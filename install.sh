@@ -60,7 +60,7 @@ max=50
 while [ "$attempt" -le "$max" ]; do
   # -C - resume, --retry handles transient errors, generous timeouts for Tor
   if curl -fL -C - --retry 5 --retry-delay 3 \
-          --connect-timeout 60 --speed-time 60 --speed-limit 1024 \
+          --connect-timeout 60 --speed-time 300 --speed-limit 30 \
           --progress-bar "$url" -o "$tmp"; then
     break
   fi
