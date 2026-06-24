@@ -54,6 +54,7 @@ def build_sidebar(
     on_navigate: Callable[[str], None],
     log_panel: ft.Control,
     engine_panel: ft.Control | None = None,
+    version_panel: ft.Control | None = None,
 ) -> ft.Container:
     nav = ft.Column(
         spacing=6,
@@ -98,6 +99,7 @@ def build_sidebar(
                 nav,
                 ft.Container(expand=True),
                 *([engine_panel] if engine_panel is not None else []),
+                *([version_panel] if version_panel is not None else []),
                 log_panel,
             ],
         ),

@@ -42,12 +42,12 @@ def test_check_returns_none_when_repo_unconfigured(monkeypatch):
 def test_pick_binary_asset_filters_by_name():
     assets = [
         {"name": "persona-windows.exe", "browser_download_url": "u1"},
-        {"name": "persona-linux", "browser_download_url": "u2"},
+        {"name": "persona-x86_64.AppImage", "browser_download_url": "u2"},
         {"name": "persona-macos", "browser_download_url": "u3"},
     ]
     assert au.pick_asset(assets) == "u2"
 
 
-def test_pick_binary_asset_none_when_no_linux():
+def test_pick_binary_asset_none_when_no_appimage():
     assets = [{"name": "persona-windows.exe", "browser_download_url": "u1"}]
     assert au.pick_asset(assets) == ""

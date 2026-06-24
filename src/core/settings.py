@@ -11,6 +11,7 @@ SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
 
 _ONBOARDING_KEY = "onboarding_done"
 _SERVER_KEY = "server_enabled"
+_AUTO_UPDATE_KEY = "auto_update"
 
 
 def _path() -> str:
@@ -59,3 +60,11 @@ def is_server_enabled() -> bool:
 
 def set_server_enabled(enabled: bool) -> None:
     set(_SERVER_KEY, bool(enabled))
+
+
+def is_auto_update_enabled() -> bool:
+    return bool(get(_AUTO_UPDATE_KEY, True))
+
+
+def set_auto_update_enabled(enabled: bool) -> None:
+    set(_AUTO_UPDATE_KEY, bool(enabled))

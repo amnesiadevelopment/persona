@@ -65,6 +65,14 @@ class App:
         self._active_tag = ""
         self._page_host: ft.Container | None = None
         self._sidebar_host: ft.Container | None = None
+        self._app_latest = ""
+        self._app_update_url = ""
+        self._app_update_status = ""  # '', downloading, ready, failed
+        self._app_update_done = 0
+        self._app_update_total = 0
+        self._update_in_progress = False
+        self._update_staged = ""
+        self._update_start_t = 0.0
         self._checking_proxies: set[str] = set()
         self._engine_latest: str = ""
         self._engine_busy = False
@@ -214,6 +222,118 @@ class App:
             on_navigate=self._navigate,
             log_panel=log_panel,
             engine_panel=engine_panel,
+            version_panel=self._build_version_panel(),
+        )
+
+    def _build_version_panel(self) -> ft.Control:
+        from . import progress_fmt as pf
+
+        ver = app_update.APP_VERSION
+        has_update = bool(self._app_latest) and self._app_latest != ver
+        auto_on = app_settings.is_auto_update_enabled()
+
+        rows: list[ft.Control] = []
+
+        # line 1: version + (badge if update available) + auto switch
+        head = ft.Row(
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                ft.Row(
+                    spacing=8,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        ft.Text(
+                            f"persona v{ver}",
+                            size=11,
+                            color=COLORS["text_sub"],
+                            font_family="monospace",
+                        ),
+                        *(
+                            [
+                                ft.Container(
+                                    width=7, height=7, border_radius=4,
+                                    bgcolor=COLORS["accent"],
+                                )
+                            ]
+                            if has_update
+                            else []
+                        ),
+                    ],
+                ),
+                ft.Switch(
+                    value=auto_on,
+                    scale=0.7,
+                    active_color=COLORS["accent"],
+                    on_change=lambda e: self._set_auto_update(e.control.value),
+                    tooltip="Auto-update",
+                ),
+            ],
+        )
+        rows.append(head)
+
+        # status line / action
+        if self._app_update_status == "downloading":
+            done, total = self._app_update_done, self._app_update_total
+            import time
+
+            elapsed = max(time.monotonic() - self._update_start_t, 0.001)
+            label = (
+                f"{pf.percent(done, total)}%" if total > 0 else pf.fmt_mb(done)
+            )
+            rows.append(
+                ft.Text(
+                    f"updating {label}",
+                    size=10, color=COLORS["accent"], font_family="monospace",
+                )
+            )
+            rows.append(
+                ft.ProgressBar(
+                    value=pf.fraction(done, total),
+                    color=COLORS["accent"], bgcolor=COLORS["input_bg"], height=4,
+                )
+            )
+            rows.append(
+                ft.Text(
+                    pf.fmt_line(done, total, elapsed),
+                    size=9, color=COLORS["text_sub"], font_family="monospace",
+                )
+            )
+        elif self._update_staged or self._app_update_status == "ready":
+            rows.append(
+                ft.Button(
+                    "[ restart to update ]",
+                    height=30,
+                    style=ft.ButtonStyle(
+                        shape=ft.RoundedRectangleBorder(radius=3),
+                        color=COLORS["accent"],
+                        side=ft.BorderSide(1, COLORS["accent"]),
+                        text_style=ft.TextStyle(font_family="monospace", size=11),
+                    ),
+                    on_click=lambda _: self._apply_update_now(),
+                )
+            )
+        elif has_update:
+            rows.append(
+                ft.Button(
+                    f"[ update to {self._app_latest} ]",
+                    height=30,
+                    style=ft.ButtonStyle(
+                        shape=ft.RoundedRectangleBorder(radius=3),
+                        color=COLORS["accent"],
+                        side=ft.BorderSide(1, COLORS["accent"]),
+                        text_style=ft.TextStyle(font_family="monospace", size=11),
+                    ),
+                    on_click=lambda _: self._apply_update_now(),
+                )
+            )
+
+        return ft.Container(
+            border_radius=3,
+            border=ft.Border.all(1, COLORS["card_border"]),
+            padding=ft.Padding.symmetric(horizontal=10, vertical=8),
+            margin=ft.Margin.only(bottom=10),
+            content=ft.Column(spacing=4, controls=rows),
         )
 
     def _build_root_layout(self, r: UIRefs) -> ft.Row:
@@ -674,68 +794,127 @@ class App:
         self._safe_update()
 
     def _check_app_update_async(self) -> None:
+        """Check for a newer release on startup and then periodically. The
+        actual download/restart decision is made by _on_update_found per the
+        auto-update setting and whether profiles are running."""
         import threading
 
+        def loop() -> None:
+            import time
+
+            while True:
+                if not self._update_in_progress and not self._update_staged:
+                    tag, url = app_update.check_for_update()
+                    if tag and url and tag != self._app_latest:
+                        self._app_latest = tag
+                        self._app_update_url = url
+                        self._on_update_found(tag, url)
+                time.sleep(60)
+
+        threading.Thread(target=loop, daemon=True).start()
+
+    def _on_update_found(self, tag: str, url: str) -> None:
+        """Decide what to do when a newer version is available."""
+        # Always refresh the sidebar so the "new version" badge shows.
+        self._refresh_sidebar()
+        if not app_update.is_packaged_appimage():
+            # running from source: just surface it, can't self-update
+            self._log(f"New version {tag} available (update from source).")
+            return
+        if not app_settings.is_auto_update_enabled():
+            self._log(f"New version {tag} available — update from the sidebar.")
+            return
+        running = len(self.bl.running_profile_names()) > 0
+        if running:
+            # don't interrupt active work; wait for a manual click
+            self._log(f"New version {tag} ready to install when you're idle.")
+            return
+        # no profiles running -> download automatically
+        self._log(f"New version {tag} found — downloading…")
+        self._start_app_update(url)
+
+    def _start_app_update(self, url: str) -> None:
+        import threading
+
+        if self._update_in_progress:
+            return
+        self._update_in_progress = True
+
         def work() -> None:
-            tag, url = app_update.check_for_update()
-            if tag and url:
-                self._show_update_banner(tag, url)
+            import time
+
+            self._update_start_t = time.monotonic()
+            self._app_update_status = "downloading"
+            self._refresh_sidebar()
+            staged = app_update.download_update(url, progress=self._update_progress_cb)
+            self._update_in_progress = False
+            if staged:
+                self._update_staged = staged
+                self._app_update_status = "ready"
+                self._log("Update downloaded.")
+                self._refresh_sidebar()
+                # if still idle (no profiles running), restart now
+                if len(self.bl.running_profile_names()) == 0 and app_settings.is_auto_update_enabled():
+                    self._log("Restarting into the new version…")
+                    app_update.apply_and_restart(staged)
+            else:
+                self._app_update_status = "failed"
+                self._log("Update download failed — will retry.")
+                self._refresh_sidebar()
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _show_update_banner(self, tag: str, url: str) -> None:
-        if self.page is None:
-            return
+    def _update_progress_cb(self, done: int, total: int) -> None:
+        import time
 
-        def do_restart(_: ft.ControlEvent) -> None:
-            self.page.pop_dialog()
-            if not app_update.is_frozen():
-                self._log(
-                    "Self-update only works in the packaged build; "
-                    "update from source with git."
+        elapsed = max(time.monotonic() - self._update_start_t, 0.001)
+        self._app_update_done = done
+        self._app_update_total = total
+        self._refresh_sidebar()
+
+    def _apply_update_now(self) -> None:
+        """Manual 'update now' click: download if needed, then restart."""
+        if self._update_staged:
+            self._log("Restarting into the new version…")
+            app_update.apply_and_restart(self._update_staged)
+        elif self._app_update_url and not self._update_in_progress:
+            # download then restart regardless of running profiles (user asked)
+            import threading
+
+            def work() -> None:
+                import time
+
+                self._update_in_progress = True
+                self._update_start_t = time.monotonic()
+                self._app_update_status = "downloading"
+                self._refresh_sidebar()
+                staged = app_update.download_update(
+                    self._app_update_url, progress=self._update_progress_cb
                 )
-                return
-            self._log(f"Downloading update {tag}…")
-            staged = app_update.download_update(url)
-            if staged:
-                self._log("Update downloaded — restarting…")
-                app_update.apply_and_restart(staged)
-            else:
-                self._log("Update download failed — try again later.")
+                self._update_in_progress = False
+                if staged:
+                    self._update_staged = staged
+                    self._log("Update downloaded — restarting…")
+                    app_update.apply_and_restart(staged)
+                else:
+                    self._app_update_status = "failed"
+                    self._log("Update download failed — try again.")
+                    self._refresh_sidebar()
 
-        dlg = ft.AlertDialog(
-            modal=True,
-            shape=ft.RoundedRectangleBorder(
-                radius=3, side=ft.BorderSide(1, COLORS["accent_dim"])
-            ),
-            bgcolor=COLORS["card_bg"],
-            title=ft.Text(
-                "update ready",
-                size=18,
-                weight=ft.FontWeight.BOLD,
-                color=COLORS["text_main"],
-                font_family="monospace",
-            ),
-            content=ft.Text(
-                f"{app_update.APP_VERSION} → {tag}",
-                size=13,
-                color=COLORS["text_sub"],
-                font_family="monospace",
-            ),
-            actions=[
-                ft.TextButton(
-                    "Later",
-                    style=ft.ButtonStyle(color=COLORS["text_sub"]),
-                    on_click=lambda _: self.page.pop_dialog(),
-                ),
-                ft.Button(
-                    "[ restart now ]",
-                    style=ACCENT_STYLE,
-                    on_click=do_restart,
-                ),
-            ],
-        )
-        self.page.show_dialog(dlg)
+            threading.Thread(target=work, daemon=True).start()
+
+    def _set_auto_update(self, enabled: bool) -> None:
+        app_settings.set_auto_update_enabled(enabled)
+        self._refresh_sidebar()
+        # if turning on and an update is already known + idle, kick it off
+        if (
+            enabled
+            and self._app_update_url
+            and not self._update_in_progress
+            and not self._update_staged
+            and len(self.bl.running_profile_names()) == 0
+        ):
+            self._start_app_update(self._app_update_url)
 
     def _server_running(self) -> bool:
         return bool(self.api_server is not None and self.api_server.is_running)
