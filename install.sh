@@ -29,9 +29,35 @@ if [ -z "$url" ]; then
 fi
 
 mkdir -p "$DEST"
-tmp="$(mktemp)"
-echo "Downloading $ASSET ..."
-curl -fSL --progress-bar "$url" -o "$tmp"
+# Resumable download: over Tor/slow links the connection often drops mid-file,
+# so retry with -C - (continue) until the whole file is here. We keep a stable
+# partial file (not mktemp) so each attempt resumes instead of restarting.
+tmp="$DEST/.persona.partial"
+echo "Downloading $ASSET (resumable; safe to re-run if it drops) ..."
+attempt=1
+max=50
+while [ "$attempt" -le "$max" ]; do
+  # -C - resume, --retry handles transient errors, generous timeouts for Tor
+  if curl -fL -C - --retry 5 --retry-delay 3 \
+          --connect-timeout 60 --speed-time 60 --speed-limit 1024 \
+          --progress-bar "$url" -o "$tmp"; then
+    break
+  fi
+  rc=$?
+  # curl 33 = server doesn't support resume; 416 = already complete -> treat as done
+  if [ "$rc" = "33" ] || [ "$rc" = "22" ]; then
+    # can't resume: wipe and retry from scratch a couple of times
+    rm -f "$tmp"
+  fi
+  echo "  download interrupted (attempt $attempt/$max), retrying..."
+  attempt=$((attempt + 1))
+  sleep 3
+done
+if [ ! -s "$tmp" ]; then
+  echo "Download failed after $max attempts. Try again later, or grab the file" >&2
+  echo "manually from https://github.com/$REPO/releases/latest" >&2
+  exit 1
+fi
 chmod +x "$tmp"
 mv "$tmp" "$DEST/persona"
 echo "Installed to $DEST/persona"
