@@ -1,0 +1,143 @@
+"""Per-profile fontconfig that makes the browser see ONLY persona's bundled
+fonts for the profile's OS, ignoring whatever the host has installed. This
+keeps the font fingerprint identical on every host, distinct per spoofed OS,
+distinct per profile (a tiny seeded glyph skew), and lets CJK render from
+fonts we ship — without depending on system fonts.
+"""
+
+import os
+import pathlib
+import sys
+
+_FONTS_SUBDIR = os.path.join("assets", "fonts")
+_COMMON = "common"
+_OS_DIRS = {"windows": "windows", "macos": "macos", "linux": "linux"}
+
+_CONF_TEMPLATE = """<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<fontconfig>
+  <dir>{common}</dir>
+  <dir>{osdir}</dir>
+  <cachedir>{cachedir}</cachedir>
+  <!-- Don't fall back to system fonts: the bundled set is the whole world. -->
+  <config>
+    <rescan><int>30</int></rescan>
+  </config>
+
+  <!-- CJK requests resolve to the bundled Noto CJK faces (no tofu). -->
+  <match target="pattern">
+    <test name="lang" compare="contains"><string>zh</string></test>
+    <edit name="family" mode="prepend" binding="strong">
+      <string>Noto Sans CJK SC</string>
+    </edit>
+  </match>
+  <match target="pattern">
+    <test name="lang" compare="contains"><string>ja</string></test>
+    <edit name="family" mode="prepend" binding="strong">
+      <string>Noto Sans CJK JP</string>
+    </edit>
+  </match>
+  <match target="pattern">
+    <test name="lang" compare="contains"><string>ko</string></test>
+    <edit name="family" mode="prepend" binding="strong">
+      <string>Noto Sans CJK KR</string>
+    </edit>
+  </match>
+
+  <!-- Latin generics fall back to whatever the OS set ships, then CJK. -->
+  <alias>
+    <family>sans-serif</family>
+    <prefer>{sans_prefs}</prefer>
+  </alias>
+  <alias>
+    <family>serif</family>
+    <prefer>{serif_prefs}</prefer>
+  </alias>
+  <alias>
+    <family>monospace</family>
+    <prefer>{mono_prefs}</prefer>
+  </alias>
+</fontconfig>
+"""
+
+_SEED_MATCH = """\
+  <!-- Per-profile micro glyph skew: the engine already varies the GPU canvas
+       by seed, but text rendering depends on (shared) fonts, so two profiles
+       on the same OS share the text canvas. A sub-perceptual transform makes
+       it deterministically unique per profile. -->
+  <match target="font">
+    <edit name="matrix" mode="assign">
+      <matrix><double>{sx:.6f}</double><double>{skew:.6f}</double><double>0</double><double>1</double></matrix>
+    </edit>
+  </match>"""
+
+_OS_FAMILIES = {
+    "windows": {
+        "sans": ["Arimo", "DejaVu Sans"],
+        "serif": ["Tinos", "DejaVu Serif"],
+        "mono": ["Cousine", "DejaVu Sans Mono"],
+    },
+    "macos": {
+        "sans": ["Noto Sans", "DejaVu Sans"],
+        "serif": ["DejaVu Serif"],
+        "mono": ["DejaVu Sans Mono"],
+    },
+    "linux": {
+        "sans": ["DejaVu Sans"],
+        "serif": ["DejaVu Serif"],
+        "mono": ["DejaVu Sans Mono"],
+    },
+}
+_CJK_SANS = ["Noto Sans CJK SC", "Noto Sans CJK JP", "Noto Sans CJK KR"]
+_CJK_SERIF = ["Noto Serif CJK SC"]
+
+
+def bundled_fonts_dir() -> str:
+    """Absolute path to persona's shipped fonts directory, in dev and when
+    frozen by PyInstaller (where assets land under sys._MEIPASS/src/assets).
+    """
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        return os.path.join(meipass, "src", _FONTS_SUBDIR)
+    here = pathlib.Path(__file__).resolve()
+    src_root = here.parents[2]
+    return str(src_root / _FONTS_SUBDIR)
+
+
+def _prefs(families: list[str], cjk: list[str]) -> str:
+    items = [f"<family>{f}</family>" for f in families + cjk]
+    return "".join(items)
+
+
+
+
+def build_font_config(profile_dir: str, os_type: str = "linux") -> str:
+    """Write a fontconfig under the profile dir exposing only the bundled fonts
+    for `os_type` (plus shared CJK), with a per-`seed` micro glyph skew, and
+    return its path. Different OS types expose different font sets and each
+    profile gets a unique text-canvas via the skew.
+    """
+    os_key = os_type if os_type in _OS_DIRS else "linux"
+    base = bundled_fonts_dir()
+    common_dir = os.path.join(base, _COMMON)
+    os_dir = os.path.join(base, _OS_DIRS[os_key])
+
+    profile = pathlib.Path(profile_dir)
+    profile.mkdir(parents=True, exist_ok=True)
+    cachedir = profile / ".fontcache"
+    cachedir.mkdir(parents=True, exist_ok=True)
+
+    fams = _OS_FAMILIES[os_key]
+    conf = profile / "fonts.conf"
+    conf.write_text(
+        _CONF_TEMPLATE.format(
+            common=common_dir,
+            osdir=os_dir,
+            cachedir=str(cachedir),
+            sans_prefs=_prefs(fams["sans"], _CJK_SANS),
+            serif_prefs=_prefs(fams["serif"], _CJK_SERIF),
+            mono_prefs=_prefs(fams["mono"], []),
+        ),
+        encoding="utf-8",
+    )
+    return str(conf)
