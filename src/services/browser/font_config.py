@@ -1,8 +1,13 @@
 """Per-profile fontconfig that makes the browser see ONLY persona's bundled
 fonts for the profile's OS, ignoring whatever the host has installed. This
 keeps the font fingerprint identical on every host, distinct per spoofed OS,
-distinct per profile (a tiny seeded glyph skew), and lets CJK render from
-fonts we ship — without depending on system fonts.
+and lets CJK render from fonts we ship — without depending on system fonts.
+
+Named families a site requests by name (Arial, Times New Roman, Courier New,
+…) are mapped onto bundled metric-compatible clones (Arimo, Tinos, Cousine) so
+text laid out against those families keeps the right advance widths. Without
+the mapping fontconfig falls through to DejaVu Sans, which is wider and breaks
+metric-sensitive layouts (e.g. Google Sheets columns shift).
 """
 
 import os
@@ -44,6 +49,9 @@ _CONF_TEMPLATE = """<?xml version="1.0"?>
     </edit>
   </match>
 
+  <!-- Named families a site asks for by name map to bundled metric clones,
+       else they fall through to DejaVu Sans (wider) and break column layout. -->
+{named_matches}
   <!-- Latin generics fall back to whatever the OS set ships, then CJK. -->
   <alias>
     <family>sans-serif</family>
@@ -60,15 +68,10 @@ _CONF_TEMPLATE = """<?xml version="1.0"?>
 </fontconfig>
 """
 
-_SEED_MATCH = """\
-  <!-- Per-profile micro glyph skew: the engine already varies the GPU canvas
-       by seed, but text rendering depends on (shared) fonts, so two profiles
-       on the same OS share the text canvas. A sub-perceptual transform makes
-       it deterministically unique per profile. -->
-  <match target="font">
-    <edit name="matrix" mode="assign">
-      <matrix><double>{sx:.6f}</double><double>{skew:.6f}</double><double>0</double><double>1</double></matrix>
-    </edit>
+_NAMED_MATCH = """\
+  <match target="pattern">
+    <test name="family"><string>{requested}</string></test>
+    <edit name="family" mode="assign" binding="strong"><string>{clone}</string></edit>
   </match>"""
 
 _OS_FAMILIES = {
@@ -90,6 +93,44 @@ _OS_FAMILIES = {
 }
 _CJK_SANS = ["Noto Sans CJK SC", "Noto Sans CJK JP", "Noto Sans CJK KR"]
 _CJK_SERIF = ["Noto Serif CJK SC"]
+
+# Map the families real sites request by name onto the bundled clone that
+# carries matching metrics. Arimo/Tinos/Cousine are the metric-compatible
+# clones of Arial/Times New Roman/Courier New. macOS exposes Noto Sans.
+_SANS_CLONE = {"windows": "Arimo", "macos": "Noto Sans", "linux": "DejaVu Sans"}
+_SERIF_CLONE = {"windows": "Tinos", "macos": "DejaVu Serif", "linux": "DejaVu Serif"}
+_MONO_CLONE = {
+    "windows": "Cousine",
+    "macos": "DejaVu Sans Mono",
+    "linux": "DejaVu Sans Mono",
+}
+_SANS_NAMED = [
+    "Arial", "Arial Black", "Helvetica", "Helvetica Neue", "Verdana",
+    "Tahoma", "Segoe UI", "Calibri", "Roboto", "Liberation Sans",
+]
+_SERIF_NAMED = [
+    "Times New Roman", "Times", "Georgia", "Liberation Serif",
+]
+_MONO_NAMED = [
+    "Courier New", "Courier", "Consolas", "Liberation Mono",
+]
+
+
+def _named_matches(os_key: str) -> str:
+    blocks = []
+    for fam in _SANS_NAMED:
+        blocks.append(
+            _NAMED_MATCH.format(requested=fam, clone=_SANS_CLONE[os_key])
+        )
+    for fam in _SERIF_NAMED:
+        blocks.append(
+            _NAMED_MATCH.format(requested=fam, clone=_SERIF_CLONE[os_key])
+        )
+    for fam in _MONO_NAMED:
+        blocks.append(
+            _NAMED_MATCH.format(requested=fam, clone=_MONO_CLONE[os_key])
+        )
+    return "\n".join(blocks)
 
 
 def bundled_fonts_dir() -> str:
@@ -113,9 +154,9 @@ def _prefs(families: list[str], cjk: list[str]) -> str:
 
 def build_font_config(profile_dir: str, os_type: str = "linux") -> str:
     """Write a fontconfig under the profile dir exposing only the bundled fonts
-    for `os_type` (plus shared CJK), with a per-`seed` micro glyph skew, and
-    return its path. Different OS types expose different font sets and each
-    profile gets a unique text-canvas via the skew.
+    for `os_type` (plus shared CJK) and return its path. Different OS types
+    expose different font sets, and named families are mapped to their bundled
+    metric clones so layout stays correct.
     """
     os_key = os_type if os_type in _OS_DIRS else "linux"
     base = bundled_fonts_dir()
@@ -134,6 +175,7 @@ def build_font_config(profile_dir: str, os_type: str = "linux") -> str:
             common=common_dir,
             osdir=os_dir,
             cachedir=str(cachedir),
+            named_matches=_named_matches(os_key),
             sans_prefs=_prefs(fams["sans"], _CJK_SANS),
             serif_prefs=_prefs(fams["serif"], _CJK_SERIF),
             mono_prefs=_prefs(fams["mono"], []),
