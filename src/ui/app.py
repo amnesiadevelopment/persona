@@ -956,10 +956,25 @@ class App:
                     done(True)
                     return
                 self._engine_busy = True
-                ok, _msg = engine.ensure_engine(progress=progress)
+                self._engine_progress_start()
+
+                # mirror progress to BOTH the onboarding dialog and the
+                # sidebar panel, so if the user closes onboarding mid-
+                # download the sidebar keeps showing live progress instead
+                # of a bare 'unknown'.
+                def both(done_bytes, total):
+                    try:
+                        progress(done_bytes, total)
+                    except Exception:
+                        pass
+                    self._engine_progress_cb(done_bytes, total)
+
+                ok, _msg = engine.ensure_engine(progress=both)
                 self._engine_busy = False
                 if ok:
                     self._engine_latest = engine.current_version()
+                self._refresh_engine_text()
+                self._refresh_sidebar()
                 done(ok)
 
             threading.Thread(target=work, daemon=True).start()

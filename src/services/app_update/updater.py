@@ -18,7 +18,7 @@ import urllib.request
 
 from ..engine.updater import is_newer
 
-APP_VERSION = "1.0.8"
+APP_VERSION = "1.0.9"
 APP_REPO = "amnesiadevelopment/persona"
 ASSET_NAME = "persona-x86_64.AppImage"
 
