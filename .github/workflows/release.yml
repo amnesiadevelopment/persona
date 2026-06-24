@@ -48,15 +48,7 @@ jobs:
         run: |
           # The Flutter desktop client is downloaded on first run and bundled by
           # persona.spec from ~/.flet/client. Trigger that download headlessly.
-          xvfb-run -a python - <<'PY' || true
-import flet
-def main(page):
-    page.window.close()
-try:
-    flet.app(target=main)
-except Exception as e:
-    print("flet prefetch finished:", e)
-PY
+          xvfb-run -a python ci/prefetch_flet.py || true
           echo "flet client dir:"; ls -la ~/.flet/client/ || echo "(none yet)"
 
       - name: Build the single-file binary
