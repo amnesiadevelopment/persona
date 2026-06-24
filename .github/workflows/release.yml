@@ -29,10 +29,17 @@ jobs:
           pip install --prefer-binary -r requirements.txt
           pip install pyinstaller
 
-      - name: Fetch bundled fonts
+      - name: Install system libs the Flet client needs
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb
+          # libsecret is a runtime dep of the Flet (Flutter) desktop client;
+          # without it PyInstaller can't resolve the client and drops it from the
+          # bundle (binary comes out ~140MB instead of ~225MB and crashes).
+          sudo apt-get install -y xvfb libsecret-1-0 libsecret-1-dev \
+            libgtk-3-0 libblkid1 liblzma5
+
+      - name: Fetch bundled fonts
+        run: |
           chmod +x download-fonts.sh
           ./download-fonts.sh
           # fail loudly if fonts didn't land, so we never ship a fontless build
