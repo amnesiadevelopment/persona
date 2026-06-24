@@ -290,9 +290,10 @@ class App:
             label = (
                 f"{pf.percent(done, total)}%" if total > 0 else pf.fmt_mb(done)
             )
+            target = self._app_latest or "new version"
             rows.append(
                 ft.Text(
-                    f"updating {label}",
+                    f"updating to {target} \u00b7 {label}",
                     size=10, color=COLORS["accent"], font_family="monospace",
                 )
             )

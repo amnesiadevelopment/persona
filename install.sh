@@ -38,10 +38,12 @@ fi
 docs="$( (command -v xdg-user-dir >/dev/null 2>&1 && xdg-user-dir DOCUMENTS) || echo "$HOME/Documents")"
 mkdir -p "$docs" 2>/dev/null || true
 
-# resolve the latest release's download URL via the GitHub API
+# resolve the latest release (tag + download URL) via the GitHub API
 api="https://api.github.com/repos/$REPO/releases/latest"
 echo "Looking up the latest release..."
-url="$(curl -fsSL "$api" | grep -o "https://github.com/$REPO/releases/download/[^\"]*$ASSET" | head -n1)"
+meta="$(curl -fsSL "$api")"
+url="$(printf '%s' "$meta" | grep -o "https://github.com/$REPO/releases/download/[^\"]*$ASSET" | head -n1)"
+tag="$(printf '%s' "$meta" | grep -o '"tag_name"[ ]*:[ ]*"[^"]*"' | head -n1 | sed 's/.*"\([^"]*\)"$/\1/')"
 if [ -z "$url" ]; then
   echo "Could not find a '$ASSET' asset in the latest release of $REPO." >&2
   exit 1
@@ -52,7 +54,7 @@ mkdir -p "$DEST"
 # so retry with -C - (continue) until the whole file is here. We keep a stable
 # partial file (not mktemp) so each attempt resumes instead of restarting.
 tmp="$DEST/.persona.partial"
-echo "Downloading $ASSET (resumable; safe to re-run if it drops) ..."
+echo "Downloading persona ${tag:-latest} (resumable; safe to re-run if it drops) ..."
 attempt=1
 max=50
 while [ "$attempt" -le "$max" ]; do
