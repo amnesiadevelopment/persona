@@ -1,9 +1,24 @@
 import pathlib
+import shutil
+import subprocess
+
+import pytest
 
 from src.services.browser.font_config import (
     bundled_fonts_dir,
     build_font_config,
 )
+
+
+def _fc_match(conf_path: str, family: str) -> str:
+    out = subprocess.run(
+        ["fc-match", family],
+        env={"FONTCONFIG_FILE": conf_path},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return out.stdout
 
 
 def test_bundled_dir_exists_and_has_fonts():
@@ -69,3 +84,37 @@ def test_valid_xml(tmp_path):
     assert "<fontconfig>" in text
     assert "<cachedir>" in text
     assert str(tmp_path) in text
+
+
+@pytest.mark.skipif(
+    shutil.which("fc-match") is None, reason="fontconfig not installed"
+)
+@pytest.mark.parametrize(
+    "requested,expected_face",
+    [
+        ("Arial", "Arimo"),
+        ("Helvetica", "Arimo"),
+        ("Segoe UI", "Arimo"),
+        ("Verdana", "Arimo"),
+        ("Tahoma", "Arimo"),
+        ("Times New Roman", "Tinos"),
+        ("Georgia", "Tinos"),
+        ("Courier New", "Cousine"),
+        ("Consolas", "Cousine"),
+    ],
+)
+def test_named_windows_families_resolve_to_metric_clones(
+    tmp_path, requested, expected_face
+):
+    # A Windows profile must map the common named families a real site asks
+    # for (Arial, Times New Roman, ...) onto their bundled metric-compatible
+    # clones. Without this they fall through to DejaVu Sans, whose advance
+    # widths differ and break column layout (Google Sheets shifts).
+    conf = build_font_config(str(tmp_path), "windows")
+    resolved = _fc_match(conf, requested)
+    assert expected_face in resolved, (
+        f"{requested!r} resolved to {resolved!r}, expected {expected_face}"
+    )
+    assert "DejaVu" not in resolved, (
+        f"{requested!r} fell through to DejaVu: {resolved!r}"
+    )
