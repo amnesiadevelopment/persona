@@ -19,6 +19,25 @@ if [ "$os" != "Linux" ] || [ "$arch" != "x86_64" ]; then
   exit 1
 fi
 
+# Flet (the UI runtime inside persona) calls the OS for the documents directory
+# at startup via the `xdg-user-dir` binary. On minimal/headless systems (e.g.
+# Whonix) that binary is missing and persona fails to start with
+# "MissingPlatformDirectoryException". Make sure it's present and the XDG dirs
+# exist. Best-effort — skipped if apt/sudo aren't available.
+if ! command -v xdg-user-dir >/dev/null 2>&1; then
+  echo "Setting up XDG user directories (needed by the UI runtime)..."
+  if command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get update >/dev/null 2>&1 || true
+    sudo apt-get install -y --no-install-recommends xdg-user-dirs >/dev/null 2>&1 || true
+  fi
+fi
+if command -v xdg-user-dirs-update >/dev/null 2>&1; then
+  xdg-user-dirs-update --force >/dev/null 2>&1 || xdg-user-dirs-update >/dev/null 2>&1 || true
+fi
+# guarantee a Documents dir exists regardless
+docs="$( (command -v xdg-user-dir >/dev/null 2>&1 && xdg-user-dir DOCUMENTS) || echo "$HOME/Documents")"
+mkdir -p "$docs" 2>/dev/null || true
+
 # resolve the latest release's download URL via the GitHub API
 api="https://api.github.com/repos/$REPO/releases/latest"
 echo "Looking up the latest release..."
