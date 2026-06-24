@@ -39,6 +39,7 @@ def test_progress_cb_formats_mb_percent_speed(monkeypatch):
     app._engine_bar = ft.ProgressBar()
     app._engine_detail = ft.Text("")
     monkeypatch.setattr(app, "_safe_update", lambda: None)
+    monkeypatch.setattr(app, "_refresh_sidebar", lambda: None)
 
     import time
     monkeypatch.setattr(app, "_engine_start_t", time.monotonic() - 2.0)
@@ -59,6 +60,7 @@ def test_progress_cb_unknown_total_shows_mb_and_speed(monkeypatch):
     app._engine_bar = ft.ProgressBar()
     app._engine_detail = ft.Text("")
     monkeypatch.setattr(app, "_safe_update", lambda: None)
+    monkeypatch.setattr(app, "_refresh_sidebar", lambda: None)
     import time
     app._engine_start_t = time.monotonic() - 1.0
     app._engine_progress_cb(30_000_000, 0)

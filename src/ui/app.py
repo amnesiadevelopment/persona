@@ -1009,7 +1009,9 @@ class App:
             label = pf.fmt_mb(done)
         self.engine_text.value = f"downloading {label}"
         self._engine_detail.value = pf.fmt_line(done, total, elapsed)
-        self._safe_update()
+        # rebuild the sidebar so the live values render (a bare
+        # _safe_update() does not reliably reflect .value changes here).
+        self._refresh_sidebar()
 
     def _check_engine_async(self) -> None:
         def work() -> None:
