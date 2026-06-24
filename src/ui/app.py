@@ -234,43 +234,52 @@ class App:
 
         rows: list[ft.Control] = []
 
-        # line 1: version + (badge if update available) + auto switch
-        head = ft.Row(
-            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        # version line (+ badge when an update is available)
+        version_row = ft.Row(
+            spacing=8,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
             controls=[
-                ft.Row(
-                    spacing=8,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    controls=[
-                        ft.Text(
-                            f"persona v{ver}",
-                            size=11,
-                            color=COLORS["text_sub"],
-                            font_family="monospace",
-                        ),
-                        *(
-                            [
-                                ft.Container(
-                                    width=7, height=7, border_radius=4,
-                                    bgcolor=COLORS["accent"],
-                                )
-                            ]
-                            if has_update
-                            else []
-                        ),
-                    ],
+                ft.Text(
+                    f"persona v{ver}",
+                    size=11,
+                    color=COLORS["text_sub"],
+                    font_family="monospace",
                 ),
-                ft.Switch(
-                    value=auto_on,
-                    scale=0.7,
-                    active_color=COLORS["accent"],
-                    on_change=lambda e: self._set_auto_update(e.control.value),
-                    tooltip="Auto-update",
+                *(
+                    [
+                        ft.Container(
+                            width=7, height=7, border_radius=4,
+                            bgcolor=COLORS["accent"],
+                        )
+                    ]
+                    if has_update
+                    else []
                 ),
             ],
         )
-        rows.append(head)
+        rows.append(version_row)
+
+        # auto-update toggle on its own line so the label fits
+        toggle = ft.Container(
+            on_click=lambda _: self._set_auto_update(not auto_on),
+            ink=True,
+            border_radius=3,
+            padding=ft.Padding.symmetric(horizontal=4, vertical=2),
+            tooltip=(
+                "Auto-update is ON: new versions download and install\n"
+                "automatically when no profiles are running. Click to turn off."
+                if auto_on else
+                "Auto-update is OFF: you update manually from here.\n"
+                "Click to turn on automatic updates."
+            ),
+            content=ft.Text(
+                f"[ auto-update: {'on' if auto_on else 'off'} ]",
+                size=10,
+                color=COLORS["accent"] if auto_on else COLORS["text_dim"],
+                font_family="monospace",
+            ),
+        )
+        rows.append(toggle)
 
         # status line / action
         if self._app_update_status == "downloading":
