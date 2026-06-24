@@ -22,21 +22,13 @@ personas look unrelated.
 curl -fsSL https://raw.githubusercontent.com/amnesiadevelopment/persona/main/install.sh | sh
 ```
 
-This downloads the latest release binary, installs it to `~/.local/bin/persona`,
-and you launch it with `persona`. Nothing else to install — the UI runtime and
-fonts are bundled inside the binary, and the browser engine downloads itself on
-first run.
+This downloads the latest AppImage, installs it to `~/.local/bin/persona`, adds
+a menu entry with an icon, and you launch it with `persona` (or from your app
+menu). Nothing else to install — the UI runtime and fonts are bundled inside the
+AppImage, and the browser engine downloads itself on first run.
 
-Prefer a direct download? Grab `persona-linux-x86_64` from the
+Prefer a direct download? Grab `persona-x86_64.AppImage` from the
 [latest release](https://github.com/amnesiadevelopment/persona/releases/latest), then:
-
-```sh
-chmod +x persona-linux-x86_64
-./persona-linux-x86_64
-```
-
-Or download the **AppImage** (`persona-x86_64.AppImage`) for a self-contained
-desktop app with its own menu icon:
 
 ```sh
 chmod +x persona-x86_64.AppImage

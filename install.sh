@@ -5,7 +5,7 @@
 set -e
 
 REPO="amnesiadevelopment/persona"            # <-- set to your github user/repo
-ASSET="persona-linux-x86_64"
+ASSET="persona-x86_64.AppImage"
 DEST="${PERSONA_INSTALL_DIR:-$HOME/.local/bin}"
 
 echo "persona installer"

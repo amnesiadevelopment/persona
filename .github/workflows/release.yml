@@ -1,19 +1,20 @@
 name: release
 
-# Build the Linux binary and publish it to a GitHub Release whenever a version
-# tag (v1.2.3) is pushed.
+# Build the Linux desktop app with `flet build linux` (Flutter-based, bundles
+# the Flet client + Python runtime deterministically) and publish a single
+# AppImage to a GitHub Release on each version tag.
 on:
   push:
     tags:
       - "v*"
-  workflow_dispatch: {}   # also allow manual runs from the Actions tab
+  workflow_dispatch: {}
 
 permissions:
-  contents: write   # needed to create the release and upload the binary
+  contents: write
 
 jobs:
   build-linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Check out the code
         uses: actions/checkout@v4
@@ -23,98 +24,89 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install build dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install --prefer-binary -r requirements.txt
-          pip install pyinstaller
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
 
-      - name: Install system libs the Flet client needs
+      - name: Install Linux build dependencies
         run: |
           sudo apt-get update
-          # libsecret is a runtime dep of the Flet (Flutter) desktop client;
-          # without it PyInstaller can't resolve the client and drops it from the
-          # bundle (binary comes out ~140MB instead of ~225MB and crashes).
-          sudo apt-get install -y xvfb libsecret-1-0 libsecret-1-dev \
-            libgtk-3-0 libblkid1 liblzma5
+          sudo apt-get install -y \
+            binutils clang cmake llvm lld ninja-build pkg-config \
+            libgtk-3-dev libsecret-1-dev libunwind-dev \
+            libasound2-dev
 
-      - name: Fetch bundled fonts
+      - name: Install Flet CLI + app deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install flet==0.85.3
+          pip install --prefer-binary -r requirements.txt
+
+      - name: Fetch bundled fonts into src/assets
         run: |
           chmod +x download-fonts.sh
           ./download-fonts.sh
-          # fail loudly if fonts didn't land, so we never ship a fontless build
           count=$(find src/assets/fonts -name '*.ttf' -o -name '*.ttc' | wc -l)
           echo "bundled font faces: $count"
           if [ "$count" -lt 8 ]; then
             echo "ERROR: too few fonts bundled ($count); aborting." >&2
-            find src/assets/fonts -type f
             exit 1
           fi
 
-      - name: Prefetch the Flet desktop client
-        run: |
-          # The Flutter desktop client is downloaded on first run and bundled by
-          # persona.spec from ~/.flet/client. Trigger that download headlessly.
-          xvfb-run -a python ci/prefetch_flet.py || true
-          echo "flet client dir:"; ls -la ~/.flet/client/ || echo "(none yet)"
+      - name: Build the Linux bundle
+        run: flet build linux -v --no-rich-output
 
-      - name: Build the single-file binary
-        run: pyinstaller persona.spec --noconfirm --clean
-
-      - name: Sanity-check the binary (must contain flet data, be full size)
+      - name: Show what flet produced
         run: |
-          size=$(stat -c%s dist/persona)
-          echo "binary size: $size bytes"
-          # a working build is ~200MB+; the broken (no flet data) one was ~90MB
-          if [ "$size" -lt 150000000 ]; then
-            echo "ERROR: binary too small ($size) - flet data likely missing." >&2
-            exit 1
-          fi
-          if ! strings dist/persona | grep -q 'icons.json'; then
-            echo "ERROR: icons.json not bundled - flet data missing." >&2
-            exit 1
-          fi
-          echo "binary looks complete."
+          echo "=== build/linux tree ==="
+          find build/linux -maxdepth 2 -type f | head -40
+          du -sh build/linux
 
-      - name: Build the AppImage
+      - name: Package the bundle into an AppImage
         run: |
-          # fetch appimagetool
           curl -fsSL -o /tmp/appimagetool \
             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x /tmp/appimagetool
-          # assemble the AppDir
           APPDIR=/tmp/persona.AppDir
-          rm -rf "$APPDIR"; mkdir -p "$APPDIR/usr/bin"
-          cp dist/persona "$APPDIR/usr/bin/persona"
-          chmod +x "$APPDIR/usr/bin/persona"
+          rm -rf "$APPDIR"; mkdir -p "$APPDIR/usr"
+          # flet build output lives in build/linux (executable + lib/ + data/)
+          cp -r build/linux/* "$APPDIR/usr/"
+          # find the actual executable flet produced
+          BIN="$(find "$APPDIR/usr" -maxdepth 2 -type f -executable ! -name '*.so' | head -1)"
+          echo "app executable: $BIN"
+          BINREL="${BIN#$APPDIR/}"
           cp src/assets/icon.png "$APPDIR/persona.png"
-          cat > "$APPDIR/persona.desktop" <<'EOF'
+          cat > "$APPDIR/persona.desktop" <<EOF
           [Desktop Entry]
           Type=Application
           Name=persona
           Comment=Anti-detect browser manager
-          Exec=persona
+          Exec=AppRun
           Icon=persona
           Categories=Network;WebBrowser;
           Terminal=false
           EOF
-          cat > "$APPDIR/AppRun" <<'EOF'
+          cat > "$APPDIR/AppRun" <<EOF
           #!/bin/sh
-          HERE="$(dirname "$(readlink -f "$0")")"
-          exec "$HERE/usr/bin/persona" "$@"
+          HERE="\$(dirname "\$(readlink -f "\$0")")"
+          exec "\$HERE/$BINREL" "\$@"
           EOF
           chmod +x "$APPDIR/AppRun"
           ARCH=x86_64 /tmp/appimagetool --appimage-extract-and-run "$APPDIR" persona-x86_64.AppImage
+          ls -la persona-x86_64.AppImage
 
-      - name: Name the artifacts
+      - name: Sanity-check the AppImage size
         run: |
-          cp dist/persona persona-linux-x86_64
-          chmod +x persona-linux-x86_64 persona-x86_64.AppImage
+          size=$(stat -c%s persona-x86_64.AppImage)
+          echo "AppImage size: $size bytes"
+          if [ "$size" -lt 30000000 ]; then
+            echo "ERROR: AppImage too small ($size) - build likely incomplete." >&2
+            exit 1
+          fi
 
       - name: Publish to the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            persona-linux-x86_64
-            persona-x86_64.AppImage
+          files: persona-x86_64.AppImage
           generate_release_notes: true
