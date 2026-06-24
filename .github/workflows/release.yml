@@ -27,7 +27,10 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          # flet 0.85.3 pins this exact Flutter version; using "stable" makes
+          # flet try to reinstall the right one interactively and the build
+          # hangs/fails on the [y/n] prompt in CI.
+          flutter-version: "3.41.7"
 
       - name: Install Linux build dependencies
         run: |
