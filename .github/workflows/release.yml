@@ -32,6 +32,7 @@ jobs:
       - name: Fetch bundled fonts
         run: |
           sudo apt-get update
+          sudo apt-get install -y xvfb
           chmod +x download-fonts.sh
           ./download-fonts.sh
           # fail loudly if fonts didn't land, so we never ship a fontless build
@@ -43,8 +44,38 @@ jobs:
             exit 1
           fi
 
+      - name: Prefetch the Flet desktop client
+        run: |
+          # The Flutter desktop client is downloaded on first run and bundled by
+          # persona.spec from ~/.flet/client. Trigger that download headlessly.
+          xvfb-run -a python - <<'PY' || true
+import flet
+def main(page):
+    page.window.close()
+try:
+    flet.app(target=main)
+except Exception as e:
+    print("flet prefetch finished:", e)
+PY
+          echo "flet client dir:"; ls -la ~/.flet/client/ || echo "(none yet)"
+
       - name: Build the single-file binary
         run: pyinstaller persona.spec --noconfirm --clean
+
+      - name: Sanity-check the binary (must contain flet data, be full size)
+        run: |
+          size=$(stat -c%s dist/persona)
+          echo "binary size: $size bytes"
+          # a working build is ~200MB+; the broken (no flet data) one was ~90MB
+          if [ "$size" -lt 150000000 ]; then
+            echo "ERROR: binary too small ($size) - flet data likely missing." >&2
+            exit 1
+          fi
+          if ! strings dist/persona | grep -q 'icons.json'; then
+            echo "ERROR: icons.json not bundled - flet data missing." >&2
+            exit 1
+          fi
+          echo "binary looks complete."
 
       - name: Build the AppImage
         run: |
