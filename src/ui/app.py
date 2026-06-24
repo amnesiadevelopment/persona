@@ -811,7 +811,13 @@ class App:
 
         elapsed = max(time.monotonic() - self._engine_start_t, 0.001)
         self._engine_bar.value = pf.fraction(done, total)
-        label = f"{pf.percent(done, total)}%" if total > 0 else pf.fmt_mb(done)
+        # With a known size show a percentage; when the server omits
+        # Content-Length (common over Tor) show the live downloaded amount
+        # so it's obvious bytes are flowing rather than a bar spinning idle.
+        if total > 0:
+            label = f"{pf.percent(done, total)}%"
+        else:
+            label = pf.fmt_mb(done)
         self.engine_text.value = f"downloading {label}"
         self._engine_detail.value = pf.fmt_line(done, total, elapsed)
         self._safe_update()
@@ -836,7 +842,8 @@ class App:
         self._engine_busy = True
         self._log("No browser engine found — downloading…")
         self._engine_progress_start()
-        self._refresh_engine_text("downloading…")
+        self.engine_text.value = "connecting…"
+        self._refresh_sidebar()
 
         ok, msg = engine.ensure_engine(progress=self._engine_progress_cb)
         self._engine_busy = False

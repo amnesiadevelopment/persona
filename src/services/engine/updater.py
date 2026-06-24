@@ -123,35 +123,62 @@ def download_engine(
         return False
     os.makedirs(ENGINE_DIR, exist_ok=True)
     tmp = APPIMAGE + ".new"
-    try:
-        h = hashlib.sha256()
-        with urllib.request.urlopen(url, timeout=timeout) as resp, open(
-            tmp, "wb"
-        ) as out:
-            total = int(resp.headers.get("Content-Length") or 0)
-            done = 0
-            while True:
-                chunk = resp.read(1 << 20)
-                if not chunk:
-                    break
-                out.write(chunk)
-                h.update(chunk)
-                done += len(chunk)
-                if progress is not None:
-                    progress(done, total)
-        if digest and h.hexdigest() != digest.split(":", 1)[-1].strip().lower():
-            os.remove(tmp)
-            return False
-        os.chmod(tmp, 0o755)
-        os.replace(tmp, APPIMAGE)
-        return True
-    except Exception:
-        if os.path.exists(tmp):
-            try:
+    # Resume across dropped connections (Tor): keep the partial file and
+    # re-request with a Range header from where we left off. Retry until the
+    # whole file is here or we run out of attempts.
+    attempts = 0
+    max_attempts = 40
+    total = 0
+    while attempts < max_attempts:
+        attempts += 1
+        have = os.path.getsize(tmp) if os.path.exists(tmp) else 0
+        req = urllib.request.Request(url)
+        if have:
+            req.add_header("Range", f"bytes={have}-")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                # Content-Range gives the true total when resuming; else
+                # Content-Length (+ what we already have).
+                cr = resp.headers.get("Content-Range")
+                if cr and "/" in cr:
+                    try:
+                        total = int(cr.rsplit("/", 1)[-1])
+                    except ValueError:
+                        total = 0
+                else:
+                    cl = int(resp.headers.get("Content-Length") or 0)
+                    total = (have + cl) if cl else 0
+                mode = "ab" if have and resp.status == 206 else "wb"
+                if mode == "wb":
+                    have = 0
+                done = have
+                with open(tmp, mode) as out:
+                    while True:
+                        chunk = resp.read(1 << 20)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                        done += len(chunk)
+                        if progress is not None:
+                            progress(done, total)
+            # finished a pass; if we have the whole file (or total unknown
+            # and the stream ended cleanly), verify and install.
+            if total and os.path.getsize(tmp) < total:
+                continue  # dropped early, resume
+            h = hashlib.sha256()
+            with open(tmp, "rb") as f:
+                for blk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(blk)
+            if digest and h.hexdigest() != digest.split(":", 1)[-1].strip().lower():
                 os.remove(tmp)
-            except OSError:
-                pass
-        return False
+                return False
+            os.chmod(tmp, 0o755)
+            os.replace(tmp, APPIMAGE)
+            return True
+        except Exception:
+            # keep the partial file for the next resume attempt
+            continue
+    return False
 
 
 def ensure_engine(progress=None, timeout: int = 600) -> tuple[bool, str]:
