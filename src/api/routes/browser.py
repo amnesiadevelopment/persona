@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import dataclasses
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from ...core.logging import get_logger
+from ..cdp_endpoint import cdp_info_for
 from ..dependencies import get_browser_launcher, get_event_bus, get_profile_manager
 from ..helpers import require_profile
 from ..schemas.browser import (
+    BrowserCdpInfo,
     BrowserStatusResponse,
     LaunchResponse,
     RunningBrowsersResponse,
@@ -40,13 +43,21 @@ def list_running(
     response_model=BrowserStatusResponse,
     responses={404: {"model": ErrorResponse}},
 )
-def browser_status(
+async def browser_status(
     name: str,
     pm: IProfileManager = Depends(get_profile_manager),
     bl: IBrowserLauncher = Depends(get_browser_launcher),
 ) -> BrowserStatusResponse:
     require_profile(name, pm)
-    return BrowserStatusResponse(name=name, is_running=bl.is_running(name))
+    running = bl.is_running(name)
+    cdp: BrowserCdpInfo | None = None
+    if running:
+        # Best-effort: only profiles launched with automation expose a CDP port.
+        try:
+            cdp = await cdp_info_for(name)
+        except Exception:
+            cdp = None
+    return BrowserStatusResponse(name=name, is_running=running, cdp=cdp)
 
 
 @router.post(
@@ -55,8 +66,9 @@ def browser_status(
     status_code=202,
     responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
 )
-def launch_browser(
+async def launch_browser(
     name: str,
+    automation: bool = True,
     pm: IProfileManager = Depends(get_profile_manager),
     bl: IBrowserLauncher = Depends(get_browser_launcher),
     bus: EventBus = Depends(get_event_bus),
@@ -66,6 +78,12 @@ def launch_browser(
         raise HTTPException(status_code=409, detail="Browser already running")
 
     profile = pm.profiles[name]
+    # API launches default to automation mode: force remote debugging on so an
+    # external script can attach, without mutating the persisted ai_control
+    # flag (a manual open from the UI stays CDP-free, which is less detectable).
+    launch_profile = (
+        dataclasses.replace(profile, ai_control=True) if automation else profile
+    )
 
     def _on_ready() -> None:
         bus.emit()
@@ -73,10 +91,45 @@ def launch_browser(
     def _on_stop() -> None:
         bus.emit()
 
-    bl.start_thread(profile, _api_log, on_ready=_on_ready, on_stop=_on_stop)
-    logger.info("API launched browser for: %s", name)
+    bl.start_thread(launch_profile, _api_log, on_ready=_on_ready, on_stop=_on_stop)
+    logger.info("API launched browser for: %s (automation=%s)", name, automation)
     bus.emit()
-    return LaunchResponse(success=True, message=f"Browser launching for '{name}'")
+
+    cdp: BrowserCdpInfo | None = None
+    if automation:
+        try:
+            cdp = await cdp_info_for(name)
+        except Exception as exc:
+            logger.warning("CDP endpoint not ready for %s: %s", name, exc)
+
+    return LaunchResponse(
+        success=True,
+        message=f"Browser launching for '{name}'",
+        cdp=cdp,
+    )
+
+
+@router.get(
+    "/{name}/cdp",
+    response_model=BrowserCdpInfo,
+    responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+)
+async def browser_cdp(
+    name: str,
+    pm: IProfileManager = Depends(get_profile_manager),
+    bl: IBrowserLauncher = Depends(get_browser_launcher),
+) -> BrowserCdpInfo:
+    """Resolve the CDP endpoint for an already-running automation profile."""
+    require_profile(name, pm)
+    if not bl.is_running(name):
+        raise HTTPException(status_code=409, detail="Browser is not running")
+    try:
+        return await cdp_info_for(name)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="CDP endpoint not available (profile not launched for automation)",
+        ) from exc
 
 
 @router.post(
