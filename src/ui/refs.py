@@ -7,7 +7,7 @@ import flet as ft
 class UIRefs:
     stats_text: ft.Text
     running_text: ft.Text
-    log_text: ft.Text
+    log_list: ft.ListView
     log_column: ft.Container
     log_toggle_btn: ft.TextButton
     content_subtitle: ft.Text

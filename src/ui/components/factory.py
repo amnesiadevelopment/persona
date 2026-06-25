@@ -13,12 +13,11 @@ def build_ui_refs(
     on_change_page: Callable[[int], None],
     file_picker: ft.FilePicker,
 ) -> UIRefs:
-    log_text = ft.Text(
-        "",
-        size=11,
-        color=COLORS["text_dim"],
-        selectable=True,
-        no_wrap=False,
+    log_list = ft.ListView(
+        controls=[],
+        spacing=2,
+        auto_scroll=True,
+        padding=0,
     )
     log_toggle_btn = ft.TextButton(
         "Activity Log",
@@ -32,12 +31,9 @@ def build_ui_refs(
             color=COLORS["text_sub"],
         ),
         running_text=ft.Text("", size=12, color=COLORS["text_dim"]),
-        log_text=log_text,
+        log_list=log_list,
         log_column=ft.Container(
-            content=ft.Column(
-                controls=[log_text],
-                spacing=0,
-            ),
+            content=log_list,
             visible=False,
             padding=ft.Padding.symmetric(horizontal=12, vertical=10),
             margin=ft.Margin.symmetric(horizontal=0, vertical=4),

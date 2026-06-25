@@ -49,8 +49,9 @@ class AppState:
             or "Error" in message
         )
         now = time.monotonic()
+        stamp = time.strftime("%H:%M:%S")
         with self._log_lock:
-            self._log_lines.append(f"> {message}")
+            self._log_lines.append(f"{stamp}  > {message}")
             if force or now - self._last_log_ui_update >= 0.15:
                 self._last_log_ui_update = now
                 self._pending_log_flush = True
