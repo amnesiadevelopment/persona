@@ -31,18 +31,23 @@ def log_message_color(message: str) -> str:
     return COLORS["text_dim"]
 
 
-def log_line_control(line: str) -> ft.Text:
+def log_line_control(line: str, wrap: bool = True) -> ft.Text:
     """Build a terminal-style coloured row for one stored log line.
 
     Stored lines look like ``HH:MM:SS  > message``; the timestamp is rendered
     dim and the message is coloured by type. Lines without the expected shape
-    fall back to a single dim run.
+    fall back to a single dim run. With ``wrap=False`` the line stays on one
+    row (used in the narrow sidebar, where wrapping made the panel overflow its
+    fixed height and the list jittered); the fullscreen dialog wraps.
     """
+    no_wrap = not wrap
+    max_lines = 1 if no_wrap else None
     stamp, sep, rest = line.partition("  > ")
     if not sep:
         return ft.Text(
             line, size=11, color=COLORS["text_dim"], font_family="monospace",
-            no_wrap=False,
+            no_wrap=no_wrap, max_lines=max_lines,
+            overflow=ft.TextOverflow.ELLIPSIS if no_wrap else None,
         )
     return ft.Text(
         spans=[
@@ -57,6 +62,8 @@ def log_line_control(line: str) -> ft.Text:
         ],
         font_family="monospace",
         size=11,
-        no_wrap=False,
+        no_wrap=no_wrap,
+        max_lines=max_lines,
+        overflow=ft.TextOverflow.ELLIPSIS if no_wrap else None,
         selectable=True,
     )
