@@ -15,7 +15,9 @@ from .bookmarks_seed import seed_bookmarks
 from .cdp import cdp_port_for
 from .audio_ext import build_audio_extension
 from .device_ext import build_device_extension
+from .device_presets import is_mobile_os, pick_preset
 from .measuretext_ext import build_measuretext_extension
+from .mobile_ext import build_mobile_extension
 from .webgl_ext import build_webgl_extension
 from .geo_ext import build_geo_extension
 from .locale_ext import build_locale_extension
@@ -108,6 +110,18 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
     # Locale + timezone follow the proxy's geo so they match the exit IP.
     lang = _locale_for(proxy.country_code) if proxy else "en-US"
 
+    # Mobile profiles are assembled at this layer (the engine has no Android/iOS
+    # mode): a real device preset drives the UA, window size, screen and the
+    # touch/Client-Hints extension. A profile is mobile when its OS is a mobile
+    # family (android/ios) — device_type is kept on the model for the API but
+    # the OS is the source of truth so the UI only needs the OS dropdown.
+    is_mobile = is_mobile_os(profile.os_type) or profile.device_type == "mobile"
+    # the mobile OS family for preset selection (android unless explicitly ios)
+    mobile_os = profile.os_type if is_mobile_os(profile.os_type) else "android"
+    preset = (
+        pick_preset(profile.fingerprint_seed, mobile_os) if is_mobile else None
+    )
+
     extensions = [title_ext]
     extensions.append(
         build_locale_extension(
@@ -130,12 +144,29 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
             os.path.join(profile_dir, ".persona-audio-ext"),
         )
     )
-    extensions.append(
-        build_device_extension(
-            profile.fingerprint_seed,
-            os.path.join(profile_dir, ".persona-device-ext"),
+    if is_mobile and preset is not None:
+        extensions.append(
+            build_mobile_extension(
+                os.path.join(profile_dir, ".persona-mobile-ext"),
+                is_ios=(preset.os_type == "ios"),
+                platform=preset.platform,
+                model=preset.model,
+                ua_full_version=preset.ua_full_version,
+                css_width=preset.width,
+                css_height=preset.height,
+                dpr=preset.dpr,
+                device_memory=preset.device_memory,
+                hardware_concurrency=preset.hardware_concurrency,
+                touch_points=5,
+            )
         )
-    )
+    else:
+        extensions.append(
+            build_device_extension(
+                profile.fingerprint_seed,
+                os.path.join(profile_dir, ".persona-device-ext"),
+            )
+        )
     extensions.append(
         build_webgl_extension(
             profile.fingerprint_seed,
@@ -151,12 +182,20 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
             )
         )
 
+    # The engine has no android/ios platform; back a mobile profile with the
+    # nearest desktop platform the engine DOES spoof (linux for Android, macos
+    # for iOS) so its native spoofs stay coherent, while the UA, window size
+    # and the mobile extension supply the actual mobile signals.
+    engine_platform = profile.os_type
+    if is_mobile:
+        engine_platform = "macos" if profile.os_type == "ios" else "linux"
+
     args = [
         FINGERPRINT_CHROMIUM,
         "--appimage-extract-and-run",
         f"--user-data-dir={profile_dir}",
         f"--fingerprint={profile.fingerprint_seed}",
-        f"--fingerprint-platform={profile.os_type}",
+        f"--fingerprint-platform={engine_platform}",
         "--fingerprint-brand=Chrome",
         f"--lang={lang}",
         f"--accept-lang={lang},{lang.split('-')[0]}",
@@ -177,6 +216,13 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
         "--hide-crash-restore-bubble",
         "--force-dark-mode",
     ]
+
+    if is_mobile and preset is not None:
+        # Drive the real device's UA and a window sized to its CSS viewport, so
+        # the browser presents the device's screen and layout. The mobile
+        # extension fills the JS-visible touch/Client-Hints/screen signals.
+        args.append(f"--user-agent={preset.user_agent}")
+        args.append(f"--window-size={preset.width},{preset.height}")
 
     if proxy:
         tz = proxy.timezone or _timezone_for(proxy.country_code)
@@ -202,7 +248,7 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
 
     env = os.environ.copy()
     env.setdefault("DISPLAY", ":0")
-    env["FONTCONFIG_FILE"] = build_font_config(profile_dir, profile.os_type)
+    env["FONTCONFIG_FILE"] = build_font_config(profile_dir, engine_platform)
 
     proc = subprocess.Popen(
         args,

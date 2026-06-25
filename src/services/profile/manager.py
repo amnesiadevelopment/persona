@@ -33,6 +33,9 @@ class ProfileManager:
                                 "os_type",
                                 p_data.get("config", {}).get("os", "windows"),
                             ),
+                            "device_type": p_data.get(
+                                "device_type", "desktop"
+                            ),
                             "search_engine": p_data.get(
                                 "search_engine", "duckduckgo"
                             ),
@@ -70,6 +73,7 @@ class ProfileManager:
         bookmark_pool: str | None = None,
         bookmarks: list[str] | None = None,
         tags: list[str] | None = None,
+        device_type: str = "desktop",
     ) -> bool:
         if name in self.profiles:
             return False
@@ -77,6 +81,7 @@ class ProfileManager:
             name=name,
             proxy=proxy or None,
             os_type=os_type,
+            device_type=device_type,
             search_engine=search_engine,
             bookmark_pool=bookmark_pool or None,
             bookmarks=bookmarks or [],
@@ -98,6 +103,7 @@ class ProfileManager:
         new_bookmarks: list[str] | None = None,
         new_tags: list[str] | None = None,
         new_ai_control: bool | None = None,
+        new_device_type: str | None = None,
     ) -> bool:
         if original_name not in self.profiles:
             return False
@@ -109,6 +115,8 @@ class ProfileManager:
         profile.name = new_name
         profile.proxy = new_proxy or None
         profile.os_type = new_os
+        if new_device_type is not None:
+            profile.device_type = new_device_type
         if new_search_engine is not None:
             profile.search_engine = new_search_engine
         profile.bookmark_pool = new_bookmark_pool or None
