@@ -163,7 +163,7 @@ class AppHandlers:
         refs = self._get_refs()
         assert refs is not None and page is not None
         self._state.log_collapsed = not self._state.log_collapsed
-        has_content = bool(refs.log_text.value)
+        has_content = bool(refs.log_list.controls)
         refs.log_column.visible = has_content and not self._state.log_collapsed
         refs.log_toggle_btn.icon = (
             ft.Icons.KEYBOARD_ARROW_RIGHT
