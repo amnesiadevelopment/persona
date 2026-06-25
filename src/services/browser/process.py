@@ -14,6 +14,7 @@ from ..proxy.store import ProxyStore
 from .bookmarks_seed import seed_bookmarks
 from .cdp import cdp_port_for
 from .audio_ext import build_audio_extension
+from .device_ext import build_device_extension
 from .measuretext_ext import build_measuretext_extension
 from .webgl_ext import build_webgl_extension
 from .geo_ext import build_geo_extension
@@ -127,6 +128,12 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
         build_audio_extension(
             profile.fingerprint_seed,
             os.path.join(profile_dir, ".persona-audio-ext"),
+        )
+    )
+    extensions.append(
+        build_device_extension(
+            profile.fingerprint_seed,
+            os.path.join(profile_dir, ".persona-device-ext"),
         )
     )
     extensions.append(
