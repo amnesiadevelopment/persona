@@ -226,6 +226,28 @@ class App:
             version_panel=self._build_version_panel(),
         )
 
+    def _update_button(self, label: str) -> ft.Control:
+        # full-width, single-line: the sidebar is only ~200px so a default
+        # Button wraps "[ update to vX.Y.Z ]" onto two lines and tears the box.
+        return ft.Container(
+            on_click=lambda _: self._apply_update_now(),
+            ink=True,
+            height=30,
+            border_radius=3,
+            border=ft.Border.all(1, COLORS["accent"]),
+            alignment=ft.Alignment.CENTER,
+            padding=ft.Padding.symmetric(horizontal=6, vertical=0),
+            content=ft.Text(
+                label,
+                size=11,
+                color=COLORS["accent"],
+                font_family="monospace",
+                no_wrap=True,
+                max_lines=1,
+                text_align=ft.TextAlign.CENTER,
+            ),
+        )
+
     def _build_version_panel(self) -> ft.Control:
         from . import progress_fmt as pf
 
@@ -311,32 +333,10 @@ class App:
                 )
             )
         elif self._update_staged or self._app_update_status == "ready":
-            rows.append(
-                ft.Button(
-                    "[ restart to update ]",
-                    height=30,
-                    style=ft.ButtonStyle(
-                        shape=ft.RoundedRectangleBorder(radius=3),
-                        color=COLORS["accent"],
-                        side=ft.BorderSide(1, COLORS["accent"]),
-                        text_style=ft.TextStyle(font_family="monospace", size=11),
-                    ),
-                    on_click=lambda _: self._apply_update_now(),
-                )
-            )
+            rows.append(self._update_button("[ restart to update ]"))
         elif has_update:
             rows.append(
-                ft.Button(
-                    f"[ update to {self._app_latest} ]",
-                    height=30,
-                    style=ft.ButtonStyle(
-                        shape=ft.RoundedRectangleBorder(radius=3),
-                        color=COLORS["accent"],
-                        side=ft.BorderSide(1, COLORS["accent"]),
-                        text_style=ft.TextStyle(font_family="monospace", size=11),
-                    ),
-                    on_click=lambda _: self._apply_update_now(),
-                )
+                self._update_button(f"[ update to {self._app_latest} ]")
             )
 
         return ft.Container(
@@ -1214,7 +1214,7 @@ class App:
             lines = [ln for ln in text.split("\n") if ln]
             sidebar_lines = lines[-6:]
             self.refs.log_list.controls = [
-                log_line_control(ln) for ln in sidebar_lines
+                log_line_control(ln, wrap=False) for ln in sidebar_lines
             ]
             self.refs.log_column.height = max(72, len(sidebar_lines) * 18 + 20)
             self.refs.log_column.visible = (
