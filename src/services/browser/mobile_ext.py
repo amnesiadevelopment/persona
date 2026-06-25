@@ -70,15 +70,78 @@ _CONTENT_SCRIPT = r"""
   } catch (e) {}
 
   // --- touch ---
+  // Real mobile exposes ontouchstart on the PROTOTYPE (Window/Document/Element),
+  // not just the instance, and on document.documentElement. Detectors test
+  // 'ontouchstart' in document.documentElement and the prototype chain, so set
+  // it there — an instance-only ontouchstart still reads as no-touch.
   try {
     def(navigator, 'maxTouchPoints', TOUCH);
-    if (!('ontouchstart' in window)) {
-      window.ontouchstart = null;  // presence is what's sniffed
+    var touchTargets = [];
+    if (window.Window) touchTargets.push(Window.prototype);
+    if (window.Document) touchTargets.push(Document.prototype);
+    if (window.HTMLElement) touchTargets.push(HTMLElement.prototype);
+    touchTargets.forEach(function (proto) {
+      try {
+        if (!('ontouchstart' in proto)) {
+          Object.defineProperty(proto, 'ontouchstart', {
+            get: function () { return null; }, set: function () {},
+            configurable: true, enumerable: true,
+          });
+        }
+      } catch (e) {}
+    });
+    // Touch / TouchEvent constructors exist on real mobile Chrome.
+    if (typeof window.TouchEvent === 'undefined') {
+      try { window.TouchEvent = function TouchEvent() {}; } catch (e) {}
+    }
+    if (typeof window.Touch === 'undefined') {
+      try { window.Touch = function Touch() {}; } catch (e) {}
     }
   } catch (e) {}
 
-  // --- platform ---
+  // --- pointer/hover media queries: a phone is pointer:coarse + hover:none,
+  //     never pointer:fine. The engine (backed by a desktop platform with a
+  //     mouse) answers the opposite, which detectors compare against
+  //     maxTouchPoints — a mismatch (touch points but pointer:fine) is the
+  //     classic mobile-emulation tell. Rewrite the pointer/hover answers.
+  try {
+    var realMM = window.matchMedia.bind(window);
+    var MOBILE_MQ = {
+      '(pointer: coarse)': true, '(pointer: fine)': false,
+      '(any-pointer: coarse)': true, '(any-pointer: fine)': false,
+      '(hover: none)': true, '(hover: hover)': false,
+      '(any-hover: none)': true, '(any-hover: hover)': false,
+    };
+    function patchedMM(q) {
+      var mql = realMM(q);
+      var key = (q || '').replace(/\s+/g, ' ').trim().toLowerCase();
+      if (key in MOBILE_MQ) {
+        var want = MOBILE_MQ[key];
+        try {
+          Object.defineProperty(mql, 'matches', {
+            get: function () { return want; }, configurable: true,
+          });
+        } catch (e) {}
+      }
+      return mql;
+    }
+    try {
+      Object.defineProperty(patchedMM, 'name', { value: 'matchMedia' });
+      patchedMM.toString = function () {
+        return 'function matchMedia() { [native code] }';
+      };
+    } catch (e) {}
+    window.matchMedia = patchedMM;
+  } catch (e) {}
+
+  // --- platform + vendor ---
   try { def(navigator, 'platform', IS_IOS ? 'iPhone' : 'Linux armv81'); } catch (e) {}
+  // Real iOS Safari reports vendor "Apple Computer, Inc."; the Chromium engine
+  // says "Google Inc.", which contradicts an iPhone UA. Android Chrome keeps
+  // "Google Inc." (correct), so only override on iOS.
+  if (IS_IOS) {
+    try { def(navigator, 'vendor', 'Apple Computer, Inc.'); } catch (e) {}
+  }
 
   // --- userAgentData / Client Hints ---
   try {
