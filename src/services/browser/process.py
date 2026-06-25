@@ -14,6 +14,7 @@ from ..proxy.store import ProxyStore
 from .bookmarks_seed import seed_bookmarks
 from .cdp import cdp_port_for
 from .audio_ext import build_audio_extension
+from .measuretext_ext import build_measuretext_extension
 from .webgl_ext import build_webgl_extension
 from .geo_ext import build_geo_extension
 from .locale_ext import build_locale_extension
@@ -115,6 +116,11 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
     extensions.append(
         build_stealth_extension(
             os.path.join(profile_dir, ".persona-stealth-ext")
+        )
+    )
+    extensions.append(
+        build_measuretext_extension(
+            os.path.join(profile_dir, ".persona-measuretext-ext")
         )
     )
     extensions.append(
