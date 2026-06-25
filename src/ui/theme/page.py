@@ -36,6 +36,8 @@ def build_os_dropdown(value: str = "windows") -> ft.Dropdown:
             ft.dropdown.Option("windows"),
             ft.dropdown.Option("macos"),
             ft.dropdown.Option("linux"),
+            ft.dropdown.Option("android"),
+            ft.dropdown.Option("ios"),
         ],
     )
 
