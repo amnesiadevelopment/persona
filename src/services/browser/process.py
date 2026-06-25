@@ -16,6 +16,7 @@ from .cdp import cdp_port_for
 from .audio_ext import build_audio_extension
 from .device_ext import build_device_extension
 from .device_presets import is_mobile_os, pick_preset
+from .gpu_ext import build_gpu_extension
 from .measuretext_ext import build_measuretext_extension
 from .mobile_ext import build_mobile_extension
 from .webgl_ext import build_webgl_extension
@@ -171,6 +172,13 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
         build_webgl_extension(
             profile.fingerprint_seed,
             os.path.join(profile_dir, ".persona-webgl-ext"),
+        )
+    )
+    extensions.append(
+        build_gpu_extension(
+            profile.fingerprint_seed,
+            profile.os_type,
+            os.path.join(profile_dir, ".persona-gpu-ext"),
         )
     )
     if proxy and proxy.lat is not None and proxy.lon is not None:
