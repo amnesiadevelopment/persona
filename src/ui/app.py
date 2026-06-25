@@ -226,6 +226,28 @@ class App:
             version_panel=self._build_version_panel(),
         )
 
+    def _update_button(self, label: str) -> ft.Control:
+        # full-width, single-line: the sidebar is only ~200px so a default
+        # Button wraps "[ update to vX.Y.Z ]" onto two lines and tears the box.
+        return ft.Container(
+            on_click=lambda _: self._apply_update_now(),
+            ink=True,
+            height=30,
+            border_radius=3,
+            border=ft.Border.all(1, COLORS["accent"]),
+            alignment=ft.Alignment.CENTER,
+            padding=ft.Padding.symmetric(horizontal=6, vertical=0),
+            content=ft.Text(
+                label,
+                size=11,
+                color=COLORS["accent"],
+                font_family="monospace",
+                no_wrap=True,
+                max_lines=1,
+                text_align=ft.TextAlign.CENTER,
+            ),
+        )
+
     def _build_version_panel(self) -> ft.Control:
         from . import progress_fmt as pf
 
@@ -288,10 +310,15 @@ class App:
             import time
 
             elapsed = max(time.monotonic() - self._update_start_t, 0.001)
-            label = (
-                f"{pf.percent(done, total)}%" if total > 0 else pf.fmt_mb(done)
-            )
             target = self._app_latest or "new version"
+            if done <= 0:
+                # no bytes yet: a Tor circuit can take a while to deliver the
+                # first byte \u2014 say so instead of showing a frozen "0.0 MB".
+                label = "connecting\u2026"
+            elif total > 0:
+                label = f"{pf.percent(done, total)}%"
+            else:
+                label = pf.fmt_mb(done)
             rows.append(
                 ft.Text(
                     f"updating to {target} \u00b7 {label}",
@@ -300,7 +327,7 @@ class App:
             )
             rows.append(
                 ft.ProgressBar(
-                    value=pf.fraction(done, total),
+                    value=pf.fraction(done, total) if done > 0 else None,
                     color=COLORS["accent"], bgcolor=COLORS["input_bg"], height=4,
                 )
             )
@@ -311,32 +338,10 @@ class App:
                 )
             )
         elif self._update_staged or self._app_update_status == "ready":
-            rows.append(
-                ft.Button(
-                    "[ restart to update ]",
-                    height=30,
-                    style=ft.ButtonStyle(
-                        shape=ft.RoundedRectangleBorder(radius=3),
-                        color=COLORS["accent"],
-                        side=ft.BorderSide(1, COLORS["accent"]),
-                        text_style=ft.TextStyle(font_family="monospace", size=11),
-                    ),
-                    on_click=lambda _: self._apply_update_now(),
-                )
-            )
+            rows.append(self._update_button("[ restart to update ]"))
         elif has_update:
             rows.append(
-                ft.Button(
-                    f"[ update to {self._app_latest} ]",
-                    height=30,
-                    style=ft.ButtonStyle(
-                        shape=ft.RoundedRectangleBorder(radius=3),
-                        color=COLORS["accent"],
-                        side=ft.BorderSide(1, COLORS["accent"]),
-                        text_style=ft.TextStyle(font_family="monospace", size=11),
-                    ),
-                    on_click=lambda _: self._apply_update_now(),
-                )
+                self._update_button(f"[ update to {self._app_latest} ]")
             )
 
         return ft.Container(
@@ -832,6 +837,23 @@ class App:
             # running from source: just surface it, can't self-update
             self._log(f"New version {tag} available (update from source).")
             return
+        # A previous run may have already finished downloading this update; if a
+        # complete staged file is on disk, offer to restart into it instead of
+        # downloading again (e.g. the user reopened the app before it restarted).
+        if not self._update_staged:
+            ready = app_update.find_ready_staged(url)
+            if ready:
+                self._update_staged = ready
+                self._app_update_status = "ready"
+                self._log(f"Update {tag} ready — restart to apply.")
+                self._refresh_sidebar()
+                if (
+                    app_settings.is_auto_update_enabled()
+                    and len(self.bl.running_profile_names()) == 0
+                ):
+                    self._log("Restarting into the new version…")
+                    app_update.apply_and_restart(ready)
+                return
         if not app_settings.is_auto_update_enabled():
             self._log(f"New version {tag} available — update from the sidebar.")
             return
@@ -1214,7 +1236,7 @@ class App:
             lines = [ln for ln in text.split("\n") if ln]
             sidebar_lines = lines[-6:]
             self.refs.log_list.controls = [
-                log_line_control(ln) for ln in sidebar_lines
+                log_line_control(ln, wrap=False) for ln in sidebar_lines
             ]
             self.refs.log_column.height = max(72, len(sidebar_lines) * 18 + 20)
             self.refs.log_column.visible = (
