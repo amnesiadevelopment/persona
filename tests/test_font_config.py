@@ -118,3 +118,36 @@ def test_named_windows_families_resolve_to_metric_clones(
     assert "DejaVu" not in resolved, (
         f"{requested!r} fell through to DejaVu: {resolved!r}"
     )
+
+
+def test_emoji_font_bundled():
+    d = pathlib.Path(bundled_fonts_dir())
+    assert (d / "common" / "NotoColorEmoji.ttf").exists(), (
+        "Noto Color Emoji not bundled — emoji render as tofu"
+    )
+
+
+@pytest.mark.skipif(
+    shutil.which("fc-match") is None, reason="fontconfig not installed"
+)
+@pytest.mark.parametrize("os_type", ["windows", "macos", "linux"])
+def test_emoji_codepoint_resolves_to_color_emoji(tmp_path, os_type):
+    # An emoji codepoint (U+2705 ✅) must resolve to Noto Color Emoji, not tofu
+    # in DejaVu. fc-match by charset proves the glyph is reachable.
+    conf = build_font_config(str(tmp_path / os_type), os_type)
+    out = subprocess.run(
+        ["fc-match", ":charset=2705"],
+        env={"FONTCONFIG_FILE": conf},
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert "Emoji" in out, f"U+2705 resolved to {out!r}, expected Noto Color Emoji"
+
+
+@pytest.mark.skipif(
+    shutil.which("fc-match") is None, reason="fontconfig not installed"
+)
+def test_platform_emoji_families_map_to_bundled(tmp_path):
+    conf = build_font_config(str(tmp_path), "windows")
+    for fam in ("Segoe UI Emoji", "Apple Color Emoji"):
+        out = _fc_match(conf, fam)
+        assert "Emoji" in out, f"{fam} resolved to {out!r}"

@@ -65,6 +65,26 @@ _CONF_TEMPLATE = """<?xml version="1.0"?>
     <family>monospace</family>
     <prefer>{mono_prefs}</prefer>
   </alias>
+
+  <!-- Emoji: the bundled Noto Color Emoji backs every emoji request, and is
+       appended to every generic so emoji embedded in normal text render
+       instead of tofu. The platform emoji families resolve to it too. -->
+  <alias>
+    <family>emoji</family>
+    <prefer><family>Noto Color Emoji</family></prefer>
+  </alias>
+  <match target="pattern">
+    <test name="family"><string>Apple Color Emoji</string></test>
+    <edit name="family" mode="assign" binding="strong"><string>Noto Color Emoji</string></edit>
+  </match>
+  <match target="pattern">
+    <test name="family"><string>Segoe UI Emoji</string></test>
+    <edit name="family" mode="assign" binding="strong"><string>Noto Color Emoji</string></edit>
+  </match>
+  <match target="pattern">
+    <test name="family"><string>Segoe UI Symbol</string></test>
+    <edit name="family" mode="assign" binding="strong"><string>Noto Color Emoji</string></edit>
+  </match>
 </fontconfig>
 """
 
@@ -145,8 +165,12 @@ def bundled_fonts_dir() -> str:
     return str(src_root / _FONTS_SUBDIR)
 
 
+_EMOJI = "Noto Color Emoji"
+
+
 def _prefs(families: list[str], cjk: list[str]) -> str:
-    items = [f"<family>{f}</family>" for f in families + cjk]
+    # Emoji last so a glyph missing from the text faces still renders in colour.
+    items = [f"<family>{f}</family>" for f in families + cjk + [_EMOJI]]
     return "".join(items)
 
 

@@ -16,9 +16,9 @@ mkdir -p "$FONTS"/{common,windows,macos,linux,base}
 
 echo "Downloading font packages..."
 cd "$TMP"
-apt-get download fonts-croscore fonts-noto-cjk fonts-noto-core fonts-dejavu-core 2>/dev/null || {
+apt-get download fonts-croscore fonts-noto-cjk fonts-noto-core fonts-dejavu-core fonts-noto-color-emoji 2>/dev/null || {
   echo "apt-get download failed. Install these packages and copy the faces manually:"
-  echo "  fonts-croscore fonts-noto-cjk fonts-noto-core fonts-dejavu-core"
+  echo "  fonts-croscore fonts-noto-cjk fonts-noto-core fonts-dejavu-core fonts-noto-color-emoji"
   exit 1
 }
 for deb in *.deb; do dpkg-deb -x "$deb" extracted; done
@@ -27,6 +27,7 @@ find_face() { find "$TMP/extracted" -name "$1" -print -quit; }
 
 cp "$(find_face NotoSansCJK-Regular.ttc)"  "$FONTS/common/"  2>/dev/null || true
 cp "$(find_face NotoSerifCJK-Regular.ttc)" "$FONTS/common/"  2>/dev/null || true
+cp "$(find_face NotoColorEmoji.ttf)"       "$FONTS/common/"  2>/dev/null || true
 cp "$(find_face Arimo-Regular.ttf)"        "$FONTS/windows/" 2>/dev/null || true
 cp "$(find_face Tinos-Regular.ttf)"        "$FONTS/windows/" 2>/dev/null || true
 cp "$(find_face Cousine-Regular.ttf)"      "$FONTS/windows/" 2>/dev/null || true

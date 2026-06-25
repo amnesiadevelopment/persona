@@ -18,6 +18,30 @@ _NOISY_PREFIXES = (
     "WARNING: At least one completion condition",
 )
 
+# GTK/accessibility chatter the engine prints to stderr on a headless or
+# a11y-less display. Harmless, but it drowns the activity log; these markers
+# appear mid-line (e.g. "(chrome:123): dbind-WARNING **: ..."), so match as a
+# substring rather than a prefix.
+_NOISY_SUBSTRINGS = (
+    "dbind-WARNING",
+    "AT-SPI:",
+    "Atk-CRITICAL",
+    "Gtk-WARNING",
+    "Gdk-Message",
+    "Gtk-Message",
+    "GLib-GObject",
+    "org.a11y.Bus",
+    "atk_socket_embed",
+    "from the cursor theme",
+)
+
+
+def is_engine_noise(msg: str) -> bool:
+    """True for engine stderr chatter that shouldn't reach the activity log."""
+    return msg.startswith(_NOISY_PREFIXES) or any(
+        s in msg for s in _NOISY_SUBSTRINGS
+    )
+
 
 class BrowserLauncher:
     def __init__(self) -> None:
@@ -161,7 +185,7 @@ class BrowserLauncher:
                     notify_stopped()
                     terminate(proc, name, timeout=1)
                     break
-                if msg.startswith(_NOISY_PREFIXES):
+                if is_engine_noise(msg):
                     logger.debug("[%s] %s", name, msg)
                     continue
                 if len(msg) > 400:
