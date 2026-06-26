@@ -1,6 +1,7 @@
 import os
 import pathlib
 import subprocess
+import sys
 from collections.abc import Callable
 from urllib.parse import urlparse
 
@@ -89,10 +90,47 @@ def _timezone_for(country_code: str) -> str:
 
 
 
+def _spawn_camoufox(profile: Profile, profile_dir: str) -> subprocess.Popen:
+    """Launch the Camoufox (Firefox/Juggler) engine for this profile as a
+    subprocess, mapping the profile onto Camoufox's options."""
+    store = ProxyStore()
+    proxy_url = store.resolve(profile.proxy) or ""
+    cfg = {
+        "os_type": profile.os_type,
+        "proxy_url": proxy_url,
+        "start_url": "https://www.google.com",
+    }
+    cfg_path = os.path.join(profile_dir, ".camoufox.json")
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        import json as _json
+
+        _json.dump(cfg, f)
+    env = os.environ.copy()
+    env.setdefault("DISPLAY", ":0")
+    return subprocess.Popen(
+        [sys.executable, "-m", "src.services.browser.camoufox_runner", cfg_path],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        cwd=pathlib.Path.cwd(),
+        env=env,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+    )
+
+
 def spawn_browser(profile: Profile) -> subprocess.Popen:
-    """Launch a fingerprint-chromium persona browser for the given profile."""
+    """Launch a persona browser (fingerprint-chromium or Camoufox) for the
+    given profile."""
     profile_dir = os.path.join(DATA_DIR, profile.name)
     os.makedirs(profile_dir, exist_ok=True)
+
+    if getattr(profile, "engine", "chromium") == "camoufox":
+        proc = _spawn_camoufox(profile, profile_dir)
+        proc._proxy_bridge = None  # type: ignore[attr-defined]
+        return proc
+
     seed_profile_prefs(profile_dir, profile.search_engine)
 
     chosen = BookmarkStore().resolve_selection(

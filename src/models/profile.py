@@ -10,6 +10,9 @@ class Profile:
     # "desktop" | "mobile". For mobile profiles os_type carries the mobile OS
     # family ("android" | "ios") and a real device preset drives UA/screen/etc.
     device_type: str = "desktop"
+    # "chromium" (fingerprint-chromium + extensions) | "camoufox" (Firefox/
+    # Juggler, C++-level spoofing, no CDP/webdriver tells).
+    engine: str = "chromium"
     search_engine: str = "duckduckgo"
     bookmark_pool: str | None = None
     bookmarks: list[str] = field(default_factory=list)

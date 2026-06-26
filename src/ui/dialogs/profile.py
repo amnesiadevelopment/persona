@@ -12,7 +12,7 @@ from ...services.browser.profile_seed import (
 )
 from ...utils.validation import validate_profile_name
 from ..theme.colors import COLORS
-from ..theme.page import build_os_dropdown
+from ..theme.page import build_engine_dropdown, build_os_dropdown
 from ..theme.styles import ACCENT_STYLE, DLG_FIELD_KWARGS, MONO, OUTLINE_STYLE
 
 _DIRECT = "(direct)"
@@ -23,7 +23,7 @@ def open_profile_dialog(
     page: ft.Page,
     proxy_service: IProxyService,
     on_save: Callable[
-        [str, str, str, str, str, list[str], list[str], str], str | None
+        [str, str, str, str, str, list[str], list[str], str, str], str | None
     ],
     profile: Profile | None = None,
     proxy_names: list[str] | None = None,
@@ -78,6 +78,11 @@ def open_profile_dialog(
         profile.os_type if profile is not None else "windows",
     )
     os_dropdown.expand = True
+
+    engine_dropdown = build_engine_dropdown(
+        getattr(profile, "engine", "chromium") if profile is not None else "chromium",
+    )
+    engine_dropdown.expand = True
 
     current_search = (
         profile.search_engine if profile is not None else DEFAULT_SEARCH_ENGINE
@@ -251,6 +256,7 @@ def open_profile_dialog(
         bookmarks = [n for n, cb in bookmark_checks.items() if cb.value]
         tags = [s.strip() for s in (tags_field.value or "").split(",") if s.strip()]
         notes = (notes_field.value or "").strip()
+        engine = engine_dropdown.value or "chromium"
         name_error.visible = False
 
         valid_name, name_err = validate_profile_name(name)
@@ -260,7 +266,9 @@ def open_profile_dialog(
             page.update()
             return
 
-        error = on_save(name, proxy, os_type, search, pool, bookmarks, tags, notes)
+        error = on_save(
+            name, proxy, os_type, search, pool, bookmarks, tags, notes, engine
+        )
         if error:
             name_error.value = error
             name_error.visible = True
@@ -299,6 +307,7 @@ def open_profile_dialog(
                     ft.Row(controls=[proxy_dropdown]),
                     proxy_hint,
                     ft.Row(controls=[os_dropdown]),
+                    ft.Row(controls=[engine_dropdown]),
                     ft.Row(controls=[search_dropdown]),
                     search_hint,
                     ft.Divider(height=10, color=COLORS["border"]),

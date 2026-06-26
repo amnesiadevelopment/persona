@@ -42,6 +42,24 @@ def build_os_dropdown(value: str = "windows") -> ft.Dropdown:
     )
 
 
+def build_engine_dropdown(value: str = "chromium") -> ft.Dropdown:
+    return ft.Dropdown(
+        label="Engine",
+        value=value,
+        bgcolor=COLORS["input_bg"],
+        color=COLORS["text_main"],
+        border_color=COLORS["card_border"],
+        focused_border_color=COLORS["accent"],
+        label_style=ft.TextStyle(color=COLORS["text_sub"], font_family="monospace"),
+        text_style=ft.TextStyle(font_family="monospace"),
+        border_radius=3,
+        options=[
+            ft.dropdown.Option(key="chromium", text="fingerprint-chromium"),
+            ft.dropdown.Option(key="camoufox", text="Camoufox (Firefox)"),
+        ],
+    )
+
+
 def configure_page(page: ft.Page) -> None:
     page.title = "persona"
     page.window.width, page.window.height = 1280, 820

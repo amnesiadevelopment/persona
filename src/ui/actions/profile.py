@@ -51,12 +51,14 @@ def edit_profile(
         new_bookmarks: list[str],
         new_tags: list[str],
         new_notes: str = "",
+        new_engine: str = "chromium",
     ) -> str | None:
         if new_name != original and bl.is_running(original):
             return "Stop the browser before renaming"
         if not pm.update_profile(
             original, new_name, new_proxy, new_os, new_search, new_pool,
-            new_bookmarks, new_tags, new_notes=new_notes,
+            new_bookmarks, new_tags,
+            new_notes=new_notes, new_engine=new_engine,
         ):
             return get_string("update_failed")
         log(get_string("updated_profile", old=original, new=new_name))
@@ -104,9 +106,11 @@ def add_profile(
         bookmarks: list[str],
         tags: list[str],
         notes: str = "",
+        engine: str = "chromium",
     ) -> str | None:
         if not pm.add_profile(
-            name, proxy, os_type, search, pool, bookmarks, tags, notes=notes
+            name, proxy, os_type, search, pool, bookmarks, tags,
+            notes=notes, engine=engine,
         ):
             return get_string("profile_exists")
         log(get_string("created_profile", name=name))
