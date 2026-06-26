@@ -66,6 +66,7 @@ def import_from_zip(
                 name=name,
                 proxy=profile_data.get("proxy"),
                 os_type=profile_data.get("os_type", "windows"),
+                notes=profile_data.get("notes", ""),
             )
 
             data_files = [f for f in zipf.namelist() if f.startswith("data/")]

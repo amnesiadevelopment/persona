@@ -14,6 +14,7 @@ def filter_profiles(profiles: list[Profile], query: str) -> list[Profile]:
         if q in p.name.lower()
         or q in (p.proxy or "").lower()
         or q in p.os_type.lower()
+        or q in (p.notes or "").lower()
         or any(q in tag.lower() for tag in p.tags)
     ]
 

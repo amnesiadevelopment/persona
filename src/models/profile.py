@@ -15,6 +15,7 @@ class Profile:
     bookmarks: list[str] = field(default_factory=list)
     cookie_import_status: str | None = None
     tags: list[str] = field(default_factory=list)
+    notes: str = ""
     ai_control: bool = False
 
     @property
