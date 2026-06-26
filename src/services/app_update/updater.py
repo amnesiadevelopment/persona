@@ -14,7 +14,6 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.request
 
 from ..engine.updater import is_newer
 
@@ -40,17 +39,45 @@ def staged_path() -> str:
     return os.path.join(os.path.dirname(target), ".persona-update.AppImage.part")
 
 
+def _curl_get(url: str, headers: dict | None = None, max_time: int = 30) -> str:
+    """GET a URL via curl with a short connect-timeout and a hard max-time, so a
+    dead/slow Tor circuit fails fast instead of hanging the whole updater (the
+    version check used urllib, whose `timeout` is per-read and would block for
+    its full duration on a stalled connection — making the updater 'work through
+    a router-down minute and then silently miss the new version'). Returns the
+    body, or '' on any failure/timeout."""
+    cmd = ["curl", "-fsSL", "--connect-timeout", "15", "--max-time", str(max_time)]
+    for k, v in (headers or {}).items():
+        cmd += ["-H", f"{k}: {v}"]
+    cmd.append(url)
+    try:
+        out = subprocess.run(cmd, capture_output=True, timeout=max_time + 5)
+        if out.returncode != 0:
+            return ""
+        return out.stdout.decode("utf-8", "replace")
+    except Exception:
+        return ""
+
+
 def remote_size(url: str, timeout: int = 30) -> int:
     """HEAD the asset to learn its size, so a resumed/staged file can be checked
-    for completeness. 0 when unknown."""
+    for completeness. 0 when unknown. Uses curl (-I) with a short connect
+    timeout so a slow Tor circuit can't hang it."""
     if not url:
         return 0
     try:
-        req = urllib.request.Request(url, method="HEAD")
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return int(resp.headers.get("Content-Length") or 0)
+        out = subprocess.run(
+            ["curl", "-fsSLI", "--connect-timeout", "15", "--max-time", str(timeout), url],
+            capture_output=True, timeout=timeout + 5,
+        )
+        if out.returncode != 0:
+            return 0
+        for line in out.stdout.decode("utf-8", "replace").splitlines():
+            if line.lower().startswith("content-length:"):
+                return int(line.split(":", 1)[1].strip())
     except Exception:
         return 0
+    return 0
 
 
 def find_ready_staged(url: str, timeout: int = 30) -> str:
@@ -103,18 +130,21 @@ def is_packaged_appimage() -> bool:
 
 
 def check_for_update(timeout: int = 30) -> tuple[str, str]:
-    """Return (tag, download_url) when a newer release exists, else ('','')."""
+    """Return (tag, download_url) when a newer release exists, else ('',''). Uses
+    curl with a short connect timeout so the check fails fast on a dead Tor
+    circuit instead of hanging (and then silently missing the update)."""
     api = releases_api()
     if not api:
+        return "", ""
+    body = _curl_get(
+        api, headers={"Accept": "application/vnd.github+json"}, max_time=timeout
+    )
+    if not body:
         return "", ""
     try:
         import json
 
-        req = urllib.request.Request(
-            api, headers={"Accept": "application/vnd.github+json"}
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.load(resp)
+        data = json.loads(body)
         tag = data.get("tag_name", "")
         if not update_available(tag):
             return "", ""
