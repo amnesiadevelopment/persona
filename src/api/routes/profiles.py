@@ -63,7 +63,9 @@ def create_profile(
         if not valid:
             raise HTTPException(status_code=400, detail=msg)
 
-    if not pm.add_profile(body.name, body.proxy or "", body.os_type):
+    if not pm.add_profile(
+        body.name, body.proxy or "", body.os_type, notes=body.notes
+    ):
         raise HTTPException(status_code=409, detail="Profile already exists")
 
     logger.info("API created profile: %s", body.name)
@@ -104,6 +106,7 @@ def update_profile(
     new_name = supplied.get("name", name)
     new_proxy = supplied.get("proxy", profile.proxy)
     new_os = supplied.get("os_type", profile.os_type)
+    new_notes = supplied.get("notes")
 
     if "name" in supplied:
         valid, msg = validate_profile_name(new_name)
@@ -120,7 +123,9 @@ def update_profile(
         if not valid:
             raise HTTPException(status_code=400, detail=msg)
 
-    if not pm.update_profile(name, new_name, new_proxy or "", new_os):
+    if not pm.update_profile(
+        name, new_name, new_proxy or "", new_os, new_notes=new_notes
+    ):
         raise HTTPException(status_code=409, detail="Update failed (name conflict?)")
 
     logger.info("API updated profile: %s -> %s", name, new_name)

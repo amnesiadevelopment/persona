@@ -32,6 +32,7 @@ def build_profile_response(
         name=profile.name,
         proxy=profile.proxy,
         os_type=profile.os_type,
+        notes=getattr(profile, "notes", ""),
         data_dir=data_dir,
         is_running=bl.is_running(name),
     )

@@ -45,6 +45,7 @@ class ProfileManager:
                                 "cookie_import_status"
                             ),
                             "tags": p_data.get("tags", []),
+                            "notes": p_data.get("notes", ""),
                             "ai_control": p_data.get("ai_control", False),
                         }
                         self.profiles[name] = Profile(**clean_data)
@@ -74,6 +75,7 @@ class ProfileManager:
         bookmarks: list[str] | None = None,
         tags: list[str] | None = None,
         device_type: str = "desktop",
+        notes: str = "",
     ) -> bool:
         if name in self.profiles:
             return False
@@ -86,6 +88,7 @@ class ProfileManager:
             bookmark_pool=bookmark_pool or None,
             bookmarks=bookmarks or [],
             tags=tags or [],
+            notes=notes,
         )
         self.save_profiles()
         pathlib.Path(self._data_path(name)).mkdir(exist_ok=True, parents=True)
@@ -104,6 +107,7 @@ class ProfileManager:
         new_tags: list[str] | None = None,
         new_ai_control: bool | None = None,
         new_device_type: str | None = None,
+        new_notes: str | None = None,
     ) -> bool:
         if original_name not in self.profiles:
             return False
@@ -124,6 +128,8 @@ class ProfileManager:
             profile.bookmarks = new_bookmarks
         if new_tags is not None:
             profile.tags = new_tags
+        if new_notes is not None:
+            profile.notes = new_notes
         if new_ai_control is not None:
             profile.ai_control = new_ai_control
 

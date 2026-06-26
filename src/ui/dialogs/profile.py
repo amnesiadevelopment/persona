@@ -22,7 +22,9 @@ _NO_POOL = "(none)"
 def open_profile_dialog(
     page: ft.Page,
     proxy_service: IProxyService,
-    on_save: Callable[[str, str, str, str, str, list[str], list[str]], str | None],
+    on_save: Callable[
+        [str, str, str, str, str, list[str], list[str], str], str | None
+    ],
     profile: Profile | None = None,
     proxy_names: list[str] | None = None,
     pool_names: list[str] | None = None,
@@ -226,6 +228,16 @@ def open_profile_dialog(
         **DLG_FIELD_KWARGS,
     )
 
+    current_notes = profile.notes if profile is not None else ""
+    notes_field = ft.TextField(
+        label="Notes",
+        value=current_notes,
+        multiline=True,
+        min_lines=2,
+        max_lines=4,
+        **DLG_FIELD_KWARGS,
+    )
+
     name_error = ft.Text("", size=12, color=COLORS["error"], visible=False)
 
     def on_submit(_: ft.ControlEvent) -> None:
@@ -238,6 +250,7 @@ def open_profile_dialog(
         pool = "" if pool == _NO_POOL else pool
         bookmarks = [n for n, cb in bookmark_checks.items() if cb.value]
         tags = [s.strip() for s in (tags_field.value or "").split(",") if s.strip()]
+        notes = (notes_field.value or "").strip()
         name_error.visible = False
 
         valid_name, name_err = validate_profile_name(name)
@@ -247,7 +260,7 @@ def open_profile_dialog(
             page.update()
             return
 
-        error = on_save(name, proxy, os_type, search, pool, bookmarks, tags)
+        error = on_save(name, proxy, os_type, search, pool, bookmarks, tags, notes)
         if error:
             name_error.value = error
             name_error.visible = True
@@ -282,6 +295,7 @@ def open_profile_dialog(
                     ft.Row(controls=[name_field]),
                     name_error,
                     ft.Row(controls=[tags_field]),
+                    ft.Row(controls=[notes_field]),
                     ft.Row(controls=[proxy_dropdown]),
                     proxy_hint,
                     ft.Row(controls=[os_dropdown]),

@@ -5,6 +5,7 @@ class ProfileCreate(BaseModel):
     name: str
     proxy: str | None = None
     os_type: str = "windows"
+    notes: str = ""
 
 
 class ProfileUpdate(BaseModel):
@@ -13,12 +14,14 @@ class ProfileUpdate(BaseModel):
     name: str | None = None
     proxy: str | None = None
     os_type: str | None = None
+    notes: str | None = None
 
 
 class ProfileResponse(BaseModel):
     name: str
     proxy: str | None
     os_type: str
+    notes: str = ""
     data_dir: str
     is_running: bool
 

@@ -170,6 +170,20 @@ def build_profile_card(
                                     else COLORS["text_sub"],
                                     font_family=MONO,
                                 ),
+                                *(
+                                    [
+                                        ft.Text(
+                                            getattr(profile, "notes", ""),
+                                            size=11,
+                                            color=COLORS["text_dim"],
+                                            italic=True,
+                                            max_lines=1,
+                                            overflow=ft.TextOverflow.ELLIPSIS,
+                                        )
+                                    ]
+                                    if getattr(profile, "notes", "")
+                                    else []
+                                ),
                             ],
                         ),
                     ],
