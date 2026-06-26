@@ -50,6 +50,14 @@ class Container:
         return self._instances["pstore"]
 
     @property
+    def ssh_host_store(self):
+        if "sshstore" not in self._instances:
+            from ..services.ssh.store import SSHHostStore
+
+            self._instances["sshstore"] = SSHHostStore()
+        return self._instances["sshstore"]
+
+    @property
     def bookmark_store(self):
         if "bstore" not in self._instances:
             from ..services.bookmark.store import BookmarkStore
