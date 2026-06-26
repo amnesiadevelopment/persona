@@ -15,6 +15,7 @@ from .components import (
     build_content_area,
     build_empty_state,
     build_network_page,
+    build_ssh_page,
     build_profile_card,
     build_sidebar,
     build_top_bar,
@@ -56,6 +57,7 @@ class App:
         self.bl: IBrowserLauncher = c.browser_launcher
         self.ps: IProxyService = c.proxy_service
         self.pstore = c.proxy_store
+        self.ssh_store = c.ssh_host_store
         self.bstore = c.bookmark_store
         self.state = AppState()
         self.page: ft.Page | None = None
@@ -418,8 +420,53 @@ class App:
                 on_assign=self._assign_tag,
                 on_remove_tag=self._remove_tag,
             )
+        elif self._active_page == "ssh":
+            self._page_host.content = build_ssh_page(
+                self.ssh_store.list(),
+                on_add=lambda: self._open_ssh_host_dialog(),
+                on_edit=self._edit_ssh_host,
+                on_delete=self._delete_ssh_host,
+                on_run=self._ssh_run,
+            )
         else:
             self._page_host.content = self._build_profiles_page()
+
+    def _ssh_run(self, host_name: str, command: str) -> tuple[int, str, str]:
+        from ..services.ssh import client as ssh
+        from ..services.ssh.resolver import target_for
+
+        host = self.ssh_store.get(host_name)
+        if host is None:
+            return 1, "", f"host {host_name!r} not found"
+        target = target_for(host, self.pm, self.pstore)
+        return ssh.run_command(target, command)
+
+    def _open_ssh_host_dialog(self, name: str | None = None) -> None:
+        from .dialogs.ssh_host import open_ssh_host_dialog
+
+        host = self.ssh_store.get(name) if name else None
+        profile_names = [p.name for p in self.pm.list_profiles()]
+
+        def on_save(h) -> str | None:
+            if name:
+                if not self.ssh_store.update(name, h):
+                    return "Update failed (name conflict?)"
+            else:
+                if not self.ssh_store.add(h):
+                    return "Host name already exists"
+            self._render_active_page()
+            self._safe_update()
+            return None
+
+        open_ssh_host_dialog(self.page, host, profile_names, on_save)
+
+    def _edit_ssh_host(self, name: str) -> None:
+        self._open_ssh_host_dialog(name)
+
+    def _delete_ssh_host(self, name: str) -> None:
+        self.ssh_store.remove(name)
+        self._render_active_page()
+        self._safe_update()
 
     def _build_profiles_page(self) -> ft.Container:
         r = self.refs

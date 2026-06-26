@@ -16,6 +16,7 @@ _NAV_ITEMS = [
     ("network", ft.Icons.LAN_OUTLINED, "network"),
     ("bookmarks", ft.Icons.BOOKMARK_BORDER, "bookmarks"),
     ("tags", ft.Icons.LABEL_OUTLINE, "tags"),
+    ("ssh", ft.Icons.TERMINAL, "ssh"),
     ("connect", ft.Icons.SMART_TOY_OUTLINED, "connect"),
 ]
 

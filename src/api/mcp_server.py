@@ -175,4 +175,93 @@ def build_mcp(container: Container) -> FastMCP:
             await browser.close()
             await pw.stop()
 
+    # --- SSH / SFTP / tmux tools (route through the host's profile proxy) ---
+
+    def _ssh_target(host_name: str):
+        from ..services.ssh.resolver import target_for
+
+        host = container.ssh_host_store.get(host_name)
+        if host is None:
+            raise ValueError(f"SSH host {host_name!r} not found")
+        return target_for(host, container.profile_manager, container.proxy_store)
+
+    @mcp.tool()
+    def list_ssh_hosts() -> list[dict]:
+        """List saved SSH hosts (host, user, and the profile whose proxy is used)."""
+        return [
+            {"name": h.name, "host": h.host, "port": h.port,
+             "user": h.username, "profile": h.profile}
+            for h in container.ssh_host_store.list()
+        ]
+
+    @mcp.tool()
+    async def ssh_exec(host_name: str, command: str) -> dict:
+        """Run a shell command on a saved SSH host (via its profile's proxy).
+        Returns exit code, stdout, stderr."""
+        import asyncio
+
+        from ..services.ssh import client as ssh
+
+        target = _ssh_target(host_name)
+        code, out, err = await asyncio.to_thread(ssh.run_command, target, command)
+        return {"exit": code, "stdout": out, "stderr": err}
+
+    @mcp.tool()
+    async def tmux_send(host_name: str, session: str, keys: str) -> dict:
+        """Send a line of input to a tmux session on the SSH host (creating the
+        session if needed)."""
+        import asyncio
+
+        from ..services.ssh import client as ssh
+
+        target = _ssh_target(host_name)
+        code, out, err = await asyncio.to_thread(
+            ssh.tmux_send, target, session, keys
+        )
+        return {"ok": code == 0, "stderr": err}
+
+    @mcp.tool()
+    async def tmux_capture(host_name: str, session: str, lines: int = 200) -> dict:
+        """Capture the visible output of a tmux session on the SSH host."""
+        import asyncio
+
+        from ..services.ssh import client as ssh
+
+        target = _ssh_target(host_name)
+        text = await asyncio.to_thread(ssh.tmux_capture, target, session, lines)
+        return {"output": text}
+
+    @mcp.tool()
+    async def sftp_list(host_name: str, path: str = ".") -> dict:
+        """List a directory on the SSH host over SFTP."""
+        import asyncio
+
+        from ..services.ssh import client as ssh
+
+        target = _ssh_target(host_name)
+        entries = await asyncio.to_thread(ssh.sftp_list, target, path)
+        return {"path": path, "entries": entries}
+
+    @mcp.tool()
+    async def sftp_get(host_name: str, remote_path: str, local_path: str) -> dict:
+        """Download a file from the SSH host to a local path."""
+        import asyncio
+
+        from ..services.ssh import client as ssh
+
+        target = _ssh_target(host_name)
+        await asyncio.to_thread(ssh.sftp_get, target, remote_path, local_path)
+        return {"ok": True, "local_path": local_path}
+
+    @mcp.tool()
+    async def sftp_put(host_name: str, local_path: str, remote_path: str) -> dict:
+        """Upload a local file to the SSH host."""
+        import asyncio
+
+        from ..services.ssh import client as ssh
+
+        target = _ssh_target(host_name)
+        await asyncio.to_thread(ssh.sftp_put, target, local_path, remote_path)
+        return {"ok": True, "remote_path": remote_path}
+
     return mcp
