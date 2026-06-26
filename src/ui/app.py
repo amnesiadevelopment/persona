@@ -208,6 +208,24 @@ class App:
                         ],
                     ),
                     self.engine_text,
+                    ft.Container(height=4),
+                    ft.Row(
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Icon(
+                                ft.Icons.PUBLIC,
+                                size=14,
+                                color=COLORS["text_dim"],
+                            ),
+                            ft.Text(
+                                self._camoufox_label(),
+                                size=11,
+                                color=COLORS["text_sub"],
+                                font_family="monospace",
+                            ),
+                        ],
+                    ),
                     *(
                         [
                             ft.Container(height=4),
@@ -555,6 +573,23 @@ class App:
         state = "enabled" if enabled else "disabled"
         self._log(f"AI control {state} for '{name}'")
         self._safe_update()
+
+    def _save_notes_inline(self, name: str, notes: str) -> None:
+        """Save a profile's notes edited inline on the card (no dialog)."""
+        p = self.pm.profiles.get(name)
+        if p is None or getattr(p, "notes", "") == notes:
+            return
+        p.notes = notes
+        self.pm.save_profiles()
+
+    def _camoufox_label(self) -> str:
+        try:
+            from ..services.browser.camoufox_launch import installed_version
+
+            ver = installed_version()
+        except Exception:
+            ver = ""
+        return f"camoufox {ver}" if ver else "camoufox (not installed)"
 
     def _assign_tag(self, names: list[str], tag: str) -> None:
         n = self.pm.assign_tag(names, tag)
@@ -1212,6 +1247,7 @@ class App:
                     on_select=self.h.on_toggle_select,
                     proxy=self.pstore.get(p.proxy) if p.proxy else None,
                     on_check_proxy=self._check_proxy,
+                    on_notes_change=self._save_notes_inline,
                     proxy_checking=(
                         p.proxy in self._checking_proxies if p.proxy else False
                     ),

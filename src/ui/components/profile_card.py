@@ -99,6 +99,33 @@ def _proxy_indicator(
     )
 
 
+def _notes_field(profile, on_notes_change):
+    """Inline, editable notes in the middle of the row — saved on blur (or
+    Enter), no need to open the edit dialog. Expands to fill the row."""
+    field = ft.TextField(
+        value=getattr(profile, "notes", ""),
+        hint_text="notes…",
+        text_size=12,
+        text_style=ft.TextStyle(font_family=MONO, italic=True),
+        hint_style=ft.TextStyle(color=COLORS["text_dim"], font_family=MONO),
+        color=COLORS["text_sub"],
+        border=ft.InputBorder.NONE,
+        content_padding=ft.Padding.symmetric(horizontal=10, vertical=6),
+        expand=True,
+        on_blur=(
+            (lambda e, n=profile.name: on_notes_change(n, e.control.value or ""))
+            if on_notes_change
+            else None
+        ),
+        on_submit=(
+            (lambda e, n=profile.name: on_notes_change(n, e.control.value or ""))
+            if on_notes_change
+            else None
+        ),
+    )
+    return ft.Container(expand=True, content=field, padding=ft.Padding.only(left=20, right=20))
+
+
 def build_profile_card(
     profile: Profile,
     is_loading: bool,
@@ -111,6 +138,7 @@ def build_profile_card(
     proxy: Proxy | None = None,
     on_check_proxy: Callable[[str], None] | None = None,
     proxy_checking: bool = False,
+    on_notes_change: Callable[[str, str], None] | None = None,
 ) -> ft.Container:
     """Build a single profile row as a terminal-style line."""
     launch_btn = build_launch_button(profile.name, is_loading, is_running, on_launch)
@@ -170,25 +198,11 @@ def build_profile_card(
                                     else COLORS["text_sub"],
                                     font_family=MONO,
                                 ),
-                                *(
-                                    [
-                                        ft.Text(
-                                            getattr(profile, "notes", ""),
-                                            size=11,
-                                            color=COLORS["text_dim"],
-                                            italic=True,
-                                            max_lines=1,
-                                            overflow=ft.TextOverflow.ELLIPSIS,
-                                        )
-                                    ]
-                                    if getattr(profile, "notes", "")
-                                    else []
-                                ),
                             ],
                         ),
                     ],
                 ),
-                ft.Container(expand=True),
+                _notes_field(profile, on_notes_change),
                 ft.Row(
                     spacing=6,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,

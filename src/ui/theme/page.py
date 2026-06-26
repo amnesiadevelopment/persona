@@ -54,7 +54,7 @@ def build_engine_dropdown(value: str = "chromium") -> ft.Dropdown:
         text_style=ft.TextStyle(font_family="monospace"),
         border_radius=3,
         options=[
-            ft.dropdown.Option(key="chromium", text="fingerprint-chromium"),
+            ft.dropdown.Option(key="chromium", text="fingerprint-chromium (Chrome)"),
             ft.dropdown.Option(key="camoufox", text="Camoufox (Firefox)"),
         ],
     )

@@ -238,8 +238,8 @@ def open_profile_dialog(
         label="Notes",
         value=current_notes,
         multiline=True,
-        min_lines=2,
-        max_lines=4,
+        min_lines=1,
+        max_lines=2,
         **DLG_FIELD_KWARGS,
     )
 
