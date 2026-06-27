@@ -1153,7 +1153,10 @@ class App:
                     and len(self.bl.running_profile_names()) == 0
                 ):
                     self._log("Restarting into the new version…")
-                    app_update.apply_and_restart(ready)
+                    app_update.apply_and_restart(ready, log=self._log)
+                    # only reached if the relaunch failed: surface the button
+                    self._app_update_status = "ready"
+                    self._refresh_sidebar()
                 return
         if not app_settings.is_auto_update_enabled():
             self._log(f"New version {tag} available — update from the sidebar.")
@@ -1192,7 +1195,10 @@ class App:
                 # if still idle (no profiles running), restart now
                 if len(self.bl.running_profile_names()) == 0 and app_settings.is_auto_update_enabled():
                     self._log("Restarting into the new version…")
-                    app_update.apply_and_restart(staged)
+                    app_update.apply_and_restart(staged, log=self._log)
+                    # reached only if relaunch failed; keep the restart button
+                    self._app_update_status = "ready"
+                    self._refresh_sidebar()
             else:
                 self._app_update_status = "failed"
                 self._log("Update download failed — will retry.")
@@ -1212,7 +1218,10 @@ class App:
         """Manual 'update now' click: download if needed, then restart."""
         if self._update_staged:
             self._log("Restarting into the new version…")
-            app_update.apply_and_restart(self._update_staged)
+            app_update.apply_and_restart(self._update_staged, log=self._log)
+            # reached only if the relaunch failed
+            self._app_update_status = "ready"
+            self._refresh_sidebar()
         elif self._app_update_url and not self._update_in_progress:
             # download then restart regardless of running profiles (user asked)
             import threading
@@ -1233,7 +1242,9 @@ class App:
                 if staged:
                     self._update_staged = staged
                     self._log("Update downloaded — restarting…")
-                    app_update.apply_and_restart(staged)
+                    app_update.apply_and_restart(staged, log=self._log)
+                    self._app_update_status = "ready"
+                    self._refresh_sidebar()
                 else:
                     self._app_update_status = "failed"
                     self._log("Update download failed — try again.")

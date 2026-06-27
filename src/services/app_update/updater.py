@@ -17,7 +17,7 @@ import time
 
 from ..engine.updater import is_newer
 
-APP_VERSION = "2.1.2"
+APP_VERSION = "2.1.0"
 APP_REPO = "amnesiadevelopment/persona"
 ASSET_NAME = "persona-x86_64.AppImage"
 
@@ -241,36 +241,59 @@ def download_update(url: str, timeout: int = 600, progress=None, size: int = 0) 
     return ""
 
 
-def apply_and_restart(staged: str, extra_args=None) -> bool:
+def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
     """Atomically replace the running AppImage with the staged download and
-    re-exec into the new version. Returns False (and leaves things intact) when
-    not applicable or the install dir isn't writable. Does not return on
-    success (process is replaced)."""
+    re-exec into the new version. Returns False (and leaves the staged file in
+    place so it can be retried) when not applicable or a step fails; `log` (if
+    given) explains why. Does not return on success (process is replaced)."""
+
+    def say(msg: str) -> None:
+        if log is not None:
+            try:
+                log(msg)
+            except Exception:
+                pass
+
     target = installed_appimage_path()
-    if target is None or not staged or not os.path.isfile(staged):
+    if target is None:
+        say("Update: not running as an AppImage, can't self-replace.")
+        return False
+    if not staged or not os.path.isfile(staged):
+        say("Update: staged file missing.")
         return False
     target_dir = os.path.dirname(target)
     if not os.access(target_dir, os.W_OK | os.X_OK):
+        say(f"Update: {target_dir} not writable, can't replace.")
         return False
     try:
-        # staged is already on the same fs (downloaded next to target)
         f = os.open(staged, os.O_RDONLY)
         try:
             os.fsync(f)
         finally:
             os.close(f)
-        os.replace(staged, target)
-    except Exception:
-        try:
-            os.remove(staged)
-        except OSError:
-            pass
-        return False
-    args = [target] + list(extra_args or sys.argv[1:])
+        os.replace(staged, target)  # same fs; old inode stays live while open
+        os.chmod(target, 0o755)
+    except Exception as e:
+        say(f"Update: replacing the AppImage failed: {e}")
+        return False  # keep `staged` for a retry; do NOT delete it
+    # Re-exec. Preserve extract-and-run mode if we were launched that way, so a
+    # missing-FUSE host (Whonix) still relaunches instead of silently failing.
+    args = [target]
+    cur = list(sys.argv[1:])
+    if "--appimage-extract-and-run" not in cur and not os.environ.get(
+        "APPIMAGE_EXTRACT_AND_RUN"
+    ):
+        os.environ["APPIMAGE_EXTRACT_AND_RUN"] = "1"
+    args += list(extra_args or cur)
     try:
         sys.stdout.flush()
         sys.stderr.flush()
     except Exception:
         pass
-    os.execv(target, args)
+    say("Update: restarting…")
+    try:
+        os.execv(target, args)
+    except Exception as e:
+        say(f"Update: relaunch failed: {e}")
+        return False
     return False  # unreachable on success
