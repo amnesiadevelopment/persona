@@ -17,7 +17,7 @@ import time
 
 from ..engine.updater import is_newer
 
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.1.3"
 APP_REPO = "amnesiadevelopment/persona"
 ASSET_NAME = "persona-x86_64.AppImage"
 
