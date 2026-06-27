@@ -939,10 +939,17 @@ class App:
             ),
         )
 
+        def _bar_block(bar, detail) -> ft.Control:
+            return ft.Container(
+                padding=ft.Padding.only(left=36, right=10, top=2, bottom=2),
+                content=ft.Column(spacing=2, controls=[bar, detail]),
+            )
+
         body: list[ft.Control] = []
         if self._engines_open:
-            body = [
-                ft.Divider(height=10, color=COLORS["border"]),
+            body = [ft.Divider(height=10, color=COLORS["border"])]
+            # fp-chromium row, with its own progress bar directly beneath it
+            body.append(
                 ft.Container(
                     padding=ft.Padding.symmetric(horizontal=10),
                     on_click=lambda _: self._on_engine_click(),
@@ -955,8 +962,13 @@ class App:
                         checking=self._engine_busy,
                         dot=self._engine_update_available(),
                     ),
-                ),
-                ft.Container(height=6),
+                )
+            )
+            if self._engine_busy:
+                body.append(_bar_block(self._engine_bar, self._engine_detail))
+            body.append(ft.Container(height=8))
+            # camoufox row, with its own progress bar directly beneath it
+            body.append(
                 ft.Container(
                     padding=ft.Padding.symmetric(horizontal=10),
                     on_click=lambda _: self._on_camoufox_click(),
@@ -969,43 +981,11 @@ class App:
                         checking=self._camoufox_busy,
                         dot=self._camoufox_update_available(),
                     ),
-                ),
-                *(
-                    [
-                        ft.Container(
-                            padding=ft.Padding.symmetric(horizontal=10),
-                            content=ft.Column(
-                                spacing=2,
-                                controls=[
-                                    ft.Container(height=4),
-                                    self._engine_bar,
-                                    self._engine_detail,
-                                ],
-                            ),
-                        )
-                    ]
-                    if self._engine_busy
-                    else []
-                ),
-                *(
-                    [
-                        ft.Container(
-                            padding=ft.Padding.symmetric(horizontal=10),
-                            content=ft.Column(
-                                spacing=2,
-                                controls=[
-                                    ft.Container(height=4),
-                                    self._camoufox_bar,
-                                    self._camoufox_detail,
-                                ],
-                            ),
-                        )
-                    ]
-                    if self._camoufox_busy
-                    else []
-                ),
-                ft.Container(height=6),
-            ]
+                )
+            )
+            if self._camoufox_busy:
+                body.append(_bar_block(self._camoufox_bar, self._camoufox_detail))
+            body.append(ft.Container(height=6))
 
         return ft.Container(
             border_radius=3,
@@ -1080,7 +1060,7 @@ class App:
         self._log(f"Downloading Camoufox {self._camoufox_latest}…")
 
         def work() -> None:
-            ok = cf.download_camoufox(progress=self._camoufox_progress_cb)
+            ok = cf.download_camoufox(progress=self._camoufox_progress_cb, log=self._log)
             self._camoufox_busy = False
             self._camoufox_status = ""
             self._camoufox_detail.value = ""
@@ -1437,7 +1417,7 @@ class App:
             for attempt in range(3):
                 try:
                     ok = cf.ensure_camoufox_installed(
-                        progress=self._camoufox_progress_cb
+                        progress=self._camoufox_progress_cb, log=self._log
                     )
                 except Exception as e:
                     self._log(f"Camoufox download error: {e}")
@@ -1463,12 +1443,19 @@ class App:
         elapsed = max(time.monotonic() - self._camoufox_start_t, 0.001)
         self._camoufox_bar.value = pf.fraction(done, total) if done > 0 else None
         if done <= 0:
+            # The fetch can sit ~30-60s before the first byte arrives over Tor.
+            # Show a ticking "connecting" so it reads as alive, not frozen.
             self._camoufox_status = "downloading…"
-        elif total > 0:
-            self._camoufox_status = f"{pf.percent(done, total)}%"
+            self._camoufox_detail.value = (
+                f"connecting over Tor… {int(elapsed)}s (first bytes can take a "
+                f"minute)"
+            )
         else:
-            self._camoufox_status = pf.fmt_mb(done)
-        self._camoufox_detail.value = pf.fmt_line(done, total, elapsed)
+            if total > 0:
+                self._camoufox_status = f"{pf.percent(done, total)}%"
+            else:
+                self._camoufox_status = pf.fmt_mb(done)
+            self._camoufox_detail.value = pf.fmt_line(done, total, elapsed)
         self._refresh_sidebar()
 
     def _download_engine_fresh(self) -> None:

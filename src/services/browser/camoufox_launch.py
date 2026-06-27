@@ -154,10 +154,11 @@ def patch_playwright_driver() -> None:
         pass
 
 
-def ensure_camoufox_installed(progress=None) -> bool:
+def ensure_camoufox_installed(progress=None, log=None) -> bool:
     """True if the Camoufox Firefox binary is present; fetch it if not. When
     `progress(done, total)` is given the fetch reports byte progress so the UI
-    can show a real download bar. Returns False only if the fetch failed."""
+    can show a real download bar; `log(msg)` reports each stage. Returns False
+    only if the fetch failed."""
     try:
         from camoufox.pkgman import installed_verstr
 
@@ -166,7 +167,7 @@ def ensure_camoufox_installed(progress=None) -> bool:
     except Exception:
         pass
     # not installed -> fetch the FF binary into the user cache (with progress)
-    return download_camoufox(progress=progress)
+    return download_camoufox(progress=progress, log=log)
 
 
 def installed_version() -> str:
@@ -201,12 +202,21 @@ def update_available(latest: str = "") -> bool:
     return bool(latest) and latest != have
 
 
-def download_camoufox(progress=None) -> bool:
+def download_camoufox(progress=None, log=None) -> bool:
     """Download + install the latest Camoufox to the user cache. When `progress`
     is given (progress(done_bytes, total_bytes)), the binary is fetched with a
     visible byte/percent/ETA readout — the same first-run treatment fp-chromium
-    gets — instead of Camoufox's silent terminal-only download. Returns False on
-    failure. Resumable across dropped Tor circuits."""
+    gets — instead of Camoufox's silent terminal-only download. `log(msg)`
+    reports each stage so a stall has a visible reason. Returns False on
+    failure. Resumable across dropped Tor circuits AND across restarts."""
+
+    def say(msg: str) -> None:
+        if log is not None:
+            try:
+                log(msg)
+            except Exception:
+                pass
+
     if progress is None:
         try:
             from camoufox.pkgman import CamoufoxFetcher, installed_verstr
@@ -217,12 +227,25 @@ def download_camoufox(progress=None) -> bool:
             return False
 
     import subprocess
-    import tempfile
     import threading
 
     # tell the UI we've started before any (slow, over-Tor) network call, so the
     # bar appears immediately instead of after fetch_latest/HEAD round-trips
     progress(0, 0)
+
+    # fetch_latest() + the curl connect can take 30-60s over Tor before a single
+    # byte lands. Tick progress(0,0) once a second through that dead time so the
+    # UI's "connecting… Ns" keeps moving and never looks frozen. `done_connect`
+    # is set once the real watcher takes over, which ends the ticker.
+    done_connect = threading.Event()
+
+    def tick() -> None:
+        # wait() returns True the instant done_connect is set, else blocks ~1s,
+        # so this loops once a second without busy-spinning
+        while not done_connect.wait(1.0):
+            progress(0, 0)
+
+    threading.Thread(target=tick, daemon=True).start()
 
     try:
         from camoufox.pkgman import (
@@ -232,12 +255,22 @@ def download_camoufox(progress=None) -> bool:
             unzip,
         )
 
+        say("Camoufox: contacting release server over Tor…")
         f = CamoufoxFetcher()
         f.fetch_latest()
         url = f.url
+        say("Camoufox: downloading engine…")
 
-        tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
-        tmp.close()
+        # Download to a DETERMINISTIC path next to the install dir, not a random
+        # temp file. curl -C - then resumes a partial download across restarts —
+        # so if a slow Tor circuit stalls and the user restarts persona, the
+        # next run continues from where it left off instead of starting over
+        # (which is why it looked like it "never downloads after a restart").
+        class _Tmp:
+            name = str(INSTALL_DIR) + ".download.zip"
+
+        tmp = _Tmp()
+        os.makedirs(os.path.dirname(tmp.name), exist_ok=True)
 
         # learn the total in the background so a slow HEAD never blocks the bar
         total_box = {"v": 0}
@@ -260,6 +293,7 @@ def download_camoufox(progress=None) -> bool:
 
         watcher = threading.Thread(target=watch, daemon=True)
         watcher.start()
+        done_connect.set()  # watcher now drives progress; stop the connect ticker
 
         ok = False
         try:
@@ -281,10 +315,12 @@ def download_camoufox(progress=None) -> bool:
             stop.set()
 
         if not ok:
+            say("Camoufox: download didn't complete — will resume on next start.")
             return False
 
         final_total = total_box["v"] or os.path.getsize(tmp.name)
         progress(final_total, final_total)
+        say("Camoufox: extracting…")
         # hand the downloaded zip to Camoufox's own extractor
         import shutil
 
@@ -295,12 +331,14 @@ def download_camoufox(progress=None) -> bool:
             unzip(zf, str(INSTALL_DIR), bar=False)
         f.set_version()
         try:
-            os.remove(tmp.name)
+            os.remove(tmp.name)  # resumable zip no longer needed once installed
         except OSError:
             pass
         return bool(installed_verstr())
     except Exception:
         return False
+    finally:
+        done_connect.set()  # never leave the connect ticker running
 
 
 def _remote_size(url: str) -> int:
