@@ -17,7 +17,7 @@ import time
 
 from ..engine.updater import is_newer
 
-APP_VERSION = "2.0.0"
+APP_VERSION = "1.4.0"
 APP_REPO = "amnesiadevelopment/persona"
 ASSET_NAME = "persona-x86_64.AppImage"
 
@@ -72,12 +72,21 @@ def remote_size(url: str, timeout: int = 30) -> int:
         )
         if out.returncode != 0:
             return 0
+        # GitHub releases 302-redirect to a CDN; the redirect response carries
+        # "Content-Length: 0" and the REAL size is in the final response's
+        # header. Take the LAST non-zero Content-Length, not the first.
+        size = 0
         for line in out.stdout.decode("utf-8", "replace").splitlines():
             if line.lower().startswith("content-length:"):
-                return int(line.split(":", 1)[1].strip())
+                try:
+                    v = int(line.split(":", 1)[1].strip())
+                except ValueError:
+                    continue
+                if v > 0:
+                    size = v
+        return size
     except Exception:
         return 0
-    return 0
 
 
 def find_ready_staged(url: str, timeout: int = 30) -> str:
@@ -206,10 +215,20 @@ def download_update(url: str, timeout: int = 600, progress=None) -> str:
             except FileNotFoundError:
                 break  # no curl; nothing else to try
             have = os.path.getsize(staged) if os.path.exists(staged) else 0
-            if rc == 0 and (not total or have >= total):
+            # Done when the file is fully here. Several ways the last attempt can
+            # leave a COMPLETE file with a non-zero rc, all of which we accept:
+            #  - have >= total (the real size, now correctly read past redirects)
+            #  - curl exited 33/36 (HTTP 416 Range Not Satisfiable): -C - asked
+            #    to resume an already-complete file, which means it's done
+            #  - total unknown but curl succeeded
+            complete = bool(total) and have >= total
+            range_done = rc in (33, 36) and bool(total) and have >= total
+            if complete or range_done or (rc == 0 and not total and have > 0):
+                if progress is not None and total:
+                    progress(have, total)  # flush 100% to the UI
                 os.chmod(staged, 0o755)
                 return staged
-            # rc != 0 (timeout/slow/drop) or short file: loop and resume
+            # otherwise: rc != 0 (timeout/slow/drop) or short file -> loop+resume
     finally:
         stop.set()
     return ""

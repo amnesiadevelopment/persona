@@ -102,10 +102,22 @@ def _spawn_camoufox(profile: Profile, profile_dir: str):
     os.environ.setdefault("DISPLAY", ":0")
     store = ProxyStore()
     proxy_url = store.resolve(profile.proxy) or ""
+    proxy = store.get(profile.proxy) if profile.proxy else None
+    lang = _locale_for(proxy.country_code) if proxy else "en-US"
+    tz = (proxy.timezone or _timezone_for(proxy.country_code)) if proxy else ""
+
+    # Give the Camoufox window the profile's name + a fox icon in the taskbar,
+    # the same way the chromium path labels its windows.
+    write_window_entry(profile.name, icon="firefox")
+
     cfg = {
         "os_type": profile.os_type,
         "proxy_url": proxy_url,
         "start_url": "https://www.google.com",
+        "profile_name": profile.name,
+        "search_engine": profile.search_engine,
+        "locale": lang,
+        "timezone": tz,
         "_needs_fetch": not ensure_camoufox_installed(),
     }
     return spawn(cfg)

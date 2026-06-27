@@ -3,8 +3,10 @@ from collections.abc import Callable
 import flet as ft
 
 from ...models.profile import Profile
+from ...services.ssh.store import SSHHost
 from ..theme.colors import COLORS
 from ..theme.styles import MONO
+from .ssh_page import build_ssh_section
 
 
 def build_connect_page(
@@ -16,6 +18,11 @@ def build_connect_page(
     server_running: bool,
     on_toggle_server: Callable[[bool], None],
     endpoint: str,
+    ssh_hosts: list[SSHHost],
+    on_ssh_add: Callable,
+    on_ssh_edit: Callable[[str], None],
+    on_ssh_delete: Callable[[str], None],
+    on_ssh_run: Callable[[str, str], tuple[int, str, str]],
 ) -> ft.Container:
     controls: list[ft.Control] = [
         _title("connect Claude"),
@@ -43,15 +50,29 @@ def build_connect_page(
             _ai_section(profiles, on_toggle_ai),
         ]
 
+    section, footer = build_ssh_section(
+        ssh_hosts, on_ssh_add, on_ssh_edit, on_ssh_delete, on_ssh_run
+    )
+    controls += [ft.Divider(height=40, color=COLORS["border"]), section]
     controls.append(ft.Container(height=20))
+
+    # The scrollable content always lives in an expanding region so long pages
+    # (MCP enabled) scroll. When SSH has no hosts, the empty-state hint sits
+    # below that region as a real footer pinned to the bottom of the page.
+    scroller = ft.Column(
+        spacing=0,
+        scroll=ft.ScrollMode.AUTO,
+        controls=controls,
+    )
+    page_controls: list[ft.Control] = [ft.Container(expand=True, content=scroller)]
+    if footer is not None:
+        page_controls.append(footer)
 
     return ft.Container(
         expand=True,
         bgcolor=COLORS["bg"],
         padding=ft.Padding.symmetric(horizontal=32, vertical=24),
-        content=ft.Column(
-            spacing=0, expand=True, scroll=ft.ScrollMode.AUTO, controls=controls
-        ),
+        content=ft.Column(spacing=0, expand=True, controls=page_controls),
     )
 
 

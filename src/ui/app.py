@@ -15,7 +15,6 @@ from .components import (
     build_content_area,
     build_empty_state,
     build_network_page,
-    build_ssh_page,
     build_profile_card,
     build_sidebar,
     build_top_bar,
@@ -79,6 +78,10 @@ class App:
         self._checking_proxies: set[str] = set()
         self._engine_latest: str = ""
         self._engine_busy = False
+        self._engines_open = False
+        self._camoufox_latest: str = ""
+        self._camoufox_busy = False
+        self._camoufox_status: str = ""
         self.engine_text = ft.Text(
             "…",
             size=12,
@@ -120,6 +123,7 @@ class App:
             get_bookmarks=lambda: self.bstore.list_bookmarks(),
             import_cookies_file=self._import_cookies_file,
             export_cookies_file=self._export_cookies_file,
+            open_add_proxy=self._goto_add_proxy,
         )
 
     def run(self) -> None:
@@ -144,6 +148,7 @@ class App:
         else:
             self._show_onboarding()
         self._check_app_update_async()
+        self._check_engines_periodic()
         self.state._last_running_snapshot = self.bl.running_profile_names()
         self._start_server_if_enabled()
         if not self._reconcile_started:
@@ -171,73 +176,7 @@ class App:
                 r.log_column,
             ],
         )
-        engine_panel = ft.Container(
-            border_radius=3,
-            border=ft.Border.all(1, COLORS["card_border"]),
-            padding=ft.Padding.symmetric(horizontal=10, vertical=8),
-            margin=ft.Margin.only(bottom=10),
-            on_click=lambda _: self._on_engine_click(),
-            ink=True,
-            tooltip="Check / update browser engine",
-            content=ft.Column(
-                spacing=2,
-                controls=[
-                    ft.Row(
-                        spacing=8,
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                        controls=[
-                            self._engine_icon(),
-                            ft.Text(
-                                "fp-chromium",
-                                size=11,
-                                color=COLORS["text_sub"],
-                                font_family="monospace",
-                            ),
-                            *(
-                                [
-                                    ft.Container(
-                                        width=7,
-                                        height=7,
-                                        border_radius=4,
-                                        bgcolor=COLORS["accent"],
-                                    )
-                                ]
-                                if self._engine_update_available()
-                                else []
-                            ),
-                        ],
-                    ),
-                    self.engine_text,
-                    ft.Container(height=4),
-                    ft.Row(
-                        spacing=8,
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                        controls=[
-                            ft.Icon(
-                                ft.Icons.PUBLIC,
-                                size=14,
-                                color=COLORS["text_dim"],
-                            ),
-                            ft.Text(
-                                self._camoufox_label(),
-                                size=11,
-                                color=COLORS["text_sub"],
-                                font_family="monospace",
-                            ),
-                        ],
-                    ),
-                    *(
-                        [
-                            ft.Container(height=4),
-                            self._engine_bar,
-                            self._engine_detail,
-                        ]
-                        if self._engine_busy
-                        else []
-                    ),
-                ],
-            ),
-        )
+        engine_panel = self._build_engines_panel()
         return build_sidebar(
             active_page=self._active_page,
             on_navigate=self._navigate,
@@ -431,20 +370,17 @@ class App:
                 server_running=self._server_running(),
                 on_toggle_server=self._set_server,
                 endpoint=mcp_url(),
+                ssh_hosts=self.ssh_store.list(),
+                on_ssh_add=lambda: self._open_ssh_host_dialog(),
+                on_ssh_edit=self._edit_ssh_host,
+                on_ssh_delete=self._delete_ssh_host,
+                on_ssh_run=self._ssh_run,
             )
         elif self._active_page == "tags":
             self._page_host.content = build_tags_page(
                 self.pm.list_profiles(),
                 on_assign=self._assign_tag,
                 on_remove_tag=self._remove_tag,
-            )
-        elif self._active_page == "ssh":
-            self._page_host.content = build_ssh_page(
-                self.ssh_store.list(),
-                on_add=lambda: self._open_ssh_host_dialog(),
-                on_edit=self._edit_ssh_host,
-                on_delete=self._delete_ssh_host,
-                on_run=self._ssh_run,
             )
         else:
             self._page_host.content = self._build_profiles_page()
@@ -582,14 +518,29 @@ class App:
         p.notes = notes
         self.pm.save_profiles()
 
-    def _camoufox_label(self) -> str:
+    def _camoufox_version_text(self) -> str:
         try:
             from ..services.browser.camoufox_launch import installed_version
 
             ver = installed_version()
         except Exception:
             ver = ""
-        return f"camoufox {ver}" if ver else "camoufox (not installed)"
+        return ver or "not installed"
+
+    def _camoufox_update_available(self) -> bool:
+        cur = self._camoufox_version_text()
+        return (
+            cur not in ("", "not installed")
+            and bool(self._camoufox_latest)
+            and self._camoufox_latest != cur
+        )
+
+    def _camoufox_status_text(self) -> str:
+        if self._camoufox_status:
+            return self._camoufox_status
+        if self._camoufox_update_available():
+            return f"update → {self._camoufox_latest}"
+        return self._camoufox_version_text()
 
     def _assign_tag(self, names: list[str], tag: str) -> None:
         n = self.pm.assign_tag(names, tag)
@@ -608,6 +559,12 @@ class App:
         self._render_active_page()
         self._refresh_profiles()
         self._safe_update()
+
+    def _goto_add_proxy(self) -> None:
+        """Jump from the profile dialog to the network page with the add-proxy
+        dialog already open."""
+        self._navigate("network")
+        self._open_proxy_dialog()
 
     def _open_proxy_dialog(self, name: str | None = None) -> None:
         page = self.page
@@ -879,6 +836,231 @@ class App:
     def _engine_update_available(self) -> bool:
         return engine.is_newer(self._engine_latest, engine.current_version())
 
+    def _engine_logo(self, engine_key: str, size: int = 18) -> ft.Control:
+        from ..core.assets import asset_path
+
+        fname = "engine_firefox.png" if engine_key == "camoufox" else "engine_chrome.png"
+        path = asset_path(fname)
+        if os.path.exists(path):
+            return ft.Image(src=path, width=size, height=size)
+        return ft.Icon(ft.Icons.PUBLIC, size=size, color=COLORS["text_sub"])
+
+    def _engine_row(
+        self, badge: ft.Control, name: str, version: str, checking: bool,
+        dot: bool = False,
+    ) -> ft.Control:
+        trailing: list[ft.Control] = []
+        if checking:
+            trailing.append(
+                ft.ProgressRing(
+                    width=11, height=11, stroke_width=2, color=COLORS["accent"]
+                )
+            )
+        elif dot:
+            trailing.append(
+                ft.Container(width=7, height=7, border_radius=4, bgcolor=COLORS["accent"])
+            )
+        return ft.Column(
+            spacing=1,
+            controls=[
+                ft.Row(
+                    spacing=8,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        badge,
+                        ft.Text(
+                            name, size=11, color=COLORS["text_sub"],
+                            font_family="monospace",
+                        ),
+                        *trailing,
+                    ],
+                ),
+                ft.Container(
+                    padding=ft.Padding.only(left=26),
+                    content=ft.Text(
+                        version, size=12, color=COLORS["text_main"],
+                        font_family="monospace",
+                    ),
+                ),
+            ],
+        )
+
+    def _build_engines_panel(self) -> ft.Control:
+        header = ft.Container(
+            padding=ft.Padding.symmetric(horizontal=10, vertical=8),
+            on_click=lambda _: self._toggle_engines(),
+            ink=True,
+            tooltip="Browser engines — open to check both",
+            content=ft.Row(
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Row(
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            self._engine_icon(),
+                            ft.Text(
+                                "engines", size=11, color=COLORS["text_sub"],
+                                font_family="monospace",
+                            ),
+                            *(
+                                [
+                                    ft.Container(
+                                        width=7, height=7, border_radius=4,
+                                        bgcolor=COLORS["accent"],
+                                    )
+                                ]
+                                if (
+                                    self._engine_update_available()
+                                    or self._camoufox_update_available()
+                                )
+                                else []
+                            ),
+                        ],
+                    ),
+                    ft.Icon(
+                        ft.Icons.KEYBOARD_ARROW_UP
+                        if self._engines_open
+                        else ft.Icons.KEYBOARD_ARROW_DOWN,
+                        size=16,
+                        color=COLORS["text_sub"],
+                    ),
+                ],
+            ),
+        )
+
+        body: list[ft.Control] = []
+        if self._engines_open:
+            body = [
+                ft.Divider(height=10, color=COLORS["border"]),
+                ft.Container(
+                    padding=ft.Padding.symmetric(horizontal=10),
+                    on_click=lambda _: self._on_engine_click(),
+                    ink=True,
+                    tooltip="Check / update fp-chromium",
+                    content=self._engine_row(
+                        self._engine_logo("chromium"),
+                        "fp-chromium",
+                        self.engine_text.value or "…",
+                        checking=self._engine_busy,
+                        dot=self._engine_update_available(),
+                    ),
+                ),
+                ft.Container(height=6),
+                ft.Container(
+                    padding=ft.Padding.symmetric(horizontal=10),
+                    on_click=lambda _: self._on_camoufox_click(),
+                    ink=True,
+                    tooltip="Check / update camoufox",
+                    content=self._engine_row(
+                        self._engine_logo("camoufox"),
+                        "camoufox",
+                        self._camoufox_status_text(),
+                        checking=self._camoufox_busy,
+                        dot=self._camoufox_update_available(),
+                    ),
+                ),
+                *(
+                    [
+                        ft.Container(
+                            padding=ft.Padding.symmetric(horizontal=10),
+                            content=ft.Column(
+                                spacing=2,
+                                controls=[
+                                    ft.Container(height=4),
+                                    self._engine_bar,
+                                    self._engine_detail,
+                                ],
+                            ),
+                        )
+                    ]
+                    if self._engine_busy
+                    else []
+                ),
+                ft.Container(height=6),
+            ]
+
+        return ft.Container(
+            border_radius=3,
+            border=ft.Border.all(1, COLORS["card_border"]),
+            margin=ft.Margin.only(bottom=10),
+            content=ft.Column(spacing=0, controls=[header, *body]),
+        )
+
+    def _toggle_engines(self) -> None:
+        self._engines_open = not self._engines_open
+        if self._engines_open:
+            self._check_both_engines()
+        self._refresh_sidebar()
+
+    def _check_both_engines(self) -> None:
+        """Opening the panel checks both engines for an upstream update over
+        the network — each runs on its own thread with its own spinner."""
+        if not self._engine_busy and not self._engine_update_available():
+            self._engine_busy = True
+            self._refresh_engine_text("checking…")
+
+            def work() -> None:
+                tag, _url = engine.fetch_latest()
+                self._engine_latest = tag
+                self._engine_busy = False
+                if self._engine_update_available():
+                    self._log(f"Engine update available: {tag}")
+                self._refresh_engine_text()
+
+            threading.Thread(target=work, daemon=True).start()
+
+        if not self._camoufox_busy and not self._camoufox_update_available():
+            self._check_camoufox_async()
+
+    def _check_camoufox_async(self) -> None:
+        from ..services.browser import camoufox_launch as cf
+
+        self._camoufox_busy = True
+        self._camoufox_status = "checking…"
+        self._refresh_sidebar()
+
+        def work() -> None:
+            latest = cf.fetch_latest_version()
+            self._camoufox_latest = latest
+            self._camoufox_busy = False
+            self._camoufox_status = ""
+            if self._camoufox_update_available():
+                self._log(f"Camoufox update available: {latest}")
+            self._refresh_sidebar()
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_camoufox_click(self) -> None:
+        if self._camoufox_busy:
+            return
+        if self._camoufox_update_available():
+            self._update_camoufox_async()
+        else:
+            self._check_camoufox_async()
+
+    def _update_camoufox_async(self) -> None:
+        from ..services.browser import camoufox_launch as cf
+
+        self._camoufox_busy = True
+        self._camoufox_status = "downloading…"
+        self._refresh_sidebar()
+        self._log(f"Downloading Camoufox {self._camoufox_latest}…")
+
+        def work() -> None:
+            ok = cf.download_camoufox()
+            self._camoufox_busy = False
+            self._camoufox_status = ""
+            if ok:
+                self._camoufox_latest = ""
+                self._log(f"Camoufox updated to {cf.installed_version()}")
+            else:
+                self._log("Camoufox update failed")
+            self._refresh_sidebar()
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _refresh_engine_text(self, status: str = "") -> None:
         cur = engine.current_version() or "unknown"
         if status:
@@ -908,6 +1090,40 @@ class App:
                         self._app_update_url = url
                         self._on_update_found(tag, url)
                 time.sleep(60)
+
+        threading.Thread(target=loop, daemon=True).start()
+
+    def _check_engines_periodic(self) -> None:
+        """Quietly poll both engines for an upstream update once an hour so the
+        sidebar dot lights up on its own. This only refreshes the 'latest'
+        version (no spinner, no auto-download) — installing stays a click."""
+        import threading
+        import time
+
+        from ..services.browser import camoufox_launch as cf
+
+        def loop() -> None:
+            while True:
+                time.sleep(3600)
+                try:
+                    if not self._engine_busy:
+                        tag, _url = engine.fetch_latest()
+                        if tag:
+                            self._engine_latest = tag
+                            if self._engine_update_available():
+                                self._log(f"Engine update available: {tag}")
+                except Exception:
+                    pass
+                try:
+                    if not self._camoufox_busy:
+                        latest = cf.fetch_latest_version()
+                        if latest:
+                            self._camoufox_latest = latest
+                            if self._camoufox_update_available():
+                                self._log(f"Camoufox update available: {latest}")
+                except Exception:
+                    pass
+                self._refresh_sidebar()
 
         threading.Thread(target=loop, daemon=True).start()
 

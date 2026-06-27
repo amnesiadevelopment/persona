@@ -33,7 +33,9 @@ def open_ssh_host_dialog(
 ) -> None:
     name_f = _field("name", host.name if host else "")
     host_f = _field("host", host.host if host else "")
+    host_f.expand = True
     port_f = _field("port", str(host.port) if host else "22")
+    port_f.width = 110
     user_f = _field("username", host.username if host else "")
     key_f = _field("private key path", host.key_path if host else "")
     keypass_f = _field("key passphrase", host.key_passphrase if host else "", password=True)
@@ -101,8 +103,13 @@ def open_ssh_host_dialog(
             content=ft.Column(
                 tight=True, spacing=12, scroll=ft.ScrollMode.AUTO,
                 controls=[
-                    name_f, host_f,
-                    ft.Row(controls=[port_f, user_f]),
+                    name_f,
+                    ft.Row(
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.START,
+                        controls=[host_f, port_f],
+                    ),
+                    user_f,
                     profile_dd,
                     ft.Divider(height=8, color=COLORS["border"]),
                     ft.Text("auth — key and/or password",
