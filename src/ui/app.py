@@ -69,6 +69,7 @@ class App:
         self._sidebar_host: ft.Container | None = None
         self._app_latest = ""
         self._app_update_url = ""
+        self._app_update_size = 0
         self._app_update_status = ""  # '', downloading, ready, failed
         self._app_update_done = 0
         self._app_update_total = 0
@@ -1084,10 +1085,11 @@ class App:
 
             while True:
                 if not self._update_in_progress and not self._update_staged:
-                    tag, url = app_update.check_for_update()
+                    tag, url, size = app_update.check_for_update()
                     if tag and url and tag != self._app_latest:
                         self._app_latest = tag
                         self._app_update_url = url
+                        self._app_update_size = size
                         self._on_update_found(tag, url)
                 time.sleep(60)
 
@@ -1139,7 +1141,7 @@ class App:
         # complete staged file is on disk, offer to restart into it instead of
         # downloading again (e.g. the user reopened the app before it restarted).
         if not self._update_staged:
-            ready = app_update.find_ready_staged(url)
+            ready = app_update.find_ready_staged(url, size=self._app_update_size)
             if ready:
                 self._update_staged = ready
                 self._app_update_status = "ready"
@@ -1177,7 +1179,9 @@ class App:
             self._update_start_t = time.monotonic()
             self._app_update_status = "downloading"
             self._refresh_sidebar()
-            staged = app_update.download_update(url, progress=self._update_progress_cb)
+            staged = app_update.download_update(
+                url, progress=self._update_progress_cb, size=self._app_update_size
+            )
             self._update_in_progress = False
             if staged:
                 self._update_staged = staged
@@ -1220,7 +1224,9 @@ class App:
                 self._app_update_status = "downloading"
                 self._refresh_sidebar()
                 staged = app_update.download_update(
-                    self._app_update_url, progress=self._update_progress_cb
+                    self._app_update_url,
+                    progress=self._update_progress_cb,
+                    size=self._app_update_size,
                 )
                 self._update_in_progress = False
                 if staged:

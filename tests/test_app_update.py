@@ -36,7 +36,7 @@ def test_release_url_empty_when_repo_unconfigured(monkeypatch):
 def test_check_returns_none_when_repo_unconfigured(monkeypatch):
     # no GitHub repo set yet -> check is a no-op, never crashes
     monkeypatch.setattr(au, "APP_REPO", "")
-    assert au.check_for_update() == ("", "")
+    assert au.check_for_update() == ("", "", 0)
 
 
 def test_pick_binary_asset_filters_by_name():
@@ -45,9 +45,9 @@ def test_pick_binary_asset_filters_by_name():
         {"name": "persona-x86_64.AppImage", "browser_download_url": "u2"},
         {"name": "persona-macos", "browser_download_url": "u3"},
     ]
-    assert au.pick_asset(assets) == "u2"
+    assert au.pick_asset(assets) == ("u2", 0)
 
 
 def test_pick_binary_asset_none_when_no_appimage():
     assets = [{"name": "persona-windows.exe", "browser_download_url": "u1"}]
-    assert au.pick_asset(assets) == ""
+    assert au.pick_asset(assets) == ("", 0)

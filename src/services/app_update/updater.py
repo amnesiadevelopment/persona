@@ -89,14 +89,15 @@ def remote_size(url: str, timeout: int = 30) -> int:
         return 0
 
 
-def find_ready_staged(url: str, timeout: int = 30) -> str:
+def find_ready_staged(url: str, timeout: int = 30, size: int = 0) -> str:
     """If a fully-downloaded staged file from a previous run is already on disk
     (size matches the remote asset), return it so we can offer to restart into
-    it without re-downloading. Else ''."""
+    it without re-downloading. Else ''. Prefers the API-provided `size` over a
+    HEAD request."""
     staged = staged_path()
     if not staged or not os.path.exists(staged):
         return ""
-    total = remote_size(url, timeout)
+    total = size or remote_size(url, timeout)
     if total and os.path.getsize(staged) == total:
         return staged
     return ""
@@ -112,16 +113,18 @@ def update_available(latest: str, current: str = APP_VERSION) -> bool:
     return is_newer(latest, current)
 
 
-def pick_asset(assets: list[dict]) -> str:
-    """Pick the AppImage download URL from a release's assets."""
+def pick_asset(assets: list[dict]) -> tuple[str, int]:
+    """Pick the AppImage (download_url, size) from a release's assets. The size
+    comes straight from the GitHub API, so the download has an exact total
+    without a separate (Tor-flaky) HEAD request."""
     for asset in assets:
         if asset.get("name", "") == ASSET_NAME:
-            return asset.get("browser_download_url", "")
+            return asset.get("browser_download_url", ""), int(asset.get("size", 0) or 0)
     # fallback: any .AppImage
     for asset in assets:
         if asset.get("name", "").endswith(".AppImage"):
-            return asset.get("browser_download_url", "")
-    return ""
+            return asset.get("browser_download_url", ""), int(asset.get("size", 0) or 0)
+    return "", 0
 
 
 def installed_appimage_path() -> str | None:
@@ -138,35 +141,39 @@ def is_packaged_appimage() -> bool:
     return installed_appimage_path() is not None
 
 
-def check_for_update(timeout: int = 30) -> tuple[str, str]:
-    """Return (tag, download_url) when a newer release exists, else ('',''). Uses
-    curl with a short connect timeout so the check fails fast on a dead Tor
-    circuit instead of hanging (and then silently missing the update)."""
+def check_for_update(timeout: int = 30) -> tuple[str, str, int]:
+    """Return (tag, download_url, size) when a newer release exists, else
+    ('', '', 0). Uses curl with a short connect timeout so the check fails fast
+    on a dead Tor circuit instead of hanging (and then silently missing the
+    update)."""
     api = releases_api()
     if not api:
-        return "", ""
+        return "", "", 0
     body = _curl_get(
         api, headers={"Accept": "application/vnd.github+json"}, max_time=timeout
     )
     if not body:
-        return "", ""
+        return "", "", 0
     try:
         import json
 
         data = json.loads(body)
         tag = data.get("tag_name", "")
         if not update_available(tag):
-            return "", ""
-        return tag, pick_asset(data.get("assets", []))
+            return "", "", 0
+        url, size = pick_asset(data.get("assets", []))
+        return tag, url, size
     except Exception:
-        return "", ""
+        return "", "", 0
 
 
-def download_update(url: str, timeout: int = 600, progress=None) -> str:
+def download_update(url: str, timeout: int = 600, progress=None, size: int = 0) -> str:
     """Download the new AppImage to a temp file next to the installed one
     (same filesystem, so the later os.replace is atomic). Resumable across
     dropped connections (Tor). Returns the staged path or '' on failure.
-    `progress(done, total)` is called as bytes arrive.
+    `progress(done, total)` is called as bytes arrive. `size` is the exact asset
+    size from the GitHub API; we trust it over a HEAD request (which is flaky to
+    impossible over Tor — that's why the bar had no total and looked stuck).
     """
     if not url:
         return ""
@@ -174,7 +181,7 @@ def download_update(url: str, timeout: int = 600, progress=None) -> str:
     if not staged:
         return ""
 
-    total = remote_size(url)
+    total = size or remote_size(url)
 
     # Report progress by watching the staged file grow, so the UI shows the real
     # MB/speed (and "connecting…" via progress(0, total)) instead of freezing on
