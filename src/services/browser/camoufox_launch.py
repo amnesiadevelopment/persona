@@ -556,38 +556,93 @@ def _child(cfg: dict, write_fd: int) -> None:
     close_and_exit()
 
 
+def _child_main() -> None:
+    """Entry point for the non-fork (Windows/macOS) launch path. Run as a fresh
+    subprocess (`python -c "...; _child_main()"`); reads the cfg from the env
+    and writes status to stdout (fd 1), which the parent reads as proc.stdout.
+    Native Win/Mac builds have a real interpreter, so `python -c` works (the
+    Linux AppImage's embedded Python doesn't — that's why Linux forks instead)."""
+    import json
+
+    cfg = json.loads(os.environ.get("PERSONA_CF_CFG", "{}"))
+    _child(cfg, 1)  # fd 1 = stdout
+
+
 class CamoufoxProcess:
-    """multiprocessing-fork-backed handle with the subset of the Popen API the
-    browser launcher uses: .stdout (readable text pipe), .poll(), .terminate(),
-    .kill(), .wait(), .pid."""
+    """Popen-compatible handle (.stdout/.poll()/.terminate()/.kill()/.wait()/
+    .pid) the launcher expects, backed by either a multiprocessing fork (Linux)
+    or a real subprocess (Windows/macOS).
+
+    Linux forks to dodge the flet-AppImage embedded Python. On a native Win/Mac
+    build sys.executable is a normal interpreter and fork is unavailable/unsafe,
+    so we launch `python -c "...: _child_main()"` as a plain subprocess and read
+    its stdout."""
 
     def __init__(self, cfg: dict) -> None:
-        r, w = os.pipe()
-        ctx = mp.get_context("fork")
-        self._proc = ctx.Process(target=_child, args=(cfg, w), daemon=False)
-        self._proc.start()
-        os.close(w)  # parent keeps only the read end
-        self.stdout = os.fdopen(r, "r")
-        self.pid = self._proc.pid
+        from ...core import platform as _p
+
         self._proxy_bridge = None  # launcher attribute parity
+        if _p.needs_fork_launch():
+            self._fork = True
+            r, w = os.pipe()
+            ctx = mp.get_context("fork")
+            self._proc = ctx.Process(target=_child, args=(cfg, w), daemon=False)
+            self._proc.start()
+            os.close(w)  # parent keeps only the read end
+            self.stdout = os.fdopen(r, "r")
+            self.pid = self._proc.pid
+        else:
+            self._fork = False
+            import json
+            import subprocess
+            import sys
+
+            env = dict(os.environ)
+            env["PERSONA_CF_CFG"] = json.dumps(cfg)
+            code = (
+                "from src.services.browser.camoufox_launch import _child_main;"
+                "_child_main()"
+            )
+            self._proc = subprocess.Popen(
+                [sys.executable, "-c", code],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                env=env,
+                text=True,
+                bufsize=1,
+            )
+            self.stdout = self._proc.stdout
+            self.pid = self._proc.pid
 
     def poll(self):
-        return None if self._proc.is_alive() else (self._proc.exitcode or 0)
+        if self._fork:
+            return None if self._proc.is_alive() else (self._proc.exitcode or 0)
+        return self._proc.poll()
 
     def wait(self, timeout=None):
-        self._proc.join(timeout)
-        return self._proc.exitcode
+        if self._fork:
+            self._proc.join(timeout)
+            return self._proc.exitcode
+        return self._proc.wait(timeout)
 
     def terminate(self):
-        if self._proc.is_alive():
-            self._proc.terminate()
+        if self._fork:
+            if self._proc.is_alive():
+                self._proc.terminate()
+        else:
+            if self._proc.poll() is None:
+                self._proc.terminate()
 
     def kill(self):
-        if self._proc.is_alive():
-            try:
-                os.kill(self._proc.pid, signal.SIGKILL)
-            except Exception:
-                self._proc.terminate()
+        if self._fork:
+            if self._proc.is_alive():
+                try:
+                    os.kill(self._proc.pid, signal.SIGKILL)
+                except Exception:
+                    self._proc.terminate()
+        else:
+            if self._proc.poll() is None:
+                self._proc.kill()
 
 
 def spawn(cfg: dict) -> CamoufoxProcess:
