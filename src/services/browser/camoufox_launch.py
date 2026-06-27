@@ -154,9 +154,10 @@ def patch_playwright_driver() -> None:
         pass
 
 
-def ensure_camoufox_installed() -> bool:
-    """True if the Camoufox Firefox binary is present; fetch it if not. Returns
-    False only if the fetch failed."""
+def ensure_camoufox_installed(progress=None) -> bool:
+    """True if the Camoufox Firefox binary is present; fetch it if not. When
+    `progress(done, total)` is given the fetch reports byte progress so the UI
+    can show a real download bar. Returns False only if the fetch failed."""
     try:
         from camoufox.pkgman import installed_verstr
 
@@ -164,16 +165,8 @@ def ensure_camoufox_installed() -> bool:
             return True
     except Exception:
         pass
-    # not installed -> fetch (downloads the FF binary into the user cache)
-    try:
-        from camoufox.pkgman import CamoufoxFetcher
-
-        CamoufoxFetcher().install()
-        from camoufox.pkgman import installed_verstr
-
-        return bool(installed_verstr())
-    except Exception:
-        return False
+    # not installed -> fetch the FF binary into the user cache (with progress)
+    return download_camoufox(progress=progress)
 
 
 def installed_version() -> str:
@@ -208,16 +201,129 @@ def update_available(latest: str = "") -> bool:
     return bool(latest) and latest != have
 
 
-def download_camoufox() -> bool:
-    """Reinstall Camoufox to the latest upstream version. Returns False on
-    failure."""
-    try:
-        from camoufox.pkgman import CamoufoxFetcher, installed_verstr
+def download_camoufox(progress=None) -> bool:
+    """Download + install the latest Camoufox to the user cache. When `progress`
+    is given (progress(done_bytes, total_bytes)), the binary is fetched with a
+    visible byte/percent/ETA readout — the same first-run treatment fp-chromium
+    gets — instead of Camoufox's silent terminal-only download. Returns False on
+    failure. Resumable across dropped Tor circuits."""
+    if progress is None:
+        try:
+            from camoufox.pkgman import CamoufoxFetcher, installed_verstr
 
-        CamoufoxFetcher().install()
+            CamoufoxFetcher().install()
+            return bool(installed_verstr())
+        except Exception:
+            return False
+
+    import subprocess
+    import tempfile
+    import threading
+
+    # tell the UI we've started before any (slow, over-Tor) network call, so the
+    # bar appears immediately instead of after fetch_latest/HEAD round-trips
+    progress(0, 0)
+
+    try:
+        from camoufox.pkgman import (
+            INSTALL_DIR,
+            CamoufoxFetcher,
+            installed_verstr,
+            unzip,
+        )
+
+        f = CamoufoxFetcher()
+        f.fetch_latest()
+        url = f.url
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+        tmp.close()
+
+        # learn the total in the background so a slow HEAD never blocks the bar
+        total_box = {"v": 0}
+
+        def get_total() -> None:
+            total_box["v"] = _remote_size(url)
+
+        threading.Thread(target=get_total, daemon=True).start()
+
+        stop = threading.Event()
+
+        def watch() -> None:
+            while not stop.is_set():
+                try:
+                    done = os.path.getsize(tmp.name)
+                except OSError:
+                    done = 0
+                progress(done, total_box["v"])
+                stop.wait(0.5)
+
+        watcher = threading.Thread(target=watch, daemon=True)
+        watcher.start()
+
+        ok = False
+        try:
+            for _ in range(40):
+                rc = subprocess.run(
+                    [
+                        "curl", "-fsSL", "--connect-timeout", "30",
+                        "--speed-limit", "1024", "--speed-time", "30",
+                        "-C", "-", "-o", tmp.name, url,
+                    ],
+                    capture_output=True,
+                ).returncode
+                have = os.path.getsize(tmp.name) if os.path.exists(tmp.name) else 0
+                total = total_box["v"]
+                if (total and have >= total) or rc in (33, 36) or (rc == 0 and have > 0):
+                    ok = True
+                    break
+        finally:
+            stop.set()
+
+        if not ok:
+            return False
+
+        final_total = total_box["v"] or os.path.getsize(tmp.name)
+        progress(final_total, final_total)
+        # hand the downloaded zip to Camoufox's own extractor
+        import shutil
+
+        if INSTALL_DIR.exists():
+            shutil.rmtree(INSTALL_DIR)
+        INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+        with open(tmp.name, "rb") as zf:
+            unzip(zf, str(INSTALL_DIR), bar=False)
+        f.set_version()
+        try:
+            os.remove(tmp.name)
+        except OSError:
+            pass
         return bool(installed_verstr())
     except Exception:
         return False
+
+
+def _remote_size(url: str) -> int:
+    """Content-Length of the asset (last non-zero past GitHub's 302 redirect)."""
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["curl", "-fsSLI", "--connect-timeout", "15", "--max-time", "30", url],
+            capture_output=True, timeout=35,
+        )
+        size = 0
+        for line in out.stdout.decode("utf-8", "replace").splitlines():
+            if line.lower().startswith("content-length:"):
+                try:
+                    v = int(line.split(":", 1)[1].strip())
+                except ValueError:
+                    continue
+                if v > 0:
+                    size = v
+        return size
+    except Exception:
+        return 0
 
 
 def _child(cfg: dict, write_fd: int) -> None:

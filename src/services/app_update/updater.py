@@ -17,7 +17,7 @@ import time
 
 from ..engine.updater import is_newer
 
-APP_VERSION = "2.1.3"
+APP_VERSION = "2.1.0"
 APP_REPO = "amnesiadevelopment/persona"
 ASSET_NAME = "persona-x86_64.AppImage"
 
@@ -241,11 +241,40 @@ def download_update(url: str, timeout: int = 600, progress=None, size: int = 0) 
     return ""
 
 
+def verify_appimage_runs(path: str, timeout: int = 60) -> bool:
+    """True if `path` is a launchable AppImage. Runs it with --appimage-version
+    (handled by the AppImage runtime itself, before our app code) in a probe
+    subprocess; a runtime that can't mount/extract exits non-zero or errors,
+    which is exactly the 'bricked' failure we must catch BEFORE replacing the
+    live binary. Times out defensively."""
+    import subprocess
+
+    if not path or not os.path.isfile(path):
+        return False
+    try:
+        os.chmod(path, 0o755)
+    except OSError:
+        pass
+    try:
+        # --appimage-version is consumed by the AppImage type-2 runtime and
+        # returns 0 without ever starting the bundled app, so it's a cheap,
+        # side-effect-free 'does this AppImage even launch on this host' probe.
+        r = subprocess.run(
+            [path, "--appimage-version"],
+            capture_output=True, timeout=timeout,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
 def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
-    """Atomically replace the running AppImage with the staged download and
-    re-exec into the new version. Returns False (and leaves the staged file in
-    place so it can be retried) when not applicable or a step fails; `log` (if
-    given) explains why. Does not return on success (process is replaced)."""
+    """Replace the running AppImage with the staged download and re-exec into
+    it — but ONLY after proving the new binary actually launches, and with the
+    old binary kept as a backup that is restored if anything goes wrong. This
+    can never leave a non-launchable AppImage in place (the v2.1.3 brick). On
+    any failure it returns False, keeps the working version, and `log` explains
+    why. Does not return on success (process is replaced)."""
 
     def say(msg: str) -> None:
         if log is not None:
@@ -265,6 +294,24 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
     if not os.access(target_dir, os.W_OK | os.X_OK):
         say(f"Update: {target_dir} not writable, can't replace.")
         return False
+
+    # 1) Prove the new AppImage launches on THIS host before touching the live
+    #    one. If it can't, we abort and the user stays on the working version.
+    say("Update: verifying the new build…")
+    if not verify_appimage_runs(staged):
+        say("Update: the new build didn't launch here — keeping the current "
+            "version. The download is saved; it will be retried.")
+        return False
+
+    # 2) Back up the working binary, then swap in the verified new one. If the
+    #    swap fails, restore the backup so we never lose a launchable app.
+    backup = target + ".bak"
+    try:
+        shutil = __import__("shutil")
+        shutil.copy2(target, backup)
+    except Exception as e:
+        say(f"Update: couldn't back up the current version ({e}); aborting.")
+        return False
     try:
         f = os.open(staged, os.O_RDONLY)
         try:
@@ -274,23 +321,27 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
         os.replace(staged, target)  # same fs; old inode stays live while open
         os.chmod(target, 0o755)
     except Exception as e:
-        say(f"Update: replacing the AppImage failed: {e}")
-        return False  # keep `staged` for a retry; do NOT delete it
-    # Re-exec. Preserve extract-and-run mode if we were launched that way, so a
-    # missing-FUSE host (Whonix) still relaunches instead of silently failing.
-    args = [target]
-    cur = list(sys.argv[1:])
-    if "--appimage-extract-and-run" not in cur and not os.environ.get(
-        "APPIMAGE_EXTRACT_AND_RUN"
-    ):
-        os.environ["APPIMAGE_EXTRACT_AND_RUN"] = "1"
-    args += list(extra_args or cur)
+        say(f"Update: replacing the AppImage failed: {e}; restoring backup.")
+        try:
+            os.replace(backup, target)
+        except Exception:
+            pass
+        return False
+
+    # 3) Re-exec exactly as launched. (Never force APPIMAGE_EXTRACT_AND_RUN — on
+    #    a FUSE host it makes the runtime extract into a dir it can't and the
+    #    AppImage fails with "open dir error"; that bricked v2.1.3.)
+    args = [target] + list(extra_args or sys.argv[1:])
     try:
         sys.stdout.flush()
         sys.stderr.flush()
     except Exception:
         pass
     say("Update: restarting…")
+    try:
+        os.remove(backup)  # verified to launch; the backup is no longer needed
+    except OSError:
+        pass
     try:
         os.execv(target, args)
     except Exception as e:

@@ -83,6 +83,13 @@ class App:
         self._camoufox_latest: str = ""
         self._camoufox_busy = False
         self._camoufox_status: str = ""
+        self._camoufox_start_t = 0.0
+        self._camoufox_bar = ft.ProgressBar(
+            value=None, color=COLORS["accent"], bgcolor=COLORS["input_bg"], height=4,
+        )
+        self._camoufox_detail = ft.Text(
+            "", size=10, color=COLORS["text_sub"], font_family="monospace",
+        )
         self.engine_text = ft.Text(
             "…",
             size=12,
@@ -980,6 +987,23 @@ class App:
                     if self._engine_busy
                     else []
                 ),
+                *(
+                    [
+                        ft.Container(
+                            padding=ft.Padding.symmetric(horizontal=10),
+                            content=ft.Column(
+                                spacing=2,
+                                controls=[
+                                    ft.Container(height=4),
+                                    self._camoufox_bar,
+                                    self._camoufox_detail,
+                                ],
+                            ),
+                        )
+                    ]
+                    if self._camoufox_busy
+                    else []
+                ),
                 ft.Container(height=6),
             ]
 
@@ -1043,17 +1067,23 @@ class App:
             self._check_camoufox_async()
 
     def _update_camoufox_async(self) -> None:
+        import time
+
         from ..services.browser import camoufox_launch as cf
 
         self._camoufox_busy = True
         self._camoufox_status = "downloading…"
+        self._camoufox_start_t = time.monotonic()
+        self._camoufox_bar.value = None
+        self._camoufox_detail.value = "connecting…"
         self._refresh_sidebar()
         self._log(f"Downloading Camoufox {self._camoufox_latest}…")
 
         def work() -> None:
-            ok = cf.download_camoufox()
+            ok = cf.download_camoufox(progress=self._camoufox_progress_cb)
             self._camoufox_busy = False
             self._camoufox_status = ""
+            self._camoufox_detail.value = ""
             if ok:
                 self._camoufox_latest = ""
                 self._log(f"Camoufox updated to {cf.installed_version()}")
@@ -1390,10 +1420,15 @@ class App:
         from ..services.browser import camoufox_launch as cf
 
         def work() -> None:
+            import time
+
             if cf.installed_version():
                 return
             self._camoufox_busy = True
             self._camoufox_status = "downloading…"
+            self._camoufox_start_t = time.monotonic()
+            self._camoufox_bar.value = None
+            self._camoufox_detail.value = "connecting…"
             self._log("Camoufox engine not found — downloading…")
             self._refresh_sidebar()
             ok = False
@@ -1401,7 +1436,9 @@ class App:
             # circuit doesn't leave the (required) engine uninstalled
             for attempt in range(3):
                 try:
-                    ok = cf.ensure_camoufox_installed()
+                    ok = cf.ensure_camoufox_installed(
+                        progress=self._camoufox_progress_cb
+                    )
                 except Exception as e:
                     self._log(f"Camoufox download error: {e}")
                     ok = False
@@ -1411,6 +1448,7 @@ class App:
                     self._log("Camoufox download interrupted — retrying…")
             self._camoufox_busy = False
             self._camoufox_status = ""
+            self._camoufox_detail.value = ""
             if ok:
                 self._log(f"Camoufox installed: {cf.installed_version()}")
             else:
@@ -1418,6 +1456,20 @@ class App:
             self._refresh_sidebar()
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _camoufox_progress_cb(self, done: int, total: int) -> None:
+        import time
+
+        elapsed = max(time.monotonic() - self._camoufox_start_t, 0.001)
+        self._camoufox_bar.value = pf.fraction(done, total) if done > 0 else None
+        if done <= 0:
+            self._camoufox_status = "downloading…"
+        elif total > 0:
+            self._camoufox_status = f"{pf.percent(done, total)}%"
+        else:
+            self._camoufox_status = pf.fmt_mb(done)
+        self._camoufox_detail.value = pf.fmt_line(done, total, elapsed)
+        self._refresh_sidebar()
 
     def _download_engine_fresh(self) -> None:
         """First-run: no engine installed yet, fetch it before anything can

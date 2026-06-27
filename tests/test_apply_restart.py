@@ -1,11 +1,59 @@
-"""apply_and_restart must never fail silently: when the relaunch can't happen
-it has to explain why (so the Activity Log shows it) and must leave the staged
-file in place so the 'restart to update' button can retry. Regression for the
-'download hit 100% but nothing restarted and there was no hint why' bug."""
+"""The self-update must be unbrickable: it verifies the new AppImage actually
+launches BEFORE replacing the live one, keeps a backup it restores on failure,
+and never deletes the staged file when it bails. Regression for v2.1.3, which
+replaced the running AppImage with one that wouldn't start ("open dir error")
+and left the app unopenable."""
 
 import os
 
 import src.services.app_update.updater as au
+
+
+def _stub_target(monkeypatch, tmp_path):
+    target = tmp_path / "persona.AppImage"
+    target.write_bytes(b"old")
+    staged = tmp_path / "p.AppImage.part"
+    staged.write_bytes(b"new")
+    monkeypatch.setattr(au, "installed_appimage_path", lambda: str(target))
+    return target, staged
+
+
+def test_aborts_and_keeps_working_version_when_new_build_wont_launch(
+    monkeypatch, tmp_path
+):
+    target, staged = _stub_target(monkeypatch, tmp_path)
+    # the new build fails the launch probe (the v2.1.3 brick scenario)
+    monkeypatch.setattr(au, "verify_appimage_runs", lambda p, **k: False)
+    # replace/execv must never be reached
+    monkeypatch.setattr(
+        au.os, "replace", lambda *a: (_ for _ in ()).throw(AssertionError("replaced!"))
+    )
+    msgs = []
+    ok = au.apply_and_restart(str(staged), log=msgs.append)
+    assert ok is False
+    assert target.read_bytes() == b"old"  # untouched
+    assert staged.exists()  # saved for retry
+    assert any("didn't launch" in m.lower() for m in msgs)
+
+
+def test_restores_backup_when_replace_fails(monkeypatch, tmp_path):
+    target, staged = _stub_target(monkeypatch, tmp_path)
+    monkeypatch.setattr(au, "verify_appimage_runs", lambda p, **k: True)
+    real_replace = au.os.replace
+    calls = {"n": 0}
+
+    def replace(src, dst):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("Text file busy")  # the staged->target swap fails
+        return real_replace(src, dst)  # the backup->target restore succeeds
+
+    monkeypatch.setattr(au.os, "replace", replace)
+    msgs = []
+    ok = au.apply_and_restart(str(staged), log=msgs.append)
+    assert ok is False
+    assert target.read_bytes() == b"old"  # restored from backup
+    assert any("restoring backup" in m.lower() for m in msgs)
 
 
 def test_logs_and_keeps_staged_when_not_appimage(monkeypatch, tmp_path):
@@ -16,35 +64,20 @@ def test_logs_and_keeps_staged_when_not_appimage(monkeypatch, tmp_path):
     ok = au.apply_and_restart(str(staged), log=msgs.append)
     assert ok is False
     assert any("AppImage" in m for m in msgs)
-    assert staged.exists()  # kept for a retry, not deleted
-
-
-def test_logs_and_keeps_staged_when_replace_fails(monkeypatch, tmp_path):
-    target = tmp_path / "persona.AppImage"
-    target.write_bytes(b"old")
-    staged = tmp_path / "p.AppImage.part"
-    staged.write_bytes(b"new")
-    monkeypatch.setattr(au, "installed_appimage_path", lambda: str(target))
-
-    def boom(*a, **k):
-        raise OSError("Text file busy")
-
-    monkeypatch.setattr(au.os, "replace", boom)
-    msgs = []
-    ok = au.apply_and_restart(str(staged), log=msgs.append)
-    assert ok is False
-    assert any("failed" in m.lower() for m in msgs)
-    assert staged.exists()  # NOT removed, so the user can retry the restart
+    assert staged.exists()
 
 
 def test_relaunch_failure_is_logged(monkeypatch, tmp_path):
-    target = tmp_path / "persona.AppImage"
-    target.write_bytes(b"old")
-    staged = tmp_path / "p.AppImage.part"
-    staged.write_bytes(b"new")
-    monkeypatch.setattr(au, "installed_appimage_path", lambda: str(target))
-    monkeypatch.setattr(au.os, "execv", lambda *a: (_ for _ in ()).throw(OSError("no fuse")))
+    target, staged = _stub_target(monkeypatch, tmp_path)
+    monkeypatch.setattr(au, "verify_appimage_runs", lambda p, **k: True)
+    monkeypatch.setattr(
+        au.os, "execv", lambda *a: (_ for _ in ()).throw(OSError("no fuse"))
+    )
     msgs = []
     ok = au.apply_and_restart(str(staged), log=msgs.append)
     assert ok is False
     assert any("relaunch failed" in m.lower() for m in msgs)
+
+
+def test_verify_appimage_runs_false_for_missing_file(tmp_path):
+    assert au.verify_appimage_runs(str(tmp_path / "nope")) is False
