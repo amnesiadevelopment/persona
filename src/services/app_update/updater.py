@@ -17,7 +17,7 @@ import time
 
 from ..engine.updater import is_newer
 
-APP_VERSION = "2.1.4"
+APP_VERSION = "2.1.5"
 APP_REPO = "amnesiadevelopment/persona"
 ASSET_NAME = "persona-x86_64.AppImage"
 
@@ -368,6 +368,17 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
         os.remove(backup)  # verified to launch; the backup is no longer needed
     except OSError:
         pass
+    # execv inherits the current working directory. If we were launched from a
+    # dir that no longer exists after the swap (e.g. the old AppImage's mount
+    # point), the relaunched process can't getcwd() and dies at startup with
+    # "Getting current working directory failed". Move to a directory that is
+    # guaranteed to exist first.
+    for safe in (os.path.expanduser("~"), os.path.dirname(target), "/"):
+        try:
+            os.chdir(safe)
+            break
+        except OSError:
+            continue
     try:
         os.execv(target, args)
     except Exception as e:

@@ -228,6 +228,7 @@ def download_camoufox(progress=None, log=None) -> bool:
 
     import subprocess
     import threading
+    import time
 
     # tell the UI we've started before any (slow, over-Tor) network call, so the
     # bar appears immediately instead of after fetch_latest/HEAD round-trips
@@ -257,8 +258,22 @@ def download_camoufox(progress=None, log=None) -> bool:
 
         say("Camoufox: contacting release server over Tor…")
         f = CamoufoxFetcher()
-        f.fetch_latest()
-        url = f.url
+        # fetch_latest() does a requests.get(timeout=20) to the GitHub API, which
+        # frequently times out over Tor — and that exception used to bubble up
+        # and abort the whole download silently. Retry it patiently so a slow or
+        # rebuilding Tor circuit eventually gets through instead of giving up.
+        url = ""
+        for attempt in range(8):
+            try:
+                f.fetch_latest()
+                url = f.url
+                break
+            except Exception as e:
+                say(f"Camoufox: release lookup failed (Tor), retrying… ({e})")
+                time.sleep(5)
+        if not url:
+            say("Camoufox: couldn't reach the release server — will retry later.")
+            return False
         say("Camoufox: downloading engine…")
 
         # Download to a DETERMINISTIC path next to the install dir, not a random
@@ -295,6 +310,41 @@ def download_camoufox(progress=None, log=None) -> bool:
         watcher.start()
         done_connect.set()  # watcher now drives progress; stop the connect ticker
 
+        # A partial left by a previous run is only safe to resume if it's a real,
+        # not-yet-complete prefix of the asset. Drop it up front when it's
+        # bigger than the asset, or its bytes aren't a zip header — otherwise
+        # curl -C - resumes a corrupt file forever (the "never downloads after a
+        # restart" case). A clean prefix (right magic, smaller than total) stays.
+        def _partial_is_bad() -> bool:
+            try:
+                size = os.path.getsize(tmp.name)
+            except OSError:
+                return False
+            if size == 0:
+                return True
+            tv = total_box["v"]
+            if tv and size > tv:
+                return True
+            try:
+                with open(tmp.name, "rb") as fh:
+                    magic = fh.read(2)
+                return magic != b"PK"  # zip files start with 'PK'
+            except OSError:
+                return True
+
+        if os.path.exists(tmp.name):
+            # total may still be resolving; wait briefly for it before judging
+            for _ in range(6):
+                if total_box["v"]:
+                    break
+                time.sleep(0.5)
+            if _partial_is_bad():
+                say("Camoufox: discarding a corrupt partial — starting fresh.")
+                try:
+                    os.remove(tmp.name)
+                except OSError:
+                    pass
+
         ok = False
         try:
             for _ in range(40):
@@ -302,13 +352,26 @@ def download_camoufox(progress=None, log=None) -> bool:
                     [
                         "curl", "-fsSL", "--connect-timeout", "30",
                         "--speed-limit", "1024", "--speed-time", "30",
+                        # cap a single attempt so a wedged transfer can't hang
+                        # the loop forever; the outer loop just resumes it
+                        "--max-time", "1800",
                         "-C", "-", "-o", tmp.name, url,
                     ],
                     capture_output=True,
                 ).returncode
                 have = os.path.getsize(tmp.name) if os.path.exists(tmp.name) else 0
                 total = total_box["v"]
-                if (total and have >= total) or rc in (33, 36) or (rc == 0 and have > 0):
+                # Complete only when we actually have the whole asset. curl's
+                # 33/36 (HTTP 416) means "complete" ONLY if the file is the full
+                # size — on a leftover partial it also returns 33/36, and
+                # treating that as done would feed a broken zip to the extractor.
+                if total and have >= total:
+                    ok = True
+                    break
+                if rc in (33, 36) and total and have == total:
+                    ok = True
+                    break
+                if rc == 0 and have > 0 and not total:
                     ok = True
                     break
         finally:
