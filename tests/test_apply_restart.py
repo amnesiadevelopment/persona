@@ -81,3 +81,42 @@ def test_relaunch_failure_is_logged(monkeypatch, tmp_path):
 
 def test_verify_appimage_runs_false_for_missing_file(tmp_path):
     assert au.verify_appimage_runs(str(tmp_path / "nope")) is False
+
+
+# --- real-AppImage probe checks (skipped where no real AppImage is present,
+#     e.g. CI; they run in dev-WS where a real type-2 AppImage exists) ---
+
+import os  # noqa: E402
+
+import pytest  # noqa: E402
+
+_REAL = next(
+    (
+        p
+        for p in (
+            "/home/user/.persona/engine/fpchrome.AppImage",
+            "/tmp/persona-flet.AppImage",
+        )
+        if os.path.isfile(p)
+    ),
+    None,
+)
+
+
+@pytest.mark.skipif(_REAL is None, reason="no real AppImage available")
+def test_probe_accepts_a_real_launchable_appimage():
+    assert au.verify_appimage_runs(_REAL, settle=4.0) is True
+
+
+@pytest.mark.skipif(_REAL is None, reason="no real AppImage available")
+def test_probe_rejects_a_broken_mount(monkeypatch, tmp_path):
+    # reproduce the v2.1.3 brick: a working AppImage whose runtime can neither
+    # FUSE-mount nor extract (unwritable TMPDIR) exits 127 with "open dir error"
+    nd = tmp_path / "nd"
+    nd.mkdir()
+    nd.chmod(0)
+    monkeypatch.setenv("TMPDIR", str(nd / "x"))
+    try:
+        assert au.verify_appimage_runs(_REAL, settle=4.0) is False
+    finally:
+        nd.chmod(0o755)

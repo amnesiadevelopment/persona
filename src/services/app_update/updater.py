@@ -241,12 +241,21 @@ def download_update(url: str, timeout: int = 600, progress=None, size: int = 0) 
     return ""
 
 
-def verify_appimage_runs(path: str, timeout: int = 60) -> bool:
-    """True if `path` is a launchable AppImage. Runs it with --appimage-version
-    (handled by the AppImage runtime itself, before our app code) in a probe
-    subprocess; a runtime that can't mount/extract exits non-zero or errors,
-    which is exactly the 'bricked' failure we must catch BEFORE replacing the
-    live binary. Times out defensively."""
+def verify_appimage_runs(path: str, settle: float = 4.0, timeout: int = 30) -> bool:
+    """True if `path` actually launches on THIS host. Starts the AppImage the
+    exact way a user does — no special flag — and watches it: a launch failure
+    (the runtime can't FUSE-mount and can't extract: "open dir error"/"create
+    mount dir error", exit 127, or a corrupt-squashfs segfault) dies within a
+    fraction of a second, so an early non-zero exit means broken. If it's still
+    alive after `settle` seconds it launched fine — we kill the probe and report
+    healthy.
+
+    A flag like --appimage-version is NOT enough: it's answered by the runtime
+    before the app's real mount/launch path, so it returns 0 even on an AppImage
+    that then fails to start (this is exactly what let v2.1.3 brick the app).
+    Verified in dev-WS against real type-2 AppImages, both healthy and broken.
+    """
+    import signal
     import subprocess
 
     if not path or not os.path.isfile(path):
@@ -255,17 +264,34 @@ def verify_appimage_runs(path: str, timeout: int = 60) -> bool:
         os.chmod(path, 0o755)
     except OSError:
         pass
+    env = dict(os.environ)
+    env.setdefault("DISPLAY", ":0")
     try:
-        # --appimage-version is consumed by the AppImage type-2 runtime and
-        # returns 0 without ever starting the bundled app, so it's a cheap,
-        # side-effect-free 'does this AppImage even launch on this host' probe.
-        r = subprocess.run(
-            [path, "--appimage-version"],
-            capture_output=True, timeout=timeout,
+        proc = subprocess.Popen(
+            [path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            env=env,
+            start_new_session=True,
         )
-        return r.returncode == 0
     except Exception:
         return False
+    deadline = time.time() + min(settle, timeout)
+    while time.time() < deadline:
+        rc = proc.poll()
+        if rc is not None:
+            return rc == 0  # exited before settling -> launch failure
+        time.sleep(0.2)
+    # still alive after settling = it launched; kill the throwaway probe
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    return True
 
 
 def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
