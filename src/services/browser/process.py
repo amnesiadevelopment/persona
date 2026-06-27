@@ -33,8 +33,11 @@ logger = get_logger("browser.process")
 
 
 from ...core.config import ENGINE_DIR
+from ...core import platform as _platform
 
-FINGERPRINT_CHROMIUM = os.path.join(ENGINE_DIR, "fpchrome.AppImage")
+FINGERPRINT_CHROMIUM = os.path.join(
+    ENGINE_DIR, _platform.fingerprint_chromium_filename()
+)
 
 
 def _proxy_arg(proxy_url: str | None) -> tuple[str | None, ProxyBridge | None]:
@@ -99,7 +102,8 @@ def _spawn_camoufox(profile: Profile, profile_dir: str):
     """
     from .camoufox_launch import ensure_camoufox_installed, spawn
 
-    os.environ.setdefault("DISPLAY", ":0")
+    if _platform.IS_LINUX:
+        os.environ.setdefault("DISPLAY", ":0")
     store = ProxyStore()
     proxy_url = store.resolve(profile.proxy) or ""
     proxy = store.get(profile.proxy) if profile.proxy else None
@@ -107,8 +111,10 @@ def _spawn_camoufox(profile: Profile, profile_dir: str):
     tz = (proxy.timezone or _timezone_for(proxy.country_code)) if proxy else ""
 
     # Give the Camoufox window the profile's name + a fox icon in the taskbar,
-    # the same way the chromium path labels its windows.
-    write_window_entry(profile.name, icon="firefox")
+    # the same way the chromium path labels its windows. (.desktop entries are
+    # a Linux thing; Win/Mac label windows by title only.)
+    if _platform.supports_linux_desktop_integration():
+        write_window_entry(profile.name, icon="firefox")
 
     cfg = {
         "os_type": profile.os_type,
@@ -140,7 +146,8 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
         profile.bookmark_pool, profile.bookmarks
     )
     seed_bookmarks(profile_dir, chosen)
-    write_window_entry(profile.name)
+    if _platform.supports_linux_desktop_integration():
+        write_window_entry(profile.name)
     title_ext = build_title_extension(
         profile.name, os.path.join(profile_dir, ".persona-title-ext")
     )
@@ -239,17 +246,18 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
     if is_mobile:
         engine_platform = "macos" if profile.os_type == "ios" else "linux"
 
-    args = [
-        FINGERPRINT_CHROMIUM,
-        "--appimage-extract-and-run",
+    args = [FINGERPRINT_CHROMIUM]
+    # --appimage-extract-and-run only applies to the Linux AppImage engine; the
+    # Windows .exe / macOS .app are launched directly.
+    if _platform.IS_LINUX:
+        args.append("--appimage-extract-and-run")
+    args += [
         f"--user-data-dir={profile_dir}",
         f"--fingerprint={profile.fingerprint_seed}",
         f"--fingerprint-platform={engine_platform}",
         "--fingerprint-brand=Chrome",
         f"--lang={lang}",
         f"--accept-lang={lang},{lang.split('-')[0]}",
-        # Wayland app_id, so the taskbar shows which persona each window is.
-        f"--class=persona-{profile.name}",
         f"--load-extension={','.join(extensions)}",
         # Software GL (SwiftShader) keeps the GPU process alive so the
         # fingerprint WebGL spoofer populates a believable vendor/renderer.
@@ -265,6 +273,11 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
         "--hide-crash-restore-bubble",
         "--force-dark-mode",
     ]
+
+    # Wayland app_id (taskbar label/icon per persona) is an X11/Wayland concept;
+    # only pass it on Linux.
+    if _platform.supports_linux_desktop_integration():
+        args.append(f"--class=persona-{profile.name}")
 
     if is_mobile and preset is not None:
         # Drive the real device's UA and a window sized to its CSS viewport, so
@@ -296,14 +309,17 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
         args.append("--dns-prefetch-disable")
 
     env = os.environ.copy()
-    env.setdefault("DISPLAY", ":0")
-    env["FONTCONFIG_FILE"] = build_font_config(profile_dir, engine_platform)
+    # X11 DISPLAY and fontconfig are Linux concepts; on Win/Mac the OS supplies
+    # fonts and there's no DISPLAY to set.
+    if _platform.IS_LINUX:
+        env.setdefault("DISPLAY", ":0")
+        env["FONTCONFIG_FILE"] = build_font_config(profile_dir, engine_platform)
 
     proc = subprocess.Popen(
         args,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        cwd=pathlib.Path.cwd(),
+        cwd=os.path.expanduser("~"),
         env=env,
         text=True,
         encoding="utf-8",
