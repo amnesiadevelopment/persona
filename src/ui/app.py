@@ -146,6 +146,7 @@ class App:
         self._refresh_engine_text()
         if app_settings.is_onboarding_done():
             self._check_engine_async()
+            self._ensure_camoufox_async()
         else:
             self._show_onboarding()
         self._check_app_update_async()
@@ -1311,6 +1312,8 @@ class App:
             # if the operator skipped the download, fetch in the background
             if not engine.is_installed() and not self._engine_busy:
                 self._check_engine_async()
+            # both engines are required: pull Camoufox too
+            self._ensure_camoufox_async()
             self._refresh_engine_text()
             self._safe_update()
 
@@ -1365,6 +1368,43 @@ class App:
             if self._engine_update_available():
                 self._log(f"Engine update available: {tag}")
             self._refresh_engine_text()
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _ensure_camoufox_async(self) -> None:
+        """Both engines are required, not optional. If the Camoufox binary
+        isn't present (fresh install, or an update that added the engine to an
+        install that only had chromium), fetch it in the background with a
+        visible status — the same first-run treatment fp-chromium gets."""
+        from ..services.browser import camoufox_launch as cf
+
+        def work() -> None:
+            if cf.installed_version():
+                return
+            self._camoufox_busy = True
+            self._camoufox_status = "downloading…"
+            self._log("Camoufox engine not found — downloading…")
+            self._refresh_sidebar()
+            ok = False
+            # the binary is ~150MB over Tor; retry a few times so a dropped
+            # circuit doesn't leave the (required) engine uninstalled
+            for attempt in range(3):
+                try:
+                    ok = cf.ensure_camoufox_installed()
+                except Exception as e:
+                    self._log(f"Camoufox download error: {e}")
+                    ok = False
+                if ok:
+                    break
+                if attempt < 2:
+                    self._log("Camoufox download interrupted — retrying…")
+            self._camoufox_busy = False
+            self._camoufox_status = ""
+            if ok:
+                self._log(f"Camoufox installed: {cf.installed_version()}")
+            else:
+                self._log("Camoufox download failed — will retry on next start")
+            self._refresh_sidebar()
 
         threading.Thread(target=work, daemon=True).start()
 
