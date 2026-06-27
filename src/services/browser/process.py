@@ -90,34 +90,37 @@ def _timezone_for(country_code: str) -> str:
 
 
 
-def _spawn_camoufox(profile: Profile, profile_dir: str) -> subprocess.Popen:
-    """Launch the Camoufox (Firefox/Juggler) engine for this profile as a
-    subprocess, mapping the profile onto Camoufox's options."""
+def _spawn_camoufox(profile: Profile, profile_dir: str):
+    """Launch the Camoufox (Firefox/Juggler) engine for this profile.
+
+    Forks the current process (NOT `sys.executable -m`, which breaks on the
+    flet-AppImage's embedded Python with 'bad magic number'); auto-fetches the
+    Camoufox Firefox binary on first use. Returns a Popen-compatible handle.
+    """
+    from .camoufox_launch import ensure_camoufox_installed, spawn
+
+    os.environ.setdefault("DISPLAY", ":0")
     store = ProxyStore()
     proxy_url = store.resolve(profile.proxy) or ""
+    proxy = store.get(profile.proxy) if profile.proxy else None
+    lang = _locale_for(proxy.country_code) if proxy else "en-US"
+    tz = (proxy.timezone or _timezone_for(proxy.country_code)) if proxy else ""
+
+    # Give the Camoufox window the profile's name + a fox icon in the taskbar,
+    # the same way the chromium path labels its windows.
+    write_window_entry(profile.name, icon="firefox")
+
     cfg = {
         "os_type": profile.os_type,
         "proxy_url": proxy_url,
         "start_url": "https://www.google.com",
+        "profile_name": profile.name,
+        "search_engine": profile.search_engine,
+        "locale": lang,
+        "timezone": tz,
+        "_needs_fetch": not ensure_camoufox_installed(),
     }
-    cfg_path = os.path.join(profile_dir, ".camoufox.json")
-    with open(cfg_path, "w", encoding="utf-8") as f:
-        import json as _json
-
-        _json.dump(cfg, f)
-    env = os.environ.copy()
-    env.setdefault("DISPLAY", ":0")
-    return subprocess.Popen(
-        [sys.executable, "-m", "src.services.browser.camoufox_runner", cfg_path],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        cwd=pathlib.Path.cwd(),
-        env=env,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        bufsize=1,
-    )
+    return spawn(cfg)
 
 
 def spawn_browser(profile: Profile) -> subprocess.Popen:

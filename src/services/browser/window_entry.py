@@ -19,12 +19,13 @@ def _safe_filename(profile_name: str) -> str:
     return f"persona-{safe}.desktop"
 
 
-def write_window_entry(profile_name: str) -> str:
+def write_window_entry(profile_name: str, icon: str = "chromium") -> str:
     """Write a desktop entry so the Wayland taskbar shows the browser window
-    with the chromium icon and the profile name instead of a generic fallback.
+    with the engine icon and the profile name instead of a generic fallback.
 
     labwc/lxqt-panel matches a toplevel's app_id against StartupWMClass to pick
     the icon and label; the browser is launched with --class=persona-<name>.
+    `icon` is the engine's icon-theme name (chromium / firefox).
     """
     entry_dir = _entry_dir()
     entry_dir.mkdir(parents=True, exist_ok=True)
@@ -33,7 +34,7 @@ def write_window_entry(profile_name: str) -> str:
         "[Desktop Entry]\n"
         "Type=Application\n"
         f"Name={profile_name}\n"
-        "Icon=chromium\n"
+        f"Icon={icon}\n"
         "Terminal=false\n"
         "NoDisplay=true\n"
         f"StartupWMClass={app_id_for(profile_name)}\n"

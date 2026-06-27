@@ -32,6 +32,7 @@ def open_profile_dialog(
     on_import_cookies_file: Callable[[], object] | None = None,
     on_export_cookies_file: Callable[[], object] | None = None,
     on_bulk: Callable[[], None] | None = None,
+    on_add_proxy: Callable[[], None] | None = None,
 ) -> None:
     proxy_names = proxy_names or []
     pool_names = pool_names or []
@@ -68,6 +69,23 @@ def open_profile_dialog(
         label_style=ft.TextStyle(color=COLORS["text_sub"], font_family=MONO),
         text_style=ft.TextStyle(font_family=MONO),
     )
+
+    def go_add_proxy(_: ft.ControlEvent) -> None:
+        page.pop_dialog()
+        if on_add_proxy is not None:
+            on_add_proxy()
+
+    proxy_row_controls: list[ft.Control] = [proxy_dropdown]
+    if on_add_proxy is not None:
+        proxy_row_controls.append(
+            ft.OutlinedButton(
+                "[ + proxy ]",
+                style=OUTLINE_STYLE,
+                height=48,
+                on_click=go_add_proxy,
+                tooltip="Add a new proxy on the network page",
+            )
+        )
     proxy_hint = ft.Text(
         "manage proxies on the network page",
         size=11,
@@ -79,9 +97,10 @@ def open_profile_dialog(
     )
     os_dropdown.expand = True
 
-    engine_dropdown = build_engine_dropdown(
-        getattr(profile, "engine", "chromium") if profile is not None else "chromium",
+    engine_value = (
+        getattr(profile, "engine", "chromium") if profile is not None else "chromium"
     )
+    engine_dropdown = build_engine_dropdown(engine_value)
     engine_dropdown.expand = True
 
     current_search = (
@@ -238,8 +257,8 @@ def open_profile_dialog(
         label="Notes",
         value=current_notes,
         multiline=True,
-        min_lines=2,
-        max_lines=4,
+        min_lines=1,
+        max_lines=2,
         **DLG_FIELD_KWARGS,
     )
 
@@ -304,7 +323,11 @@ def open_profile_dialog(
                     name_error,
                     ft.Row(controls=[tags_field]),
                     ft.Row(controls=[notes_field]),
-                    ft.Row(controls=[proxy_dropdown]),
+                    ft.Row(
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=proxy_row_controls,
+                    ),
                     proxy_hint,
                     ft.Row(controls=[os_dropdown]),
                     ft.Row(controls=[engine_dropdown]),
@@ -318,27 +341,32 @@ def open_profile_dialog(
                 ],
             ),
         ),
+        actions_alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
         actions=[
-            ft.TextButton(
-                "Cancel",
-                style=ft.ButtonStyle(color=COLORS["text_sub"]),
-                on_click=lambda _: page.pop_dialog(),
-            ),
-            *(
-                [
-                    ft.OutlinedButton(
-                        "[ bulk ]",
-                        style=OUTLINE_STYLE,
-                        on_click=lambda _: (page.pop_dialog(), on_bulk()),
-                    )
-                ]
+            (
+                ft.OutlinedButton(
+                    "[ bulk ]",
+                    style=OUTLINE_STYLE,
+                    on_click=lambda _: (page.pop_dialog(), on_bulk()),
+                )
                 if on_bulk is not None
-                else []
+                else ft.Container()
             ),
-            ft.Button(
-                save_label,
-                style=ACCENT_STYLE,
-                on_click=on_submit,
+            ft.Row(
+                spacing=8,
+                tight=True,
+                controls=[
+                    ft.TextButton(
+                        "Cancel",
+                        style=ft.ButtonStyle(color=COLORS["text_sub"]),
+                        on_click=lambda _: page.pop_dialog(),
+                    ),
+                    ft.Button(
+                        save_label,
+                        style=ACCENT_STYLE,
+                        on_click=on_submit,
+                    ),
+                ],
             ),
         ],
     )

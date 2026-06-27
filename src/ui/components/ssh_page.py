@@ -7,14 +7,16 @@ from ..theme.colors import COLORS
 from ..theme.styles import ACCENT_STYLE, MONO
 
 
-def build_ssh_page(
+def build_ssh_section(
     hosts: list[SSHHost],
     on_add: Callable,
     on_edit: Callable[[str], None],
     on_delete: Callable[[str], None],
     on_run: Callable[[str, str], tuple[int, str, str]],
-) -> ft.Container:
-    """SSH page: saved hosts + a command runner whose output is shown inline.
+) -> tuple[ft.Control, ft.Control | None]:
+    """SSH controls for the connect page. Returns (section, footer): `section`
+    is the main block, `footer` is the empty-state hint to pin at the bottom
+    of the page (None when hosts exist, so the section just scrolls inline).
 
     on_run(host_name, command) -> (exit, stdout, stderr), already routed through
     the host's profile proxy by the caller.
@@ -92,10 +94,6 @@ def build_ssh_page(
         ],
     )
 
-    host_rows: list[ft.Control] = (
-        [_host_row(h, on_edit, on_delete) for h in hosts] if hosts else [_empty()]
-    )
-
     top = ft.Row(
         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
         vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -114,19 +112,22 @@ def build_ssh_page(
         ],
     )
 
-    return ft.Container(
-        padding=20,
-        content=ft.Column(
-            spacing=16,
-            scroll=ft.ScrollMode.AUTO,
-            controls=[
-                top,
-                runner,
-                ft.Divider(height=12, color=COLORS["border"]),
-                ft.Column(spacing=8, controls=host_rows),
-            ],
-        ),
+    if not hosts:
+        # Nothing to run against yet: section is just the header; the hint is
+        # returned separately so the page can pin it to the bottom as a footer.
+        return top, _empty()
+
+    host_rows = [_host_row(h, on_edit, on_delete) for h in hosts]
+    section = ft.Column(
+        spacing=16,
+        controls=[
+            top,
+            runner,
+            ft.Divider(height=12, color=COLORS["border"]),
+            ft.Column(spacing=8, controls=host_rows),
+        ],
     )
+    return section, None
 
 
 def _host_row(

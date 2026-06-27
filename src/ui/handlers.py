@@ -33,6 +33,7 @@ class AppHandlers:
         get_bookmarks: Callable[[], list] = lambda: [],
         import_cookies_file=None,
         export_cookies_file=None,
+        open_add_proxy: Callable[[], None] | None = None,
     ) -> None:
         self._pm = pm
         self._bl = bl
@@ -48,6 +49,7 @@ class AppHandlers:
         self._get_bookmarks = get_bookmarks
         self._import_cookies_file = import_cookies_file
         self._export_cookies_file = export_cookies_file
+        self._open_add_proxy = open_add_proxy
 
     def on_launch(self, name: str) -> None:
         launch_or_stop(name, self._pm, self._bl, self._state, self._log)
@@ -73,6 +75,7 @@ class AppHandlers:
             all_bookmarks=self._get_bookmarks(),
             import_cookies_file=self._import_cookies_file,
             export_cookies_file=self._export_cookies_file,
+            on_add_proxy=self._open_add_proxy,
         )
 
     def open_add_dialog(self) -> None:
@@ -88,6 +91,7 @@ class AppHandlers:
             pool_names=self._get_pool_names(),
             all_bookmarks=self._get_bookmarks(),
             on_bulk=self.open_bulk_dialog,
+            on_add_proxy=self._open_add_proxy,
         )
 
     def open_bulk_dialog(self) -> None:

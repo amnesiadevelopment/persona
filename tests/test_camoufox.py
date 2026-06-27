@@ -3,7 +3,7 @@ import importlib
 import pytest
 
 from src.models.profile import Profile
-from src.services.browser import camoufox_runner as R
+from src.services.browser import camoufox_launch as R
 
 
 def test_profile_engine_default_chromium():

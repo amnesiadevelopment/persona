@@ -36,6 +36,7 @@ def edit_profile(
     all_bookmarks: list[Bookmark] | None = None,
     import_cookies_file=None,
     export_cookies_file=None,
+    on_add_proxy: Callable[[], None] | None = None,
 ) -> None:
     profile = pm.profiles.get(name)
     if not profile:
@@ -83,6 +84,7 @@ def edit_profile(
             if export_cookies_file is not None
             else None
         ),
+        on_add_proxy=on_add_proxy,
     )
 
 
@@ -96,6 +98,7 @@ def add_profile(
     pool_names: list[str] | None = None,
     all_bookmarks: list[Bookmark] | None = None,
     on_bulk: Callable[[], None] | None = None,
+    on_add_proxy: Callable[[], None] | None = None,
 ) -> None:
     def on_save(
         name: str,
@@ -125,6 +128,7 @@ def add_profile(
         pool_names=pool_names,
         all_bookmarks=all_bookmarks,
         on_bulk=on_bulk,
+        on_add_proxy=on_add_proxy,
     )
 
 

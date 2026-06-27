@@ -99,6 +99,39 @@ def _proxy_indicator(
     )
 
 
+def _notes_field(profile, on_notes_change):
+    """Inline, editable notes, vertically centred in the row and dim so it
+    doesn't draw the eye. Saved on blur or Enter — no dialog needed. A fixed
+    width keeps the notes aligned in a column across every card."""
+    field = ft.TextField(
+        value=getattr(profile, "notes", ""),
+        hint_text="notes…",
+        text_size=12,
+        text_align=ft.TextAlign.CENTER,
+        text_style=ft.TextStyle(
+            font_family=MONO, italic=True, color=COLORS["text_dim"]
+        ),
+        hint_style=ft.TextStyle(color=COLORS["text_dim"], font_family=MONO),
+        color=COLORS["text_dim"],
+        border=ft.InputBorder.NONE,
+        content_padding=ft.Padding.symmetric(horizontal=8, vertical=4),
+        multiline=False,
+        on_blur=(
+            (lambda e, n=profile.name: on_notes_change(n, e.control.value or ""))
+            if on_notes_change
+            else None
+        ),
+        on_submit=(
+            (lambda e, n=profile.name: on_notes_change(n, e.control.value or ""))
+            if on_notes_change
+            else None
+        ),
+    )
+    # Fixed width, centred by the overlay row, so notes line up down the
+    # middle of every card regardless of name/button widths.
+    return ft.Container(width=260, content=field)
+
+
 def build_profile_card(
     profile: Profile,
     is_loading: bool,
@@ -111,9 +144,16 @@ def build_profile_card(
     proxy: Proxy | None = None,
     on_check_proxy: Callable[[str], None] | None = None,
     proxy_checking: bool = False,
+    on_notes_change: Callable[[str, str], None] | None = None,
 ) -> ft.Container:
     """Build a single profile row as a terminal-style line."""
-    launch_btn = build_launch_button(profile.name, is_loading, is_running, on_launch)
+    launch_btn = build_launch_button(
+        profile.name,
+        is_loading,
+        is_running,
+        on_launch,
+        engine=getattr(profile, "engine", "chromium"),
+    )
     action_buttons = _build_action_buttons(profile.name, on_edit, on_delete)
     select_box = _build_select_box(profile.name, is_selected, on_select)
     indicator = _proxy_indicator(proxy, on_check_proxy, proxy_checking)
@@ -131,71 +171,60 @@ def build_profile_card(
     if is_running:
         meta = f"{meta} · running"
 
+    left_block = ft.Row(
+        spacing=14,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        controls=[
+            select_box,
+            indicator,
+            ft.Column(
+                spacing=3,
+                alignment=ft.MainAxisAlignment.CENTER,
+                controls=[
+                    ft.Text(
+                        profile.name,
+                        size=15,
+                        weight=ft.FontWeight.BOLD,
+                        color=COLORS["text_main"],
+                        font_family=MONO,
+                    ),
+                    *([_tag_chips(profile.tags)] if profile.tags else []),
+                    ft.Text(
+                        meta,
+                        size=11,
+                        color=COLORS["accent"] if is_running else COLORS["text_sub"],
+                        font_family=MONO,
+                    ),
+                ],
+            ),
+        ],
+    )
+    right_block = ft.Row(
+        spacing=6,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        controls=[launch_btn, *action_buttons],
+    )
+
+    # The left and right blocks pin to the edges; notes are layered on top in
+    # their own centred row so they sit dead-centre of the whole card, not
+    # centred in the gap between the two blocks.
+    row = ft.Row(
+        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        controls=[left_block, right_block],
+    )
+    notes_overlay = ft.Row(
+        alignment=ft.MainAxisAlignment.CENTER,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        controls=[_notes_field(profile, on_notes_change)],
+    )
+
     return ft.Container(
         border_radius=3,
         border=ft.Border.all(1, border_color),
         bgcolor=COLORS["card_bg"],
         padding=ft.Padding.symmetric(horizontal=18, vertical=14),
-        content=ft.Row(
-            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            controls=[
-                ft.Row(
-                    spacing=14,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    controls=[
-                        select_box,
-                        indicator,
-                        ft.Column(
-                            spacing=3,
-                            alignment=ft.MainAxisAlignment.CENTER,
-                            controls=[
-                                ft.Text(
-                                    profile.name,
-                                    size=15,
-                                    weight=ft.FontWeight.BOLD,
-                                    color=COLORS["text_main"],
-                                    font_family=MONO,
-                                ),
-                                *(
-                                    [_tag_chips(profile.tags)]
-                                    if profile.tags
-                                    else []
-                                ),
-                                ft.Text(
-                                    meta,
-                                    size=11,
-                                    color=COLORS["accent"]
-                                    if is_running
-                                    else COLORS["text_sub"],
-                                    font_family=MONO,
-                                ),
-                                *(
-                                    [
-                                        ft.Text(
-                                            getattr(profile, "notes", ""),
-                                            size=11,
-                                            color=COLORS["text_dim"],
-                                            italic=True,
-                                            max_lines=1,
-                                            overflow=ft.TextOverflow.ELLIPSIS,
-                                        )
-                                    ]
-                                    if getattr(profile, "notes", "")
-                                    else []
-                                ),
-                            ],
-                        ),
-                    ],
-                ),
-                ft.Container(expand=True),
-                ft.Row(
-                    spacing=6,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    controls=[launch_btn, *action_buttons],
-                ),
-            ],
-        ),
+        content=ft.Stack(controls=[row, notes_overlay]),
     )
 
 

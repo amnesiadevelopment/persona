@@ -2,7 +2,26 @@ import os
 
 import flet as ft
 
+from ...core.assets import asset_path
 from .colors import COLORS
+
+
+def _engine_option(key: str, label: str, icon_file: str) -> ft.dropdown.Option:
+    path = asset_path(icon_file)
+    row_controls: list[ft.Control] = []
+    if os.path.exists(path):
+        row_controls.append(ft.Image(src=path, width=18, height=18))
+    row_controls.append(
+        ft.Text(label, color=COLORS["text_main"], font_family="monospace")
+    )
+    return ft.dropdown.Option(
+        key=key,
+        content=ft.Row(
+            spacing=10,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=row_controls,
+        ),
+    )
 
 
 def build_page_theme() -> ft.Theme:
@@ -54,8 +73,10 @@ def build_engine_dropdown(value: str = "chromium") -> ft.Dropdown:
         text_style=ft.TextStyle(font_family="monospace"),
         border_radius=3,
         options=[
-            ft.dropdown.Option(key="chromium", text="fingerprint-chromium"),
-            ft.dropdown.Option(key="camoufox", text="Camoufox (Firefox)"),
+            _engine_option(
+                "chromium", "fingerprint-chromium (Chrome)", "engine_chrome.png"
+            ),
+            _engine_option("camoufox", "Camoufox (Firefox)", "engine_firefox.png"),
         ],
     )
 
