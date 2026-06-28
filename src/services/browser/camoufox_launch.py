@@ -223,7 +223,8 @@ def download_camoufox(progress=None, log=None) -> bool:
 
             CamoufoxFetcher().install()
             return bool(installed_verstr())
-        except Exception:
+        except Exception as e:
+            say(f"Camoufox: install failed — {type(e).__name__}: {e}")
             return False
 
     import subprocess
@@ -398,7 +399,8 @@ def download_camoufox(progress=None, log=None) -> bool:
         except OSError:
             pass
         return bool(installed_verstr())
-    except Exception:
+    except Exception as e:
+        say(f"Camoufox: install failed — {type(e).__name__}: {e}")
         return False
     finally:
         done_connect.set()  # never leave the connect ticker running
