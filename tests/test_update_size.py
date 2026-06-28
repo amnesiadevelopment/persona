@@ -5,7 +5,14 @@ flaky). Regression for the 'stuck/indeterminate bar, no total, no ETA' bug."""
 import src.services.app_update.updater as au
 
 
-def test_pick_asset_returns_url_and_size():
+def _force_linux(monkeypatch):
+    monkeypatch.setattr(au._platform, "IS_WINDOWS", False)
+    monkeypatch.setattr(au._platform, "IS_MACOS", False)
+    monkeypatch.setattr(au._platform, "IS_LINUX", True)
+
+
+def test_pick_asset_returns_url_and_size(monkeypatch):
+    _force_linux(monkeypatch)
     assets = [
         {"name": "persona-x86_64.AppImage", "browser_download_url": "u", "size": 4096},
     ]
@@ -13,6 +20,7 @@ def test_pick_asset_returns_url_and_size():
 
 
 def test_check_for_update_propagates_size(monkeypatch):
+    _force_linux(monkeypatch)
     body = (
         '{"tag_name": "v9.9.9", "assets": '
         '[{"name": "persona-x86_64.AppImage", "browser_download_url": "u", '

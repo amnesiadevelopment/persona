@@ -16,10 +16,27 @@ import threading
 import time
 
 from ..engine.updater import is_newer
+from ...core import platform as _platform
 
 APP_VERSION = "2.1.6"
 APP_REPO = "amnesiadevelopment/persona"
-ASSET_NAME = "persona-x86_64.AppImage"
+
+
+def asset_name() -> str:
+    """The release asset filename for this OS — what CI publishes per platform."""
+    if _platform.IS_WINDOWS:
+        return "persona-windows-x64.zip"
+    if _platform.IS_MACOS:
+        return "persona-macos.dmg"
+    return "persona-x86_64.AppImage"
+
+
+def _asset_suffix() -> str:
+    if _platform.IS_WINDOWS:
+        return ".zip"
+    if _platform.IS_MACOS:
+        return ".dmg"
+    return ".AppImage"
 
 # curl keeps a download alive over a flaky Tor circuit far better than urllib,
 # which can block for the whole timeout on a dead exit. These match install.sh.
@@ -114,15 +131,17 @@ def update_available(latest: str, current: str = APP_VERSION) -> bool:
 
 
 def pick_asset(assets: list[dict]) -> tuple[str, int]:
-    """Pick the AppImage (download_url, size) from a release's assets. The size
-    comes straight from the GitHub API, so the download has an exact total
-    without a separate (Tor-flaky) HEAD request."""
+    """Pick this OS's release asset (download_url, size). The size comes straight
+    from the GitHub API, so the download has an exact total without a separate
+    (Tor-flaky) HEAD request."""
+    want = asset_name()
     for asset in assets:
-        if asset.get("name", "") == ASSET_NAME:
+        if asset.get("name", "") == want:
             return asset.get("browser_download_url", ""), int(asset.get("size", 0) or 0)
-    # fallback: any .AppImage
+    # fallback: any asset with this OS's extension
+    suffix = _asset_suffix()
     for asset in assets:
-        if asset.get("name", "").endswith(".AppImage"):
+        if asset.get("name", "").endswith(suffix):
             return asset.get("browser_download_url", ""), int(asset.get("size", 0) or 0)
     return "", 0
 
@@ -308,6 +327,13 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
                 log(msg)
             except Exception:
                 pass
+
+    # In-place self-replace is the AppImage (Linux) mechanism. On Windows/macOS
+    # a running .exe/.app can't replace itself; until a per-OS updater exists we
+    # detect-and-notify rather than risk a broken swap.
+    if not _platform.IS_LINUX:
+        say("Update available — download the new version from the releases page.")
+        return False
 
     target = installed_appimage_path()
     if target is None:
