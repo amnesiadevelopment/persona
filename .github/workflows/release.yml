@@ -108,6 +108,13 @@ jobs:
             exit 1
           fi
 
+      - name: Upload the AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: persona-appimage
+          path: persona-x86_64.AppImage
+          if-no-files-found: error
+
       - name: Publish to the GitHub Release
         uses: softprops/action-gh-release@v2
         with:

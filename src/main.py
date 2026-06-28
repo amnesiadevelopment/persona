@@ -1,6 +1,34 @@
 import os
 import sys
 
+
+def _ensure_valid_cwd() -> None:
+    """Guarantee the process has a working directory that still exists.
+
+    A self-update re-exec (or an autostart entry) can leave us running with a
+    current directory that was unmounted with the previous AppImage. The very
+    next os.getcwd() then fails with "Getting current working directory failed"
+    — and because os.path.abspath() below calls getcwd(), and Flet's runtime
+    calls it at startup, the app dies before any window appears. Move to the
+    first directory that actually exists, before anything else runs.
+    """
+    try:
+        if os.getcwd():
+            return
+    except OSError:
+        pass
+    for candidate in (os.path.expanduser("~"), os.environ.get("HOME", ""), "/tmp", "/"):
+        if not candidate:
+            continue
+        try:
+            os.chdir(candidate)
+            return
+        except OSError:
+            continue
+
+
+_ensure_valid_cwd()
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
