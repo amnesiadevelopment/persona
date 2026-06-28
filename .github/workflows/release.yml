@@ -1,8 +1,9 @@
 name: release
 
-# Build the Linux desktop app with `flet build linux` (Flutter-based, bundles
-# the Flet client + Python runtime deterministically) and publish a single
-# AppImage to a GitHub Release on each version tag.
+# Build the persona desktop app with `flet build` (Flutter-based, bundles the
+# Flet client + Python runtime deterministically) for Linux, Windows, and
+# macOS, and publish a per-OS artifact to a GitHub Release on each version tag:
+# an AppImage (Linux), a portable zip (Windows .exe), and a dmg (macOS .app).
 on:
   push:
     tags:
@@ -116,7 +117,155 @@ jobs:
           if-no-files-found: error
 
       - name: Publish to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: persona-x86_64.AppImage
+          generate_release_notes: true
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.41.7"
+
+      - name: Install Flet CLI + app deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install flet==0.85.3
+          pip install --prefer-binary -r requirements.txt
+
+      - name: Fetch bundled fonts into src/assets
+        shell: bash
+        run: |
+          ./download-fonts.sh
+          count=$(find src/assets/fonts -name '*.ttf' -o -name '*.ttc' | wc -l)
+          echo "bundled font faces: $count"
+          if [ "$count" -lt 8 ]; then
+            echo "ERROR: too few fonts bundled ($count); aborting." >&2
+            exit 1
+          fi
+
+      - name: Build the Windows bundle
+        run: flet build windows -v --no-rich-output
+
+      - name: Package the bundle into a portable zip
+        shell: bash
+        run: |
+          echo "=== build/windows tree ==="
+          find build/windows -maxdepth 2 -type f | head -40
+          # flet build output (the .exe + DLLs + data/) lives in build/windows
+          cd build/windows
+          7z a -tzip ../../persona-windows-x64.zip ./* >/dev/null
+          cd ../..
+          ls -la persona-windows-x64.zip
+
+      - name: Sanity-check the zip size
+        shell: bash
+        run: |
+          size=$(stat -c%s persona-windows-x64.zip)
+          echo "zip size: $size bytes"
+          if [ "$size" -lt 15000000 ]; then
+            echo "ERROR: zip too small ($size) - build likely incomplete." >&2
+            exit 1
+          fi
+
+      - name: Upload the Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: persona-windows
+          path: persona-windows-x64.zip
+          if-no-files-found: error
+
+      - name: Publish to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: persona-windows-x64.zip
+          generate_release_notes: true
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.41.7"
+
+      - name: Install Flet CLI + app deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install flet==0.85.3
+          pip install --prefer-binary -r requirements.txt
+
+      - name: Fetch bundled fonts into src/assets
+        run: |
+          chmod +x download-fonts.sh
+          ./download-fonts.sh
+          count=$(find src/assets/fonts -name '*.ttf' -o -name '*.ttc' | wc -l)
+          echo "bundled font faces: $count"
+          if [ "$count" -lt 8 ]; then
+            echo "ERROR: too few fonts bundled ($count); aborting." >&2
+            exit 1
+          fi
+
+      - name: Build the macOS bundle
+        run: flet build macos -v --no-rich-output
+
+      - name: Package the .app into a dmg
+        run: |
+          echo "=== build/macos tree ==="
+          find build/macos -maxdepth 3 -name "*.app" | head
+          APP="$(find build/macos -maxdepth 3 -name '*.app' | head -1)"
+          if [ -z "$APP" ]; then
+            echo "ERROR: no .app produced by flet build macos" >&2
+            exit 1
+          fi
+          echo "app bundle: $APP"
+          STAGE="$(mktemp -d)"
+          cp -R "$APP" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create -volname persona -srcfolder "$STAGE" -ov \
+            -format UDZO persona-macos.dmg
+          ls -la persona-macos.dmg
+
+      - name: Sanity-check the dmg size
+        run: |
+          size=$(stat -f%z persona-macos.dmg)
+          echo "dmg size: $size bytes"
+          if [ "$size" -lt 15000000 ]; then
+            echo "ERROR: dmg too small ($size) - build likely incomplete." >&2
+            exit 1
+          fi
+
+      - name: Upload the macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: persona-macos
+          path: persona-macos.dmg
+          if-no-files-found: error
+
+      - name: Publish to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: persona-macos.dmg
           generate_release_notes: true
