@@ -8,7 +8,17 @@ import subprocess
 import sys
 import tempfile
 
+import pytest
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# The reproduction deletes the process's own working directory, which only
+# works on POSIX — Windows holds an open handle on the CWD and refuses to remove
+# it (WinError 32). The crash being guarded against is the unmounted-AppImage
+# case, which is Linux-only anyway, so skipping off-POSIX loses no coverage.
+pytestmark = pytest.mark.skipif(
+    os.name != "posix", reason="deleted-cwd reproduction is POSIX-only"
+)
 
 
 def _run_in_deleted_cwd(snippet: str) -> subprocess.CompletedProcess:

@@ -21,6 +21,14 @@ def _fc_match(conf_path: str, family: str) -> str:
     return out.stdout
 
 
+_FONTS_PRESENT = list(pathlib.Path(bundled_fonts_dir()).rglob("*.tt*"))
+_needs_fonts = pytest.mark.skipif(
+    not _FONTS_PRESENT,
+    reason="bundled fonts not fetched (download-fonts.sh runs in CI, not locally)",
+)
+
+
+@_needs_fonts
 def test_bundled_dir_exists_and_has_fonts():
     d = pathlib.Path(bundled_fonts_dir())
     assert d.is_dir()
@@ -120,6 +128,7 @@ def test_named_windows_families_resolve_to_metric_clones(
     )
 
 
+@_needs_fonts
 def test_emoji_font_bundled():
     d = pathlib.Path(bundled_fonts_dir())
     assert (d / "common" / "NotoColorEmoji.ttf").exists(), (

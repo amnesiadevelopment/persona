@@ -6,7 +6,17 @@ and left the app unopenable."""
 
 import os
 
+import pytest
+
 import src.services.app_update.updater as au
+
+# AppImage self-update is Linux-only: it atomically replaces the running binary
+# in place (os.replace over an open file), which POSIX allows but Windows
+# refuses ("Bad file descriptor" — the file is locked while open). Windows/macOS
+# get their own update mechanism; these regression tests cover the AppImage path.
+pytestmark = pytest.mark.skipif(
+    os.name != "posix", reason="AppImage in-place self-update is POSIX-only"
+)
 
 
 def _stub_target(monkeypatch, tmp_path):

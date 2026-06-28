@@ -6,22 +6,25 @@ from src.services.engine import updater
 
 
 def test_is_installed_false_when_missing(tmp_path, monkeypatch):
-    monkeypatch.setattr(updater, "APPIMAGE", str(tmp_path / "fpchrome.AppImage"))
+    monkeypatch.setattr(updater._platform, "IS_MACOS", False)
+    monkeypatch.setattr(updater, "ENGINE_BINARY", str(tmp_path / "engine.bin"))
     assert updater.is_installed() is False
 
 
 def test_is_installed_true_when_present(tmp_path, monkeypatch):
-    p = tmp_path / "fpchrome.AppImage"
+    p = tmp_path / "engine.bin"
     p.write_bytes(b"\x00" * 10)
-    monkeypatch.setattr(updater, "APPIMAGE", str(p))
+    monkeypatch.setattr(updater._platform, "IS_MACOS", False)
+    monkeypatch.setattr(updater, "ENGINE_BINARY", str(p))
     assert updater.is_installed() is True
 
 
 def test_is_installed_false_when_empty(tmp_path, monkeypatch):
     # a zero-byte file is a failed/partial download, not a usable engine
-    p = tmp_path / "fpchrome.AppImage"
+    p = tmp_path / "engine.bin"
     p.touch()
-    monkeypatch.setattr(updater, "APPIMAGE", str(p))
+    monkeypatch.setattr(updater._platform, "IS_MACOS", False)
+    monkeypatch.setattr(updater, "ENGINE_BINARY", str(p))
     assert updater.is_installed() is False
 
 
