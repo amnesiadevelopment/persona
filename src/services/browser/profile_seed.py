@@ -37,13 +37,6 @@ SEARCH_ENGINES: dict[str, dict] = {
         "favicon_url": "https://search.brave.com/favicon.ico",
         "prepopulate_id": 0,
     },
-    "startpage": {
-        "short_name": "Startpage",
-        "keyword": "startpage.com",
-        "url": "https://www.startpage.com/sp/search?query={searchTerms}",
-        "favicon_url": "https://www.startpage.com/favicon.ico",
-        "prepopulate_id": 0,
-    },
 }
 
 DEFAULT_SEARCH_ENGINE = "duckduckgo"
@@ -52,7 +45,6 @@ SEARCH_ENGINE_LABELS = {
     "duckduckgo": "DuckDuckGo",
     "google": "Google",
     "brave": "Brave",
-    "startpage": "Startpage",
 }
 
 

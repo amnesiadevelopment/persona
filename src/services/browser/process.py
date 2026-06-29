@@ -91,6 +91,29 @@ def _timezone_for(country_code: str) -> str:
     return _COUNTRY_TZ.get((country_code or "").upper(), "UTC")
 
 
+def _host_timezone() -> str:
+    """The host's IANA timezone, for a direct (no-proxy) profile. Resolving to a
+    concrete zone keeps invisible from doing a ~40s egress lookup at launch.
+    Falls back to UTC when the host zone can't be read."""
+    try:
+        from datetime import datetime
+
+        name = datetime.now().astimezone().tzname()
+        # tzname() can yield an abbreviation (e.g. "CET") rather than an IANA
+        # zone; only accept a slash-form IANA path, else read /etc/localtime.
+        if name and "/" in name:
+            return name
+    except Exception:
+        pass
+    try:
+        link = os.path.realpath("/etc/localtime")
+        if "zoneinfo/" in link:
+            return link.split("zoneinfo/", 1)[1]
+    except Exception:
+        pass
+    return "UTC"
+
+
 
 
 def _spawn_camoufox(profile: Profile, profile_dir: str):
@@ -129,14 +152,53 @@ def _spawn_camoufox(profile: Profile, profile_dir: str):
     return spawn(cfg)
 
 
+def _spawn_invisible(profile: Profile, profile_dir: str):
+    """Launch the invisible_playwright (patched Firefox 150) engine. SOCKS5
+    proxy auth is handled natively (no bridge). Returns a Popen-compatible
+    handle."""
+    from .invisible_launch import ensure_invisible_installed, spawn
+
+    store = ProxyStore()
+    proxy_url = store.resolve(profile.proxy) or ""
+    proxy = store.get(profile.proxy) if profile.proxy else None
+    # Locale + timezone follow the proxy's geo so they match the exit IP. Always
+    # resolve to a CONCRETE zone — never leave it empty: invisible treats an
+    # empty timezone as "auto" and blocks the launch ~40s on an egress-IP lookup
+    # (direct, over Tor). A direct profile uses the host zone; that lookup is the
+    # single biggest hit to open time.
+    lang = _locale_for(proxy.country_code) if proxy else "en-US"
+    tz = (proxy.timezone or _timezone_for(proxy.country_code)) if proxy else _host_timezone()
+
+    if _platform.supports_linux_desktop_integration():
+        write_window_entry(profile.name, icon="firefox")
+
+    cfg = {
+        "os_type": profile.os_type,
+        "proxy_url": proxy_url,
+        "start_url": "https://www.google.com",
+        "profile_name": profile.name,
+        "search_engine": profile.search_engine,
+        "locale": lang,
+        "timezone": tz,
+        "profile_dir": os.path.join(profile_dir, ".invisible-profile"),
+        "_needs_fetch": not ensure_invisible_installed(),
+    }
+    return spawn(cfg)
+
+
 def spawn_browser(profile: Profile) -> subprocess.Popen:
     """Launch a persona browser (fingerprint-chromium or Camoufox) for the
     given profile."""
     profile_dir = os.path.join(DATA_DIR, profile.name)
     os.makedirs(profile_dir, exist_ok=True)
 
-    if getattr(profile, "engine", "chromium") == "camoufox":
+    engine = getattr(profile, "engine", "chromium")
+    if engine == "camoufox":
         proc = _spawn_camoufox(profile, profile_dir)
+        proc._proxy_bridge = None  # type: ignore[attr-defined]
+        return proc
+    if engine == "firefox":
+        proc = _spawn_invisible(profile, profile_dir)
         proc._proxy_bridge = None  # type: ignore[attr-defined]
         return proc
 

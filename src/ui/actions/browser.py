@@ -33,11 +33,13 @@ def launch_or_stop(
         threading.Thread(target=do_stop, daemon=True).start()
         return
 
-    if not engine.is_installed():
-        log("Browser engine not ready yet — wait for the download to finish.")
-        return
+    if getattr(profile, "engine", "chromium") == "firefox":
+        from ...services.browser.invisible_launch import ensure_invisible_installed
 
-    if not engine.is_installed():
+        if not ensure_invisible_installed():
+            log("Firefox engine not ready yet — wait for the download to finish.")
+            return
+    elif not engine.is_installed():
         log("Browser engine not ready yet — wait for the download to finish.")
         return
 
