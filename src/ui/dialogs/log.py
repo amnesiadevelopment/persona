@@ -25,8 +25,7 @@ def open_log_dialog(page: ft.Page, log_lines: list[str]) -> None:
             bgcolor=COLORS["log_bg"],
             padding=14,
             content=ft.Column(
-                scroll=ft.ScrollMode.AUTO,
-                auto_scroll=True,
+                expand=True,
                 controls=[
                     ft.Text(
                         f"{len(log_lines)} entries",
@@ -34,7 +33,15 @@ def open_log_dialog(page: ft.Page, log_lines: list[str]) -> None:
                         color=COLORS["text_dim"],
                     ),
                     ft.Container(height=8),
-                    *rows,
+                    # A ListView (not a Column) is what actually takes the wheel
+                    # and drag scroll here; auto_scroll on the outer Column was
+                    # pinning the view to the bottom so manual scroll-up did
+                    # nothing. The user browses history, so don't auto-pin.
+                    ft.ListView(
+                        controls=rows,
+                        expand=True,
+                        spacing=2,
+                    ),
                 ],
             ),
         ),
