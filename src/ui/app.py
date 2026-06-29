@@ -80,14 +80,14 @@ class App:
         self._engine_latest: str = ""
         self._engine_busy = False
         self._engines_open = False
-        self._camoufox_latest: str = ""
-        self._camoufox_busy = False
-        self._camoufox_status: str = ""
-        self._camoufox_start_t = 0.0
-        self._camoufox_bar = ft.ProgressBar(
+        self._engine2_latest: str = ""
+        self._engine2_busy = False
+        self._engine2_status: str = ""
+        self._engine2_start_t = 0.0
+        self._engine2_bar = ft.ProgressBar(
             value=None, color=COLORS["accent"], bgcolor=COLORS["input_bg"], height=4,
         )
-        self._camoufox_detail = ft.Text(
+        self._engine2_detail = ft.Text(
             "", size=10, color=COLORS["text_sub"], font_family="monospace",
         )
         self.engine_text = ft.Text(
@@ -153,7 +153,7 @@ class App:
         self._refresh_engine_text()
         if app_settings.is_onboarding_done():
             self._check_engine_async()
-            self._ensure_camoufox_async()
+            self._ensure_engine2_async()
         else:
             self._show_onboarding()
         self._check_app_update_async()
@@ -527,29 +527,26 @@ class App:
         p.notes = notes
         self.pm.save_profiles()
 
-    def _camoufox_version_text(self) -> str:
-        try:
-            from ..services.browser.camoufox_launch import installed_version
-
-            ver = installed_version()
-        except Exception:
-            ver = ""
-        return ver or "not installed"
-
-    def _camoufox_update_available(self) -> bool:
-        cur = self._camoufox_version_text()
-        return (
-            cur not in ("", "not installed")
-            and bool(self._camoufox_latest)
-            and self._camoufox_latest != cur
+    def _engine2_version_text(self) -> str:
+        from ..services.browser.invisible_launch import (
+            installed_version,
+            is_invisible_installed,
         )
 
-    def _camoufox_status_text(self) -> str:
-        if self._camoufox_status:
-            return self._camoufox_status
-        if self._camoufox_update_available():
-            return f"update → {self._camoufox_latest}"
-        return self._camoufox_version_text()
+        if not is_invisible_installed():
+            return "not installed"
+        return installed_version() or "installed"
+
+    def _engine2_update_available(self) -> bool:
+        # The Firefox engine's version is pinned to the invisible_playwright
+        # package, which ships with persona — it updates with the app, not on
+        # its own. So there's never a standalone engine update to offer.
+        return False
+
+    def _engine2_status_text(self) -> str:
+        if self._engine2_status:
+            return self._engine2_status
+        return self._engine2_version_text()
 
     def _assign_tag(self, names: list[str], tag: str) -> None:
         n = self.pm.assign_tag(names, tag)
@@ -848,7 +845,11 @@ class App:
     def _engine_logo(self, engine_key: str, size: int = 18) -> ft.Control:
         from ..core.assets import asset_path
 
-        fname = "engine_firefox.png" if engine_key == "camoufox" else "engine_chrome.png"
+        fname = (
+            "engine_firefox.png"
+            if engine_key in ("firefox", "camoufox")
+            else "engine_chrome.png"
+        )
         path = asset_path(fname)
         if os.path.exists(path):
             return ft.Image(src=path, width=size, height=size)
@@ -922,7 +923,7 @@ class App:
                                 ]
                                 if (
                                     self._engine_update_available()
-                                    or self._camoufox_update_available()
+                                    or self._engine2_update_available()
                                 )
                                 else []
                             ),
@@ -967,24 +968,24 @@ class App:
             if self._engine_busy:
                 body.append(_bar_block(self._engine_bar, self._engine_detail))
             body.append(ft.Container(height=8))
-            # camoufox row, with its own progress bar directly beneath it
+            # firefox engine row, with its own progress bar directly beneath it
             body.append(
                 ft.Container(
                     padding=ft.Padding.symmetric(horizontal=10),
-                    on_click=lambda _: self._on_camoufox_click(),
+                    on_click=lambda _: self._on_engine2_click(),
                     ink=True,
-                    tooltip="Check / update camoufox",
+                    tooltip="Download the Firefox engine",
                     content=self._engine_row(
-                        self._engine_logo("camoufox"),
-                        "camoufox",
-                        self._camoufox_status_text(),
-                        checking=self._camoufox_busy,
-                        dot=self._camoufox_update_available(),
+                        self._engine_logo("firefox"),
+                        "firefox",
+                        self._engine2_status_text(),
+                        checking=self._engine2_busy,
+                        dot=self._engine2_update_available(),
                     ),
                 )
             )
-            if self._camoufox_busy:
-                body.append(_bar_block(self._camoufox_bar, self._camoufox_detail))
+            if self._engine2_busy:
+                body.append(_bar_block(self._engine2_bar, self._engine2_detail))
             body.append(ft.Container(height=6))
 
         return ft.Container(
@@ -1017,61 +1018,15 @@ class App:
 
             threading.Thread(target=work, daemon=True).start()
 
-        if not self._camoufox_busy and not self._camoufox_update_available():
-            self._check_camoufox_async()
+        self._ensure_engine2_async()
 
-    def _check_camoufox_async(self) -> None:
-        from ..services.browser import camoufox_launch as cf
-
-        self._camoufox_busy = True
-        self._camoufox_status = "checking…"
-        self._refresh_sidebar()
-
-        def work() -> None:
-            latest = cf.fetch_latest_version()
-            self._camoufox_latest = latest
-            self._camoufox_busy = False
-            self._camoufox_status = ""
-            if self._camoufox_update_available():
-                self._log(f"Camoufox update available: {latest}")
-            self._refresh_sidebar()
-
-        threading.Thread(target=work, daemon=True).start()
-
-    def _on_camoufox_click(self) -> None:
-        if self._camoufox_busy:
+    def _on_engine2_click(self) -> None:
+        """Clicking the Firefox-engine row downloads it if it isn't installed.
+        There's no separate update to check — the engine version is pinned to
+        the bundled invisible_playwright package."""
+        if self._engine2_busy:
             return
-        if self._camoufox_update_available():
-            self._update_camoufox_async()
-        else:
-            self._check_camoufox_async()
-
-    def _update_camoufox_async(self) -> None:
-        import time
-
-        from ..services.browser import camoufox_launch as cf
-
-        self._camoufox_busy = True
-        self._camoufox_status = "downloading…"
-        self._camoufox_start_t = time.monotonic()
-        self._camoufox_bar.value = None
-        self._camoufox_detail.value = "connecting…"
-        self._refresh_sidebar()
-        self._log(f"Downloading Camoufox {self._camoufox_latest}…")
-
-        def work() -> None:
-            ok = cf.download_camoufox(progress=self._camoufox_progress_cb, log=self._log)
-            self._camoufox_busy = False
-            self._camoufox_status = ""
-            self._camoufox_detail.value = ""
-            if ok:
-                self._camoufox_latest = ""
-                self._log(f"Camoufox updated to {cf.installed_version()}")
-            else:
-                self._log("Camoufox update failed")
-            self._refresh_sidebar()
-
-        threading.Thread(target=work, daemon=True).start()
+        self._ensure_engine2_async()
 
     def _refresh_engine_text(self, status: str = "") -> None:
         cur = engine.current_version() or "unknown"
@@ -1107,13 +1062,13 @@ class App:
         threading.Thread(target=loop, daemon=True).start()
 
     def _check_engines_periodic(self) -> None:
-        """Quietly poll both engines for an upstream update once an hour so the
-        sidebar dot lights up on its own. This only refreshes the 'latest'
-        version (no spinner, no auto-download) — installing stays a click."""
+        """Quietly poll the chromium engine for an upstream update once an hour
+        so the sidebar dot lights up on its own. This only refreshes the
+        'latest' version (no spinner, no auto-download) — installing stays a
+        click. The Firefox engine has no standalone update (its version is
+        pinned to the bundled package), so it isn't polled."""
         import threading
         import time
-
-        from ..services.browser import camoufox_launch as cf
 
         def loop() -> None:
             while True:
@@ -1125,15 +1080,6 @@ class App:
                             self._engine_latest = tag
                             if self._engine_update_available():
                                 self._log(f"Engine update available: {tag}")
-                except Exception:
-                    pass
-                try:
-                    if not self._camoufox_busy:
-                        latest = cf.fetch_latest_version()
-                        if latest:
-                            self._camoufox_latest = latest
-                            if self._camoufox_update_available():
-                                self._log(f"Camoufox update available: {latest}")
                 except Exception:
                     pass
                 self._refresh_sidebar()
@@ -1333,8 +1279,8 @@ class App:
             # if the operator skipped the download, fetch in the background
             if not engine.is_installed() and not self._engine_busy:
                 self._check_engine_async()
-            # both engines are required: pull Camoufox too
-            self._ensure_camoufox_async()
+            # both engines are required: pull the Firefox engine too
+            self._ensure_engine2_async()
             self._refresh_engine_text()
             self._safe_update()
 
@@ -1392,70 +1338,70 @@ class App:
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _ensure_camoufox_async(self) -> None:
-        """Both engines are required, not optional. If the Camoufox binary
-        isn't present (fresh install, or an update that added the engine to an
-        install that only had chromium), fetch it in the background with a
-        visible status — the same first-run treatment fp-chromium gets."""
-        from ..services.browser import camoufox_launch as cf
+    def _ensure_engine2_async(self) -> None:
+        """Both engines are required, not optional. If the Firefox engine binary
+        isn't present (fresh install, or an update that added it to an install
+        that only had chromium), fetch it in the background with a visible
+        status — the same first-run treatment fp-chromium gets."""
+        from ..services.browser import invisible_launch as inv
 
         def work() -> None:
             import time
 
-            if cf.installed_version():
+            if inv.is_invisible_installed():
                 return
-            self._camoufox_busy = True
-            self._camoufox_status = "downloading…"
-            self._camoufox_start_t = time.monotonic()
-            self._camoufox_bar.value = None
-            self._camoufox_detail.value = "connecting…"
-            self._log("Camoufox engine not found — downloading…")
+            self._engine2_busy = True
+            self._engine2_status = "downloading…"
+            self._engine2_start_t = time.monotonic()
+            self._engine2_bar.value = None
+            self._engine2_detail.value = "connecting…"
+            self._log("Firefox engine not found — downloading…")
             self._refresh_sidebar()
             ok = False
-            # the binary is ~150MB over Tor; retry a few times so a dropped
+            # the binary is ~80MB over Tor; retry a few times so a dropped
             # circuit doesn't leave the (required) engine uninstalled
             for attempt in range(3):
                 try:
-                    ok = cf.ensure_camoufox_installed(
-                        progress=self._camoufox_progress_cb, log=self._log
+                    ok = inv.ensure_invisible_installed(
+                        progress=self._engine2_progress_cb, log=self._log
                     )
                 except Exception as e:
-                    self._log(f"Camoufox download error: {e}")
+                    self._log(f"Firefox engine download error: {e}")
                     ok = False
                 if ok:
                     break
                 if attempt < 2:
-                    self._log("Camoufox download interrupted — retrying…")
-            self._camoufox_busy = False
-            self._camoufox_status = ""
-            self._camoufox_detail.value = ""
+                    self._log("Firefox engine download interrupted — retrying…")
+            self._engine2_busy = False
+            self._engine2_status = ""
+            self._engine2_detail.value = ""
             if ok:
-                self._log(f"Camoufox installed: {cf.installed_version()}")
+                self._log(f"Firefox engine installed: {inv.installed_version()}")
             else:
-                self._log("Camoufox download failed — will retry on next start")
+                self._log("Firefox engine download failed — will retry on next start")
             self._refresh_sidebar()
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _camoufox_progress_cb(self, done: int, total: int) -> None:
+    def _engine2_progress_cb(self, done: int, total: int) -> None:
         import time
 
-        elapsed = max(time.monotonic() - self._camoufox_start_t, 0.001)
-        self._camoufox_bar.value = pf.fraction(done, total) if done > 0 else None
+        elapsed = max(time.monotonic() - self._engine2_start_t, 0.001)
+        self._engine2_bar.value = pf.fraction(done, total) if done > 0 else None
         if done <= 0:
             # The fetch can sit ~30-60s before the first byte arrives over Tor.
             # Show a ticking "connecting" so it reads as alive, not frozen.
-            self._camoufox_status = "downloading…"
-            self._camoufox_detail.value = (
+            self._engine2_status = "downloading…"
+            self._engine2_detail.value = (
                 f"connecting over Tor… {int(elapsed)}s (first bytes can take a "
                 f"minute)"
             )
         else:
             if total > 0:
-                self._camoufox_status = f"{pf.percent(done, total)}%"
+                self._engine2_status = f"{pf.percent(done, total)}%"
             else:
-                self._camoufox_status = pf.fmt_mb(done)
-            self._camoufox_detail.value = pf.fmt_line(done, total, elapsed)
+                self._engine2_status = pf.fmt_mb(done)
+            self._engine2_detail.value = pf.fmt_line(done, total, elapsed)
         self._refresh_sidebar()
 
     def _download_engine_fresh(self) -> None:
