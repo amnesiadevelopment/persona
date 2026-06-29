@@ -116,42 +116,6 @@ def _host_timezone() -> str:
 
 
 
-def _spawn_camoufox(profile: Profile, profile_dir: str):
-    """Launch the Camoufox (Firefox/Juggler) engine for this profile.
-
-    Forks the current process (NOT `sys.executable -m`, which breaks on the
-    flet-AppImage's embedded Python with 'bad magic number'); auto-fetches the
-    Camoufox Firefox binary on first use. Returns a Popen-compatible handle.
-    """
-    from .camoufox_launch import ensure_camoufox_installed, spawn
-
-    if _platform.IS_LINUX:
-        os.environ.setdefault("DISPLAY", ":0")
-    store = ProxyStore()
-    proxy_url = store.resolve(profile.proxy) or ""
-    proxy = store.get(profile.proxy) if profile.proxy else None
-    lang = _locale_for(proxy.country_code) if proxy else "en-US"
-    tz = (proxy.timezone or _timezone_for(proxy.country_code)) if proxy else ""
-
-    # Give the Camoufox window the profile's name + a fox icon in the taskbar,
-    # the same way the chromium path labels its windows. (.desktop entries are
-    # a Linux thing; Win/Mac label windows by title only.)
-    if _platform.supports_linux_desktop_integration():
-        write_window_entry(profile.name, icon="firefox")
-
-    cfg = {
-        "os_type": profile.os_type,
-        "proxy_url": proxy_url,
-        "start_url": "https://www.google.com",
-        "profile_name": profile.name,
-        "search_engine": profile.search_engine,
-        "locale": lang,
-        "timezone": tz,
-        "_needs_fetch": not ensure_camoufox_installed(),
-    }
-    return spawn(cfg)
-
-
 def _spawn_invisible(profile: Profile, profile_dir: str):
     """Launch the invisible_playwright (patched Firefox 150) engine. SOCKS5
     proxy auth is handled natively (no bridge). Returns a Popen-compatible
@@ -187,17 +151,15 @@ def _spawn_invisible(profile: Profile, profile_dir: str):
 
 
 def spawn_browser(profile: Profile) -> subprocess.Popen:
-    """Launch a persona browser (fingerprint-chromium or Camoufox) for the
-    given profile."""
+    """Launch a persona browser (fingerprint-chromium or the patched Firefox)
+    for the given profile."""
     profile_dir = os.path.join(DATA_DIR, profile.name)
     os.makedirs(profile_dir, exist_ok=True)
 
     engine = getattr(profile, "engine", "chromium")
-    if engine == "camoufox":
-        proc = _spawn_camoufox(profile, profile_dir)
-        proc._proxy_bridge = None  # type: ignore[attr-defined]
-        return proc
-    if engine == "firefox":
+    # "camoufox" is the retired engine name; treat any leftover as the Firefox
+    # engine so an old profile keeps launching.
+    if engine in ("firefox", "camoufox"):
         proc = _spawn_invisible(profile, profile_dir)
         proc._proxy_bridge = None  # type: ignore[attr-defined]
         return proc

@@ -32,7 +32,7 @@ def fingerprint_chromium_filename() -> str:
 
 
 def needs_fork_launch() -> bool:
-    """The Camoufox launcher forks on Linux to dodge the flet-AppImage's
+    """The Firefox-engine launcher forks on Linux to dodge the flet-AppImage's
     embedded Python (where `subprocess([sys.executable, '-m', ...])` loads
     incompatible .pyc — 'bad magic number'). On a native Windows/macOS build
     sys.executable is a normal interpreter, so a plain subprocess works and

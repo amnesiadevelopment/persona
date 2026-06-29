@@ -11,6 +11,11 @@ dependencies = [
     "uvicorn[standard]>=0.30.0",
     "cryptography>=42.0.0",
     "mcp>=1.28.0",
+    # 2nd browser engine (patched Firefox 150). MUST be here, not just in
+    # requirements.txt — flet build bundles deps from pyproject, so a package
+    # that's only in requirements.txt is missing from the built app (that's
+    # exactly why Camoufox showed ModuleNotFoundError in prod).
+    "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git",
 ]
 
 [tool.flet]

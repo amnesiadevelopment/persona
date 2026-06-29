@@ -63,6 +63,16 @@ logger = get_logger("main")
 
 
 def main() -> None:
+    # Self-update verification hook: the updater launches the new AppImage with
+    # PERSONA_SELFTEST=1 to confirm it boots before swapping it in. Reaching
+    # here means the AppImage mounted and every import above succeeded, so the
+    # build is sound — print the token and exit cleanly, WITHOUT starting the
+    # GUI or binding the API port (which would need a display / a free port and
+    # made the old probe a false-negative that looped the update forever).
+    if os.environ.get("PERSONA_SELFTEST") == "1":
+        print("SELFTEST_OK", flush=True)
+        return
+
     container = Container()
 
     fastapi_app = create_app(container)

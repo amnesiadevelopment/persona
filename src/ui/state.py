@@ -1,7 +1,36 @@
+import glob
+import os
+import re
 import threading
 import time
 
 ITEMS_PER_PAGE = 8
+
+
+def _load_recent_log_lines(limit: int = 200) -> list[str]:
+    """Seed the Activity Log from the persistent file log so it survives a
+    restart — otherwise an auto-update (which restarts the app) wipes the very
+    entries that explain whether the update succeeded or looped. Reads the
+    newest logs/persona_*.log and reformats its lines to the UI's "HH:MM:SS  >
+    message" shape."""
+    try:
+        candidates = sorted(glob.glob(os.path.join("logs", "persona_*.log")))
+        if not candidates:
+            return []
+        with open(candidates[-1], encoding="utf-8", errors="replace") as f:
+            raw = f.readlines()[-limit:]
+        out = []
+        # file lines look like: "2026-06-29 17:07:52 - INFO - persona.api - msg"
+        for ln in raw:
+            m = re.match(
+                r"\d{4}-\d{2}-\d{2} (\d{2}:\d{2}:\d{2}) - \w+ - [\w.]+ - (.*)",
+                ln.rstrip("\n"),
+            )
+            if m:
+                out.append(f"{m.group(1)}  > {m.group(2)}")
+        return out
+    except Exception:
+        return []
 
 
 class AppState:
@@ -9,7 +38,7 @@ class AppState:
         self.current_page: int = 1
         self.log_collapsed: bool = False
 
-        self._log_lines: list[str] = []
+        self._log_lines: list[str] = _load_recent_log_lines()
         self._loading_profiles: set[str] = set()
         self._loading_lock = threading.Lock()
         self._log_lock = threading.Lock()

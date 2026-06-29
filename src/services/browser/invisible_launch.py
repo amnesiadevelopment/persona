@@ -3,8 +3,7 @@
 A Popen-compatible handle that runs the browser in a forked child (on Linux,
 to dodge the flet-AppImage's embedded Python) or a plain subprocess elsewhere,
 keeps the window open until the user closes it, and reports readiness on a pipe
-— the same shape as the chromium/camoufox launchers so spawn_browser can treat
-them alike.
+— the same shape as the chromium launcher so spawn_browser can treat them alike.
 """
 
 import json
@@ -50,10 +49,10 @@ def ensure_invisible_installed(progress=None, log=None) -> bool:
 
     invisible_playwright's own ensure_binary() does a single non-resumable
     request with a 60s timeout, which Tor reliably tears down mid-stream on an
-    ~80MB Firefox archive (the same failure mode fingerprint-chromium and
-    Camoufox already solved). This fetches with HTTP Range resume + retries so a
-    dropped circuit picks up where it left off, then verifies the sha256 and
-    extracts via invisible's own helpers."""
+    ~80MB Firefox archive (the same failure mode fingerprint-chromium already
+    solves). This fetches with HTTP Range resume + retries so a dropped circuit
+    picks up where it left off, then verifies the sha256 and extracts via
+    invisible's own helpers."""
     if is_invisible_installed():
         return True
     try:
@@ -96,7 +95,7 @@ def _download_invisible(progress=None, log=None) -> bool:
     url_sums = _resolve_asset_url(BINARY_VERSION, "checksums.txt")
 
     # Keep the partial next to the cache dir so a dropped Tor circuit resumes
-    # across restarts (same approach as fp-chromium / Camoufox).
+    # across restarts (same approach as fp-chromium).
     archive_path = version_dir.parent / (asset + ".download")
     say("Firefox engine: downloading…")
     if not _resumable_download(str(url_archive), str(archive_path), progress=progress):

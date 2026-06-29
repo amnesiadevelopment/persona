@@ -36,7 +36,13 @@ class ProfileManager:
                             "device_type": p_data.get(
                                 "device_type", "desktop"
                             ),
-                            "engine": p_data.get("engine", "chromium"),
+                            # "camoufox" was the retired Firefox engine; map any
+                            # saved profile onto the current "firefox" engine.
+                            "engine": (
+                                "firefox"
+                                if p_data.get("engine") == "camoufox"
+                                else p_data.get("engine", "chromium")
+                            ),
                             "search_engine": p_data.get(
                                 "search_engine", "duckduckgo"
                             ),

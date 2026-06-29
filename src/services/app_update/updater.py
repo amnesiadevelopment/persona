@@ -261,18 +261,25 @@ def download_update(url: str, timeout: int = 600, progress=None, size: int = 0) 
 
 
 def verify_appimage_runs(path: str, settle: float = 4.0, timeout: int = 30) -> bool:
-    """True if `path` actually launches on THIS host. Starts the AppImage the
-    exact way a user does — no special flag — and watches it: a launch failure
-    (the runtime can't FUSE-mount and can't extract: "open dir error"/"create
-    mount dir error", exit 127, or a corrupt-squashfs segfault) dies within a
-    fraction of a second, so an early non-zero exit means broken. If it's still
-    alive after `settle` seconds it launched fine — we kill the probe and report
-    healthy.
+    """True if `path` boots far enough to be trusted as the next version.
 
-    A flag like --appimage-version is NOT enough: it's answered by the runtime
-    before the app's real mount/launch path, so it returns 0 even on an AppImage
-    that then fails to start (this is exactly what let v2.1.3 brick the app).
-    Verified in dev-WS against real type-2 AppImages, both healthy and broken.
+    The old probe launched the AppImage as a full GUI app and required it to
+    stay ALIVE for `settle` seconds. That is too fragile: the probe instance
+    exits early for reasons that have nothing to do with the build being broken
+    — no usable DISPLAY in the probe's context, or a second persona instance
+    bailing on the single-instance/API-port guard. An early exit was then read
+    as "broken", the update was refused, and because the app restarts to apply
+    it looped forever offering the same version ("restart to apply" → restart →
+    same version again). That loop is the bug this rewrite fixes.
+
+    Instead we run a fast, headless SELF-TEST: launch the AppImage with
+    PERSONA_SELFTEST=1, which main.py answers by importing the app and printing
+    'SELFTEST_OK' then exiting 0 — proving the runtime mounts and Python +
+    imports load, WITHOUT needing a display or a free API port. A broken
+    AppImage (bad FUSE mount, exit 127, corrupt squashfs) never prints the
+    token. If the token check is inconclusive (e.g. an older build without the
+    self-test hook), we fall back to the alive-after-settle heuristic so we
+    don't regress older versions.
     """
     import signal
     import subprocess
@@ -285,13 +292,43 @@ def verify_appimage_runs(path: str, settle: float = 4.0, timeout: int = 30) -> b
         pass
     env = dict(os.environ)
     env.setdefault("DISPLAY", ":0")
+    env["PERSONA_SELFTEST"] = "1"
+
+    # 1) Fast self-test: the build proves it boots and prints the token.
+    try:
+        out = subprocess.run(
+            [path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            env=env,
+            timeout=timeout,
+        )
+        if b"SELFTEST_OK" in (out.stdout or b""):
+            return True
+        # exit 0 without the token = an older build that ignores the flag and
+        # ran the GUI then exited cleanly; treat as launchable.
+        if out.returncode == 0:
+            return True
+    except subprocess.TimeoutExpired:
+        # It didn't exit on the self-test flag (older build that launched the
+        # GUI and kept running) — fall through to the alive heuristic, which
+        # for an older build means "still alive = good".
+        pass
+    except Exception:
+        return False
+
+    # 2) Fallback for builds without the self-test hook: launch normally and
+    #    accept it if it survives a couple of seconds.
+    env2 = dict(os.environ)
+    env2.setdefault("DISPLAY", ":0")
     try:
         proc = subprocess.Popen(
             [path],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
-            env=env,
+            env=env2,
             start_new_session=True,
         )
     except Exception:
@@ -300,9 +337,8 @@ def verify_appimage_runs(path: str, settle: float = 4.0, timeout: int = 30) -> b
     while time.time() < deadline:
         rc = proc.poll()
         if rc is not None:
-            return rc == 0  # exited before settling -> launch failure
+            return rc == 0
         time.sleep(0.2)
-    # still alive after settling = it launched; kill the throwaway probe
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
     except Exception:

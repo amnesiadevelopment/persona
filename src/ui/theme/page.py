@@ -76,7 +76,7 @@ def build_engine_dropdown(value: str = "chromium") -> ft.Dropdown:
             _engine_option(
                 "chromium", "fingerprint-chromium (Chrome)", "engine_chrome.png"
             ),
-            _engine_option("camoufox", "Camoufox (Firefox)", "engine_firefox.png"),
+            _engine_option("firefox", "Firefox (invisible)", "engine_firefox.png"),
         ],
     )
 
