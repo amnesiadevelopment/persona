@@ -154,24 +154,67 @@ jobs:
       - name: Build the Windows bundle
         run: flet build windows -v --no-rich-output
 
-      - name: Package the bundle into a portable zip
+      - name: Show what flet produced
         shell: bash
         run: |
           echo "=== build/windows tree ==="
-          find build/windows -maxdepth 2 -type f | head -40
-          # flet build output (the .exe + DLLs + data/) lives in build/windows
-          cd build/windows
-          7z a -tzip ../../persona-windows-x64.zip ./* >/dev/null
-          cd ../..
-          ls -la persona-windows-x64.zip
+          find build/windows -maxdepth 2 | head -60
 
-      - name: Sanity-check the zip size
+      - name: Build a Windows installer (Inno Setup)
+        shell: pwsh
+        run: |
+          # flet build output (persona.exe + DLLs + data/) lives in build/windows.
+          # Find the real exe so the installer launches the right binary.
+          $exe = Get-ChildItem build/windows -Recurse -Filter *.exe |
+            Where-Object { $_.Name -notmatch 'unins|vc_redist|setup' } |
+            Select-Object -First 1
+          if (-not $exe) { Write-Error "no .exe in build/windows"; exit 1 }
+          $exeName = $exe.Name
+          Write-Host "app exe: $exeName"
+          # icon: flet bundles assets; fall back to the source icon.png-derived ico
+          $icon = Get-ChildItem build/windows -Recurse -Filter *.ico |
+            Select-Object -First 1
+          $iconLine = if ($icon) { "SetupIconFile=$($icon.FullName)" } else { "" }
+          $iss = @"
+          [Setup]
+          AppName=persona
+          AppVersion=${{ github.ref_name }}
+          AppPublisher=persona contributors
+          DefaultDirName={autopf}\persona
+          DefaultGroupName=persona
+          DisableProgramGroupPage=yes
+          OutputDir=.
+          OutputBaseFilename=persona-setup
+          Compression=lzma2
+          SolidCompression=yes
+          ArchitecturesInstallIn64BitMode=x64compatible
+          ArchitecturesAllowed=x64compatible
+          $iconLine
+          [Files]
+          Source: "build\windows\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
+          [Icons]
+          Name: "{group}\persona"; Filename: "{app}\$exeName"
+          Name: "{autodesktop}\persona"; Filename: "{app}\$exeName"; Tasks: desktopicon
+          [Tasks]
+          Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"
+          [Run]
+          Filename: "{app}\$exeName"; Description: "Launch persona"; Flags: nowait postinstall skipifsilent
+          "@
+          Set-Content -Path persona.iss -Value $iss -Encoding UTF8
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc persona.iss
+          if ($LASTEXITCODE -ne 0) { Write-Error "ISCC failed"; exit 1 }
+          Rename-Item persona-setup.exe persona-windows-setup.exe
+          Get-Item persona-windows-setup.exe | Format-List Name,Length
+
+      - name: Sanity-check the installer size
         shell: bash
         run: |
-          size=$(stat -c%s persona-windows-x64.zip)
-          echo "zip size: $size bytes"
+          size=$(stat -c%s persona-windows-setup.exe)
+          echo "installer size: $size bytes"
           if [ "$size" -lt 15000000 ]; then
-            echo "ERROR: zip too small ($size) - build likely incomplete." >&2
+            echo "ERROR: installer too small ($size) - build likely incomplete." >&2
             exit 1
           fi
 
@@ -179,14 +222,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: persona-windows
-          path: persona-windows-x64.zip
+          path: persona-windows-setup.exe
           if-no-files-found: error
 
       - name: Publish to the GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: persona-windows-x64.zip
+          files: persona-windows-setup.exe
           generate_release_notes: true
 
   build-macos:
