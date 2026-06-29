@@ -125,6 +125,12 @@ jobs:
 
   build-windows:
     runs-on: windows-latest
+    # flet's build spinner prints box-drawing/dot glyphs; the Windows runner's
+    # default cp1252 console can't encode them and flet dies with
+    # UnicodeEncodeError. Force UTF-8 I/O for the whole job.
+    env:
+      PYTHONIOENCODING: "utf-8"
+      PYTHONUTF8: "1"
     steps:
       - name: Check out the code
         uses: actions/checkout@v4
@@ -185,6 +191,10 @@ jobs:
 
   build-macos:
     runs-on: macos-latest
+    # Temporarily disabled: flet build macos rebuilds Python deps from source and
+    # the cryptography wheel (Rust/maturin) fails to compile in this toolchain.
+    # Re-enable once that's resolved.
+    if: false
     steps:
       - name: Check out the code
         uses: actions/checkout@v4
