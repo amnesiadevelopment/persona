@@ -272,6 +272,27 @@ def _child(cfg: dict, write_fd: int) -> None:
         emit(f"LAUNCH_FAILED: invisible_playwright import error: {e}")
         return
 
+    # When persona already knows the timezone (it always passes a concrete one),
+    # short-circuit invisible's egress-IP lookup. invisible runs that lookup over
+    # the proxy to drive a WebRTC srflx override, but on Tor WebRTC carries no
+    # real candidates anyway, and the lookup adds ~15s of round-trips through
+    # Tor+proxy to every launch. Skipping it makes a proxied profile open about
+    # as fast as a direct one without weakening anything on a Tor egress.
+    if cfg.get("timezone"):
+        try:
+            from invisible_playwright import _geo as _ipgeo
+            from invisible_playwright import launcher as _iplauncher
+
+            def _geo_no_egress(timezone, proxy, _orig=_ipgeo.prepare_session_geo):
+                tz = (timezone or "").strip()
+                if tz and tz.lower() != "auto":
+                    return _ipgeo.SessionGeo(tz, None)
+                return _orig(timezone, proxy)
+
+            _iplauncher.prepare_session_geo = _geo_no_egress
+        except Exception:
+            pass
+
     proxy = _proxy_dict(cfg.get("proxy_url", ""))
     # Seed the fingerprint deterministically from the profile name, so the same
     # profile keeps a stable identity across launches.
@@ -325,19 +346,29 @@ def _child(cfg: dict, write_fd: int) -> None:
             # fresh work page and close the stray, leaving exactly ONE window.
             stray = list(ctx.pages)
             page = ctx.new_page()
-            try:
-                page.goto(cfg.get("start_url", "https://www.google.com"), timeout=60000)
-            except Exception:
-                pass
             for p in stray:
                 try:
                     p.close()
                 except Exception:
                     pass
-            # BROWSER_STARTED is the readiness marker the launcher's monitor
-            # waits for to flip the UI from loading to running (LAUNCH_OK is not
-            # one it knows — the profile would hang in the loading state).
+            # The window exists the moment new_page() returns (Firefox is already
+            # up from __enter__), so report ready NOW — before navigating. The
+            # launcher's monitor waits for BROWSER_STARTED to flip the UI from
+            # loading to running; emitting it here means the profile shows ready
+            # as soon as the window is on screen, not after the start page loads
+            # over Tor. (LAUNCH_OK is not a marker the monitor knows.)
             emit("BROWSER_STARTED")
+            # Kick off the start-page navigation without blocking: the user sees
+            # the window immediately and the page loads on its own, like any
+            # browser opening a slow site.
+            try:
+                page.goto(
+                    cfg.get("start_url", "https://www.google.com"),
+                    wait_until="commit",
+                    timeout=20000,
+                )
+            except Exception:
+                pass
             # Exit when the user closes every window. is_connected() stays True
             # while the Firefox process lives even with zero tabs, so it can't
             # signal "all windows closed"; the page count going to 0 does (proven
