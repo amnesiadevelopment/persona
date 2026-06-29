@@ -1,18 +1,22 @@
 """MAIN-world extension that repairs Canvas measureText().
 
 The fingerprint engine adds noise to Canvas::measureText() (a Bromite
-fingerprinting feature), which scales the returned width to a near-zero / tiny
-value. Layout-heavy web apps that measure text to position it — Google Sheets'
-canvas grid is the canonical victim — then lay glyphs out against a width of ~0
-and the text overlaps into adjacent columns ("looks right for a frame, then
-shifts").
+fingerprinting feature), which scales EVERY returned metric — width AND the
+actualBoundingBox*/fontBoundingBox* fields — to a near-zero / negative value.
+Layout-heavy web apps that measure text to position UI then break:
+ - Google Sheets' canvas grid lays glyphs out against a width of ~0 and the
+   text overlaps into adjacent columns ("looks right for a frame, then shifts").
+ - Sheets' date-cell calendar popover sizes/places itself from the bounding-box
+   metrics; with negative values the popover collapses to zero size / off-screen
+   and "the calendar doesn't appear at all".
 
 getClientRects()/getBoundingClientRect() are NOT noised in this build, so we
-recover the true text width by measuring the same string in a hidden DOM node
-and return that from measureText. This keeps every other anti-fingerprint
-defense intact (canvas readback noise, audio, webgl, …) while making text
-measurement correct — which is also *more* natural, since a negative text width
-is itself a blatant anti-detect tell.
+recover the true geometry by measuring the same string in a hidden DOM node and
+rebuild a full, self-consistent TextMetrics: width from the node's rect, and the
+ascent/descent/left/right box fields from the element's font metrics. This keeps
+every other anti-fingerprint defense intact (canvas readback noise, audio,
+webgl, …) while making text measurement correct — which is also *more* natural,
+since negative text metrics are themselves a blatant anti-detect tell.
 """
 
 import json
@@ -37,25 +41,54 @@ CONTENT_SCRIPT = r"""
     return span;
   }
 
+  // Real, self-consistent metrics for `text` in the context's current font,
+  // derived from a hidden DOM node (not noised). Returns null if we can't
+  // measure (no DOM yet) so the caller can fall back to the native object.
+  function realMetrics(font, text) {
+    var s = ensureSpan();
+    if (!s) return null;
+    s.style.font = font;
+    s.style.letterSpacing = '0px';
+    s.textContent = String(text);
+    var rect = s.getBoundingClientRect();
+    var width = rect.width;
+    // Font size in px → split into ascent/descent. Browsers don't expose the
+    // exact font ascent here, so use the standard ~0.8/0.2 split of the em,
+    // which is what fonts overwhelmingly use and keeps the box plausible and
+    // positive (the layout only needs sane, non-negative geometry).
+    var fontPx = parseFloat(getComputedStyle(s).fontSize) || rect.height || 0;
+    var ascent = fontPx * 0.8;
+    var descent = fontPx * 0.2;
+    return {
+      width: width,
+      actualBoundingBoxLeft: 0,
+      actualBoundingBoxRight: width,
+      actualBoundingBoxAscent: ascent,
+      actualBoundingBoxDescent: descent,
+      fontBoundingBoxAscent: ascent,
+      fontBoundingBoxDescent: descent,
+    };
+  }
+
   function patch(target) {
     var orig = target.measureText;
     if (!orig) return;
     function measureText(text) {
       var m = orig.call(this, text);
       try {
-        var s = ensureSpan();
-        if (!s) return m;
-        s.style.font = this.font;
-        s.style.letterSpacing = '0px';
-        s.textContent = String(text);
-        var w = s.getBoundingClientRect().width;
-        // Only override when the native width is clearly corrupt (noise drives
-        // it to ~0 or negative); leave legitimate values untouched.
-        if (!(m.width > 0) || Math.abs(m.width - w) > 1) {
-          return new Proxy(m, {
-            get: function (t, p) { return p === 'width' ? w : t[p]; },
-          });
-        }
+        // Repair when ANY metric is corrupt (noise drives them to ~0 or
+        // negative); a healthy positive width with sane boxes is left alone.
+        var corrupt = !(m.width > 0) ||
+          !(m.actualBoundingBoxRight > 0) ||
+          !(m.fontBoundingBoxAscent > 0);
+        if (!corrupt) return m;
+        var fixed = realMetrics(this.font, text);
+        if (!fixed) return m;
+        return new Proxy(m, {
+          get: function (t, p) {
+            return (p in fixed) ? fixed[p] : t[p];
+          },
+        });
       } catch (e) {}
       return m;
     }
