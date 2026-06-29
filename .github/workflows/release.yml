@@ -145,17 +145,6 @@ jobs:
           pip install flet==0.85.3
           pip install --prefer-binary -r requirements.txt
 
-      - name: Fetch bundled fonts into src/assets
-        shell: bash
-        run: |
-          ./download-fonts.sh
-          count=$(find src/assets/fonts -name '*.ttf' -o -name '*.ttc' | wc -l)
-          echo "bundled font faces: $count"
-          if [ "$count" -lt 8 ]; then
-            echo "ERROR: too few fonts bundled ($count); aborting." >&2
-            exit 1
-          fi
-
       - name: Build the Windows bundle
         run: flet build windows -v --no-rich-output
 
@@ -215,17 +204,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install flet==0.85.3
           pip install --prefer-binary -r requirements.txt
-
-      - name: Fetch bundled fonts into src/assets
-        run: |
-          chmod +x download-fonts.sh
-          ./download-fonts.sh
-          count=$(find src/assets/fonts -name '*.ttf' -o -name '*.ttc' | wc -l)
-          echo "bundled font faces: $count"
-          if [ "$count" -lt 8 ]; then
-            echo "ERROR: too few fonts bundled ($count); aborting." >&2
-            exit 1
-          fi
 
       - name: Build the macOS bundle
         run: flet build macos -v --no-rich-output
