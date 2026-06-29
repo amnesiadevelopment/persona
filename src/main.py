@@ -51,6 +51,32 @@ def _point_flet_at_bundled_client() -> None:
 _point_flet_at_bundled_client()
 
 
+def _ensure_flet_desktop_mode() -> None:
+    """Keep Flet in desktop mode on a Wayland session that has no DISPLAY.
+
+    Flet decides "this is a headless Linux server → run as a web server" purely
+    from `DISPLAY` being unset (flet.utils.is_linux_server). On a pure-Wayland
+    desktop DISPLAY is often empty while WAYLAND_DISPLAY is set, so Flet wrongly
+    switches to the web path and aborts trying to install the absent `flet-web`
+    package — the app never opens a window. When we can see we're on a real
+    graphical session (Wayland or an X session that just didn't export DISPLAY),
+    point DISPLAY at the XWayland default so Flet stays on the desktop path.
+    """
+    if not sys.platform.startswith("linux"):
+        return
+    if os.environ.get("DISPLAY"):
+        return
+    graphical = (
+        os.environ.get("WAYLAND_DISPLAY")
+        or os.environ.get("XDG_SESSION_TYPE") in ("wayland", "x11")
+        or os.environ.get("XDG_RUNTIME_DIR")
+    )
+    if graphical:
+        os.environ["DISPLAY"] = ":0"
+
+
+_ensure_flet_desktop_mode()
+
 
 from src.api.app import create_app
 from src.api.server import APIServer
