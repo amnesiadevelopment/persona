@@ -8,3 +8,4 @@ mcp>=1.28.0
 paramiko>=3.4
 PySocks>=1.7
 camoufox>=0.4
+pywin32>=306; sys_platform == "win32"

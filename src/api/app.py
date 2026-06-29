@@ -9,7 +9,6 @@ from fastapi.responses import JSONResponse
 
 from ..core.logging import get_logger
 from .routes import browser_router, profiles_router, proxy_router
-from .mcp_server import build_mcp
 from .mcp_token import get_or_create_token
 from .schemas.common import SuccessResponse
 
@@ -21,12 +20,29 @@ logger = get_logger("api")
 API_PREFIX = "/api/v1"
 
 
+def _try_build_mcp(container: Container):
+    """Build the MCP control server, or return None if its dependencies are
+    unavailable. The MCP stack pulls platform-specific packages (e.g. pywin32 on
+    Windows); when those are missing it must not take the whole app down — the
+    server is off by default anyway, so the app stays fully usable without it."""
+    try:
+        from .mcp_server import build_mcp
+
+        return build_mcp(container)
+    except Exception as e:
+        logger.warning("MCP control server unavailable, continuing without it: %s", e)
+        return None
+
+
 def create_app(container: Container) -> FastAPI:
     """Build and return the FastAPI application."""
-    mcp = build_mcp(container)
+    mcp = _try_build_mcp(container)
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI):
+        if mcp is None:
+            yield
+            return
         async with mcp.session_manager.run():
             yield
 
@@ -48,7 +64,8 @@ def create_app(container: Container) -> FastAPI:
                 return JSONResponse({"error": "unauthorized"}, status_code=401)
         return await call_next(request)
 
-    app.mount("/mcp", mcp.streamable_http_app())
+    if mcp is not None:
+        app.mount("/mcp", mcp.streamable_http_app())
 
     app.include_router(profiles_router, prefix=API_PREFIX)
     app.include_router(browser_router, prefix=API_PREFIX)
