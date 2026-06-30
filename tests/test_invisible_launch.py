@@ -1,0 +1,51 @@
+from src.services.browser.invisible_launch import (
+    _profile_prefs,
+    _remoting_name,
+    installed_version,
+)
+
+
+def test_remoting_name_is_dbus_valid():
+    # The remoting name doubles as the Firefox DBus name; a dash or space makes
+    # Firefox reject it and fall back to a shared default, which is what made a
+    # second profile fail to launch. It must be [A-Za-z0-9_] only.
+    import re
+
+    name = _remoting_name("My Profile-2")
+    assert re.fullmatch(r"persona_[A-Za-z0-9_]+", name)
+
+
+def test_installed_version_is_firefox_version_not_build_tag():
+    # The sidebar must show the real Firefox version (e.g. "150.0.1"), not the
+    # engine's internal build tag ("firefox-13").
+    v = installed_version()
+    assert not v.startswith("firefox-")
+
+
+def test_profile_prefs_force_dark_theme():
+    prefs = _profile_prefs({"search_engine": "duckduckgo"})
+    assert prefs["ui.systemUsesDarkTheme"] == 1
+
+
+def test_profile_prefs_close_without_confirmation():
+    # Closing the window with the X must not pop a "close N tabs?" dialog, which
+    # would leave the profile shown as running until dismissed.
+    prefs = _profile_prefs({"search_engine": "duckduckgo"})
+    assert prefs["browser.tabs.warnOnClose"] is False
+    assert prefs["browser.warnOnQuit"] is False
+
+
+def test_profile_prefs_homepage_follows_search_engine():
+    assert "duckduckgo.com" in _profile_prefs({"search_engine": "duckduckgo"})[
+        "browser.startup.homepage"
+    ]
+    assert "google.com" in _profile_prefs({"search_engine": "google"})[
+        "browser.startup.homepage"
+    ]
+
+
+def test_profile_prefs_skip_startup_network_fetch():
+    # The remote-settings server is pointed at a data: URL so Firefox skips the
+    # startup changeset poll that hangs a launch over Tor.
+    prefs = _profile_prefs({})
+    assert prefs["services.settings.server"].startswith("data:")

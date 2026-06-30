@@ -171,6 +171,15 @@ def _resumable_download(url: str, path: str, progress=None, timeout: int = 120) 
 
 
 def installed_version() -> str:
+    """The underlying Firefox version (e.g. "150.0.1") for display. The engine's
+    own BINARY_VERSION ("firefox-13") is an internal build tag, not a Firefox
+    version, so show the real upstream version the user recognises."""
+    try:
+        from invisible_playwright.constants import FIREFOX_UPSTREAM_VERSION
+
+        return FIREFOX_UPSTREAM_VERSION
+    except Exception:
+        pass
     try:
         from invisible_playwright import BINARY_VERSION
 
@@ -196,53 +205,155 @@ def _proxy_dict(proxy_url: str):
     return d
 
 
+from .window_entry import app_id_for as _remoting_name
+
+
 _SEARCH_URLS = {
     "duckduckgo": "https://duckduckgo.com/?q=",
     "google": "https://www.google.com/search?q=",
     "brave": "https://search.brave.com/search?q=",
 }
-_SEARCH_NAMES = {
-    "duckduckgo": "DuckDuckGo",
-    "google": "Google",
-    "brave": "Brave Search",
+
+# Remote Settings / Normandy / Pocket / telemetry all do a network fetch during
+# Firefox startup. Over Tor those fetches are slow, and two profiles starting at
+# once make one of them hang the full launch timeout on the changeset poll. The
+# data: URL makes Remote Settings' shouldSkipRemoteActivity short-circuit BEFORE
+# any request (a valid URL, so no invalid-URL hang — an empty string breaks URL
+# parsing and hangs instead). The rest kill the remaining startup requests so a
+# launch never blocks on the network. NEVER blank a *.server pref to disable a
+# feature — use its enabled flag; a blank server URL is an invalid URL and hangs.
+_NO_STARTUP_FETCH = {
+    "services.settings.server": "data:,#remote-settings-dummy/v1",
+    "services.settings.poll_interval": 0,
+    "services.settings.load_dumps": True,
+    "extensions.pocket.enabled": False,
+    "browser.newtabpage.activity-stream.feeds.section.topstories": False,
+    "browser.newtabpage.activity-stream.feeds.system.topstories": False,
+    "browser.newtabpage.activity-stream.showSponsored": False,
+    "browser.newtabpage.activity-stream.showSponsoredTopSites": False,
+    "app.normandy.enabled": False,
+    "app.normandy.first_run": False,
+    "app.shield.optoutstudies.enabled": False,
+    "messaging-system.rsexperimentloader.enabled": False,
+    "browser.discovery.enabled": False,
+    "extensions.blocklist.enabled": False,
+    "datareporting.policy.dataSubmissionEnabled": False,
+    "datareporting.healthreport.uploadEnabled": False,
+    "toolkit.telemetry.unified": False,
+    "toolkit.telemetry.archive.enabled": False,
+    "browser.search.update": False,
+    "browser.region.update.enabled": False,
+    "network.captive-portal-service.enabled": False,
+    "network.connectivity-service.enabled": False,
+    "extensions.getAddons.cache.enabled": False,
+    "browser.safebrowsing.downloads.remote.enabled": False,
 }
 
 
 def _profile_prefs(cfg: dict) -> dict:
     """Firefox prefs overlaid (LAST) on invisible_playwright's generated profile.
 
-    invisible forces session restore off; these bring back the behaviour
-    persona's users expect — the chosen search engine and restoring the last
-    session's tabs — so a profile keeps what the user set across launches.
-
-    The UI theme the user picks by hand persists in the profile's own prefs.js;
-    we deliberately don't force a theme pref here, so re-injected user.js can't
-    overwrite the user's choice on the next launch.
+    Brings back the behaviour persona's users expect on top of invisible's
+    stealth profile: a dark UI, the chosen start page, restored tabs, a visible
+    bookmarks toolbar — and disables every startup network fetch so a launch
+    never blocks on Tor (the multi-profile launch hang).
     """
+    prefs = dict(_NO_STARTUP_FETCH)
+    prefs.update(
+        {
+            # Force the dark UI regardless of the seed. invisible derives the
+            # theme from the fingerprint seed, so without this a profile's theme
+            # is random; persona's users expect dark.
+            "ui.systemUsesDarkTheme": 1,
+            # Restore the previous session's tabs/windows across launches. The
+            # persistent profile_dir holds sessionstore, so page 3 brings the
+            # user's tabs back. Write the store often so a tab opened seconds
+            # before close is still in the restored session.
+            "browser.startup.page": 3,
+            "browser.sessionstore.resume_from_crash": True,
+            "browser.sessionstore.interval": 1500,
+            # Always show the bookmarks toolbar so the shipped test bookmarks
+            # are visible (default only shows it on the new-tab page).
+            "browser.toolbars.bookmarks.visibility": "always",
+            # Close the window immediately when the user hits the X — no
+            # "close N tabs?" confirmation. The confirmation would leave the
+            # window (and the profile's "running" state) up until dismissed.
+            "browser.tabs.warnOnClose": False,
+            "browser.warnOnQuit": False,
+            "browser.sessionstore.warnOnQuit": False,
+        }
+    )
+    # The chosen search engine drives the start page so the window opens on the
+    # engine the user picked instead of about:home. (Firefox 150 has no
+    # per-profile way to set the URL-bar default engine without a network search
+    # config, so the address bar keeps its built-in default; the start page is
+    # what the user sees open.)
     engine = cfg.get("search_engine", "duckduckgo")
-    return {
-        # Address-bar search → chosen engine (keyword.URL covers non-keyword
-        # queries without rewriting search.json.mozlz4).
-        "keyword.enabled": True,
-        "keyword.URL": _SEARCH_URLS.get(engine, _SEARCH_URLS["duckduckgo"]),
-        "browser.search.defaultenginename": _SEARCH_NAMES.get(engine, "DuckDuckGo"),
-        "browser.urlbar.suggest.searches": True,
-        # Restore the previous session's tabs/windows (invisible defaults this
-        # to 0 = blank). The persistent profile_dir holds sessionstore.jsonlz4,
-        # so page 3 brings the user's tabs back across launches.
-        "browser.startup.page": 3,
-        "browser.sessionstore.resume_from_crash": True,
-        # Playwright drives Firefox's lifecycle, so the periodic sessionstore
-        # write (default 15s) is the only thing that captures the open tabs
-        # before the process is told to exit. Write more often so a tab opened
-        # seconds before close is still in the restored session.
-        "browser.sessionstore.interval": 1500,
-    }
+    start = _SEARCH_URLS.get(engine, _SEARCH_URLS["duckduckgo"]).split("?", 1)[0]
+    prefs["browser.startup.homepage"] = start
+    return prefs
+
+
+def _enter_with_timeout(InvisiblePlaywright, kwargs, profile_dir, attempts, per_try):
+    """Enter an InvisiblePlaywright context, bounding each attempt to `per_try`
+    seconds and retrying. Returns (inv, ctx) on success, or (None, None) if every
+    attempt timed out.
+
+    __enter__ is a blocking call, so it runs in a thread; when the attempt
+    overruns we kill the launching Firefox so the blocked call raises and the
+    thread unwinds, then try again with a clean profile lock."""
+    import threading
+
+    for _ in range(attempts):
+        holder = {}
+
+        def attempt():
+            try:
+                inv = InvisiblePlaywright(**kwargs)
+                holder["inv"] = inv
+                holder["ctx"] = inv.__enter__()
+            except BaseException as e:  # noqa: BLE001 — record, retry decides
+                holder["err"] = e
+
+        t = threading.Thread(target=attempt, daemon=True)
+        t.start()
+        t.join(per_try)
+        if "ctx" in holder:
+            return holder["inv"], holder["ctx"]
+        # Timed out or failed — kill the launching Firefox so the thread unwinds,
+        # clear the stale lock, and retry.
+        pid = _firefox_pid(profile_dir)
+        if pid:
+            try:
+                os.kill(pid, 9)
+            except OSError:
+                pass
+        t.join(5)
+        for fname in ("lock", ".parentlock"):
+            try:
+                os.remove(os.path.join(profile_dir, fname))
+            except OSError:
+                pass
+        try:
+            inv = holder.get("inv")
+            if inv is not None:
+                inv.__exit__(None, None, None)
+        except Exception:
+            pass
+    return None, None
 
 
 def _child(cfg: dict, write_fd: int) -> None:
     """Runs in the child: open a single visible Firefox window via
-    invisible_playwright and keep it alive until the user closes every window."""
+    invisible_playwright and keep it alive until the user closes the window.
+
+    Readiness and closure are reported on the pipe (BROWSER_STARTED /
+    BROWSER_CLOSED) so the launcher can treat this like the chromium Popen.
+    Closure is detected by watching the Firefox PROCESS, not Playwright events:
+    in a forked child the close events don't reliably wake this thread, but the
+    Firefox process exiting when the user closes the window always does.
+    """
+    import threading
     import time
 
     out = os.fdopen(write_fd, "w", buffering=1)
@@ -254,17 +365,25 @@ def _child(cfg: dict, write_fd: int) -> None:
         except Exception:
             pass
 
-    def close_and_exit() -> None:
-        """Report closure and hard-exit. Tearing the context down can block on
-        an already-dead Firefox, which would leave this child alive and the
-        profile stuck 'running'. Exiting the process directly skips that
-        teardown so the launcher sees the profile stop."""
-        emit("BROWSER_CLOSED")
+    profile_dir = cfg.get("profile_dir", "")
+
+    # A killed Firefox leaves lock/.parentlock in the profile; a stale lock makes
+    # the next launch think the profile is already running. persona only spawns
+    # this child when it knows the profile isn't running, so any lock here is
+    # stale — clear it before launching.
+    for fname in ("lock", ".parentlock"):
         try:
-            out.flush()
-        except Exception:
+            os.remove(os.path.join(profile_dir, fname))
+        except OSError:
             pass
-        os._exit(0)
+
+    # A DBus-valid, per-profile-unique remoting name so multiple profiles open
+    # at once (see _remoting_name). It doubles as the Wayland app_id for the
+    # taskbar icon. Set in this child's own environment — forks have separate
+    # memory, so this doesn't race with other profiles' children.
+    name = cfg.get("profile_name", "")
+    if name and _platform.IS_LINUX:
+        os.environ["MOZ_APP_REMOTINGNAME"] = _remoting_name(name)
 
     try:
         from invisible_playwright import InvisiblePlaywright
@@ -276,8 +395,7 @@ def _child(cfg: dict, write_fd: int) -> None:
     # short-circuit invisible's egress-IP lookup. invisible runs that lookup over
     # the proxy to drive a WebRTC srflx override, but on Tor WebRTC carries no
     # real candidates anyway, and the lookup adds ~15s of round-trips through
-    # Tor+proxy to every launch. Skipping it makes a proxied profile open about
-    # as fast as a direct one without weakening anything on a Tor egress.
+    # Tor+proxy to every launch.
     if cfg.get("timezone"):
         try:
             from invisible_playwright import _geo as _ipgeo
@@ -293,100 +411,162 @@ def _child(cfg: dict, write_fd: int) -> None:
         except Exception:
             pass
 
+    # Open at a sensible window size, not the full spoofed screen. invisible
+    # sizes the window from the fingerprint's screen (often 2560/3840 wide via
+    # the context viewport), so a profile spoofing a 4K monitor opens a giant
+    # window. Cap the viewport that drives the window BEFORE launch — overriding
+    # the kwargs the persistent context is built with, so the window opens at the
+    # right size with no after-the-fact resize. The spoofed `screen` stays large
+    # for the fingerprint; only the window is capped, like a non-maximized user.
+    try:
+        from invisible_playwright import launcher as _iplauncher2
+
+        _orig_kwargs = _iplauncher2.InvisiblePlaywright._persistent_context_kwargs
+
+        def _capped_kwargs(self, _orig=_orig_kwargs):
+            kw = _orig(self)
+            vp = kw.get("viewport")
+            if isinstance(vp, dict):
+                vp["width"] = min(vp.get("width", 1280), 1280)
+                vp["height"] = min(vp.get("height", 800), 800)
+            return kw
+
+        _iplauncher2.InvisiblePlaywright._persistent_context_kwargs = _capped_kwargs
+    except Exception:
+        pass
+
     proxy = _proxy_dict(cfg.get("proxy_url", ""))
-    # Seed the fingerprint deterministically from the profile name, so the same
+    # Seed the fingerprint deterministically from the profile name so the same
     # profile keeps a stable identity across launches.
     seed = abs(hash(cfg.get("profile_name", ""))) % (2**31)
     kwargs = {"seed": seed, "headless": False, "extra_prefs": _profile_prefs(cfg)}
     if proxy:
         kwargs["proxy"] = proxy
-    # Locale + timezone follow the proxy's geo so they match the exit IP. Empty
-    # values leave invisible_playwright's own auto-detection in place.
     locale = cfg.get("locale", "")
     timezone = cfg.get("timezone", "")
     if locale:
         kwargs["locale"] = locale
     if timezone:
         kwargs["timezone"] = timezone
-    # Taskbar identity (Linux desktop only): the window's app_id must equal the
-    # StartupWMClass persona wrote to the .desktop entry so labwc shows the fox
-    # icon + name. Under Wayland, Firefox derives app_id from
-    # MOZ_APP_REMOTINGNAME, not --name (which only sets the X11 instance); set
-    # the env so the match works on Wayland. --name is kept for the X11 path.
-    name = cfg.get("profile_name", "")
     if name and _platform.IS_LINUX:
-        kwargs["extra_args"] = [f"--name=persona-{name}"]
-        os.environ["MOZ_APP_REMOTINGNAME"] = f"persona-{name}"
-    # A persistent profile dir keeps cookies/bookmarks/logins/tabs across launches.
-    profile_dir = cfg.get("profile_dir", "")
+        # --name sets the X11 instance (the WM_CLASS labwc matches for the icon);
+        # MOZ_APP_REMOTINGNAME (set above) is the Wayland app_id. Keep both so
+        # the taskbar icon matches the .desktop StartupWMClass on either backend.
+        kwargs["extra_args"] = [f"--name={_remoting_name(name)}"]
     if profile_dir:
         kwargs["profile_dir"] = profile_dir
 
+    # Launch with a bounded timeout and one retry. Over Tor, a launch
+    # occasionally stalls on Firefox's startup remote-settings fetch and would
+    # otherwise hang the full 180s Playwright timeout — unacceptably long for the
+    # user. Cap each attempt; if it overruns, tear it down and try once more (a
+    # fresh attempt almost always comes up fast). InvisiblePlaywright's
+    # __enter__ is blocking, so run it in a thread and watchdog it: killing the
+    # Firefox process makes the blocked __enter__ raise so the thread unwinds.
+    inv, ctx = _enter_with_timeout(InvisiblePlaywright, kwargs, profile_dir, attempts=3, per_try=25)
+    if ctx is None:
+        emit("LAUNCH_FAILED: launch timed out")
+        emit("BROWSER_CLOSED")
+        os._exit(0)
+
+    # Prefix every tab/window title with the profile name so the taskbar button
+    # identifies which persona owns the window. An init script runs in every page
+    # the context opens, including tabs the user opens by hand.
+    if name:
+        _prefix = f"[{name}] "
+        try:
+            ctx.add_init_script(
+                "(()=>{const P=" + json.dumps(_prefix) + ";"
+                "const f=()=>{if(document.title&&!document.title.startsWith(P))"
+                "document.title=P+document.title;};f();"
+                "document.addEventListener('DOMContentLoaded',f);"
+                "const h=document.head||document.documentElement;"
+                "if(h)new MutationObserver(f).observe(h,"
+                "{subtree:true,childList:true,characterData:true});})();"
+            )
+        except Exception:
+            pass
+
+    # The persistent context already opened ONE window (about:home, which the
+    # startup-homepage pref navigates to the chosen engine). Don't open a second
+    # page — new_page() opens a whole new WINDOW in this Firefox, which is the
+    # "two windows, one flashes and dies" bug. The single window is enough; the
+    # user drives it from there.
+
+    # The window is on screen the moment __enter__ returns, so report ready now.
+    emit("BROWSER_STARTED")
+
+    # Detect closure by watching the WINDOW count, not the process. Playwright
+    # keeps the Firefox process ALIVE after the user closes the last window (a
+    # persistent context stays connected for more commands), so the process
+    # never exits on its own — watching the pid would never see the close and
+    # the profile would stay "running". But ctx.pages drops to 0 (and page
+    # "close" events fire) the instant the last window is closed. Poll the page
+    # count and treat zero as "user closed the browser".
+    closed = threading.Event()
+
+    def stop_gracefully() -> None:
+        """On STOP (parent terminate) close the context so Firefox removes its
+        own lock before exit; a hard kill would leave a stale lock and block the
+        next launch."""
+        try:
+            if inv is not None:
+                inv.__exit__(None, None, None)
+        except Exception:
+            pass
+        closed.set()
+
+    import signal
+
+    signal.signal(signal.SIGTERM, lambda *a: stop_gracefully())
+
+    while not closed.wait(0.5):
+        try:
+            if len(ctx.pages) == 0:
+                break  # user closed the last window
+        except Exception:
+            break  # context torn down (browser gone) → treat as closed
+
+    # Tear down so Firefox actually exits and releases its lock, then report.
     try:
-        with InvisiblePlaywright(**kwargs) as ctx:
-            # Prefix every tab/window title with the profile name so the taskbar
-            # button identifies which persona owns the window (the WM_CLASS from
-            # --name labels the icon group, but labwc shows the window title).
-            # An init script runs in every page the context opens, including tabs
-            # the user opens by hand — a per-page goto-time inject would miss those.
-            if name:
-                _prefix = f"[{name}] "
-                ctx.add_init_script(
-                    "(()=>{const P=" + json.dumps(_prefix) + ";"
-                    "const f=()=>{if(document.title&&!document.title.startsWith(P))"
-                    "document.title=P+document.title;};f();"
-                    "document.addEventListener('DOMContentLoaded',f);"
-                    "const h=document.head||document.documentElement;"
-                    "if(h)new MutationObserver(f).observe(h,"
-                    "{subtree:true,childList:true,characterData:true});})();"
-                )
-            # With profile_dir, __enter__ yields a persistent BrowserContext that
-            # already has one stray about:home page. We can't navigate that page
-            # (its browsingContext never binds — "loadURI undefined"), so open a
-            # fresh work page and close the stray, leaving exactly ONE window.
-            stray = list(ctx.pages)
-            page = ctx.new_page()
-            for p in stray:
-                try:
-                    p.close()
-                except Exception:
-                    pass
-            # The window exists the moment new_page() returns (Firefox is already
-            # up from __enter__), so report ready NOW — before navigating. The
-            # launcher's monitor waits for BROWSER_STARTED to flip the UI from
-            # loading to running; emitting it here means the profile shows ready
-            # as soon as the window is on screen, not after the start page loads
-            # over Tor. (LAUNCH_OK is not a marker the monitor knows.)
-            emit("BROWSER_STARTED")
-            # Kick off the start-page navigation without blocking: the user sees
-            # the window immediately and the page loads on its own, like any
-            # browser opening a slow site.
-            try:
-                page.goto(
-                    cfg.get("start_url", "https://www.google.com"),
-                    wait_until="commit",
-                    timeout=20000,
-                )
-            except Exception:
-                pass
-            # Exit when the user closes every window. is_connected() stays True
-            # while the Firefox process lives even with zero tabs, so it can't
-            # signal "all windows closed"; the page count going to 0 does (proven
-            # empirically). A brief grace period covers the moment right after
-            # launch before the work page is fully registered.
-            grace = time.time() + 5
-            while True:
-                time.sleep(0.5)
-                try:
-                    n = len(ctx.pages)
-                except Exception:
-                    break
-                if n == 0 and time.time() > grace:
-                    break
-            close_and_exit()
-    except Exception as e:
-        emit(f"LAUNCH_FAILED: {type(e).__name__}: {e}")
-    close_and_exit()
+        if inv is not None:
+            inv.__exit__(None, None, None)
+    except Exception:
+        pass
+    emit("BROWSER_CLOSED")
+    os._exit(0)
+
+
+def _firefox_pid(profile_dir: str):
+    """The pid of the Firefox process owning this profile, or None.
+
+    invisible launches `firefox -no-remote ... -profile <profile_dir> ...`; match
+    that command line so we watch the right process even with several profiles
+    open. profile_dir is unique per profile, so the match is unambiguous."""
+    if not profile_dir:
+        return None
+    try:
+        # `--` stops pgrep parsing the pattern (which starts with "-profile") as
+        # options. Match on the profile dir alone — it's unique per profile.
+        out = subprocess.check_output(
+            ["pgrep", "-f", "--", re.escape(profile_dir)], text=True
+        )
+    except Exception:
+        return None
+    for line in out.split():
+        try:
+            return int(line)
+        except ValueError:
+            continue
+    return None
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
 
 
 def _child_main() -> None:

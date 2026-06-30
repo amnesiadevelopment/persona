@@ -27,7 +27,7 @@ from .stealth_ext import build_stealth_extension
 from .font_config import build_font_config
 from .profile_seed import seed_profile_prefs
 from .title_ext import build_title_extension
-from .window_entry import write_window_entry
+from .window_entry import app_id_for, write_window_entry
 
 logger = get_logger("browser.process")
 
@@ -139,7 +139,6 @@ def _spawn_invisible(profile: Profile, profile_dir: str):
     cfg = {
         "os_type": profile.os_type,
         "proxy_url": proxy_url,
-        "start_url": "https://www.google.com",
         "profile_name": profile.name,
         "search_engine": profile.search_engine,
         "locale": lang,
@@ -299,9 +298,9 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
     ]
 
     # Wayland app_id (taskbar label/icon per persona) is an X11/Wayland concept;
-    # only pass it on Linux.
+    # only pass it on Linux. Matches the .desktop StartupWMClass via app_id_for.
     if _platform.supports_linux_desktop_integration():
-        args.append(f"--class=persona-{profile.name}")
+        args.append(f"--class={app_id_for(profile.name)}")
 
     if is_mobile and preset is not None:
         # Drive the real device's UA and a window sized to its CSS viewport, so
