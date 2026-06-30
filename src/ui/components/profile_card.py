@@ -167,9 +167,9 @@ def build_profile_card(
 
     os_label = _OS_LABELS.get(profile.os_type, profile.os_type)
     proxy_label = profile.proxy if profile.proxy else "direct"
+    # A running profile is already shown by the accent border and the stop
+    # button; a "· running" suffix here would be redundant.
     meta = f"{os_label} · {proxy_label}"
-    if is_running:
-        meta = f"{meta} · running"
 
     left_block = ft.Row(
         spacing=14,

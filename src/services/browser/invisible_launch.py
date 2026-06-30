@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 from ...core import platform as _platform
 
@@ -97,10 +98,6 @@ def _download_invisible(progress=None, log=None) -> bool:
     # Keep the partial next to the cache dir so a dropped Tor circuit resumes
     # across restarts (same approach as fp-chromium).
     archive_path = version_dir.parent / (asset + ".download")
-    say("Firefox engine: downloading…")
-    if not _resumable_download(str(url_archive), str(archive_path), progress=progress):
-        say("Firefox engine: download didn't complete — will resume next start.")
-        return False
 
     # checksums.txt is tiny; a plain fetch is fine.
     sums_path = version_dir.parent / "checksums.txt"
@@ -109,16 +106,43 @@ def _download_invisible(progress=None, log=None) -> bool:
         return False
     sums = _parse_checksums(open(sums_path, encoding="utf-8").read())
     expected = sums.get(asset)
-    if expected and _sha256_file(archive_path).lower() != expected.lower():
-        say("Firefox engine: checksum mismatch — discarding and retrying.")
+
+    # Download, then verify the sha256. Over Tor the long transfer can flip a
+    # byte (a circuit swaps mid-stream) and corrupt the archive; a single bad
+    # byte fails the checksum. Don't give up on the whole 118MB for that — retry
+    # the download a few times, starting each retry from a CLEAN file so a bad
+    # resume can't keep a corrupt tail around.
+    for verify_attempt in range(3):
+        say("Firefox engine: downloading…")
+        if not _resumable_download(
+            str(url_archive), str(archive_path), progress=progress
+        ):
+            say("Firefox engine: download didn't complete — will resume next start.")
+            return False
+        if not expected:
+            break  # no checksum to verify against
+        if _sha256_file(archive_path).lower() == expected.lower():
+            break  # verified
+        say("Firefox engine: checksum mismatch — re-downloading from scratch.")
         try:
-            os.remove(archive_path)
+            os.remove(archive_path)  # next attempt restarts clean, no bad resume
         except OSError:
             pass
+    else:
+        say("Firefox engine: couldn't get a clean download — will retry next start.")
         return False
 
+    # Rename to the real asset name before extracting — _extract picks the
+    # archive type from the extension, and the ".download" suffix hides the
+    # ".tar.gz" so it can't tell the format.
+    final_archive = version_dir.parent / asset
+    try:
+        os.replace(archive_path, final_archive)
+    except OSError:
+        final_archive = archive_path
     say("Firefox engine: extracting…")
-    _extract(archive_path, version_dir)
+    _extract(final_archive, version_dir)
+    archive_path = final_archive
     try:
         os.remove(archive_path)
     except OSError:
@@ -126,47 +150,148 @@ def _download_invisible(progress=None, log=None) -> bool:
     return is_invisible_installed()
 
 
-def _resumable_download(url: str, path: str, progress=None, timeout: int = 120) -> bool:
+class _KeepRangeRedirect(__import__("urllib.request", fromlist=["HTTPRedirectHandler"]).HTTPRedirectHandler):
+    """Re-attach the Range header after a redirect.
+
+    GitHub release downloads 302 to a signed CDN URL, and urllib's default
+    redirect handler builds the follow-up request WITHOUT the original headers —
+    so the Range header is lost and the CDN returns the whole file (200) instead
+    of the requested tail (206). That silently restarts the download from zero on
+    every resume, which over Tor never finishes. Carry Range across the redirect
+    so resume actually works."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None:
+            rng = req.headers.get("Range")
+            if rng:
+                new.add_header("Range", rng)
+        return new
+
+
+def _resumable_download(
+    url: str,
+    path: str,
+    progress=None,
+    timeout: int = 30,
+    stall_timeout: int = 25,
+) -> bool:
     """Download `url` to `path`, resuming with an HTTP Range header across
-    dropped connections. Returns True only on a complete file."""
+    dropped connections. Returns True only on a complete file.
+
+    Over Tor a circuit can connect and then go silent — the socket stays open
+    but no bytes arrive, so a plain socket timeout never fires and the download
+    hangs on "connecting" forever. A stall watchdog closes the response if no
+    byte arrives within `stall_timeout`, which raises in read() and drops us to
+    the next attempt with a fresh circuit; the partial on disk lets us resume."""
+    import threading
+    import urllib.error
     import urllib.request
 
+    opener = urllib.request.build_opener(_KeepRangeRedirect)
+
     attempts = 0
-    while attempts < 40:
+    while attempts < 80:
         attempts += 1
         have = os.path.getsize(path) if os.path.exists(path) else 0
         req = urllib.request.Request(url)
         if have:
             req.add_header("Range", f"bytes={have}-")
+        resp = None
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                cr = resp.headers.get("Content-Range")
-                if cr and "/" in cr:
-                    try:
-                        total = int(cr.rsplit("/", 1)[-1])
-                    except ValueError:
-                        total = 0
-                else:
-                    cl = int(resp.headers.get("Content-Length") or 0)
-                    total = (have + cl) if cl else 0
-                mode = "ab" if have and resp.status == 206 else "wb"
-                if mode == "wb":
-                    have = 0
-                done = have
-                with open(path, mode) as out:
+            try:
+                resp = opener.open(req, timeout=timeout)
+            except urllib.error.HTTPError as he:
+                # 416 = the Range is past the end → the file is already complete
+                # on disk (a finished partial from a prior run). Treat as done.
+                if he.code == 416 and have:
+                    return True
+                raise
+            cr = resp.headers.get("Content-Range")  # "bytes START-END/TOTAL"
+            range_start = None
+            total = 0
+            if cr and "/" in cr:
+                try:
+                    total = int(cr.rsplit("/", 1)[-1])
+                    range_start = int(cr.split()[1].split("-")[0])
+                except (ValueError, IndexError):
+                    range_start = None
+            else:
+                cl = int(resp.headers.get("Content-Length") or 0)
+                total = (have + cl) if (have and resp.status == 206 and cl) else cl
+
+            # Append ONLY when the server confirms a 206 starting exactly where
+            # our file ends. Otherwise (200, or a range starting somewhere else)
+            # we'd duplicate bytes and bloat the file past its real size — so
+            # restart from scratch by truncating. This is the bug that grew the
+            # archive to ~200MB instead of 118MB.
+            if have and resp.status == 206 and range_start == have:
+                seek_to = have
+            else:
+                seek_to = 0
+            done = seek_to
+
+            # Stall watchdog: if no chunk arrives within stall_timeout, close
+            # the response so the blocked read() raises and we retry with a new
+            # circuit. Reset the timer on every received chunk.
+            last_progress = [time.monotonic()]
+            stop_watch = threading.Event()
+
+            def _watch():
+                while not stop_watch.wait(1.0):
+                    if time.monotonic() - last_progress[0] > stall_timeout:
+                        try:
+                            resp.close()
+                        except Exception:
+                            pass
+                        return
+
+            watcher = threading.Thread(target=_watch, daemon=True)
+            watcher.start()
+            try:
+                # r+b so we can seek to the resume point without truncating a
+                # valid prefix; create the file if it's missing.
+                if not os.path.exists(path):
+                    open(path, "wb").close()
+                with open(path, "r+b") as out:
+                    out.seek(seek_to)
+                    if seek_to == 0:
+                        out.truncate(0)
                     while True:
                         chunk = resp.read(1 << 20)
                         if not chunk:
                             break
+                        # Never write past the known total — a stray duplicated
+                        # tail would otherwise grow the file.
+                        if total and done + len(chunk) > total:
+                            chunk = chunk[: total - done]
+                        if not chunk:
+                            break
                         out.write(chunk)
                         done += len(chunk)
+                        last_progress[0] = time.monotonic()
                         if progress is not None:
                             progress(done, total)
-            if total and os.path.getsize(path) < total:
-                continue  # dropped early, resume
+                    out.flush()
+            finally:
+                stop_watch.set()
+
+            size = os.path.getsize(path)
+            if total and size < total:
+                continue  # dropped early, resume with a fresh circuit
+            if total and size > total:
+                # Safety net: trim any overshoot back to the real size.
+                with open(path, "r+b") as out:
+                    out.truncate(total)
             return True
         except Exception:
             continue  # keep the partial for the next resume attempt
+        finally:
+            if resp is not None:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
     return False
 
 

@@ -99,9 +99,11 @@ class BrowserLauncher:
                 self._active_sessions[profile.name] = proc
                 self._stop_notifiers[profile.name] = stop_event
 
+            engine = getattr(profile, "engine", "chromium")
             threading.Thread(
                 target=self._monitor_process,
-                args=(proc, profile.name, log_callback, on_ready, notify_stopped),
+                args=(proc, profile.name, log_callback, on_ready,
+                      notify_stopped, engine),
                 daemon=True,
             ).start()
             threading.Thread(
@@ -157,8 +159,17 @@ class BrowserLauncher:
         log_callback: Callable[[str], None],
         on_ready: Callable[[], None] | None,
         notify_stopped: Callable[[], None],
+        engine: str = "chromium",
     ) -> None:
         ready_notified = False
+        # Only the Firefox engine emits a BROWSER_STARTED marker on its pipe.
+        # Chromium just streams its own log and never prints a readiness line,
+        # so without this it would sit "loading" forever and never show a stop
+        # button. The chromium process being up IS its readiness — fire on_ready
+        # right away so the profile flips to running with a stop button.
+        if engine != "firefox" and on_ready is not None:
+            ready_notified = True
+            on_ready()
         try:
             if proc.stdout is None:
                 return
