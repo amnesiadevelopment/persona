@@ -419,15 +419,30 @@ def _profile_prefs(cfg: dict) -> dict:
     return prefs
 
 
-def _enter_with_timeout(InvisiblePlaywright, kwargs, profile_dir, attempts, per_try):
+def _enter_with_timeout(InvisiblePlaywright, kwargs, profile_dir, attempts, per_try,
+                        inline=False):
     """Enter an InvisiblePlaywright context, bounding each attempt to `per_try`
     seconds and retrying. Returns (inv, ctx) on success, or (None, None) if every
     attempt timed out.
 
     __enter__ is a blocking call, so it runs in a thread; when the attempt
     overruns we kill the launching Firefox so the blocked call raises and the
-    thread unwinds, then try again with a clean profile lock."""
+    thread unwinds, then try again with a clean profile lock.
+
+    `inline=True` enters on the CALLING thread instead (no watchdog). Playwright's
+    sync API is thread-affine — the object must be used on the thread that made
+    it — so the Windows/macOS thread path enters inline, keeping ctx usable for
+    the close-watch. The launch is against a local engine there (not Tor), so the
+    startup-fetch stall the watchdog guards against doesn't apply."""
     import threading
+
+    if inline:
+        try:
+            inv = InvisiblePlaywright(**kwargs)
+            ctx = inv.__enter__()
+            return inv, ctx
+        except BaseException:  # noqa: BLE001
+            return None, None
 
     for _ in range(attempts):
         holder = {}
@@ -604,7 +619,10 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     # fresh attempt almost always comes up fast). InvisiblePlaywright's
     # __enter__ is blocking, so run it in a thread and watchdog it: killing the
     # Firefox process makes the blocked __enter__ raise so the thread unwinds.
-    inv, ctx = _enter_with_timeout(InvisiblePlaywright, kwargs, profile_dir, attempts=3, per_try=25)
+    inv, ctx = _enter_with_timeout(
+        InvisiblePlaywright, kwargs, profile_dir,
+        attempts=3, per_try=25, inline=in_thread,
+    )
     if ctx is None:
         emit("LAUNCH_FAILED: launch timed out")
         emit("BROWSER_CLOSED")
@@ -666,10 +684,39 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
 
         signal.signal(signal.SIGTERM, lambda *a: stop_gracefully())
 
+    # Closure watch: the user closing the last window drops ctx.pages to 0
+    # (Playwright keeps the Firefox PROCESS alive in a persistent context, so we
+    # watch WINDOWS not the process). ctx.pages must be read from the thread that
+    # created ctx — on both paths that's THIS thread now (see _enter_with_timeout,
+    # which enters inline on the thread path).
+    # On the fork path (Linux) ctx.pages drops to 0 when the user closes the last
+    # window, and reading it from this process is reliable. On the Windows thread
+    # path a persistent context keeps a background page after the visible window
+    # is gone (ctx.pages stays 1) AND the Firefox process stays alive — neither
+    # signals the close. What actually tracks "the user closed it" is the count
+    # of VISIBLE top-level Firefox windows for this profile, read from the OS. Grace
+    # period: the window takes a moment to appear, so don't treat the initial
+    # zero as closed.
+    saw_window = False
+    ff_pids: set = set()
+    ticks = 0
     while not closed.wait(0.5):
         if stop_event is not None and stop_event.is_set():
             stop_gracefully()
             break
+        if in_thread:
+            ticks += 1
+            # Re-resolve the profile's Firefox pids every ~2s (a WMI/PowerShell
+            # call is too slow to run every 0.5s tick). Firefox stays alive after
+            # the last window closes, so the pid set is stable once found.
+            if not ff_pids or ticks % 4 == 0:
+                ff_pids = _ff_pids_for_profile(profile_dir) or ff_pids
+            n = _count_visible_windows(ff_pids)
+            if n > 0:
+                saw_window = True
+            elif saw_window:
+                break  # a window existed and now none do → user closed it
+            continue
         try:
             if len(ctx.pages) == 0:
                 break  # user closed the last window
@@ -687,14 +734,94 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     return
 
 
+def _ff_pids_for_profile(profile_dir: str) -> set:
+    """All firefox.exe pids whose command line references this profile dir
+    (Windows only). Empty set on failure."""
+    if not profile_dir or not _platform.IS_WINDOWS:
+        return set()
+    # Match the profile dir case-insensitively; single-quote it for PowerShell and
+    # escape embedded quotes. Filter on Name in Where-Object (a -Filter string is
+    # fragile to quote through python→powershell).
+    needle = profile_dir.replace("'", "''")
+    ps = (
+        "Get-CimInstance Win32_Process | "
+        "Where-Object { $_.Name -eq 'firefox.exe' -and "
+        f"$_.CommandLine -like '*{needle}*' }} | "
+        "Select-Object -ExpandProperty ProcessId"
+    )
+    try:
+        out = subprocess.check_output(
+            ["powershell", "-NoProfile", "-Command", ps],
+            text=True, **_platform.no_window_kwargs(),
+        )
+        return {int(x) for x in out.split() if x.strip().isdigit()}
+    except Exception:
+        return set()
+
+
+def _count_visible_windows(pids: set) -> int:
+    """Count VISIBLE, titled top-level windows owned by any pid in `pids`
+    (Windows). Pure Win32 (EnumWindows) — fast enough to poll every tick. A
+    persistent-context Firefox keeps its process alive after the user closes the
+    last visible window, so this window count is the reliable close signal."""
+    if not pids or not _platform.IS_WINDOWS:
+        return 0
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    count = {"n": 0}
+
+    WNDENUMPROC = ctypes.WINFUNCTYPE(
+        wintypes.BOOL, wintypes.HWND, wintypes.LPARAM
+    )
+
+    def _cb(hwnd, _lparam):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value in pids and user32.GetWindowTextLengthW(hwnd) > 0:
+            count["n"] += 1
+        return True
+
+    try:
+        user32.EnumWindows(WNDENUMPROC(_cb), 0)
+    except Exception:
+        return -1
+    return count["n"]
+
+
 def _firefox_pid(profile_dir: str):
-    """The pid of the Firefox process owning this profile, or None.
+    """The pid of a Firefox process owning this profile, or None.
 
     invisible launches `firefox -no-remote ... -profile <profile_dir> ...`; match
     that command line so we watch the right process even with several profiles
-    open. profile_dir is unique per profile, so the match is unambiguous."""
+    open. profile_dir is unique per profile, so the match is unambiguous. Uses
+    pgrep on Linux/macOS and WMIC/tasklist on Windows (pgrep doesn't exist
+    there)."""
     if not profile_dir:
         return None
+    if _platform.IS_WINDOWS:
+        try:
+            # Query the command line of every firefox.exe and match the profile
+            # dir. CIM/WMI exposes CommandLine; PowerShell keeps this dependency
+            # free of extra packages.
+            ps = (
+                "Get-CimInstance Win32_Process -Filter "
+                "\"Name='firefox.exe'\" | "
+                "Where-Object { $_.CommandLine -like '*' + "
+                f"{json.dumps(profile_dir)}"
+                " + '*' } | Select-Object -First 1 -ExpandProperty ProcessId"
+            )
+            out = subprocess.check_output(
+                ["powershell", "-NoProfile", "-Command", ps],
+                text=True, **_platform.no_window_kwargs(),
+            )
+            out = out.strip()
+            return int(out) if out else None
+        except Exception:
+            return None
     try:
         # `--` stops pgrep parsing the pattern (which starts with "-profile") as
         # options. Match on the profile dir alone — it's unique per profile.
@@ -712,6 +839,17 @@ def _firefox_pid(profile_dir: str):
 
 
 def _pid_alive(pid: int) -> bool:
+    if pid is None:
+        return False
+    if _platform.IS_WINDOWS:
+        try:
+            out = subprocess.check_output(
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                text=True, **_platform.no_window_kwargs(),
+            )
+            return str(pid) in out
+        except Exception:
+            return False
     try:
         os.kill(pid, 0)
         return True
