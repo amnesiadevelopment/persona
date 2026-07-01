@@ -10,6 +10,10 @@ logger = get_logger("bookmark.store")
 DEFAULT_BOOKMARKS = {
     "cookie-viewer": "https://httpbingo.org/cookies",
     "cookie-store": "chrome://settings/cookies",
+    "browserleaks": "https://browserleaks.com/",
+    "pixelscan": "https://pixelscan.net/",
+    "iphey": "https://iphey.com/",
+    "browserscan": "https://browserscan.net/",
 }
 
 
