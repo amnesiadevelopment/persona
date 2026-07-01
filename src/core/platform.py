@@ -50,3 +50,20 @@ def supports_linux_desktop_integration() -> bool:
 def default_display() -> str | None:
     """X11 DISPLAY only matters on Linux; None elsewhere."""
     return ":0" if IS_LINUX else None
+
+
+def no_window_kwargs() -> dict:
+    """subprocess kwargs that keep a console tool (curl, engine binaries) from
+    flashing a console window on Windows. Empty on Linux/macOS, where a
+    subprocess never spawns a visible console."""
+    if not IS_WINDOWS:
+        return {}
+    import subprocess
+
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 0  # SW_HIDE
+    return {
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+        "startupinfo": startupinfo,
+    }

@@ -1,4 +1,9 @@
+import inspect
+
+from src.services.browser import invisible_launch
 from src.services.browser.invisible_launch import (
+    InvisibleProcess,
+    _child,
     _profile_prefs,
     _remoting_name,
     installed_version,
@@ -49,3 +54,30 @@ def test_profile_prefs_skip_startup_network_fetch():
     # startup changeset poll that hangs a launch over Tor.
     prefs = _profile_prefs({})
     assert prefs["services.settings.server"].startswith("data:")
+
+
+def test_child_accepts_stop_event_for_thread_path():
+    # On Windows/macOS _child runs in a thread and is stopped via a stop_event
+    # (SIGTERM is main-thread only). The signature must accept it.
+    params = inspect.signature(_child).parameters
+    assert "stop_event" in params
+
+
+def test_non_fork_launch_uses_thread_not_reexec(monkeypatch):
+    # The Win/Mac path must NOT re-exec sys.executable (in a flet bundle that's
+    # the GUI launcher, not python — it just opens a second window). It must run
+    # _child in a thread. Guard against a regression to subprocess.Popen.
+    monkeypatch.setattr(invisible_launch._platform, "needs_fork_launch", lambda: False)
+
+    def _boom(*a, **k):
+        raise AssertionError("non-fork path must not spawn a subprocess")
+
+    monkeypatch.setattr(invisible_launch.subprocess, "Popen", _boom)
+    # _child does the heavy lifting; stub it so no real Firefox launches.
+    monkeypatch.setattr(
+        invisible_launch, "_child", lambda cfg, wfd, stop_event=None: None
+    )
+    proc = InvisibleProcess({"profile_name": "t"})
+    assert hasattr(proc, "_thread")
+    assert hasattr(proc, "_stop_event")
+    proc.wait(timeout=5)

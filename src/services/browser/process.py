@@ -356,6 +356,7 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
         encoding="utf-8",
         errors="replace",
         bufsize=1,
+        **_platform.no_window_kwargs(),
     )
     proc._proxy_bridge = bridge  # type: ignore[attr-defined]
     return proc

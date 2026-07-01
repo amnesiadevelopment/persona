@@ -230,8 +230,26 @@ jobs:
           Name: "{autodesktop}\persona"; Filename: "{app}\$exeName"; Tasks: desktopicon
           [Tasks]
           Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"
+          Name: "cleaninstall"; Description: "Clean install: also delete my profiles and settings"; GroupDescription: "Data:"; Flags: unchecked
           [Run]
+          ; Refresh the shell icon cache so the new persona icon shows at every
+          ; size immediately (Windows otherwise keeps the old cached icon).
+          Filename: "{sys}\ie4uinit.exe"; Parameters: "-show"; Flags: runhidden nowait
           Filename: "{app}\$exeName"; Description: "Launch persona"; Flags: nowait postinstall skipifsilent
+          [Code]
+          // The user's data lives in %USERPROFILE%\.persona and is preserved by
+          // default. Only when the "clean install" task is checked do we wipe it.
+          procedure CurStepChanged(CurStep: TSetupStep);
+          var
+            personaData: String;
+          begin
+            if (CurStep = ssInstall) and WizardIsTaskSelected('cleaninstall') then
+            begin
+              personaData := ExpandConstant('{userprofile}\.persona');
+              if DirExists(personaData) then
+                DelTree(personaData, True, True, True);
+            end;
+          end;
           "@
           Set-Content -Path persona.iss -Value $iss -Encoding UTF8
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"

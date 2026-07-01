@@ -68,7 +68,10 @@ def _curl_get(url: str, headers: dict | None = None, max_time: int = 30) -> str:
         cmd += ["-H", f"{k}: {v}"]
     cmd.append(url)
     try:
-        out = subprocess.run(cmd, capture_output=True, timeout=max_time + 5)
+        out = subprocess.run(
+            cmd, capture_output=True, timeout=max_time + 5,
+            **_platform.no_window_kwargs(),
+        )
         if out.returncode != 0:
             return ""
         return out.stdout.decode("utf-8", "replace")
@@ -86,6 +89,7 @@ def remote_size(url: str, timeout: int = 30) -> int:
         out = subprocess.run(
             ["curl", "-fsSLI", "--connect-timeout", "15", "--max-time", str(timeout), url],
             capture_output=True, timeout=timeout + 5,
+            **_platform.no_window_kwargs(),
         )
         if out.returncode != 0:
             return 0
@@ -237,7 +241,9 @@ def download_update(url: str, timeout: int = 600, progress=None, size: int = 0) 
                 url,
             ]
             try:
-                rc = subprocess.run(cmd, capture_output=True).returncode
+                rc = subprocess.run(
+                    cmd, capture_output=True, **_platform.no_window_kwargs()
+                ).returncode
             except FileNotFoundError:
                 break  # no curl; nothing else to try
             have = os.path.getsize(staged) if os.path.exists(staged) else 0

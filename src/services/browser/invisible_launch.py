@@ -468,18 +468,24 @@ def _enter_with_timeout(InvisiblePlaywright, kwargs, profile_dir, attempts, per_
     return None, None
 
 
-def _child(cfg: dict, write_fd: int) -> None:
-    """Runs in the child: open a single visible Firefox window via
-    invisible_playwright and keep it alive until the user closes the window.
+def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
+    """Open a single visible Firefox window via invisible_playwright and keep it
+    alive until the user closes the window or the parent asks to stop.
+
+    Runs as a forked PROCESS on Linux and as a THREAD on Windows/macOS (where
+    re-exec via sys.executable can't work: sys.executable is the flet launcher,
+    not a python interpreter). When `stop_event` is given we're in a thread:
+    don't install a SIGTERM handler (only valid on the main thread) and never
+    os._exit (that would kill the whole app) — return instead and honour the
+    event for STOP.
 
     Readiness and closure are reported on the pipe (BROWSER_STARTED /
     BROWSER_CLOSED) so the launcher can treat this like the chromium Popen.
-    Closure is detected by watching the Firefox PROCESS, not Playwright events:
-    in a forked child the close events don't reliably wake this thread, but the
-    Firefox process exiting when the user closes the window always does.
     """
     import threading
     import time
+
+    in_thread = stop_event is not None
 
     out = os.fdopen(write_fd, "w", buffering=1)
 
@@ -489,6 +495,16 @@ def _child(cfg: dict, write_fd: int) -> None:
             out.flush()
         except Exception:
             pass
+
+    def _finish() -> None:
+        """End the child: a forked process must os._exit so it doesn't return
+        into the parent's code; a thread must just return."""
+        try:
+            out.flush()
+        except Exception:
+            pass
+        if not in_thread:
+            os._exit(0)
 
     profile_dir = cfg.get("profile_dir", "")
 
@@ -592,7 +608,8 @@ def _child(cfg: dict, write_fd: int) -> None:
     if ctx is None:
         emit("LAUNCH_FAILED: launch timed out")
         emit("BROWSER_CLOSED")
-        os._exit(0)
+        _finish()
+        return
 
     # Prefix every tab/window title with the profile name so the taskbar button
     # identifies which persona owns the window. An init script runs in every page
@@ -641,11 +658,18 @@ def _child(cfg: dict, write_fd: int) -> None:
             pass
         closed.set()
 
-    import signal
+    # A forked process is told to STOP with SIGTERM (only settable on the main
+    # thread). In the Windows/macOS thread path there's no signal; the parent
+    # sets stop_event, which we poll in the wait loop below.
+    if not in_thread:
+        import signal
 
-    signal.signal(signal.SIGTERM, lambda *a: stop_gracefully())
+        signal.signal(signal.SIGTERM, lambda *a: stop_gracefully())
 
     while not closed.wait(0.5):
+        if stop_event is not None and stop_event.is_set():
+            stop_gracefully()
+            break
         try:
             if len(ctx.pages) == 0:
                 break  # user closed the last window
@@ -659,7 +683,8 @@ def _child(cfg: dict, write_fd: int) -> None:
     except Exception:
         pass
     emit("BROWSER_CLOSED")
-    os._exit(0)
+    _finish()
+    return
 
 
 def _firefox_pid(profile_dir: str):
@@ -715,16 +740,34 @@ class InvisibleProcess:
             self.stdout = os.fdopen(r)
             self.pid = self._proc.pid
         else:
-            env = dict(os.environ)
-            env["PERSONA_INVISIBLE_CFG"] = json.dumps(cfg)
-            self._proc = subprocess.Popen(
-                [sys.executable, "-c",
-                 "from src.services.browser.invisible_launch import _child_main;"
-                 "_child_main()"],
-                stdout=subprocess.PIPE, env=env, text=True,
-            )
-            self.stdout = self._proc.stdout
-            self.pid = self._proc.pid
+            # Windows/macOS: sys.executable is the flet launcher, not a python
+            # interpreter, so re-exec (`sys.executable -c ...`) just opens a
+            # second GUI. Run _child in a THREAD in this process instead; it
+            # talks to us over an os.pipe exactly like the forked child does,
+            # and a stop_event stands in for the SIGTERM the fork path uses.
+            import threading
+
+            r, w = os.pipe()
+            self._stop_event = threading.Event()
+            wf = w
+
+            def _run(_cfg=cfg, _wf=wf, _ev=self._stop_event):
+                try:
+                    _child(_cfg, _wf, stop_event=_ev)
+                except Exception:
+                    try:
+                        os.write(_wf, b"BROWSER_CLOSED\n")
+                    except Exception:
+                        pass
+                    try:
+                        os.close(_wf)
+                    except Exception:
+                        pass
+
+            self._thread = threading.Thread(target=_run, daemon=True)
+            self._thread.start()
+            self.stdout = os.fdopen(r)
+            self.pid = 0
         self.returncode = None
 
     def poll(self):
@@ -733,30 +776,33 @@ class InvisibleProcess:
                 return None
             self.returncode = self._proc.exitcode
             return self.returncode
-        return self._proc.poll()
+        if self._thread.is_alive():
+            return None
+        self.returncode = 0
+        return 0
 
     def wait(self, timeout=None):
         if self._fork:
             self._proc.join(timeout)
             self.returncode = self._proc.exitcode
             return self.returncode
-        return self._proc.wait(timeout)
+        self._thread.join(timeout)
+        self.returncode = 0 if not self._thread.is_alive() else None
+        return self.returncode
 
     def terminate(self):
         if self._fork:
             if self._proc.is_alive():
                 self._proc.terminate()
         else:
-            if self._proc.poll() is None:
-                self._proc.terminate()
+            self._stop_event.set()
 
     def kill(self):
         if self._fork:
             if self._proc.is_alive():
                 self._proc.kill()
         else:
-            if self._proc.poll() is None:
-                self._proc.kill()
+            self._stop_event.set()
 
 
 def spawn(cfg: dict) -> InvisibleProcess:
