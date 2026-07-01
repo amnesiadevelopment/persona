@@ -39,6 +39,22 @@ def test_deleted_default_does_not_resurrect(store_path):
     assert "cookie-viewer" not in reloaded.bookmark_names()
 
 
+def test_empty_selection_defaults_to_stock_bookmarks(store_path):
+    # A profile with no pool and no picked bookmarks still opens with the stock
+    # testers on the toolbar, not an empty bar.
+    store = BookmarkStore(path=store_path)
+    resolved = store.resolve_selection(None, [])
+    names = [b.name for b in resolved]
+    for tester in ("browserleaks", "pixelscan", "iphey", "browserscan"):
+        assert tester in names
+
+
+def test_explicit_selection_is_honored_not_defaulted(store_path):
+    store = BookmarkStore(path=store_path)
+    resolved = store.resolve_selection(None, ["iphey"])
+    assert [b.name for b in resolved] == ["iphey"]
+
+
 def test_existing_store_gets_missing_testers_once(store_path, tmp_path):
     import json
 

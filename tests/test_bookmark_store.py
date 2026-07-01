@@ -135,9 +135,14 @@ def test_resolve_only_pool(tmp_path):
     assert [bm.name for bm in result] == ["a"]
 
 
-def test_resolve_empty(tmp_path):
+def test_resolve_empty_falls_back_to_stock_defaults(tmp_path):
+    # No pool and no picks → the profile gets the stock default bookmarks that
+    # exist in the store (so the toolbar isn't empty), not an empty list.
+    from src.services.bookmark.store import DEFAULT_BOOKMARKS
+
     s = _store(tmp_path)
-    assert s.resolve_selection(None, None) == []
+    names = {b.name for b in s.resolve_selection(None, None)}
+    assert names == {n for n in DEFAULT_BOOKMARKS if n in s.bookmarks}
 
 
 def test_resolve_skips_deleted_names(tmp_path):

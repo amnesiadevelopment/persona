@@ -375,6 +375,72 @@ _NO_STARTUP_FETCH = {
 }
 
 
+def _seed_firefox_bookmarks(profile_dir: str, bookmarks: list) -> None:
+    """Put the profile's bookmarks on the Firefox toolbar.
+
+    Firefox stores bookmarks in places.sqlite (not a plain file like Chromium),
+    so we can't write them directly. Instead drop a Netscape bookmarks.html and
+    ask Firefox to import it into the TOOLBAR on the next start via prefs, but
+    only ONCE per bookmark set (a marker file) so we don't re-import on every
+    launch or clobber bookmarks the user added by hand."""
+    if not profile_dir or not bookmarks:
+        return
+    try:
+        os.makedirs(profile_dir, exist_ok=True)
+        import hashlib
+
+        sig = hashlib.md5(
+            json.dumps(bookmarks, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        marker = os.path.join(profile_dir, ".persona-bookmarks-sig")
+        if os.path.exists(marker):
+            with open(marker, encoding="utf-8") as f:
+                if f.read().strip() == sig:
+                    return  # this exact set was already imported
+
+        rows = "\n".join(
+            f'        <DT><A HREF="{b.get("url", "")}">{b.get("name", "")}</A>'
+            for b in bookmarks
+        )
+        html = (
+            "<!DOCTYPE NETSCAPE-Bookmark-file-1>\n"
+            '<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">\n'
+            "<TITLE>Bookmarks</TITLE>\n<H1>Bookmarks</H1>\n<DL><p>\n"
+            '    <DT><H3 PERSONAL_TOOLBAR_FOLDER="true">Bookmarks Toolbar</H3>\n'
+            "    <DL><p>\n" + rows + "\n    </DL><p>\n</DL><p>\n"
+        )
+        html_path = os.path.join(profile_dir, "persona-bookmarks.html")
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(html)
+
+        # Ask Firefox to import the HTML into the toolbar at startup. user.js is
+        # read before every start; the prefs below trigger a one-time HTML import
+        # (Firefox clears importBookmarksHTML after acting on it).
+        userjs = os.path.join(profile_dir, "user.js")
+        lines = [
+            'user_pref("browser.places.importBookmarksHTML", true);',
+            f'user_pref("browser.bookmarks.file", {json.dumps(html_path)});',
+            'user_pref("browser.bookmarks.restore_default_bookmarks", false);',
+        ]
+        existing = ""
+        if os.path.exists(userjs):
+            with open(userjs, encoding="utf-8") as f:
+                existing = f.read()
+        keep = "\n".join(
+            ln for ln in existing.splitlines()
+            if "importBookmarksHTML" not in ln
+            and "browser.bookmarks.file" not in ln
+            and "restore_default_bookmarks" not in ln
+        )
+        with open(userjs, "w", encoding="utf-8") as f:
+            f.write((keep + "\n" if keep else "") + "\n".join(lines) + "\n")
+
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write(sig)
+    except Exception:
+        pass
+
+
 def _profile_prefs(cfg: dict) -> dict:
     """Firefox prefs overlaid (LAST) on invisible_playwright's generated profile.
 

@@ -232,6 +232,10 @@ def _spawn_invisible(profile: Profile, profile_dir: str):
     if _platform.supports_linux_desktop_integration():
         write_window_entry(profile.name, icon="firefox")
 
+    chosen = BookmarkStore().resolve_selection(
+        profile.bookmark_pool, profile.bookmarks
+    )
+
     cfg = {
         "os_type": profile.os_type,
         "proxy_url": proxy_url,
@@ -239,6 +243,7 @@ def _spawn_invisible(profile: Profile, profile_dir: str):
         "search_engine": profile.search_engine,
         "locale": lang,
         "timezone": tz,
+        "bookmarks": [{"name": b.name, "url": b.url} for b in chosen],
         "profile_dir": os.path.join(profile_dir, ".invisible-profile"),
         "_needs_fetch": not ensure_invisible_installed(),
     }

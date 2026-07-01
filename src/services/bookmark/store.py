@@ -186,6 +186,12 @@ class BookmarkStore:
             ordered.extend(self.pools[pool_name].bookmark_names)
         if bookmark_names:
             ordered.extend(bookmark_names)
+        # No explicit choice → give the profile the stock default bookmarks (the
+        # anti-detect testers), so every profile opens with them on the toolbar
+        # instead of an empty bar. An explicit choice (even one item) is honored
+        # as-is.
+        if not ordered:
+            ordered = [n for n in DEFAULT_BOOKMARKS if n in self.bookmarks]
         seen: set[str] = set()
         result: list[Bookmark] = []
         for n in ordered:
