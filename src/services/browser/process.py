@@ -323,6 +323,11 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
 
     if getattr(profile, "ai_control", False):
         args.append(f"--remote-debugging-port={cdp_port_for(profile.name)}")
+        # Chrome 132+ rejects a DevTools WebSocket whose Origin isn't allow-listed
+        # (403 "Rejected an incoming WebSocket connection"). The CDP client (a
+        # local automation driver) connects over 127.0.0.1, so allow-list the
+        # loopback origins — without this the exposed port is unusable.
+        args.append("--remote-allow-origins=http://127.0.0.1,http://localhost")
 
     proxy_server, bridge = _proxy_arg(proxy_url)
     if proxy_server:
