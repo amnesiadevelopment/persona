@@ -154,30 +154,13 @@ jobs:
       - name: Build the Windows bundle
         run: flet build windows -v --no-rich-output
 
-      - name: Stamp the real icon into persona.exe
-        shell: pwsh
-        run: |
-          # flet 0.85 leaves the default Flutter arrow icon in the compiled
-          # Windows runner even though flutter_launcher_icons reports success,
-          # so embed the real icon into the finished .exe directly. flet emits
-          # persona.exe both at the build root and under x64\runner\Release; the
-          # installer packages the tree, so stamp EVERY copy to be safe.
-          pip install --quiet pillow
-          $exes = Get-ChildItem build/windows -Recurse -Filter persona.exe
-          if (-not $exes) { Write-Error "no persona.exe in build/windows"; exit 1 }
-          foreach ($exe in $exes) {
-            $before = (Get-Item $exe.FullName).Length
-            python .github/scripts/set_exe_icon.py $exe.FullName src/assets/icon.png
-            if ($LASTEXITCODE -ne 0) { Write-Error "icon stamp failed for $($exe.FullName)"; exit 1 }
-            $after = (Get-Item $exe.FullName).Length
-            Write-Host "stamped $($exe.FullName): $before -> $after bytes"
-          }
-
       - name: Show what flet produced
         shell: bash
         run: |
           echo "=== build/windows tree ==="
           find build/windows -maxdepth 2 | head -60
+          echo "=== every persona.exe + size ==="
+          find build/windows -name persona.exe -exec ls -l {} \;
 
       - name: Build a Windows installer (Inno Setup)
         shell: pwsh
@@ -189,12 +172,22 @@ jobs:
             Select-Object -First 1
           if (-not $exe) { Write-Error "no .exe in build/windows"; exit 1 }
           $exeName = $exe.Name
-          Write-Host "app exe: $exeName"
+          Write-Host "app exe: $exeName at $($exe.FullName)"
+          pip install --quiet pillow
+          # flet 0.85 leaves the default Flutter arrow icon in the compiled
+          # runner even though flutter_launcher_icons reports success. Stamp the
+          # real icon into the EXACT exe the installer packages, right before
+          # ISCC, so nothing can overwrite it in between.
+          $before = (Get-Item $exe.FullName).Length
+          python .github/scripts/set_exe_icon.py $exe.FullName src/assets/icon.png
+          if ($LASTEXITCODE -ne 0) { Write-Error "icon stamp failed"; exit 1 }
+          $after = (Get-Item $exe.FullName).Length
+          Write-Host "stamped $($exe.FullName): $before -> $after bytes"
+          if ($after -le $before) { Write-Error "icon stamp did not grow the exe"; exit 1 }
           # Always derive the installer icon from the source PNG so the setup
           # gets persona's icon, not Inno Setup's default. A multi-size .ico
           # keeps it crisp at every shell size.
           $icoPath = Join-Path (Get-Location) "persona-installer.ico"
-          pip install --quiet pillow
           python -c "from PIL import Image; Image.open('src/assets/icon.png').save(r'$icoPath', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])"
           $iconLine = if (Test-Path $icoPath) { "SetupIconFile=$icoPath" } else { "" }
           Write-Host "installer icon: $iconLine"
@@ -257,10 +250,11 @@ jobs:
 
   build-macos:
     runs-on: macos-latest
-    # Temporarily disabled: flet build macos rebuilds Python deps from source and
-    # the cryptography wheel (Rust/maturin) fails to compile in this toolchain.
-    # Re-enable once that's resolved.
-    if: false
+    # flet build macos rebuilds the Python deps with its own pip, which tried to
+    # compile the cryptography Rust wheel from source and failed. Force pip (both
+    # ours and flet's internal one) to take cryptography's prebuilt macOS wheel.
+    env:
+      PIP_ONLY_BINARY: cryptography
     steps:
       - name: Check out the code
         uses: actions/checkout@v4
