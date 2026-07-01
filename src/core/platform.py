@@ -53,17 +53,16 @@ def default_display() -> str | None:
 
 
 def no_window_kwargs() -> dict:
-    """subprocess kwargs that keep a console tool (curl, engine binaries) from
-    flashing a console window on Windows. Empty on Linux/macOS, where a
-    subprocess never spawns a visible console."""
+    """subprocess kwargs that keep a console tool (curl) from flashing a console
+    window on Windows. Empty on Linux/macOS, where a subprocess never spawns a
+    visible console.
+
+    Uses ONLY CREATE_NO_WINDOW — it suppresses the console a console app would
+    allocate. Do NOT add a STARTUPINFO with wShowWindow=SW_HIDE: SW_HIDE is
+    applied to the FIRST window a GUI process shows, which hides the browser
+    window itself (chromium came up window-less because of this)."""
     if not IS_WINDOWS:
         return {}
     import subprocess
 
-    startupinfo = subprocess.STARTUPINFO()
-    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = 0  # SW_HIDE
-    return {
-        "creationflags": subprocess.CREATE_NO_WINDOW,
-        "startupinfo": startupinfo,
-    }
+    return {"creationflags": subprocess.CREATE_NO_WINDOW}
