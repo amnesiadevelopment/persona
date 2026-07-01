@@ -37,3 +37,31 @@ def test_deleted_default_does_not_resurrect(store_path):
     store.delete("cookie-viewer")
     reloaded = BookmarkStore(path=store_path)
     assert "cookie-viewer" not in reloaded.bookmark_names()
+
+
+def test_existing_store_gets_missing_testers_once(store_path, tmp_path):
+    import json
+
+    # An old store (pre-testers) with no defaults_seeded marker and only the two
+    # cookie bookmarks — as an upgrading user would have.
+    with open(store_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "bookmarks": {
+                    "cookie-viewer": {
+                        "name": "cookie-viewer",
+                        "url": "https://httpbingo.org/cookies",
+                    }
+                },
+                "pools": {},
+            },
+            f,
+        )
+    store = BookmarkStore(path=store_path)
+    for tester in ("browserleaks", "pixelscan", "iphey", "browserscan"):
+        assert tester in store.bookmark_names()
+    # migration is one-shot: after it runs, deleting a tester must not bring it
+    # back on the next load.
+    store.delete("pixelscan")
+    reloaded = BookmarkStore(path=store_path)
+    assert "pixelscan" not in reloaded.bookmark_names()

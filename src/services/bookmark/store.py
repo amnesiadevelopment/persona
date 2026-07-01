@@ -37,6 +37,19 @@ class BookmarkStore:
                 self.pools[name] = Pool(
                     name=p["name"], bookmark_names=p.get("bookmark_names", [])
                 )
+            # A store created before a default was added never had that default
+            # seeded. Add any missing defaults ONCE (guarded by a marker) so an
+            # existing user gets the anti-detect testers too, without resurrecting
+            # a default the user has since deleted.
+            if not data.get("defaults_seeded"):
+                added = False
+                for name, url in DEFAULT_BOOKMARKS.items():
+                    if name not in self.bookmarks:
+                        self.bookmarks[name] = Bookmark(name=name, url=url)
+                        added = True
+                self._defaults_seeded = True
+                if added:
+                    self._save()
             logger.info(
                 "Loaded %d bookmarks, %d pools",
                 len(self.bookmarks),
@@ -48,6 +61,7 @@ class BookmarkStore:
     def _seed_defaults(self) -> None:
         for name, url in DEFAULT_BOOKMARKS.items():
             self.bookmarks[name] = Bookmark(name=name, url=url)
+        self._defaults_seeded = True
         self._save()
 
     def _save(self) -> None:
@@ -55,6 +69,9 @@ class BookmarkStore:
             with pathlib.Path(self._path).open("w", encoding="utf-8") as f:
                 json.dump(
                     {
+                        "defaults_seeded": getattr(
+                            self, "_defaults_seeded", True
+                        ),
                         "bookmarks": {
                             n: b.to_dict() for n, b in self.bookmarks.items()
                         },

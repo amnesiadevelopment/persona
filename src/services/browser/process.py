@@ -91,10 +91,106 @@ def _timezone_for(country_code: str) -> str:
     return _COUNTRY_TZ.get((country_code or "").upper(), "UTC")
 
 
+# Windows timezone keys (from the registry / GetDynamicTimeZoneInformation) map
+# to IANA zones; only the common ones are listed, with an offset-based fallback
+# for the rest. A concrete zone is what makes Firefox report a local time that
+# matches the exit IP — otherwise a direct profile shows UTC and scanners flag a
+# "spoofed location".
+_WINDOWS_TZ_TO_IANA = {
+    "UTC": "UTC",
+    "GMT Standard Time": "Europe/London",
+    "Greenwich Standard Time": "Atlantic/Reykjavik",
+    "W. Europe Standard Time": "Europe/Berlin",
+    "Central Europe Standard Time": "Europe/Budapest",
+    "Central European Standard Time": "Europe/Warsaw",
+    "Romance Standard Time": "Europe/Paris",
+    "E. Europe Standard Time": "Europe/Chisinau",
+    "GTB Standard Time": "Europe/Bucharest",
+    "FLE Standard Time": "Europe/Kiev",
+    "Kaliningrad Standard Time": "Europe/Kaliningrad",
+    "Russian Standard Time": "Europe/Moscow",
+    "Turkey Standard Time": "Europe/Istanbul",
+    "Israel Standard Time": "Asia/Jerusalem",
+    "Arabic Standard Time": "Asia/Baghdad",
+    "Arab Standard Time": "Asia/Riyadh",
+    "Iran Standard Time": "Asia/Tehran",
+    "Arabian Standard Time": "Asia/Dubai",
+    "India Standard Time": "Asia/Kolkata",
+    "China Standard Time": "Asia/Shanghai",
+    "Tokyo Standard Time": "Asia/Tokyo",
+    "Korea Standard Time": "Asia/Seoul",
+    "Singapore Standard Time": "Asia/Singapore",
+    "W. Australia Standard Time": "Australia/Perth",
+    "AUS Eastern Standard Time": "Australia/Sydney",
+    "New Zealand Standard Time": "Pacific/Auckland",
+    "Eastern Standard Time": "America/New_York",
+    "Central Standard Time": "America/Chicago",
+    "Mountain Standard Time": "America/Denver",
+    "Pacific Standard Time": "America/Los_Angeles",
+    "US Eastern Standard Time": "America/Indiana/Indianapolis",
+    "Canada Central Standard Time": "America/Regina",
+    "SA Pacific Standard Time": "America/Bogota",
+    "SA Eastern Standard Time": "America/Cayenne",
+    "E. South America Standard Time": "America/Sao_Paulo",
+    "Argentina Standard Time": "America/Argentina/Buenos_Aires",
+    "Central Brazilian Standard Time": "America/Cuiaba",
+}
+
+
+def _windows_timezone_key() -> str | None:
+    """The Windows TimeZoneKeyName (e.g. 'FLE Standard Time'), via
+    GetDynamicTimeZoneInformation. None if it can't be read."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class DTZI(ctypes.Structure):
+            _fields_ = [
+                ("Bias", ctypes.c_long),
+                ("StandardName", wintypes.WCHAR * 32),
+                ("StandardDate", wintypes.BYTE * 16),
+                ("StandardBias", ctypes.c_long),
+                ("DaylightName", wintypes.WCHAR * 32),
+                ("DaylightDate", wintypes.BYTE * 16),
+                ("DaylightBias", ctypes.c_long),
+                ("TimeZoneKeyName", wintypes.WCHAR * 128),
+                ("DynamicDaylightTimeDisabled", wintypes.BOOLEAN),
+            ]
+
+        tzi = DTZI()
+        ctypes.windll.kernel32.GetDynamicTimeZoneInformation(ctypes.byref(tzi))
+        return tzi.TimeZoneKeyName or None
+    except Exception:
+        return None
+
+
+def _offset_zone() -> str:
+    """An Etc/GMT zone matching the host's current UTC offset — a coarse but
+    scanner-consistent fallback (POSIX Etc/GMT signs are inverted)."""
+    try:
+        from datetime import datetime
+
+        off = datetime.now().astimezone().utcoffset()
+        if off is None:
+            return "UTC"
+        hours = int(off.total_seconds() // 3600)
+        if hours == 0:
+            return "UTC"
+        return f"Etc/GMT{'+' if hours < 0 else '-'}{abs(hours)}"
+    except Exception:
+        return "UTC"
+
+
 def _host_timezone() -> str:
     """The host's IANA timezone, for a direct (no-proxy) profile. Resolving to a
-    concrete zone keeps invisible from doing a ~40s egress lookup at launch.
-    Falls back to UTC when the host zone can't be read."""
+    concrete zone keeps invisible from doing a ~40s egress lookup at launch and
+    makes Firefox's clock match the exit IP. Falls back to an offset zone, then
+    UTC, when the host zone can't be resolved."""
+    if _platform.IS_WINDOWS:
+        key = _windows_timezone_key()
+        if key and key in _WINDOWS_TZ_TO_IANA:
+            return _WINDOWS_TZ_TO_IANA[key]
+        return _offset_zone()
     try:
         from datetime import datetime
 

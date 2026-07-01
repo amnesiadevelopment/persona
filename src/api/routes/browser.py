@@ -96,7 +96,11 @@ async def launch_browser(
     bus.emit()
 
     cdp: BrowserCdpInfo | None = None
-    if automation:
+    # Only the chromium engine exposes a Chrome DevTools (CDP) port. The Firefox
+    # engine speaks Juggler via Playwright, not CDP, so waiting for a CDP
+    # endpoint there just times out (~15s) even though the window is already up.
+    engine = getattr(profile, "engine", "chromium")
+    if automation and engine not in ("firefox", "camoufox"):
         try:
             cdp = await cdp_info_for(name)
         except Exception as exc:
