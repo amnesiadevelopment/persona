@@ -30,3 +30,13 @@ def test_script_hooks_measuretext_and_uses_dom_width(tmp_path):
     assert "Proxy" in js
     # masks the override so it doesn't read as patched
     assert "[native code]" in js
+
+
+def test_detects_noise_regardless_of_sign(tmp_path):
+    d = build_measuretext_extension(str(tmp_path / "mt"))
+    js = (pathlib.Path(d) / "measuretext.js").read_text()
+    # The engine's noise factor can be positive OR negative depending on the
+    # seed, so a near-zero POSITIVE width is corrupt too — detection keys on
+    # magnitude, not sign, and skips empty strings (which measure zero).
+    assert "Math.abs(m.width)" in js
+    assert "String(text).length" in js

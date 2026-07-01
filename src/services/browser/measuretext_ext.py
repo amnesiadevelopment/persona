@@ -76,11 +76,14 @@ CONTENT_SCRIPT = r"""
     function measureText(text) {
       var m = orig.call(this, text);
       try {
-        // Repair when ANY metric is corrupt (noise drives them to ~0 or
-        // negative); a healthy positive width with sane boxes is left alone.
-        var corrupt = !(m.width > 0) ||
-          !(m.actualBoundingBoxRight > 0) ||
-          !(m.fontBoundingBoxAscent > 0);
+        // The engine scales every metric by a tiny factor (~1e-6), so a
+        // non-empty string comes back with |width| far below one pixel — the
+        // sign of that factor varies with the fingerprint seed, so both a
+        // near-zero negative AND a near-zero positive are noise. Empty text
+        // legitimately measures zero, so only repair a non-empty string whose
+        // width collapsed below a single pixel.
+        var hasText = String(text).length > 0;
+        var corrupt = hasText && !(Math.abs(m.width) >= 1);
         if (!corrupt) return m;
         var fixed = realMetrics(this.font, text);
         if (!fixed) return m;
