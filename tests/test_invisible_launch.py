@@ -63,21 +63,22 @@ def test_child_accepts_stop_event_for_thread_path():
     assert "stop_event" in params
 
 
-def test_count_visible_windows_empty_without_pids():
+def test_count_windows_for_pids_empty_without_pids():
     # No pids → no windows, and it never touches Win32 with an empty set.
-    from src.services.browser.invisible_launch import _count_visible_windows
+    from src.services.browser.invisible_launch import _count_windows_for_pids
 
-    assert _count_visible_windows(set()) == 0
+    assert _count_windows_for_pids(set()) == 0
 
 
 def test_close_watch_uses_window_count_on_thread_path():
-    # The Windows close-watch keys on the OS window count (a persistent-context
-    # Firefox keeps its process + a background page alive after the last window
-    # closes, so ctx.pages/pid can't signal the close). Guard the helper exists.
+    # The Windows close-watch keys on the OS window count of THIS profile's
+    # Firefox pids (a persistent-context Firefox keeps its process + a background
+    # page alive after the last window closes, so ctx.pages/pid-alive can't
+    # signal the close). Pure-ctypes helpers, no subprocess.
     from src.services.browser import invisible_launch
 
-    assert hasattr(invisible_launch, "_count_visible_windows")
-    assert hasattr(invisible_launch, "_ff_pids_for_profile")
+    assert hasattr(invisible_launch, "_count_windows_for_pids")
+    assert hasattr(invisible_launch, "_firefox_pids_snapshot")
 
 
 def test_non_fork_launch_uses_thread_not_reexec(monkeypatch):

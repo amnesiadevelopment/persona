@@ -631,9 +631,10 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
 
     # Prefix every tab/window title with the profile name so the taskbar button
     # identifies which persona owns the window. An init script runs in every page
-    # the context opens, including tabs the user opens by hand.
+    # the context opens, including tabs the user opens by hand. The prefix also
+    # lets the close-watch below count THIS profile's windows by title.
+    _prefix = f"[{name}] " if name else None
     if name:
-        _prefix = f"[{name}] "
         try:
             ctx.add_init_script(
                 "(()=>{const P=" + json.dumps(_prefix) + ";"
@@ -698,24 +699,16 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     # period: the window takes a moment to appear, so don't treat the initial
     # zero as closed.
     saw_window = False
-    ff_pids: set = set()
-    ticks = 0
     while not closed.wait(0.5):
         if stop_event is not None and stop_event.is_set():
             stop_gracefully()
             break
         if in_thread:
-            ticks += 1
-            # Re-resolve the profile's Firefox pids every ~2s (a WMI/PowerShell
-            # call is too slow to run every 0.5s tick). Firefox stays alive after
-            # the last window closes, so the pid set is stable once found.
-            if not ff_pids or ticks % 4 == 0:
-                ff_pids = _ff_pids_for_profile(profile_dir) or ff_pids
-            n = _count_visible_windows(ff_pids)
+            n = _count_windows_for_pids(_firefox_pids_snapshot())
             if n > 0:
                 saw_window = True
             elif saw_window:
-                break  # a window existed and now none do → user closed it
+                break
             continue
         try:
             if len(ctx.pages) == 0:
@@ -734,36 +727,54 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     return
 
 
-def _ff_pids_for_profile(profile_dir: str) -> set:
-    """All firefox.exe pids whose command line references this profile dir
-    (Windows only). Empty set on failure."""
-    if not profile_dir or not _platform.IS_WINDOWS:
+def _firefox_pids_snapshot() -> set:
+    """Set of all running firefox.exe pids (Windows), via a Toolhelp32 process
+    snapshot. Pure ctypes — no subprocess. Empty set on failure."""
+    if not _platform.IS_WINDOWS:
         return set()
-    # Match the profile dir case-insensitively; single-quote it for PowerShell and
-    # escape embedded quotes. Filter on Name in Where-Object (a -Filter string is
-    # fragile to quote through python→powershell).
-    needle = profile_dir.replace("'", "''")
-    ps = (
-        "Get-CimInstance Win32_Process | "
-        "Where-Object { $_.Name -eq 'firefox.exe' -and "
-        f"$_.CommandLine -like '*{needle}*' }} | "
-        "Select-Object -ExpandProperty ProcessId"
-    )
+    import ctypes
+    from ctypes import wintypes
+
+    TH32CS_SNAPPROCESS = 0x00000002
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", ctypes.c_long),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", ctypes.c_wchar * 260),
+        ]
+
+    kernel32 = ctypes.windll.kernel32
+    pids = set()
     try:
-        out = subprocess.check_output(
-            ["powershell", "-NoProfile", "-Command", ps],
-            text=True, **_platform.no_window_kwargs(),
-        )
-        return {int(x) for x in out.split() if x.strip().isdigit()}
+        snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if snap == -1:
+            return set()
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        ok = kernel32.Process32FirstW(snap, ctypes.byref(entry))
+        while ok:
+            if entry.szExeFile.lower() == "firefox.exe":
+                pids.add(entry.th32ProcessID)
+            ok = kernel32.Process32NextW(snap, ctypes.byref(entry))
+        kernel32.CloseHandle(snap)
     except Exception:
         return set()
+    return pids
 
 
-def _count_visible_windows(pids: set) -> int:
+def _count_windows_for_pids(pids: set) -> int:
     """Count VISIBLE, titled top-level windows owned by any pid in `pids`
-    (Windows). Pure Win32 (EnumWindows) — fast enough to poll every tick. A
-    persistent-context Firefox keeps its process alive after the user closes the
-    last visible window, so this window count is the reliable close signal."""
+    (Windows). Pure ctypes EnumWindows. A persistent-context Firefox keeps its
+    process alive after the user closes the last visible window, so this window
+    count is the reliable close signal. Returns 0 when pids is empty."""
     if not pids or not _platform.IS_WINDOWS:
         return 0
     import ctypes
@@ -777,18 +788,21 @@ def _count_visible_windows(pids: set) -> int:
     )
 
     def _cb(hwnd, _lparam):
-        if not user32.IsWindowVisible(hwnd):
-            return True
-        pid = wintypes.DWORD()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        if pid.value in pids and user32.GetWindowTextLengthW(hwnd) > 0:
-            count["n"] += 1
+        try:
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value in pids and user32.GetWindowTextLengthW(hwnd) > 0:
+                count["n"] += 1
+        except Exception:
+            pass
         return True
 
     try:
         user32.EnumWindows(WNDENUMPROC(_cb), 0)
     except Exception:
-        return -1
+        return 0
     return count["n"]
 
 
