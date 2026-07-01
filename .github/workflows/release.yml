@@ -159,13 +159,19 @@ jobs:
         run: |
           # flet 0.85 leaves the default Flutter arrow icon in the compiled
           # Windows runner even though flutter_launcher_icons reports success,
-          # so embed the real icon into the finished .exe directly.
-          $exe = Get-ChildItem build/windows -Recurse -Filter *.exe |
-            Where-Object { $_.Name -notmatch 'unins|vc_redist|setup' } |
-            Select-Object -First 1
-          if (-not $exe) { Write-Error "no .exe in build/windows"; exit 1 }
+          # so embed the real icon into the finished .exe directly. flet emits
+          # persona.exe both at the build root and under x64\runner\Release; the
+          # installer packages the tree, so stamp EVERY copy to be safe.
           pip install --quiet pillow
-          python .github/scripts/set_exe_icon.py $exe.FullName src/assets/icon.png
+          $exes = Get-ChildItem build/windows -Recurse -Filter persona.exe
+          if (-not $exes) { Write-Error "no persona.exe in build/windows"; exit 1 }
+          foreach ($exe in $exes) {
+            $before = (Get-Item $exe.FullName).Length
+            python .github/scripts/set_exe_icon.py $exe.FullName src/assets/icon.png
+            if ($LASTEXITCODE -ne 0) { Write-Error "icon stamp failed for $($exe.FullName)"; exit 1 }
+            $after = (Get-Item $exe.FullName).Length
+            Write-Host "stamped $($exe.FullName): $before -> $after bytes"
+          }
 
       - name: Show what flet produced
         shell: bash
