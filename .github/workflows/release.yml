@@ -171,10 +171,14 @@ jobs:
           if (-not $exe) { Write-Error "no .exe in build/windows"; exit 1 }
           $exeName = $exe.Name
           Write-Host "app exe: $exeName"
-          # icon: flet bundles assets; fall back to the source icon.png-derived ico
-          $icon = Get-ChildItem build/windows -Recurse -Filter *.ico |
-            Select-Object -First 1
-          $iconLine = if ($icon) { "SetupIconFile=$($icon.FullName)" } else { "" }
+          # Always derive the installer icon from the source PNG so the setup
+          # gets persona's icon, not Inno Setup's default. A multi-size .ico
+          # keeps it crisp at every shell size.
+          $icoPath = Join-Path (Get-Location) "persona-installer.ico"
+          pip install --quiet pillow
+          python -c "from PIL import Image; Image.open('src/assets/icon.png').save(r'$icoPath', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])"
+          $iconLine = if (Test-Path $icoPath) { "SetupIconFile=$icoPath" } else { "" }
+          Write-Host "installer icon: $iconLine"
           $iss = @"
           [Setup]
           AppName=persona

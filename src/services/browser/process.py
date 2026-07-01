@@ -282,20 +282,28 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
         f"--lang={lang}",
         f"--accept-lang={lang},{lang.split('-')[0]}",
         f"--load-extension={','.join(extensions)}",
-        # Software GL (SwiftShader) keeps the GPU process alive so the
-        # fingerprint WebGL spoofer populates a believable vendor/renderer.
-        # --disable-gpu killed it, leaving a blank WebGL that flagged as fake.
-        "--use-gl=angle",
-        "--use-angle=swiftshader",
-        "--enable-unsafe-swiftshader",
-        "--password-store=basic",
-        "--use-mock-keychain",
         "--no-first-run",
         "--no-default-browser-check",
         "--restore-last-session",
         "--hide-crash-restore-bubble",
         "--force-dark-mode",
     ]
+
+    if _platform.IS_LINUX:
+        # Software GL (SwiftShader) keeps the GPU process alive so the
+        # fingerprint WebGL spoofer populates a believable vendor/renderer;
+        # --disable-gpu left a blank WebGL that flagged as fake. On Windows the
+        # native D3D11 ANGLE backend renders correctly — forcing SwiftShader for
+        # the whole GL stack there paints a BLACK, unrendered window, so keep
+        # these Linux-only. The keychain flags are Linux/mac password-store
+        # concepts and are meaningless (and unneeded) on Windows.
+        args += [
+            "--use-gl=angle",
+            "--use-angle=swiftshader",
+            "--enable-unsafe-swiftshader",
+            "--password-store=basic",
+            "--use-mock-keychain",
+        ]
 
     # Wayland app_id (taskbar label/icon per persona) is an X11/Wayland concept;
     # only pass it on Linux. Matches the .desktop StartupWMClass via app_id_for.
