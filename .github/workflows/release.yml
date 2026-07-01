@@ -154,6 +154,19 @@ jobs:
       - name: Build the Windows bundle
         run: flet build windows -v --no-rich-output
 
+      - name: Stamp the real icon into persona.exe
+        shell: pwsh
+        run: |
+          # flet 0.85 leaves the default Flutter arrow icon in the compiled
+          # Windows runner even though flutter_launcher_icons reports success,
+          # so embed the real icon into the finished .exe directly.
+          $exe = Get-ChildItem build/windows -Recurse -Filter *.exe |
+            Where-Object { $_.Name -notmatch 'unins|vc_redist|setup' } |
+            Select-Object -First 1
+          if (-not $exe) { Write-Error "no .exe in build/windows"; exit 1 }
+          pip install --quiet pillow
+          python .github/scripts/set_exe_icon.py $exe.FullName src/assets/icon.png
+
       - name: Show what flet produced
         shell: bash
         run: |
