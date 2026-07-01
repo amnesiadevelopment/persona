@@ -191,10 +191,22 @@ jobs:
           python -c "from PIL import Image; Image.open('src/assets/icon.png').save(r'$icoPath', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])"
           $iconLine = if (Test-Path $icoPath) { "SetupIconFile=$icoPath" } else { "" }
           Write-Host "installer icon: $iconLine"
+          # Version string: on a tag it's the tag name; on a manual dispatch
+          # github.ref_name is a branch, so fall back to the app's own version.
+          $ver = "${{ github.ref_name }}"
+          if ($ver -notmatch '^v?\d+\.\d+') {
+            $ver = (Select-String -Path src/services/app_update/updater.py -Pattern 'APP_VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          }
+          Write-Host "installer version: $ver"
           $iss = @"
           [Setup]
+          ; A FIXED AppId makes every new installer recognise a prior persona
+          ; install and upgrade it IN PLACE (old files removed, one entry in
+          ; Programs and Features) instead of leaving a second copy. User data
+          ; lives in %USERPROFILE%\.persona and is never touched by (un)install.
+          AppId={{6F2A9C1E-3B7D-4E52-9A44-A1B2C3D4E5F6}}
           AppName=persona
-          AppVersion=${{ github.ref_name }}
+          AppVersion=$ver
           AppPublisher=persona contributors
           DefaultDirName={autopf}\persona
           DefaultGroupName=persona
@@ -206,6 +218,11 @@ jobs:
           ArchitecturesInstallIn64BitMode=x64compatible
           ArchitecturesAllowed=x64compatible
           $iconLine
+          [InstallDelete]
+          ; Clear the previous app payload before copying the new one so a file
+          ; dropped between versions doesn't linger. Only touches {app} (Program
+          ; Files\persona), NOT the user's .persona data.
+          Type: filesandordirs; Name: "{app}\*"
           [Files]
           Source: "build\windows\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
           [Icons]
