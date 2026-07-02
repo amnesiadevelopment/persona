@@ -309,6 +309,52 @@ jobs:
                 WipePersonaEngines;
             end;
           end;
+
+          // Dark-theme the wizard with no external DLL: recolour each control by
+          // type. TColor is 0x00BBGGRR (hex literals inline; no const section so
+          // the Pascal parser stays happy). One self-recursive proc, no forward.
+          procedure DarkenTree(Parent: TWinControl);
+          var
+            i: Integer;
+            C: TControl;
+          begin
+            Parent.Color := $001B110D;
+            for i := 0 to Parent.ControlCount - 1 do
+            begin
+              C := Parent.Controls[i];
+              if C is TNewStaticText then
+              begin
+                TNewStaticText(C).Color := $001B110D;
+                TNewStaticText(C).Font.Color := $00F3EDE6;
+              end
+              else if C is TNewCheckBox then
+                TNewCheckBox(C).Font.Color := $00F3EDE6
+              else if C is TNewRadioButton then
+                TNewRadioButton(C).Font.Color := $00F3EDE6
+              else if C is TNewEdit then
+              begin
+                TNewEdit(C).Color := $002A1F17;
+                TNewEdit(C).Font.Color := $00F3EDE6;
+              end
+              else if C is TLabel then
+                TLabel(C).Font.Color := $00F3EDE6;
+              if C is TWinControl then
+                DarkenTree(TWinControl(C));
+            end;
+          end;
+
+          procedure InitializeWizard();
+          begin
+            WizardForm.Color := $001B110D;
+            WizardForm.MainPanel.Color := $001B110D;
+            WizardForm.PageNameLabel.Font.Color := $00F3EDE6;
+            WizardForm.PageDescriptionLabel.Font.Color := $009E948B;
+            WizardForm.WelcomeLabel1.Font.Color := $00F3EDE6;
+            WizardForm.WelcomeLabel2.Font.Color := $009E948B;
+            WizardForm.FinishedHeadingLabel.Font.Color := $00F3EDE6;
+            WizardForm.FinishedLabel.Font.Color := $009E948B;
+            DarkenTree(WizardForm);
+          end;
           "@
           Set-Content -Path persona.iss -Value $iss -Encoding UTF8
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
