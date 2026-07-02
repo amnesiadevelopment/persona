@@ -404,6 +404,29 @@ def _system_dpr() -> float:
         return 1.0
 
 
+def _screen_metrics() -> str:
+    """A compact string of the host display metrics for debugging HiDPI sizing:
+    physical pixel size, virtual (scaled) size, and the work area. Windows only;
+    empty elsewhere."""
+    if not _platform.IS_WINDOWS:
+        return "n/a"
+    try:
+        import ctypes
+
+        u = ctypes.windll.user32
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            pass
+        SM_CXSCREEN, SM_CYSCREEN = 0, 1
+        vx = u.GetSystemMetrics(SM_CXSCREEN)
+        vy = u.GetSystemMetrics(SM_CYSCREEN)
+        # physical resolution via EnumDisplaySettings (current mode)
+        return f"virt={vx}x{vy}"
+    except Exception:
+        return "err"
+
+
 from .window_entry import app_id_for as _remoting_name
 
 
@@ -725,12 +748,23 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     res = cfg.get("resolution")
     if res:
         w, h = int(res[0]), int(res[1])
-        # Match the host's real display scale so the page renders at a readable
-        # size. Forcing dpr=1.0 made the content tiny on a HiDPI monitor (a 4K
-        # screen at 150% needs dpr≈1.5); using the actual system scale gives the
-        # same devicePixelRatio a real user on that machine has — readable AND a
-        # plausible fingerprint. Spoofed screen.width/height still drive the
-        # window size and the reported screen geometry.
+        dpr = _system_dpr()
+        # DEBUG: log the real display metrics so the HiDPI window sizing can be
+        # tuned to an actual 4K/scaled host (dev VMs can't reproduce HiDPI).
+        try:
+            emit(f"HIDPI_DEBUG dpr={dpr} chosen={w}x{h} metrics={_screen_metrics()}")
+        except Exception:
+            pass
+        # Open the window physically at the chosen resolution: Firefox's
+        # --width/--height are CSS pixels, so at dpr>1 pass resolution/dpr and the
+        # physical window comes out to exactly the chosen resolution instead of
+        # resolution*dpr (which overflowed the monitor). The spoofed screen still
+        # reports the full chosen resolution for the fingerprint.
+        if dpr > 1.0:
+            cw, ch = int(round(w / dpr)), int(round(h / dpr))
+            _extra_win = [f"--width={cw}", f"--height={ch}"]
+        else:
+            _extra_win = [f"--width={w}", f"--height={h}"]
         kwargs["pin"] = {
             "screen.width": w,
             "screen.height": h,
@@ -746,11 +780,16 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
         kwargs["locale"] = locale
     if timezone:
         kwargs["timezone"] = timezone
+    extra_args: list = []
     if name and _platform.IS_LINUX:
         # --name sets the X11 instance (the WM_CLASS labwc matches for the icon);
         # MOZ_APP_REMOTINGNAME (set above) is the Wayland app_id. Keep both so
         # the taskbar icon matches the .desktop StartupWMClass on either backend.
-        kwargs["extra_args"] = [f"--name={_remoting_name(name)}"]
+        extra_args.append(f"--name={_remoting_name(name)}")
+    if res:
+        extra_args.extend(_extra_win)
+    if extra_args:
+        kwargs["extra_args"] = extra_args
     if profile_dir:
         kwargs["profile_dir"] = profile_dir
 

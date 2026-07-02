@@ -154,7 +154,9 @@ def build_profile_card(
         on_launch,
         engine=getattr(profile, "engine", "chromium"),
     )
-    action_buttons = _build_action_buttons(profile.name, on_edit, on_delete)
+    action_buttons = _build_action_buttons(
+        profile.name, on_edit, on_delete, is_running=is_running
+    )
     select_box = _build_select_box(profile.name, is_selected, on_select)
     indicator = _proxy_indicator(proxy, on_check_proxy, proxy_checking)
 
@@ -232,12 +234,16 @@ def _build_action_buttons(
     name: str,
     on_edit: Callable[[str], None],
     on_delete: Callable[[str], None],
+    is_running: bool = False,
 ) -> list[ft.Button]:
     return [
         ft.Button(
             "[ edit ]",
             width=92,
             height=38,
+            # Editing a profile while its browser is open can corrupt its data
+            # dir / fingerprint mid-session, so disable edit until it's stopped.
+            disabled=is_running,
             style=ft.ButtonStyle(
                 shape=ft.RoundedRectangleBorder(radius=3),
                 color=COLORS["text_sub"],
@@ -245,7 +251,7 @@ def _build_action_buttons(
                 padding=ft.Padding.symmetric(horizontal=4, vertical=0),
                 text_style=ft.TextStyle(font_family=MONO, size=13),
             ),
-            tooltip="Edit profile",
+            tooltip="Stop the profile to edit it" if is_running else "Edit profile",
             on_click=lambda _, n=name: on_edit(n),
         ),
         ft.Button(

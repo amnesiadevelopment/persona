@@ -858,12 +858,12 @@ class App:
             else "engine_chrome.png"
         )
         path = asset_path(fname)
-        # Box the logo in a fixed-size container with CONTAIN fit so a non-square
-        # source can't overflow its slot and clip/overlap the neighbouring row.
+        # Box the logo in a fixed-size container so a non-square source can't
+        # overflow its slot and clip/overlap the neighbouring row. (ft.ImageFit
+        # isn't available in this Flet, so the fixed width/height on both the
+        # Image and its container is what constrains it.)
         if os.path.exists(path):
-            inner: ft.Control = ft.Image(
-                src=path, width=size, height=size, fit=ft.ImageFit.CONTAIN
-            )
+            inner: ft.Control = ft.Image(src=path, width=size, height=size)
         else:
             inner = ft.Icon(ft.Icons.PUBLIC, size=size, color=COLORS["text_sub"])
         return ft.Container(width=size, height=size, content=inner)
@@ -1010,9 +1010,15 @@ class App:
 
     def _toggle_engines(self) -> None:
         self._engines_open = not self._engines_open
-        if self._engines_open:
-            self._check_both_engines()
+        # Rebuild the sidebar FIRST so the panel actually opens; the engine
+        # check is a best-effort extra that must never block or break the toggle
+        # (a slow/raising check was leaving the panel stuck closed).
         self._refresh_sidebar()
+        if self._engines_open:
+            try:
+                self._check_both_engines()
+            except Exception as e:
+                logger.error("engine check failed on panel open: %s", e)
 
     def _check_both_engines(self) -> None:
         """Opening the panel checks both engines for an upstream update over
@@ -1032,24 +1038,17 @@ class App:
             threading.Thread(target=work, daemon=True).start()
 
         # The Firefox engine's version is pinned to the bundled package, so
-        # there's no upstream update to fetch — but show a brief "checking…" on
-        # its row too so the user sees BOTH engines get verified, then settle
-        # back to the installed version. If it isn't installed yet, download it.
+        # there's no upstream update to fetch. If it's already installed there's
+        # nothing to do (its version is shown); if it's missing, download it.
+        # (An earlier attempt to flash a "checking…" via a sleeping thread that
+        # rebuilt the sidebar is what jammed the panel open/closed — dropped.)
         from ..services.browser import invisible_launch as inv
 
-        if inv.is_invisible_installed() and not self._engine2_busy:
-            import time
-
-            def check2() -> None:
-                self._engine2_checking = True
-                self._refresh_sidebar()
-                time.sleep(1.0)  # a visible beat so "checking…" is seen
-                self._engine2_checking = False
-                self._refresh_sidebar()
-
-            threading.Thread(target=check2, daemon=True).start()
-        else:
-            self._ensure_engine2_async()
+        try:
+            if not inv.is_invisible_installed() and not self._engine2_busy:
+                self._ensure_engine2_async()
+        except Exception as e:
+            logger.error("firefox engine check failed: %s", e)
 
     def _on_engine2_click(self) -> None:
         """Clicking the Firefox-engine row downloads it if it isn't installed.
