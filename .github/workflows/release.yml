@@ -191,6 +191,19 @@ jobs:
           python -c "from PIL import Image; Image.open('src/assets/icon.png').save(r'$icoPath', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])"
           $iconLine = if (Test-Path $icoPath) { "SetupIconFile=$icoPath" } else { "" }
           Write-Host "installer icon: $iconLine"
+          # Brand the wizard: a dark welcome banner (left panel) and a small
+          # header logo, both generated from the app icon so the installer looks
+          # like persona, not a stock Inno setup. Inno wants BMPs; sizes are the
+          # modern-style wizard's expected 164x314 and 55x58 (at 100% DPI — Inno
+          # scales them for HiDPI).
+          $wizLarge = Join-Path (Get-Location) "wizard-large.bmp"
+          $wizSmall = Join-Path (Get-Location) "wizard-small.bmp"
+          python .github/scripts/make_wizard_images.py src/assets/icon.png $wizLarge $wizSmall
+          $wizLines = ""
+          if ((Test-Path $wizLarge) -and (Test-Path $wizSmall)) {
+            $wizLines = "WizardImageFile=$wizLarge`nWizardSmallImageFile=$wizSmall`nWizardImageStretch=no"
+          }
+          Write-Host "wizard images: $wizLines"
           # Version string: on a tag it's the tag name; on a manual dispatch
           # github.ref_name is a branch, so fall back to the app's own version.
           $ver = "${{ github.ref_name }}"
@@ -217,7 +230,9 @@ jobs:
           SolidCompression=yes
           ArchitecturesInstallIn64BitMode=x64compatible
           ArchitecturesAllowed=x64compatible
+          WizardStyle=modern
           $iconLine
+          $wizLines
           [InstallDelete]
           ; Clear the previous app payload before copying the new one so a file
           ; dropped between versions doesn't linger. Only touches {app} (Program
