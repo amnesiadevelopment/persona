@@ -254,7 +254,7 @@ jobs:
             findRec: TFindRec;
             entry: String;
           begin
-            root := ExpandConstant('{userprofile}\.persona');
+            root := ExpandConstant('{%USERPROFILE}\.persona');
             if DirExists(root) then
             begin
               if FindFirst(root + '\*', findRec) then
@@ -280,7 +280,7 @@ jobs:
 
           procedure WipePersonaEngines;
           begin
-            DelTree(ExpandConstant('{userprofile}\.persona\engine'), True, True, True);
+            DelTree(ExpandConstant('{%USERPROFILE}\.persona\engine'), True, True, True);
             DelTree(ExpandConstant('{localappdata}\invisible-playwright'), True, True, True);
           end;
 
