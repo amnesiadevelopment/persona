@@ -314,16 +314,27 @@ def download_engine(
     return _install_linux(asset_path)
 
 
-def ensure_engine(progress=None, timeout: int = 600) -> tuple[bool, str]:
+def ensure_engine(
+    progress=None, timeout: int = 600, attempts: int = 3
+) -> tuple[bool, str]:
     """Make sure the engine is installed. If already present, no-op. Otherwise
     fetch the latest release and download it. Returns (ok, message).
+
+    The GitHub releases API call and the download each occasionally fail on a
+    transient network hiccup (a dropped connection, a flaky first request on a
+    cold start). Retry the whole fetch+download a few times so one blip doesn't
+    leave the engine uninstalled — the same treatment the Firefox engine gets.
     """
     if is_installed():
         return True, "engine present"
-    tag, url, digest = fetch_latest_full()
-    if not url:
-        return False, "could not reach GitHub releases"
-    if download_engine(url, timeout=timeout, digest=digest, progress=progress):
-        write_version(tag)
-        return True, tag
-    return False, "download failed"
+    last = "could not reach GitHub releases"
+    for _ in range(max(1, attempts)):
+        tag, url, digest = fetch_latest_full()
+        if not url:
+            last = "could not reach GitHub releases"
+            continue
+        if download_engine(url, timeout=timeout, digest=digest, progress=progress):
+            write_version(tag)
+            return True, tag
+        last = "download failed"
+    return False, last

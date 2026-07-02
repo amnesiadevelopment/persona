@@ -151,7 +151,6 @@ def open_profile_dialog(
         label="Screen resolution",
         value=res_value,
         expand=True,
-        on_change=on_res_change,
         options=(
             [ft.dropdown.Option(key="auto", text="Auto (random)")]
             + [ft.dropdown.Option(key=r, text=r.replace("x", " x ")) for r in res_presets]
@@ -165,6 +164,10 @@ def open_profile_dialog(
         label_style=ft.TextStyle(color=COLORS["text_sub"], font_family=MONO),
         text_style=ft.TextStyle(font_family=MONO),
     )
+    # Assign on_change after construction: this Flet's Dropdown.__init__ doesn't
+    # accept it as a keyword, and passing it there raised at dialog-build time,
+    # which is what made the create-profile dialog fail to open.
+    resolution_dropdown.on_change = on_res_change
 
     current_search = (
         profile.search_engine if profile is not None else DEFAULT_SEARCH_ENGINE

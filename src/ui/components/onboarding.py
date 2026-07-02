@@ -87,17 +87,17 @@ class Onboarding:
     def _begin_engine(self) -> None:
         self._start_t = time.monotonic()
         self._throttle = pf.ProgressThrottle()
+        self._pstate = pf.ProgressState()
 
         def progress(done: int, total: int) -> None:
             now = time.monotonic()
+            self._pstate.update(done, total, now)
             if not self._throttle.should_emit(done, total, now):
                 return
-            elapsed = max(now - self._start_t, 0.001)
-            self._bar.value = pf.fraction(done, total)
-            self._pct.value = (
-                f"{pf.percent(done, total)}%" if total > 0 else pf.fmt_mb(done)
-            )
-            self._detail.value = pf.fmt_line(done, total, elapsed)
+            st = self._pstate
+            self._bar.value = st.fraction
+            self._pct.value = f"{st.percent}%" if st.total > 0 else pf.fmt_mb(st.done)
+            self._detail.value = st.line()
             self.page.update()
 
         def done(ok: bool) -> None:

@@ -85,3 +85,44 @@ def test_throttle_always_fires_on_completion():
     # even within the interval and after a recent emit, completion must show
     t.should_emit(done=51, total=100, now=0.01)  # 51%, fires
     assert t.should_emit(done=100, total=100, now=0.02) is True
+
+
+def test_progress_state_percent_is_monotonic():
+    s = pf.ProgressState()
+    s.update(done=50, total=100, now=1.0)
+    assert s.percent == 50
+    # a lower reading (e.g. a retry restarting the byte count) must NOT move
+    # the displayed percent backwards
+    s.update(done=10, total=100, now=2.0)
+    assert s.percent == 50
+    s.update(done=80, total=100, now=3.0)
+    assert s.percent == 80
+
+
+def test_progress_state_fraction_is_monotonic():
+    s = pf.ProgressState()
+    s.update(done=60, total=100, now=1.0)
+    assert s.fraction == 0.6
+    s.update(done=20, total=100, now=2.0)  # retry reset
+    assert s.fraction == 0.6  # bar does not jump back
+
+
+def test_progress_state_speed_is_ema_smoothed():
+    s = pf.ProgressState(alpha=0.3)
+    # first update has no prior sample; second seeds the EMA at a steady rate
+    s.update(done=0, total=100_000_000, now=0.0)
+    s.update(done=1_000_000, total=100_000_000, now=1.0)  # seed EMA ~1 MB/s
+    seeded = s.speed
+    assert 0 < seeded <= 1_200_000
+    # a big instantaneous spike must be damped by the EMA, not shown raw
+    s.update(done=51_000_000, total=100_000_000, now=2.0)  # ~50 MB/s raw sample
+    assert s.speed < 50_000_000  # smoothed, well below the raw spike
+    assert s.speed > seeded  # but it did move toward the spike
+
+
+def test_progress_state_unknown_total_keeps_bytes():
+    s = pf.ProgressState()
+    s.update(done=5_000_000, total=0, now=1.0)
+    assert s.percent == 0
+    assert s.fraction is None
+    assert s.done == 5_000_000

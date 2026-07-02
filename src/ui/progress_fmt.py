@@ -61,6 +61,72 @@ class ProgressThrottle:
         return False
 
 
+class ProgressState:
+    """Smoothed, monotonic view of a download's progress.
+
+    A raw byte count can jump backwards (a retry restarts the transfer, a
+    resume re-reports an earlier offset) and the instantaneous rate swings
+    wildly chunk-to-chunk. Both make the progress UI look broken. This keeps a
+    percent/fraction that never decreases and an EMA-smoothed speed, so the
+    displayed values move steadily the way a polished downloader's do.
+
+    alpha is the EMA weight on the newest speed sample (tqdm's default 0.3):
+    lower = smoother/laggier, higher = twitchier.
+    """
+
+    def __init__(self, alpha: float = 0.3) -> None:
+        self.alpha = alpha
+        self.done = 0
+        self.total = 0
+        self._max_frac = 0.0
+        self._speed = 0.0
+        self._last_done = 0
+        self._last_t: float | None = None
+
+    def update(self, done: int, total: int, now: float) -> None:
+        self.total = total
+        # Monotonic: never let the shown amount fall below what we've seen.
+        self.done = max(self.done, done)
+        if total > 0:
+            self._max_frac = max(self._max_frac, self.done / total)
+        # EMA speed from the delta since the last sample. Ignore non-positive
+        # deltas (a retry/resume rewind) so they don't produce a negative rate.
+        if self._last_t is not None:
+            dt = now - self._last_t
+            dbytes = self.done - self._last_done
+            if dt > 0 and dbytes > 0:
+                sample = dbytes / dt
+                self._speed = (
+                    sample
+                    if self._speed <= 0
+                    else self.alpha * sample + (1 - self.alpha) * self._speed
+                )
+        self._last_t = now
+        self._last_done = self.done
+
+    @property
+    def percent(self) -> int:
+        return int(self._max_frac * 100)
+
+    @property
+    def fraction(self) -> float | None:
+        return self._max_frac if self.total > 0 else None
+
+    @property
+    def speed(self) -> float:
+        return self._speed
+
+    def line(self) -> str:
+        """One-line 'X MB of Y MB   Z MB/s   Ns left' using the smoothed speed."""
+        if self.total <= 0:
+            return f"{fmt_mb(self.done)}   {fmt_speed(self._speed)}"
+        parts = [f"{fmt_mb(self.done)} of {fmt_mb(self.total)}", fmt_speed(self._speed)]
+        eta = fmt_eta(self.done, self.total, self._speed)
+        if eta:
+            parts.append(eta)
+        return "   ".join(parts)
+
+
 def fmt_line(done: int, total: int, elapsed: float) -> str:
     """One-line summary: '50.0 MB of 118.0 MB   2.0 MB/s   30s left'.
     With unknown total, falls back to the downloaded amount and speed.

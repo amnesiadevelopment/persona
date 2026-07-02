@@ -86,6 +86,8 @@ class App:
         self._engine2_start_t = 0.0
         self._engine_throttle = pf.ProgressThrottle()
         self._engine2_throttle = pf.ProgressThrottle()
+        self._engine_pstate = pf.ProgressState()
+        self._engine2_pstate = pf.ProgressState()
         self._engine2_bar = ft.ProgressBar(
             value=None, color=COLORS["accent"], bgcolor=COLORS["input_bg"], height=4,
         )
@@ -1303,6 +1305,8 @@ class App:
         import time
 
         self._engine_start_t = time.monotonic()
+        self._engine_throttle = pf.ProgressThrottle()
+        self._engine_pstate = pf.ProgressState()
         self._engine_bar.value = None
         self._engine_detail.value = ""
         # _engine_busy is already True here; rebuild so the progress
@@ -1313,19 +1317,21 @@ class App:
         import time
 
         now = time.monotonic()
+        # Feed every chunk into the smoothed, monotonic state (cheap), but only
+        # repaint when the throttle allows — a chunk-rate repaint flickers the
+        # sidebar. The state keeps percent from jumping backwards on a retry and
+        # EMA-smooths the speed so the numbers move steadily.
+        self._engine_pstate.update(done, total, now)
         if not self._engine_throttle.should_emit(done, total, now):
             return
-        elapsed = max(now - self._engine_start_t, 0.001)
-        self._engine_bar.value = pf.fraction(done, total)
+        st = self._engine_pstate
+        self._engine_bar.value = st.fraction
         # With a known size show a percentage; when the server omits
         # Content-Length (common over Tor) show the live downloaded amount
         # so it's obvious bytes are flowing rather than a bar spinning idle.
-        if total > 0:
-            label = f"{pf.percent(done, total)}%"
-        else:
-            label = pf.fmt_mb(done)
+        label = f"{st.percent}%" if st.total > 0 else pf.fmt_mb(st.done)
         self.engine_text.value = f"downloading {label}"
-        self._engine_detail.value = pf.fmt_line(done, total, elapsed)
+        self._engine_detail.value = st.line()
         # The bar/detail/text controls are already in the sidebar tree, so
         # updating their .value and pushing the page reflects the change
         # without rebuilding the whole sidebar on every chunk (which made
@@ -1360,6 +1366,8 @@ class App:
             self._engine2_busy = True
             self._engine2_status = "downloading…"
             self._engine2_start_t = time.monotonic()
+            self._engine2_throttle = pf.ProgressThrottle()
+            self._engine2_pstate = pf.ProgressState()
             self._engine2_bar.value = None
             self._engine2_detail.value = "connecting…"
             self._log("Firefox engine not found — downloading…")
@@ -1394,27 +1402,28 @@ class App:
         import time
 
         now = time.monotonic()
+        if done > 0:
+            self._engine2_pstate.update(done, total, now)
         # Always let the pre-transfer "connecting" ticks and completion through;
         # throttle only the steady stream of transfer chunks so the download
         # renders as smoothly as chromium's without flickering the sidebar.
         if done > 0 and not self._engine2_throttle.should_emit(done, total, now):
             return
         elapsed = max(now - self._engine2_start_t, 0.001)
-        self._engine2_bar.value = pf.fraction(done, total) if done > 0 else None
         if done <= 0:
             # The fetch can sit ~30-60s before the first byte arrives over Tor.
             # Show a ticking "connecting" so it reads as alive, not frozen.
+            self._engine2_bar.value = None
             self._engine2_status = "downloading…"
             self._engine2_detail.value = (
                 f"connecting over Tor… {int(elapsed)}s (first bytes can take a "
                 f"minute)"
             )
         else:
-            if total > 0:
-                self._engine2_status = f"{pf.percent(done, total)}%"
-            else:
-                self._engine2_status = pf.fmt_mb(done)
-            self._engine2_detail.value = pf.fmt_line(done, total, elapsed)
+            st = self._engine2_pstate
+            self._engine2_bar.value = st.fraction
+            self._engine2_status = f"{st.percent}%" if st.total > 0 else pf.fmt_mb(st.done)
+            self._engine2_detail.value = st.line()
         # Bar and detail are live controls already in the tree; update in place
         # instead of rebuilding the sidebar on every chunk (the flicker source).
         self._safe_update()

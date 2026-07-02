@@ -132,19 +132,24 @@ def _download_invisible(progress=None, log=None) -> bool:
         say("Firefox engine: couldn't get a clean download — will retry next start.")
         return False
 
-    # Rename to the real asset name before extracting — _extract picks the
-    # archive type from the extension, and the ".download" suffix hides the
-    # ".tar.gz" so it can't tell the format.
+    # Extract from a file whose extension matches the archive type — _extract
+    # picks the format from the extension, and the ".download" suffix hides it
+    # (".zip"/".tar.gz"), so extracting the raw partial fails with "unknown
+    # archive format". Move the completed partial onto the real asset name
+    # first. A stale asset file from an interrupted earlier run makes os.replace
+    # fail on Windows, so delete any leftover target before the move, and never
+    # fall back to extracting the ".download" file.
     final_archive = version_dir.parent / asset
     try:
-        os.replace(archive_path, final_archive)
+        if final_archive.exists():
+            os.remove(final_archive)
     except OSError:
-        final_archive = archive_path
+        pass
+    os.replace(archive_path, final_archive)
     say("Firefox engine: extracting…")
     _extract(final_archive, version_dir)
-    archive_path = final_archive
     try:
-        os.remove(archive_path)
+        os.remove(final_archive)
     except OSError:
         pass
     return is_invisible_installed()

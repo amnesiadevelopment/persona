@@ -37,6 +37,7 @@ def test_progress_cb_formats_mb_percent_speed(monkeypatch):
     # minimal attrs the cb touches
     app._engine_start_t = 0.0
     app._engine_throttle = pf.ProgressThrottle()
+    app._engine_pstate = pf.ProgressState()
     app.engine_text = ft.Text("")
     app._engine_bar = ft.ProgressBar()
     app._engine_detail = ft.Text("")
@@ -59,6 +60,7 @@ def test_progress_cb_formats_mb_percent_speed(monkeypatch):
 def test_progress_cb_unknown_total_shows_mb_and_speed(monkeypatch):
     app = _app()
     app._engine_throttle = pf.ProgressThrottle()
+    app._engine_pstate = pf.ProgressState()
     app.engine_text = ft.Text("")
     app._engine_bar = ft.ProgressBar()
     app._engine_detail = ft.Text("")
