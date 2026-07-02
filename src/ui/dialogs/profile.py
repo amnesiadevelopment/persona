@@ -119,10 +119,19 @@ def open_profile_dialog(
     current_res = (
         getattr(profile, "resolution", "auto") if profile is not None else "auto"
     )
-    res_presets = [
-        "1920x1080", "1366x768", "1536x864", "1600x900",
-        "2560x1440", "1440x900", "1280x800",
+    # Ordered largest-to-smallest with a human label, so the list reads
+    # logically (4K at the top) and the common sizes are easy to find.
+    res_choices = [
+        ("3840x2160", "4K UHD"),
+        ("2560x1440", "2K QHD"),
+        ("1920x1080", "Full HD"),
+        ("1600x900", "HD+"),
+        ("1536x864", "HD+"),
+        ("1440x900", "WXGA+"),
+        ("1366x768", "HD"),
+        ("1280x800", "WXGA"),
     ]
+    res_presets = [r for r, _ in res_choices]
     is_preset = current_res in res_presets
     res_value = current_res if (current_res == "auto" or is_preset) else "custom"
     custom_w = ft.TextField(
@@ -153,7 +162,12 @@ def open_profile_dialog(
         expand=True,
         options=(
             [ft.dropdown.Option(key="auto", text="Auto (random)")]
-            + [ft.dropdown.Option(key=r, text=r.replace("x", " x ")) for r in res_presets]
+            + [
+                ft.dropdown.Option(
+                    key=r, text=f"{r.replace('x', ' x ')}  ({label})"
+                )
+                for r, label in res_choices
+            ]
             + [ft.dropdown.Option(key="custom", text="Custom…")]
         ),
         bgcolor=COLORS["input_bg"],
@@ -196,6 +210,21 @@ def open_profile_dialog(
         color=COLORS["text_sub"],
         font_family=MONO,
     )
+    # The Firefox engine has no per-profile default search engine — it's set
+    # globally (all Firefox profiles use DuckDuckGo), so a per-profile picker
+    # here would mislead. Hide the search picker for Firefox; keep it for
+    # chromium where it IS per-profile. React to the engine dropdown so it
+    # updates live when the user switches engines while creating a profile.
+    search_section = ft.Column(
+        spacing=6, controls=[ft.Row(controls=[search_dropdown]), search_hint]
+    )
+    search_section.visible = engine_value != "firefox"
+
+    def on_engine_change(_: ft.ControlEvent) -> None:
+        search_section.visible = (engine_dropdown.value or "chromium") != "firefox"
+        page.update()
+
+    engine_dropdown.on_change = on_engine_change
 
     current_pool = (profile.bookmark_pool or "") if profile is not None else ""
     pool_value = current_pool if current_pool in pool_names else _NO_POOL
@@ -414,8 +443,7 @@ def open_profile_dialog(
                     engine_hint,
                     ft.Row(controls=[resolution_dropdown]),
                     custom_row,
-                    ft.Row(controls=[search_dropdown]),
-                    search_hint,
+                    search_section,
                     ft.Divider(height=10, color=COLORS["border"]),
                     ft.Row(controls=[pool_dropdown]),
                     *bookmark_section,

@@ -43,6 +43,35 @@ def is_invisible_installed() -> bool:
     return bool(p and p.exists())
 
 
+def _ensure_firefox_policies() -> None:
+    """Pin DuckDuckGo as the default search engine for the Firefox engine via an
+    Enterprise Policy file next to the binary.
+
+    FF150 ignores browser.search.defaultenginename; it resolves the default from
+    search-config-v2, so the only durable way to set it is policies.json with
+    SearchEngines.Default. This lives in the install-relative `distribution/`
+    dir (shared by all profiles — Firefox has no per-profile default engine), so
+    every Firefox profile opens on DuckDuckGo instead of the region default
+    (often Google), and the user can't have it silently reset. DuckDuckGo is a
+    builtin engine, so this resolves from the local config dump with no network
+    fetch at startup."""
+    p = _invisible_binary_path()
+    if not p:
+        return
+    try:
+        dist = p.parent / "distribution"
+        dist.mkdir(parents=True, exist_ok=True)
+        policies = dist / "policies.json"
+        content = json.dumps(
+            {"policies": {"SearchEngines": {"Default": "DuckDuckGo"}}}, indent=2
+        )
+        # Only rewrite when different so we don't touch the file every launch.
+        if not policies.exists() or policies.read_text(encoding="utf-8") != content:
+            policies.write_text(content, encoding="utf-8")
+    except Exception:
+        pass
+
+
 def ensure_invisible_installed(progress=None, log=None) -> bool:
     """True if the patched Firefox binary is present; fetch it (resumably, over
     Tor) if not. `progress(done, total)` reports bytes; `log(msg)` reports each
@@ -67,13 +96,36 @@ def ensure_invisible_installed(progress=None, log=None) -> bool:
         return False
 
 
+def _extract_as(archive_path, dst, asset_name: str) -> None:
+    """Extract `archive_path` into `dst`, choosing the archive format from
+    `asset_name`'s extension rather than the file's own name.
+
+    The downloaded file is named "<asset>.download", whose suffix hides the real
+    type; passing the asset name (".zip" on Windows, ".tar.gz" on Linux) lets us
+    extract the partial in place with no rename — which is what avoids the
+    Windows "file in use" lock on os.replace."""
+    import os as _os
+    import tarfile
+    import zipfile
+
+    name = asset_name.lower()
+    _os.makedirs(dst, exist_ok=True)
+    if name.endswith(".zip"):
+        with zipfile.ZipFile(archive_path) as zf:
+            zf.extractall(dst)
+    elif name.endswith(".tar.gz") or name.endswith(".tgz"):
+        with tarfile.open(archive_path, "r:gz") as tf:
+            tf.extractall(dst)
+    else:
+        raise RuntimeError(f"unknown archive format for asset: {asset_name}")
+
+
 def _download_invisible(progress=None, log=None) -> bool:
     import platform as _pyplatform
     import tempfile
 
     from invisible_playwright.constants import ARCHIVE_NAME, BINARY_VERSION
     from invisible_playwright.download import (
-        _extract,
         _parse_checksums,
         _resolve_asset_url,
         _sha256_file,
@@ -132,24 +184,17 @@ def _download_invisible(progress=None, log=None) -> bool:
         say("Firefox engine: couldn't get a clean download — will retry next start.")
         return False
 
-    # Extract from a file whose extension matches the archive type — _extract
-    # picks the format from the extension, and the ".download" suffix hides it
-    # (".zip"/".tar.gz"), so extracting the raw partial fails with "unknown
-    # archive format". Move the completed partial onto the real asset name
-    # first. A stale asset file from an interrupted earlier run makes os.replace
-    # fail on Windows, so delete any leftover target before the move, and never
-    # fall back to extracting the ".download" file.
-    final_archive = version_dir.parent / asset
-    try:
-        if final_archive.exists():
-            os.remove(final_archive)
-    except OSError:
-        pass
-    os.replace(archive_path, final_archive)
+    # Extract straight from the downloaded partial, choosing the archive type
+    # from the ASSET name (not the file's ".download" suffix). Renaming the
+    # partial onto the real ".zip"/".tar.gz" name first is what caused the
+    # Windows failures: os.replace raised WinError 32 ("file in use") because
+    # Defender scans a freshly written file and briefly locks it, so the whole
+    # install aborted and retried. Extracting by known type needs no rename, so
+    # there's no window for that lock to bite.
     say("Firefox engine: extracting…")
-    _extract(final_archive, version_dir)
+    _extract_as(archive_path, version_dir, asset)
     try:
-        os.remove(final_archive)
+        os.remove(archive_path)
     except OSError:
         pass
     return is_invisible_installed()
@@ -333,6 +378,30 @@ def _proxy_dict(proxy_url: str):
         d["username"] = user
         d["password"] = pw
     return d
+
+
+def _system_dpr() -> float:
+    """The host display's scale factor (1.0 at 100%, 1.5 at 150%, 2.0 at 200%).
+
+    On Windows a HiDPI monitor runs at 125–200% scale; matching it keeps the
+    spoofed browser's content readable instead of microscopic. Non-Windows
+    desktops the shrink bug didn't affect fall back to 1.0. Clamped to a sane
+    desktop range so a weird reading can't produce an unusable window."""
+    if not _platform.IS_WINDOWS:
+        return 1.0
+    try:
+        import ctypes
+
+        # Per-monitor DPI awareness so GetDpiForSystem returns the real scale.
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            pass
+        dpi = ctypes.windll.user32.GetDpiForSystem()
+        scale = dpi / 96.0 if dpi else 1.0
+        return max(1.0, min(3.0, round(scale, 2)))
+    except Exception:
+        return 1.0
 
 
 from .window_entry import app_id_for as _remoting_name
@@ -656,12 +725,18 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     res = cfg.get("resolution")
     if res:
         w, h = int(res[0]), int(res[1])
+        # Match the host's real display scale so the page renders at a readable
+        # size. Forcing dpr=1.0 made the content tiny on a HiDPI monitor (a 4K
+        # screen at 150% needs dpr≈1.5); using the actual system scale gives the
+        # same devicePixelRatio a real user on that machine has — readable AND a
+        # plausible fingerprint. Spoofed screen.width/height still drive the
+        # window size and the reported screen geometry.
         kwargs["pin"] = {
             "screen.width": w,
             "screen.height": h,
             "screen.avail_width": w,
             "screen.avail_height": h - 40,
-            "screen.dpr": 1.0,
+            "screen.dpr": _system_dpr(),
         }
     if proxy:
         kwargs["proxy"] = proxy
@@ -771,7 +846,18 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
             stop_gracefully()
             break
         if in_thread:
-            n = _count_windows_for_pids(_firefox_pids_snapshot())
+            # Count only THIS profile's Firefox windows, not every firefox.exe —
+            # otherwise other open profiles keep the count above zero and this
+            # profile's close is never seen (the "stuck running" bug).
+            pids = _profile_firefox_pids(profile_dir)
+            if not pids:
+                # No process for this profile at all: it never started, or the
+                # whole thing already exited. Once we've seen a window, that's a
+                # close; before that, keep waiting through the launch grace.
+                if saw_window:
+                    break
+                continue
+            n = _count_windows_for_pids(pids)
             if n > 0:
                 saw_window = True
             elif saw_window:
@@ -792,6 +878,33 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     emit("BROWSER_CLOSED")
     _finish()
     return
+
+
+def _profile_firefox_pids(profile_dir: str) -> set:
+    """PIDs of firefox.exe processes belonging to THIS profile (Windows), matched
+    by profile_dir in the command line via WMI.
+
+    Counting ALL firefox.exe windows is the bug behind "profile stuck running":
+    with several profiles (or a stray/zombie Firefox) open, closing one still
+    leaves other firefox.exe windows, so an all-windows count never reaches zero
+    and the close is never detected. Scoping to this profile's own processes
+    makes the close-watch reliable regardless of what else is running."""
+    if not profile_dir or not _platform.IS_WINDOWS:
+        return set()
+    try:
+        ps = (
+            "Get-CimInstance Win32_Process -Filter \"Name='firefox.exe'\" | "
+            "Where-Object { $_.CommandLine -like '*' + "
+            f"{json.dumps(profile_dir)}"
+            " + '*' } | Select-Object -ExpandProperty ProcessId"
+        )
+        out = subprocess.check_output(
+            ["powershell", "-NoProfile", "-Command", ps],
+            text=True, **_platform.no_window_kwargs(),
+        )
+        return {int(x) for x in out.split() if x.strip().isdigit()}
+    except Exception:
+        return set()
 
 
 def _firefox_pids_snapshot() -> set:
@@ -954,6 +1067,8 @@ class InvisibleProcess:
         # headless engine init to create the database, so the very first real
         # window already shows the bookmarks.
         _seed_firefox_bookmarks(cfg.get("profile_dir", ""), cfg.get("bookmarks", []))
+        # Pin DuckDuckGo as the default search engine for every Firefox profile.
+        _ensure_firefox_policies()
         self._fork = _platform.needs_fork_launch()
         if self._fork:
             ctx = mp.get_context("fork")

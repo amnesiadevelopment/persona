@@ -83,6 +83,7 @@ class App:
         self._engine2_latest: str = ""
         self._engine2_busy = False
         self._engine2_status: str = ""
+        self._engine2_checking = False
         self._engine2_start_t = 0.0
         self._engine_throttle = pf.ProgressThrottle()
         self._engine2_throttle = pf.ProgressThrottle()
@@ -548,6 +549,8 @@ class App:
         return False
 
     def _engine2_status_text(self) -> str:
+        if self._engine2_checking:
+            return "checking…"
         if self._engine2_status:
             return self._engine2_status
         return self._engine2_version_text()
@@ -855,9 +858,15 @@ class App:
             else "engine_chrome.png"
         )
         path = asset_path(fname)
+        # Box the logo in a fixed-size container with CONTAIN fit so a non-square
+        # source can't overflow its slot and clip/overlap the neighbouring row.
         if os.path.exists(path):
-            return ft.Image(src=path, width=size, height=size)
-        return ft.Icon(ft.Icons.PUBLIC, size=size, color=COLORS["text_sub"])
+            inner: ft.Control = ft.Image(
+                src=path, width=size, height=size, fit=ft.ImageFit.CONTAIN
+            )
+        else:
+            inner = ft.Icon(ft.Icons.PUBLIC, size=size, color=COLORS["text_sub"])
+        return ft.Container(width=size, height=size, content=inner)
 
     def _engine_row(
         self, badge: ft.Control, name: str, version: str, checking: bool,
@@ -983,7 +992,7 @@ class App:
                         self._engine_logo("firefox"),
                         "firefox",
                         self._engine2_status_text(),
-                        checking=self._engine2_busy,
+                        checking=self._engine2_busy or self._engine2_checking,
                         dot=self._engine2_update_available(),
                     ),
                 )
@@ -1022,7 +1031,25 @@ class App:
 
             threading.Thread(target=work, daemon=True).start()
 
-        self._ensure_engine2_async()
+        # The Firefox engine's version is pinned to the bundled package, so
+        # there's no upstream update to fetch — but show a brief "checking…" on
+        # its row too so the user sees BOTH engines get verified, then settle
+        # back to the installed version. If it isn't installed yet, download it.
+        from ..services.browser import invisible_launch as inv
+
+        if inv.is_invisible_installed() and not self._engine2_busy:
+            import time
+
+            def check2() -> None:
+                self._engine2_checking = True
+                self._refresh_sidebar()
+                time.sleep(1.0)  # a visible beat so "checking…" is seen
+                self._engine2_checking = False
+                self._refresh_sidebar()
+
+            threading.Thread(target=check2, daemon=True).start()
+        else:
+            self._ensure_engine2_async()
 
     def _on_engine2_click(self) -> None:
         """Clicking the Firefox-engine row downloads it if it isn't installed.
@@ -1388,11 +1415,14 @@ class App:
                 if attempt < 2:
                     self._log("Firefox engine download interrupted — retrying…")
             self._engine2_busy = False
-            self._engine2_status = ""
             self._engine2_detail.value = ""
             if ok:
+                # Show the installed version straight away — clearing the status
+                # first would flash "not installed" until the version resolved.
+                self._engine2_status = inv.installed_version()
                 self._log(f"Firefox engine installed: {inv.installed_version()}")
             else:
+                self._engine2_status = ""
                 self._log("Firefox engine download failed — will retry on next start")
             self._refresh_sidebar()
 
@@ -1422,8 +1452,17 @@ class App:
         else:
             st = self._engine2_pstate
             self._engine2_bar.value = st.fraction
-            self._engine2_status = f"{st.percent}%" if st.total > 0 else pf.fmt_mb(st.done)
-            self._engine2_detail.value = st.line()
+            # At 100% the bytes are down but extraction still runs; show
+            # "installing…" so the row reads as progressing instead of snapping
+            # from a percent to a momentary blank / "not installed".
+            if st.total > 0 and st.done >= st.total:
+                self._engine2_status = "installing…"
+                self._engine2_detail.value = "installing…"
+            else:
+                self._engine2_status = (
+                    f"{st.percent}%" if st.total > 0 else pf.fmt_mb(st.done)
+                )
+                self._engine2_detail.value = st.line()
         # Bar and detail are live controls already in the tree; update in place
         # instead of rebuilding the sidebar on every chunk (the flicker source).
         self._safe_update()
