@@ -43,6 +43,7 @@ class ProfileManager:
                                 if p_data.get("engine") == "camoufox"
                                 else p_data.get("engine", "chromium")
                             ),
+                            "resolution": p_data.get("resolution", "auto"),
                             "search_engine": p_data.get(
                                 "search_engine", "duckduckgo"
                             ),
