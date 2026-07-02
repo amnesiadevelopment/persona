@@ -86,9 +86,13 @@ class Onboarding:
 
     def _begin_engine(self) -> None:
         self._start_t = time.monotonic()
+        self._throttle = pf.ProgressThrottle()
 
         def progress(done: int, total: int) -> None:
-            elapsed = max(time.monotonic() - self._start_t, 0.001)
+            now = time.monotonic()
+            if not self._throttle.should_emit(done, total, now):
+                return
+            elapsed = max(now - self._start_t, 0.001)
             self._bar.value = pf.fraction(done, total)
             self._pct.value = (
                 f"{pf.percent(done, total)}%" if total > 0 else pf.fmt_mb(done)

@@ -47,3 +47,41 @@ def test_fmt_line_zero_total():
     # streaming with unknown size: just show downloaded amount
     line = pf.fmt_line(done=5_000_000, total=0, elapsed=2.0)
     assert "MB" in line
+
+
+def test_throttle_first_call_always_fires():
+    t = pf.ProgressThrottle(min_interval=0.1)
+    assert t.should_emit(done=0, total=100, now=0.0) is True
+
+
+def test_throttle_suppresses_rapid_same_percent():
+    t = pf.ProgressThrottle(min_interval=0.1)
+    assert t.should_emit(done=0, total=1000, now=0.0) is True
+    # 1ms later, still 0% -> suppressed
+    assert t.should_emit(done=1, total=1000, now=0.001) is False
+    assert t.should_emit(done=2, total=1000, now=0.002) is False
+
+
+def test_throttle_fires_on_percent_change():
+    t = pf.ProgressThrottle(min_interval=10.0)  # long interval
+    assert t.should_emit(done=0, total=100, now=0.0) is True
+    # same instant, but the whole percent advanced -> fire
+    assert t.should_emit(done=1, total=100, now=0.0) is True
+    assert t.should_emit(done=2, total=100, now=0.0) is True
+
+
+def test_throttle_fires_after_interval_even_without_percent_change():
+    t = pf.ProgressThrottle(min_interval=0.1)
+    assert t.should_emit(done=0, total=0, now=0.0) is True  # unknown total, 0%
+    assert t.should_emit(done=1_000_000, total=0, now=0.05) is False
+    # interval elapsed -> fire so an unknown-total download still ticks
+    assert t.should_emit(done=2_000_000, total=0, now=0.2) is True
+
+
+def test_throttle_always_fires_on_completion():
+    t = pf.ProgressThrottle(min_interval=10.0)
+    assert t.should_emit(done=0, total=100, now=0.0) is True
+    assert t.should_emit(done=50, total=100, now=0.0) is True
+    # even within the interval and after a recent emit, completion must show
+    t.should_emit(done=51, total=100, now=0.01)  # 51%, fires
+    assert t.should_emit(done=100, total=100, now=0.02) is True

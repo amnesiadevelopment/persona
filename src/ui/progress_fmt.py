@@ -32,6 +32,35 @@ def percent(done: int, total: int) -> int:
     return done * 100 // total
 
 
+class ProgressThrottle:
+    """Decides when a download-progress update is worth redrawing.
+
+    A download reports progress on every chunk (~hundreds per second on a fast
+    connection). Redrawing the UI that often makes unrelated controls flicker
+    and stutter. Emit only when the whole percent advanced, or a minimum
+    interval has passed (so an unknown-size download still visibly ticks), or
+    the download completed. The first call always emits.
+    """
+
+    def __init__(self, min_interval: float = 0.1) -> None:
+        self.min_interval = min_interval
+        self._last_t: float | None = None
+        self._last_pct: int | None = None
+
+    def should_emit(self, done: int, total: int, now: float) -> bool:
+        pct = percent(done, total)
+        complete = total > 0 and done >= total
+        if self._last_t is None:
+            self._last_t = now
+            self._last_pct = pct
+            return True
+        if complete or pct != self._last_pct or (now - self._last_t) >= self.min_interval:
+            self._last_t = now
+            self._last_pct = pct
+            return True
+        return False
+
+
 def fmt_line(done: int, total: int, elapsed: float) -> str:
     """One-line summary: '50.0 MB of 118.0 MB   2.0 MB/s   30s left'.
     With unknown total, falls back to the downloaded amount and speed.

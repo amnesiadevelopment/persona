@@ -3,6 +3,7 @@ sidebar panel, and the progress bar must be inserted into the sidebar tree
 while a download is in flight."""
 import flet as ft
 
+from src.ui import progress_fmt as pf
 from src.ui.app import App
 
 
@@ -35,6 +36,7 @@ def test_progress_cb_formats_mb_percent_speed(monkeypatch):
     app = _app()
     # minimal attrs the cb touches
     app._engine_start_t = 0.0
+    app._engine_throttle = pf.ProgressThrottle()
     app.engine_text = ft.Text("")
     app._engine_bar = ft.ProgressBar()
     app._engine_detail = ft.Text("")
@@ -56,6 +58,7 @@ def test_progress_cb_formats_mb_percent_speed(monkeypatch):
 
 def test_progress_cb_unknown_total_shows_mb_and_speed(monkeypatch):
     app = _app()
+    app._engine_throttle = pf.ProgressThrottle()
     app.engine_text = ft.Text("")
     app._engine_bar = ft.ProgressBar()
     app._engine_detail = ft.Text("")

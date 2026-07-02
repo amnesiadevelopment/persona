@@ -84,6 +84,8 @@ class App:
         self._engine2_busy = False
         self._engine2_status: str = ""
         self._engine2_start_t = 0.0
+        self._engine_throttle = pf.ProgressThrottle()
+        self._engine2_throttle = pf.ProgressThrottle()
         self._engine2_bar = ft.ProgressBar(
             value=None, color=COLORS["accent"], bgcolor=COLORS["input_bg"], height=4,
         )
@@ -1310,7 +1312,10 @@ class App:
     def _engine_progress_cb(self, done: int, total: int) -> None:
         import time
 
-        elapsed = max(time.monotonic() - self._engine_start_t, 0.001)
+        now = time.monotonic()
+        if not self._engine_throttle.should_emit(done, total, now):
+            return
+        elapsed = max(now - self._engine_start_t, 0.001)
         self._engine_bar.value = pf.fraction(done, total)
         # With a known size show a percentage; when the server omits
         # Content-Length (common over Tor) show the live downloaded amount
@@ -1321,9 +1326,11 @@ class App:
             label = pf.fmt_mb(done)
         self.engine_text.value = f"downloading {label}"
         self._engine_detail.value = pf.fmt_line(done, total, elapsed)
-        # rebuild the sidebar so the live values render (a bare
-        # _safe_update() does not reliably reflect .value changes here).
-        self._refresh_sidebar()
+        # The bar/detail/text controls are already in the sidebar tree, so
+        # updating their .value and pushing the page reflects the change
+        # without rebuilding the whole sidebar on every chunk (which made
+        # unrelated controls flicker).
+        self._safe_update()
 
     def _check_engine_async(self) -> None:
         def work() -> None:
@@ -1386,7 +1393,13 @@ class App:
     def _engine2_progress_cb(self, done: int, total: int) -> None:
         import time
 
-        elapsed = max(time.monotonic() - self._engine2_start_t, 0.001)
+        now = time.monotonic()
+        # Always let the pre-transfer "connecting" ticks and completion through;
+        # throttle only the steady stream of transfer chunks so the download
+        # renders as smoothly as chromium's without flickering the sidebar.
+        if done > 0 and not self._engine2_throttle.should_emit(done, total, now):
+            return
+        elapsed = max(now - self._engine2_start_t, 0.001)
         self._engine2_bar.value = pf.fraction(done, total) if done > 0 else None
         if done <= 0:
             # The fetch can sit ~30-60s before the first byte arrives over Tor.
@@ -1402,7 +1415,9 @@ class App:
             else:
                 self._engine2_status = pf.fmt_mb(done)
             self._engine2_detail.value = pf.fmt_line(done, total, elapsed)
-        self._refresh_sidebar()
+        # Bar and detail are live controls already in the tree; update in place
+        # instead of rebuilding the sidebar on every chunk (the flicker source).
+        self._safe_update()
 
     def _download_engine_fresh(self) -> None:
         """First-run: no engine installed yet, fetch it before anything can
