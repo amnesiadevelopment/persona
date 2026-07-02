@@ -230,24 +230,68 @@ jobs:
           Name: "{autodesktop}\persona"; Filename: "{app}\$exeName"; Tasks: desktopicon
           [Tasks]
           Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"
-          Name: "cleaninstall"; Description: "Clean install: also delete my profiles and settings"; GroupDescription: "Data:"; Flags: unchecked
+          Name: "wipedata"; Description: "Delete my profiles, settings and logs"; GroupDescription: "Reset persona (leave both unchecked to keep everything):"; Flags: unchecked
+          Name: "wipeengines"; Description: "Delete the downloaded browser engines (re-downloaded on next launch)"; GroupDescription: "Reset persona (leave both unchecked to keep everything):"; Flags: unchecked
           [Run]
           ; Refresh the shell icon cache so the new persona icon shows at every
           ; size immediately (Windows otherwise keeps the old cached icon).
           Filename: "{sys}\ie4uinit.exe"; Parameters: "-show"; Flags: runhidden nowait
           Filename: "{app}\$exeName"; Description: "Launch persona"; Flags: nowait postinstall skipifsilent
           [Code]
-          // The user's data lives in %USERPROFILE%\.persona and is preserved by
-          // default. Only when the "clean install" task is checked do we wipe it.
-          procedure CurStepChanged(CurStep: TSetupStep);
+          // persona keeps two kinds of state, wiped by two independent tasks so a
+          // user can reset settings without re-downloading ~750MB of engines, or
+          // vice versa. Checking both leaves nothing behind — a from-scratch install.
+          //
+          //   data    = %USERPROFILE%\.persona  EXCEPT its \engine subdir
+          //             (profiles, settings.json, logs, bookmarks) + the app's
+          //             unpacked code caches in %APPDATA%\persona, %LOCALAPPDATA%\persona.
+          //   engines = the fp-chromium binary in %USERPROFILE%\.persona\engine AND
+          //             the stealth-Firefox cache in %LOCALAPPDATA%\invisible-playwright
+          //             (invisible_playwright caches its engine OUTSIDE .persona).
+          procedure WipePersonaDataKeepEngines;
           var
-            personaData: String;
+            root: String;
+            findRec: TFindRec;
+            entry: String;
           begin
-            if (CurStep = ssInstall) and WizardIsTaskSelected('cleaninstall') then
+            root := ExpandConstant('{userprofile}\.persona');
+            if DirExists(root) then
             begin
-              personaData := ExpandConstant('{userprofile}\.persona');
-              if DirExists(personaData) then
-                DelTree(personaData, True, True, True);
+              if FindFirst(root + '\*', findRec) then
+              try
+                repeat
+                  entry := findRec.Name;
+                  if (entry <> '.') and (entry <> '..') and (entry <> 'engine') then
+                  begin
+                    if (findRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
+                      DelTree(root + '\' + entry, True, True, True)
+                    else
+                      DeleteFile(root + '\' + entry);
+                  end;
+                until not FindNext(findRec);
+              finally
+                FindClose(findRec);
+              end;
+            end;
+            // The unpacked-code caches are always safe to drop; they rebuild.
+            DelTree(ExpandConstant('{userappdata}\persona'), True, True, True);
+            DelTree(ExpandConstant('{localappdata}\persona'), True, True, True);
+          end;
+
+          procedure WipePersonaEngines;
+          begin
+            DelTree(ExpandConstant('{userprofile}\.persona\engine'), True, True, True);
+            DelTree(ExpandConstant('{localappdata}\invisible-playwright'), True, True, True);
+          end;
+
+          procedure CurStepChanged(CurStep: TSetupStep);
+          begin
+            if CurStep = ssInstall then
+            begin
+              if WizardIsTaskSelected('wipedata') then
+                WipePersonaDataKeepEngines;
+              if WizardIsTaskSelected('wipeengines') then
+                WipePersonaEngines;
             end;
           end;
           "@
