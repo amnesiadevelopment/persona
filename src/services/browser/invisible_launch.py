@@ -375,68 +375,72 @@ _NO_STARTUP_FETCH = {
 }
 
 
-def _seed_firefox_bookmarks(profile_dir: str, bookmarks: list) -> None:
-    """Put the profile's bookmarks on the Firefox toolbar.
+def _bookmarks_sig(bookmarks: list) -> str:
+    import hashlib
 
-    Firefox stores bookmarks in places.sqlite (not a plain file like Chromium),
-    so we can't write them directly. Instead drop a Netscape bookmarks.html and
-    ask Firefox to import it into the TOOLBAR on the next start via prefs, but
-    only ONCE per bookmark set (a marker file) so we don't re-import on every
-    launch or clobber bookmarks the user added by hand."""
+    return hashlib.md5(
+        json.dumps(bookmarks, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def _init_places_db(profile_dir: str) -> bool:
+    """Launch the engine once headless so it creates a valid places.sqlite.
+
+    Firefox rejects a hand-built places database ("files in use"), so the only
+    way to get a database we can seed is to let the engine create one. Returns
+    True once places.sqlite exists.
+    """
+    try:
+        from invisible_playwright import InvisiblePlaywright
+    except Exception:
+        return False
+    try:
+        with InvisiblePlaywright(
+            seed=abs(hash(profile_dir)) % (2**31),
+            headless=True,
+            profile_dir=profile_dir,
+        ):
+            time.sleep(6)  # let Places create + flush the database
+    except Exception:
+        pass
+    # Clear the lock the headless run leaves so the real launch isn't blocked.
+    for fname in ("lock", ".parentlock"):
+        try:
+            os.remove(os.path.join(profile_dir, fname))
+        except OSError:
+            pass
+    return os.path.exists(os.path.join(profile_dir, "places.sqlite"))
+
+
+def _seed_firefox_bookmarks(profile_dir: str, bookmarks: list) -> None:
+    """Put the profile's bookmarks on the Firefox toolbar via places.sqlite.
+
+    The engine must have created places.sqlite first (Firefox rejects a
+    hand-built one); if it hasn't, do a one-time headless init to create it.
+    Seed only once per bookmark set (a marker file) so a set the user has
+    since edited by hand isn't re-clobbered on every launch."""
     if not profile_dir or not bookmarks:
         return
     try:
-        os.makedirs(profile_dir, exist_ok=True)
-        import hashlib
+        from ...models.bookmark import Bookmark
+        from .firefox_bookmarks import seed_places_bookmarks
 
-        sig = hashlib.md5(
-            json.dumps(bookmarks, sort_keys=True).encode("utf-8")
-        ).hexdigest()
+        os.makedirs(profile_dir, exist_ok=True)
+        sig = _bookmarks_sig(bookmarks)
         marker = os.path.join(profile_dir, ".persona-bookmarks-sig")
         if os.path.exists(marker):
             with open(marker, encoding="utf-8") as f:
                 if f.read().strip() == sig:
-                    return  # this exact set was already imported
+                    return  # this exact set was already seeded
 
-        rows = "\n".join(
-            f'        <DT><A HREF="{b.get("url", "")}">{b.get("name", "")}</A>'
-            for b in bookmarks
-        )
-        html = (
-            "<!DOCTYPE NETSCAPE-Bookmark-file-1>\n"
-            '<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">\n'
-            "<TITLE>Bookmarks</TITLE>\n<H1>Bookmarks</H1>\n<DL><p>\n"
-            '    <DT><H3 PERSONAL_TOOLBAR_FOLDER="true">Bookmarks Toolbar</H3>\n'
-            "    <DL><p>\n" + rows + "\n    </DL><p>\n</DL><p>\n"
-        )
-        html_path = os.path.join(profile_dir, "persona-bookmarks.html")
-        with open(html_path, "w", encoding="utf-8") as f:
-            f.write(html)
+        places = os.path.join(profile_dir, "places.sqlite")
+        if not os.path.exists(places) and not _init_places_db(profile_dir):
+            return
 
-        # Ask Firefox to import the HTML into the toolbar at startup. user.js is
-        # read before every start; the prefs below trigger a one-time HTML import
-        # (Firefox clears importBookmarksHTML after acting on it).
-        userjs = os.path.join(profile_dir, "user.js")
-        lines = [
-            'user_pref("browser.places.importBookmarksHTML", true);',
-            f'user_pref("browser.bookmarks.file", {json.dumps(html_path)});',
-            'user_pref("browser.bookmarks.restore_default_bookmarks", false);',
-        ]
-        existing = ""
-        if os.path.exists(userjs):
-            with open(userjs, encoding="utf-8") as f:
-                existing = f.read()
-        keep = "\n".join(
-            ln for ln in existing.splitlines()
-            if "importBookmarksHTML" not in ln
-            and "browser.bookmarks.file" not in ln
-            and "restore_default_bookmarks" not in ln
-        )
-        with open(userjs, "w", encoding="utf-8") as f:
-            f.write((keep + "\n" if keep else "") + "\n".join(lines) + "\n")
-
-        with open(marker, "w", encoding="utf-8") as f:
-            f.write(sig)
+        marks = [Bookmark(b.get("name", ""), b.get("url", "")) for b in bookmarks]
+        if seed_places_bookmarks(places, marks):
+            with open(marker, "w", encoding="utf-8") as f:
+                f.write(sig)
     except Exception:
         pass
 
@@ -633,35 +637,27 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
         except Exception:
             pass
 
-    # Open at a sensible window size, not the full spoofed screen. invisible
-    # sizes the window from the fingerprint's screen (often 2560/3840 wide via
-    # the context viewport), so a profile spoofing a 4K monitor opens a giant
-    # window. Cap the viewport that drives the window BEFORE launch — overriding
-    # the kwargs the persistent context is built with, so the window opens at the
-    # right size with no after-the-fact resize. The spoofed `screen` stays large
-    # for the fingerprint; only the window is capped, like a non-maximized user.
-    try:
-        from invisible_playwright import launcher as _iplauncher2
-
-        _orig_kwargs = _iplauncher2.InvisiblePlaywright._persistent_context_kwargs
-
-        def _capped_kwargs(self, _orig=_orig_kwargs):
-            kw = _orig(self)
-            vp = kw.get("viewport")
-            if isinstance(vp, dict):
-                vp["width"] = min(vp.get("width", 1280), 1280)
-                vp["height"] = min(vp.get("height", 800), 800)
-            return kw
-
-        _iplauncher2.InvisiblePlaywright._persistent_context_kwargs = _capped_kwargs
-    except Exception:
-        pass
-
     proxy = _proxy_dict(cfg.get("proxy_url", ""))
     # Seed the fingerprint deterministically from the profile name so the same
     # profile keeps a stable identity across launches.
     seed = abs(hash(cfg.get("profile_name", ""))) % (2**31)
     kwargs = {"seed": seed, "headless": False, "extra_prefs": _profile_prefs(cfg)}
+    # Pin the screen to the profile's resolution. The engine derives the window
+    # viewport, the spoofed `screen` and `device_scale_factor` from these, so
+    # the window opens at exactly the chosen size and the fingerprint agrees.
+    # A desktop DPR of 1.0 keeps `layout.css.devPixelsPerPx` at 1 — without it
+    # the engine samples a HiDPI DPR and the page renders tiny on a 150%-scaled
+    # Windows host after the window is already up.
+    res = cfg.get("resolution")
+    if res:
+        w, h = int(res[0]), int(res[1])
+        kwargs["pin"] = {
+            "screen.width": w,
+            "screen.height": h,
+            "screen.avail_width": w,
+            "screen.avail_height": h - 40,
+            "screen.dpr": 1.0,
+        }
     if proxy:
         kwargs["proxy"] = proxy
     locale = cfg.get("locale", "")
@@ -948,6 +944,11 @@ class InvisibleProcess:
     """Popen-compatible handle around the invisible_playwright child."""
 
     def __init__(self, cfg: dict) -> None:
+        # Seed the profile's bookmarks into places.sqlite before launching. The
+        # first time a profile with bookmarks is opened this does a one-time
+        # headless engine init to create the database, so the very first real
+        # window already shows the bookmarks.
+        _seed_firefox_bookmarks(cfg.get("profile_dir", ""), cfg.get("bookmarks", []))
         self._fork = _platform.needs_fork_launch()
         if self._fork:
             ctx = mp.get_context("fork")

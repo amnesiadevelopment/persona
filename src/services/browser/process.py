@@ -16,6 +16,7 @@ from .bookmarks_seed import seed_bookmarks
 from .cdp import cdp_port_for
 from .audio_ext import build_audio_extension
 from .device_ext import build_device_extension
+from .resolution import parse_resolution, resolve_resolution
 from .device_presets import is_mobile_os, pick_preset
 from .gpu_ext import build_gpu_extension
 from .measuretext_ext import build_measuretext_extension
@@ -236,6 +237,10 @@ def _spawn_invisible(profile: Profile, profile_dir: str):
         profile.bookmark_pool, profile.bookmarks
     )
 
+    width, height = resolve_resolution(
+        getattr(profile, "resolution", "auto"), profile.fingerprint_seed
+    )
+
     cfg = {
         "os_type": profile.os_type,
         "proxy_url": proxy_url,
@@ -244,6 +249,7 @@ def _spawn_invisible(profile: Profile, profile_dir: str):
         "locale": lang,
         "timezone": tz,
         "bookmarks": [{"name": b.name, "url": b.url} for b in chosen],
+        "resolution": [width, height],
         "profile_dir": os.path.join(profile_dir, ".invisible-profile"),
         "_needs_fetch": not ensure_invisible_installed(),
     }
@@ -338,6 +344,7 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
             build_device_extension(
                 profile.fingerprint_seed,
                 os.path.join(profile_dir, ".persona-device-ext"),
+                resolution=parse_resolution(getattr(profile, "resolution", "auto")),
             )
         )
     extensions.append(

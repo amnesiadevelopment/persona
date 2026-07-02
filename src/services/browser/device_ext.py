@@ -59,13 +59,22 @@ _CONTENT_SCRIPT = r"""
   // real window extent the screen must contain
   var needW = Math.max(window.outerWidth || 0, window.innerWidth || 0);
   var needH = (Math.max(window.outerHeight || 0, window.innerHeight || 0)) + TASKBAR;
-  var fits = RES.filter(function (r) { return r[0] >= needW && r[1] >= needH; });
-  if (!fits.length) {
-    // window bigger than every preset — round the real screen up a little
-    fits = [[Math.max(needW, 1920), Math.max(needH, 1080)]];
+  // A forced resolution (user picked a specific one) wins outright, as long as
+  // it still contains the window; otherwise fall back to the seeded pick so the
+  // screen is never smaller than its own window (an instant tell).
+  var FORCED = __FORCED_RES__;
+  var W, H;
+  if (FORCED && FORCED[0] >= needW && FORCED[1] >= needH) {
+    W = FORCED[0]; H = FORCED[1];
+  } else {
+    var fits = RES.filter(function (r) { return r[0] >= needW && r[1] >= needH; });
+    if (!fits.length) {
+      // window bigger than every preset — round the real screen up a little
+      fits = [[Math.max(needW, 1920), Math.max(needH, 1080)]];
+    }
+    var r = pick(fits, 0x5c0fee);
+    W = r[0]; H = r[1];
   }
-  var r = pick(fits, 0x5c0fee);
-  var W = r[0], H = r[1];
 
   try {
     def(screen, 'width', W);
@@ -136,13 +145,21 @@ _MANIFEST = {
 }
 
 
-def build_device_extension(seed: int, base_dir: str) -> str:
+def build_device_extension(
+    seed: int, base_dir: str, resolution: tuple[int, int] | None = None
+) -> str:
     """Generate an unpacked extension that spoofs screen geometry and the
     mediaDevices list deterministically per profile seed. Returns its dir.
+
+    ``resolution`` forces the spoofed screen to a specific (width, height);
+    when None the screen is picked from common desktop sizes by the seed.
     """
     ext_dir = pathlib.Path(base_dir)
     ext_dir.mkdir(parents=True, exist_ok=True)
-    script = _CONTENT_SCRIPT.replace("__SEED__", str(int(seed) & 0xFFFFFFFF))
+    forced = f"[{resolution[0]}, {resolution[1]}]" if resolution else "null"
+    script = _CONTENT_SCRIPT.replace(
+        "__SEED__", str(int(seed) & 0xFFFFFFFF)
+    ).replace("__FORCED_RES__", forced)
     (ext_dir / "device.js").write_text(script, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(
         json.dumps(_MANIFEST, indent=2), encoding="utf-8"

@@ -10,6 +10,7 @@ from ...services.browser.profile_seed import (
     DEFAULT_SEARCH_ENGINE,
     SEARCH_ENGINE_LABELS,
 )
+from ...services.browser.resolution import parse_resolution
 from ...utils.validation import validate_profile_name
 from ..theme.colors import COLORS
 from ..theme.page import build_engine_dropdown, build_os_dropdown
@@ -23,7 +24,7 @@ def open_profile_dialog(
     page: ft.Page,
     proxy_service: IProxyService,
     on_save: Callable[
-        [str, str, str, str, str, list[str], list[str], str, str], str | None
+        [str, str, str, str, str, list[str], list[str], str, str, str], str | None
     ],
     profile: Profile | None = None,
     proxy_names: list[str] | None = None,
@@ -102,6 +103,68 @@ def open_profile_dialog(
     )
     engine_dropdown = build_engine_dropdown(engine_value)
     engine_dropdown.expand = True
+    # A profile is bound to its engine: the data dir layout and the whole
+    # fingerprint mechanism are engine-specific, so switching after creation
+    # would break the existing profile. Lock it when editing.
+    engine_hint: ft.Control = ft.Container()
+    if is_edit:
+        engine_dropdown.disabled = True
+        engine_hint = ft.Text(
+            "engine is fixed after a profile is created",
+            size=11,
+            color=COLORS["text_sub"],
+            font_family=MONO,
+        )
+
+    current_res = (
+        getattr(profile, "resolution", "auto") if profile is not None else "auto"
+    )
+    res_presets = [
+        "1920x1080", "1366x768", "1536x864", "1600x900",
+        "2560x1440", "1440x900", "1280x800",
+    ]
+    is_preset = current_res in res_presets
+    res_value = current_res if (current_res == "auto" or is_preset) else "custom"
+    custom_w = ft.TextField(
+        label="width",
+        value="" if res_value != "custom" else current_res.split("x")[0],
+        width=110,
+        **DLG_FIELD_KWARGS,
+    )
+    custom_h = ft.TextField(
+        label="height",
+        value="" if res_value != "custom" else current_res.split("x")[-1],
+        width=110,
+        **DLG_FIELD_KWARGS,
+    )
+    custom_row = ft.Row(
+        spacing=10,
+        visible=res_value == "custom",
+        controls=[custom_w, ft.Text("x", color=COLORS["text_sub"]), custom_h],
+    )
+
+    def on_res_change(_: ft.ControlEvent) -> None:
+        custom_row.visible = resolution_dropdown.value == "custom"
+        page.update()
+
+    resolution_dropdown = ft.Dropdown(
+        label="Screen resolution",
+        value=res_value,
+        expand=True,
+        on_change=on_res_change,
+        options=(
+            [ft.dropdown.Option(key="auto", text="Auto (random)")]
+            + [ft.dropdown.Option(key=r, text=r.replace("x", " x ")) for r in res_presets]
+            + [ft.dropdown.Option(key="custom", text="Custom…")]
+        ),
+        bgcolor=COLORS["input_bg"],
+        color=COLORS["text_main"],
+        border_color=COLORS["card_border"],
+        focused_border_color=COLORS["accent"],
+        border_radius=3,
+        label_style=ft.TextStyle(color=COLORS["text_sub"], font_family=MONO),
+        text_style=ft.TextStyle(font_family=MONO),
+    )
 
     current_search = (
         profile.search_engine if profile is not None else DEFAULT_SEARCH_ENGINE
@@ -278,6 +341,19 @@ def open_profile_dialog(
         engine = engine_dropdown.value or "chromium"
         name_error.visible = False
 
+        res_choice = resolution_dropdown.value or "auto"
+        if res_choice == "custom":
+            w = (custom_w.value or "").strip()
+            h = (custom_h.value or "").strip()
+            if parse_resolution(f"{w}x{h}") is None:
+                name_error.value = "Enter a valid custom resolution (e.g. 1920 x 1080)"
+                name_error.visible = True
+                page.update()
+                return
+            resolution = f"{w}x{h}"
+        else:
+            resolution = res_choice
+
         valid_name, name_err = validate_profile_name(name)
         if not valid_name:
             name_error.value = name_err
@@ -286,7 +362,8 @@ def open_profile_dialog(
             return
 
         error = on_save(
-            name, proxy, os_type, search, pool, bookmarks, tags, notes, engine
+            name, proxy, os_type, search, pool, bookmarks, tags, notes, engine,
+            resolution,
         )
         if error:
             name_error.value = error
@@ -331,6 +408,9 @@ def open_profile_dialog(
                     proxy_hint,
                     ft.Row(controls=[os_dropdown]),
                     ft.Row(controls=[engine_dropdown]),
+                    engine_hint,
+                    ft.Row(controls=[resolution_dropdown]),
+                    custom_row,
                     ft.Row(controls=[search_dropdown]),
                     search_hint,
                     ft.Divider(height=10, color=COLORS["border"]),

@@ -13,6 +13,8 @@ class Profile:
     # "chromium" (fingerprint-chromium + extensions) or "firefox" (patched
     # Firefox 150, C++-level spoofing, no CDP/webdriver tells).
     engine: str = "chromium"
+    # "auto" (a stable per-profile pick) or an explicit "WIDTHxHEIGHT".
+    resolution: str = "auto"
     search_engine: str = "duckduckgo"
     bookmark_pool: str | None = None
     bookmarks: list[str] = field(default_factory=list)

@@ -84,6 +84,7 @@ class ProfileManager:
         device_type: str = "desktop",
         notes: str = "",
         engine: str = "chromium",
+        resolution: str = "auto",
     ) -> bool:
         if name in self.profiles:
             return False
@@ -93,6 +94,7 @@ class ProfileManager:
             os_type=os_type,
             device_type=device_type,
             engine=engine,
+            resolution=resolution,
             search_engine=search_engine,
             bookmark_pool=bookmark_pool or None,
             bookmarks=bookmarks or [],
@@ -118,6 +120,7 @@ class ProfileManager:
         new_device_type: str | None = None,
         new_notes: str | None = None,
         new_engine: str | None = None,
+        new_resolution: str | None = None,
     ) -> bool:
         if original_name not in self.profiles:
             return False
@@ -133,6 +136,8 @@ class ProfileManager:
             profile.device_type = new_device_type
         if new_engine is not None:
             profile.engine = new_engine
+        if new_resolution is not None:
+            profile.resolution = new_resolution
         if new_search_engine is not None:
             profile.search_engine = new_search_engine
         profile.bookmark_pool = new_bookmark_pool or None
@@ -155,13 +160,6 @@ class ProfileManager:
 
         self.save_profiles()
         logger.info("Updated profile: %s -> %s", original_name, new_name)
-        return True
-
-    def set_cookie_status(self, name: str, status: str) -> bool:
-        if name not in self.profiles:
-            return False
-        self.profiles[name].cookie_import_status = status
-        self.save_profiles()
         return True
 
     def set_cookie_status(self, name: str, status: str) -> bool:
