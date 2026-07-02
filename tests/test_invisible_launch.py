@@ -5,6 +5,7 @@ from src.services.browser.invisible_launch import (
     InvisibleProcess,
     _child,
     _profile_prefs,
+    _ps_single_quote,
     _remoting_name,
     _window_size_for,
     installed_version,
@@ -26,6 +27,22 @@ def test_installed_version_is_firefox_version_not_build_tag():
     # engine's internal build tag ("firefox-13").
     v = installed_version()
     assert not v.startswith("firefox-")
+
+
+def test_ps_single_quote_keeps_backslashes():
+    # The WMI CommandLine match must compare against a real Windows path with
+    # single backslashes. json.dumps escaped them to \\ so the -like filter never
+    # matched and the close-watch never saw the profile (stuck-running bug).
+    p = r"C:\Users\admin\.persona\FF test\.invisible-profile"
+    q = _ps_single_quote("*" + p + "*")
+    # single-quoted, backslashes untouched (no doubling)
+    assert q == "'*" + p + "*'"
+    assert "\\\\" not in q
+
+
+def test_ps_single_quote_doubles_apostrophes():
+    # A path with a single quote in it must be escaped for PowerShell by doubling.
+    assert _ps_single_quote("a'b") == "'a''b'"
 
 
 def test_window_never_exceeds_work_area():

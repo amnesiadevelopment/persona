@@ -801,28 +801,32 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     res = cfg.get("resolution")
     if res:
         w, h = int(res[0]), int(res[1])
-        # The chosen resolution is the FINGERPRINT screen (what scanners read),
-        # not the physical window size. Tying the window to the resolution made a
-        # 4K pick overflow a 4K monitor (there's no room for the taskbar/borders
-        # once the window is that large). Instead open the window at a comfortable
-        # size that fits the monitor — the spoofed screen still reports the chosen
-        # resolution, exactly how the chromium engine already behaves.
+        # invisible_playwright ties the Firefox WINDOW size to the pinned
+        # screen.width (its viewport is screen.width - chrome), so the spoofed
+        # screen and the real window can't be sized independently the way the
+        # chromium engine allows. Pinning the full chosen resolution therefore
+        # opens a window that large — which overflows a 4K monitor. So pin the
+        # screen to a size that fits the work area (shrinking a too-large pick),
+        # keeping the window on-screen; scanners read this fitted size.
+        #
+        # Firefox has NO --width/--height CLI flags (those are chromium's); a
+        # patched-Firefox launch that received them treated the leftover as a URL
+        # and opened a bogus "0.0.9.51" page. Size comes ONLY from the pin, never
+        # from extra_args.
         aw, ah = _work_area()
-        cw, ch = _window_size_for(w, h, (aw, ah))
+        sw, sh = _window_size_for(w, h, (aw, ah))
         try:
-            emit(f"HIDPI_DEBUG chosen={w}x{h} window={cw}x{ch} work={aw}x{ah}")
+            emit(f"HIDPI_DEBUG chosen={w}x{h} pinned={sw}x{sh} work={aw}x{ah}")
         except Exception:
             pass
-        _extra_win = [f"--width={cw}", f"--height={ch}"]
-        # Pin the fingerprint screen to the chosen resolution with DPR 1 so
-        # screen.width * devicePixelRatio equals the chosen width (a spoofed
-        # screen at the host's real 1.5 DPR would report resolution*1.5, an
-        # impossible size — the same tell fixed in the chromium device ext).
+        # DPR 1 so screen.width * devicePixelRatio == screen.width (a spoofed
+        # screen at the host's real 1.5 DPR would report an impossible size — the
+        # same tell fixed in the chromium device ext).
         kwargs["pin"] = {
-            "screen.width": w,
-            "screen.height": h,
-            "screen.avail_width": w,
-            "screen.avail_height": h - 40,
+            "screen.width": sw,
+            "screen.height": sh,
+            "screen.avail_width": sw,
+            "screen.avail_height": sh - 40,
             "screen.dpr": 1,
         }
     if proxy:
@@ -839,8 +843,6 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
         # MOZ_APP_REMOTINGNAME (set above) is the Wayland app_id. Keep both so
         # the taskbar icon matches the .desktop StartupWMClass on either backend.
         extra_args.append(f"--name={_remoting_name(name)}")
-    if res:
-        extra_args.extend(_extra_win)
     if extra_args:
         kwargs["extra_args"] = extra_args
     if profile_dir:
@@ -972,6 +974,18 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     return
 
 
+def _ps_single_quote(s: str) -> str:
+    """Quote a string as a PowerShell single-quoted literal.
+
+    A Windows path is full of backslashes; json.dumps (used before) escaped them
+    to '\\\\', which no longer matches the real single-backslash CommandLine, so
+    the WMI -like filter returned nothing and the close-watch never saw the
+    profile's processes (the "profile stuck running after X" bug). A PowerShell
+    single-quoted string treats backslashes literally — only a single quote needs
+    doubling."""
+    return "'" + s.replace("'", "''") + "'"
+
+
 def _profile_firefox_pids(profile_dir: str) -> set:
     """PIDs of firefox.exe processes belonging to THIS profile (Windows), matched
     by profile_dir in the command line via WMI.
@@ -984,11 +998,11 @@ def _profile_firefox_pids(profile_dir: str) -> set:
     if not profile_dir or not _platform.IS_WINDOWS:
         return set()
     try:
+        pat = _ps_single_quote("*" + profile_dir + "*")
         ps = (
             "Get-CimInstance Win32_Process -Filter \"Name='firefox.exe'\" | "
-            "Where-Object { $_.CommandLine -like '*' + "
-            f"{json.dumps(profile_dir)}"
-            " + '*' } | Select-Object -ExpandProperty ProcessId"
+            f"Where-Object {{ $_.CommandLine -like {pat} }} | "
+            "Select-Object -ExpandProperty ProcessId"
         )
         out = subprocess.check_output(
             ["powershell", "-NoProfile", "-Command", ps],
@@ -1093,12 +1107,12 @@ def _firefox_pid(profile_dir: str):
             # Query the command line of every firefox.exe and match the profile
             # dir. CIM/WMI exposes CommandLine; PowerShell keeps this dependency
             # free of extra packages.
+            pat = _ps_single_quote("*" + profile_dir + "*")
             ps = (
                 "Get-CimInstance Win32_Process -Filter "
                 "\"Name='firefox.exe'\" | "
-                "Where-Object { $_.CommandLine -like '*' + "
-                f"{json.dumps(profile_dir)}"
-                " + '*' } | Select-Object -First 1 -ExpandProperty ProcessId"
+                f"Where-Object {{ $_.CommandLine -like {pat} }} | "
+                "Select-Object -First 1 -ExpandProperty ProcessId"
             )
             out = subprocess.check_output(
                 ["powershell", "-NoProfile", "-Command", ps],
