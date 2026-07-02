@@ -46,7 +46,7 @@ def _force_os(monkeypatch, *, win=False, mac=False, linux=False):
 
 
 _ASSETS = [
-    {"name": "persona-windows-x64.zip", "browser_download_url": "uwin"},
+    {"name": "persona-windows-setup.exe", "browser_download_url": "uwin"},
     {"name": "persona-x86_64.AppImage", "browser_download_url": "ulin"},
     {"name": "persona-macos.dmg", "browser_download_url": "umac"},
 ]
@@ -76,20 +76,62 @@ def test_pick_asset_none_when_os_asset_absent(monkeypatch):
 
 def test_asset_name_per_os(monkeypatch):
     _force_os(monkeypatch, win=True)
-    assert au.asset_name() == "persona-windows-x64.zip"
+    assert au.asset_name() == "persona-windows-setup.exe"
     _force_os(monkeypatch, mac=True)
     assert au.asset_name() == "persona-macos.dmg"
     _force_os(monkeypatch, linux=True)
     assert au.asset_name() == "persona-x86_64.AppImage"
 
 
-def test_apply_and_restart_off_linux_is_notify_only(monkeypatch, tmp_path):
-    # On Windows/macOS the running binary can't replace itself; apply must
-    # bail (return False) with a notify message and never touch the binary.
+def test_staged_path_windows_uses_temp(monkeypatch):
+    # On Windows the staged installer goes to a temp file (there's no $APPIMAGE
+    # to sit next to), so downloading has somewhere to land.
     _force_os(monkeypatch, win=True)
-    staged = tmp_path / "staged.zip"
+    p = au.staged_path()
+    assert p
+    assert p.endswith(".exe")
+
+
+def test_apply_and_restart_windows_runs_installer_silently(monkeypatch, tmp_path):
+    # On Windows apply runs the downloaded setup.exe silently (Inno /SILENT), so
+    # it upgrades in place and restarts persona — no manual "download it yourself".
+    _force_os(monkeypatch, win=True)
+    staged = tmp_path / "persona-windows-setup.exe"
+    staged.write_bytes(b"MZ")
+    called = {}
+
+    def fake_popen(args, **kw):
+        called["args"] = args
+        called["kw"] = kw
+
+        class P:
+            pass
+
+        return P()
+
+    monkeypatch.setattr(au.subprocess, "Popen", fake_popen)
+    # no_window_kwargs touches Windows-only subprocess constants; stub it so the
+    # test runs on the Linux CI too.
+    monkeypatch.setattr(au._platform, "no_window_kwargs", lambda: {})
+
+    # don't actually exit the test process — raise instead so we can assert it
+    def fake_exit(code):
+        raise SystemExit(code)
+
+    monkeypatch.setattr(au.os, "_exit", fake_exit)
+    msgs = []
+    with pytest.raises(SystemExit):
+        au.apply_and_restart(str(staged), log=msgs.append)
+    # the installer was launched, with a silent flag
+    assert str(staged) in called["args"]
+    assert any("/SILENT" in a or "/silent" in a.lower() for a in called["args"])
+
+
+def test_apply_and_restart_macos_is_notify_only(monkeypatch, tmp_path):
+    # macOS has no self-updater yet; apply must notify and never touch anything.
+    _force_os(monkeypatch, mac=True)
+    staged = tmp_path / "staged.dmg"
     staged.write_bytes(b"x")
     msgs = []
-    ok = au.apply_and_restart(str(staged), log=msgs.append)
-    assert ok is False
+    assert au.apply_and_restart(str(staged), log=msgs.append) is False
     assert any("update available" in m.lower() for m in msgs)

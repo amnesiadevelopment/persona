@@ -18,14 +18,14 @@ import time
 from ..engine.updater import is_newer
 from ...core import platform as _platform
 
-APP_VERSION = "2.3.1"
+APP_VERSION = "2.3.2"
 APP_REPO = "amnesiadevelopment/persona"
 
 
 def asset_name() -> str:
     """The release asset filename for this OS — what CI publishes per platform."""
     if _platform.IS_WINDOWS:
-        return "persona-windows-x64.zip"
+        return "persona-windows-setup.exe"
     if _platform.IS_MACOS:
         return "persona-macos.dmg"
     return "persona-x86_64.AppImage"
@@ -33,7 +33,7 @@ def asset_name() -> str:
 
 def _asset_suffix() -> str:
     if _platform.IS_WINDOWS:
-        return ".zip"
+        return ".exe"
     if _platform.IS_MACOS:
         return ".dmg"
     return ".AppImage"
@@ -47,9 +47,16 @@ _MAX_ATTEMPTS = 40
 
 
 def staged_path() -> str:
-    """Deterministic path for the in-progress download, next to the installed
-    AppImage (same filesystem, so the later os.replace is atomic). '' when not
-    running as a packaged AppImage."""
+    """Deterministic path for the in-progress download.
+
+    Windows: a temp file (the installer .exe is run from there — there's no live
+    binary to sit next to). Linux: next to the installed AppImage (same
+    filesystem, so the later os.replace is atomic); '' when not a packaged
+    AppImage."""
+    if _platform.IS_WINDOWS:
+        import tempfile
+
+        return os.path.join(tempfile.gettempdir(), "persona-update-setup.exe")
     target = installed_appimage_path()
     if target is None:
         return ""
@@ -370,9 +377,45 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
             except Exception:
                 pass
 
-    # In-place self-replace is the AppImage (Linux) mechanism. On Windows/macOS
-    # a running .exe/.app can't replace itself; until a per-OS updater exists we
-    # detect-and-notify rather than risk a broken swap.
+    # Windows: hand the downloaded installer control. It has a fixed AppId, so
+    # it upgrades the existing install in place (old files removed, one entry in
+    # Programs and Features) and restarts persona — no manual download. A running
+    # .exe can't replace itself, but a SEPARATE installer process can replace it
+    # while persona exits, which is exactly what Chrome/Discord-style updaters do.
+    if _platform.IS_WINDOWS:
+        if not staged or not os.path.isfile(staged):
+            say("Update: installer missing.")
+            return False
+        say("Update: launching the installer…")
+        try:
+            # /SILENT shows only a progress bar; /CLOSEAPPLICATIONS +
+            # /RESTARTAPPLICATIONS let it close this persona and relaunch the new
+            # one; /NORESTART keeps it from rebooting Windows.
+            subprocess.Popen(
+                [
+                    staged,
+                    "/SILENT",
+                    "/CLOSEAPPLICATIONS",
+                    "/RESTARTAPPLICATIONS",
+                    "/NORESTART",
+                ],
+                close_fds=True,
+                **_platform.no_window_kwargs(),
+            )
+        except Exception as e:
+            say(f"Update: couldn't start the installer: {e}")
+            return False
+        # Exit now so the installer can overwrite our files; it relaunches persona.
+        say("Update: restarting…")
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:
+            pass
+        os._exit(0)
+
+    # macOS has no self-updater yet — detect-and-notify rather than risk a broken
+    # swap of a running .app.
     if not _platform.IS_LINUX:
         say("Update available — download the new version from the releases page.")
         return False
