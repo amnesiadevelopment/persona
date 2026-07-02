@@ -84,8 +84,18 @@ class ProgressState:
         self._last_t: float | None = None
 
     def update(self, done: int, total: int, now: float) -> None:
+        # A new total means a new phase of the download (a retry, or a resume
+        # that reports a different content length): the old accumulated
+        # done/percent no longer refer to the same target, so reset them.
+        # Otherwise the percent (from the old total) and the "X of Y" line (from
+        # the new total) disagree — e.g. 46% shown next to "102 of 125 MB".
+        if total > 0 and total != self.total:
+            self.done = 0
+            self._max_frac = 0.0
+            self._last_done = 0
         self.total = total
-        # Monotonic: never let the shown amount fall below what we've seen.
+        # Monotonic within a phase: never let the shown amount fall below what
+        # we've seen for THIS total.
         self.done = max(self.done, done)
         if total > 0:
             self._max_frac = max(self._max_frac, self.done / total)

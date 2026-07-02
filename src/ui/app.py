@@ -78,7 +78,12 @@ class App:
         self._update_start_t = 0.0
         self._checking_proxies: set[str] = set()
         self._engine_latest: str = ""
+        # _engine_busy = a real download is in flight (show the progress bar).
+        # _engine_checking = a version check over the network is in flight (show
+        # only a spinner, NEVER the bar — a version check moves no bytes, so the
+        # leftover download bar reading "189 MB of 189 MB" was wrong).
         self._engine_busy = False
+        self._engine_checking = False
         self._engines_open = False
         self._engine2_latest: str = ""
         self._engine2_busy = False
@@ -973,11 +978,14 @@ class App:
                         self._engine_logo("chromium"),
                         "fp-chromium",
                         self.engine_text.value or "…",
-                        checking=self._engine_busy,
+                        checking=self._engine_busy or self._engine_checking,
                         dot=self._engine_update_available(),
                     ),
                 )
             )
+            # The progress bar belongs to a DOWNLOAD only. A version check shows
+            # just the spinner in the row above — no bar (it would display stale
+            # bytes from a past download).
             if self._engine_busy:
                 body.append(_bar_block(self._engine_bar, self._engine_detail))
             body.append(ft.Container(height=8))
@@ -1023,14 +1031,18 @@ class App:
     def _check_both_engines(self) -> None:
         """Opening the panel checks both engines for an upstream update over
         the network — each runs on its own thread with its own spinner."""
-        if not self._engine_busy and not self._engine_update_available():
-            self._engine_busy = True
+        if (
+            not self._engine_busy
+            and not self._engine_checking
+            and not self._engine_update_available()
+        ):
+            self._engine_checking = True
             self._refresh_engine_text("checking…")
 
             def work() -> None:
                 tag, _url = engine.fetch_latest()
                 self._engine_latest = tag
-                self._engine_busy = False
+                self._engine_checking = False
                 if self._engine_update_available():
                     self._log(f"Engine update available: {tag}")
                 self._refresh_engine_text()
@@ -1047,6 +1059,23 @@ class App:
         try:
             if not inv.is_invisible_installed() and not self._engine2_busy:
                 self._ensure_engine2_async()
+            elif not self._engine2_busy and not self._engine2_checking:
+                # Already installed: no upstream feed to poll (its version is
+                # pinned to the bundled package), but flash a brief "checking…"
+                # so the row reads the same as the chromium one instead of
+                # sitting inert. Short thread + refresh_engine_text (no sidebar
+                # rebuild from the thread — that's what jammed the panel before).
+                self._engine2_checking = True
+                self._refresh_engine_text()
+
+                def settle() -> None:
+                    import time
+
+                    time.sleep(0.6)
+                    self._engine2_checking = False
+                    self._refresh_engine_text()
+
+                threading.Thread(target=settle, daemon=True).start()
         except Exception as e:
             logger.error("firefox engine check failed: %s", e)
 
@@ -1488,18 +1517,19 @@ class App:
         self._refresh_sidebar()
 
     def _on_engine_click(self) -> None:
-        if self._engine_busy:
+        if self._engine_busy or self._engine_checking:
             return
         if self._engine_update_available():
             self._update_engine_async()
         else:
-            self._engine_busy = True
+            # A version check moves no bytes: spinner only, no download bar.
+            self._engine_checking = True
             self._refresh_engine_text("checking…")
 
             def work() -> None:
                 tag, _url = engine.fetch_latest()
                 self._engine_latest = tag
-                self._engine_busy = False
+                self._engine_checking = False
                 if self._engine_update_available():
                     self._log(f"Engine update available: {tag}")
                 else:

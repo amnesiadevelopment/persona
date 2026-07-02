@@ -265,6 +265,12 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
     engine = getattr(profile, "engine", "chromium")
     # "camoufox" is the retired engine name; treat any leftover as the Firefox
     # engine so an old profile keeps launching.
+    # A mobile profile always launches on chromium: the Firefox engine has no
+    # mobile mode, and only chromium carries the device preset that makes an
+    # android/ios profile coherent. Fall back even if an old profile stored
+    # engine=firefox with a mobile OS.
+    if is_mobile_os(profile.os_type):
+        engine = "chromium"
     if engine in ("firefox", "camoufox"):
         proc = _spawn_invisible(profile, profile_dir)
         proc._proxy_bridge = None  # type: ignore[attr-defined]

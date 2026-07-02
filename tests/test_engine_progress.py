@@ -57,6 +57,38 @@ def test_progress_cb_formats_mb_percent_speed(monkeypatch):
     assert app._engine_bar.value == 0.5
 
 
+def test_version_check_uses_checking_not_busy(monkeypatch):
+    # A version check must set _engine_checking (spinner only) and NEVER
+    # _engine_busy — the download bar is gated on _engine_busy, so conflating
+    # the two is what painted a stale "189 MB of 189 MB" bar during a check.
+    app = _app()
+    app._engine_busy = False
+    app._engine_checking = False
+    app._engine2_busy = False
+    app._engine2_checking = False
+    app._engine_latest = ""
+    started = {}
+    monkeypatch.setattr(app, "_engine_update_available", lambda: False)
+    monkeypatch.setattr(app, "_refresh_engine_text", lambda *a, **k: None)
+    monkeypatch.setattr(app, "_log", lambda *a, **k: None)
+
+    import threading
+
+    # Capture the check thread's target without running the network fetch.
+    real_thread = threading.Thread
+
+    def fake_thread(target=None, **kw):
+        started["target"] = target
+        return real_thread(target=lambda: None)
+
+    monkeypatch.setattr(threading, "Thread", fake_thread)
+
+    app._check_both_engines()
+    # The moment the check starts, checking is on and busy stays off.
+    assert app._engine_checking is True
+    assert app._engine_busy is False
+
+
 def test_progress_cb_unknown_total_shows_mb_and_speed(monkeypatch):
     app = _app()
     app._engine_throttle = pf.ProgressThrottle()

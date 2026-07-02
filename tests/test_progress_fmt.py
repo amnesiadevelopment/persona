@@ -107,6 +107,20 @@ def test_progress_state_fraction_is_monotonic():
     assert s.fraction == 0.6  # bar does not jump back
 
 
+def test_progress_state_resets_on_new_total():
+    # A retry/resume that reports a DIFFERENT total starts a new phase: the
+    # percent must track the new total, not stay pinned to the old one (the
+    # "46% next to 102 of 125 MB" bug).
+    s = pf.ProgressState()
+    s.update(done=100, total=220, now=1.0)  # ~45% of the old total
+    assert s.percent == 45
+    # new phase, smaller total: 102 of 125 is ~81%, not ~45%
+    s.update(done=102, total=125, now=2.0)
+    assert s.percent == 81
+    assert s.done == 102
+    assert s.total == 125
+
+
 def test_progress_state_speed_is_ema_smoothed():
     s = pf.ProgressState(alpha=0.3)
     # first update has no prior sample; second seeds the EMA at a steady rate

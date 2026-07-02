@@ -89,6 +89,30 @@ _CONTENT_SCRIPT = r"""
     }
   } catch (e) {}
 
+  // devicePixelRatio must agree with the spoofed screen. The host's real DPR
+  // (1.5 on a 150%-scaled 4K monitor) leaks through untouched, and scanners
+  // read the "physical" resolution as screen.width * devicePixelRatio — so a
+  // spoofed 3840-wide screen at a real 1.5 DPR reports 5760x3240, a resolution
+  // no real monitor has and an obvious tell. Pin DPR to 1 so the physical
+  // resolution equals the spoofed screen (the overwhelmingly common desktop
+  // case). matchMedia('(resolution: Ndppx)') is the other DPR probe, so answer
+  // it consistently: only a 1dppx query matches.
+  try {
+    def(window, 'devicePixelRatio', 1);
+    var mm = window.matchMedia;
+    if (mm) {
+      window.matchMedia = nativeWrap(mm, function (q) {
+        var res = mm.call(window, q);
+        if (/resolution|dppx|device-pixel-ratio|-webkit-device-pixel-ratio/i.test(q)) {
+          var wantsOne = /(^|[^\d.])1(\.0+)?\s*dppx/i.test(q) ||
+                         /device-pixel-ratio\s*:\s*1(\.0+)?\s*\)/i.test(q);
+          try { def(res, 'matches', wantsOne); } catch (e) {}
+        }
+        return res;
+      });
+    }
+  } catch (e) {}
+
   // --- mediaDevices.enumerateDevices ---
   // A believable consumer-desktop set: one mic + one default mic, one webcam,
   // one speaker + one default speaker. Labels stay '' (real browsers hide them

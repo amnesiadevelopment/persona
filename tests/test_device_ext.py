@@ -42,3 +42,15 @@ def test_script_spoofs_screen_and_mediadevices(tmp_path):
     # masked as native
     assert "[native code]" not in js  # we keep real toString via nativeWrap
     assert "nativeWrap" in js
+
+
+def test_script_pins_device_pixel_ratio(tmp_path):
+    # A spoofed screen with the host's real DPR leaking through makes scanners
+    # report screen.width*dpr (e.g. 3840*1.5=5760) — a resolution no monitor
+    # has. The script must pin devicePixelRatio and keep matchMedia consistent.
+    js = pathlib.Path(
+        build_device_extension(1, str(tmp_path / "dev")) + "/device.js"
+    ).read_text()
+    assert "devicePixelRatio" in js
+    assert "matchMedia" in js
+    assert "dppx" in js

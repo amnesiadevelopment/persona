@@ -404,6 +404,59 @@ def _system_dpr() -> float:
         return 1.0
 
 
+def _window_size_for(w: int, h: int, work: tuple[int, int]) -> tuple[int, int]:
+    """A comfortable window size (CSS px) for a profile whose fingerprint screen
+    is w×h, given the usable work area. The window fits the monitor — a big
+    resolution pick doesn't open a window larger than the screen — while a small
+    pick opens at exactly its size. The fingerprint screen is set separately, so
+    the window size never changes what a scanner reads."""
+    aw, ah = work
+    if aw and ah:
+        return (min(w, int(aw * 0.92)), min(h, int(ah * 0.92)))
+    return (min(w, 1280), min(h, 800))
+
+
+def _work_area() -> tuple[int, int]:
+    """The usable desktop size in CSS pixels (excludes the taskbar), for sizing
+    a launched window so it comfortably fits the monitor.
+
+    Windows: SPI_GETWORKAREA gives the work area in physical pixels on a
+    DPI-aware process, so divide by the scale to get CSS pixels (what Firefox's
+    --width/--height expect). Non-Windows / any failure returns (0, 0) so the
+    caller falls back to the engine's default window size."""
+    if not _platform.IS_WINDOWS:
+        return (0, 0)
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            pass
+
+        class RECT(ctypes.Structure):
+            _fields_ = [
+                ("left", wintypes.LONG),
+                ("top", wintypes.LONG),
+                ("right", wintypes.LONG),
+                ("bottom", wintypes.LONG),
+            ]
+
+        SPI_GETWORKAREA = 0x0030
+        r = RECT()
+        if not ctypes.windll.user32.SystemParametersInfoW(
+            SPI_GETWORKAREA, 0, ctypes.byref(r), 0
+        ):
+            return (0, 0)
+        phys_w = r.right - r.left
+        phys_h = r.bottom - r.top
+        dpr = _system_dpr()
+        return (int(round(phys_w / dpr)), int(round(phys_h / dpr)))
+    except Exception:
+        return (0, 0)
+
+
 def _screen_metrics() -> str:
     """A compact string of the host display metrics for debugging HiDPI sizing:
     physical pixel size, virtual (scaled) size, and the work area. Windows only;
@@ -748,29 +801,29 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     res = cfg.get("resolution")
     if res:
         w, h = int(res[0]), int(res[1])
-        dpr = _system_dpr()
-        # DEBUG: log the real display metrics so the HiDPI window sizing can be
-        # tuned to an actual 4K/scaled host (dev VMs can't reproduce HiDPI).
+        # The chosen resolution is the FINGERPRINT screen (what scanners read),
+        # not the physical window size. Tying the window to the resolution made a
+        # 4K pick overflow a 4K monitor (there's no room for the taskbar/borders
+        # once the window is that large). Instead open the window at a comfortable
+        # size that fits the monitor — the spoofed screen still reports the chosen
+        # resolution, exactly how the chromium engine already behaves.
+        aw, ah = _work_area()
+        cw, ch = _window_size_for(w, h, (aw, ah))
         try:
-            emit(f"HIDPI_DEBUG dpr={dpr} chosen={w}x{h} metrics={_screen_metrics()}")
+            emit(f"HIDPI_DEBUG chosen={w}x{h} window={cw}x{ch} work={aw}x{ah}")
         except Exception:
             pass
-        # Open the window physically at the chosen resolution: Firefox's
-        # --width/--height are CSS pixels, so at dpr>1 pass resolution/dpr and the
-        # physical window comes out to exactly the chosen resolution instead of
-        # resolution*dpr (which overflowed the monitor). The spoofed screen still
-        # reports the full chosen resolution for the fingerprint.
-        if dpr > 1.0:
-            cw, ch = int(round(w / dpr)), int(round(h / dpr))
-            _extra_win = [f"--width={cw}", f"--height={ch}"]
-        else:
-            _extra_win = [f"--width={w}", f"--height={h}"]
+        _extra_win = [f"--width={cw}", f"--height={ch}"]
+        # Pin the fingerprint screen to the chosen resolution with DPR 1 so
+        # screen.width * devicePixelRatio equals the chosen width (a spoofed
+        # screen at the host's real 1.5 DPR would report resolution*1.5, an
+        # impossible size — the same tell fixed in the chromium device ext).
         kwargs["pin"] = {
             "screen.width": w,
             "screen.height": h,
             "screen.avail_width": w,
             "screen.avail_height": h - 40,
-            "screen.dpr": _system_dpr(),
+            "screen.dpr": 1,
         }
     if proxy:
         kwargs["proxy"] = proxy

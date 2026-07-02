@@ -6,6 +6,7 @@ from src.services.browser.invisible_launch import (
     _child,
     _profile_prefs,
     _remoting_name,
+    _window_size_for,
     installed_version,
 )
 
@@ -25,6 +26,28 @@ def test_installed_version_is_firefox_version_not_build_tag():
     # engine's internal build tag ("firefox-13").
     v = installed_version()
     assert not v.startswith("firefox-")
+
+
+def test_window_never_exceeds_work_area():
+    # A 4K pick on a 4K monitor (work area 2560x1392 CSS at 150% scale) must NOT
+    # open a window at 3840x2160 — that overflows the screen. It's capped to the
+    # work area so it fits with room for the taskbar/borders.
+    cw, ch = _window_size_for(3840, 2160, (2560, 1392))
+    assert cw <= 2560 and ch <= 1392
+    assert cw < 3840 and ch < 2160  # actually shrunk, not passed through
+
+
+def test_window_keeps_small_resolution_as_is():
+    # A small pick that fits the monitor opens at exactly its size.
+    cw, ch = _window_size_for(1366, 768, (2560, 1392))
+    assert (cw, ch) == (1366, 768)
+
+
+def test_window_falls_back_without_work_area():
+    # No work-area reading (non-Windows / failure): cap at a common laptop size
+    # so a huge pick can't open a window larger than a typical screen.
+    cw, ch = _window_size_for(3840, 2160, (0, 0))
+    assert cw <= 1280 and ch <= 800
 
 
 def test_profile_prefs_force_dark_theme():

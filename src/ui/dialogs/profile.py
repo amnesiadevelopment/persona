@@ -10,6 +10,7 @@ from ...services.browser.profile_seed import (
     DEFAULT_SEARCH_ENGINE,
     SEARCH_ENGINE_LABELS,
 )
+from ...services.browser.device_presets import is_mobile_os
 from ...services.browser.resolution import parse_resolution
 from ...utils.validation import validate_profile_name
 from ..theme.colors import COLORS
@@ -183,6 +184,17 @@ def open_profile_dialog(
     # which is what made the create-profile dialog fail to open.
     resolution_dropdown.on_change = on_res_change
 
+    # A mobile profile's screen geometry comes from its device preset (the
+    # phone/tablet the fingerprint impersonates), not this desktop picker — a 4K
+    # "phone" is an instant tell. Hide the whole resolution picker for mobile OSes
+    # so it's never even offered there.
+    resolution_section = ft.Column(
+        spacing=6, controls=[ft.Row(controls=[resolution_dropdown]), custom_row]
+    )
+    resolution_section.visible = not is_mobile_os(
+        os_dropdown.value or "windows"
+    )
+
     current_search = (
         profile.search_engine if profile is not None else DEFAULT_SEARCH_ENGINE
     )
@@ -213,18 +225,53 @@ def open_profile_dialog(
     # The Firefox engine has no per-profile default search engine — it's set
     # globally (all Firefox profiles use DuckDuckGo), so a per-profile picker
     # here would mislead. Hide the search picker for Firefox; keep it for
-    # chromium where it IS per-profile. React to the engine dropdown so it
-    # updates live when the user switches engines while creating a profile.
+    # chromium where it IS per-profile.
     search_section = ft.Column(
         spacing=6, controls=[ft.Row(controls=[search_dropdown]), search_hint]
     )
-    search_section.visible = engine_value != "firefox"
+
+    def _engine() -> str:
+        return engine_dropdown.value or "chromium"
+
+    def _apply_engine_dependent() -> None:
+        search_section.visible = _engine() != "firefox"
+
+    _apply_engine_dependent()
 
     def on_engine_change(_: ft.ControlEvent) -> None:
-        search_section.visible = (engine_dropdown.value or "chromium") != "firefox"
+        _apply_engine_dependent()
         page.update()
 
     engine_dropdown.on_change = on_engine_change
+
+    # invisible_playwright is desktop Firefox with no mobile mode, so a mobile
+    # profile must use chromium (which has real device presets). When the user
+    # picks a mobile OS: force the engine to chromium, drop the Firefox option so
+    # it can't be chosen, and hide the desktop resolution picker. Restore the full
+    # engine choice when they switch back to a desktop OS. The OS dropdown uses
+    # plain text options, so its on_change fires reliably (unlike the engine
+    # dropdown, whose icon "content" options swallow the event on this Flet).
+    _desktop_engine_options = list(engine_dropdown.options)
+
+    def on_os_change(_: ft.ControlEvent) -> None:
+        mobile = is_mobile_os(os_dropdown.value or "windows")
+        if mobile:
+            if _engine() == "firefox":
+                engine_dropdown.value = "chromium"
+            engine_dropdown.options = [
+                o for o in _desktop_engine_options if o.key != "firefox"
+            ]
+        else:
+            engine_dropdown.options = _desktop_engine_options
+        resolution_section.visible = not mobile
+        _apply_engine_dependent()
+        page.update()
+
+    os_dropdown.on_change = on_os_change
+    # Apply the mobile constraints for a profile that already has a mobile OS
+    # (editing one, or a create dialog defaulted to mobile).
+    if is_mobile_os(os_dropdown.value or "windows"):
+        on_os_change(None)  # type: ignore[arg-type]
 
     current_pool = (profile.bookmark_pool or "") if profile is not None else ""
     pool_value = current_pool if current_pool in pool_names else _NO_POOL
@@ -364,13 +411,21 @@ def open_profile_dialog(
         proxy = proxy_dropdown.value or _DIRECT
         proxy = "" if proxy == _DIRECT else proxy
         os_type = os_dropdown.value or "windows"
-        search = search_dropdown.value or DEFAULT_SEARCH_ENGINE
+        engine = engine_dropdown.value or "chromium"
+        # Firefox has no per-profile default search engine — it's pinned to
+        # DuckDuckGo globally for all Firefox profiles. Ignore the picker's value
+        # (the section is hidden for Firefox) so the stored engine is always the
+        # global one, regardless of what the dropdown last held.
+        search = (
+            DEFAULT_SEARCH_ENGINE
+            if engine == "firefox"
+            else (search_dropdown.value or DEFAULT_SEARCH_ENGINE)
+        )
         pool = pool_dropdown.value or _NO_POOL
         pool = "" if pool == _NO_POOL else pool
         bookmarks = [n for n, cb in bookmark_checks.items() if cb.value]
         tags = [s.strip() for s in (tags_field.value or "").split(",") if s.strip()]
         notes = (notes_field.value or "").strip()
-        engine = engine_dropdown.value or "chromium"
         name_error.visible = False
 
         res_choice = resolution_dropdown.value or "auto"
@@ -441,8 +496,7 @@ def open_profile_dialog(
                     ft.Row(controls=[os_dropdown]),
                     ft.Row(controls=[engine_dropdown]),
                     engine_hint,
-                    ft.Row(controls=[resolution_dropdown]),
-                    custom_row,
+                    resolution_section,
                     search_section,
                     ft.Divider(height=10, color=COLORS["border"]),
                     ft.Row(controls=[pool_dropdown]),
