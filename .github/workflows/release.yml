@@ -237,7 +237,7 @@ jobs:
           ; brand; WizardImageBackColor tints the banner panel to persona's bg
           ; (app theme is pure black #000000 with a lime accent).
           WizardStyle=modern dark
-          WizardImageBackColor=$00000000
+          WizardImageBackColor=#000000
           $iconLine
           $wizLines
           [InstallDelete]
