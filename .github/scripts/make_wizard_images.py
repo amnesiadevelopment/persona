@@ -11,11 +11,14 @@ import sys
 
 from PIL import Image, ImageDraw, ImageFont
 
-BG_TOP = (13, 17, 23)      # #0d1117 — persona dark
-BG_BOTTOM = (22, 27, 34)   # #161b22
-ACCENT = (57, 211, 83)     # green accent
-TEXT = (230, 237, 243)
-SUBTLE = (139, 148, 158)
+# persona's app theme: pure black with a lime accent (src/ui/theme/colors.py).
+# The banner must match WizardImageBackColor=$00000000 so there's no seam
+# between the banner panel and the wizard's dark chrome.
+BG_TOP = (0, 0, 0)         # #000000 — persona bg
+BG_BOTTOM = (10, 10, 10)   # #0A0A0A — a hair lighter for a subtle gradient
+ACCENT = (168, 255, 63)    # #A8FF3F — lime accent
+TEXT = (255, 255, 255)     # #FFFFFF
+SUBTLE = (188, 188, 188)   # #BCBCBC
 
 
 def _vertical_gradient(size, top, bottom):
