@@ -8,7 +8,13 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      os:
+        description: "Which OS to build (use 'windows' for fast installer iteration)"
+        type: choice
+        default: all
+        options: [all, windows, linux, macos]
 
 permissions:
   contents: write
@@ -16,6 +22,11 @@ permissions:
 jobs:
   build-linux:
     runs-on: ubuntu-24.04
+    # On a tag, build every OS. On a manual run, build only the chosen OS (or
+    # all) — so iterating on the Windows installer doesn't wait on Linux/macOS.
+    if: >-
+      github.event_name != 'workflow_dispatch' ||
+      contains(fromJSON('["all","linux"]'), github.event.inputs.os)
     steps:
       - name: Check out the code
         uses: actions/checkout@v4
@@ -24,6 +35,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          cache: pip
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -32,6 +44,9 @@ jobs:
           # flet try to reinstall the right one interactively and the build
           # hangs/fails on the [y/n] prompt in CI.
           flutter-version: "3.41.7"
+          # Cache the Flutter SDK between runs so it isn't re-downloaded (~hundreds
+          # of MB) every build.
+          cache: true
 
       - name: Install Linux build dependencies
         run: |
@@ -125,6 +140,9 @@ jobs:
 
   build-windows:
     runs-on: windows-latest
+    if: >-
+      github.event_name != 'workflow_dispatch' ||
+      contains(fromJSON('["all","windows"]'), github.event.inputs.os)
     # flet's build spinner prints box-drawing/dot glyphs; the Windows runner's
     # default cp1252 console can't encode them and flet dies with
     # UnicodeEncodeError. Force UTF-8 I/O for the whole job.
@@ -139,11 +157,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          cache: pip
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: "3.41.7"
+          cache: true
 
       - name: Install Flet CLI + app deps
         run: |
@@ -351,6 +371,9 @@ jobs:
 
   build-macos:
     runs-on: macos-latest
+    if: >-
+      github.event_name != 'workflow_dispatch' ||
+      contains(fromJSON('["all","macos"]'), github.event.inputs.os)
     # flet build macos rebuilds the Python deps with its own pip, which tried to
     # compile the cryptography Rust wheel from source and failed. Force pip (both
     # ours and flet's internal one) to take cryptography's prebuilt macOS wheel.
@@ -364,11 +387,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          cache: pip
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: "3.41.7"
+          cache: true
 
       - name: Install Flet CLI + app deps
         run: |
