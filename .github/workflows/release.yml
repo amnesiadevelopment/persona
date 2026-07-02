@@ -309,6 +309,75 @@ jobs:
                 WipePersonaEngines;
             end;
           end;
+
+          // --- Dark theme (no external DLL) ------------------------------------
+          // Paint the whole wizard in persona's colours by walking every control
+          // on the form and recolouring by type. TColor is 0x00BBGGRR.
+          const
+            clDarkBg     = $001B110D;  // #0d111b window / panel background
+            clDarkPanel  = $0022161C;  // #1c1622 slightly lighter panel
+            clDarkInput  = $002A1F17;  // input background
+            clAccent     = $0053D339;  // #39d353 green
+            clLightText  = $00F3EDE6;  // #e6edf3 text
+            clSubText    = $009E948B;  // muted text
+
+          procedure DarkenControl(C: TControl); forward;
+
+          procedure DarkenChildren(Parent: TWinControl);
+          var
+            i: Integer;
+          begin
+            for i := 0 to Parent.ControlCount - 1 do
+              DarkenControl(Parent.Controls[i]);
+          end;
+
+          procedure DarkenControl(C: TControl);
+          begin
+            if C is TNewStaticText then
+            begin
+              TNewStaticText(C).Color := clDarkBg;
+              TNewStaticText(C).Font.Color := clLightText;
+            end
+            else if C is TNewNotebookPage then
+              TNewNotebookPage(C).Color := clDarkBg
+            else if C is TNewNotebook then
+              TNewNotebook(C).Color := clDarkBg
+            else if C is TPanel then
+              TPanel(C).Color := clDarkPanel
+            else if C is TNewCheckListBox then
+            begin
+              TNewCheckListBox(C).Color := clDarkInput;
+              TNewCheckListBox(C).Font.Color := clLightText;
+            end
+            else if C is TNewCheckBox then
+              TNewCheckBox(C).Font.Color := clLightText
+            else if C is TNewRadioButton then
+              TNewRadioButton(C).Font.Color := clLightText
+            else if C is TNewEdit then
+            begin
+              TNewEdit(C).Color := clDarkInput;
+              TNewEdit(C).Font.Color := clLightText;
+            end
+            else if C is TLabel then
+              TLabel(C).Font.Color := clLightText;
+            // The progress bar is deliberately left to the system so it keeps
+            // its native animation.
+            if C is TWinControl then
+              DarkenChildren(TWinControl(C));
+          end;
+
+          procedure InitializeWizard();
+          begin
+            WizardForm.Color := clDarkBg;
+            WizardForm.MainPanel.Color := clDarkBg;
+            WizardForm.PageNameLabel.Font.Color := clLightText;
+            WizardForm.PageDescriptionLabel.Font.Color := clSubText;
+            WizardForm.WelcomeLabel1.Font.Color := clLightText;
+            WizardForm.WelcomeLabel2.Font.Color := clSubText;
+            WizardForm.FinishedHeadingLabel.Font.Color := clLightText;
+            WizardForm.FinishedLabel.Font.Color := clSubText;
+            DarkenChildren(WizardForm);
+          end;
           "@
           Set-Content -Path persona.iss -Value $iss -Encoding UTF8
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
