@@ -318,7 +318,9 @@ jobs:
             i: Integer;
             C: TControl;
           begin
-            Parent.Color := $001B110D;
+            // Only concrete control types expose .Color in Inno's Pascal Script
+            // (the base TWinControl does not — touching Parent.Color errors with
+            // "Unknown identifier 'COLOR'"), so recolour by type and recurse.
             for i := 0 to Parent.ControlCount - 1 do
             begin
               C := Parent.Controls[i];
@@ -327,6 +329,8 @@ jobs:
                 TNewStaticText(C).Color := $001B110D;
                 TNewStaticText(C).Font.Color := $00F3EDE6;
               end
+              else if C is TPanel then
+                TPanel(C).Color := $001B110D
               else if C is TNewCheckBox then
                 TNewCheckBox(C).Font.Color := $00F3EDE6
               else if C is TNewRadioButton then
