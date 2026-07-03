@@ -67,27 +67,25 @@ def test_window_falls_back_without_work_area():
     assert cw <= 1280 and ch <= 800
 
 
-def test_context_overrides_decouple_screen_from_window():
-    # The spoofed screen must stay at the CHOSEN resolution (what the user
-    # picked, e.g. 4K) while the real window (viewport) is shrunk to fit the
-    # monitor. Coupling them is the #102 bug: picking 4K opened a 4K window that
-    # overflowed the monitor, and shrinking the window shrank the fingerprint.
+def test_context_overrides_fill_monitor_for_large_pick():
+    # The spoofed screen stays at the CHOSEN resolution (4K) while the window
+    # FILLS the monitor's work area вЂ” "open on the whole screen". It must not
+    # exceed the work area (that overflows) and must not shrink the fingerprint.
     from src.services.browser.invisible_launch import _context_overrides_for
 
     ov = _context_overrides_for(3840, 2160, (2560, 1392))
     assert ov["screen"] == {"width": 3840, "height": 2160}       # fingerprint = chosen
-    assert ov["viewport"]["width"] <= 2560                        # window fits monitor
-    assert ov["viewport"]["width"] < 3840
+    assert ov["viewport"] == {"width": 2560, "height": 1392}      # window fills the monitor
 
 
-def test_context_overrides_small_pick_window_equals_screen():
-    # A small pick that already fits opens the window at its size and the screen
-    # matches it вЂ” no shrink, no decoupling needed.
+def test_context_overrides_small_pick_stays_small():
+    # A pick SMALLER than the monitor opens a window of exactly that size (a
+    # deliberately small window), not full-screen.
     from src.services.browser.invisible_launch import _context_overrides_for
 
     ov = _context_overrides_for(1366, 768, (2560, 1392))
     assert ov["screen"] == {"width": 1366, "height": 768}
-    assert ov["viewport"]["width"] <= 1366
+    assert ov["viewport"] == {"width": 1366, "height": 768}
 
 
 def test_outer_size_override_script_ties_outer_to_window():

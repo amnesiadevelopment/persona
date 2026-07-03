@@ -2,6 +2,7 @@
 
 import flet as ft
 
+from ...core.logging import get_logger
 from ...core.strings import get_string
 from ...interfaces.protocols import IProxyService
 from ...models.bookmark import Bookmark
@@ -272,9 +273,24 @@ def open_profile_dialog(
 
     _apply_engine_dependent()
 
+    def _refresh_search_controls() -> None:
+        # Update the specific controls whose visibility we toggled. page.update()
+        # alone sometimes doesn't repaint a control's `visible` change nested deep
+        # inside a dialog on this Flet, so nudge each control directly too (guarded
+        # вЂ” calling .update() before the control is on the page raises).
+        for ctl in (search_dropdown, search_locked, search_hint):
+            try:
+                ctl.update()
+            except Exception:
+                pass
+
     def on_engine_change(_: ft.ControlEvent) -> None:
+        get_logger("ui.dialog").info(
+            "engine on_change fired: engine=%s", engine_dropdown.value
+        )
         _apply_engine_dependent()
         page.update()
+        _refresh_search_controls()
 
     engine_dropdown.on_change = on_engine_change
 

@@ -421,14 +421,25 @@ def _context_overrides_for(
 ) -> dict:
     """Playwright context kwargs that decouple the spoofed screen from the real
     window. The `screen` stays at the CHOSEN resolution (the fingerprint the
-    user picked) while the `viewport` is the fit-to-monitor window size.
+    user picked) while the `viewport` FILLS the monitor вЂ” the window opens as
+    large as the screen (minus the taskbar), which is what "open on the whole
+    screen" means. It never exceeds the work area (that would overflow), and if
+    the work area is unknown it falls back to the fitted size.
 
     invisible_playwright derives BOTH from one `p.screen` value, so pinning a 4K
     screen also opened a 4K window that overflowed the monitor (#102). Passing
     these overrides straight into launch_persistent_context sizes the window and
     the fingerprint independently вЂ” Playwright accepts `screen` and `viewport`
     as separate kwargs; only the engine coupled them."""
-    vw, vh = _window_size_for(w, h, work)
+    aw, ah = work
+    if aw and ah:
+        # Fill the usable desktop. Cap at the chosen resolution only when the
+        # pick is SMALLER than the screen (a deliberately small window); a pick
+        # >= the monitor opens full-screen-sized.
+        vw = min(w, aw) if w < aw else aw
+        vh = min(h, ah) if h < ah else ah
+    else:
+        vw, vh = _window_size_for(w, h, work)
     return {
         "screen": {"width": w, "height": h},
         "viewport": {"width": vw, "height": vh},
