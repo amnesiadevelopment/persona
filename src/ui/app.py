@@ -486,10 +486,12 @@ class App:
             ),
         )
 
-    def _build_tag_chips(self) -> ft.Control:
+    def _tag_chips_content(self) -> ft.Control | None:
+        """The row of tag-filter chips, or None when there are no tags. Built
+        from the CURRENT profiles so a tag added after startup shows up."""
         tags = all_tags(self.pm.list_profiles())
         if not tags:
-            return ft.Container(height=0)
+            return None
         chips: list[ft.Control] = []
         for tag in tags:
             active = self._active_tag.lower() == tag.lower()
@@ -509,10 +511,26 @@ class App:
                     ),
                 )
             )
-        return ft.Container(
-            padding=ft.Padding.only(bottom=12),
-            content=ft.Row(spacing=8, wrap=True, controls=chips),
+        return ft.Row(spacing=8, wrap=True, controls=chips)
+
+    def _build_tag_chips(self) -> ft.Control:
+        # A live container so the chip row can be refreshed when a profile with a
+        # new tag is created after startup (a fixed build meant chips only ever
+        # showed the tags that existed when the layout was first built).
+        content = self._tag_chips_content()
+        self._tag_chips_row = ft.Container(
+            padding=ft.Padding.only(bottom=12 if content is not None else 0),
+            content=content,
         )
+        return self._tag_chips_row
+
+    def _refresh_tag_chips(self) -> None:
+        row = getattr(self, "_tag_chips_row", None)
+        if row is None:
+            return
+        content = self._tag_chips_content()
+        row.content = content
+        row.padding = ft.Padding.only(bottom=12 if content is not None else 0)
 
     def _toggle_tag_filter(self, tag: str) -> None:
         if self._active_tag.lower() == tag.lower():
@@ -1639,6 +1657,7 @@ class App:
         )
         r.prev_btn.disabled = self.state.current_page <= 1
         r.next_btn.disabled = self.state.current_page >= total_pages
+        self._refresh_tag_chips()
         self._safe_update()
 
     def _change_page(self, delta: int) -> None:

@@ -67,25 +67,28 @@ def test_window_falls_back_without_work_area():
     assert cw <= 1280 and ch <= 800
 
 
-def test_context_overrides_fill_monitor_for_large_pick():
-    # The spoofed screen stays at the CHOSEN resolution (4K) while the window
-    # FILLS the monitor's work area вЂ” "open on the whole screen". It must not
-    # exceed the work area (that overflows) and must not shrink the fingerprint.
+def test_context_overrides_window_fills_monitor_regardless_of_pick():
+    # The window ALWAYS fills the monitor's work area (Mars wants full-screen),
+    # while the spoofed screen reports the chosen resolution. A 4K pick and a
+    # small pick both open a full-screen window; only the fingerprint differs.
     from src.services.browser.invisible_launch import _context_overrides_for
 
-    ov = _context_overrides_for(3840, 2160, (2560, 1392))
-    assert ov["screen"] == {"width": 3840, "height": 2160}       # fingerprint = chosen
-    assert ov["viewport"] == {"width": 2560, "height": 1392}      # window fills the monitor
+    big = _context_overrides_for(3840, 2160, (2560, 1392))
+    assert big["screen"] == {"width": 3840, "height": 2160}      # fingerprint = chosen
+    assert big["viewport"] == {"width": 2560, "height": 1392}     # window = monitor
+
+    small = _context_overrides_for(1366, 768, (2560, 1392))
+    assert small["screen"] == {"width": 1366, "height": 768}      # fingerprint = chosen
+    assert small["viewport"] == {"width": 2560, "height": 1392}    # window STILL = monitor
 
 
-def test_context_overrides_small_pick_stays_small():
-    # A pick SMALLER than the monitor opens a window of exactly that size (a
-    # deliberately small window), not full-screen.
+def test_context_overrides_fallback_without_work_area():
+    # No work-area reading: the window falls back to the chosen size so at least
+    # the picked resolution's window shows.
     from src.services.browser.invisible_launch import _context_overrides_for
 
-    ov = _context_overrides_for(1366, 768, (2560, 1392))
-    assert ov["screen"] == {"width": 1366, "height": 768}
-    assert ov["viewport"] == {"width": 1366, "height": 768}
+    ov = _context_overrides_for(1920, 1080, (0, 0))
+    assert ov["viewport"] == {"width": 1920, "height": 1080}
 
 
 def test_outer_size_override_script_ties_outer_to_window():

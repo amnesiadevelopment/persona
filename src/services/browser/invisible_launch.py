@@ -1,9 +1,9 @@
-﻿"""Launch the invisible_playwright (patched Firefox 150) engine for a profile.
+"""Launch the invisible_playwright (patched Firefox 150) engine for a profile.
 
 A Popen-compatible handle that runs the browser in a forked child (on Linux,
 to dodge the flet-AppImage's embedded Python) or a plain subprocess elsewhere,
 keeps the window open until the user closes it, and reports readiness on a pipe
-вЂ” the same shape as the chromium launcher so spawn_browser can treat them alike.
+— the same shape as the chromium launcher so spawn_browser can treat them alike.
 """
 
 import json
@@ -50,7 +50,7 @@ def _ensure_firefox_policies() -> None:
     FF150 ignores browser.search.defaultenginename; it resolves the default from
     search-config-v2, so the only durable way to set it is policies.json with
     SearchEngines.Default. This lives in the install-relative `distribution/`
-    dir (shared by all profiles вЂ” Firefox has no per-profile default engine), so
+    dir (shared by all profiles — Firefox has no per-profile default engine), so
     every Firefox profile opens on DuckDuckGo instead of the region default
     (often Google), and the user can't have it silently reset. DuckDuckGo is a
     builtin engine, so this resolves from the local config dump with no network
@@ -75,7 +75,7 @@ def _ensure_firefox_policies() -> None:
 def ensure_invisible_installed(progress=None, log=None) -> bool:
     """True if the patched Firefox binary is present; fetch it (resumably, over
     Tor) if not. `progress(done, total)` reports bytes; `log(msg)` reports each
-    stage. Returns False only if the fetch failed вЂ” the caller can retry later.
+    stage. Returns False only if the fetch failed — the caller can retry later.
 
     invisible_playwright's own ensure_binary() does a single non-resumable
     request with a 60s timeout, which Tor reliably tears down mid-stream on an
@@ -90,7 +90,7 @@ def ensure_invisible_installed(progress=None, log=None) -> bool:
     except Exception as e:
         if log:
             try:
-                log(f"Firefox engine: install failed вЂ” {type(e).__name__}: {e}")
+                log(f"Firefox engine: install failed — {type(e).__name__}: {e}")
             except Exception:
                 pass
         return False
@@ -102,7 +102,7 @@ def _extract_as(archive_path, dst, asset_name: str) -> None:
 
     The downloaded file is named "<asset>.download", whose suffix hides the real
     type; passing the asset name (".zip" on Windows, ".tar.gz" on Linux) lets us
-    extract the partial in place with no rename вЂ” which is what avoids the
+    extract the partial in place with no rename — which is what avoids the
     Windows "file in use" lock on os.replace."""
     import os as _os
     import tarfile
@@ -143,7 +143,7 @@ def _download_invisible(progress=None, log=None) -> bool:
     version_dir = cache_dir_for_version(BINARY_VERSION)
     version_dir.mkdir(parents=True, exist_ok=True)
 
-    say("Firefox engine: resolving release over TorвЂ¦")
+    say("Firefox engine: resolving release over Tor…")
     url_archive = _resolve_asset_url(BINARY_VERSION, asset)
     url_sums = _resolve_asset_url(BINARY_VERSION, "checksums.txt")
 
@@ -154,34 +154,34 @@ def _download_invisible(progress=None, log=None) -> bool:
     # checksums.txt is tiny; a plain fetch is fine.
     sums_path = version_dir.parent / "checksums.txt"
     if not _resumable_download(str(url_sums), str(sums_path), progress=None):
-        say("Firefox engine: couldn't fetch checksums вЂ” retrying later.")
+        say("Firefox engine: couldn't fetch checksums — retrying later.")
         return False
     sums = _parse_checksums(open(sums_path, encoding="utf-8").read())
     expected = sums.get(asset)
 
     # Download, then verify the sha256. Over Tor the long transfer can flip a
     # byte (a circuit swaps mid-stream) and corrupt the archive; a single bad
-    # byte fails the checksum. Don't give up on the whole 118MB for that вЂ” retry
+    # byte fails the checksum. Don't give up on the whole 118MB for that — retry
     # the download a few times, starting each retry from a CLEAN file so a bad
     # resume can't keep a corrupt tail around.
     for verify_attempt in range(3):
-        say("Firefox engine: downloadingвЂ¦")
+        say("Firefox engine: downloading…")
         if not _resumable_download(
             str(url_archive), str(archive_path), progress=progress
         ):
-            say("Firefox engine: download didn't complete вЂ” will resume next start.")
+            say("Firefox engine: download didn't complete — will resume next start.")
             return False
         if not expected:
             break  # no checksum to verify against
         if _sha256_file(archive_path).lower() == expected.lower():
             break  # verified
-        say("Firefox engine: checksum mismatch вЂ” re-downloading from scratch.")
+        say("Firefox engine: checksum mismatch — re-downloading from scratch.")
         try:
             os.remove(archive_path)  # next attempt restarts clean, no bad resume
         except OSError:
             pass
     else:
-        say("Firefox engine: couldn't get a clean download вЂ” will retry next start.")
+        say("Firefox engine: couldn't get a clean download — will retry next start.")
         return False
 
     # Extract straight from the downloaded partial, choosing the archive type
@@ -191,7 +191,7 @@ def _download_invisible(progress=None, log=None) -> bool:
     # Defender scans a freshly written file and briefly locks it, so the whole
     # install aborted and retried. Extracting by known type needs no rename, so
     # there's no window for that lock to bite.
-    say("Firefox engine: extractingвЂ¦")
+    say("Firefox engine: extracting…")
     _extract_as(archive_path, version_dir, asset)
     try:
         os.remove(archive_path)
@@ -204,7 +204,7 @@ class _KeepRangeRedirect(__import__("urllib.request", fromlist=["HTTPRedirectHan
     """Re-attach the Range header after a redirect.
 
     GitHub release downloads 302 to a signed CDN URL, and urllib's default
-    redirect handler builds the follow-up request WITHOUT the original headers вЂ”
+    redirect handler builds the follow-up request WITHOUT the original headers —
     so the Range header is lost and the CDN returns the whole file (200) instead
     of the requested tail (206). That silently restarts the download from zero on
     every resume, which over Tor never finishes. Carry Range across the redirect
@@ -229,7 +229,7 @@ def _resumable_download(
     """Download `url` to `path`, resuming with an HTTP Range header across
     dropped connections. Returns True only on a complete file.
 
-    Over Tor a circuit can connect and then go silent вЂ” the socket stays open
+    Over Tor a circuit can connect and then go silent — the socket stays open
     but no bytes arrive, so a plain socket timeout never fires and the download
     hangs on "connecting" forever. A stall watchdog closes the response if no
     byte arrives within `stall_timeout`, which raises in read() and drops us to
@@ -252,7 +252,7 @@ def _resumable_download(
             try:
                 resp = opener.open(req, timeout=timeout)
             except urllib.error.HTTPError as he:
-                # 416 = the Range is past the end в†’ the file is already complete
+                # 416 = the Range is past the end → the file is already complete
                 # on disk (a finished partial from a prior run). Treat as done.
                 if he.code == 416 and have:
                     return True
@@ -272,7 +272,7 @@ def _resumable_download(
 
             # Append ONLY when the server confirms a 206 starting exactly where
             # our file ends. Otherwise (200, or a range starting somewhere else)
-            # we'd duplicate bytes and bloat the file past its real size вЂ” so
+            # we'd duplicate bytes and bloat the file past its real size — so
             # restart from scratch by truncating. This is the bug that grew the
             # archive to ~200MB instead of 118MB.
             if have and resp.status == 206 and range_start == have:
@@ -311,7 +311,7 @@ def _resumable_download(
                         chunk = resp.read(1 << 20)
                         if not chunk:
                             break
-                        # Never write past the known total вЂ” a stray duplicated
+                        # Never write past the known total — a stray duplicated
                         # tail would otherwise grow the file.
                         if total and done + len(chunk) > total:
                             chunk = chunk[: total - done]
@@ -383,7 +383,7 @@ def _proxy_dict(proxy_url: str):
 def _system_dpr() -> float:
     """The host display's scale factor (1.0 at 100%, 1.5 at 150%, 2.0 at 200%).
 
-    On Windows a HiDPI monitor runs at 125вЂ“200% scale; matching it keeps the
+    On Windows a HiDPI monitor runs at 125–200% scale; matching it keeps the
     spoofed browser's content readable instead of microscopic. Non-Windows
     desktops the shrink bug didn't affect fall back to 1.0. Clamped to a sane
     desktop range so a weird reading can't produce an unusable window."""
@@ -406,8 +406,8 @@ def _system_dpr() -> float:
 
 def _window_size_for(w: int, h: int, work: tuple[int, int]) -> tuple[int, int]:
     """A comfortable window size (CSS px) for a profile whose fingerprint screen
-    is wГ—h, given the usable work area. The window fits the monitor вЂ” a big
-    resolution pick doesn't open a window larger than the screen вЂ” while a small
+    is w×h, given the usable work area. The window fits the monitor — a big
+    resolution pick doesn't open a window larger than the screen — while a small
     pick opens at exactly its size. The fingerprint screen is set separately, so
     the window size never changes what a scanner reads."""
     aw, ah = work
@@ -419,27 +419,27 @@ def _window_size_for(w: int, h: int, work: tuple[int, int]) -> tuple[int, int]:
 def _context_overrides_for(
     w: int, h: int, work: tuple[int, int]
 ) -> dict:
-    """Playwright context kwargs that decouple the spoofed screen from the real
-    window. The `screen` stays at the CHOSEN resolution (the fingerprint the
-    user picked) while the `viewport` FILLS the monitor вЂ” the window opens as
-    large as the screen (minus the taskbar), which is what "open on the whole
-    screen" means. It never exceeds the work area (that would overflow), and if
-    the work area is unknown it falls back to the fitted size.
+    """Playwright context kwargs that decouple the spoofed screen (the
+    fingerprint) from the real window size.
 
-    invisible_playwright derives BOTH from one `p.screen` value, so pinning a 4K
-    screen also opened a 4K window that overflowed the monitor (#102). Passing
-    these overrides straight into launch_persistent_context sizes the window and
-    the fingerprint independently вЂ” Playwright accepts `screen` and `viewport`
-    as separate kwargs; only the engine coupled them."""
+    The `screen` reports the CHOSEN resolution the user picked (the anti-detect
+    value — this already works: pin -> zoom.stealth.screen.* -> JS screen.*). The
+    `viewport` — which is what actually sizes the physical on-screen window — is
+    set to the FULL monitor so the window opens on the whole screen every time,
+    regardless of the chosen resolution.
+
+    The engine otherwise sizes the window from the SPOOFED screen (launcher.py
+    viewport = p.screen - chrome). When the spoof is smaller than the monitor
+    (e.g. a 1280x720 pick on a 1080p display) the window filled only ~65% — the
+    #102 complaint. Forcing viewport = the real monitor fills the screen and
+    never touches the reported resolution (proven independent in dev-WS)."""
     aw, ah = work
     if aw and ah:
-        # Fill the usable desktop. Cap at the chosen resolution only when the
-        # pick is SMALLER than the screen (a deliberately small window); a pick
-        # >= the monitor opens full-screen-sized.
-        vw = min(w, aw) if w < aw else aw
-        vh = min(h, ah) if h < ah else ah
+        vw, vh = aw, ah          # fill the monitor's work area, always
     else:
-        vw, vh = _window_size_for(w, h, work)
+        # No work-area reading (non-Windows / failure): fall back to the chosen
+        # size so at least the picked resolution's window shows.
+        vw, vh = w, h
     return {
         "screen": {"width": w, "height": h},
         "viewport": {"width": vw, "height": vh},
@@ -451,10 +451,10 @@ def _outer_size_override_script() -> str:
     chrome), not the spoofed screen.
 
     With the screen spoofed to a big resolution but the window physically small,
-    Firefox reports outerWidth == the spoofed screen width вЂ” larger than
+    Firefox reports outerWidth == the spoofed screen width — larger than
     innerWidth on a small window, an inner<outer==screen mismatch no real
     un-maximized window shows. Deriving outer from the live inner size keeps
-    outer в‰€ inner + chrome (both below screen), which is what a normal window
+    outer ≈ inner + chrome (both below screen), which is what a normal window
     looks like. Chrome offsets match the engine's own (_CHROME_W/_CHROME_H)."""
     return (
         "(() => {"
@@ -467,13 +467,16 @@ def _outer_size_override_script() -> str:
 
 
 def _work_area() -> tuple[int, int]:
-    """The usable desktop size in CSS pixels (excludes the taskbar), for sizing
-    a launched window so it comfortably fits the monitor.
+    """The usable desktop size in PHYSICAL pixels (excludes the taskbar), used as
+    the launched window's viewport so the window fills the monitor.
 
-    Windows: SPI_GETWORKAREA gives the work area in physical pixels on a
-    DPI-aware process, so divide by the scale to get CSS pixels (what Firefox's
-    --width/--height expect). Non-Windows / any failure returns (0, 0) so the
-    caller falls back to the engine's default window size."""
+    The engine pins the browser to devicePixelRatio 1, so a Playwright viewport
+    value maps 1:1 to physical screen pixels — the viewport must therefore be the
+    PHYSICAL work-area size, not a DPI-scaled (CSS) one. Dividing by the scale
+    (as a CSS conversion would) under-sizes the window on a HiDPI host, leaving
+    it short of the screen edges. SPI_GETWORKAREA already returns physical pixels
+    on a DPI-aware process, so use it as-is. Non-Windows / failure returns (0, 0)
+    so the caller falls back to the chosen size."""
     if not _platform.IS_WINDOWS:
         return (0, 0)
     try:
@@ -499,10 +502,7 @@ def _work_area() -> tuple[int, int]:
             SPI_GETWORKAREA, 0, ctypes.byref(r), 0
         ):
             return (0, 0)
-        phys_w = r.right - r.left
-        phys_h = r.bottom - r.top
-        dpr = _system_dpr()
-        return (int(round(phys_w / dpr)), int(round(phys_h / dpr)))
+        return (r.right - r.left, r.bottom - r.top)
     except Exception:
         return (0, 0)
 
@@ -543,10 +543,10 @@ _SEARCH_URLS = {
 # Firefox startup. Over Tor those fetches are slow, and two profiles starting at
 # once make one of them hang the full launch timeout on the changeset poll. The
 # data: URL makes Remote Settings' shouldSkipRemoteActivity short-circuit BEFORE
-# any request (a valid URL, so no invalid-URL hang вЂ” an empty string breaks URL
+# any request (a valid URL, so no invalid-URL hang — an empty string breaks URL
 # parsing and hangs instead). The rest kill the remaining startup requests so a
 # launch never blocks on the network. NEVER blank a *.server pref to disable a
-# feature вЂ” use its enabled flag; a blank server URL is an invalid URL and hangs.
+# feature — use its enabled flag; a blank server URL is an invalid URL and hangs.
 _NO_STARTUP_FETCH = {
     "services.settings.server": "data:,#remote-settings-dummy/v1",
     "services.settings.poll_interval": 0,
@@ -650,7 +650,7 @@ def _profile_prefs(cfg: dict) -> dict:
 
     Brings back the behaviour persona's users expect on top of invisible's
     stealth profile: a dark UI, the chosen start page, restored tabs, a visible
-    bookmarks toolbar вЂ” and disables every startup network fetch so a launch
+    bookmarks toolbar — and disables every startup network fetch so a launch
     never blocks on Tor (the multi-profile launch hang).
     """
     prefs = dict(_NO_STARTUP_FETCH)
@@ -670,7 +670,7 @@ def _profile_prefs(cfg: dict) -> dict:
             # Always show the bookmarks toolbar so the shipped test bookmarks
             # are visible (default only shows it on the new-tab page).
             "browser.toolbars.bookmarks.visibility": "always",
-            # Close the window immediately when the user hits the X вЂ” no
+            # Close the window immediately when the user hits the X — no
             # "close N tabs?" confirmation. The confirmation would leave the
             # window (and the profile's "running" state) up until dismissed.
             "browser.tabs.warnOnClose": False,
@@ -700,8 +700,8 @@ def _enter_with_timeout(InvisiblePlaywright, kwargs, profile_dir, attempts, per_
     thread unwinds, then try again with a clean profile lock.
 
     `inline=True` enters on the CALLING thread instead (no watchdog). Playwright's
-    sync API is thread-affine вЂ” the object must be used on the thread that made
-    it вЂ” so the Windows/macOS thread path enters inline, keeping ctx usable for
+    sync API is thread-affine — the object must be used on the thread that made
+    it — so the Windows/macOS thread path enters inline, keeping ctx usable for
     the close-watch. The launch is against a local engine there (not Tor), so the
     startup-fetch stall the watchdog guards against doesn't apply."""
     import threading
@@ -722,7 +722,7 @@ def _enter_with_timeout(InvisiblePlaywright, kwargs, profile_dir, attempts, per_
                 inv = InvisiblePlaywright(**kwargs)
                 holder["inv"] = inv
                 holder["ctx"] = inv.__enter__()
-            except BaseException as e:  # noqa: BLE001 вЂ” record, retry decides
+            except BaseException as e:  # noqa: BLE001 — record, retry decides
                 holder["err"] = e
 
         t = threading.Thread(target=attempt, daemon=True)
@@ -730,7 +730,7 @@ def _enter_with_timeout(InvisiblePlaywright, kwargs, profile_dir, attempts, per_
         t.join(per_try)
         if "ctx" in holder:
             return holder["inv"], holder["ctx"]
-        # Timed out or failed вЂ” kill the launching Firefox so the thread unwinds,
+        # Timed out or failed — kill the launching Firefox so the thread unwinds,
         # clear the stale lock, and retry.
         pid = _firefox_pid(profile_dir)
         if pid:
@@ -761,7 +761,7 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     re-exec via sys.executable can't work: sys.executable is the flet launcher,
     not a python interpreter). When `stop_event` is given we're in a thread:
     don't install a SIGTERM handler (only valid on the main thread) and never
-    os._exit (that would kill the whole app) вЂ” return instead and honour the
+    os._exit (that would kill the whole app) — return instead and honour the
     event for STOP.
 
     Readiness and closure are reported on the pipe (BROWSER_STARTED /
@@ -796,7 +796,7 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     # A killed Firefox leaves lock/.parentlock in the profile; a stale lock makes
     # the next launch think the profile is already running. persona only spawns
     # this child when it knows the profile isn't running, so any lock here is
-    # stale вЂ” clear it before launching.
+    # stale — clear it before launching.
     for fname in ("lock", ".parentlock"):
         try:
             os.remove(os.path.join(profile_dir, fname))
@@ -805,7 +805,7 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
 
     # A DBus-valid, per-profile-unique remoting name so multiple profiles open
     # at once (see _remoting_name). It doubles as the Wayland app_id for the
-    # taskbar icon. Set in this child's own environment вЂ” forks have separate
+    # taskbar icon. Set in this child's own environment — forks have separate
     # memory, so this doesn't race with other profiles' children.
     name = cfg.get("profile_name", "")
     if name and _platform.IS_LINUX:
@@ -845,7 +845,7 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     # Pin the screen to the profile's resolution. The engine derives the window
     # viewport, the spoofed `screen` and `device_scale_factor` from these, so
     # the window opens at exactly the chosen size and the fingerprint agrees.
-    # A desktop DPR of 1.0 keeps `layout.css.devPixelsPerPx` at 1 вЂ” without it
+    # A desktop DPR of 1.0 keeps `layout.css.devPixelsPerPx` at 1 — without it
     # the engine samples a HiDPI DPR and the page renders tiny on a 150%-scaled
     # Windows host after the window is already up.
     # Decouple the spoofed screen (the chosen resolution the fingerprint reports)
@@ -869,7 +869,7 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
         # Pin the fingerprint screen to the CHOSEN resolution (not the fitted
         # window) with DPR 1 so screen.width * devicePixelRatio == screen.width
         # (a spoofed screen at the host's real 1.5 DPR would report an impossible
-        # size вЂ” the same tell fixed in the chromium device ext). The window size
+        # size — the same tell fixed in the chromium device ext). The window size
         # is set separately via _res_overrides["viewport"] below.
         #
         # Firefox has NO --width/--height CLI flags (those are chromium's); a
@@ -906,7 +906,7 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     # context `viewport` (window) and `screen` (fingerprint) from one p.screen
     # value; overlay our own so the window fits the monitor while the screen
     # reports the chosen resolution. Overlaying _default_context_kwargs is the
-    # same monkeypatch style as the prepare_session_geo shim above вЂ” narrow, and
+    # same monkeypatch style as the prepare_session_geo shim above — narrow, and
     # only when a resolution was chosen (Auto keeps the engine's own sizing).
     if _res_overrides is not None:
         try:
@@ -924,7 +924,7 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
 
     # Launch with a bounded timeout and one retry. Over Tor, a launch
     # occasionally stalls on Firefox's startup remote-settings fetch and would
-    # otherwise hang the full 180s Playwright timeout вЂ” unacceptably long for the
+    # otherwise hang the full 180s Playwright timeout — unacceptably long for the
     # user. Cap each attempt; if it overruns, tear it down and try once more (a
     # fresh attempt almost always comes up fast). InvisiblePlaywright's
     # __enter__ is blocking, so run it in a thread and watchdog it: killing the
@@ -961,7 +961,7 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     # Keep outerWidth/outerHeight tied to the real window (inner + chrome) so a
     # small window on a big spoofed screen doesn't leak the screen size through
     # outerWidth (an inner<outer==screen mismatch a scanner can flag). Only when
-    # a resolution was chosen вЂ” Auto opens the window at the engine's own screen,
+    # a resolution was chosen — Auto opens the window at the engine's own screen,
     # where outer already agrees.
     if _res_overrides is not None:
         try:
@@ -971,7 +971,7 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
 
     # The persistent context already opened ONE window (about:home, which the
     # startup-homepage pref navigates to the chosen engine). Don't open a second
-    # page вЂ” new_page() opens a whole new WINDOW in this Firefox, which is the
+    # page — new_page() opens a whole new WINDOW in this Firefox, which is the
     # "two windows, one flashes and dies" bug. The single window is enough; the
     # user drives it from there.
 
@@ -981,7 +981,7 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     # Detect closure by watching the WINDOW count, not the process. Playwright
     # keeps the Firefox process ALIVE after the user closes the last window (a
     # persistent context stays connected for more commands), so the process
-    # never exits on its own вЂ” watching the pid would never see the close and
+    # never exits on its own — watching the pid would never see the close and
     # the profile would stay "running". But ctx.pages drops to 0 (and page
     # "close" events fire) the instant the last window is closed. Poll the page
     # count and treat zero as "user closed the browser".
@@ -1007,17 +1007,17 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
         signal.signal(signal.SIGTERM, lambda *a: stop_gracefully())
 
     # Closure watch. On the Linux fork path, ctx.pages drops to 0 when the user
-    # closes the last window (read from the thread that created ctx вЂ” that's THIS
+    # closes the last window (read from the thread that created ctx — that's THIS
     # thread on both paths; see _enter_with_timeout inline entry).
     #
     # On the Windows thread path, watch whether THIS profile's Firefox PROCESS is
     # still alive. Closing the window with the X exits the whole patched Firefox
-    # (verified: 0 firefox.exe left after the X), so the profile's process вЂ” the
-    # one carrying "-profile <dir>" in its command line вЂ” disappears. That's the
+    # (verified: 0 firefox.exe left after the X), so the profile's process — the
+    # one carrying "-profile <dir>" in its command line — disappears. That's the
     # reliable signal. The earlier approaches failed: a persistent context keeps
     # ctx.pages at 1 and never fires a close event, and counting windows by title
     # missed the "New Tab" page (whose title Firefox owns, so the "[profile]"
-    # init-script prefix isn't on it) вЂ” so the close was never seen and the
+    # init-script prefix isn't on it) — so the close was never seen and the
     # profile stuck "running". Grace period: the process takes a moment to appear,
     # so don't treat the initial absence as a close.
     saw_process = False
@@ -1030,13 +1030,13 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
             if alive:
                 saw_process = True
             elif saw_process:
-                break  # the profile's Firefox exited в†’ user closed it
+                break  # the profile's Firefox exited → user closed it
             continue
         try:
             if len(ctx.pages) == 0:
                 break  # user closed the last window
         except Exception:
-            break  # context torn down (browser gone) в†’ treat as closed
+            break  # context torn down (browser gone) → treat as closed
 
     # Tear down so Firefox actually exits and releases its lock, then report.
     try:
@@ -1056,7 +1056,7 @@ def _ps_single_quote(s: str) -> str:
     to '\\\\', which no longer matches the real single-backslash CommandLine, so
     the WMI -like filter returned nothing and the close-watch never saw the
     profile's processes (the "profile stuck running after X" bug). A PowerShell
-    single-quoted string treats backslashes literally вЂ” only a single quote needs
+    single-quoted string treats backslashes literally — only a single quote needs
     doubling."""
     return "'" + s.replace("'", "''") + "'"
 
@@ -1120,7 +1120,7 @@ def _firefox_pid(profile_dir: str):
             return None
     try:
         # `--` stops pgrep parsing the pattern (which starts with "-profile") as
-        # options. Match on the profile dir alone вЂ” it's unique per profile.
+        # options. Match on the profile dir alone — it's unique per profile.
         out = subprocess.check_output(
             ["pgrep", "-f", "--", re.escape(profile_dir)], text=True
         )
