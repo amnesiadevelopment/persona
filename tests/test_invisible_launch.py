@@ -137,41 +137,17 @@ def test_child_accepts_stop_event_for_thread_path():
     assert "stop_event" in params
 
 
-def test_count_windows_for_pids_empty_without_pids():
-    # No pids в†’ no windows, and it never touches Win32 with an empty set.
-    from src.services.browser.invisible_launch import _count_windows_for_pids
-
-    assert _count_windows_for_pids(set()) == 0
-
-
-def test_count_windows_by_title_prefix_empty_without_prefix():
-    # No prefix в†’ nothing to match, never touches Win32.
-    from src.services.browser.invisible_launch import _count_windows_by_title_prefix
-
-    assert _count_windows_by_title_prefix("") == 0
-
-
-def test_close_watch_matches_windows_by_title_not_pid():
-    # #112: matching the profile's window by the firefox.exe PID is fragile вЂ”
-    # the visible window can belong to a child process the WMI -like filter
-    # doesn't return, so the count is always 0 and the close is never seen
-    # ("stuck running"). The window title carries the "[profile]" prefix (set by
-    # the init script), so counting windows by that title prefix is pid-
-    # independent and reliable. The helper must exist.
+def test_close_watch_uses_profile_process_liveness():
+    # #112: the Windows close-watch keys on whether THIS profile's Firefox
+    # PROCESS is still alive (matched by "-profile <dir>" in the command line),
+    # NOT on a window count. Closing the window with the X exits the whole
+    # patched Firefox, so the profile's process disappears вЂ” a reliable signal.
+    # Counting windows by title missed the "New Tab" page (Firefox owns its
+    # title, no "[profile]" prefix), so the close was never seen. The
+    # per-profile pid helper must exist.
     from src.services.browser import invisible_launch
 
-    assert hasattr(invisible_launch, "_count_windows_by_title_prefix")
-
-
-def test_close_watch_uses_window_count_on_thread_path():
-    # The Windows close-watch keys on the OS window count of THIS profile's
-    # Firefox pids (a persistent-context Firefox keeps its process + a background
-    # page alive after the last window closes, so ctx.pages/pid-alive can't
-    # signal the close). Pure-ctypes helpers, no subprocess.
-    from src.services.browser import invisible_launch
-
-    assert hasattr(invisible_launch, "_count_windows_for_pids")
-    assert hasattr(invisible_launch, "_firefox_pids_snapshot")
+    assert hasattr(invisible_launch, "_profile_firefox_pids")
 
 
 def test_non_fork_launch_uses_thread_not_reexec(monkeypatch):

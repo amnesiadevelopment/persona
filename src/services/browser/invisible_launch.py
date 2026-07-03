@@ -995,42 +995,31 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
 
         signal.signal(signal.SIGTERM, lambda *a: stop_gracefully())
 
-    # Closure watch: the user closing the last window drops ctx.pages to 0
-    # (Playwright keeps the Firefox PROCESS alive in a persistent context, so we
-    # watch WINDOWS not the process). ctx.pages must be read from the thread that
-    # created ctx вЂ” on both paths that's THIS thread now (see _enter_with_timeout,
-    # which enters inline on the thread path).
-    # On the fork path (Linux) ctx.pages drops to 0 when the user closes the last
-    # window, and reading it from this process is reliable. On the Windows thread
-    # path a persistent context keeps a background page after the visible window
-    # is gone (ctx.pages stays 1) AND the Firefox process stays alive вЂ” neither
-    # signals the close. What actually tracks "the user closed it" is the count
-    # of VISIBLE top-level Firefox windows for this profile, read from the OS. Grace
-    # period: the window takes a moment to appear, so don't treat the initial
-    # zero as closed.
-    saw_window = False
+    # Closure watch. On the Linux fork path, ctx.pages drops to 0 when the user
+    # closes the last window (read from the thread that created ctx вЂ” that's THIS
+    # thread on both paths; see _enter_with_timeout inline entry).
+    #
+    # On the Windows thread path, watch whether THIS profile's Firefox PROCESS is
+    # still alive. Closing the window with the X exits the whole patched Firefox
+    # (verified: 0 firefox.exe left after the X), so the profile's process вЂ” the
+    # one carrying "-profile <dir>" in its command line вЂ” disappears. That's the
+    # reliable signal. The earlier approaches failed: a persistent context keeps
+    # ctx.pages at 1 and never fires a close event, and counting windows by title
+    # missed the "New Tab" page (whose title Firefox owns, so the "[profile]"
+    # init-script prefix isn't on it) вЂ” so the close was never seen and the
+    # profile stuck "running". Grace period: the process takes a moment to appear,
+    # so don't treat the initial absence as a close.
+    saw_process = False
     while not closed.wait(0.5):
         if stop_event is not None and stop_event.is_set():
             stop_gracefully()
             break
         if in_thread:
-            # Count THIS profile's visible windows by their TITLE PREFIX, not by
-            # firefox.exe PID. Matching by PID was fragile: the visible window
-            # can belong to a child process the WMI -like filter (which only
-            # matches the parent's -profile argv) never returns, so the window
-            # count stayed 0 and the close was never seen вЂ” the "stuck running"
-            # bug. Every window's title carries "[profile] " (the init script),
-            # so a title-prefix count is pid-independent and reliable.
-            if _prefix:
-                n = _count_windows_by_title_prefix(_prefix)
-            else:
-                # No profile name в†’ no title prefix; fall back to the pid path.
-                pids = _profile_firefox_pids(profile_dir)
-                n = _count_windows_for_pids(pids) if pids else 0
-            if n > 0:
-                saw_window = True
-            elif saw_window:
-                break
+            alive = bool(_profile_firefox_pids(profile_dir))
+            if alive:
+                saw_process = True
+            elif saw_process:
+                break  # the profile's Firefox exited в†’ user closed it
             continue
         try:
             if len(ctx.pages) == 0:
@@ -1086,126 +1075,6 @@ def _profile_firefox_pids(profile_dir: str) -> set:
         return {int(x) for x in out.split() if x.strip().isdigit()}
     except Exception:
         return set()
-
-
-def _firefox_pids_snapshot() -> set:
-    """Set of all running firefox.exe pids (Windows), via a Toolhelp32 process
-    snapshot. Pure ctypes вЂ” no subprocess. Empty set on failure."""
-    if not _platform.IS_WINDOWS:
-        return set()
-    import ctypes
-    from ctypes import wintypes
-
-    TH32CS_SNAPPROCESS = 0x00000002
-
-    class PROCESSENTRY32W(ctypes.Structure):
-        _fields_ = [
-            ("dwSize", wintypes.DWORD),
-            ("cntUsage", wintypes.DWORD),
-            ("th32ProcessID", wintypes.DWORD),
-            ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
-            ("th32ModuleID", wintypes.DWORD),
-            ("cntThreads", wintypes.DWORD),
-            ("th32ParentProcessID", wintypes.DWORD),
-            ("pcPriClassBase", ctypes.c_long),
-            ("dwFlags", wintypes.DWORD),
-            ("szExeFile", ctypes.c_wchar * 260),
-        ]
-
-    kernel32 = ctypes.windll.kernel32
-    pids = set()
-    try:
-        snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
-        if snap == -1:
-            return set()
-        entry = PROCESSENTRY32W()
-        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
-        ok = kernel32.Process32FirstW(snap, ctypes.byref(entry))
-        while ok:
-            if entry.szExeFile.lower() == "firefox.exe":
-                pids.add(entry.th32ProcessID)
-            ok = kernel32.Process32NextW(snap, ctypes.byref(entry))
-        kernel32.CloseHandle(snap)
-    except Exception:
-        return set()
-    return pids
-
-
-def _count_windows_for_pids(pids: set) -> int:
-    """Count VISIBLE, titled top-level windows owned by any pid in `pids`
-    (Windows). Pure ctypes EnumWindows. A persistent-context Firefox keeps its
-    process alive after the user closes the last visible window, so this window
-    count is the reliable close signal. Returns 0 when pids is empty."""
-    if not pids or not _platform.IS_WINDOWS:
-        return 0
-    import ctypes
-    from ctypes import wintypes
-
-    user32 = ctypes.windll.user32
-    count = {"n": 0}
-
-    WNDENUMPROC = ctypes.WINFUNCTYPE(
-        wintypes.BOOL, wintypes.HWND, wintypes.LPARAM
-    )
-
-    def _cb(hwnd, _lparam):
-        try:
-            if not user32.IsWindowVisible(hwnd):
-                return True
-            pid = wintypes.DWORD()
-            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-            if pid.value in pids and user32.GetWindowTextLengthW(hwnd) > 0:
-                count["n"] += 1
-        except Exception:
-            pass
-        return True
-
-    try:
-        user32.EnumWindows(WNDENUMPROC(_cb), 0)
-    except Exception:
-        return 0
-    return count["n"]
-
-
-def _count_windows_by_title_prefix(prefix: str) -> int:
-    """Count VISIBLE top-level windows whose title starts with `prefix`
-    (Windows). Pure ctypes EnumWindows. persona prefixes every Firefox window
-    title with "[profile] " (an init script), so this counts exactly THIS
-    profile's windows regardless of which process owns them вЂ” the reliable
-    close signal when a persistent-context Firefox keeps its process alive after
-    the last window closes. Returns 0 when prefix is empty."""
-    if not prefix or not _platform.IS_WINDOWS:
-        return 0
-    import ctypes
-    from ctypes import wintypes
-
-    user32 = ctypes.windll.user32
-    count = {"n": 0}
-
-    WNDENUMPROC = ctypes.WINFUNCTYPE(
-        wintypes.BOOL, wintypes.HWND, wintypes.LPARAM
-    )
-
-    def _cb(hwnd, _lparam):
-        try:
-            if not user32.IsWindowVisible(hwnd):
-                return True
-            length = user32.GetWindowTextLengthW(hwnd)
-            if length <= 0:
-                return True
-            buf = ctypes.create_unicode_buffer(length + 1)
-            user32.GetWindowTextW(hwnd, buf, length + 1)
-            if buf.value.startswith(prefix):
-                count["n"] += 1
-        except Exception:
-            pass
-        return True
-
-    try:
-        user32.EnumWindows(WNDENUMPROC(_cb), 0)
-    except Exception:
-        return 0
-    return count["n"]
 
 
 def _firefox_pid(profile_dir: str):

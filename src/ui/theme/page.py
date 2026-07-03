@@ -1,27 +1,17 @@
-import os
+﻿import os
 
 import flet as ft
 
-from ...core.assets import asset_path
 from .colors import COLORS
 
 
-def _engine_option(key: str, label: str, icon_file: str) -> ft.dropdown.Option:
-    path = asset_path(icon_file)
-    row_controls: list[ft.Control] = []
-    if os.path.exists(path):
-        row_controls.append(ft.Image(src=path, width=18, height=18))
-    row_controls.append(
-        ft.Text(label, color=COLORS["text_main"], font_family="monospace")
-    )
-    return ft.dropdown.Option(
-        key=key,
-        content=ft.Row(
-            spacing=10,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            controls=row_controls,
-        ),
-    )
+def _engine_option(key: str, label: str) -> ft.dropdown.Option:
+    # A plain-text option (no `content=` control). A dropdown built from
+    # content-Row options does NOT fire on_change when the user picks one on this
+    # Flet, so switching the engine to Firefox never triggered the search-picker
+    # lock. Text options fire on_change reliably (as the OS dropdown does); the
+    # engine icons still show in the sidebar engines panel.
+    return ft.dropdown.Option(key=key, text=label)
 
 
 def build_page_theme() -> ft.Theme:
@@ -73,12 +63,8 @@ def build_engine_dropdown(value: str = "chromium") -> ft.Dropdown:
         text_style=ft.TextStyle(font_family="monospace"),
         border_radius=3,
         options=[
-            _engine_option(
-                "chromium", 'Chrome ("fingerprint-chromium")', "engine_chrome.png"
-            ),
-            _engine_option(
-                "firefox", 'Firefox ("invisible_playwright")', "engine_firefox.png"
-            ),
+            _engine_option("chromium", 'Chrome ("fingerprint-chromium")'),
+            _engine_option("firefox", 'Firefox ("invisible_playwright")'),
         ],
     )
 

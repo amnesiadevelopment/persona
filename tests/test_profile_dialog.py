@@ -109,3 +109,26 @@ def test_chromium_search_dropdown_is_active():
     assert dd is not None
     assert dd.disabled is False
     assert dd.value == "google"
+
+
+def test_switching_engine_to_firefox_locks_search_picker():
+    # The real bug: a NEW profile opens on chromium (search picker live). When
+    # the user switches the engine to Firefox, the picker must lock to DDG right
+    # then. The old test only checked the initial state and missed this вЂ” the
+    # engine dropdown's on_change didn't fire (icon-content options), so the
+    # lock never applied. Simulate the on_change to prove the handler is wired.
+    page = _open(None)  # fresh create dialog, defaults to chromium
+    engine_dd = _find_dropdown(page, "Engine")
+    search_dd = _find_dropdown(page, "Default search engine")
+    assert engine_dd is not None and search_dd is not None
+    assert search_dd.disabled is False            # chromium: live
+    # user picks Firefox
+    engine_dd.value = "firefox"
+    assert engine_dd.on_change is not None
+    engine_dd.on_change(None)                      # the event Flet fires on pick
+    assert search_dd.disabled is True             # now locked
+    assert search_dd.value == "duckduckgo"
+    # switching back to chromium re-enables it
+    engine_dd.value = "chromium"
+    engine_dd.on_change(None)
+    assert search_dd.disabled is False
