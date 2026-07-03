@@ -1,4 +1,4 @@
-import inspect
+﻿import inspect
 
 from src.services.browser import invisible_launch
 from src.services.browser.invisible_launch import (
@@ -47,7 +47,7 @@ def test_ps_single_quote_doubles_apostrophes():
 
 def test_window_never_exceeds_work_area():
     # A 4K pick on a 4K monitor (work area 2560x1392 CSS at 150% scale) must NOT
-    # open a window at 3840x2160 — that overflows the screen. It's capped to the
+    # open a window at 3840x2160 вЂ” that overflows the screen. It's capped to the
     # work area so it fits with room for the taskbar/borders.
     cw, ch = _window_size_for(3840, 2160, (2560, 1392))
     assert cw <= 2560 and ch <= 1392
@@ -65,6 +65,40 @@ def test_window_falls_back_without_work_area():
     # so a huge pick can't open a window larger than a typical screen.
     cw, ch = _window_size_for(3840, 2160, (0, 0))
     assert cw <= 1280 and ch <= 800
+
+
+def test_context_overrides_decouple_screen_from_window():
+    # The spoofed screen must stay at the CHOSEN resolution (what the user
+    # picked, e.g. 4K) while the real window (viewport) is shrunk to fit the
+    # monitor. Coupling them is the #102 bug: picking 4K opened a 4K window that
+    # overflowed the monitor, and shrinking the window shrank the fingerprint.
+    from src.services.browser.invisible_launch import _context_overrides_for
+
+    ov = _context_overrides_for(3840, 2160, (2560, 1392))
+    assert ov["screen"] == {"width": 3840, "height": 2160}       # fingerprint = chosen
+    assert ov["viewport"]["width"] <= 2560                        # window fits monitor
+    assert ov["viewport"]["width"] < 3840
+
+
+def test_context_overrides_small_pick_window_equals_screen():
+    # A small pick that already fits opens the window at its size and the screen
+    # matches it вЂ” no shrink, no decoupling needed.
+    from src.services.browser.invisible_launch import _context_overrides_for
+
+    ov = _context_overrides_for(1366, 768, (2560, 1392))
+    assert ov["screen"] == {"width": 1366, "height": 768}
+    assert ov["viewport"]["width"] <= 1366
+
+
+def test_outer_size_override_script_ties_outer_to_window():
+    # outerWidth/outerHeight must track the real window (inner + chrome), NOT the
+    # spoofed screen вЂ” otherwise outerWidth leaks the 4K screen on a physically
+    # small window, an inner<outer==screen mismatch a scanner can catch.
+    from src.services.browser.invisible_launch import _outer_size_override_script
+
+    js = _outer_size_override_script()
+    assert "outerWidth" in js and "outerHeight" in js
+    assert "innerWidth" in js  # derives outer from the real inner size
 
 
 def test_profile_prefs_force_dark_theme():
@@ -104,10 +138,29 @@ def test_child_accepts_stop_event_for_thread_path():
 
 
 def test_count_windows_for_pids_empty_without_pids():
-    # No pids → no windows, and it never touches Win32 with an empty set.
+    # No pids в†’ no windows, and it never touches Win32 with an empty set.
     from src.services.browser.invisible_launch import _count_windows_for_pids
 
     assert _count_windows_for_pids(set()) == 0
+
+
+def test_count_windows_by_title_prefix_empty_without_prefix():
+    # No prefix в†’ nothing to match, never touches Win32.
+    from src.services.browser.invisible_launch import _count_windows_by_title_prefix
+
+    assert _count_windows_by_title_prefix("") == 0
+
+
+def test_close_watch_matches_windows_by_title_not_pid():
+    # #112: matching the profile's window by the firefox.exe PID is fragile вЂ”
+    # the visible window can belong to a child process the WMI -like filter
+    # doesn't return, so the count is always 0 and the close is never seen
+    # ("stuck running"). The window title carries the "[profile]" prefix (set by
+    # the init script), so counting windows by that title prefix is pid-
+    # independent and reliable. The helper must exist.
+    from src.services.browser import invisible_launch
+
+    assert hasattr(invisible_launch, "_count_windows_by_title_prefix")
 
 
 def test_close_watch_uses_window_count_on_thread_path():
@@ -123,7 +176,7 @@ def test_close_watch_uses_window_count_on_thread_path():
 
 def test_non_fork_launch_uses_thread_not_reexec(monkeypatch):
     # The Win/Mac path must NOT re-exec sys.executable (in a flet bundle that's
-    # the GUI launcher, not python — it just opens a second window). It must run
+    # the GUI launcher, not python вЂ” it just opens a second window). It must run
     # _child in a thread. Guard against a regression to subprocess.Popen.
     monkeypatch.setattr(invisible_launch._platform, "needs_fork_launch", lambda: False)
 

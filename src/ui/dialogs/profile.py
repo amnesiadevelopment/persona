@@ -1,4 +1,4 @@
-from collections.abc import Callable
+﻿from collections.abc import Callable
 
 import flet as ft
 
@@ -169,7 +169,7 @@ def open_profile_dialog(
                 )
                 for r, label in res_choices
             ]
-            + [ft.dropdown.Option(key="custom", text="Custom…")]
+            + [ft.dropdown.Option(key="custom", text="CustomвЂ¦")]
         ),
         bgcolor=COLORS["input_bg"],
         color=COLORS["text_main"],
@@ -185,7 +185,7 @@ def open_profile_dialog(
     resolution_dropdown.on_change = on_res_change
 
     # A mobile profile's screen geometry comes from its device preset (the
-    # phone/tablet the fingerprint impersonates), not this desktop picker — a 4K
+    # phone/tablet the fingerprint impersonates), not this desktop picker вЂ” a 4K
     # "phone" is an instant tell. Hide the whole resolution picker for mobile OSes
     # so it's never even offered there.
     resolution_section = ft.Column(
@@ -222,10 +222,6 @@ def open_profile_dialog(
         color=COLORS["text_sub"],
         font_family=MONO,
     )
-    # The Firefox engine has no per-profile default search engine — it's set
-    # globally (all Firefox profiles use DuckDuckGo), so a per-profile picker
-    # here would mislead. Hide the search picker for Firefox; keep it for
-    # chromium where it IS per-profile.
     search_section = ft.Column(
         spacing=6, controls=[ft.Row(controls=[search_dropdown]), search_hint]
     )
@@ -233,8 +229,19 @@ def open_profile_dialog(
     def _engine() -> str:
         return engine_dropdown.value or "chromium"
 
+    # The Firefox engine has no per-profile default search engine вЂ” it's pinned
+    # globally to DuckDuckGo for every Firefox profile. Rather than hide the
+    # picker (which reads as "no setting exists"), keep it visible but locked:
+    # greyed out and showing DuckDuckGo, so the user sees the fixed value. For
+    # chromium the engine IS per-profile, so the picker stays live.
     def _apply_engine_dependent() -> None:
-        search_section.visible = _engine() != "firefox"
+        if _engine() == "firefox":
+            search_dropdown.value = DEFAULT_SEARCH_ENGINE
+            search_dropdown.disabled = True
+            search_hint.value = "fixed to DuckDuckGo for the Firefox engine"
+        else:
+            search_dropdown.disabled = False
+            search_hint.value = "applied to new profiles only"
 
     _apply_engine_dependent()
 
@@ -412,7 +419,7 @@ def open_profile_dialog(
         proxy = "" if proxy == _DIRECT else proxy
         os_type = os_dropdown.value or "windows"
         engine = engine_dropdown.value or "chromium"
-        # Firefox has no per-profile default search engine — it's pinned to
+        # Firefox has no per-profile default search engine вЂ” it's pinned to
         # DuckDuckGo globally for all Firefox profiles. Ignore the picker's value
         # (the section is hidden for Firefox) so the stored engine is always the
         # global one, regardless of what the dropdown last held.

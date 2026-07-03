@@ -1,4 +1,4 @@
-from src.ui import progress_fmt as pf
+﻿from src.ui import progress_fmt as pf
 
 
 def test_fmt_mb():
@@ -24,6 +24,32 @@ def test_fmt_eta_done_or_unknown():
     assert pf.fmt_eta(done=100, total=100, rate=5) == ""
     assert pf.fmt_eta(done=10, total=0, rate=5) == ""
     assert pf.fmt_eta(done=10, total=100, rate=0) == ""
+
+
+def test_progress_state_percent_matches_bytes_on_stable_total():
+    # The reported percent must agree with the "X of Y" bytes for a stable
+    # total вЂ” the engine download reports one total the whole time, so 122 of
+    # 125 MB must read as ~98%, never a stale low number (the #113 glitch was
+    # a suspected percent/bytes mismatch; the download logic keeps total stable).
+    st = pf.ProgressState()
+    t = 0.0
+    for mb in (10, 60, 118, 122):
+        st.update(mb * 1_000_000, 125_000_000, t)
+        t += 1
+    assert st.percent == 122 * 100 // 125  # 97, matches the bytes
+    assert st.done == 122_000_000
+    assert st.total == 125_000_000
+
+
+def test_progress_state_resets_percent_when_total_changes():
+    # If the total genuinely changes mid-download (a retry that re-reports a
+    # different content length), percent must re-base to the new total, not stay
+    # pinned to a fraction of the old one вЂ” otherwise 122/125 could display as an
+    # old-total 41%.
+    st = pf.ProgressState()
+    st.update(50_000_000, 300_000_000, 0.0)   # early, inflated total в†’ ~16%
+    st.update(122_000_000, 125_000_000, 1.0)  # real total arrives
+    assert st.percent == 122 * 100 // 125     # re-based, ~97% not ~40%
 
 
 def test_fraction():
