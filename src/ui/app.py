@@ -70,6 +70,7 @@ class App:
         self._app_latest = ""
         self._app_update_url = ""
         self._app_update_size = 0
+        self._app_update_tag = ""
         self._app_update_status = ""  # '', downloading, ready, failed
         self._app_update_done = 0
         self._app_update_total = 0
@@ -101,7 +102,7 @@ class App:
             "", size=10, color=COLORS["text_sub"], font_family="monospace",
         )
         self.engine_text = ft.Text(
-            "вЂ¦",
+            "...",
             size=12,
             color=COLORS["text_main"],
             font_family="monospace",
@@ -555,7 +556,7 @@ class App:
 
     def _engine2_status_text(self) -> str:
         if self._engine2_checking:
-            return "checkingвЂ¦"
+            return "checking..."
         if self._engine2_status:
             return self._engine2_status
         return self._engine2_version_text()
@@ -977,7 +978,7 @@ class App:
                     content=self._engine_row(
                         self._engine_logo("chromium"),
                         "fp-chromium",
-                        self.engine_text.value or "вЂ¦",
+                        self.engine_text.value or "...",
                         checking=self._engine_busy or self._engine_checking,
                         dot=self._engine_update_available(),
                     ),
@@ -1037,7 +1038,7 @@ class App:
             and not self._engine_update_available()
         ):
             self._engine_checking = True
-            self._refresh_engine_text("checkingвЂ¦")
+            self._refresh_engine_text("checking...")
 
             def work() -> None:
                 tag, _url = engine.fetch_latest()
@@ -1052,7 +1053,7 @@ class App:
         # The Firefox engine's version is pinned to the bundled package, so
         # there's no upstream update to fetch. If it's already installed there's
         # nothing to do (its version is shown); if it's missing, download it.
-        # (An earlier attempt to flash a "checkingвЂ¦" via a sleeping thread that
+        # (An earlier attempt to flash a "checking..." via a sleeping thread that
         # rebuilt the sidebar is what jammed the panel open/closed вЂ” dropped.)
         from ..services.browser import invisible_launch as inv
 
@@ -1061,7 +1062,7 @@ class App:
                 self._ensure_engine2_async()
             elif not self._engine2_busy and not self._engine2_checking:
                 # Already installed: no upstream feed to poll (its version is
-                # pinned to the bundled package), but flash a brief "checkingвЂ¦"
+                # pinned to the bundled package), but flash a brief "checking..."
                 # so the row reads the same as the chromium one instead of
                 # sitting inert. Short thread + refresh_engine_text (no sidebar
                 # rebuild from the thread вЂ” that's what jammed the panel before).
@@ -1115,6 +1116,7 @@ class App:
                         self._app_latest = tag
                         self._app_update_url = url
                         self._app_update_size = size
+                        self._app_update_tag = tag
                         self._on_update_found(tag, url)
                 time.sleep(60)
 
@@ -1157,7 +1159,9 @@ class App:
         # complete staged file is on disk, offer to restart into it instead of
         # downloading again (e.g. the user reopened the app before it restarted).
         if not self._update_staged:
-            ready = app_update.find_ready_staged(url, size=self._app_update_size)
+            ready = app_update.find_ready_staged(
+                url, size=self._app_update_size, tag=self._app_update_tag
+            )
             if ready:
                 self._update_staged = ready
                 self._app_update_status = "ready"
@@ -1167,7 +1171,7 @@ class App:
                     app_settings.is_auto_update_enabled()
                     and len(self.bl.running_profile_names()) == 0
                 ):
-                    self._log("Restarting into the new versionвЂ¦")
+                    self._log("Restarting into the new version...")
                     app_update.apply_and_restart(ready, log=self._log)
                     # only reached if the relaunch failed: surface the button
                     self._app_update_status = "ready"
@@ -1182,7 +1186,7 @@ class App:
             self._log(f"New version {tag} ready to install when you're idle.")
             return
         # no profiles running -> download automatically
-        self._log(f"New version {tag} found вЂ” downloadingвЂ¦")
+        self._log(f"New version {tag} found вЂ” downloading...")
         self._start_app_update(url)
 
     def _start_app_update(self, url: str) -> None:
@@ -1199,7 +1203,8 @@ class App:
             self._app_update_status = "downloading"
             self._refresh_sidebar()
             staged = app_update.download_update(
-                url, progress=self._update_progress_cb, size=self._app_update_size
+                url, progress=self._update_progress_cb, size=self._app_update_size,
+                tag=self._app_update_tag,
             )
             self._update_in_progress = False
             if staged:
@@ -1209,7 +1214,7 @@ class App:
                 self._refresh_sidebar()
                 # if still idle (no profiles running), restart now
                 if len(self.bl.running_profile_names()) == 0 and app_settings.is_auto_update_enabled():
-                    self._log("Restarting into the new versionвЂ¦")
+                    self._log("Restarting into the new version...")
                     app_update.apply_and_restart(staged, log=self._log)
                     # reached only if relaunch failed; keep the restart button
                     self._app_update_status = "ready"
@@ -1232,7 +1237,7 @@ class App:
     def _apply_update_now(self) -> None:
         """Manual 'update now' click: download if needed, then restart."""
         if self._update_staged:
-            self._log("Restarting into the new versionвЂ¦")
+            self._log("Restarting into the new version...")
             app_update.apply_and_restart(self._update_staged, log=self._log)
             # reached only if the relaunch failed
             self._app_update_status = "ready"
@@ -1252,11 +1257,12 @@ class App:
                     self._app_update_url,
                     progress=self._update_progress_cb,
                     size=self._app_update_size,
+                    tag=self._app_update_tag,
                 )
                 self._update_in_progress = False
                 if staged:
                     self._update_staged = staged
-                    self._log("Update downloaded вЂ” restartingвЂ¦")
+                    self._log("Update downloaded вЂ” restarting...")
                     app_update.apply_and_restart(staged, log=self._log)
                     self._app_update_status = "ready"
                     self._refresh_sidebar()
@@ -1419,13 +1425,13 @@ class App:
             if inv.is_invisible_installed():
                 return
             self._engine2_busy = True
-            self._engine2_status = "downloadingвЂ¦"
+            self._engine2_status = "downloading..."
             self._engine2_start_t = time.monotonic()
             self._engine2_throttle = pf.ProgressThrottle()
             self._engine2_pstate = pf.ProgressState()
             self._engine2_bar.value = None
-            self._engine2_detail.value = "connectingвЂ¦"
-            self._log("Firefox engine not found вЂ” downloadingвЂ¦")
+            self._engine2_detail.value = "connecting..."
+            self._log("Firefox engine not found вЂ” downloading...")
             self._refresh_sidebar()
             ok = False
             # the binary is ~80MB over Tor; retry a few times so a dropped
@@ -1441,7 +1447,7 @@ class App:
                 if ok:
                     break
                 if attempt < 2:
-                    self._log("Firefox engine download interrupted вЂ” retryingвЂ¦")
+                    self._log("Firefox engine download interrupted вЂ” retrying...")
             self._engine2_busy = False
             self._engine2_detail.value = ""
             if ok:
@@ -1474,17 +1480,17 @@ class App:
             # frozen. No "over Tor" wording вЂ” on a direct connection (Windows/mac
             # host) there's no Tor, so the generic text is correct everywhere.
             self._engine2_bar.value = None
-            self._engine2_status = "connectingвЂ¦"
-            self._engine2_detail.value = f"connectingвЂ¦ {int(elapsed)}s"
+            self._engine2_status = "connecting..."
+            self._engine2_detail.value = f"connecting... {int(elapsed)}s"
         else:
             st = self._engine2_pstate
             self._engine2_bar.value = st.fraction
             # At 100% the bytes are down but extraction still runs; show
-            # "installingвЂ¦" so the row reads as progressing instead of snapping
+            # "installing..." so the row reads as progressing instead of snapping
             # from a percent to a momentary blank / "not installed".
             if st.total > 0 and st.done >= st.total:
-                self._engine2_status = "installingвЂ¦"
-                self._engine2_detail.value = "installingвЂ¦"
+                self._engine2_status = "installing..."
+                self._engine2_detail.value = "installing..."
             else:
                 self._engine2_status = (
                     f"{st.percent}%" if st.total > 0 else pf.fmt_mb(st.done)
@@ -1499,9 +1505,9 @@ class App:
         launch. Runs on the engine-check thread; shows progress in the panel.
         """
         self._engine_busy = True
-        self._log("No browser engine found вЂ” downloadingвЂ¦")
+        self._log("No browser engine found вЂ” downloading...")
         self._engine_progress_start()
-        self.engine_text.value = "connectingвЂ¦"
+        self.engine_text.value = "connecting..."
         self._refresh_sidebar()
 
         ok, msg = engine.ensure_engine(progress=self._engine_progress_cb)
@@ -1523,7 +1529,7 @@ class App:
         else:
             # A version check moves no bytes: spinner only, no download bar.
             self._engine_checking = True
-            self._refresh_engine_text("checkingвЂ¦")
+            self._refresh_engine_text("checking...")
 
             def work() -> None:
                 tag, _url = engine.fetch_latest()
@@ -1540,8 +1546,8 @@ class App:
     def _update_engine_async(self) -> None:
         self._engine_busy = True
         self._engine_progress_start()
-        self._refresh_engine_text("downloadingвЂ¦")
-        self._log(f"Downloading engine {self._engine_latest}вЂ¦")
+        self._refresh_engine_text("downloading...")
+        self._log(f"Downloading engine {self._engine_latest}...")
 
         def work() -> None:
             _tag, url = engine.fetch_latest()
@@ -1641,7 +1647,7 @@ class App:
 
     def _profiles_subtitle(self) -> str:
         r = self.bl.running_count()
-        return f"в—Џ {r} running" if r else ""
+        return f"* {r} running" if r else ""
 
     def _update_stats(self) -> None:
         r = self.refs

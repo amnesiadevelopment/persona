@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 
 
@@ -8,7 +8,7 @@ def _ensure_valid_cwd() -> None:
     A self-update re-exec (or an autostart entry) can leave us running with a
     current directory that was unmounted with the previous AppImage. The very
     next os.getcwd() then fails with "Getting current working directory failed"
-    — and because os.path.abspath() below calls getcwd(), and Flet's runtime
+    вЂ” and because os.path.abspath() below calls getcwd(), and Flet's runtime
     calls it at startup, the app dies before any window appears. Move to the
     first directory that actually exists, before anything else runs.
     """
@@ -28,6 +28,27 @@ def _ensure_valid_cwd() -> None:
 
 
 _ensure_valid_cwd()
+
+
+def _force_utf8() -> None:
+    """Make the process speak UTF-8 for text everywhere.
+
+    On Windows the default process code page is a legacy one (e.g. cp1251 on a
+    Russian install). Flet/Python then encode UI strings through that code page,
+    so a bullet "в—Џ", an ellipsis "вЂ¦", or a Cyrillic profile name come out as
+    mojibake ("РІвЂ”РЏ", "installingРІР‚В¦", "[Р±Р±Р±Р±]"). Forcing UTF-8 for stdio and the
+    filesystem encoding fixes every one of those at the source instead of
+    hunting them string by string. No-op where already UTF-8 (Linux/macOS)."""
+    os.environ.setdefault("PYTHONUTF8", "1")
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    for stream in (sys.stdout, sys.stderr, sys.stdin):
+        try:
+            stream.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+        except Exception:
+            pass
+
+
+_force_utf8()
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -54,11 +75,11 @@ _point_flet_at_bundled_client()
 def _ensure_flet_desktop_mode() -> None:
     """Keep Flet in desktop mode on a Wayland session that has no DISPLAY.
 
-    Flet decides "this is a headless Linux server → run as a web server" purely
+    Flet decides "this is a headless Linux server в†’ run as a web server" purely
     from `DISPLAY` being unset (flet.utils.is_linux_server). On a pure-Wayland
     desktop DISPLAY is often empty while WAYLAND_DISPLAY is set, so Flet wrongly
     switches to the web path and aborts trying to install the absent `flet-web`
-    package — the app never opens a window. When we can see we're on a real
+    package вЂ” the app never opens a window. When we can see we're on a real
     graphical session (Wayland or an X session that just didn't export DISPLAY),
     point DISPLAY at the XWayland default so Flet stays on the desktop path.
     """
@@ -92,7 +113,7 @@ def main() -> None:
     # Self-update verification hook: the updater launches the new AppImage with
     # PERSONA_SELFTEST=1 to confirm it boots before swapping it in. Reaching
     # here means the AppImage mounted and every import above succeeded, so the
-    # build is sound — print the token and exit cleanly, WITHOUT starting the
+    # build is sound вЂ” print the token and exit cleanly, WITHOUT starting the
     # GUI or binding the API port (which would need a display / a free port and
     # made the old probe a false-negative that looped the update forever).
     if os.environ.get("PERSONA_SELFTEST") == "1":

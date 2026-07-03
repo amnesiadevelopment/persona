@@ -222,25 +222,52 @@ def open_profile_dialog(
         color=COLORS["text_sub"],
         font_family=MONO,
     )
+    # For the Firefox engine the search engine is fixed to DuckDuckGo (no
+    # per-profile setting exists), so instead of a dropdown that can still be
+    # opened, show a static locked field. A disabled ft.Dropdown on this Flet
+    # still opens its option list on click, which read as "the fix didn't work";
+    # a plain read-only display can't be opened at all.
+    search_locked = ft.Container(
+        padding=ft.Padding.symmetric(horizontal=14, vertical=14),
+        border=ft.Border.all(1, COLORS["card_border"]),
+        border_radius=3,
+        bgcolor=COLORS["input_bg"],
+        content=ft.Column(
+            spacing=2,
+            controls=[
+                ft.Text(
+                    "Default search engine",
+                    size=11,
+                    color=COLORS["text_sub"],
+                    font_family=MONO,
+                ),
+                ft.Text(
+                    "DuckDuckGo  (fixed for Firefox)",
+                    color=COLORS["text_sub"],
+                    font_family=MONO,
+                ),
+            ],
+        ),
+    )
     search_section = ft.Column(
-        spacing=6, controls=[ft.Row(controls=[search_dropdown]), search_hint]
+        spacing=6,
+        controls=[ft.Row(controls=[search_dropdown]), search_locked, search_hint],
     )
 
     def _engine() -> str:
         return engine_dropdown.value or "chromium"
 
     # The Firefox engine has no per-profile default search engine вЂ” it's pinned
-    # globally to DuckDuckGo for every Firefox profile. Rather than hide the
-    # picker (which reads as "no setting exists"), keep it visible but locked:
-    # greyed out and showing DuckDuckGo, so the user sees the fixed value. For
-    # chromium the engine IS per-profile, so the picker stays live.
+    # globally to DuckDuckGo for every Firefox profile. Show the static locked
+    # field then (nothing to open); chromium keeps the live dropdown.
     def _apply_engine_dependent() -> None:
-        if _engine() == "firefox":
+        firefox = _engine() == "firefox"
+        search_dropdown.visible = not firefox
+        search_locked.visible = firefox
+        if firefox:
             search_dropdown.value = DEFAULT_SEARCH_ENGINE
-            search_dropdown.disabled = True
             search_hint.value = "fixed to DuckDuckGo for the Firefox engine"
         else:
-            search_dropdown.disabled = False
             search_hint.value = "applied to new profiles only"
 
     _apply_engine_dependent()

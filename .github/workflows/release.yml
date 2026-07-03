@@ -1,4 +1,4 @@
-name: release
+﻿name: release
 
 # Build the persona desktop app with `flet build` (Flutter-based, bundles the
 # Flet client + Python runtime deterministically) for Linux, Windows, and
@@ -23,7 +23,7 @@ jobs:
   build-linux:
     runs-on: ubuntu-24.04
     # On a tag, build every OS. On a manual run, build only the chosen OS (or
-    # all) — so iterating on the Windows installer doesn't wait on Linux/macOS.
+    # all) вЂ” so iterating on the Windows installer doesn't wait on Linux/macOS.
     if: >-
       github.event_name != 'workflow_dispatch' ||
       contains(fromJSON('["all","linux"]'), github.event.inputs.os)
@@ -214,7 +214,7 @@ jobs:
           # Brand the wizard: a dark welcome banner (left panel) and a small
           # header logo, both generated from the app icon so the installer looks
           # like persona, not a stock Inno setup. Inno wants BMPs; sizes are the
-          # modern-style wizard's expected 164x314 and 55x58 (at 100% DPI — Inno
+          # modern-style wizard's expected 164x314 and 55x58 (at 100% DPI вЂ” Inno
           # scales them for HiDPI).
           $wizLarge = Join-Path (Get-Location) "wizard-large.bmp"
           $wizSmall = Join-Path (Get-Location) "wizard-small.bmp"
@@ -278,11 +278,16 @@ jobs:
           ; Refresh the shell icon cache so the new persona icon shows at every
           ; size immediately (Windows otherwise keeps the old cached icon).
           Filename: "{sys}\ie4uinit.exe"; Parameters: "-show"; Flags: runhidden nowait
+          ; Interactive install: the finished page offers a "Launch persona" checkbox.
           Filename: "{app}\$exeName"; Description: "Launch persona"; Flags: nowait postinstall skipifsilent
+          ; Silent install (the self-updater uses /VERYSILENT): no finished page
+          ; exists for a postinstall checkbox, so relaunch persona directly. Run as
+          ; the original (non-elevated) user so the app isn't left running elevated.
+          Filename: "{app}\$exeName"; Flags: nowait runasoriginaluser; Check: WizardSilent
           [Code]
           // persona keeps two kinds of state, wiped by two independent tasks so a
           // user can reset settings without re-downloading ~750MB of engines, or
-          // vice versa. Checking both leaves nothing behind — a from-scratch install.
+          // vice versa. Checking both leaves nothing behind вЂ” a from-scratch install.
           //
           //   data    = %USERPROFILE%\.persona  EXCEPT its \engine subdir
           //             (profiles, settings.json, logs, bookmarks) + the app's

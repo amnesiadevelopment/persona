@@ -1,4 +1,4 @@
-"""The download progress total must come from the GitHub API asset size, not a
+﻿"""The download progress total must come from the GitHub API asset size, not a
 HEAD request, so the progress bar has a real total over Tor (where HEAD is
 flaky). Regression for the 'stuck/indeterminate bar, no total, no ETA' bug."""
 
@@ -34,7 +34,8 @@ def test_check_for_update_propagates_size(monkeypatch):
 def test_download_uses_api_size_not_head(monkeypatch, tmp_path):
     # if download trusts the API size, it must never call remote_size (HEAD)
     staged = tmp_path / "p.part"
-    monkeypatch.setattr(au, "staged_path", lambda: str(staged))
+    monkeypatch.setattr(au, "staged_path", lambda tag="": str(staged))
+    monkeypatch.setattr(au, "_clear_stale_staged", lambda keep: None)
 
     def boom(*a, **k):
         raise AssertionError("remote_size (HEAD) must not be called when size given")

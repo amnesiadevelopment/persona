@@ -86,49 +86,52 @@ def _find_dropdown(page, label):
     return None
 
 
-def test_firefox_search_dropdown_is_locked_to_ddg():
-    # For a Firefox profile the default-search-engine picker must be VISIBLE but
-    # disabled (greyed) and pinned to DuckDuckGo вЂ” Firefox has no per-profile
-    # search engine, so the control shows the fixed value instead of misleading
-    # the user with a live, changeable picker.
+def _find_by_text(page, needle):
+    for c in _walk(page.shown):
+        if getattr(c, "value", None) and needle in str(c.value):
+            return c
+    return None
+
+
+def test_firefox_hides_dropdown_shows_locked_field():
+    # For a Firefox profile the live dropdown must be HIDDEN (it can still be
+    # opened even when disabled on this Flet) and a static "DuckDuckGo (fixed)"
+    # field shown instead вЂ” nothing to open, no misleading live picker.
     prof = Profile(name="FF", engine="firefox", resolution="auto")
     page = _open(prof)
     dd = _find_dropdown(page, "Default search engine")
     assert dd is not None
-    assert dd.disabled is True
-    assert dd.value == "duckduckgo"
+    assert dd.visible is False                     # the openable dropdown is gone
+    locked = _find_by_text(page, "fixed for Firefox")
+    assert locked is not None                      # the static locked field shows
 
 
-def test_chromium_search_dropdown_is_active():
-    # Chromium DOES have a per-profile search engine, so its picker stays
-    # enabled and keeps the profile's chosen value.
+def test_chromium_shows_live_dropdown():
+    # Chromium DOES have a per-profile search engine, so its dropdown is visible
+    # and keeps the profile's chosen value.
     prof = Profile(name="CH", engine="chromium", search_engine="google",
                    resolution="auto")
     page = _open(prof)
     dd = _find_dropdown(page, "Default search engine")
     assert dd is not None
-    assert dd.disabled is False
+    assert dd.visible is not False                 # visible (None or True)
     assert dd.value == "google"
 
 
-def test_switching_engine_to_firefox_locks_search_picker():
-    # The real bug: a NEW profile opens on chromium (search picker live). When
-    # the user switches the engine to Firefox, the picker must lock to DDG right
-    # then. The old test only checked the initial state and missed this вЂ” the
-    # engine dropdown's on_change didn't fire (icon-content options), so the
-    # lock never applied. Simulate the on_change to prove the handler is wired.
+def test_switching_engine_to_firefox_hides_dropdown():
+    # The real bug: a NEW profile opens on chromium (dropdown live). When the
+    # user switches the engine to Firefox, the dropdown must be hidden right then
+    # and the locked field shown. Simulate the on_change to prove it's wired.
     page = _open(None)  # fresh create dialog, defaults to chromium
     engine_dd = _find_dropdown(page, "Engine")
     search_dd = _find_dropdown(page, "Default search engine")
     assert engine_dd is not None and search_dd is not None
-    assert search_dd.disabled is False            # chromium: live
-    # user picks Firefox
+    assert search_dd.visible is not False          # chromium: dropdown shown
     engine_dd.value = "firefox"
     assert engine_dd.on_change is not None
-    engine_dd.on_change(None)                      # the event Flet fires on pick
-    assert search_dd.disabled is True             # now locked
-    assert search_dd.value == "duckduckgo"
-    # switching back to chromium re-enables it
+    engine_dd.on_change(None)                       # the event Flet fires on pick
+    assert search_dd.visible is False              # dropdown hidden for firefox
+    # switching back to chromium shows it again
     engine_dd.value = "chromium"
     engine_dd.on_change(None)
-    assert search_dd.disabled is False
+    assert search_dd.visible is True

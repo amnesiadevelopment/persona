@@ -1,4 +1,4 @@
-import pytest
+﻿import pytest
 
 from src.services.app_update import updater as au
 
@@ -92,9 +92,22 @@ def test_staged_path_windows_uses_temp(monkeypatch):
     assert p.endswith(".exe")
 
 
+def test_staged_path_is_keyed_by_tag(monkeypatch):
+    # A per-tag filename keeps one version's download from resuming onto вЂ” or
+    # being mistaken for вЂ” another's. This is the fix for "installed 2.3.4 but
+    # stayed 2.3.3": a fixed name reused the stale 2.3.3 installer.
+    _force_os(monkeypatch, win=True)
+    p3 = au.staged_path("v2.3.3")
+    p4 = au.staged_path("v2.3.4")
+    assert p3 != p4
+    assert "2.3.3" in p3 and "2.3.4" in p4
+    assert p3.endswith(".exe") and p4.endswith(".exe")
+
+
 def test_apply_and_restart_windows_runs_installer_silently(monkeypatch, tmp_path):
-    # On Windows apply runs the downloaded setup.exe silently (Inno /SILENT), so
-    # it upgrades in place and restarts persona — no manual "download it yourself".
+    # On Windows apply runs the downloaded setup.exe with NO windows (Inno
+    # /VERYSILENT), so it upgrades in place with no visible installer and the
+    # installer's [Run] entry relaunches persona вЂ” no manual "download it".
     _force_os(monkeypatch, win=True)
     staged = tmp_path / "persona-windows-setup.exe"
     staged.write_bytes(b"MZ")
@@ -114,7 +127,7 @@ def test_apply_and_restart_windows_runs_installer_silently(monkeypatch, tmp_path
     # test runs on the Linux CI too.
     monkeypatch.setattr(au._platform, "no_window_kwargs", lambda: {})
 
-    # don't actually exit the test process — raise instead so we can assert it
+    # don't actually exit the test process вЂ” raise instead so we can assert it
     def fake_exit(code):
         raise SystemExit(code)
 
@@ -122,9 +135,9 @@ def test_apply_and_restart_windows_runs_installer_silently(monkeypatch, tmp_path
     msgs = []
     with pytest.raises(SystemExit):
         au.apply_and_restart(str(staged), log=msgs.append)
-    # the installer was launched, with a silent flag
+    # the installer was launched fully silently (no visible progress window)
     assert str(staged) in called["args"]
-    assert any("/SILENT" in a or "/silent" in a.lower() for a in called["args"])
+    assert any(a.lower() == "/verysilent" for a in called["args"])
 
 
 def test_apply_and_restart_macos_is_notify_only(monkeypatch, tmp_path):
