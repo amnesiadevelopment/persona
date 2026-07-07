@@ -1,4 +1,4 @@
-﻿name: release
+name: release
 
 # Build the persona desktop app with `flet build` (Flutter-based, bundles the
 # Flet client + Python runtime deterministically) for Linux, Windows, and
@@ -23,7 +23,7 @@ jobs:
   build-linux:
     runs-on: ubuntu-24.04
     # On a tag, build every OS. On a manual run, build only the chosen OS (or
-    # all) вЂ” so iterating on the Windows installer doesn't wait on Linux/macOS.
+    # all) — so iterating on the Windows installer doesn't wait on Linux/macOS.
     if: >-
       github.event_name != 'workflow_dispatch' ||
       contains(fromJSON('["all","linux"]'), github.event.inputs.os)
@@ -214,7 +214,7 @@ jobs:
           # Brand the wizard: a dark welcome banner (left panel) and a small
           # header logo, both generated from the app icon so the installer looks
           # like persona, not a stock Inno setup. Inno wants BMPs; sizes are the
-          # modern-style wizard's expected 164x314 and 55x58 (at 100% DPI вЂ” Inno
+          # modern-style wizard's expected 164x314 and 55x58 (at 100% DPI — Inno
           # scales them for HiDPI).
           $wizLarge = Join-Path (Get-Location) "wizard-large.bmp"
           $wizSmall = Join-Path (Get-Location) "wizard-small.bmp"
@@ -278,16 +278,16 @@ jobs:
           ; Refresh the shell icon cache so the new persona icon shows at every
           ; size immediately (Windows otherwise keeps the old cached icon).
           Filename: "{sys}\ie4uinit.exe"; Parameters: "-show"; Flags: runhidden nowait
-          ; Interactive install: the finished page offers a "Launch persona" checkbox.
+          ; Interactive install only: the finished page offers a "Launch persona"
+          ; checkbox. On a SILENT install (the self-updater's /VERYSILENT) the
+          ; installer does NOT relaunch — the updater itself restarts persona in a
+          ; normal user session afterward, because the installer's own relaunch
+          ; came up to a black window under a lowered token.
           Filename: "{app}\$exeName"; Description: "Launch persona"; Flags: nowait postinstall skipifsilent
-          ; Silent install (the self-updater uses /VERYSILENT): no finished page
-          ; exists for a postinstall checkbox, so relaunch persona directly. Run as
-          ; the original (non-elevated) user so the app isn't left running elevated.
-          Filename: "{app}\$exeName"; Flags: nowait runasoriginaluser; Check: WizardSilent
           [Code]
           // persona keeps two kinds of state, wiped by two independent tasks so a
           // user can reset settings without re-downloading ~750MB of engines, or
-          // vice versa. Checking both leaves nothing behind вЂ” a from-scratch install.
+          // vice versa. Checking both leaves nothing behind — a from-scratch install.
           //
           //   data    = %USERPROFILE%\.persona  EXCEPT its \engine subdir
           //             (profiles, settings.json, logs, bookmarks) + the app's
@@ -360,18 +360,30 @@ jobs:
             exit 1
           fi
 
+      - name: Publish a SHA256 checksum for the installer
+        # The self-updater verifies the staged installer against this before
+        # running it, so a truncated/corrupted download never executes.
+        shell: bash
+        run: |
+          sha256sum persona-windows-setup.exe > checksums.txt
+          cat checksums.txt
+
       - name: Upload the Windows artifact
         uses: actions/upload-artifact@v4
         with:
           name: persona-windows
-          path: persona-windows-setup.exe
+          path: |
+            persona-windows-setup.exe
+            checksums.txt
           if-no-files-found: error
 
       - name: Publish to the GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: persona-windows-setup.exe
+          files: |
+            persona-windows-setup.exe
+            checksums.txt
           generate_release_notes: true
 
   build-macos:

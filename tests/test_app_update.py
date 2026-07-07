@@ -1,4 +1,4 @@
-﻿import pytest
+import pytest
 
 from src.services.app_update import updater as au
 
@@ -93,8 +93,8 @@ def test_staged_path_windows_uses_temp(monkeypatch):
 
 
 def test_staged_path_is_keyed_by_tag(monkeypatch):
-    # A per-tag filename keeps one version's download from resuming onto вЂ” or
-    # being mistaken for вЂ” another's. This is the fix for "installed 2.3.4 but
+    # A per-tag filename keeps one version's download from resuming onto — or
+    # being mistaken for — another's. This is the fix for "installed 2.3.4 but
     # stayed 2.3.3": a fixed name reused the stale 2.3.3 installer.
     _force_os(monkeypatch, win=True)
     p3 = au.staged_path("v2.3.3")
@@ -106,16 +106,17 @@ def test_staged_path_is_keyed_by_tag(monkeypatch):
 
 def test_apply_and_restart_windows_runs_installer_silently(monkeypatch, tmp_path):
     # On Windows apply runs the downloaded setup.exe with NO windows (Inno
-    # /VERYSILENT), so it upgrades in place with no visible installer and the
-    # installer's [Run] entry relaunches persona вЂ” no manual "download it".
+    # /VERYSILENT), then WE relaunch persona ourselves afterward (the installer's
+    # own relaunch came up to a black window under a lowered token).
     _force_os(monkeypatch, win=True)
     staged = tmp_path / "persona-windows-setup.exe"
     staged.write_bytes(b"MZ")
-    called = {}
+    exe = tmp_path / "persona.exe"
+    exe.write_bytes(b"MZ")
+    calls = []
 
     def fake_popen(args, **kw):
-        called["args"] = args
-        called["kw"] = kw
+        calls.append(args)
 
         class P:
             pass
@@ -123,11 +124,10 @@ def test_apply_and_restart_windows_runs_installer_silently(monkeypatch, tmp_path
         return P()
 
     monkeypatch.setattr(au.subprocess, "Popen", fake_popen)
-    # no_window_kwargs touches Windows-only subprocess constants; stub it so the
-    # test runs on the Linux CI too.
     monkeypatch.setattr(au._platform, "no_window_kwargs", lambda: {})
+    # point the relaunch at our fake exe so the relaunch branch runs
+    monkeypatch.setattr(au, "_installed_windows_exe", lambda: str(exe))
 
-    # don't actually exit the test process вЂ” raise instead so we can assert it
     def fake_exit(code):
         raise SystemExit(code)
 
@@ -135,9 +135,12 @@ def test_apply_and_restart_windows_runs_installer_silently(monkeypatch, tmp_path
     msgs = []
     with pytest.raises(SystemExit):
         au.apply_and_restart(str(staged), log=msgs.append)
-    # the installer was launched fully silently (no visible progress window)
-    assert str(staged) in called["args"]
-    assert any(a.lower() == "/verysilent" for a in called["args"])
+    # 1) the installer was launched fully silently (no visible progress window)
+    installer_call = next(c for c in calls if str(staged) in c)
+    assert any(a.lower() == "/verysilent" for a in installer_call)
+    # 2) persona is relaunched by US afterward (the installed exe, via a waiting cmd)
+    relaunch_call = next(c for c in calls if str(exe) in c)
+    assert relaunch_call[0] == "cmd"
 
 
 def test_apply_and_restart_macos_is_notify_only(monkeypatch, tmp_path):

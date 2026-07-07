@@ -4,6 +4,8 @@ import re
 import threading
 import time
 
+from ..core.config import LOG_DIR
+
 ITEMS_PER_PAGE = 8
 
 
@@ -11,10 +13,10 @@ def _load_recent_log_lines(limit: int = 200) -> list[str]:
     """Seed the Activity Log from the persistent file log so it survives a
     restart — otherwise an auto-update (which restarts the app) wipes the very
     entries that explain whether the update succeeded or looped. Reads the
-    newest logs/persona_*.log and reformats its lines to the UI's "HH:MM:SS  >
-    message" shape."""
+    newest persona_*.log in LOG_DIR and reformats its lines to the UI's
+    "HH:MM:SS  > message" shape."""
     try:
-        candidates = sorted(glob.glob(os.path.join("logs", "persona_*.log")))
+        candidates = sorted(glob.glob(os.path.join(LOG_DIR, "persona_*.log")))
         if not candidates:
             return []
         with open(candidates[-1], encoding="utf-8", errors="replace") as f:

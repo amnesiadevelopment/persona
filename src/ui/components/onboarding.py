@@ -25,10 +25,15 @@ class Onboarding:
             [Callable[[int, int], None], Callable[[bool], None]], None
         ],
         engine_already_installed: bool = False,
+        on_ui: Callable[[Callable[[], None]], None] | None = None,
     ) -> None:
         self.page = page
         self.on_finish = on_finish
         self.start_engine = start_engine
+        # start_engine calls progress()/done() from its download worker, but
+        # flet's control tree and page.update() are only safe on the session
+        # thread — on_ui marshals there (falls back to inline when absent).
+        self.on_ui = on_ui or (lambda fn: fn())
         self.engine_done = engine_already_installed
         self.index = 0
         self.dlg: ft.AlertDialog | None = None
@@ -94,18 +99,28 @@ class Onboarding:
             self._pstate.update(done, total, now)
             if not self._throttle.should_emit(done, total, now):
                 return
-            st = self._pstate
-            self._bar.value = st.fraction
-            self._pct.value = f"{st.percent}%" if st.total > 0 else pf.fmt_mb(st.done)
-            self._detail.value = st.line()
-            self.page.update()
+
+            def apply() -> None:
+                st = self._pstate
+                self._bar.value = st.fraction
+                self._pct.value = (
+                    f"{st.percent}%" if st.total > 0 else pf.fmt_mb(st.done)
+                )
+                self._detail.value = st.line()
+                self.page.update()
+
+            self.on_ui(apply)
 
         def done(ok: bool) -> None:
             self.engine_done = True
-            self._bar.value = 1.0
-            self._pct.value = "done" if ok else "failed"
-            self._detail.value = "" if ok else "could not download engine"
-            self.page.update()
+
+            def apply() -> None:
+                self._bar.value = 1.0
+                self._pct.value = "done" if ok else "failed"
+                self._detail.value = "" if ok else "could not download engine"
+                self.page.update()
+
+            self.on_ui(apply)
 
         self.start_engine(progress, done)
 

@@ -1,4 +1,4 @@
-﻿"""The download progress total must come from the GitHub API asset size, not a
+"""The download progress total must come from the GitHub API asset size, not a
 HEAD request, so the progress bar has a real total over Tor (where HEAD is
 flaky). Regression for the 'stuck/indeterminate bar, no total, no ETA' bug."""
 

@@ -1,4 +1,4 @@
-﻿"""The create/edit profile dialog must build without raising.
+"""The create/edit profile dialog must build without raising.
 
 A regression where resolution_dropdown was constructed with an unsupported
 `on_change=` keyword made ft.Dropdown.__init__ raise at build time, so the
@@ -96,7 +96,7 @@ def _find_by_text(page, needle):
 def test_firefox_hides_dropdown_shows_locked_field():
     # For a Firefox profile the live dropdown must be HIDDEN (it can still be
     # opened even when disabled on this Flet) and a static "DuckDuckGo (fixed)"
-    # field shown instead вЂ” nothing to open, no misleading live picker.
+    # field shown instead — nothing to open, no misleading live picker.
     prof = Profile(name="FF", engine="firefox", resolution="auto")
     page = _open(prof)
     dd = _find_dropdown(page, "Default search engine")

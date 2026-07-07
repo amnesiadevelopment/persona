@@ -446,6 +446,27 @@ def _context_overrides_for(
     }
 
 
+def _with_context_overrides(InvisiblePlaywright, overrides: dict):
+    """A subclass whose context kwargs overlay `overrides` on the engine's own.
+
+    The overlay rides on the launch's OWN class, never on InvisiblePlaywright
+    itself: on the Windows/macOS thread path several launches share one
+    process, so patching the engine class races — the last patch wins for any
+    launch still inside __enter__, handing a profile the WRONG viewport/screen,
+    and the patch would stay on for launches that chose no resolution at all.
+    A per-launch subclass gives each launch its own overlay with nothing shared
+    to race on or restore."""
+    ov = dict(overrides)
+
+    class _WithOverrides(InvisiblePlaywright):
+        def _default_context_kwargs(self):
+            kw = super()._default_context_kwargs()
+            kw.update(ov)
+            return kw
+
+    return _WithOverrides
+
+
 def _outer_size_override_script() -> str:
     """JS that pins window.outerWidth/outerHeight to the real window (inner +
     chrome), not the spoofed screen.
@@ -583,12 +604,13 @@ def _bookmarks_sig(bookmarks: list) -> str:
     ).hexdigest()
 
 
-def _init_places_db(profile_dir: str) -> bool:
+def _init_places_db(profile_dir: str, seed: int) -> bool:
     """Launch the engine once headless so it creates a valid places.sqlite.
 
     Firefox rejects a hand-built places database ("files in use"), so the only
-    way to get a database we can seed is to let the engine create one. Returns
-    True once places.sqlite exists.
+    way to get a database we can seed is to let the engine create one. `seed`
+    is the profile's stable fingerprint seed, the same one the real launch
+    uses. Returns True once places.sqlite exists.
     """
     try:
         from invisible_playwright import InvisiblePlaywright
@@ -596,7 +618,7 @@ def _init_places_db(profile_dir: str) -> bool:
         return False
     try:
         with InvisiblePlaywright(
-            seed=abs(hash(profile_dir)) % (2**31),
+            seed=seed,
             headless=True,
             profile_dir=profile_dir,
         ):
@@ -612,7 +634,7 @@ def _init_places_db(profile_dir: str) -> bool:
     return os.path.exists(os.path.join(profile_dir, "places.sqlite"))
 
 
-def _seed_firefox_bookmarks(profile_dir: str, bookmarks: list) -> None:
+def _seed_firefox_bookmarks(profile_dir: str, bookmarks: list, seed: int) -> None:
     """Put the profile's bookmarks on the Firefox toolbar via places.sqlite.
 
     The engine must have created places.sqlite first (Firefox rejects a
@@ -634,7 +656,7 @@ def _seed_firefox_bookmarks(profile_dir: str, bookmarks: list) -> None:
                     return  # this exact set was already seeded
 
         places = os.path.join(profile_dir, "places.sqlite")
-        if not os.path.exists(places) and not _init_places_db(profile_dir):
+        if not os.path.exists(places) and not _init_places_db(profile_dir, seed):
             return
 
         marks = [Bookmark(b.get("name", ""), b.get("url", "")) for b in bookmarks]
@@ -753,6 +775,17 @@ def _enter_with_timeout(InvisiblePlaywright, kwargs, profile_dir, attempts, per_
     return None, None
 
 
+def _resolve_seed(cfg: dict) -> int:
+    """The profile's fingerprint seed. persona passes the profile's stable
+    crc32 seed in cfg — hash(str) is salted per-process, so deriving the seed
+    here gave a DIFFERENT fingerprint every app restart. The hash fallback only
+    covers a cfg that predates the seed field."""
+    seed = cfg.get("seed")
+    if seed is not None:
+        return int(seed)
+    return abs(hash(cfg.get("profile_name", ""))) % (2**31)
+
+
 def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     """Open a single visible Firefox window via invisible_playwright and keep it
     alive until the user closes the window or the parent asks to stop.
@@ -783,13 +816,19 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
 
     def _finish() -> None:
         """End the child: a forked process must os._exit so it doesn't return
-        into the parent's code; a thread must just return."""
+        into the parent's code; a thread must close the pipe's write end so the
+        parent's reader sees EOF (readline would otherwise block until the fd
+        happens to be garbage-collected), then just return."""
         try:
             out.flush()
         except Exception:
             pass
         if not in_thread:
             os._exit(0)
+        try:
+            out.close()
+        except Exception:
+            pass
 
     profile_dir = cfg.get("profile_dir", "")
 
@@ -803,6 +842,20 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
         except OSError:
             pass
 
+    # Deterministic per-profile seed so the same profile keeps a stable
+    # fingerprint across launches AND app restarts.
+    seed = _resolve_seed(cfg)
+
+    # Seed the profile's bookmarks into places.sqlite before the engine opens
+    # the visible window, so the first real window already shows them. The
+    # first time a profile with bookmarks is opened this does a one-time
+    # HEADLESS engine init (a real Firefox start, tens of seconds) — it must
+    # run here in the child, never on the thread constructing the handle,
+    # which on a UI launch is the Flet session thread and would freeze the app.
+    _seed_firefox_bookmarks(profile_dir, cfg.get("bookmarks", []), seed)
+    # Pin DuckDuckGo as the default search engine for every Firefox profile.
+    _ensure_firefox_policies()
+
     # A DBus-valid, per-profile-unique remoting name so multiple profiles open
     # at once (see _remoting_name). It doubles as the Wayland app_id for the
     # taskbar icon. Set in this child's own environment — forks have separate
@@ -815,6 +868,8 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
         from invisible_playwright import InvisiblePlaywright
     except Exception as e:
         emit(f"LAUNCH_FAILED: invisible_playwright import error: {e}")
+        emit("BROWSER_CLOSED")
+        _finish()  # close the pipe so the monitor's reader unblocks (no fd leak)
         return
 
     # When persona already knows the timezone (it always passes a concrete one),
@@ -838,9 +893,6 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
             pass
 
     proxy = _proxy_dict(cfg.get("proxy_url", ""))
-    # Seed the fingerprint deterministically from the profile name so the same
-    # profile keeps a stable identity across launches.
-    seed = abs(hash(cfg.get("profile_name", ""))) % (2**31)
     kwargs = {"seed": seed, "headless": False, "extra_prefs": _profile_prefs(cfg)}
     # Pin the screen to the profile's resolution. The engine derives the window
     # viewport, the spoofed `screen` and `device_scale_factor` from these, so
@@ -905,22 +957,14 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     # Decouple window size from the spoofed screen. The engine builds both the
     # context `viewport` (window) and `screen` (fingerprint) from one p.screen
     # value; overlay our own so the window fits the monitor while the screen
-    # reports the chosen resolution. Overlaying _default_context_kwargs is the
-    # same monkeypatch style as the prepare_session_geo shim above — narrow, and
-    # only when a resolution was chosen (Auto keeps the engine's own sizing).
+    # reports the chosen resolution. The overlay is a per-launch subclass (see
+    # _with_context_overrides — patching the engine class races on the thread
+    # path), and only when a resolution was chosen (Auto keeps the engine's own
+    # sizing).
     if _res_overrides is not None:
-        try:
-            _orig_ctx_kwargs = InvisiblePlaywright._default_context_kwargs
-
-            def _ctx_kwargs_with_overrides(self, _orig=_orig_ctx_kwargs,
-                                           _ov=dict(_res_overrides)):
-                kw = _orig(self)
-                kw.update(_ov)
-                return kw
-
-            InvisiblePlaywright._default_context_kwargs = _ctx_kwargs_with_overrides
-        except Exception:
-            pass
+        InvisiblePlaywright = _with_context_overrides(
+            InvisiblePlaywright, _res_overrides
+        )
 
     # Launch with a bounded timeout and one retry. Over Tor, a launch
     # occasionally stalls on Firefox's startup remote-settings fetch and would
@@ -1008,35 +1052,19 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
 
     # Closure watch. On the Linux fork path, ctx.pages drops to 0 when the user
     # closes the last window (read from the thread that created ctx — that's THIS
-    # thread on both paths; see _enter_with_timeout inline entry).
-    #
-    # On the Windows thread path, watch whether THIS profile's Firefox PROCESS is
-    # still alive. Closing the window with the X exits the whole patched Firefox
-    # (verified: 0 firefox.exe left after the X), so the profile's process — the
-    # one carrying "-profile <dir>" in its command line — disappears. That's the
-    # reliable signal. The earlier approaches failed: a persistent context keeps
-    # ctx.pages at 1 and never fires a close event, and counting windows by title
-    # missed the "New Tab" page (whose title Firefox owns, so the "[profile]"
-    # init-script prefix isn't on it) — so the close was never seen and the
-    # profile stuck "running". Grace period: the process takes a moment to appear,
-    # so don't treat the initial absence as a close.
-    saw_process = False
-    while not closed.wait(0.5):
-        if stop_event is not None and stop_event.is_set():
-            stop_gracefully()
-            break
-        if in_thread:
-            alive = bool(_profile_firefox_pids(profile_dir))
-            if alive:
-                saw_process = True
-            elif saw_process:
-                break  # the profile's Firefox exited → user closed it
-            continue
-        try:
-            if len(ctx.pages) == 0:
-                break  # user closed the last window
-        except Exception:
-            break  # context torn down (browser gone) → treat as closed
+    # thread on both paths; see _enter_with_timeout inline entry). The
+    # Windows/macOS thread path watches the profile's Firefox process instead
+    # (see _thread_close_watch — a persistent context there keeps ctx.pages at 1
+    # and never fires a close event).
+    if in_thread:
+        _thread_close_watch(profile_dir, closed, stop_event, stop_gracefully)
+    else:
+        while not closed.wait(0.5):
+            try:
+                if len(ctx.pages) == 0:
+                    break  # user closed the last window
+            except Exception:
+                break  # context torn down (browser gone) → treat as closed
 
     # Tear down so Firefox actually exits and releases its lock, then report.
     try:
@@ -1061,9 +1089,56 @@ def _ps_single_quote(s: str) -> str:
     return "'" + s.replace("'", "''") + "'"
 
 
-def _profile_firefox_pids(profile_dir: str) -> set:
+def _thread_close_watch(profile_dir, closed, stop_event, stop_gracefully,
+                        no_process_timeout=60.0, interval=1.0):
+    """Wait until THIS profile's Firefox is gone (the user closed the window) or
+    STOP is requested — the Windows/macOS thread-path close signal. Closing the
+    window with the X exits the whole patched Firefox, so the disappearance of
+    the process carrying "-profile <dir>" is the reliable signal; a persistent
+    context keeps ctx.pages at 1 and never fires a close event, and counting
+    windows by title misses the "New Tab" page (Firefox owns its title, so the
+    "[profile]" init-script prefix isn't on it).
+
+    The profile's pid is resolved once and then polled with a cheap liveness
+    check — re-running the WMI CommandLine scan every tick for every open
+    profile is real CPU/battery burn. A failed pid query (None) carries no
+    verdict: it must NOT count as "process gone", or a transient WMI failure
+    would tear down a live browser — only a dead poll on a pid that was
+    actually seen decides the close. If no process is ever confidently seen
+    within `no_process_timeout`, give up so a half-failed launch can't wedge
+    the profile "running" forever."""
+    pid = None
+    deadline = time.monotonic() + no_process_timeout
+    while not closed.wait(interval):
+        if stop_event is not None and stop_event.is_set():
+            stop_gracefully()
+            return
+        if pid is not None:
+            if _pid_alive(pid):
+                continue
+            return  # the profile's Firefox exited → the user closed it
+        pids = _profile_firefox_pids(profile_dir)
+        if pids:
+            pid = next(iter(pids))
+            continue
+        if pids is None:
+            # No verdict from the WMI scan; the single-pid helper is a second
+            # chance (and the only resolver on macOS, which has no WMI).
+            p = _firefox_pid(profile_dir)
+            if p is not None:
+                pid = p
+                continue
+        if time.monotonic() > deadline:
+            return  # never confidently saw the process → treat the launch as dead
+
+
+def _profile_firefox_pids(profile_dir: str):
     """PIDs of firefox.exe processes belonging to THIS profile (Windows), matched
-    by profile_dir in the command line via WMI.
+    by profile_dir in the command line via WMI. Returns None when the query
+    can't run or failed — a transient WMI error is "no verdict", while an empty
+    set means the query SUCCEEDED and the profile truly has no process; the
+    close-watch must tell the two apart or it either misses a close forever or
+    tears down a live browser.
 
     Counting ALL firefox.exe windows is the bug behind "profile stuck running":
     with several profiles (or a stray/zombie Firefox) open, closing one still
@@ -1071,7 +1146,7 @@ def _profile_firefox_pids(profile_dir: str) -> set:
     and the close is never detected. Scoping to this profile's own processes
     makes the close-watch reliable regardless of what else is running."""
     if not profile_dir or not _platform.IS_WINDOWS:
-        return set()
+        return None
     try:
         pat = _ps_single_quote("*" + profile_dir + "*")
         ps = (
@@ -1085,7 +1160,7 @@ def _profile_firefox_pids(profile_dir: str) -> set:
         )
         return {int(x) for x in out.split() if x.strip().isdigit()}
     except Exception:
-        return set()
+        return None
 
 
 def _firefox_pid(profile_dir: str):
@@ -1094,8 +1169,8 @@ def _firefox_pid(profile_dir: str):
     invisible launches `firefox -no-remote ... -profile <profile_dir> ...`; match
     that command line so we watch the right process even with several profiles
     open. profile_dir is unique per profile, so the match is unambiguous. Uses
-    pgrep on Linux/macOS and WMIC/tasklist on Windows (pgrep doesn't exist
-    there)."""
+    pgrep on Linux/macOS and a WMI CommandLine query on Windows (pgrep doesn't
+    exist there)."""
     if not profile_dir:
         return None
     if _platform.IS_WINDOWS:
@@ -1135,15 +1210,25 @@ def _firefox_pid(profile_dir: str):
 
 
 def _pid_alive(pid: int) -> bool:
+    """Whether `pid` is still running. The Windows check is pure ctypes
+    (OpenProcess + WaitForSingleObject) so the close-watch can poll every tick
+    without spawning a subprocess per poll."""
     if pid is None:
         return False
     if _platform.IS_WINDOWS:
         try:
-            out = subprocess.check_output(
-                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-                text=True, **_platform.no_window_kwargs(),
-            )
-            return str(pid) in out
+            import ctypes
+
+            SYNCHRONIZE = 0x00100000
+            WAIT_TIMEOUT = 0x00000102
+            k32 = ctypes.windll.kernel32
+            handle = k32.OpenProcess(SYNCHRONIZE, False, int(pid))
+            if not handle:
+                return False  # an exited pid can't be opened
+            try:
+                return k32.WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
+            finally:
+                k32.CloseHandle(handle)
         except Exception:
             return False
     try:
@@ -1164,13 +1249,10 @@ class InvisibleProcess:
     """Popen-compatible handle around the invisible_playwright child."""
 
     def __init__(self, cfg: dict) -> None:
-        # Seed the profile's bookmarks into places.sqlite before launching. The
-        # first time a profile with bookmarks is opened this does a one-time
-        # headless engine init to create the database, so the very first real
-        # window already shows the bookmarks.
-        _seed_firefox_bookmarks(cfg.get("profile_dir", ""), cfg.get("bookmarks", []))
-        # Pin DuckDuckGo as the default search engine for every Firefox profile.
-        _ensure_firefox_policies()
+        # No blocking work here: this runs on the caller's thread (the Flet
+        # session thread on a UI launch). Bookmark seeding — which can do a
+        # one-time headless engine init taking tens of seconds — happens in
+        # _child, off this thread, before the visible window opens.
         self._fork = _platform.needs_fork_launch()
         if self._fork:
             ctx = mp.get_context("fork")

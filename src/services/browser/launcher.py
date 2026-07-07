@@ -6,7 +6,7 @@ from collections.abc import Callable
 
 from ...core.logging import get_logger
 from ...models.profile import Profile
-from .process import spawn_browser, terminate, wait_for_exit
+from .process import effective_engine, spawn_browser, terminate, wait_for_exit
 
 logger = get_logger("browser.launcher")
 
@@ -99,7 +99,10 @@ class BrowserLauncher:
                 self._active_sessions[profile.name] = proc
                 self._stop_notifiers[profile.name] = stop_event
 
-            engine = getattr(profile, "engine", "chromium")
+            # The monitor must wait for the readiness signal of the engine
+            # actually launched — e.g. a mobile profile stores engine=firefox
+            # but launches chromium, and Firefox's BROWSER_STARTED never comes.
+            engine = effective_engine(profile)
             threading.Thread(
                 target=self._monitor_process,
                 args=(proc, profile.name, log_callback, on_ready,

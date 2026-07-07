@@ -64,11 +64,3 @@ class Container:
 
             self._instances["bstore"] = BookmarkStore()
         return self._instances["bstore"]
-
-    @property
-    def bookmark_store(self):
-        if "bstore" not in self._instances:
-            from ..services.bookmark.store import BookmarkStore
-
-            self._instances["bstore"] = BookmarkStore()
-        return self._instances["bstore"]

@@ -78,6 +78,18 @@ async def launch_browser(
         raise HTTPException(status_code=409, detail="Browser already running")
 
     profile = pm.profiles[name]
+    from ...services.browser.invisible_launch import is_invisible_installed
+    from ...services.browser.process import effective_engine
+
+    engine = effective_engine(profile)
+    # Check-only, like the UI launch guard: falling through would let the
+    # engine start its own blocking, non-resumable download mid-launch.
+    if engine == "firefox" and not is_invisible_installed():
+        raise HTTPException(
+            status_code=409,
+            detail="Firefox engine not installed yet — download it from the app first",
+        )
+
     # API launches default to automation mode: force remote debugging on so an
     # external script can attach, without mutating the persisted ai_control
     # flag (a manual open from the UI stays CDP-free, which is less detectable).
@@ -99,8 +111,7 @@ async def launch_browser(
     # Only the chromium engine exposes a Chrome DevTools (CDP) port. The Firefox
     # engine speaks Juggler via Playwright, not CDP, so waiting for a CDP
     # endpoint there just times out (~15s) even though the window is already up.
-    engine = getattr(profile, "engine", "chromium")
-    if automation and engine not in ("firefox", "camoufox"):
+    if automation and engine != "firefox":
         try:
             cdp = await cdp_info_for(name)
         except Exception as exc:

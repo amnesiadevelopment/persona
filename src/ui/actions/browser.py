@@ -33,10 +33,15 @@ def launch_or_stop(
         threading.Thread(target=do_stop, daemon=True).start()
         return
 
-    if getattr(profile, "engine", "chromium") == "firefox":
-        from ...services.browser.invisible_launch import ensure_invisible_installed
+    # Guard on the EFFECTIVE engine (a mobile profile stored as firefox actually
+    # launches chromium — see effective_engine), so we don't demand the Firefox
+    # engine be installed for a launch that will really use chromium.
+    from ...services.browser.process import effective_engine
 
-        if not ensure_invisible_installed():
+    if effective_engine(profile) == "firefox":
+        from ...services.browser.invisible_launch import is_invisible_installed
+
+        if not is_invisible_installed():
             log("Firefox engine not ready yet — wait for the download to finish.")
             return
     elif not engine.is_installed():

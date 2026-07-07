@@ -5,6 +5,7 @@ seen, etc.). Lives under the user's config dir, separate from per-profile data.
 import json
 import os
 import pathlib
+import time
 
 SETTINGS_DIR = os.path.expanduser("~/.persona")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
@@ -18,13 +19,29 @@ def _path() -> str:
     return os.environ.get("PERSONA_SETTINGS_FILE", SETTINGS_FILE)
 
 
-def _load() -> dict:
+def _quarantine(path: str) -> None:
+    # An unreadable settings file may still hold real preferences; move it
+    # aside so the next _save() can't silently overwrite it.
     try:
-        with open(_path(), encoding="utf-8") as f:
+        os.replace(path, f"{path}.corrupt-{int(time.time())}")
+    except OSError:
+        pass
+
+
+def _load() -> dict:
+    path = _path()
+    try:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
+    except OSError:
         return {}
+    except ValueError:
+        _quarantine(path)
+        return {}
+    if isinstance(data, dict):
+        return data
+    _quarantine(path)
+    return {}
 
 
 def _save(data: dict) -> None:

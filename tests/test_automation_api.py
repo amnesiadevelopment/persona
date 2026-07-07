@@ -69,6 +69,7 @@ def client(monkeypatch):
     monkeypatch.setattr("src.api.routes.browser.cdp_info_for", fake_cdp)
     c = TestClient(app)
     c._launcher = launcher
+    c._pm = pm
     return c
 
 
@@ -116,6 +117,47 @@ def test_cdp_route_ok_when_running(client):
     r = client.get("/api/browser/shopper/cdp")
     assert r.status_code == 200
     assert r.json()["ws"]["playwright"] == GUID_WS
+
+
+def test_firefox_launch_409_when_engine_missing(client, monkeypatch):
+    # #119 carry-over: the API launch path must only CHECK for the Firefox
+    # engine — never fall through into the engine's own blocking download.
+    from src.services.browser import invisible_launch as il
+
+    def _boom(*a, **k):
+        raise AssertionError("API launch must not trigger the engine download")
+
+    monkeypatch.setattr(il, "is_invisible_installed", lambda: False)
+    monkeypatch.setattr(il, "ensure_invisible_installed", _boom)
+    client._pm.profiles["fox"] = Profile(name="fox", engine="firefox")
+    r = client.post("/api/browser/fox/launch")
+    assert r.status_code == 409
+    assert "engine" in r.json()["detail"].lower()
+    assert client._launcher.launched == []
+
+
+def test_firefox_launch_proceeds_when_engine_installed(client, monkeypatch):
+    from src.services.browser import invisible_launch as il
+
+    monkeypatch.setattr(il, "is_invisible_installed", lambda: True)
+    client._pm.profiles["fox"] = Profile(name="fox", engine="firefox")
+    r = client.post("/api/browser/fox/launch")
+    assert r.status_code == 202
+    assert [p.name for p in client._launcher.launched] == ["fox"]
+    # Firefox speaks Juggler, not CDP — no endpoint to wait for.
+    assert r.json()["cdp"] is None
+
+
+def test_mobile_firefox_launch_ignores_missing_firefox_engine(client, monkeypatch):
+    # A mobile profile launches chromium even if it stored engine=firefox, so a
+    # missing Firefox engine must not block it.
+    from src.services.browser import invisible_launch as il
+
+    monkeypatch.setattr(il, "is_invisible_installed", lambda: False)
+    client._pm.profiles["mob"] = Profile(name="mob", engine="firefox", os_type="android")
+    r = client.post("/api/browser/mob/launch")
+    assert r.status_code == 202
+    assert [p.name for p in client._launcher.launched] == ["mob"]
 
 
 def test_fetch_browser_ws_url_parses_real_json_version():

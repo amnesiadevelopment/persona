@@ -1,4 +1,4 @@
-﻿"""persona self-update.
+"""persona self-update.
 
 Checks the project's GitHub releases for a newer AppImage of the app itself,
 downloads it (resumable, with progress), atomically replaces the running
@@ -9,6 +9,7 @@ $APPIMAGE). When running from source the check still reports availability but
 apply_and_restart is a no-op guarded by the $APPIMAGE check.
 """
 
+import hashlib
 import os
 import subprocess
 import sys
@@ -18,12 +19,12 @@ import time
 from ..engine.updater import is_newer
 from ...core import platform as _platform
 
-APP_VERSION = "2.3.7"
+APP_VERSION = "2.3.8"
 APP_REPO = "amnesiadevelopment/persona"
 
 
 def asset_name() -> str:
-    """The release asset filename for this OS вЂ” what CI publishes per platform."""
+    """The release asset filename for this OS — what CI publishes per platform."""
     if _platform.IS_WINDOWS:
         return "persona-windows-setup.exe"
     if _platform.IS_MACOS:
@@ -61,7 +62,7 @@ def staged_path(tag: str = "") -> str:
     matched it by an identical size and ran the OLD installer. A per-tag name makes
     each version its own file, so a stale one is never reused.
 
-    Windows: a temp file (the installer .exe is run from there вЂ” there's no live
+    Windows: a temp file (the installer .exe is run from there — there's no live
     binary to sit next to). Linux: next to the installed AppImage (same
     filesystem, so the later os.replace is atomic); '' when not a packaged
     AppImage."""
@@ -107,7 +108,7 @@ def _curl_get(url: str, headers: dict | None = None, max_time: int = 30) -> str:
     """GET a URL via curl with a short connect-timeout and a hard max-time, so a
     dead/slow Tor circuit fails fast instead of hanging the whole updater (the
     version check used urllib, whose `timeout` is per-read and would block for
-    its full duration on a stalled connection вЂ” making the updater 'work through
+    its full duration on a stalled connection — making the updater 'work through
     a router-down minute and then silently miss the new version'). Returns the
     body, or '' on any failure/timeout."""
     cmd = ["curl", "-fsSL", "--connect-timeout", "15", "--max-time", str(max_time)]
@@ -245,11 +246,11 @@ def download_update(
     across dropped connections (Tor). Returns the staged path or '' on failure.
     `progress(done, total)` is called as bytes arrive. `size` is the exact asset
     size from the GitHub API; we trust it over a HEAD request (which is flaky to
-    impossible over Tor вЂ” that's why the bar had no total and looked stuck).
+    impossible over Tor — that's why the bar had no total and looked stuck).
 
     The tag keys the staged filename so a resume never lands on a different
     version's leftover, and stale installers from other versions are cleared
-    first вЂ” the fix for "installed 2.3.4 but stayed 2.3.3".
+    first — the fix for "installed 2.3.4 but stayed 2.3.3".
     """
     if not url:
         return ""
@@ -261,7 +262,7 @@ def download_update(
     total = size or remote_size(url)
 
     # Report progress by watching the staged file grow, so the UI shows the real
-    # MB/speed (and "connectingвЂ¦" via progress(0, total)) instead of freezing on
+    # MB/speed (and "connecting…" via progress(0, total)) instead of freezing on
     # 0.0 when a Tor circuit is slow to deliver the first byte.
     stop = threading.Event()
 
@@ -326,15 +327,15 @@ def verify_appimage_runs(path: str, settle: float = 4.0, timeout: int = 30) -> b
     The old probe launched the AppImage as a full GUI app and required it to
     stay ALIVE for `settle` seconds. That is too fragile: the probe instance
     exits early for reasons that have nothing to do with the build being broken
-    вЂ” no usable DISPLAY in the probe's context, or a second persona instance
+    — no usable DISPLAY in the probe's context, or a second persona instance
     bailing on the single-instance/API-port guard. An early exit was then read
     as "broken", the update was refused, and because the app restarts to apply
-    it looped forever offering the same version ("restart to apply" в†’ restart в†’
+    it looped forever offering the same version ("restart to apply" → restart →
     same version again). That loop is the bug this rewrite fixes.
 
     Instead we run a fast, headless SELF-TEST: launch the AppImage with
     PERSONA_SELFTEST=1, which main.py answers by importing the app and printing
-    'SELFTEST_OK' then exiting 0 вЂ” proving the runtime mounts and Python +
+    'SELFTEST_OK' then exiting 0 — proving the runtime mounts and Python +
     imports load, WITHOUT needing a display or a free API port. A broken
     AppImage (bad FUSE mount, exit 127, corrupt squashfs) never prints the
     token. If the token check is inconclusive (e.g. an older build without the
@@ -372,7 +373,7 @@ def verify_appimage_runs(path: str, settle: float = 4.0, timeout: int = 30) -> b
             return True
     except subprocess.TimeoutExpired:
         # It didn't exit on the self-test flag (older build that launched the
-        # GUI and kept running) вЂ” fall through to the alive heuristic, which
+        # GUI and kept running) — fall through to the alive heuristic, which
         # for an older build means "still alive = good".
         pass
     except Exception:
@@ -409,9 +410,107 @@ def verify_appimage_runs(path: str, settle: float = 4.0, timeout: int = 30) -> b
     return True
 
 
+def _sha256_file(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def fetch_expected_sha256(tag: str, name: str = "", attempts: int = 3) -> str:
+    """The sha256 CI publishes in the release's checksums.txt for this OS's
+    asset, or '' when unavailable (older release without one, asset not listed,
+    or the fetch failed after retries)."""
+    if not tag:
+        return ""
+    name = name or asset_name()
+    url = f"https://github.com/{APP_REPO}/releases/download/{tag}/checksums.txt"
+    for _ in range(attempts):
+        body = _curl_get(url)
+        if not body:
+            continue
+        for line in body.splitlines():
+            parts = line.split()
+            # sha256sum format: "<hex>  <name>" ('*' prefix in binary mode)
+            if len(parts) >= 2 and parts[-1].lstrip("*") == name:
+                return parts[0].strip().lower()
+        return ""
+    return ""
+
+
+def _tag_from_staged(staged: str) -> str:
+    """Recover the release tag baked into the staged filename by staged_path()."""
+    name = os.path.basename(staged or "")
+    prefix, suffix = "persona-update-setup-", ".exe"
+    if name.startswith(prefix) and name.endswith(suffix):
+        return name[len(prefix):-len(suffix)]
+    return ""
+
+
+def verify_staged_installer(staged: str, tag: str = "", log=None) -> bool:
+    """True when the staged installer's sha256 matches the checksum published
+    for its release. A fetched-and-mismatching checksum ALWAYS refuses (a
+    truncated/corrupted download must never run as an installer). When no
+    checksum can be fetched — an older release that never published one, or
+    the network dropped — fall back to the size check already done at download
+    time rather than blocking updates, and say so."""
+
+    def say(msg: str) -> None:
+        if log is not None:
+            try:
+                log(msg)
+            except Exception:
+                pass
+
+    expected = fetch_expected_sha256(tag or _tag_from_staged(staged))
+    if not expected:
+        say("Update: no published checksum for this release — "
+            "relying on the size check.")
+        return True
+    try:
+        actual = _sha256_file(staged)
+    except OSError as e:
+        say(f"Update: couldn't read the installer to verify it: {e}")
+        return False
+    if actual == expected:
+        return True
+    say("Update: installer checksum mismatch — refusing to run it. "
+        "Keeping the current version; the download will be retried.")
+    return False
+
+
+def _installed_windows_exe() -> str:
+    """Best-effort path to the installed persona.exe, so the updater can relaunch
+    it after a silent install (rather than relying on the installer's own
+    relaunch, which came up to a black window under a lowered token). Falls back
+    to sys.executable's directory, then the default install path."""
+    candidates = []
+    try:
+        # in a flet build, sys.executable IS persona.exe
+        exe = sys.executable
+        if exe and exe.lower().endswith("persona.exe"):
+            candidates.append(exe)
+        if exe:
+            candidates.append(os.path.join(os.path.dirname(exe), "persona.exe"))
+    except Exception:
+        pass
+    candidates.append(
+        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"),
+                     "persona", "persona.exe")
+    )
+    for c in candidates:
+        try:
+            if c and os.path.isfile(c):
+                return c
+        except Exception:
+            continue
+    return ""
+
+
 def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
     """Replace the running AppImage with the staged download and re-exec into
-    it вЂ” but ONLY after proving the new binary actually launches, and with the
+    it — but ONLY after proving the new binary actually launches, and with the
     old binary kept as a backup that is restored if anything goes wrong. This
     can never leave a non-launchable AppImage in place (the v2.1.3 brick). On
     any failure it returns False, keeps the working version, and `log` explains
@@ -426,21 +525,25 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
 
     # Windows: hand the downloaded installer control. It has a fixed AppId, so
     # it upgrades the existing install in place (old files removed, one entry in
-    # Programs and Features) and restarts persona вЂ” no manual download. A running
+    # Programs and Features) and restarts persona — no manual download. A running
     # .exe can't replace itself, but a SEPARATE installer process can replace it
     # while persona exits, which is exactly what Chrome/Discord-style updaters do.
     if _platform.IS_WINDOWS:
         if not staged or not os.path.isfile(staged):
             say("Update: installer missing.")
             return False
-        say("Update: launching the installerвЂ¦")
+        if not verify_staged_installer(staged, log=log):
+            try:
+                os.remove(staged)  # a full-size corrupt file would otherwise
+            except OSError:        # be matched again by find_ready_staged
+                pass
+            return False
+        say("Update: launching the installer…")
+        exe = _installed_windows_exe()
         try:
             # /VERYSILENT installs with no windows at all (/SILENT still shows a
             # progress dialog); /CLOSEAPPLICATIONS closes this persona so its
             # files can be replaced; /NORESTART keeps it from rebooting Windows.
-            # The installer's [Run] entry relaunches persona at the end (a plain
-            # entry, not postinstall вЂ” a silent install shows no finished page for
-            # a postinstall checkbox to live on, which is why it didn't reopen).
             subprocess.Popen(
                 [
                     staged,
@@ -454,8 +557,31 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
         except Exception as e:
             say(f"Update: couldn't start the installer: {e}")
             return False
-        # Exit now so the installer can overwrite our files; it relaunches persona.
-        say("Update: restartingвЂ¦")
+        # Relaunch persona OURSELVES after the installer finishes, in this same
+        # (normal) user context — NOT from the installer's [Run] entry. The
+        # installer's runasoriginaluser relaunch ran persona in a lowered-token
+        # shell where the flet/Flutter client came up to a black window that never
+        # painted. A detached cmd waits a few seconds for the install to replace
+        # the files, then starts the new persona.exe normally.
+        if exe:
+            try:
+                subprocess.Popen(
+                    [
+                        "cmd", "/c",
+                        # wait ~8s for the silent install to finish swapping files,
+                        # then launch the freshly-installed exe in a normal session
+                        "ping", "-n", "8", "127.0.0.1", ">nul", "&",
+                        "start", "", "/D", os.path.dirname(exe), exe,
+                    ],
+                    close_fds=True,
+                    creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
+                    | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+                    **_platform.no_window_kwargs(),
+                )
+            except Exception as e:
+                say(f"Update: couldn't schedule the relaunch: {e}")
+        # Exit now so the installer can overwrite our files.
+        say("Update: restarting…")
         try:
             sys.stdout.flush()
             sys.stderr.flush()
@@ -463,10 +589,10 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
             pass
         os._exit(0)
 
-    # macOS has no self-updater yet вЂ” detect-and-notify rather than risk a broken
+    # macOS has no self-updater yet — detect-and-notify rather than risk a broken
     # swap of a running .app.
     if not _platform.IS_LINUX:
-        say("Update available вЂ” download the new version from the releases page.")
+        say("Update available — download the new version from the releases page.")
         return False
 
     target = installed_appimage_path()
@@ -483,9 +609,9 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
 
     # 1) Prove the new AppImage launches on THIS host before touching the live
     #    one. If it can't, we abort and the user stays on the working version.
-    say("Update: verifying the new buildвЂ¦")
+    say("Update: verifying the new build…")
     if not verify_appimage_runs(staged):
-        say("Update: the new build didn't launch here вЂ” keeping the current "
+        say("Update: the new build didn't launch here — keeping the current "
             "version. The download is saved; it will be retried.")
         return False
 
@@ -514,7 +640,7 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
             pass
         return False
 
-    # 3) Re-exec exactly as launched. (Never force APPIMAGE_EXTRACT_AND_RUN вЂ” on
+    # 3) Re-exec exactly as launched. (Never force APPIMAGE_EXTRACT_AND_RUN — on
     #    a FUSE host it makes the runtime extract into a dir it can't and the
     #    AppImage fails with "open dir error"; that bricked v2.1.3.)
     args = [target] + list(extra_args or sys.argv[1:])
@@ -523,7 +649,7 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
         sys.stderr.flush()
     except Exception:
         pass
-    say("Update: restartingвЂ¦")
+    say("Update: restarting…")
     try:
         os.remove(backup)  # verified to launch; the backup is no longer needed
     except OSError:

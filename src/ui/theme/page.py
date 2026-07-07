@@ -1,4 +1,4 @@
-﻿import os
+import os
 
 import flet as ft
 

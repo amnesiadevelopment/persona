@@ -1,4 +1,4 @@
-﻿from collections.abc import Callable
+from collections.abc import Callable
 
 import flet as ft
 
@@ -170,7 +170,7 @@ def open_profile_dialog(
                 )
                 for r, label in res_choices
             ]
-            + [ft.dropdown.Option(key="custom", text="CustomвЂ¦")]
+            + [ft.dropdown.Option(key="custom", text="Custom…")]
         ),
         bgcolor=COLORS["input_bg"],
         color=COLORS["text_main"],
@@ -186,7 +186,7 @@ def open_profile_dialog(
     resolution_dropdown.on_change = on_res_change
 
     # A mobile profile's screen geometry comes from its device preset (the
-    # phone/tablet the fingerprint impersonates), not this desktop picker вЂ” a 4K
+    # phone/tablet the fingerprint impersonates), not this desktop picker — a 4K
     # "phone" is an instant tell. Hide the whole resolution picker for mobile OSes
     # so it's never even offered there.
     resolution_section = ft.Column(
@@ -258,7 +258,7 @@ def open_profile_dialog(
     def _engine() -> str:
         return engine_dropdown.value or "chromium"
 
-    # The Firefox engine has no per-profile default search engine вЂ” it's pinned
+    # The Firefox engine has no per-profile default search engine — it's pinned
     # globally to DuckDuckGo for every Firefox profile. Show the static locked
     # field then (nothing to open); chromium keeps the live dropdown.
     def _apply_engine_dependent() -> None:
@@ -277,7 +277,7 @@ def open_profile_dialog(
         # Update the specific controls whose visibility we toggled. page.update()
         # alone sometimes doesn't repaint a control's `visible` change nested deep
         # inside a dialog on this Flet, so nudge each control directly too (guarded
-        # вЂ” calling .update() before the control is on the page raises).
+        # — calling .update() before the control is on the page raises).
         for ctl in (search_dropdown, search_locked, search_hint):
             try:
                 ctl.update()
@@ -462,7 +462,7 @@ def open_profile_dialog(
         proxy = "" if proxy == _DIRECT else proxy
         os_type = os_dropdown.value or "windows"
         engine = engine_dropdown.value or "chromium"
-        # Firefox has no per-profile default search engine вЂ” it's pinned to
+        # Firefox has no per-profile default search engine — it's pinned to
         # DuckDuckGo globally for all Firefox profiles. Ignore the picker's value
         # (the section is hidden for Firefox) so the stored engine is always the
         # global one, regardless of what the dropdown last held.

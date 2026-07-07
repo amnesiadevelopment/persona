@@ -211,13 +211,22 @@ def _host_timezone() -> str:
     return "UTC"
 
 
+def _proxy_timezone(proxy) -> str:
+    """The timezone for a proxied profile. An unchecked proxy (no geo data yet)
+    falls back to the host zone — UTC against a non-UTC exit IP is a louder
+    fingerprint tell than the host zone, and matches direct-profile behavior."""
+    if proxy.timezone:
+        return proxy.timezone
+    if proxy.country_code:
+        return _timezone_for(proxy.country_code)
+    return _host_timezone()
 
 
 def _spawn_invisible(profile: Profile, profile_dir: str):
     """Launch the invisible_playwright (patched Firefox 150) engine. SOCKS5
     proxy auth is handled natively (no bridge). Returns a Popen-compatible
     handle."""
-    from .invisible_launch import ensure_invisible_installed, spawn
+    from .invisible_launch import is_invisible_installed, spawn
 
     store = ProxyStore()
     proxy_url = store.resolve(profile.proxy) or ""
@@ -228,7 +237,7 @@ def _spawn_invisible(profile: Profile, profile_dir: str):
     # (direct, over Tor). A direct profile uses the host zone; that lookup is the
     # single biggest hit to open time.
     lang = _locale_for(proxy.country_code) if proxy else "en-US"
-    tz = (proxy.timezone or _timezone_for(proxy.country_code)) if proxy else _host_timezone()
+    tz = _proxy_timezone(proxy) if proxy else _host_timezone()
 
     if _platform.supports_linux_desktop_integration():
         write_window_entry(profile.name, icon="firefox")
@@ -245,15 +254,35 @@ def _spawn_invisible(profile: Profile, profile_dir: str):
         "os_type": profile.os_type,
         "proxy_url": proxy_url,
         "profile_name": profile.name,
+        # The stable crc32 fingerprint seed — the child must NOT derive it via
+        # hash(), which is salted per-process and changes every app restart.
+        "seed": profile.fingerprint_seed,
         "search_engine": profile.search_engine,
         "locale": lang,
         "timezone": tz,
         "bookmarks": [{"name": b.name, "url": b.url} for b in chosen],
         "resolution": [width, height],
         "profile_dir": os.path.join(profile_dir, ".invisible-profile"),
-        "_needs_fetch": not ensure_invisible_installed(),
+        # A pure presence check: ensure_invisible_installed would DOWNLOAD the
+        # ~118MB engine here and block the launch for minutes over Tor.
+        "_needs_fetch": not is_invisible_installed(),
     }
     return spawn(cfg)
+
+
+def effective_engine(profile: Profile) -> str:
+    """The engine actually launched for a profile — readiness monitoring and
+    install checks must follow this, not the stored engine."""
+    # A mobile profile always launches on chromium: the Firefox engine has no
+    # mobile mode, and only chromium carries the device preset that makes an
+    # android/ios profile coherent. Fall back even if an old profile stored
+    # engine=firefox with a mobile OS.
+    if is_mobile_os(profile.os_type):
+        return "chromium"
+    engine = getattr(profile, "engine", "chromium")
+    # "camoufox" is the retired engine name; treat any leftover as the Firefox
+    # engine so an old profile keeps launching.
+    return "firefox" if engine == "camoufox" else engine
 
 
 def spawn_browser(profile: Profile) -> subprocess.Popen:
@@ -262,16 +291,8 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
     profile_dir = os.path.join(DATA_DIR, profile.name)
     os.makedirs(profile_dir, exist_ok=True)
 
-    engine = getattr(profile, "engine", "chromium")
-    # "camoufox" is the retired engine name; treat any leftover as the Firefox
-    # engine so an old profile keeps launching.
-    # A mobile profile always launches on chromium: the Firefox engine has no
-    # mobile mode, and only chromium carries the device preset that makes an
-    # android/ios profile coherent. Fall back even if an old profile stored
-    # engine=firefox with a mobile OS.
-    if is_mobile_os(profile.os_type):
-        engine = "chromium"
-    if engine in ("firefox", "camoufox"):
+    engine = effective_engine(profile)
+    if engine == "firefox":
         proc = _spawn_invisible(profile, profile_dir)
         proc._proxy_bridge = None  # type: ignore[attr-defined]
         return proc
@@ -432,8 +453,7 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
         args.append(f"--window-size={preset.width},{preset.height}")
 
     if proxy:
-        tz = proxy.timezone or _timezone_for(proxy.country_code)
-        args.append(f"--timezone={tz}")
+        args.append(f"--timezone={_proxy_timezone(proxy)}")
 
     if getattr(profile, "ai_control", False):
         args.append(f"--remote-debugging-port={cdp_port_for(profile.name)}")

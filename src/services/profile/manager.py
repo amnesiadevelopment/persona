@@ -2,6 +2,7 @@ import json
 import os
 import pathlib
 import shutil
+import time
 
 from ...core.config import DATA_DIR, PROFILES_FILE
 from ...core.logging import get_logger
@@ -14,6 +15,7 @@ logger = get_logger("profile.manager")
 class ProfileManager:
     def __init__(self) -> None:
         self.profiles: dict[str, Profile] = {}
+        self._save_blocked = False
         self._load_profiles()
         pathlib.Path(DATA_DIR).mkdir(exist_ok=True, parents=True)
 
@@ -25,7 +27,16 @@ class ProfileManager:
             try:
                 with pathlib.Path(PROFILES_FILE).open(encoding="utf-8") as f:
                     data = json.load(f)
-                    for name, p_data in data.items():
+                if not isinstance(data, dict):
+                    raise TypeError(
+                        f"profiles root is {type(data).__name__}, not dict"
+                    )
+                skipped = 0
+                for name, p_data in data.items():
+                    # One malformed record must not abort the whole load — the
+                    # next save would overwrite profiles.json with only what
+                    # loaded, silently losing every good profile.
+                    try:
                         clean_data = {
                             "name": p_data.get("name"),
                             "proxy": p_data.get("proxy"),
@@ -57,11 +68,41 @@ class ProfileManager:
                             "ai_control": p_data.get("ai_control", False),
                         }
                         self.profiles[name] = Profile(**clean_data)
+                    except Exception:
+                        skipped += 1
+                        logger.exception("Skipping malformed profile %r", name)
+                if skipped:
+                    logger.warning(
+                        "Skipped %d malformed profile record(s)", skipped
+                    )
                 logger.info("Loaded %d profiles", len(self.profiles))
             except Exception as e:
                 logger.exception("Error loading profiles: %s", e)
+                self._quarantine_profiles_file()
+
+    def _quarantine_profiles_file(self) -> None:
+        # An unreadable profiles.json still holds every profile the user has;
+        # move it aside so the next save_profiles() can't overwrite it with
+        # the empty in-memory dict.
+        backup = f"{PROFILES_FILE}.corrupt-{int(time.time())}"
+        try:
+            pathlib.Path(PROFILES_FILE).rename(backup)
+            logger.warning("Moved unreadable profiles file to %s", backup)
+        except OSError:
+            self._save_blocked = True
+            logger.exception(
+                "Could not back up %s; profile saving disabled to avoid "
+                "overwriting it",
+                PROFILES_FILE,
+            )
 
     def save_profiles(self) -> None:
+        if self._save_blocked:
+            logger.error(
+                "Not saving: profiles file failed to load and could not be "
+                "backed up"
+            )
+            return
         try:
             with pathlib.Path(PROFILES_FILE).open("w", encoding="utf-8") as f:
                 json.dump(
