@@ -24,6 +24,15 @@ def setup_logging(
 
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.WARNING)
+    # The frozen Windows app's stderr is a locale-encoded file (cp1251 on a
+    # Russian install); a record with "—" or "…" would then raise inside
+    # logging and spam "--- Logging error ---" instead of the message.
+    reconfigure = getattr(console_handler.stream, "reconfigure", None)
+    if reconfigure is not None:
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
     formatter = logging.Formatter(
         "%(asctime)s - %(levelname)s - %(name)s - %(message)s",

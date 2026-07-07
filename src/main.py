@@ -31,14 +31,20 @@ _ensure_valid_cwd()
 
 
 def _force_utf8() -> None:
-    """Make the process speak UTF-8 for text everywhere.
+    """Push this process and its descendants toward UTF-8 text.
 
-    On Windows the default process code page is a legacy one (e.g. cp1251 on a
-    Russian install). Flet/Python then encode UI strings through that code page,
-    so a bullet "●", an ellipsis "…", or a Cyrillic profile name come out as
-    mojibake ("в—Џ", "installingвЂ¦", "[бббб]"). Forcing UTF-8 for stdio and the
-    filesystem encoding fixes every one of those at the source instead of
-    hunting them string by string. No-op where already UTF-8 (Linux/macOS)."""
+    On Windows the frozen app inherits the legacy ANSI code page (cp1251 on a
+    Russian install) as its locale encoding, so text written without an
+    explicit encoding — including the flet launcher's console.log, to which it
+    redirects stdout/stderr — comes out as mojibake ("в—Џ", "installingвЂ¦").
+
+    reconfigure() fixes this process's stdio. The env vars CANNOT change this
+    already-running interpreter (UTF-8 mode is read only at startup) — they are
+    for descendants: any spawned Python child, and the relaunched exe after a
+    self-update, whose embedded interpreter reads PYTHONUTF8 from the inherited
+    environment before Py_Initialize. A fresh launch from the shell gets UTF-8
+    from the exe's activeCodePage manifest, stamped in CI (set_exe_utf8.py).
+    No-op where already UTF-8 (Linux/macOS)."""
     os.environ.setdefault("PYTHONUTF8", "1")
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
     for stream in (sys.stdout, sys.stderr, sys.stdin):

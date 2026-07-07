@@ -166,3 +166,32 @@ def test_progress_state_unknown_total_keeps_bytes():
     assert s.percent == 0
     assert s.fraction is None
     assert s.done == 5_000_000
+
+
+def test_progress_state_percent_advances_when_total_arrives_late():
+    # First chunks can land before the server reports a size: once the total
+    # shows up, percent must jump to the true fraction and then advance with
+    # the bytes — not stay pinned at 0 or an early value.
+    s = pf.ProgressState()
+    s.update(done=5_000_000, total=0, now=0.0)
+    assert s.percent == 0
+    s.update(done=38_000_000, total=100_000_000, now=1.0)
+    assert s.percent == 38
+    s.update(done=70_000_000, total=100_000_000, now=2.0)
+    assert s.percent == 70
+    s.update(done=100_000_000, total=100_000_000, now=3.0)
+    assert s.percent == 100
+
+
+def test_progress_state_percent_tracks_bytes_in_lockstep():
+    # percent must move with every advance of done, monotonically, agreeing
+    # with the "X of Y MB" readout the whole way down the transfer.
+    s = pf.ProgressState()
+    total = 189_800_000
+    prev = -1
+    for done in range(0, total + 1, total // 10):
+        s.update(done, total, now=done / 1e7)
+        assert s.percent == done * 100 // total
+        assert s.percent >= prev
+        prev = s.percent
+    assert s.percent == 100

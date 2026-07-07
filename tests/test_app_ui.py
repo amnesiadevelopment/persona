@@ -36,6 +36,18 @@ def make_app(page):
     app = App.__new__(App)
     app.page = page
     app.state = SimpleNamespace(_ui_update_lock=threading.Lock())
+    app._ui_ready = threading.Event()
+    app._ui_ready.set()
+    app._ui_backlog = []
+    app._ui_backlog_lock = threading.Lock()
+    return app
+
+
+def make_unready_app(page):
+    """The session loop hasn't serviced a task yet — the first window is
+    still building."""
+    app = make_app(page)
+    app._ui_ready.clear()
     return app
 
 
@@ -107,6 +119,97 @@ def test_ui_from_worker_thread_marshals():
     t.join()
     assert called == [1]
     assert len(page.run_task_handlers) == 1
+
+
+# --- #124: marshaling before the session loop services tasks ---
+
+class NotReadyPage(FakePage):
+    """A page whose session loop is still building the first window: run_task
+    accepts the handler but nothing ever services it — the #124 first-launch
+    state."""
+
+    def run_task(self, handler, *args, **kwargs):
+        self.run_task_handlers.append(handler)  # accepted, never serviced
+
+
+def test_ui_before_session_ready_defers_without_marshaling():
+    page = NotReadyPage()
+    app = make_unready_app(page)
+    called = []
+    app._ui(lambda: called.append(1))  # must neither block nor hit run_task
+    assert called == []
+    assert page.run_task_handlers == []
+
+
+def test_ui_from_worker_thread_before_ready_defers():
+    page = NotReadyPage()
+    app = make_unready_app(page)
+    called = []
+    t = threading.Thread(target=lambda: app._ui(lambda: called.append(1)))
+    t.start()
+    t.join(5)
+    assert not t.is_alive()
+    assert called == []
+    assert page.run_task_handlers == []
+
+
+def test_session_ready_flushes_deferred_ui_in_order(monkeypatch):
+    from src.ui import app as app_mod
+
+    app = make_unready_app(FakePage())
+    calls = []
+    app._ui(lambda: calls.append("a"))
+    app._ui(lambda: calls.append("b"))
+    assert calls == []
+    monkeypatch.setattr(app_mod.app_settings, "is_onboarding_done", lambda: False)
+    asyncio.run(app._on_session_ready())
+    assert calls == ["a", "b"]
+    assert app._ui_ready.is_set()
+
+
+def test_session_ready_flush_swallows_errors(monkeypatch):
+    from src.ui import app as app_mod
+
+    app = make_unready_app(FakePage())
+    calls = []
+
+    def boom():
+        raise RuntimeError("boom")
+
+    app._ui(boom)
+    app._ui(lambda: calls.append(1))
+    monkeypatch.setattr(app_mod.app_settings, "is_onboarding_done", lambda: False)
+    asyncio.run(app._on_session_ready())  # must not raise
+    assert calls == [1]
+
+
+def test_session_ready_starts_engine_bootstraps(monkeypatch):
+    # #124: the bootstrap threads stream progress/update marshals the moment
+    # they start; kicked off inside _main they raced the first window build
+    # and froze the app on a fresh install. They start from the ready hook.
+    from src.ui import app as app_mod
+
+    app = make_unready_app(FakePage())
+    starts = []
+    app._check_engine_async = lambda: starts.append("chromium")
+    app._ensure_engine2_async = lambda: starts.append("firefox")
+    monkeypatch.setattr(app_mod.app_settings, "is_onboarding_done", lambda: True)
+    asyncio.run(app._on_session_ready())
+    assert starts == ["chromium", "firefox"]
+
+
+def test_session_ready_leaves_bootstraps_to_onboarding(monkeypatch):
+    # During onboarding the engine download is user-driven (on_finish kicks
+    # it); the ready hook must not start a second one underneath the dialog.
+    from src.ui import app as app_mod
+
+    app = make_unready_app(FakePage())
+    starts = []
+    app._check_engine_async = lambda: starts.append("chromium")
+    app._ensure_engine2_async = lambda: starts.append("firefox")
+    monkeypatch.setattr(app_mod.app_settings, "is_onboarding_done", lambda: False)
+    asyncio.run(app._on_session_ready())
+    assert starts == []
 
 
 # --- _safe_update ---

@@ -89,6 +89,70 @@ def test_version_check_uses_checking_not_busy(monkeypatch):
     assert app._engine_busy is False
 
 
+def _panel_app(monkeypatch):
+    """An app with just enough state to build the engines panel headless,
+    mid-download on both engines."""
+    import time
+
+    app = _app()
+    app._engines_open = True
+    app._engine_busy = True
+    app._engine_checking = False
+    app._engine_latest = ""
+    app._engine2_busy = True
+    app._engine2_checking = False
+    app._engine2_status = "downloading..."
+    app._engine_start_t = time.monotonic() - 1.0
+    app._engine2_start_t = time.monotonic() - 1.0
+    app._engine_throttle = pf.ProgressThrottle()
+    app._engine_pstate = pf.ProgressState()
+    app._engine2_throttle = pf.ProgressThrottle()
+    app._engine2_pstate = pf.ProgressState()
+    app.engine_text = ft.Text("...")
+    app._engine_bar = ft.ProgressBar()
+    app._engine_detail = ft.Text("")
+    app._engine2_text = ft.Text("")
+    app._engine2_bar = ft.ProgressBar()
+    app._engine2_detail = ft.Text("")
+    monkeypatch.setattr(app, "_safe_update", lambda: None)
+    monkeypatch.setattr(app, "_refresh_sidebar", lambda: None)
+    return app
+
+
+def test_sidebar_row_percent_tracks_chromium_bytes(monkeypatch):
+    # The #126 freeze: the row's percent was a string snapshot taken when the
+    # sidebar was last rebuilt, while the MB/speed detail was a live control —
+    # so the bytes advanced and the percent sat frozen. The row must embed the
+    # live status control so percent moves in lockstep with the bytes.
+    app = _panel_app(monkeypatch)
+    panel = app._build_engines_panel()
+    app._engine_progress_cb(50_000_000, 100_000_000)
+    assert any("50%" in t for t in _texts(panel))
+    app._engine_progress_cb(80_000_000, 100_000_000)
+    texts = _texts(panel)
+    assert any("80%" in t for t in texts)
+    assert not any("50%" in t for t in texts)
+
+
+def test_sidebar_row_percent_tracks_firefox_bytes(monkeypatch):
+    app = _panel_app(monkeypatch)
+    panel = app._build_engines_panel()
+    # total unknown for the first chunk: the row shows live MB, not a percent
+    app._engine2_progress_cb(10_000_000, 0)
+    assert app._engine2_text.value == "10.0 MB"
+    # total arrives: percent appears and then advances with the bytes (the
+    # live bug showed the row pinned at 38% while the MB detail kept moving)
+    app._engine2_progress_cb(38_000_000, 100_000_000)
+    assert any("38%" in t for t in _texts(panel))
+    app._engine2_progress_cb(70_000_000, 100_000_000)
+    texts = _texts(panel)
+    assert any("70%" in t for t in texts)
+    assert not any("38%" in t for t in texts)
+    # completion flips the row to the installing phase, not a frozen percent
+    app._engine2_progress_cb(100_000_000, 100_000_000)
+    assert any("installing" in t for t in _texts(panel))
+
+
 def test_progress_cb_unknown_total_shows_mb_and_speed(monkeypatch):
     app = _app()
     app._engine_throttle = pf.ProgressThrottle()

@@ -381,12 +381,10 @@ def _proxy_dict(proxy_url: str):
 
 
 def _system_dpr() -> float:
-    """The host display's scale factor (1.0 at 100%, 1.5 at 150%, 2.0 at 200%).
-
-    On Windows a HiDPI monitor runs at 125–200% scale; matching it keeps the
-    spoofed browser's content readable instead of microscopic. Non-Windows
-    desktops the shrink bug didn't affect fall back to 1.0. Clamped to a sane
-    desktop range so a weird reading can't produce an unusable window."""
+    """The host display's scale factor (1.0 at 100%, 1.5 at 150%, 2.0 at 200%),
+    used to convert the physical work-area size to Firefox CSS px for the
+    initial-window-size seed. Non-Windows desktops fall back to 1.0. Clamped to
+    a sane desktop range so a weird reading can't produce an unusable window."""
     if not _platform.IS_WINDOWS:
         return 1.0
     try:
@@ -404,45 +402,20 @@ def _system_dpr() -> float:
         return 1.0
 
 
-def _window_size_for(w: int, h: int, work: tuple[int, int]) -> tuple[int, int]:
-    """A comfortable window size (CSS px) for a profile whose fingerprint screen
-    is w×h, given the usable work area. The window fits the monitor — a big
-    resolution pick doesn't open a window larger than the screen — while a small
-    pick opens at exactly its size. The fingerprint screen is set separately, so
-    the window size never changes what a scanner reads."""
-    aw, ah = work
-    if aw and ah:
-        return (min(w, int(aw * 0.92)), min(h, int(ah * 0.92)))
-    return (min(w, 1280), min(h, 800))
-
-
-def _context_overrides_for(
-    w: int, h: int, work: tuple[int, int]
-) -> dict:
+def _context_overrides_for(w: int, h: int) -> dict:
     """Playwright context kwargs that decouple the spoofed screen (the
-    fingerprint) from the real window size.
+    fingerprint) from the physical window — the chromium model.
 
     The `screen` reports the CHOSEN resolution the user picked (the anti-detect
-    value — this already works: pin -> zoom.stealth.screen.* -> JS screen.*). The
-    `viewport` — which is what actually sizes the physical on-screen window — is
-    set to the FULL monitor so the window opens on the whole screen every time,
-    regardless of the chosen resolution.
-
-    The engine otherwise sizes the window from the SPOOFED screen (launcher.py
-    viewport = p.screen - chrome). When the spoof is smaller than the monitor
-    (e.g. a 1280x720 pick on a 1080p display) the window filled only ~65% — the
-    #102 complaint. Forcing viewport = the real monitor fills the screen and
-    never touches the reported resolution (proven independent in dev-WS)."""
-    aw, ah = work
-    if aw and ah:
-        vw, vh = aw, ah          # fill the monitor's work area, always
-    else:
-        # No work-area reading (non-Windows / failure): fall back to the chosen
-        # size so at least the picked resolution's window shows.
-        vw, vh = w, h
+    value — this already works: pin -> zoom.stealth.screen.* -> JS screen.*).
+    `no_viewport` stops Playwright from fixing the content size, so the page
+    follows the NATIVE OS window: freely draggable/resizable, maximizes with no
+    skew, exactly like a normal browser. Any fixed viewport couples the window
+    to a chosen size — viewport = work_area opened the window across the whole
+    4K monitor and rendered the page misscaled."""
     return {
         "screen": {"width": w, "height": h},
-        "viewport": {"width": vw, "height": vh},
+        "no_viewport": True,
     }
 
 
@@ -462,6 +435,11 @@ def _with_context_overrides(InvisiblePlaywright, overrides: dict):
         def _default_context_kwargs(self):
             kw = super()._default_context_kwargs()
             kw.update(ov)
+            # The engine's own kwargs carry a fixed viewport and a
+            # device_scale_factor; a viewport defeats no_viewport, and
+            # Playwright rejects device_scale_factor with a null viewport.
+            kw.pop("viewport", None)
+            kw.pop("device_scale_factor", None)
             return kw
 
     return _WithOverrides
@@ -488,16 +466,10 @@ def _outer_size_override_script() -> str:
 
 
 def _work_area() -> tuple[int, int]:
-    """The usable desktop size in PHYSICAL pixels (excludes the taskbar), used as
-    the launched window's viewport so the window fills the monitor.
-
-    The engine pins the browser to devicePixelRatio 1, so a Playwright viewport
-    value maps 1:1 to physical screen pixels — the viewport must therefore be the
-    PHYSICAL work-area size, not a DPI-scaled (CSS) one. Dividing by the scale
-    (as a CSS conversion would) under-sizes the window on a HiDPI host, leaving
-    it short of the screen edges. SPI_GETWORKAREA already returns physical pixels
-    on a DPI-aware process, so use it as-is. Non-Windows / failure returns (0, 0)
-    so the caller falls back to the chosen size."""
+    """The usable desktop size in PHYSICAL pixels (excludes the taskbar).
+    SPI_GETWORKAREA returns physical pixels on a DPI-aware process; divide by
+    _system_dpr() for CSS px. Non-Windows / failure returns (0, 0) so callers
+    skip work-area-based sizing."""
     if not _platform.IS_WINDOWS:
         return (0, 0)
     try:
@@ -526,6 +498,41 @@ def _work_area() -> tuple[int, int]:
         return (r.right - r.left, r.bottom - r.top)
     except Exception:
         return (0, 0)
+
+
+def _seed_window_size(profile_dir: str) -> None:
+    """Seed the profile's INITIAL Firefox window size to half the work area
+    (CSS px) so a fresh profile opens a normal mid-size window — the same feel
+    as chromium's default. Only when xulstore.json is absent: Firefox persists
+    the user's own window size there, and a manual resize must survive
+    relaunches."""
+    if not profile_dir:
+        return
+    path = os.path.join(profile_dir, "xulstore.json")
+    if os.path.exists(path):
+        return
+    aw, ah = _work_area()
+    if not (aw and ah):
+        return
+    dpr = _system_dpr()
+    w, h = int(aw / dpr) // 2, int(ah / dpr) // 2
+    try:
+        os.makedirs(profile_dir, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "chrome://browser/content/browser.xhtml": {
+                        "main-window": {
+                            "width": str(w),
+                            "height": str(h),
+                            "sizemode": "normal",
+                        }
+                    }
+                },
+                f,
+            )
+    except OSError:
+        pass
 
 
 def _screen_metrics() -> str:
@@ -604,34 +611,126 @@ def _bookmarks_sig(bookmarks: list) -> str:
     ).hexdigest()
 
 
-def _init_places_db(profile_dir: str, seed: int) -> bool:
+def _init_places_db(
+    profile_dir: str, seed: int, timeout: float = 90.0, close_grace: float = 15.0
+) -> bool:
     """Launch the engine once headless so it creates a valid places.sqlite.
 
     Firefox rejects a hand-built places database ("files in use"), so the only
     way to get a database we can seed is to let the engine create one. `seed`
     is the profile's stable fingerprint seed, the same one the real launch
-    uses. Returns True once places.sqlite exists.
+    uses. Waits for Places to write the bookmark roots (the toolbar row the
+    seeder needs) — the file alone lands on disk long before the roots, and
+    seeding a rootless database silently inserts nothing. Playwright's sync
+    API is thread-affine, so the whole init (enter → wait for roots → polite
+    exit) runs on one worker thread, bounded: `timeout` covers reaching the
+    roots, and the polite close gets only `close_grace` on top (Firefox's
+    shutdown blockers hang it for ~90s at times; the settle below kills the
+    leftovers anyway). Returns True once the roots exist.
     """
     try:
         from invisible_playwright import InvisiblePlaywright
     except Exception:
         return False
-    try:
-        with InvisiblePlaywright(
-            seed=seed,
-            headless=True,
-            profile_dir=profile_dir,
-        ):
-            time.sleep(6)  # let Places create + flush the database
-    except Exception:
-        pass
+    import threading
+
+    from .firefox_bookmarks import places_ready
+
+    places = os.path.join(profile_dir, "places.sqlite")
+    deadline = time.monotonic() + timeout
+    ready = threading.Event()
+
+    def init() -> None:
+        try:
+            with InvisiblePlaywright(
+                seed=seed,
+                headless=True,
+                profile_dir=profile_dir,
+                # Skip Firefox's startup remote-settings sync — over Tor that
+                # fetch stalls this throwaway run for minutes.
+                extra_prefs=dict(_NO_STARTUP_FETCH),
+            ):
+                while time.monotonic() < deadline and not places_ready(places):
+                    time.sleep(0.5)
+                ready.set()
+        except Exception:
+            pass
+        finally:
+            ready.set()
+
+    t = threading.Thread(target=init, daemon=True)
+    t.start()
+    ready.wait(timeout)
+    t.join(close_grace)
+    # The engine's __exit__ is a polite Playwright teardown the multi-process
+    # Firefox routinely survives; a REAL launch over a still-dying instance
+    # can't come up cleanly. Don't proceed until this profile's Firefox is
+    # confirmed gone.
+    _wait_profile_released(profile_dir)
     # Clear the lock the headless run leaves so the real launch isn't blocked.
     for fname in ("lock", ".parentlock"):
         try:
             os.remove(os.path.join(profile_dir, fname))
         except OSError:
             pass
-    return os.path.exists(os.path.join(profile_dir, "places.sqlite"))
+    # Drop this run's saved session. The real launch restores the previous
+    # session (browser.startup.page=3) — restoring the throwaway headless
+    # window replaces the initial window juggler attaches to (half-destroyed
+    # webProgress, endless SimpleChannel churn) and the launch wedges before
+    # BROWSER_STARTED. Live-proven: process settling alone did NOT unwedge it,
+    # wiping the session did.
+    import shutil
+
+    for name in (
+        "sessionstore.jsonlz4",
+        "sessionCheckpoints.json",
+        "sessionstore-backups",
+    ):
+        path = os.path.join(profile_dir, name)
+        try:
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                os.remove(path)
+        except OSError:
+            pass
+    return places_ready(places)
+
+
+def _profile_released(profile_dir: str) -> bool:
+    """Whether no Firefox of THIS profile is running. Prefers the WMI pid scan
+    (a confident empty set); on no-verdict falls back to the pgrep/single-pid
+    probe — treating its None as released, since blocking every launch on a
+    broken scan is worse than a best-effort relaunch."""
+    pids = _profile_firefox_pids(profile_dir)
+    if pids is not None:
+        return not pids
+    return _firefox_pid(profile_dir) is None
+
+
+def _wait_profile_released(
+    profile_dir: str, grace: float = 5.0, timeout: float = 15.0
+) -> bool:
+    """Block until this profile's Firefox has fully released the profile.
+
+    The polite teardown gets `grace` seconds to exit on its own; survivors are
+    then force-killed and polled until confirmed gone (or `timeout` passes).
+    Returns True when the profile is confirmed released."""
+    deadline = time.monotonic() + grace
+    while True:
+        if _profile_released(profile_dir):
+            return True
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.25)
+    _kill_profile_firefox(profile_dir)
+    deadline = time.monotonic() + timeout
+    while True:
+        if _profile_released(profile_dir):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.25)
 
 
 def _seed_firefox_bookmarks(profile_dir: str, bookmarks: list, seed: int) -> None:
@@ -645,7 +744,7 @@ def _seed_firefox_bookmarks(profile_dir: str, bookmarks: list, seed: int) -> Non
         return
     try:
         from ...models.bookmark import Bookmark
-        from .firefox_bookmarks import seed_places_bookmarks
+        from .firefox_bookmarks import places_ready, seed_places_bookmarks
 
         os.makedirs(profile_dir, exist_ok=True)
         sig = _bookmarks_sig(bookmarks)
@@ -656,7 +755,7 @@ def _seed_firefox_bookmarks(profile_dir: str, bookmarks: list, seed: int) -> Non
                     return  # this exact set was already seeded
 
         places = os.path.join(profile_dir, "places.sqlite")
-        if not os.path.exists(places) and not _init_places_db(profile_dir, seed):
+        if not places_ready(places) and not _init_places_db(profile_dir, seed):
             return
 
         marks = [Bookmark(b.get("name", ""), b.get("url", "")) for b in bookmarks]
@@ -894,40 +993,29 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
 
     proxy = _proxy_dict(cfg.get("proxy_url", ""))
     kwargs = {"seed": seed, "headless": False, "extra_prefs": _profile_prefs(cfg)}
-    # Pin the screen to the profile's resolution. The engine derives the window
-    # viewport, the spoofed `screen` and `device_scale_factor` from these, so
-    # the window opens at exactly the chosen size and the fingerprint agrees.
-    # A desktop DPR of 1.0 keeps `layout.css.devPixelsPerPx` at 1 — without it
-    # the engine samples a HiDPI DPR and the page renders tiny on a 150%-scaled
-    # Windows host after the window is already up.
-    # Decouple the spoofed screen (the chosen resolution the fingerprint reports)
-    # from the real window (sized to fit the monitor). Set below on the context,
-    # AFTER the engine's own kwargs, so a 4K pick reports 4K but opens a window
-    # that fits the screen. None when the profile uses Auto (engine's own screen).
+    # Decouple the spoofed screen (the chosen resolution the fingerprint
+    # reports) from the physical window (native, user-sized — the chromium
+    # model). Overlaid on the context kwargs below, AFTER the engine's own, so
+    # a 4K pick reports 4K in JS while the window behaves like a normal
+    # browser. None when the profile uses Auto (engine's own screen/sizing).
     _res_overrides = None
     res = cfg.get("resolution")
     if res:
         w, h = int(res[0]), int(res[1])
-        aw, ah = _work_area()
-        _res_overrides = _context_overrides_for(w, h, (aw, ah))
-        try:
-            vp = _res_overrides["viewport"]
-            emit(
-                f"HIDPI_DEBUG chosen={w}x{h} "
-                f"window={vp['width']}x{vp['height']} work={aw}x{ah}"
-            )
-        except Exception:
-            pass
-        # Pin the fingerprint screen to the CHOSEN resolution (not the fitted
-        # window) with DPR 1 so screen.width * devicePixelRatio == screen.width
-        # (a spoofed screen at the host's real 1.5 DPR would report an impossible
-        # size — the same tell fixed in the chromium device ext). The window size
-        # is set separately via _res_overrides["viewport"] below.
+        _res_overrides = _context_overrides_for(w, h)
+        # With no_viewport Firefox owns the window size; seed a fresh profile's
+        # first window so it doesn't open at Firefox's own default.
+        _seed_window_size(profile_dir)
+        emit(f"HIDPI_DEBUG chosen={w}x{h} window=native")
+        # Pin the fingerprint screen to the CHOSEN resolution with DPR 1 so
+        # screen.width * devicePixelRatio == screen.width (a spoofed screen at
+        # the host's real 1.5 DPR would report an impossible size — the same
+        # tell fixed in the chromium device ext).
         #
         # Firefox has NO --width/--height CLI flags (those are chromium's); a
         # patched-Firefox launch that received them treated the leftover as a URL
-        # and opened a bogus "0.0.9.51" page. Size comes ONLY from the context
-        # kwargs, never from extra_args.
+        # and opened a bogus "0.0.9.51" page. Size comes ONLY from the profile's
+        # xulstore.json (seeded above), never from extra_args.
         kwargs["pin"] = {
             "screen.width": w,
             "screen.height": h,
@@ -935,6 +1023,17 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
             "screen.avail_height": h - 40,
             "screen.dpr": 1,
         }
+        # The pinned screen.dpr feeds BOTH the JS spoof (zoom.stealth.screen.dpr)
+        # and the render scale (layout.css.devPixelsPerPx) — invisible_core.prefs
+        # derives the two from one profile.screen.dpr — so at 1 the window drew
+        # 1:1 physical px, ignoring the OS scale (content ~1/3 too small on a
+        # 150% 4K display). extra_prefs overlays LAST in the engine, so re-point
+        # the RENDER pref alone at the real OS scale: the window draws like any
+        # native browser while JS keeps reporting the chosen resolution at dpr 1
+        # (the chromium model). Set explicitly rather than deleted — a "1" from
+        # an earlier run persists in the profile's prefs.js and would win if
+        # user.js merely dropped the key.
+        kwargs["extra_prefs"]["layout.css.devPixelsPerPx"] = str(_system_dpr())
     if proxy:
         kwargs["proxy"] = proxy
     locale = cfg.get("locale", "")
@@ -956,7 +1055,7 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
 
     # Decouple window size from the spoofed screen. The engine builds both the
     # context `viewport` (window) and `screen` (fingerprint) from one p.screen
-    # value; overlay our own so the window fits the monitor while the screen
+    # value; overlay our own so the window stays native while the screen
     # reports the chosen resolution. The overlay is a per-launch subclass (see
     # _with_context_overrides — patching the engine class races on the thread
     # path), and only when a resolution was chosen (Auto keeps the engine's own
@@ -1053,11 +1152,15 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     # Closure watch. On the Linux fork path, ctx.pages drops to 0 when the user
     # closes the last window (read from the thread that created ctx — that's THIS
     # thread on both paths; see _enter_with_timeout inline entry). The
-    # Windows/macOS thread path watches the profile's Firefox process instead
-    # (see _thread_close_watch — a persistent context there keeps ctx.pages at 1
-    # and never fires a close event).
+    # Windows/macOS thread path watches the profile's visible window and
+    # processes instead (see _thread_close_watch — a persistent context there
+    # keeps ctx.pages at 1 and never fires a close event, and the multi-process
+    # Firefox doesn't exit on an X-close).
+    tracked_pids = None
     if in_thread:
-        _thread_close_watch(profile_dir, closed, stop_event, stop_gracefully)
+        tracked_pids = _thread_close_watch(
+            profile_dir, closed, stop_event, stop_gracefully
+        )
     else:
         while not closed.wait(0.5):
             try:
@@ -1072,6 +1175,11 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
             inv.__exit__(None, None, None)
     except Exception:
         pass
+    # __exit__ is a polite Playwright teardown; a persistent-context
+    # multi-process Firefox routinely survives it (parent + GPU/content/socket
+    # children stayed alive after an X-close), holding the profile lock and
+    # piling up across launches. Kill whatever still belongs to this profile.
+    _kill_profile_firefox(profile_dir, tracked_pids)
     emit("BROWSER_CLOSED")
     _finish()
     return
@@ -1091,45 +1199,98 @@ def _ps_single_quote(s: str) -> str:
 
 def _thread_close_watch(profile_dir, closed, stop_event, stop_gracefully,
                         no_process_timeout=60.0, interval=1.0):
-    """Wait until THIS profile's Firefox is gone (the user closed the window) or
-    STOP is requested — the Windows/macOS thread-path close signal. Closing the
-    window with the X exits the whole patched Firefox, so the disappearance of
-    the process carrying "-profile <dir>" is the reliable signal; a persistent
-    context keeps ctx.pages at 1 and never fires a close event, and counting
-    windows by title misses the "New Tab" page (Firefox owns its title, so the
-    "[profile]" init-script prefix isn't on it).
+    """Wait until the user closed THIS profile's Firefox or STOP is requested —
+    the Windows/macOS thread-path close signal. A persistent context keeps
+    ctx.pages at 1 and never fires a close event, and the multi-process
+    Firefox does NOT exit when the window is X-closed — GPU/content/socket
+    firefox.exe children (and the connected parent) keep running, so waiting
+    for a pid to die never fires. The close is decided by the profile's
+    VISIBLE top-level window disappearing after it was seen (EnumWindows over
+    the tracked pids); every tracked pid dying stays a close signal too (a
+    crash, or macOS where there's no window enumeration).
 
-    The profile's pid is resolved once and then polled with a cheap liveness
-    check — re-running the WMI CommandLine scan every tick for every open
-    profile is real CPU/battery burn. A failed pid query (None) carries no
-    verdict: it must NOT count as "process gone", or a transient WMI failure
-    would tear down a live browser — only a dead poll on a pid that was
-    actually seen decides the close. If no process is ever confidently seen
-    within `no_process_timeout`, give up so a half-failed launch can't wedge
-    the profile "running" forever."""
-    pid = None
+    The profile's pids are resolved once and then polled with cheap ctypes
+    checks — re-running the WMI CommandLine scan every tick for every open
+    profile is real CPU/battery burn. A failed query (None) carries no
+    verdict: it must NOT count as "process/window gone", or a transient
+    failure would tear down a live browser — only a confident dead poll, or a
+    confident no-window after the window was actually seen, decides the
+    close. If no process is ever confidently seen within `no_process_timeout`,
+    give up so a half-failed launch can't wedge the profile "running"
+    forever.
+
+    Returns the tracked pid set (None if never seen) — captured while the
+    browser was still alive, so the caller can force-kill the survivors after
+    the polite teardown (which the multi-process Firefox routinely outlives)."""
+    pids = None
+    window_seen = False
     deadline = time.monotonic() + no_process_timeout
     while not closed.wait(interval):
         if stop_event is not None and stop_event.is_set():
             stop_gracefully()
-            return
-        if pid is not None:
-            if _pid_alive(pid):
-                continue
-            return  # the profile's Firefox exited → the user closed it
-        pids = _profile_firefox_pids(profile_dir)
-        if pids:
-            pid = next(iter(pids))
+            return pids
+        if pids is not None:
+            if not any(_pid_alive(p) for p in pids):
+                return pids  # every tracked Firefox process exited
+            visible = _pids_have_visible_window(pids)
+            if visible:
+                window_seen = True
+            elif visible is False and window_seen:
+                return pids  # the window the user saw is gone → they closed it
             continue
-        if pids is None:
+        found = _profile_firefox_pids(profile_dir)
+        if found:
+            pids = found
+            continue
+        if found is None:
             # No verdict from the WMI scan; the single-pid helper is a second
             # chance (and the only resolver on macOS, which has no WMI).
             p = _firefox_pid(profile_dir)
             if p is not None:
-                pid = p
+                pids = {p}
                 continue
         if time.monotonic() > deadline:
-            return  # never confidently saw the process → treat the launch as dead
+            # Never confidently saw the process → treat the launch as dead.
+            return pids
+    return pids
+
+
+def _kill_profile_firefox(profile_dir, known_pids=None) -> None:
+    """Force-kill every firefox.exe still running for THIS profile.
+
+    The kill set is the union of `known_pids` (resolved by the close-watch
+    while the browser was alive) and a fresh resolve — children spawn/exit
+    over the window's lifetime, and a no-verdict re-resolve must not lose the
+    tracked pids. Only pids matched to this profile_dir are ever killed;
+    other profiles' Firefox is untouchable."""
+    pids = set(known_pids or ())
+    fresh = _profile_firefox_pids(profile_dir)
+    if fresh:
+        pids |= fresh
+    for pid in pids:
+        if _pid_alive(pid):
+            _force_kill_pid(pid)
+
+
+def _force_kill_pid(pid: int) -> None:
+    """Kill `pid` and, on Windows, its whole process tree. Firefox content/GPU
+    children don't carry the profile dir on their command line, so the WMI
+    match only sees the parent — a single TerminateProcess would orphan the
+    children (the 30 leftover firefox.exe after an X-close)."""
+    if _platform.IS_WINDOWS:
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                **_platform.no_window_kwargs(),
+            )
+            return
+        except Exception:
+            pass
+    try:
+        os.kill(pid, 9)
+    except OSError:
+        pass
 
 
 def _profile_firefox_pids(profile_dir: str):
@@ -1161,6 +1322,48 @@ def _profile_firefox_pids(profile_dir: str):
         return {int(x) for x in out.split() if x.strip().isdigit()}
     except Exception:
         return None
+
+
+def _visible_window_pids():
+    """PIDs that own a visible top-level window (Windows), or None when the
+    enumeration can't run or failed — no-verdict must stay distinct from a
+    confident empty, same as _profile_firefox_pids. Pure ctypes so the
+    close-watch can poll every tick without spawning a subprocess."""
+    if not _platform.IS_WINDOWS:
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        pids = set()
+
+        @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        def on_window(hwnd, _lparam):
+            if user32.IsWindowVisible(hwnd):
+                owner = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+                pids.add(int(owner.value))
+            return True
+
+        if not user32.EnumWindows(on_window, 0):
+            return None
+        return pids
+    except Exception:
+        return None
+
+
+def _pids_have_visible_window(pids):
+    """Whether any of this profile's Firefox pids still owns a visible
+    top-level window. True/False are confident verdicts; None means the
+    enumeration couldn't tell (non-Windows or a transient failure) and the
+    close-watch must not act on it. Firefox's hidden helper windows don't
+    pass IsWindowVisible, so "no visible window" is exactly the state after
+    the user X-closed the browser while the processes live on."""
+    visible = _visible_window_pids()
+    if visible is None:
+        return None
+    return bool(visible & set(pids))
 
 
 def _firefox_pid(profile_dir: str):

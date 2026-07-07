@@ -204,6 +204,13 @@ jobs:
           $after = (Get-Item $exe.FullName).Length
           Write-Host "stamped $($exe.FullName): $before -> $after bytes"
           if ($after -le $before) { Write-Error "icon stamp did not grow the exe"; exit 1 }
+          # Declare activeCodePage=UTF-8 in the exe manifest so the embedded
+          # Python's locale encoding is UTF-8 instead of the user's ANSI code
+          # page (cp1251 turned log/UI em-dashes and Cyrillic profile names
+          # into mojibake). PYTHONUTF8 can't do this: nothing we control runs
+          # before the frozen interpreter starts on a fresh launch.
+          python .github/scripts/set_exe_utf8.py $exe.FullName
+          if ($LASTEXITCODE -ne 0) { Write-Error "utf-8 manifest stamp failed"; exit 1 }
           # Always derive the installer icon from the source PNG so the setup
           # gets persona's icon, not Inno Setup's default. A multi-size .ico
           # keeps it crisp at every shell size.
@@ -272,8 +279,11 @@ jobs:
           Name: "{autodesktop}\persona"; Filename: "{app}\$exeName"; Tasks: desktopicon
           [Tasks]
           Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"
-          Name: "wipedata"; Description: "Delete my profiles, settings and logs"; GroupDescription: "Reset persona (leave both unchecked to keep everything):"; Flags: unchecked
-          Name: "wipeengines"; Description: "Delete the downloaded browser engines (re-downloaded on next launch)"; GroupDescription: "Reset persona (leave both unchecked to keep everything):"; Flags: unchecked
+          ; dontinheritcheck: a wipe is a one-run choice. Without it Inno stores
+          ; the checked state in the registry and re-applies it on every later
+          ; (silent) upgrade — which wiped both engines on each self-update.
+          Name: "wipedata"; Description: "Delete my profiles, settings and logs"; GroupDescription: "Reset persona (leave both unchecked to keep everything):"; Flags: unchecked dontinheritcheck
+          Name: "wipeengines"; Description: "Delete the downloaded browser engines (re-downloaded on next launch)"; GroupDescription: "Reset persona (leave both unchecked to keep everything):"; Flags: unchecked dontinheritcheck
           [Run]
           ; Refresh the shell icon cache so the new persona icon shows at every
           ; size immediately (Windows otherwise keeps the old cached icon).

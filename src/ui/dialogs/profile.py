@@ -121,10 +121,16 @@ def open_profile_dialog(
     current_res = (
         getattr(profile, "resolution", "auto") if profile is not None else "auto"
     )
-    # Ordered largest-to-smallest with a human label, so the list reads
-    # logically (4K at the top) and the common sizes are easy to find.
+    # Ordered largest-to-smallest with a human label, so the common sizes are
+    # easy to find. 4K (3840x2160) is intentionally absent: on the Firefox engine
+    # it can't be offered honestly. The patched Firefox derives window
+    # devicePixelRatio from the render scale, which must equal the host's display
+    # scale for readable text — so on a HiDPI host (e.g. 150%) a 4K screen reports
+    # screen.width * devicePixelRatio = 5760, a physical size no real monitor has
+    # (an instant fingerprint tell), and the engine's launch also hangs at that
+    # size on such hosts. Every size below stays readable AND plausible at the
+    # host scale (2560 * 1.5 = 3840, a real 4K-at-150% panel).
     res_choices = [
-        ("3840x2160", "4K UHD"),
         ("2560x1440", "2K QHD"),
         ("1920x1080", "Full HD"),
         ("1600x900", "HD+"),
@@ -180,10 +186,7 @@ def open_profile_dialog(
         label_style=ft.TextStyle(color=COLORS["text_sub"], font_family=MONO),
         text_style=ft.TextStyle(font_family=MONO),
     )
-    # Assign on_change after construction: this Flet's Dropdown.__init__ doesn't
-    # accept it as a keyword, and passing it there raised at dialog-build time,
-    # which is what made the create-profile dialog fail to open.
-    resolution_dropdown.on_change = on_res_change
+    resolution_dropdown.on_select = on_res_change
 
     # A mobile profile's screen geometry comes from its device preset (the
     # phone/tablet the fingerprint impersonates), not this desktop picker — a 4K
@@ -286,21 +289,19 @@ def open_profile_dialog(
 
     def on_engine_change(_: ft.ControlEvent) -> None:
         get_logger("ui.dialog").info(
-            "engine on_change fired: engine=%s", engine_dropdown.value
+            "engine on_select fired: engine=%s", engine_dropdown.value
         )
         _apply_engine_dependent()
         page.update()
         _refresh_search_controls()
 
-    engine_dropdown.on_change = on_engine_change
+    engine_dropdown.on_select = on_engine_change
 
     # invisible_playwright is desktop Firefox with no mobile mode, so a mobile
     # profile must use chromium (which has real device presets). When the user
     # picks a mobile OS: force the engine to chromium, drop the Firefox option so
     # it can't be chosen, and hide the desktop resolution picker. Restore the full
-    # engine choice when they switch back to a desktop OS. The OS dropdown uses
-    # plain text options, so its on_change fires reliably (unlike the engine
-    # dropdown, whose icon "content" options swallow the event on this Flet).
+    # engine choice when they switch back to a desktop OS.
     _desktop_engine_options = list(engine_dropdown.options)
 
     def on_os_change(_: ft.ControlEvent) -> None:
@@ -317,7 +318,7 @@ def open_profile_dialog(
         _apply_engine_dependent()
         page.update()
 
-    os_dropdown.on_change = on_os_change
+    os_dropdown.on_select = on_os_change
     # Apply the mobile constraints for a profile that already has a mobile OS
     # (editing one, or a create dialog defaulted to mobile).
     if is_mobile_os(os_dropdown.value or "windows"):

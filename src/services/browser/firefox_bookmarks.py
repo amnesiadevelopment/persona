@@ -34,6 +34,29 @@ def _rev_host(host: str) -> str:
     return host.lower()[::-1] + "."
 
 
+def places_ready(places_db: str) -> bool:
+    """Whether the engine-created places database is ready to seed.
+
+    Ready means Places has written the bookmark roots — the toolbar row the
+    seeder inserts under. The file alone isn't enough: the engine writes
+    places.sqlite to disk well before the roots exist, and seeding a rootless
+    database silently inserts nothing. Safe to call while Firefox is still
+    running (WAL allows a concurrent reader)."""
+    if not os.path.exists(places_db):
+        return False
+    try:
+        conn = sqlite3.connect(places_db, timeout=1)
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM moz_bookmarks WHERE guid='toolbar_____'"
+            ).fetchone()
+        finally:
+            conn.close()
+        return row is not None
+    except sqlite3.Error:
+        return False
+
+
 def seed_places_bookmarks(places_db: str, bookmarks: list[Bookmark]) -> bool:
     """Insert bookmarks onto the toolbar of an engine-created places.sqlite.
 

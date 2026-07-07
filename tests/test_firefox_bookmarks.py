@@ -1,7 +1,10 @@
 import sqlite3
 
 from src.models.bookmark import Bookmark
-from src.services.browser.firefox_bookmarks import seed_places_bookmarks
+from src.services.browser.firefox_bookmarks import (
+    places_ready,
+    seed_places_bookmarks,
+)
 
 # Minimal slice of the Firefox 150 places.sqlite schema + roots, matching what
 # the engine creates on first launch. The seeder inserts under the toolbar root.
@@ -96,6 +99,40 @@ def test_noop_on_empty_list(tmp_path):
 
 def test_missing_db_returns_false(tmp_path):
     assert seed_places_bookmarks(str(tmp_path / "nope.sqlite"), [Bookmark("a", "https://a")]) is False
+
+
+def test_places_ready_false_when_db_missing(tmp_path):
+    assert places_ready(str(tmp_path / "places.sqlite")) is False
+
+
+def test_places_ready_false_before_toolbar_root_exists(tmp_path):
+    # A wedged/slow headless init can leave places.sqlite on disk BEFORE
+    # Places has written the bookmark roots. Seeding such a database silently
+    # inserts nothing (no toolbar parent) — the empty-toolbar bug — so the
+    # readiness signal is the toolbar root, not the file's existence.
+    db = str(tmp_path / "places.sqlite")
+    c = sqlite3.connect(db)
+    for stmt in _SCHEMA:
+        c.execute(stmt)
+    c.commit()
+    c.close()
+    assert places_ready(db) is False
+
+
+def test_places_ready_true_with_toolbar_root(tmp_path):
+    db = str(tmp_path / "places.sqlite")
+    _make_places(db)
+    assert places_ready(db) is True
+
+
+def test_places_ready_false_on_non_places_db(tmp_path):
+    # A corrupt or foreign sqlite file (no moz_bookmarks at all) is not ready.
+    db = str(tmp_path / "places.sqlite")
+    c = sqlite3.connect(db)
+    c.execute("CREATE TABLE t (x)")
+    c.commit()
+    c.close()
+    assert places_ready(db) is False
 
 
 def test_guids_are_unique_12_char(tmp_path):

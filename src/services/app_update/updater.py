@@ -19,7 +19,7 @@ import time
 from ..engine.updater import is_newer
 from ...core import platform as _platform
 
-APP_VERSION = "2.3.8"
+APP_VERSION = "2.3.9"
 APP_REPO = "amnesiadevelopment/persona"
 
 
@@ -544,12 +544,17 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
             # /VERYSILENT installs with no windows at all (/SILENT still shows a
             # progress dialog); /CLOSEAPPLICATIONS closes this persona so its
             # files can be replaced; /NORESTART keeps it from rebooting Windows.
+            # /MERGETASKS deselects the installer's wipe tasks explicitly: Inno
+            # remembers task selections from a previous interactive install and
+            # re-applies them on silent upgrades, so without this a single
+            # box-checked reinstall would wipe profiles/engines on every update.
             subprocess.Popen(
                 [
                     staged,
                     "/VERYSILENT",
                     "/CLOSEAPPLICATIONS",
                     "/NORESTART",
+                    "/MERGETASKS=!wipedata,!wipeengines",
                 ],
                 close_fds=True,
                 **_platform.no_window_kwargs(),

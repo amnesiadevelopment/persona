@@ -143,6 +143,57 @@ def test_apply_and_restart_windows_runs_installer_silently(monkeypatch, tmp_path
     assert relaunch_call[0] == "cmd"
 
 
+def test_apply_and_restart_never_wipes_engines(monkeypatch, tmp_path):
+    # Inno remembers the wipedata/wipeengines task selections from a previous
+    # interactive install and re-applies them on silent upgrades. A self-update
+    # must never wipe anything, so it has to deselect both tasks explicitly —
+    # this is what re-downloaded ~750MB of engines after the 2.3.7→2.3.8 update.
+    _force_os(monkeypatch, win=True)
+    staged = tmp_path / "persona-windows-setup.exe"
+    staged.write_bytes(b"MZ")
+    calls = []
+
+    def fake_popen(args, **kw):
+        calls.append(args)
+
+        class P:
+            pass
+
+        return P()
+
+    monkeypatch.setattr(au.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(au._platform, "no_window_kwargs", lambda: {})
+    monkeypatch.setattr(au, "_installed_windows_exe", lambda: "")
+
+    def fake_exit(code):
+        raise SystemExit(code)
+
+    monkeypatch.setattr(au.os, "_exit", fake_exit)
+    with pytest.raises(SystemExit):
+        au.apply_and_restart(str(staged))
+    installer_call = next(c for c in calls if str(staged) in c)
+    assert "/MERGETASKS=!wipedata,!wipeengines" in installer_call
+
+
+def test_installer_wipe_tasks_do_not_inherit_previous_selection():
+    # Belt to the /MERGETASKS suspenders: the wipe tasks themselves must carry
+    # dontinheritcheck, or one interactive install with a box checked poisons
+    # every later upgrade (Inno stores selected tasks in the registry and
+    # defaults to them next time).
+    import os
+    import re
+
+    wf = os.path.join(
+        os.path.dirname(__file__), "..", ".github", "workflows", "release.yml"
+    )
+    with open(wf, encoding="utf-8") as f:
+        text = f.read()
+    tasks = re.findall(r'Name: "(wipedata|wipeengines)".*', text)
+    assert len(tasks) == 2
+    for line in re.findall(r'Name: "(?:wipedata|wipeengines)".*', text):
+        assert "dontinheritcheck" in line, line
+
+
 def test_apply_and_restart_macos_is_notify_only(monkeypatch, tmp_path):
     # macOS has no self-updater yet; apply must notify and never touch anything.
     _force_os(monkeypatch, mac=True)

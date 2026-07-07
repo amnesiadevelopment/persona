@@ -61,6 +61,11 @@ class App:
         self.state = AppState()
         self.page: ft.Page | None = None
         self._reconcile_started = False
+        # Set once the session loop is servicing tasks after the first page
+        # build; until then worker threads must not marshal into it (see _ui).
+        self._ui_ready = threading.Event()
+        self._ui_backlog: list = []
+        self._ui_backlog_lock = threading.Lock()
         self.refs: UIRefs | None = None
         self._active_page = "profiles"
         self._search_query = ""
@@ -100,6 +105,9 @@ class App:
         )
         self._engine2_detail = ft.Text(
             "", size=10, color=COLORS["text_sub"], font_family="monospace",
+        )
+        self._engine2_text = ft.Text(
+            "", size=12, color=COLORS["text_main"], font_family="monospace",
         )
         self.engine_text = ft.Text(
             "...",
@@ -162,10 +170,7 @@ class App:
         self._render_active_page()
         self._refresh_profiles()
         self._refresh_engine_text()
-        if app_settings.is_onboarding_done():
-            self._check_engine_async()
-            self._ensure_engine2_async()
-        else:
+        if not app_settings.is_onboarding_done():
             self._show_onboarding()
         self._check_app_update_async()
         self._check_engines_periodic()
@@ -174,6 +179,31 @@ class App:
         if not self._reconcile_started:
             self._reconcile_started = True
             page.run_task(self._ui_reconcile_loop)
+        page.run_task(self._on_session_ready)
+
+    async def _on_session_ready(self) -> None:
+        """First task the session loop services after _main: flet runs a sync
+        main() directly ON the session loop, so nothing scheduled with
+        page.run_task executes until _main returns and the initial page patch
+        has been flushed. Flush the UI callbacks workers queued while the
+        first window was still building (see _ui), then start the engine
+        bootstraps — kicked off inside _main they streamed marshaled updates
+        into a loop that wasn't servicing tasks yet and froze the first
+        window build on a fresh install (#124)."""
+        with self._ui_backlog_lock:
+            self._ui_ready.set()
+            backlog = self._ui_backlog
+            self._ui_backlog = []
+        for fn in backlog:
+            try:
+                fn()
+            except Exception as e:
+                logger.error("Error in UI callback: %s", e)
+        # During onboarding the engine download is user-driven (on_finish
+        # kicks it); don't start a second one underneath the dialog.
+        if app_settings.is_onboarding_done():
+            self._check_engine_async()
+            self._ensure_engine2_async()
 
     def _build_sidebar(self) -> ft.Container:
         r = self.refs
@@ -896,9 +926,12 @@ class App:
         return ft.Container(width=size, height=size, content=inner)
 
     def _engine_row(
-        self, badge: ft.Control, name: str, version: str, checking: bool,
+        self, badge: ft.Control, name: str, status: ft.Control, checking: bool,
         dot: bool = False,
     ) -> ft.Control:
+        # `status` is the LIVE Text control the progress callback writes to,
+        # embedded as-is: a string snapshot here is what froze the row's
+        # percent while the byte counter beneath it kept moving.
         trailing: list[ft.Control] = []
         if checking:
             trailing.append(
@@ -927,10 +960,7 @@ class App:
                 ),
                 ft.Container(
                     padding=ft.Padding.only(left=26),
-                    content=ft.Text(
-                        version, size=12, color=COLORS["text_main"],
-                        font_family="monospace",
-                    ),
+                    content=status,
                 ),
             ],
         )
@@ -999,7 +1029,7 @@ class App:
                     content=self._engine_row(
                         self._engine_logo("chromium"),
                         "fp-chromium",
-                        self.engine_text.value or "...",
+                        self.engine_text,
                         checking=self._engine_busy or self._engine_checking,
                         dot=self._engine_update_available(),
                     ),
@@ -1012,6 +1042,7 @@ class App:
                 body.append(_bar_block(self._engine_bar, self._engine_detail))
             body.append(ft.Container(height=8))
             # firefox engine row, with its own progress bar directly beneath it
+            self._engine2_text.value = self._engine2_status_text()
             body.append(
                 ft.Container(
                     padding=ft.Padding.symmetric(horizontal=10),
@@ -1021,7 +1052,7 @@ class App:
                     content=self._engine_row(
                         self._engine_logo("firefox"),
                         "firefox",
-                        self._engine2_status_text(),
+                        self._engine2_text,
                         checking=self._engine2_busy or self._engine2_checking,
                         dot=self._engine2_update_available(),
                     ),
@@ -1532,8 +1563,10 @@ class App:
                     f"{st.percent}%" if st.total > 0 else pf.fmt_mb(st.done)
                 )
                 self._engine2_detail.value = st.line()
-        # Bar and detail are live controls already in the tree; update in place
-        # instead of rebuilding the sidebar on every chunk (the flicker source).
+        # Bar, detail and the row's status text are live controls already in
+        # the tree; update in place instead of rebuilding the sidebar on every
+        # chunk (the flicker source).
+        self._engine2_text.value = self._engine2_status
         self._safe_update()
 
     def _download_engine_fresh(self) -> None:
@@ -1726,12 +1759,21 @@ class App:
         that marshals onto the session's event loop from a worker thread
         (page.run_thread goes the other way — into the executor). When
         already on the session loop, or before a page exists, fn runs
-        inline so event-handler code keeps its current ordering."""
+        inline so event-handler code keeps its current ordering. Before the
+        loop services its first task the callback is held in a backlog
+        (flushed by _on_session_ready) — marshaling into the loop while it
+        is still building the first window froze the build (#124)."""
         page = self.page
         if page is not None:
             try:
                 asyncio.get_running_loop()
             except RuntimeError:
+                if not self._ui_ready.is_set():
+                    with self._ui_backlog_lock:
+                        if not self._ui_ready.is_set():
+                            self._ui_backlog.append(fn)
+                            return
+
                 async def call() -> None:
                     try:
                         fn()

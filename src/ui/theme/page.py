@@ -6,11 +6,6 @@ from .colors import COLORS
 
 
 def _engine_option(key: str, label: str) -> ft.dropdown.Option:
-    # A plain-text option (no `content=` control). A dropdown built from
-    # content-Row options does NOT fire on_change when the user picks one on this
-    # Flet, so switching the engine to Firefox never triggered the search-picker
-    # lock. Text options fire on_change reliably (as the OS dropdown does); the
-    # engine icons still show in the sidebar engines panel.
     return ft.dropdown.Option(key=key, text=label)
 
 
