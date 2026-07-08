@@ -42,41 +42,54 @@ def test_detects_noise_regardless_of_sign(tmp_path):
     assert "String(text).length" in js
 
 
-def test_repairs_baseline_metrics(tmp_path):
+def test_repairs_every_numeric_metric(tmp_path):
     d = build_measuretext_extension(str(tmp_path / "mt"))
     js = (pathlib.Path(d) / "measuretext.js").read_text()
-    # The engine noises the whole TextMetrics, including the baseline fields.
-    # Repairing only width/boundingBox left these near-zero (a fingerprint tell
-    # and a layout hazard for widgets that position off a baseline), so the
-    # rebuilt metrics must cover them too.
-    assert "hangingBaseline" in js
-    assert "alphabeticBaseline" in js
-    assert "ideographicBaseline" in js
+    # The engine scales the WHOLE TextMetrics by one factor, so the repair
+    # divides every numeric field (width, bounding boxes AND the baselines) by
+    # that factor rather than rebuilding a subset — leaving any field near-zero
+    # is both a fingerprint tell and a layout hazard for baseline-positioned
+    # widgets.
+    assert "typeof v === 'number'" in js
+    assert "/ scale" in js
 
 
-def test_only_overrides_metrics_present_on_native_object(tmp_path):
+def test_only_overrides_native_numeric_properties(tmp_path):
     d = build_measuretext_extension(str(tmp_path / "mt"))
     js = (pathlib.Path(d) / "measuretext.js").read_text()
-    # A metric absent from the real TextMetrics (e.g. emHeight* on some builds)
-    # must NOT be synthesised, or its mere presence becomes a new tell. The
-    # Proxy only substitutes properties the native object actually carries.
-    assert "in t" in js or "t.hasOwnProperty" in js or "p in m" in js
+    # The Proxy reads through to the native object and only rescales its own
+    # numeric members, so a metric the real TextMetrics lacks is never
+    # synthesised (its mere presence would be a new tell) and non-numeric
+    # members (e.g. toJSON) pass through untouched.
+    assert "var v = t[p]" in js
+    assert "typeof v === 'number'" in js
 
 
-def test_measuring_node_is_inert_to_compositor(tmp_path):
+def test_repair_does_no_per_call_layout(tmp_path):
     d = build_measuretext_extension(str(tmp_path / "mt"))
     js = (pathlib.Path(d) / "measuretext.js").read_text()
-    # The measuring span persists for the page's lifetime and is rewritten on
-    # every measurement. On apps that set 'transition: all' (Google Sheets) an
-    # unguarded node turns each rewrite into a CSS transition, so the browser's
-    # CompositorAnimationObserver never idles ("active for too long" -> a stuck
-    # 'Working…' throbber). The node must therefore opt out of animation and
-    # transition, and be layout/paint-contained so a rewrite can't dirty the
-    # document. (Size containment is excluded — it would zero the width.)
-    assert "animation:none" in js
-    assert "transition:none" in js
-    assert "contain:layout paint style" in js
-    assert "contain:strict" not in js
+    # The noise is a fixed multiplicative factor, learned ONCE and then reused,
+    # so a repair must never force a synchronous layout on the hot path. An
+    # earlier version measured through a resident node and called
+    # getBoundingClientRect on EVERY measureText; on an app that constantly
+    # dirties the DOM (Sheets) that thrashed layout, pinned the main thread and
+    # left the compositor perpetually busy (stuck 'Working…', blocked popovers).
+    # getBoundingClientRect must appear exactly once — in the one-shot
+    # calibration — and the calibrated factor must be cached.
+    assert js.count("getBoundingClientRect") == 1
+    assert "factor" in js
+    # the measuring node is created, measured and removed — never left resident
+    assert "removeChild" in js
+
+
+def test_measuring_node_is_not_resident(tmp_path):
+    d = build_measuretext_extension(str(tmp_path / "mt"))
+    js = (pathlib.Path(d) / "measuretext.js").read_text()
+    # The one-shot calibration node is appended, measured and immediately
+    # removed, so nothing our extension injects stays in the document to inherit
+    # the page's transitions or keep the CompositorAnimationObserver busy.
+    assert "appendChild" in js
+    assert "removeChild" in js
 
 
 def test_no_perpetual_animation_frame_loop(tmp_path):

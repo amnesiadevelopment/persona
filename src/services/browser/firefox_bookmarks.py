@@ -1,10 +1,10 @@
-"""Seed toolbar bookmarks into a Firefox profile's places.sqlite.
+"""Sync toolbar bookmarks into a Firefox profile's places.sqlite.
 
 The stealth Firefox build ignores HTML-import prefs and policy-based bookmarks,
 so bookmarks are written straight into the profile's places database. Firefox
 rejects a hand-built database ("files in use"), so the engine must create
-places.sqlite first (on its first launch); this then inserts rows into the
-existing database under the bookmarks-toolbar root.
+places.sqlite first (on its first launch); this then reconciles the rows under
+the bookmarks-toolbar root to the desired set.
 """
 
 import base64
@@ -57,13 +57,71 @@ def places_ready(places_db: str) -> bool:
         return False
 
 
-def seed_places_bookmarks(places_db: str, bookmarks: list[Bookmark]) -> bool:
-    """Insert bookmarks onto the toolbar of an engine-created places.sqlite.
+def _place_id_for(cur: sqlite3.Cursor, bm: Bookmark) -> int:
+    """The moz_places row id for this url, creating the place (and its origin)
+    when it doesn't exist yet."""
+    row = cur.execute(
+        "SELECT id FROM moz_places WHERE url=?", (bm.url,)
+    ).fetchone()
+    if row is not None:
+        return row[0]
 
-    Returns True when at least one bookmark was written. No-op (False) when the
-    list is empty or the database doesn't exist yet.
+    parsed = urlparse(bm.url)
+    prefix = f"{parsed.scheme}://"
+    host = (parsed.hostname or "").lower()
+
+    origin = cur.execute(
+        "SELECT id FROM moz_origins WHERE prefix=? AND host=?",
+        (prefix, host),
+    ).fetchone()
+    if origin is not None:
+        origin_id = origin[0]
+    else:
+        cur.execute(
+            "INSERT INTO moz_origins(prefix,host,frecency,recalc_frecency) "
+            "VALUES (?,?,?,1)",
+            (prefix, host, 100),
+        )
+        origin_id = cur.lastrowid
+
+    cur.execute(
+        "INSERT INTO moz_places"
+        "(url,title,rev_host,visit_count,hidden,typed,frecency,guid,"
+        "foreign_count,url_hash,origin_id,recalc_frecency) "
+        "VALUES (?,?,?,0,0,0,?,?,0,?,?,1)",
+        (bm.url, bm.name, _rev_host(host), 100, _guid(),
+         _url_hash(bm.url), origin_id),
+    )
+    return cur.lastrowid
+
+
+def _drop_bookmark(cur: sqlite3.Cursor, row_id: int, place_id: int) -> None:
+    """Delete a toolbar bookmark row and release its place reference; an
+    unvisited place with no remaining bookmark is a pure seed artifact and
+    goes with it (a visited one is the user's history — kept)."""
+    cur.execute("DELETE FROM moz_bookmarks WHERE id=?", (row_id,))
+    cur.execute(
+        "UPDATE moz_places SET foreign_count=MAX(foreign_count-1,0) WHERE id=?",
+        (place_id,),
+    )
+    cur.execute(
+        "DELETE FROM moz_places "
+        "WHERE id=? AND foreign_count=0 AND visit_count=0",
+        (place_id,),
+    )
+
+
+def sync_places_bookmarks(places_db: str, bookmarks: list[Bookmark]) -> bool:
+    """Reconcile the toolbar of an engine-created places.sqlite to exactly
+    `bookmarks`, in order: rows whose url isn't in the set (and duplicate rows
+    for the same url) are deleted, missing ones inserted, titles and positions
+    updated in place. Idempotent — running it again with the same set changes
+    nothing; an empty set clears the toolbar.
+
+    Returns True when the toolbar now matches the set; False when the database
+    doesn't exist or has no toolbar root yet.
     """
-    if not bookmarks or not os.path.exists(places_db):
+    if not os.path.exists(places_db):
         return False
 
     conn = sqlite3.connect(places_db)
@@ -75,47 +133,54 @@ def seed_places_bookmarks(places_db: str, bookmarks: list[Bookmark]) -> bool:
         if row is None:
             return False
         toolbar_id = row[0]
-        position = cur.execute(
-            "SELECT COALESCE(MAX(position)+1, 0) FROM moz_bookmarks WHERE parent=?",
+
+        existing = {}  # url -> (row_id, title, place_id); first row per url wins
+        others = []  # non-bookmark toolbar items (folders/separators)
+        for row_id, btype, title, place_id, url in cur.execute(
+            "SELECT b.id, b.type, b.title, b.fk, p.url FROM moz_bookmarks b "
+            "LEFT JOIN moz_places p ON b.fk=p.id "
+            "WHERE b.parent=? ORDER BY b.position",
             (toolbar_id,),
-        ).fetchone()[0]
-
-        for bm in bookmarks:
-            parsed = urlparse(bm.url)
-            prefix = f"{parsed.scheme}://"
-            host = (parsed.hostname or "").lower()
-
-            origin = cur.execute(
-                "SELECT id FROM moz_origins WHERE prefix=? AND host=?",
-                (prefix, host),
-            ).fetchone()
-            if origin is not None:
-                origin_id = origin[0]
+        ).fetchall():
+            if btype != 1:
+                others.append(row_id)
+            elif url in existing or not any(bm.url == url for bm in bookmarks):
+                _drop_bookmark(cur, row_id, place_id)
             else:
+                existing[url] = (row_id, title, place_id)
+
+        for pos, bm in enumerate(bookmarks):
+            if bm.url in existing:
+                row_id, title, _ = existing[bm.url]
+                if title != bm.name:
+                    cur.execute(
+                        "UPDATE moz_bookmarks SET title=?, lastModified=? "
+                        "WHERE id=?",
+                        (bm.name, _DATE, row_id),
+                    )
                 cur.execute(
-                    "INSERT INTO moz_origins(prefix,host,frecency,recalc_frecency) "
-                    "VALUES (?,?,?,1)",
-                    (prefix, host, 100),
+                    "UPDATE moz_bookmarks SET position=? WHERE id=?",
+                    (pos, row_id),
                 )
-                origin_id = cur.lastrowid
-
+                continue
+            place_id = _place_id_for(cur, bm)
             cur.execute(
-                "INSERT INTO moz_places"
-                "(url,title,rev_host,visit_count,hidden,typed,frecency,guid,"
-                "foreign_count,url_hash,origin_id,recalc_frecency) "
-                "VALUES (?,?,?,0,0,0,?,?,1,?,?,1)",
-                (bm.url, bm.name, _rev_host(host), 100, _guid(),
-                 _url_hash(bm.url), origin_id),
+                "UPDATE moz_places SET foreign_count=foreign_count+1 WHERE id=?",
+                (place_id,),
             )
-            place_id = cur.lastrowid
-
             cur.execute(
                 "INSERT INTO moz_bookmarks"
                 "(type,fk,parent,position,title,dateAdded,lastModified,guid,"
                 "syncStatus,syncChangeCounter) VALUES (1,?,?,?,?,?,?,?,0,1)",
-                (place_id, toolbar_id, position, bm.name, _DATE, _DATE, _guid()),
+                (place_id, toolbar_id, pos, bm.name, _DATE, _DATE, _guid()),
             )
-            position += 1
+
+        # Non-bookmark toolbar items keep their relative order after the set.
+        for offset, row_id in enumerate(others):
+            cur.execute(
+                "UPDATE moz_bookmarks SET position=? WHERE id=?",
+                (len(bookmarks) + offset, row_id),
+            )
 
         conn.commit()
         return True

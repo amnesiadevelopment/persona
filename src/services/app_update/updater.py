@@ -13,13 +13,14 @@ import hashlib
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
 from ..engine.updater import is_newer
 from ...core import platform as _platform
 
-APP_VERSION = "2.3.10"
+APP_VERSION = "2.4.0"
 APP_REPO = "amnesiadevelopment/persona"
 
 
@@ -508,6 +509,46 @@ def _installed_windows_exe() -> str:
     return ""
 
 
+def _write_relaunch_bat(exe: str, installer_pid: int) -> str:
+    """A temp .bat that polls until the installer process is gone (bounded, so a
+    hung installer can't block the relaunch forever), then starts the installed
+    exe and deletes itself. A fixed sleep raced slow installs: when the install
+    outlived it, `start` hit persona.exe mid-replace and died silently. Sleeps
+    via ping because `timeout` refuses to run without console input."""
+    content = (
+        "@echo off\r\n"
+        "set tries=0\r\n"
+        ":wait\r\n"
+        f'tasklist /FI "PID eq {installer_pid}" 2>nul'
+        f' | find "{installer_pid}" >nul\r\n'
+        "if errorlevel 1 goto launch\r\n"
+        "set /a tries+=1\r\n"
+        "if %tries% geq 120 goto launch\r\n"
+        "ping -n 2 127.0.0.1 >nul\r\n"
+        "goto wait\r\n"
+        ":launch\r\n"
+        # empty title + quoted path: `start` treats the first quoted token as a
+        # window title, so a bare path with spaces would launch nothing
+        f'start "" /D "{os.path.dirname(exe)}" "{exe}"\r\n'
+        '(goto) 2>nul & del "%~f0"\r\n'
+    )
+    fd, path = tempfile.mkstemp(prefix="persona-relaunch-", suffix=".bat")
+    try:
+        # ascii on purpose: cmd reads .bat files in the OEM codepage, which only
+        # agrees with Python's encodings in the ASCII range. A non-ASCII exe
+        # path raises here and the caller falls back to the inline relaunch,
+        # which passes the path through the (Unicode) process command line.
+        with os.fdopen(fd, "w", encoding="ascii", newline="") as f:
+            f.write(content)
+    except Exception:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        raise
+    return path
+
+
 def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
     """Replace the running AppImage with the staged download and re-exec into
     it — but ONLY after proving the new binary actually launches, and with the
@@ -548,7 +589,7 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
             # remembers task selections from a previous interactive install and
             # re-applies them on silent upgrades, so without this a single
             # box-checked reinstall would wipe profiles/engines on every update.
-            subprocess.Popen(
+            installer = subprocess.Popen(
                 [
                     staged,
                     "/VERYSILENT",
@@ -566,24 +607,38 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
         # (normal) user context — NOT from the installer's [Run] entry. The
         # installer's runasoriginaluser relaunch ran persona in a lowered-token
         # shell where the flet/Flutter client came up to a black window that never
-        # painted. A detached cmd waits a few seconds for the install to replace
-        # the files, then starts the new persona.exe normally.
+        # painted. An invisible cmd waits for the installer process to exit (it
+        # outlives our own exit — child processes aren't tied to the parent on
+        # Windows), then starts the new persona.exe normally.
         if exe:
             try:
-                subprocess.Popen(
-                    [
+                cmd = None
+                installer_pid = getattr(installer, "pid", None)
+                if installer_pid:
+                    try:
+                        cmd = ["cmd", "/c",
+                               _write_relaunch_bat(exe, installer_pid)]
+                    except Exception:
+                        cmd = None
+                if cmd is None:
+                    cmd = [
                         "cmd", "/c",
-                        # wait ~8s for the silent install to finish swapping files,
-                        # then launch the freshly-installed exe in a normal session
-                        "ping", "-n", "8", "127.0.0.1", ">nul", "&",
+                        # no installer pid to watch — wait a fixed ~14s for the
+                        # silent install to finish swapping files, then launch
+                        "ping", "-n", "15", "127.0.0.1", ">nul", "&",
                         "start", "", "/D", os.path.dirname(exe), exe,
-                    ],
+                    ]
+                subprocess.Popen(
+                    cmd,
                     close_fds=True,
                     # ONE merged creationflags — spreading no_window_kwargs()
                     # here as well would pass creationflags twice, a TypeError
                     # at the call site that silently kills the relaunch.
-                    creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
-                    | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                    # CREATE_NO_WINDOW keeps the cmd invisible but with a real
+                    # (hidden) console; DETACHED_PROCESS strips the console
+                    # entirely, and a console-less cmd wedges forever running a
+                    # batch file (its pipes and goto never execute).
+                    creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
                     | getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
             except Exception as e:

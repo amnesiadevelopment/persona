@@ -502,10 +502,13 @@ def _work_area() -> tuple[int, int]:
 
 def _seed_window_size(profile_dir: str) -> None:
     """Seed the profile's INITIAL Firefox window size to half the work area
-    (CSS px) so a fresh profile opens a normal mid-size window — the same feel
-    as chromium's default. Only when xulstore.json is absent: Firefox persists
-    the user's own window size there, and a manual resize must survive
-    relaunches."""
+    so a fresh profile opens a normal mid-size window — the same feel as
+    chromium's default. xulstore.json's main-window size restores in DEVICE
+    pixels (live-proven: a window measured 1920x1068 physical at a 1.5 OS
+    scale persisted and restored as "1920"/"1068"), so the seed is physical
+    px, NOT divided by the OS scale. Only when xulstore.json is absent:
+    Firefox persists the user's own window size there, and a manual resize
+    must survive relaunches."""
     if not profile_dir:
         return
     path = os.path.join(profile_dir, "xulstore.json")
@@ -514,8 +517,7 @@ def _seed_window_size(profile_dir: str) -> None:
     aw, ah = _work_area()
     if not (aw and ah):
         return
-    dpr = _system_dpr()
-    w, h = int(aw / dpr) // 2, int(ah / dpr) // 2
+    w, h = aw // 2, ah // 2
     try:
         os.makedirs(profile_dir, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
@@ -603,14 +605,6 @@ _NO_STARTUP_FETCH = {
 }
 
 
-def _bookmarks_sig(bookmarks: list) -> str:
-    import hashlib
-
-    return hashlib.md5(
-        json.dumps(bookmarks, sort_keys=True).encode("utf-8")
-    ).hexdigest()
-
-
 def _init_places_db(
     profile_dir: str, seed: int, timeout: float = 90.0, close_grace: float = 15.0
 ) -> bool:
@@ -635,6 +629,19 @@ def _init_places_db(
     import threading
 
     from .firefox_bookmarks import places_ready
+
+    # The engine hides this run by passing cloak_windows via user.js, but the
+    # cloak gate acts on the value already in prefs.js when the window is
+    # created — on a fresh profile there is none, so the init's Firefox window
+    # popped up VISIBLY (at the sampled profile's own scale, resizing as
+    # Playwright applied its viewport — the "misscaled window skewing before
+    # my eyes" of #131). Put the cloak in prefs.js BEFORE the first start;
+    # _scrub_headless_cloak_prefs drops it again before the visible launch.
+    if not _platform.IS_LINUX:
+        _upsert_prefs_js(profile_dir, {
+            "zoom.stealth.cloak_windows": True,
+            "widget.windows.window_occlusion_tracking.enabled": False,
+        })
 
     places = os.path.join(profile_dir, "places.sqlite")
     deadline = time.monotonic() + timeout
@@ -685,6 +692,11 @@ def _init_places_db(
         "sessionstore.jsonlz4",
         "sessionCheckpoints.json",
         "sessionstore-backups",
+        # The init run also persists ITS window size into xulstore.json,
+        # which would both defeat _seed_window_size (it only seeds when the
+        # file is absent) and hand the visible window the throwaway run's
+        # geometry. The init's window state is throwaway by definition.
+        "xulstore.json",
     ):
         path = os.path.join(profile_dir, name)
         try:
@@ -695,6 +707,75 @@ def _init_places_db(
         except OSError:
             pass
     return places_ready(places)
+
+
+def _upsert_prefs_js(profile_dir: str, prefs: dict) -> None:
+    """Write prefs straight into the profile's prefs.js (replacing any existing
+    lines for the same prefs), creating the file if needed.
+
+    Firefox's own startup applies user.js over prefs.js, but the patched
+    binary's window gates (the DWM cloak) and the first paint act on the value
+    already in prefs.js when the window is created — a user.js override lands
+    too late for them (live-proven both ways: the first headless init's window
+    stayed VISIBLE despite cloak=true in user.js, and a visible launch right
+    after the init stayed cloaked despite false in user.js). Prefs that must
+    be in force for the profile's FIRST window go through here."""
+    if not profile_dir or not prefs:
+        return
+    path = os.path.join(profile_dir, "prefs.js")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except OSError:
+        lines = []
+
+    def fmt(v):
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        if isinstance(v, int):
+            return str(v)
+        return json.dumps(str(v))
+
+    kept = [ln for ln in lines if not any(f'"{k}"' in ln for k in prefs)]
+    kept += [f'user_pref("{k}", {fmt(v)});\n' for k, v in prefs.items()]
+    try:
+        os.makedirs(profile_dir, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.writelines(kept)
+    except OSError:
+        pass
+
+
+def _scrub_headless_cloak_prefs(profile_dir: str) -> None:
+    """Drop the engine's headless window-hiding prefs from the profile's
+    prefs.js before a visible launch.
+
+    The headless places init runs the engine once in this same profile; on
+    Windows/macOS the engine hides that run by pref (zoom.stealth.cloak_windows
+    — the patched binary DWM-cloaks its own windows), and Firefox persists the
+    pref into prefs.js. The cloak gate acts on the value already in prefs.js
+    when the window is created — the visible launch's own pref override lands
+    too late to uncloak it (live-proven) — so the stale entries must be gone
+    from prefs.js before Firefox starts. Only the two headless-hiding prefs
+    are touched."""
+    if not profile_dir:
+        return
+    path = os.path.join(profile_dir, "prefs.js")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except OSError:
+        return
+    stale = ("zoom.stealth.cloak_windows",
+             "widget.windows.window_occlusion_tracking.enabled")
+    kept = [ln for ln in lines if not any(k in ln for k in stale)]
+    if len(kept) == len(lines):
+        return
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.writelines(kept)
+    except OSError:
+        pass
 
 
 def _profile_released(profile_dir: str) -> bool:
@@ -734,34 +815,28 @@ def _wait_profile_released(
 
 
 def _seed_firefox_bookmarks(profile_dir: str, bookmarks: list, seed: int) -> None:
-    """Put the profile's bookmarks on the Firefox toolbar via places.sqlite.
+    """Reconcile the Firefox toolbar to the profile's bookmark set via
+    places.sqlite — runs before every launch, so edits in the profile editor
+    take effect on the next launch: removed bookmarks disappear, nothing ever
+    duplicates, an empty set clears the toolbar (#144).
 
     The engine must have created places.sqlite first (Firefox rejects a
     hand-built one); if it hasn't, do a one-time headless init to create it.
-    Seed only once per bookmark set (a marker file) so a set the user has
-    since edited by hand isn't re-clobbered on every launch."""
-    if not profile_dir or not bookmarks:
+    An empty set on a profile with no places.sqlite yet has nothing to clear —
+    no engine init just to write nothing."""
+    if not profile_dir:
         return
     try:
         from ...models.bookmark import Bookmark
-        from .firefox_bookmarks import places_ready, seed_places_bookmarks
-
-        os.makedirs(profile_dir, exist_ok=True)
-        sig = _bookmarks_sig(bookmarks)
-        marker = os.path.join(profile_dir, ".persona-bookmarks-sig")
-        if os.path.exists(marker):
-            with open(marker, encoding="utf-8") as f:
-                if f.read().strip() == sig:
-                    return  # this exact set was already seeded
+        from .firefox_bookmarks import places_ready, sync_places_bookmarks
 
         places = os.path.join(profile_dir, "places.sqlite")
-        if not places_ready(places) and not _init_places_db(profile_dir, seed):
-            return
+        if not places_ready(places):
+            if not bookmarks or not _init_places_db(profile_dir, seed):
+                return
 
         marks = [Bookmark(b.get("name", ""), b.get("url", "")) for b in bookmarks]
-        if seed_places_bookmarks(places, marks):
-            with open(marker, "w", encoding="utf-8") as f:
-                f.write(sig)
+        sync_places_bookmarks(places, marks)
     except Exception:
         pass
 
@@ -777,6 +852,16 @@ def _profile_prefs(cfg: dict) -> dict:
     prefs = dict(_NO_STARTUP_FETCH)
     prefs.update(
         {
+            # The engine implements headless on Windows/macOS by making the
+            # patched binary DWM-cloak its own windows
+            # (zoom.stealth.cloak_windows). The one-time headless places init
+            # runs in this SAME profile and Firefox persists that pref into
+            # prefs.js, so a visible launch would inherit the cloak and open
+            # every window invisible (#142). Force it off — user.js overlays
+            # prefs.js at startup. Occlusion tracking goes back to its default
+            # for the same reason (the headless run disables it).
+            "zoom.stealth.cloak_windows": False,
+            "widget.windows.window_occlusion_tracking.enabled": True,
             # Force the dark UI regardless of the seed. invisible derives the
             # theme from the fingerprint seed, so without this a profile's theme
             # is random; persona's users expect dark.
@@ -1067,6 +1152,11 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     # run here in the child, never on the thread constructing the handle,
     # which on a UI launch is the Flet session thread and would freeze the app.
     _seed_firefox_bookmarks(profile_dir, cfg.get("bookmarks", []), seed)
+    # The headless init above persists the engine's window-hiding pref into
+    # prefs.js; left there, THIS launch's window comes up DWM-cloaked —
+    # running but invisible (#142). Must run after the seeding, before the
+    # launch.
+    _scrub_headless_cloak_prefs(profile_dir)
     # Pin DuckDuckGo as the default search engine for every Firefox profile.
     _ensure_firefox_policies()
 
@@ -1134,6 +1224,15 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
         # an earlier run persists in the profile's prefs.js and would win if
         # user.js merely dropped the key.
         kwargs["extra_prefs"]["layout.css.devPixelsPerPx"] = str(_system_dpr())
+        # The FIRST paint uses the value already in prefs.js — the user.js
+        # override above only kicks in a beat later, and the headless places
+        # init leaves the SAMPLED profile's dpr there (live: "1.0" at visible-
+        # launch start on a 1.5-scale host → content flips scale right after
+        # first paint, the #131 skew). Make prefs.js carry the right value
+        # before Firefox starts.
+        _upsert_prefs_js(
+            profile_dir, {"layout.css.devPixelsPerPx": str(_system_dpr())}
+        )
     if proxy:
         kwargs["proxy"] = proxy
     locale = cfg.get("locale", "")
@@ -1248,13 +1347,8 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
             target=_raise_profile_window, args=(profile_dir,), daemon=True
         ).start()
 
-    # Detect closure by watching the WINDOW count, not the process. Playwright
-    # keeps the Firefox process ALIVE after the user closes the last window (a
-    # persistent context stays connected for more commands), so the process
-    # never exits on its own — watching the pid would never see the close and
-    # the profile would stay "running". But ctx.pages drops to 0 (and page
-    # "close" events fire) the instant the last window is closed. Poll the page
-    # count and treat zero as "user closed the browser".
+    # Set by stop_gracefully when a STOP tears the browser down; the
+    # platform close-watches below poll it between liveness checks.
     closed = threading.Event()
 
     def stop_gracefully() -> None:
@@ -1279,25 +1373,18 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
 
         signal.signal(signal.SIGTERM, lambda *a: stop_gracefully())
 
-    # Closure watch. On the Linux fork path, ctx.pages drops to 0 when the user
-    # closes the last window (read from the thread that created ctx — that's THIS
-    # thread on both paths; see _enter_with_timeout inline entry). The
-    # Windows/macOS thread path watches the profile's visible window and
-    # processes instead (see _thread_close_watch — a persistent context there
-    # keeps ctx.pages at 1 and never fires a close event, and the multi-process
-    # Firefox doesn't exit on an X-close).
+    # Closure watch. The Windows/macOS thread path watches the profile's
+    # visible window and processes (see _thread_close_watch); the Linux fork
+    # path watches the Firefox pid (see _fork_close_watch). Neither can use
+    # ctx.pages: the ctx lives on the launch worker thread, so the sync API
+    # never delivers close events to a poll made from this thread.
     tracked_pids = None
     if in_thread:
         tracked_pids = _thread_close_watch(
             profile_dir, closed, stop_event, stop_gracefully
         )
     else:
-        while not closed.wait(0.5):
-            try:
-                if len(ctx.pages) == 0:
-                    break  # user closed the last window
-            except Exception:
-                break  # context torn down (browser gone) → treat as closed
+        tracked_pids = _fork_close_watch(profile_dir, closed)
 
     # Tear down so Firefox actually exits and releases its lock, then report.
     # (On a STOP the close-watch already called stop_gracefully, which tears
@@ -1387,6 +1474,36 @@ def _thread_close_watch(profile_dir, closed, stop_event, stop_gracefully,
             # Never confidently saw the process → treat the launch as dead.
             return pids
     return pids
+
+
+def _fork_close_watch(profile_dir, closed, no_process_timeout=60.0, interval=1.0):
+    """Wait until this profile's Firefox process exits or STOP is requested —
+    the Linux fork-path close signal.
+
+    ctx.pages cannot be the signal: the context is created on
+    _enter_with_timeout's launch thread, and the sync API's dispatcher
+    greenlet only pumps events during calls made on THAT thread — polled from
+    the child's own thread, ctx.pages is a frozen snapshot that never drops
+    to 0, so an X-close was never detected and the profile stayed "running"
+    with no close in the log (#143). On Linux, closing the last window quits
+    Firefox, so pid death is the close. The pid is resolved once (a pgrep per
+    tick burns CPU), then polled with the cheap liveness check; a launch
+    whose process is never seen within `no_process_timeout` is treated as
+    dead so the profile can't wedge "running" forever.
+
+    Returns the tracked pid set (None if never seen) so the caller can
+    force-kill survivors after the polite teardown."""
+    pid = None
+    deadline = time.monotonic() + no_process_timeout
+    while not closed.wait(interval):
+        if pid is not None:
+            if not _pid_alive(pid):
+                return {pid}
+            continue
+        pid = _firefox_pid(profile_dir)
+        if pid is None and time.monotonic() > deadline:
+            return None
+    return {pid} if pid is not None else None
 
 
 def _kill_profile_firefox(profile_dir, known_pids=None) -> None:
@@ -1496,10 +1613,33 @@ def _visible_window_pids():
     return {pid for _hwnd, pid in windows}
 
 
+def _window_cloaked(hwnd: int) -> bool:
+    """Whether the window is DWM-cloaked (invisible to the user while still
+    passing IsWindowVisible) — the engine's own headless mechanism, and also
+    the state of windows on another virtual desktop. On any failure report
+    not-cloaked so the raise still tries the window."""
+    try:
+        import ctypes
+
+        cloaked = ctypes.c_int(0)
+        DWMWA_CLOAKED = 14
+        if ctypes.windll.dwmapi.DwmGetWindowAttribute(
+            hwnd, DWMWA_CLOAKED, ctypes.byref(cloaked), 4
+        ):
+            return False
+        return bool(cloaked.value)
+    except Exception:
+        return False
+
+
 def _bring_window_to_foreground(hwnd: int) -> None:
     """Raise + focus a top-level window. SetForegroundWindow is permitted here
     because this runs in persona's own process right after the user clicked
-    launch — the foreground process may reassign the foreground."""
+    launch — the foreground process may reassign the foreground. When Windows
+    refuses anyway (another app grabbed the foreground meanwhile), attach to
+    the foreground window's input thread, which lifts the restriction. Every
+    step is best-effort: a failed raise leaves the window in the background,
+    never hidden."""
     try:
         import ctypes
 
@@ -1507,7 +1647,20 @@ def _bring_window_to_foreground(hwnd: int) -> None:
         SW_SHOW, SW_RESTORE = 5, 9
         user32.ShowWindow(hwnd, SW_RESTORE if user32.IsIconic(hwnd) else SW_SHOW)
         user32.BringWindowToTop(hwnd)
-        user32.SetForegroundWindow(hwnd)
+        if user32.SetForegroundWindow(hwnd):
+            return
+        k32 = ctypes.windll.kernel32
+        fg = user32.GetForegroundWindow()
+        if not fg or fg == hwnd:
+            return
+        fg_thread = user32.GetWindowThreadProcessId(fg, None)
+        our_thread = k32.GetCurrentThreadId()
+        if fg_thread and fg_thread != our_thread:
+            if user32.AttachThreadInput(our_thread, fg_thread, True):
+                try:
+                    user32.SetForegroundWindow(hwnd)
+                finally:
+                    user32.AttachThreadInput(our_thread, fg_thread, False)
     except Exception:
         pass
 
@@ -1530,7 +1683,10 @@ def _raise_profile_window(profile_dir: str, timeout: float = 15.0,
             pids = _profile_firefox_pids(profile_dir)
         if pids:
             for hwnd, pid in _visible_windows() or ():
-                if pid in pids:
+                # A DWM-cloaked window is invisible to the user even though
+                # IsWindowVisible says otherwise; raising it does nothing —
+                # keep polling for a really-visible window.
+                if pid in pids and not _window_cloaked(hwnd):
                     _bring_window_to_foreground(hwnd)
                     return True
         time.sleep(interval)

@@ -3,7 +3,7 @@ import sqlite3
 from src.models.bookmark import Bookmark
 from src.services.browser.firefox_bookmarks import (
     places_ready,
-    seed_places_bookmarks,
+    sync_places_bookmarks,
 )
 
 # Minimal slice of the Firefox 150 places.sqlite schema + roots, matching what
@@ -64,7 +64,7 @@ def _toolbar_bookmarks(path):
 def test_seeds_under_toolbar(tmp_path):
     db = str(tmp_path / "places.sqlite")
     _make_places(db)
-    ok = seed_places_bookmarks(
+    ok = sync_places_bookmarks(
         db,
         [
             Bookmark("browserleaks", "https://browserleaks.com/"),
@@ -81,7 +81,7 @@ def test_seeds_under_toolbar(tmp_path):
 def test_creates_one_origin_and_place_per_bookmark(tmp_path):
     db = str(tmp_path / "places.sqlite")
     _make_places(db)
-    seed_places_bookmarks(db, [Bookmark("a", "https://a.example/")])
+    sync_places_bookmarks(db, [Bookmark("a", "https://a.example/")])
     c = sqlite3.connect(db)
     assert c.execute("SELECT COUNT(*) FROM moz_origins").fetchone()[0] == 1
     assert c.execute("SELECT COUNT(*) FROM moz_places").fetchone()[0] == 1
@@ -90,15 +90,153 @@ def test_creates_one_origin_and_place_per_bookmark(tmp_path):
     c.close()
 
 
-def test_noop_on_empty_list(tmp_path):
+def test_same_set_twice_keeps_exactly_one_copy(tmp_path):
+    # #144(a): re-syncing the same set on every launch must be idempotent —
+    # the blind append duplicated the whole set per launch.
+    db = str(tmp_path / "places.sqlite")
+    marks = [
+        Bookmark("a", "https://a.example/"),
+        Bookmark("b", "https://b.example/"),
+    ]
+    _make_places(db)
+    sync_places_bookmarks(db, marks)
+    sync_places_bookmarks(db, marks)
+    assert _toolbar_bookmarks(db) == [
+        ("a", "https://a.example/"),
+        ("b", "https://b.example/"),
+    ]
+    c = sqlite3.connect(db)
+    assert c.execute("SELECT COUNT(*) FROM moz_places").fetchone()[0] == 2
+    assert c.execute("SELECT COUNT(*) FROM moz_origins").fetchone()[0] == 2
+    c.close()
+
+
+def test_sync_to_different_set_replaces_old(tmp_path):
+    # #144(b): the toolbar must equal EXACTLY the desired set — bookmarks the
+    # user removed in the profile editor must disappear, not pile up.
     db = str(tmp_path / "places.sqlite")
     _make_places(db)
-    assert seed_places_bookmarks(db, []) is False
+    sync_places_bookmarks(
+        db,
+        [
+            Bookmark("a", "https://a.example/"),
+            Bookmark("b", "https://b.example/"),
+            Bookmark("c", "https://c.example/"),
+        ],
+    )
+    sync_places_bookmarks(db, [Bookmark("b", "https://b.example/")])
+    assert _toolbar_bookmarks(db) == [("b", "https://b.example/")]
+
+
+def test_sync_to_empty_clears_toolbar(tmp_path):
+    # #144(b): removing ALL bookmarks in the profile editor must clear the
+    # toolbar (and not leave orphaned unvisited places rows behind).
+    db = str(tmp_path / "places.sqlite")
+    _make_places(db)
+    sync_places_bookmarks(
+        db,
+        [Bookmark("a", "https://a.example/"), Bookmark("b", "https://b.example/")],
+    )
+    assert sync_places_bookmarks(db, []) is True
+    assert _toolbar_bookmarks(db) == []
+    c = sqlite3.connect(db)
+    assert c.execute("SELECT COUNT(*) FROM moz_places").fetchone()[0] == 0
+    c.close()
+
+
+def test_sync_dedupes_preexisting_duplicates(tmp_path):
+    # A profile that already carries duplicates from the blind-append era must
+    # come out with exactly one row per desired bookmark.
+    db = str(tmp_path / "places.sqlite")
+    marks = [Bookmark("a", "https://a.example/")]
+    _make_places(db)
+    sync_places_bookmarks(db, marks)
+    c = sqlite3.connect(db)
+    tid = c.execute(
+        "SELECT id FROM moz_bookmarks WHERE guid='toolbar_____'"
+    ).fetchone()[0]
+    fk = c.execute("SELECT fk FROM moz_bookmarks WHERE type=1").fetchone()[0]
+    c.execute(
+        "INSERT INTO moz_bookmarks(type,fk,parent,position,title,dateAdded,"
+        "lastModified,guid,syncStatus,syncChangeCounter) "
+        "VALUES (1,?,?,1,'a',0,0,'dupdupdupdu1',0,1)",
+        (fk, tid),
+    )
+    c.execute("UPDATE moz_places SET foreign_count=2 WHERE id=?", (fk,))
+    c.commit()
+    c.close()
+    sync_places_bookmarks(db, marks)
+    assert _toolbar_bookmarks(db) == [("a", "https://a.example/")]
+
+
+def test_sync_renames_kept_bookmark(tmp_path):
+    # Same url, new name in the profile editor → the row is renamed in place,
+    # not duplicated.
+    db = str(tmp_path / "places.sqlite")
+    _make_places(db)
+    sync_places_bookmarks(db, [Bookmark("old", "https://a.example/")])
+    sync_places_bookmarks(db, [Bookmark("new", "https://a.example/")])
+    assert _toolbar_bookmarks(db) == [("new", "https://a.example/")]
+
+
+def test_sync_positions_follow_desired_order(tmp_path):
+    # Firefox orders the toolbar by `position`; after any reconcile the rows
+    # must sit at contiguous positions in the desired order.
+    db = str(tmp_path / "places.sqlite")
+    _make_places(db)
+    sync_places_bookmarks(
+        db,
+        [
+            Bookmark("a", "https://a.example/"),
+            Bookmark("b", "https://b.example/"),
+            Bookmark("c", "https://c.example/"),
+        ],
+    )
+    sync_places_bookmarks(
+        db,
+        [Bookmark("c", "https://c.example/"), Bookmark("a", "https://a.example/")],
+    )
+    assert _toolbar_bookmarks(db) == [
+        ("c", "https://c.example/"),
+        ("a", "https://a.example/"),
+    ]
+    c = sqlite3.connect(db)
+    positions = [
+        r[0]
+        for r in c.execute(
+            "SELECT position FROM moz_bookmarks WHERE type=1 ORDER BY position"
+        )
+    ]
+    c.close()
+    assert positions == [0, 1]
+
+
+def test_sync_keeps_visited_place_row(tmp_path):
+    # A place the user has actually visited is history, not our seed artifact —
+    # deleting its bookmark must not delete the history row.
+    db = str(tmp_path / "places.sqlite")
+    _make_places(db)
+    sync_places_bookmarks(db, [Bookmark("a", "https://a.example/")])
+    c = sqlite3.connect(db)
+    c.execute("UPDATE moz_places SET visit_count=3")
+    c.commit()
+    c.close()
+    sync_places_bookmarks(db, [])
+    c = sqlite3.connect(db)
+    assert c.execute("SELECT COUNT(*) FROM moz_places").fetchone()[0] == 1
+    assert c.execute("SELECT foreign_count FROM moz_places").fetchone()[0] == 0
+    c.close()
+
+
+def test_empty_set_on_fresh_db_is_true_noop(tmp_path):
+    db = str(tmp_path / "places.sqlite")
+    _make_places(db)
+    assert sync_places_bookmarks(db, []) is True
     assert _toolbar_bookmarks(db) == []
 
 
 def test_missing_db_returns_false(tmp_path):
-    assert seed_places_bookmarks(str(tmp_path / "nope.sqlite"), [Bookmark("a", "https://a")]) is False
+    assert sync_places_bookmarks(str(tmp_path / "nope.sqlite"), [Bookmark("a", "https://a")]) is False
 
 
 def test_places_ready_false_when_db_missing(tmp_path):
@@ -138,7 +276,7 @@ def test_places_ready_false_on_non_places_db(tmp_path):
 def test_guids_are_unique_12_char(tmp_path):
     db = str(tmp_path / "places.sqlite")
     _make_places(db)
-    seed_places_bookmarks(db, [Bookmark("a", "https://a.example/"), Bookmark("b", "https://b.example/")])
+    sync_places_bookmarks(db, [Bookmark("a", "https://a.example/"), Bookmark("b", "https://b.example/")])
     c = sqlite3.connect(db)
     guids = [r[0] for r in c.execute("SELECT guid FROM moz_bookmarks WHERE type=1")]
     c.close()

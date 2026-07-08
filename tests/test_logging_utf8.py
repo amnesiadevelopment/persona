@@ -57,9 +57,9 @@ def test_activity_log_seed_round_trips_utf8(tmp_path, monkeypatch):
     _log_in_locale_encoded_interpreter(str(tmp_path))
     monkeypatch.setattr(state, "LOG_DIR", str(tmp_path))
     lines = state._load_recent_log_lines()
-    assert len(lines) == 1
-    assert SAMPLE in lines[0]
-    assert "�" not in lines[0]
+    assert len(lines) == 2  # session marker + the sample record
+    assert SAMPLE in lines[-1]
+    assert "�" not in "\n".join(lines)
 
 
 def test_setup_logging_in_process_writes_utf8(tmp_path):

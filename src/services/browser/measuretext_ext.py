@@ -2,21 +2,26 @@
 
 The fingerprint engine adds noise to Canvas::measureText() (a Bromite
 fingerprinting feature), which scales EVERY returned metric — width AND the
-actualBoundingBox*/fontBoundingBox* fields — to a near-zero / negative value.
-Layout-heavy web apps that measure text to position UI then break:
+actualBoundingBox*/fontBoundingBox*/baseline fields — by a single constant
+factor (~1e-6, its sign set by the seed). Layout-heavy web apps that measure
+text to position UI then break:
  - Google Sheets' canvas grid lays glyphs out against a width of ~0 and the
    text overlaps into adjacent columns ("looks right for a frame, then shifts").
  - Sheets' date-cell calendar popover sizes/places itself from the bounding-box
-   metrics; with negative values the popover collapses to zero size / off-screen
+   metrics; with near-zero values the popover collapses to zero size / off-screen
    and "the calendar doesn't appear at all".
 
-getClientRects()/getBoundingClientRect() are NOT noised in this build, so we
-recover the true geometry by measuring the same string in a hidden DOM node and
-rebuild a full, self-consistent TextMetrics: width from the node's rect, and the
-ascent/descent/left/right box fields from the element's font metrics. This keeps
-every other anti-fingerprint defense intact (canvas readback noise, audio,
-webgl, …) while making text measurement correct — which is also *more* natural,
-since negative text metrics are themselves a blatant anti-detect tell.
+The noise is a fixed multiplicative scale for the whole session, so we learn it
+ONCE: measure a string's true width in a hidden DOM node (getBoundingClientRect
+is not noised in this build) and divide the noised width by it to get the
+factor. Every later repair is then pure arithmetic — each native metric divided
+by the factor — with NO DOM access. That recovers the engine's real, fully
+self-consistent geometry and, crucially, touches layout only once: an earlier
+version measured through a resident DOM node on EVERY call, and each
+getBoundingClientRect forced a synchronous document layout. On an app that
+constantly dirties the DOM (Sheets) that turned into layout thrashing that
+pinned the main thread, so the compositor never idled — a permanent 'Working…'
+throbber that also blocked every Sheets popover/overlay from painting.
 """
 
 import json
@@ -28,64 +33,29 @@ CONTENT_SCRIPT = r"""
   var off = (window.OffscreenCanvasRenderingContext2D || {}).prototype;
   if (!proto || !proto.measureText) return;
 
-  var span = null;
-  function ensureSpan() {
-    if (span && span.isConnected) return span;
+  // The engine's constant noise scale (noised = true * factor), learned once
+  // and then reused for every repair so no measurement ever touches the DOM.
+  var factor = null;
+
+  // One-shot, un-noised true width of `text` in `font`, via a throwaway DOM
+  // node that is appended, measured and removed immediately — it never stays
+  // resident, so it can't inherit the page's transitions or be rewritten in a
+  // hot path. Called at most once (until `factor` is known). Returns null when
+  // there's no DOM yet or the text renders to zero width.
+  function trueWidth(font, text) {
     var root = document.documentElement || document.body;
     if (!root) return null;
-    span = document.createElement('span');
-    // The node stays in the DOM for the page's lifetime and its style/text are
-    // rewritten on every measurement. Without these guards it inherits the
-    // page's transitions ('transition: all' on apps like Google Sheets) and
-    // remains part of the document's layout/paint, so each rewrite keeps
-    // scheduling compositor work — the browser's animation observer then runs
-    // forever ('active for too long') and shows a stuck 'Working…' throbber.
-    // animation/transition:none makes the rewrites inert; contain:layout paint
-    // style isolates the node so a rewrite can't dirty the document (size
-    // containment is deliberately excluded — it would zero the measured width).
+    var span = document.createElement('span');
     span.style.cssText =
       'position:absolute;left:-99999px;top:0;white-space:pre;' +
       'visibility:hidden;pointer-events:none;margin:0;padding:0;border:0;' +
-      'animation:none;transition:none;will-change:auto;contain:layout paint style';
+      'letter-spacing:0';
+    span.style.font = font;
+    span.textContent = String(text);
     root.appendChild(span);
-    return span;
-  }
-
-  // Real, self-consistent metrics for `text` in the context's current font,
-  // derived from a hidden DOM node (not noised). Returns null if we can't
-  // measure (no DOM yet) so the caller can fall back to the native object.
-  function realMetrics(font, text) {
-    var s = ensureSpan();
-    if (!s) return null;
-    s.style.font = font;
-    s.style.letterSpacing = '0px';
-    s.textContent = String(text);
-    var rect = s.getBoundingClientRect();
-    var width = rect.width;
-    // Font size in px → split into ascent/descent. Browsers don't expose the
-    // exact font ascent here, so use the standard ~0.8/0.2 split of the em,
-    // which is what fonts overwhelmingly use and keeps the box plausible and
-    // positive (the layout only needs sane, non-negative geometry).
-    var fontPx = parseFloat(getComputedStyle(s).fontSize) || rect.height || 0;
-    var ascent = fontPx * 0.8;
-    var descent = fontPx * 0.2;
-    // Baselines are reported relative to the current textBaseline (default
-    // 'alphabetic', which is the origin → 0). The hanging baseline sits near
-    // the top of the em and the ideographic one near the bottom; give them the
-    // standard signed offsets so no metric is left near-zero (a tell) and
-    // baseline-positioned widgets get sane geometry.
-    return {
-      width: width,
-      actualBoundingBoxLeft: 0,
-      actualBoundingBoxRight: width,
-      actualBoundingBoxAscent: ascent,
-      actualBoundingBoxDescent: descent,
-      fontBoundingBoxAscent: ascent,
-      fontBoundingBoxDescent: descent,
-      hangingBaseline: ascent,
-      alphabeticBaseline: 0,
-      ideographicBaseline: -descent,
-    };
+    var w = span.getBoundingClientRect().width;
+    root.removeChild(span);
+    return w > 0 ? w : null;
   }
 
   function patch(target) {
@@ -103,13 +73,23 @@ CONTENT_SCRIPT = r"""
         var hasText = String(text).length > 0;
         var corrupt = hasText && !(Math.abs(m.width) >= 1);
         if (!corrupt) return m;
-        var fixed = realMetrics(this.font, text);
-        if (!fixed) return m;
+        if (factor === null) {
+          var tw = trueWidth(this.font, text);
+          if (tw === null) return m;
+          var f = m.width / tw;
+          if (!isFinite(f) || f === 0) return m;
+          factor = f;
+        }
+        var scale = factor;
+        // Undo the uniform noise: every numeric TextMetrics field is the true
+        // value times `scale`, so dividing each by `scale` restores the real,
+        // self-consistent geometry. Non-numeric members (e.g. toJSON) pass
+        // through untouched, and a field the native object lacks is never
+        // synthesised — so no new tell is introduced.
         return new Proxy(m, {
           get: function (t, p) {
-            // Only substitute a metric the native object actually carries —
-            // synthesising a field real TextMetrics lacks would be a new tell.
-            return (p in fixed && p in t) ? fixed[p] : t[p];
+            var v = t[p];
+            return (typeof v === 'number') ? v / scale : v;
           },
         });
       } catch (e) {}

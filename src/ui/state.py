@@ -5,22 +5,28 @@ import threading
 import time
 
 from ..core.config import LOG_DIR
+from ..core.logging import SESSION_MARKER
 
 ITEMS_PER_PAGE = 8
 
 
 def _load_recent_log_lines(limit: int = 200) -> list[str]:
-    """Seed the Activity Log from the persistent file log so it survives a
-    restart — otherwise an auto-update (which restarts the app) wipes the very
-    entries that explain whether the update succeeded or looped. Reads the
-    newest persona_*.log in LOG_DIR and reformats its lines to the UI's
+    """Seed the Activity Log from the persistent file log, starting at the
+    current session's SESSION_MARKER so old sessions don't blur into this
+    launch; earlier sessions stay on disk in the same file. Reads the newest
+    persona_*.log in LOG_DIR and reformats its lines to the UI's
     "HH:MM:SS  > message" shape."""
     try:
         candidates = sorted(glob.glob(os.path.join(LOG_DIR, "persona_*.log")))
         if not candidates:
             return []
         with open(candidates[-1], encoding="utf-8", errors="replace") as f:
-            raw = f.readlines()[-limit:]
+            raw = f.readlines()
+        for i in range(len(raw) - 1, -1, -1):
+            if SESSION_MARKER in raw[i]:
+                raw = raw[i:]
+                break
+        raw = raw[-limit:]
         out = []
         # file lines look like: "2026-06-29 17:07:52 - INFO - persona.api - msg"
         for ln in raw:

@@ -147,11 +147,11 @@ def test_windows_relaunch_has_single_merged_creationflags(monkeypatch, tmp_path)
     # The relaunch Popen once passed creationflags= AND spread no_window_kwargs()
     # (which also carries creationflags) — a TypeError at the call site, swallowed
     # by the except, so the app never reopened after an update (#133). The
-    # relaunch must reach Popen with ONE merged creationflags: detached from the
-    # exiting process, its own group, and no console window.
+    # relaunch must reach Popen with ONE merged creationflags: a hidden console
+    # (NOT DETACHED_PROCESS — a cmd with no console at all wedges running a
+    # batch file) in its own process group.
     _force_os(monkeypatch, win=True)
-    DETACHED, NEW_GROUP, NO_WINDOW = 0x00000008, 0x00000200, 0x08000000
-    monkeypatch.setattr(au.subprocess, "DETACHED_PROCESS", DETACHED, raising=False)
+    NEW_GROUP, NO_WINDOW = 0x00000200, 0x08000000
     monkeypatch.setattr(
         au.subprocess, "CREATE_NEW_PROCESS_GROUP", NEW_GROUP, raising=False
     )
@@ -182,8 +182,112 @@ def test_windows_relaunch_has_single_merged_creationflags(monkeypatch, tmp_path)
         au.apply_and_restart(str(staged), log=msgs.append)
     assert not any("couldn't schedule the relaunch" in m for m in msgs), msgs
     relaunch_kw = next(kw for args, kw in calls if str(exe) in args)
-    assert relaunch_kw["creationflags"] == DETACHED | NEW_GROUP | NO_WINDOW
+    assert relaunch_kw["creationflags"] == NEW_GROUP | NO_WINDOW
     assert relaunch_kw.get("close_fds") is True
+
+
+def test_windows_relaunch_waits_for_installer_to_exit(monkeypatch, tmp_path):
+    # A fixed sleep before `start` raced slow installs (AV scan, slow disk): when
+    # the install outlived it, `start` hit persona.exe mid-replace and died
+    # silently — the app never reopened. The relaunch must instead run a temp
+    # .bat that polls for the INSTALLER PID to disappear, then starts the exe.
+    _force_os(monkeypatch, win=True)
+    NEW_GROUP, NO_WINDOW = 0x00000200, 0x08000000
+    monkeypatch.setattr(
+        au.subprocess, "CREATE_NEW_PROCESS_GROUP", NEW_GROUP, raising=False
+    )
+    monkeypatch.setattr(au.subprocess, "CREATE_NO_WINDOW", NO_WINDOW, raising=False)
+    monkeypatch.setattr(au.tempfile, "tempdir", str(tmp_path))
+    staged = tmp_path / "persona-windows-setup.exe"
+    staged.write_bytes(b"MZ")
+    exe = tmp_path / "persona.exe"
+    exe.write_bytes(b"MZ")
+    calls = []
+
+    def fake_popen(args, **kw):
+        calls.append((args, kw))
+
+        class P:
+            pid = 4242
+
+        return P()
+
+    monkeypatch.setattr(au.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(au, "_installed_windows_exe", lambda: str(exe))
+
+    def fake_exit(code):
+        raise SystemExit(code)
+
+    monkeypatch.setattr(au.os, "_exit", fake_exit)
+    msgs = []
+    with pytest.raises(SystemExit):
+        au.apply_and_restart(str(staged), log=msgs.append)
+    assert not any("couldn't schedule the relaunch" in m for m in msgs), msgs
+    relaunch = next(
+        (args, kw) for args, kw in calls if args and args[0] == "cmd"
+    )
+    args, kw = relaunch
+    assert args[1] == "/c" and args[2].endswith(".bat")
+    with open(args[2], encoding="ascii", newline="") as f:
+        bat = f.read()
+    # waits for the installer process, not a fixed number of seconds
+    assert 'tasklist /FI "PID eq 4242"' in bat
+    # bounded wait — a hung installer must not block the relaunch forever
+    assert "goto launch" in bat
+    # empty title + quoted path: `start` treats the first quoted token as a
+    # window title, so a bare path with spaces would silently launch nothing
+    assert f'start "" /D "{tmp_path}" "{exe}"' in bat
+    # the bat removes itself once done
+    assert 'del "%~f0"' in bat
+    assert kw["creationflags"] == NEW_GROUP | NO_WINDOW
+    assert kw.get("close_fds") is True
+
+
+def test_windows_relaunch_falls_back_to_fixed_wait_without_bat(
+    monkeypatch, tmp_path
+):
+    # If the waiter .bat can't be written (temp dir broken, non-encodable path),
+    # the relaunch still happens via the inline delayed-start command.
+    _force_os(monkeypatch, win=True)
+    monkeypatch.setattr(
+        au.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200, raising=False
+    )
+    monkeypatch.setattr(
+        au.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False
+    )
+    staged = tmp_path / "persona-windows-setup.exe"
+    staged.write_bytes(b"MZ")
+    exe = tmp_path / "persona.exe"
+    exe.write_bytes(b"MZ")
+    calls = []
+
+    def fake_popen(args, **kw):
+        calls.append((args, kw))
+
+        class P:
+            pid = 4242
+
+        return P()
+
+    def broken_bat(exe, pid):
+        raise OSError("no temp dir")
+
+    monkeypatch.setattr(au.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(au, "_installed_windows_exe", lambda: str(exe))
+    monkeypatch.setattr(au, "_write_relaunch_bat", broken_bat)
+
+    def fake_exit(code):
+        raise SystemExit(code)
+
+    monkeypatch.setattr(au.os, "_exit", fake_exit)
+    msgs = []
+    with pytest.raises(SystemExit):
+        au.apply_and_restart(str(staged), log=msgs.append)
+    assert not any("couldn't schedule the relaunch" in m for m in msgs), msgs
+    args, kw = next((a, k) for a, k in calls if str(exe) in a)
+    assert args[0] == "cmd"
+    assert "ping" in args and "start" in args
+    assert kw.get("close_fds") is True
 
 
 def test_apply_and_restart_never_wipes_engines(monkeypatch, tmp_path):

@@ -1,4 +1,5 @@
 import src.ui.state as state
+from src.core.logging import SESSION_MARKER
 
 
 def _write_log(dirpath, name, lines):
@@ -49,6 +50,47 @@ def test_seed_empty_when_no_logs(tmp_path, monkeypatch):
     log_dir.mkdir()
     monkeypatch.setattr(state, "LOG_DIR", str(log_dir))
     assert state._load_recent_log_lines() == []
+
+
+def test_seed_returns_only_current_session(tmp_path, monkeypatch):
+    log_dir = tmp_path / "persona_logs"
+    _write_log(
+        log_dir,
+        "persona_20260708.log",
+        [
+            f"2026-07-08 09:00:00 - INFO - persona - {SESSION_MARKER} 2.3.9 ==========",
+            "2026-07-08 09:00:01 - INFO - persona.api - first session line",
+            f"2026-07-08 10:00:00 - INFO - persona - {SESSION_MARKER} 2.3.10 ==========",
+            "2026-07-08 10:00:01 - INFO - persona.api - second session line",
+        ],
+    )
+    monkeypatch.setattr(state, "LOG_DIR", str(log_dir))
+
+    assert state._load_recent_log_lines() == [
+        f"10:00:00  > {SESSION_MARKER} 2.3.10 ==========",
+        "10:00:01  > second session line",
+    ]
+
+
+def test_seed_limit_applies_within_current_session(tmp_path, monkeypatch):
+    log_dir = tmp_path / "persona_logs"
+    _write_log(
+        log_dir,
+        "persona_20260708.log",
+        [
+            "2026-07-08 09:00:00 - INFO - persona.api - previous session",
+            f"2026-07-08 10:00:00 - INFO - persona - {SESSION_MARKER} 2.3.10 ==========",
+            *(
+                f"2026-07-08 10:00:{i:02d} - INFO - persona.api - msg{i}"
+                for i in range(1, 6)
+            ),
+        ],
+    )
+    monkeypatch.setattr(state, "LOG_DIR", str(log_dir))
+
+    assert state._load_recent_log_lines(limit=3) == [
+        f"10:00:0{i}  > msg{i}" for i in (3, 4, 5)
+    ]
 
 
 def test_appstate_seeds_from_log_dir(tmp_path, monkeypatch):

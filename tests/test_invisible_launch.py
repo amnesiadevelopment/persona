@@ -84,8 +84,11 @@ def test_with_overrides_strips_engine_viewport_and_dsf():
 
 
 def test_window_size_seed_writes_half_work_area(monkeypatch, tmp_path):
-    # A fresh profile opens at roughly half the work area (CSS px = physical
-    # ÷ system dpr), a normal mid-size window like chromium's default.
+    # A fresh profile opens at half the work area in PHYSICAL px. xulstore.json's
+    # main-window size restores in device pixels (live-proven: a 1920x1068
+    # physical window at 1.5 OS scale persisted and restored as "1920"/"1068"),
+    # so the seed is the physical work area halved, NOT divided by the OS scale —
+    # dividing would open the window a third too small on a HiDPI display.
     import json as _json
 
     monkeypatch.setattr(invisible_launch, "_work_area", lambda: (3840, 2088))
@@ -94,8 +97,8 @@ def test_window_size_seed_writes_half_work_area(monkeypatch, tmp_path):
 
     data = _json.loads((tmp_path / "xulstore.json").read_text(encoding="utf-8"))
     win = data["chrome://browser/content/browser.xhtml"]["main-window"]
-    assert win["width"] == "1280"   # 3840 / 1.5 / 2
-    assert win["height"] == "696"   # 2088 / 1.5 / 2
+    assert win["width"] == "1920"   # 3840 / 2
+    assert win["height"] == "1044"  # 2088 / 2
     assert win["sizemode"] == "normal"
 
 
@@ -156,6 +159,75 @@ def test_profile_prefs_skip_startup_network_fetch():
     # startup changeset poll that hangs a launch over Tor.
     prefs = _profile_prefs({})
     assert prefs["services.settings.server"].startswith("data:")
+
+
+def test_profile_prefs_uncloak_windows():
+    # #142: the engine implements headless on Windows/macOS by making the
+    # patched binary DWM-cloak its own windows (zoom.stealth.cloak_windows).
+    # The bookmarks seeding runs the engine once headless in the SAME profile,
+    # and Firefox persists that pref into prefs.js — so the next visible launch
+    # inherited the cloak and opened every window invisible (live-proven:
+    # MozillaWindowClass vis=True cloaked=1 for the whole session). The visible
+    # launch must force the cloak off.
+    prefs = _profile_prefs({})
+    assert prefs["zoom.stealth.cloak_windows"] is False
+
+
+def test_scrub_cloak_pref_removes_stale_true(tmp_path):
+    # The cloak gate acts on the pref value ALREADY IN prefs.js when the
+    # window is created — the launch's own prefs land too late to uncloak
+    # (live-proven: a launch right after the headless init stayed cloaked
+    # despite the False override; the NEXT launch, with False persisted, was
+    # visible). So the stale true must be scrubbed from prefs.js before the
+    # visible launch.
+    prefs = tmp_path / "prefs.js"
+    prefs.write_text(
+        'user_pref("browser.startup.page", 3);\n'
+        'user_pref("zoom.stealth.cloak_windows", true);\n'
+        'user_pref("widget.windows.window_occlusion_tracking.enabled", false);\n',
+        encoding="utf-8",
+    )
+    invisible_launch._scrub_headless_cloak_prefs(str(tmp_path))
+    left = prefs.read_text(encoding="utf-8")
+    assert "cloak_windows" not in left
+    assert "window_occlusion_tracking" not in left
+    assert "browser.startup.page" in left  # everything else untouched
+
+
+def test_scrub_cloak_pref_tolerates_missing_profile(tmp_path):
+    invisible_launch._scrub_headless_cloak_prefs(str(tmp_path / "nope"))
+    invisible_launch._scrub_headless_cloak_prefs("")
+
+
+def test_headless_init_prefs_keep_engine_cloak():
+    # The one-time headless places init must stay invisible: its prefs must NOT
+    # carry the uncloak override (the engine's setdefault would make an
+    # explicit False win and flash a window at the user).
+    from src.services.browser.invisible_launch import _NO_STARTUP_FETCH
+
+    assert "zoom.stealth.cloak_windows" not in _NO_STARTUP_FETCH
+
+
+def test_raise_profile_window_skips_cloaked_hwnd(monkeypatch):
+    # A DWM-cloaked window passes IsWindowVisible but is invisible to the user;
+    # raising it does nothing and must not count as success — keep polling for
+    # a really-visible window instead.
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(invisible_launch, "_profile_firefox_pids", lambda d: {10})
+    enums = iter([[(111, 10)], [(111, 10), (222, 10)]])
+    monkeypatch.setattr(invisible_launch, "_visible_windows", lambda: next(enums))
+    monkeypatch.setattr(
+        invisible_launch, "_window_cloaked", lambda hwnd: hwnd == 111
+    )
+    raised = []
+    monkeypatch.setattr(
+        invisible_launch, "_bring_window_to_foreground", raised.append
+    )
+    assert (
+        invisible_launch._raise_profile_window(r"C:\p", timeout=2, interval=0.01)
+        is True
+    )
+    assert raised == [222]
 
 
 def test_enter_on_worker_bounded_abandons_wedged_launch_and_retries(
@@ -760,6 +832,129 @@ def test_close_watch_still_closes_on_all_pids_dead(monkeypatch):
         r"C:\p", threading.Event(), None, lambda: None, interval=0.0,
     )
     assert next(liveness, "done") == "done"
+
+
+def test_fork_close_watch_closes_on_pid_death(monkeypatch):
+    import threading
+
+    # #143: the Linux close signal is the profile's Firefox pid dying — the
+    # window's X quits Firefox there. The pid is resolved once (pgrep), then
+    # polled with the cheap liveness check.
+    monkeypatch.setattr(invisible_launch, "_firefox_pid", lambda d: 4242)
+    liveness = iter([True, True, False])
+    monkeypatch.setattr(invisible_launch, "_pid_alive", lambda p: next(liveness))
+    got = invisible_launch._fork_close_watch(
+        "/p", threading.Event(), interval=0.0
+    )
+    assert got == {4242}
+    assert next(liveness, "done") == "done"  # closed exactly on the dead poll
+
+
+def test_fork_close_watch_gives_up_when_process_never_seen(monkeypatch):
+    import threading
+    import time as _time
+
+    # A launch whose Firefox is never seen must not wedge the profile
+    # "running" forever — give up after no_process_timeout so the child emits
+    # BROWSER_CLOSED and tears down.
+    monkeypatch.setattr(invisible_launch, "_firefox_pid", lambda d: None)
+    t0 = _time.monotonic()
+    got = invisible_launch._fork_close_watch(
+        "/p", threading.Event(), no_process_timeout=0.05, interval=0.01
+    )
+    assert got is None
+    assert _time.monotonic() - t0 < 5
+
+
+def test_fork_close_watch_returns_tracked_pid_on_stop(monkeypatch):
+    import threading
+
+    # STOP: the SIGTERM handler's stop_gracefully sets `closed`; the watch
+    # must hand back the tracked pid so the survivor force-kill has a target
+    # even when the polite teardown failed.
+    closed = threading.Event()
+    monkeypatch.setattr(invisible_launch, "_firefox_pid", lambda d: 7)
+
+    def alive(_p):
+        closed.set()
+        return True
+
+    monkeypatch.setattr(invisible_launch, "_pid_alive", alive)
+    got = invisible_launch._fork_close_watch("/p", closed, interval=0.0)
+    assert got == {7}
+
+
+def test_child_fork_path_teardown_fires_on_pid_exit(monkeypatch, tmp_path):
+    # #143 wiring: the fork (Linux) path must NOT watch ctx.pages — the ctx
+    # lives on _enter_with_timeout's launch thread, and the sync API's
+    # dispatcher greenlet never pumps events for a poll from the child's own
+    # thread, so ctx.pages is a frozen snapshot that never drops to 0: no
+    # teardown, no BROWSER_CLOSED, no close in the log, card stuck "running".
+    # The close signal is the pid watch; when it fires the child tears down,
+    # force-kills the survivors with the tracked pids and emits BROWSER_CLOSED.
+    import os
+    import signal
+    import sys
+    import types
+
+    class FakeCtx:
+        @property
+        def pages(self):
+            raise AssertionError("fork path must not poll ctx.pages (#143)")
+
+        def add_init_script(self, *_a, **_k):
+            pass
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            pass
+
+        def _default_context_kwargs(self):
+            return {}
+
+        def __enter__(self):
+            return FakeCtx()
+
+        def __exit__(self, *a):
+            return False
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+
+    watches, kills, exits = [], [], []
+    monkeypatch.setattr(
+        invisible_launch, "_fork_close_watch",
+        lambda d, closed, **k: watches.append(d) or {10},
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox",
+        lambda d, pids=None: kills.append((d, pids)),
+    )
+
+    def no_thread_watch(*_a, **_k):
+        raise AssertionError("thread close-watch on the fork path")
+
+    monkeypatch.setattr(invisible_launch, "_thread_close_watch", no_thread_watch)
+    monkeypatch.setattr(invisible_launch.os, "_exit", lambda code: exits.append(code))
+    monkeypatch.setattr(invisible_launch, "_raise_profile_window", lambda *a, **k: None)
+
+    old_term = signal.getsignal(signal.SIGTERM)
+    r, w = os.pipe()
+    try:
+        invisible_launch._child(
+            {"profile_dir": str(tmp_path), "profile_name": "t", "seed": 1}, w
+        )
+    finally:
+        signal.signal(signal.SIGTERM, old_term)
+    out = os.read(r, 65536).decode()
+    os.close(r)
+
+    assert watches == [str(tmp_path)]
+    assert kills == [(str(tmp_path), {10})]
+    assert exits == [0]
+    assert "BROWSER_STARTED" in out
+    assert "BROWSER_CLOSED" in out
 
 
 def test_pids_have_visible_window_true_when_tracked_pid_owns_one(monkeypatch):
@@ -1616,14 +1811,79 @@ def test_seed_bookmarks_ready_db_needs_no_engine_start(monkeypatch, tmp_path):
     assert _toolbar_bookmarks(db) == [("a", "https://a.example/")]
 
 
+def test_seed_bookmarks_relaunch_keeps_exactly_one_copy(monkeypatch, tmp_path):
+    # #144(a): the seed runs on EVERY launch; relaunching with the same set
+    # must leave exactly one copy of each bookmark, never a duplicate row.
+    from tests.test_firefox_bookmarks import _make_places, _toolbar_bookmarks
+
+    db = str(tmp_path / "places.sqlite")
+    _make_places(db)
+    marks = [{"name": "a", "url": "https://a.example/"}]
+    invisible_launch._seed_firefox_bookmarks(str(tmp_path), marks, 7)
+    invisible_launch._seed_firefox_bookmarks(str(tmp_path), marks, 7)
+    assert _toolbar_bookmarks(db) == [("a", "https://a.example/")]
+
+
+def test_seed_bookmarks_edited_set_replaces_old(monkeypatch, tmp_path):
+    # #144: Mars removed bookmarks in the profile editor and they came back —
+    # the launch seed must reconcile the toolbar to the CURRENT set, deleting
+    # rows that are no longer in it.
+    from tests.test_firefox_bookmarks import _make_places, _toolbar_bookmarks
+
+    db = str(tmp_path / "places.sqlite")
+    _make_places(db)
+    invisible_launch._seed_firefox_bookmarks(
+        str(tmp_path),
+        [
+            {"name": "a", "url": "https://a.example/"},
+            {"name": "b", "url": "https://b.example/"},
+        ],
+        7,
+    )
+    invisible_launch._seed_firefox_bookmarks(
+        str(tmp_path), [{"name": "b", "url": "https://b.example/"}], 7
+    )
+    assert _toolbar_bookmarks(db) == [("b", "https://b.example/")]
+
+
+def test_seed_bookmarks_empty_set_clears_toolbar(monkeypatch, tmp_path):
+    # #144(b): ALL bookmarks removed in the profile editor → the next launch
+    # clears the toolbar. No engine init for that — the db already exists.
+    from tests.test_firefox_bookmarks import _make_places, _toolbar_bookmarks
+
+    db = str(tmp_path / "places.sqlite")
+    _make_places(db)
+    invisible_launch._seed_firefox_bookmarks(
+        str(tmp_path), [{"name": "a", "url": "https://a.example/"}], 7
+    )
+
+    def boom(*a, **k):
+        raise AssertionError("no engine init when places.sqlite is ready")
+
+    monkeypatch.setattr(invisible_launch, "_init_places_db", boom)
+    invisible_launch._seed_firefox_bookmarks(str(tmp_path), [], 7)
+    assert _toolbar_bookmarks(db) == []
+
+
+def test_seed_bookmarks_empty_set_without_places_skips_init(monkeypatch, tmp_path):
+    # No bookmarks and no places.sqlite yet: there is nothing to clear —
+    # never burn a tens-of-seconds headless engine init to write nothing.
+    def boom(*a, **k):
+        raise AssertionError("no engine init for an empty set on a fresh profile")
+
+    monkeypatch.setattr(invisible_launch, "_init_places_db", boom)
+    invisible_launch._seed_firefox_bookmarks(str(tmp_path), [], 7)
+    assert not (tmp_path / "places.sqlite").exists()
+
+
 def test_child_starts_engine_exactly_once_when_already_seeded(
     monkeypatch, tmp_path
 ):
-    # #132: the hot path (bookmarks already seeded, marker matches) must start
-    # the engine EXACTLY once — the visible launch. The double start (headless
-    # init + real launch back-to-back) is what wedged the patched Firefox in a
-    # half-destroyed webProgress: no BROWSER_STARTED, close-watch dead, card
-    # stuck "running".
+    # #132: the hot path (places.sqlite ready, bookmarks reconciled in-place)
+    # must start the engine EXACTLY once — the visible launch. The double
+    # start (headless init + real launch back-to-back) is what wedged the
+    # patched Firefox in a half-destroyed webProgress: no BROWSER_STARTED,
+    # close-watch dead, card stuck "running".
     import os
     import sys
     import threading
@@ -1667,9 +1927,6 @@ def test_child_starts_engine_exactly_once_when_already_seeded(
 
     marks = [{"name": "a", "url": "https://a/"}]
     _make_places(str(tmp_path / "places.sqlite"))
-    (tmp_path / ".persona-bookmarks-sig").write_text(
-        invisible_launch._bookmarks_sig(marks), encoding="utf-8"
-    )
 
     stop = threading.Event()
     stop.set()

@@ -3,6 +3,10 @@ import os
 import pathlib
 from datetime import datetime
 
+# Written to the file log once per launch; the Activity Log seed (src/ui/state.py)
+# shows only lines from the last occurrence, so each session starts unambiguously.
+SESSION_MARKER = "========== persona session started"
+
 
 def setup_logging(
     log_dir: str = "logs",
@@ -43,6 +47,12 @@ def setup_logging(
 
     logger.addHandler(file_handler)
     logger.addHandler(console_handler)
+
+    try:
+        from ..services.app_update.updater import APP_VERSION as version
+    except Exception:
+        version = "unknown"
+    logger.info("%s %s ==========", SESSION_MARKER, version)
 
     return logger
 
