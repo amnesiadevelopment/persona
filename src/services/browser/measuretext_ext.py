@@ -34,9 +34,19 @@ CONTENT_SCRIPT = r"""
     var root = document.documentElement || document.body;
     if (!root) return null;
     span = document.createElement('span');
+    // The node stays in the DOM for the page's lifetime and its style/text are
+    // rewritten on every measurement. Without these guards it inherits the
+    // page's transitions ('transition: all' on apps like Google Sheets) and
+    // remains part of the document's layout/paint, so each rewrite keeps
+    // scheduling compositor work — the browser's animation observer then runs
+    // forever ('active for too long') and shows a stuck 'Working…' throbber.
+    // animation/transition:none makes the rewrites inert; contain:layout paint
+    // style isolates the node so a rewrite can't dirty the document (size
+    // containment is deliberately excluded — it would zero the measured width).
     span.style.cssText =
       'position:absolute;left:-99999px;top:0;white-space:pre;' +
-      'visibility:hidden;pointer-events:none;margin:0;padding:0;border:0';
+      'visibility:hidden;pointer-events:none;margin:0;padding:0;border:0;' +
+      'animation:none;transition:none;will-change:auto;contain:layout paint style';
     root.appendChild(span);
     return span;
   }
@@ -59,6 +69,11 @@ CONTENT_SCRIPT = r"""
     var fontPx = parseFloat(getComputedStyle(s).fontSize) || rect.height || 0;
     var ascent = fontPx * 0.8;
     var descent = fontPx * 0.2;
+    // Baselines are reported relative to the current textBaseline (default
+    // 'alphabetic', which is the origin → 0). The hanging baseline sits near
+    // the top of the em and the ideographic one near the bottom; give them the
+    // standard signed offsets so no metric is left near-zero (a tell) and
+    // baseline-positioned widgets get sane geometry.
     return {
       width: width,
       actualBoundingBoxLeft: 0,
@@ -67,6 +82,9 @@ CONTENT_SCRIPT = r"""
       actualBoundingBoxDescent: descent,
       fontBoundingBoxAscent: ascent,
       fontBoundingBoxDescent: descent,
+      hangingBaseline: ascent,
+      alphabeticBaseline: 0,
+      ideographicBaseline: -descent,
     };
   }
 
@@ -89,7 +107,9 @@ CONTENT_SCRIPT = r"""
         if (!fixed) return m;
         return new Proxy(m, {
           get: function (t, p) {
-            return (p in fixed) ? fixed[p] : t[p];
+            // Only substitute a metric the native object actually carries —
+            // synthesising a field real TextMetrics lacks would be a new tell.
+            return (p in fixed && p in t) ? fixed[p] : t[p];
           },
         });
       } catch (e) {}

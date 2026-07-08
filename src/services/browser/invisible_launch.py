@@ -810,30 +810,123 @@ def _profile_prefs(cfg: dict) -> dict:
     return prefs
 
 
-def _enter_with_timeout(InvisiblePlaywright, kwargs, profile_dir, attempts, per_try,
-                        inline=False):
-    """Enter an InvisiblePlaywright context, bounding each attempt to `per_try`
-    seconds and retrying. Returns (inv, ctx) on success, or (None, None) if every
-    attempt timed out.
+class _WorkerSession:
+    """A launched engine whose ctx lives on its own worker thread.
+
+    Playwright's sync API is thread-affine: every call on the context — and
+    the teardown — must run on the thread that created it. The Windows/macOS
+    path can't use the calling thread for that, because a proxied launch of
+    the patched Firefox wedges INSIDE launch_persistent_context and never
+    returns (live: ~half of fresh proxied launches hang on a half-destroyed
+    initial-window attach), and killing the browser does NOT make the blocked
+    sync call raise — the driver keeps waiting. So the enter runs on a
+    dedicated worker that the caller can bound and ABANDON on overrun, then
+    retry on a fresh worker. `run_on_worker` marshals a callable back onto the
+    worker (for add_init_script / teardown); the abandoned worker's leaked
+    greenlet dies on its own once its Firefox is gone."""
+
+    def __init__(self, inv, ctx, worker, requests, results):
+        self.inv = inv
+        self.ctx = ctx
+        self._worker = worker
+        self._requests = requests
+        self._results = results
+
+    def run_on_worker(self, fn):
+        """Run `fn()` on the worker thread and return its result (or None on
+        error). Thread-affine ctx calls must go through here."""
+        self._requests.put(fn)
+        return self._results.get()
+
+    def teardown(self):
+        """Politely tear the engine down on its own worker, then join it."""
+        if not self._worker.is_alive():
+            return  # a dead worker never answers run_on_worker — blocking forever
+        try:
+            self.run_on_worker(lambda: self.inv.__exit__(None, None, None))
+        except Exception:
+            pass
+        self._requests.put(None)  # release the worker loop
+        self._worker.join(10)
+
+
+def _enter_on_worker(InvisiblePlaywright, kwargs, profile_dir, attempts, per_try,
+                     stop_event=None):
+    """Enter on a dedicated worker thread, bounding each attempt to `per_try`
+    seconds; on overrun kill this profile's Firefox and retry on a FRESH
+    worker (the wedged one is abandoned — see _WorkerSession). Returns a
+    _WorkerSession on success, or None if every attempt overran or STOP
+    cancelled the launch."""
+    import queue
+    import threading
+
+    for attempt in range(attempts):
+        if attempt and stop_event is not None and stop_event.is_set():
+            break  # the user cancelled the launch — don't retry
+        entered = threading.Event()
+        holder = {}
+        requests: "queue.Queue" = queue.Queue()
+        results: "queue.Queue" = queue.Queue()
+
+        def worker(entered=entered, holder=holder,
+                   requests=requests, results=results):
+            try:
+                inv = InvisiblePlaywright(**kwargs)
+                ctx = inv.__enter__()
+            except BaseException:  # noqa: BLE001 — the bound/retry decides
+                entered.set()
+                return
+            holder["inv"] = inv
+            holder["ctx"] = ctx
+            entered.set()
+            # Service thread-affine ctx calls until told to stop (None).
+            while True:
+                fn = requests.get()
+                if fn is None:
+                    return
+                try:
+                    results.put(fn())
+                except Exception:
+                    results.put(None)
+
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+
+        # Bound the enter, also breaking early on STOP.
+        deadline = time.monotonic() + per_try
+        while not entered.wait(0.2):
+            stopped = stop_event is not None and stop_event.is_set()
+            if stopped or time.monotonic() > deadline:
+                break
+        if "ctx" in holder:
+            return _WorkerSession(
+                holder["inv"], holder["ctx"], t, requests, results
+            )
+        # Overrun (or a stop, or an enter error). Kill this profile's Firefox
+        # so the abandoned worker's blocked call eventually unwinds and its
+        # Firefox tree is gone, then settle before a fresh attempt so we never
+        # relaunch over a still-dying instance (#132's half-destroyed-window
+        # wedge).
+        _kill_profile_firefox(profile_dir)
+        _wait_profile_released(profile_dir)
+        for fname in ("lock", ".parentlock"):
+            try:
+                os.remove(os.path.join(profile_dir, fname))
+            except OSError:
+                pass
+    return None
+
+
+def _enter_with_timeout(InvisiblePlaywright, kwargs, profile_dir, attempts, per_try):
+    """Enter an InvisiblePlaywright context on the FORK path (Linux), bounding
+    each attempt to `per_try` seconds and retrying. Returns (inv, ctx) on
+    success, or (None, None) if every attempt timed out.
 
     __enter__ is a blocking call, so it runs in a thread; when the attempt
     overruns we kill the launching Firefox so the blocked call raises and the
-    thread unwinds, then try again with a clean profile lock.
-
-    `inline=True` enters on the CALLING thread instead (no watchdog). Playwright's
-    sync API is thread-affine — the object must be used on the thread that made
-    it — so the Windows/macOS thread path enters inline, keeping ctx usable for
-    the close-watch. The launch is against a local engine there (not Tor), so the
-    startup-fetch stall the watchdog guards against doesn't apply."""
+    thread unwinds, then try again with a clean profile lock. The Windows/macOS
+    thread path uses _enter_on_worker instead (see _WorkerSession)."""
     import threading
-
-    if inline:
-        try:
-            inv = InvisiblePlaywright(**kwargs)
-            ctx = inv.__enter__()
-            return inv, ctx
-        except BaseException:  # noqa: BLE001
-            return None, None
 
     for _ in range(attempts):
         holder = {}
@@ -872,6 +965,28 @@ def _enter_with_timeout(InvisiblePlaywright, kwargs, profile_dir, attempts, per_
         except Exception:
             pass
     return None, None
+
+
+def _install_geo_shortcircuit() -> None:
+    """Skip the engine's egress-IP lookup when the timezone is already
+    concrete. invisible runs that lookup over the proxy before every launch to
+    drive a WebRTC srflx override, but persona always passes a concrete zone,
+    on Tor WebRTC carries no real candidates anyway, and the lookup adds ~15s
+    of round-trips (and one more network step for a proxied launch to wedge
+    on). "auto"/empty still falls through to the engine's own resolver."""
+    try:
+        from invisible_playwright import _geo as _ipgeo
+        from invisible_playwright import launcher as _iplauncher
+
+        def _geo_no_egress(timezone, proxy, _orig=_ipgeo.prepare_session_geo):
+            tz = (timezone or "").strip()
+            if tz and tz.lower() != "auto":
+                return _ipgeo.SessionGeo(tz, None)
+            return _orig(timezone, proxy)
+
+        _iplauncher.prepare_session_geo = _geo_no_egress
+    except Exception:
+        pass
 
 
 def _resolve_seed(cfg: dict) -> int:
@@ -971,25 +1086,10 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
         _finish()  # close the pipe so the monitor's reader unblocks (no fd leak)
         return
 
-    # When persona already knows the timezone (it always passes a concrete one),
-    # short-circuit invisible's egress-IP lookup. invisible runs that lookup over
-    # the proxy to drive a WebRTC srflx override, but on Tor WebRTC carries no
-    # real candidates anyway, and the lookup adds ~15s of round-trips through
-    # Tor+proxy to every launch.
+    # When persona already knows the timezone (it always passes a concrete
+    # one), skip invisible's per-launch egress-IP lookup over the proxy.
     if cfg.get("timezone"):
-        try:
-            from invisible_playwright import _geo as _ipgeo
-            from invisible_playwright import launcher as _iplauncher
-
-            def _geo_no_egress(timezone, proxy, _orig=_ipgeo.prepare_session_geo):
-                tz = (timezone or "").strip()
-                if tz and tz.lower() != "auto":
-                    return _ipgeo.SessionGeo(tz, None)
-                return _orig(timezone, proxy)
-
-            _iplauncher.prepare_session_geo = _geo_no_egress
-        except Exception:
-            pass
+        _install_geo_shortcircuit()
 
     proxy = _proxy_dict(cfg.get("proxy_url", ""))
     kwargs = {"seed": seed, "headless": False, "extra_prefs": _profile_prefs(cfg)}
@@ -1065,41 +1165,62 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
             InvisiblePlaywright, _res_overrides
         )
 
-    # Launch with a bounded timeout and one retry. Over Tor, a launch
-    # occasionally stalls on Firefox's startup remote-settings fetch and would
-    # otherwise hang the full 180s Playwright timeout — unacceptably long for the
-    # user. Cap each attempt; if it overruns, tear it down and try once more (a
-    # fresh attempt almost always comes up fast). InvisiblePlaywright's
-    # __enter__ is blocking, so run it in a thread and watchdog it: killing the
-    # Firefox process makes the blocked __enter__ raise so the thread unwinds.
-    inv, ctx = _enter_with_timeout(
-        InvisiblePlaywright, kwargs, profile_dir,
-        attempts=3, per_try=25, inline=in_thread,
-    )
+    # Launch with a bounded timeout and retries. A launch can stall inside
+    # launch_persistent_context: over Tor on Firefox's startup remote-settings
+    # fetch, and — the #137 wedge — on a proxied FRESH profile whose initial
+    # window is torn down mid-attach ("half-destroyed webProgress"), which
+    # never returns and can't be interrupted by killing the browser. Cap each
+    # attempt; on overrun kill this profile's Firefox and retry. On the thread
+    # path the enter runs on an abandonable worker thread (killing the browser
+    # does NOT make the blocked sync call raise there); the fork path kills the
+    # launching Firefox so the blocked __enter__ raises and the thread unwinds.
+    session = None
+    inv = ctx = None
+    if in_thread:
+        session = _enter_on_worker(
+            InvisiblePlaywright, kwargs, profile_dir,
+            attempts=4, per_try=25, stop_event=stop_event,
+        )
+        if session is not None:
+            inv, ctx = session.inv, session.ctx
+    else:
+        inv, ctx = _enter_with_timeout(
+            InvisiblePlaywright, kwargs, profile_dir, attempts=3, per_try=25,
+        )
     if ctx is None:
-        emit("LAUNCH_FAILED: launch timed out")
+        if stop_event is not None and stop_event.is_set():
+            emit("LAUNCH_CANCELLED")
+        else:
+            emit("LAUNCH_FAILED: launch timed out")
         emit("BROWSER_CLOSED")
         _finish()
         return
 
+    # Thread-affine ctx calls must run on the worker that created ctx (the
+    # thread path) — route them through the session; the fork path uses ctx
+    # directly on this thread.
+    def on_ctx(fn):
+        if session is not None:
+            return session.run_on_worker(fn)
+        try:
+            return fn()
+        except Exception:
+            return None
+
     # Prefix every tab/window title with the profile name so the taskbar button
     # identifies which persona owns the window. An init script runs in every page
-    # the context opens, including tabs the user opens by hand. The prefix also
-    # lets the close-watch below count THIS profile's windows by title.
+    # the context opens, including tabs the user opens by hand.
     _prefix = f"[{name}] " if name else None
     if name:
-        try:
-            ctx.add_init_script(
-                "(()=>{const P=" + json.dumps(_prefix) + ";"
-                "const f=()=>{if(document.title&&!document.title.startsWith(P))"
-                "document.title=P+document.title;};f();"
-                "document.addEventListener('DOMContentLoaded',f);"
-                "const h=document.head||document.documentElement;"
-                "if(h)new MutationObserver(f).observe(h,"
-                "{subtree:true,childList:true,characterData:true});})();"
-            )
-        except Exception:
-            pass
+        on_ctx(lambda: ctx.add_init_script(
+            "(()=>{const P=" + json.dumps(_prefix) + ";"
+            "const f=()=>{if(document.title&&!document.title.startsWith(P))"
+            "document.title=P+document.title;};f();"
+            "document.addEventListener('DOMContentLoaded',f);"
+            "const h=document.head||document.documentElement;"
+            "if(h)new MutationObserver(f).observe(h,"
+            "{subtree:true,childList:true,characterData:true});})();"
+        ))
 
     # Keep outerWidth/outerHeight tied to the real window (inner + chrome) so a
     # small window on a big spoofed screen doesn't leak the screen size through
@@ -1107,10 +1228,7 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     # a resolution was chosen — Auto opens the window at the engine's own screen,
     # where outer already agrees.
     if _res_overrides is not None:
-        try:
-            ctx.add_init_script(_outer_size_override_script())
-        except Exception:
-            pass
+        on_ctx(lambda: ctx.add_init_script(_outer_size_override_script()))
 
     # The persistent context already opened ONE window (about:home, which the
     # startup-homepage pref navigates to the chosen engine). Don't open a second
@@ -1120,6 +1238,15 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
 
     # The window is on screen the moment __enter__ returns, so report ready now.
     emit("BROWSER_STARTED")
+
+    # Windows opens the engine's window BEHIND persona (the launch runs in
+    # persona's own process, which holds the foreground), so the user only
+    # sees the stop button and no browser. Chromium raises its own window;
+    # match that. Off this thread so the close-watch starts immediately.
+    if _platform.IS_WINDOWS:
+        threading.Thread(
+            target=_raise_profile_window, args=(profile_dir,), daemon=True
+        ).start()
 
     # Detect closure by watching the WINDOW count, not the process. Playwright
     # keeps the Firefox process ALIVE after the user closes the last window (a
@@ -1133,9 +1260,12 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     def stop_gracefully() -> None:
         """On STOP (parent terminate) close the context so Firefox removes its
         own lock before exit; a hard kill would leave a stale lock and block the
-        next launch."""
+        next launch. The teardown is thread-affine, so it runs on the worker
+        that created ctx (thread path) or directly (fork path)."""
         try:
-            if inv is not None:
+            if session is not None:
+                session.teardown()
+            elif inv is not None:
                 inv.__exit__(None, None, None)
         except Exception:
             pass
@@ -1170,8 +1300,12 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
                 break  # context torn down (browser gone) → treat as closed
 
     # Tear down so Firefox actually exits and releases its lock, then report.
+    # (On a STOP the close-watch already called stop_gracefully, which tears
+    # the session down; a second teardown is a harmless no-op.)
     try:
-        if inv is not None:
+        if session is not None:
+            session.teardown()
+        elif inv is not None:
             inv.__exit__(None, None, None)
     except Exception:
         pass
@@ -1324,9 +1458,9 @@ def _profile_firefox_pids(profile_dir: str):
         return None
 
 
-def _visible_window_pids():
-    """PIDs that own a visible top-level window (Windows), or None when the
-    enumeration can't run or failed — no-verdict must stay distinct from a
+def _visible_windows():
+    """(hwnd, pid) of every visible top-level window (Windows), or None when
+    the enumeration can't run or failed — no-verdict must stay distinct from a
     confident empty, same as _profile_firefox_pids. Pure ctypes so the
     close-watch can poll every tick without spawning a subprocess."""
     if not _platform.IS_WINDOWS:
@@ -1336,21 +1470,71 @@ def _visible_window_pids():
         from ctypes import wintypes
 
         user32 = ctypes.windll.user32
-        pids = set()
+        windows = []
 
         @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
         def on_window(hwnd, _lparam):
             if user32.IsWindowVisible(hwnd):
                 owner = wintypes.DWORD()
                 user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
-                pids.add(int(owner.value))
+                windows.append((int(hwnd), int(owner.value)))
             return True
 
         if not user32.EnumWindows(on_window, 0):
             return None
-        return pids
+        return windows
     except Exception:
         return None
+
+
+def _visible_window_pids():
+    """PIDs that own a visible top-level window (Windows), or None on a failed
+    enumeration (no verdict)."""
+    windows = _visible_windows()
+    if windows is None:
+        return None
+    return {pid for _hwnd, pid in windows}
+
+
+def _bring_window_to_foreground(hwnd: int) -> None:
+    """Raise + focus a top-level window. SetForegroundWindow is permitted here
+    because this runs in persona's own process right after the user clicked
+    launch — the foreground process may reassign the foreground."""
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        SW_SHOW, SW_RESTORE = 5, 9
+        user32.ShowWindow(hwnd, SW_RESTORE if user32.IsIconic(hwnd) else SW_SHOW)
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
+
+
+def _raise_profile_window(profile_dir: str, timeout: float = 15.0,
+                          interval: float = 0.5) -> bool:
+    """Bring THIS profile's Firefox window to the foreground (Windows only).
+
+    The engine's window is created while persona holds the foreground, so
+    Windows opens it in the BACKGROUND — the profile looks launched-but-
+    invisible. Polls briefly: the window can lag BROWSER_STARTED by a beat,
+    and the pid resolve is a WMI query (resolved once, then reused). Returns
+    True once a window owned by the profile's Firefox was raised."""
+    if not _platform.IS_WINDOWS:
+        return False
+    deadline = time.monotonic() + timeout
+    pids = None
+    while time.monotonic() < deadline:
+        if not pids:
+            pids = _profile_firefox_pids(profile_dir)
+        if pids:
+            for hwnd, pid in _visible_windows() or ():
+                if pid in pids:
+                    _bring_window_to_foreground(hwnd)
+                    return True
+        time.sleep(interval)
+    return False
 
 
 def _pids_have_visible_window(pids):

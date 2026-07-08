@@ -19,7 +19,7 @@ import time
 from ..engine.updater import is_newer
 from ...core import platform as _platform
 
-APP_VERSION = "2.3.9"
+APP_VERSION = "2.3.10"
 APP_REPO = "amnesiadevelopment/persona"
 
 
@@ -579,9 +579,12 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
                         "start", "", "/D", os.path.dirname(exe), exe,
                     ],
                     close_fds=True,
+                    # ONE merged creationflags — spreading no_window_kwargs()
+                    # here as well would pass creationflags twice, a TypeError
+                    # at the call site that silently kills the relaunch.
                     creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
-                    | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
-                    **_platform.no_window_kwargs(),
+                    | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                    | getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
             except Exception as e:
                 say(f"Update: couldn't schedule the relaunch: {e}")
@@ -670,6 +673,33 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
             break
         except OSError:
             continue
+    # execv also inherits os.environ, which the flet runtime has filled with
+    # per-process values: PYTHONPATH/PYTHONHOME point into THIS AppImage's
+    # private /tmp/.mount_* dir, and the FLET_* server vars carry this
+    # process's socket/port. The new build's Flutter shell re-applies any
+    # inherited values OVER its own correct ones, so a leaked PYTHONPATH makes
+    # every post-update process import site-packages from the first
+    # generation's mount forever (#135: ModuleNotFoundError for a package
+    # that IS in the new bundle), and a leaked FLET_SERVER_UDS_PATH makes the
+    # new UI wait on a socket the new Python never binds. Drop them all; the
+    # relaunched runtime recreates each one for itself.
+    for var in (
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONINSPECT",
+        "PYTHONDONTWRITEBYTECODE",
+        "PYTHONNOUSERSITE",
+        "PYTHONUNBUFFERED",
+        "FLET_SERVER_UDS_PATH",
+        "FLET_SERVER_PORT",
+        "FLET_PYTHON_CALLBACK_SOCKET_ADDR",
+        "FLET_APP_CONSOLE",
+        "FLET_APP_STORAGE_DATA",
+        "FLET_APP_STORAGE_TEMP",
+        "FLET_PLATFORM",
+        "FLET_ASSETS_DIR",
+    ):
+        os.environ.pop(var, None)
     try:
         os.execv(target, args)
     except Exception as e:

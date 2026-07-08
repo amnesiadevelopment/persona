@@ -6,7 +6,7 @@ from collections.abc import Callable
 
 from ...core.logging import get_logger
 from ...models.profile import Profile
-from .process import effective_engine, spawn_browser, terminate, wait_for_exit
+from .process import spawn_browser, terminate, wait_for_exit
 
 logger = get_logger("browser.launcher")
 
@@ -99,14 +99,10 @@ class BrowserLauncher:
                 self._active_sessions[profile.name] = proc
                 self._stop_notifiers[profile.name] = stop_event
 
-            # The monitor must wait for the readiness signal of the engine
-            # actually launched — e.g. a mobile profile stores engine=firefox
-            # but launches chromium, and Firefox's BROWSER_STARTED never comes.
-            engine = effective_engine(profile)
             threading.Thread(
                 target=self._monitor_process,
                 args=(proc, profile.name, log_callback, on_ready,
-                      notify_stopped, engine),
+                      notify_stopped),
                 daemon=True,
             ).start()
             threading.Thread(
@@ -162,16 +158,13 @@ class BrowserLauncher:
         log_callback: Callable[[str], None],
         on_ready: Callable[[], None] | None,
         notify_stopped: Callable[[], None],
-        engine: str = "chromium",
     ) -> None:
-        ready_notified = False
-        # Only the Firefox engine emits a BROWSER_STARTED marker on its pipe.
-        # Chromium just streams its own log and never prints a readiness line,
-        # so without this it would sit "loading" forever and never show a stop
-        # button. The chromium process being up IS its readiness — fire on_ready
-        # right away so the profile flips to running with a stop button.
-        if engine != "firefox" and on_ready is not None:
-            ready_notified = True
+        # The process being up is what makes the profile stoppable: report
+        # ready NOW so the card shows a killable [stop] while the engine is
+        # still coming up. Chromium never prints a readiness marker at all,
+        # and gating Firefox on its BROWSER_STARTED left a wedged proxied
+        # launch stuck "loading" with no stop button (#137).
+        if on_ready is not None:
             on_ready()
         try:
             if proc.stdout is None:
@@ -181,10 +174,6 @@ class BrowserLauncher:
                 if not msg:
                     continue
                 if msg == "BROWSER_STARTED":
-                    if not ready_notified:
-                        ready_notified = True
-                        if on_ready:
-                            on_ready()
                     log_callback("Browser started!")
                     logger.info("Browser started for profile: %s", name)
                     continue

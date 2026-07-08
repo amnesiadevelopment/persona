@@ -25,7 +25,6 @@ from .webgl_ext import build_webgl_extension
 from .geo_ext import build_geo_extension
 from .locale_ext import build_locale_extension
 from .stealth_ext import build_stealth_extension
-from .font_config import build_font_config
 from .profile_seed import seed_profile_prefs
 from .title_ext import build_title_extension
 from .window_entry import app_id_for, write_window_entry
@@ -479,11 +478,13 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
         args.append("--dns-prefetch-disable")
 
     env = os.environ.copy()
-    # X11 DISPLAY and fontconfig are Linux concepts; on Win/Mac the OS supplies
-    # fonts and there's no DISPLAY to set.
+    # Fonts come from the system fontconfig. A per-profile FONTCONFIG_FILE
+    # flooded live sessions with "Cannot load default config file" errors from
+    # chromium child processes and made pages render with the bundled clone
+    # fonts instead of the system set; the engine spoofs the JS-visible font
+    # list itself, so the override bought no anti-detect value.
     if _platform.IS_LINUX:
         env.setdefault("DISPLAY", ":0")
-        env["FONTCONFIG_FILE"] = build_font_config(profile_dir, engine_platform)
 
     proc = subprocess.Popen(
         args,

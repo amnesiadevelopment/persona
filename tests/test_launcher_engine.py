@@ -15,36 +15,30 @@ class _Proc:
         return 0
 
 
-def _monitored_engine(monkeypatch, profile):
-    recorded = {}
-    done = threading.Event()
-
-    def fake_monitor(self, proc, name, log_callback, on_ready,
-                     notify_stopped, engine="chromium"):
-        recorded["engine"] = engine
-        done.set()
-
+def _ready_fired(monkeypatch, profile) -> bool:
+    # #137: on_ready must fire at launch START — the process being up is what
+    # makes the profile stoppable. Gating Firefox readiness on BROWSER_STARTED
+    # left a wedged proxied launch stuck "loading" with no stop button; stdout
+    # here never carries a readiness line, so ready must not depend on one.
+    ready = threading.Event()
     monkeypatch.setattr(launcher_mod, "spawn_browser", lambda p: _Proc())
-    monkeypatch.setattr(BrowserLauncher, "_monitor_process", fake_monitor)
     bl = BrowserLauncher()
-    bl.start_thread(profile, lambda _m: None)
-    assert done.wait(5)
-    return recorded["engine"]
+    bl.start_thread(profile, lambda _m: None, on_ready=ready.set)
+    return ready.wait(5)
 
 
-def test_mobile_firefox_profile_monitored_as_chromium(monkeypatch):
-    # A mobile profile launches chromium regardless of the stored engine; the
-    # monitor must wait for chromium readiness, not a Firefox BROWSER_STARTED
-    # that never comes.
-    profile = Profile(name="mob", engine="firefox", os_type="android")
-    assert _monitored_engine(monkeypatch, profile) == "chromium"
-
-
-def test_desktop_firefox_profile_monitored_as_firefox(monkeypatch):
+def test_firefox_profile_stoppable_at_launch_start(monkeypatch):
     profile = Profile(name="fox", engine="firefox", os_type="windows")
-    assert _monitored_engine(monkeypatch, profile) == "firefox"
+    assert _ready_fired(monkeypatch, profile)
 
 
-def test_chromium_profile_monitored_as_chromium(monkeypatch):
+def test_chromium_profile_stoppable_at_launch_start(monkeypatch):
     profile = Profile(name="chr", engine="chromium", os_type="windows")
-    assert _monitored_engine(monkeypatch, profile) == "chromium"
+    assert _ready_fired(monkeypatch, profile)
+
+
+def test_mobile_profile_stoppable_at_launch_start(monkeypatch):
+    # A mobile profile stored as firefox actually launches chromium; either
+    # way the stop button must be available from launch start.
+    profile = Profile(name="mob", engine="firefox", os_type="android")
+    assert _ready_fired(monkeypatch, profile)

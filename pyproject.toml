@@ -18,6 +18,12 @@ dependencies = [
     "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git",
 ]
 
+[tool.pytest.ini_options]
+# A blocking test must FAIL, not hang the whole run (pytest-timeout, thread
+# method on Windows). Generous per-test bound: real WMI/subprocess tests are
+# slow but finish well under this.
+timeout = 120
+
 [tool.flet]
 product = "persona"
 org = "dev.persona"

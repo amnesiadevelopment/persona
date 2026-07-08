@@ -76,6 +76,19 @@ jobs:
       - name: Build the Linux bundle
         run: flet build linux -v --no-rich-output
 
+      - name: Assert required packages are bundled
+        # Both engines are hard requirements. flet resolves them from pyproject
+        # at build time; if that ever silently changes, fail the build here
+        # instead of shipping an app whose Firefox engine can't import.
+        run: |
+          for pkg in invisible_playwright invisible_core; do
+            if [ ! -d "build/linux/site-packages/$pkg" ]; then
+              echo "ERROR: $pkg missing from build/linux/site-packages - not bundled." >&2
+              exit 1
+            fi
+          done
+          echo "bundled engine packages OK"
+
       - name: Show what flet produced
         run: |
           echo "=== build/linux tree ==="

@@ -143,6 +143,49 @@ def test_apply_and_restart_windows_runs_installer_silently(monkeypatch, tmp_path
     assert relaunch_call[0] == "cmd"
 
 
+def test_windows_relaunch_has_single_merged_creationflags(monkeypatch, tmp_path):
+    # The relaunch Popen once passed creationflags= AND spread no_window_kwargs()
+    # (which also carries creationflags) — a TypeError at the call site, swallowed
+    # by the except, so the app never reopened after an update (#133). The
+    # relaunch must reach Popen with ONE merged creationflags: detached from the
+    # exiting process, its own group, and no console window.
+    _force_os(monkeypatch, win=True)
+    DETACHED, NEW_GROUP, NO_WINDOW = 0x00000008, 0x00000200, 0x08000000
+    monkeypatch.setattr(au.subprocess, "DETACHED_PROCESS", DETACHED, raising=False)
+    monkeypatch.setattr(
+        au.subprocess, "CREATE_NEW_PROCESS_GROUP", NEW_GROUP, raising=False
+    )
+    monkeypatch.setattr(au.subprocess, "CREATE_NO_WINDOW", NO_WINDOW, raising=False)
+    staged = tmp_path / "persona-windows-setup.exe"
+    staged.write_bytes(b"MZ")
+    exe = tmp_path / "persona.exe"
+    exe.write_bytes(b"MZ")
+    calls = []
+
+    def fake_popen(args, **kw):
+        calls.append((args, kw))
+
+        class P:
+            pass
+
+        return P()
+
+    monkeypatch.setattr(au.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(au, "_installed_windows_exe", lambda: str(exe))
+
+    def fake_exit(code):
+        raise SystemExit(code)
+
+    monkeypatch.setattr(au.os, "_exit", fake_exit)
+    msgs = []
+    with pytest.raises(SystemExit):
+        au.apply_and_restart(str(staged), log=msgs.append)
+    assert not any("couldn't schedule the relaunch" in m for m in msgs), msgs
+    relaunch_kw = next(kw for args, kw in calls if str(exe) in args)
+    assert relaunch_kw["creationflags"] == DETACHED | NEW_GROUP | NO_WINDOW
+    assert relaunch_kw.get("close_fds") is True
+
+
 def test_apply_and_restart_never_wipes_engines(monkeypatch, tmp_path):
     # Inno remembers the wipedata/wipeengines task selections from a previous
     # interactive install and re-applies them on silent upgrades. A self-update
@@ -192,6 +235,49 @@ def test_installer_wipe_tasks_do_not_inherit_previous_selection():
     assert len(tasks) == 2
     for line in re.findall(r'Name: "(?:wipedata|wipeengines)".*', text):
         assert "dontinheritcheck" in line, line
+
+
+def test_linux_relaunch_scrubs_runtime_env(monkeypatch, tmp_path):
+    # The flet runtime injects PYTHONPATH/PYTHONHOME (pointing into THIS
+    # AppImage's private /tmp/.mount_* dir) and per-process FLET_* server vars
+    # into os.environ, and the Flutter shell re-applies any inherited values
+    # over its own correct ones. os.execv passes os.environ along, so without
+    # scrubbing, every post-update process resolves site-packages from the
+    # FIRST generation's mount forever — a chain of in-app updates kept
+    # importing from a pre-invisible_playwright bundle and flooded
+    # "ModuleNotFoundError: No module named 'invisible_playwright'" (#135).
+    _force_os(monkeypatch, linux=True)
+    target = tmp_path / "persona.AppImage"
+    target.write_bytes(b"old")
+    staged = tmp_path / "staged.AppImage"
+    staged.write_bytes(b"new")
+    monkeypatch.setattr(au, "installed_appimage_path", lambda: str(target))
+    monkeypatch.setattr(au, "verify_appimage_runs", lambda p: True)
+    # fsync on an O_RDONLY fd is EBADF on Windows, where this test also runs
+    monkeypatch.setattr(au.os, "fsync", lambda fd: None)
+    poisoned = {
+        "PYTHONPATH": "/tmp/.mount_persXXXXXX/usr/site-packages",
+        "PYTHONHOME": "/tmp/.mount_persXXXXXX/usr",
+        "PYTHONNOUSERSITE": "1",
+        "FLET_SERVER_UDS_PATH": "flet_12345.sock",
+        "FLET_SERVER_PORT": "54321",
+        "FLET_PYTHON_CALLBACK_SOCKET_ADDR": "stdout_12345.sock",
+    }
+    for k, v in poisoned.items():
+        monkeypatch.setenv(k, v)
+    seen = {}
+
+    def fake_execv(path, args):
+        seen["env"] = dict(au.os.environ)
+        seen["path"] = path
+        raise SystemExit(0)
+
+    monkeypatch.setattr(au.os, "execv", fake_execv)
+    with pytest.raises(SystemExit):
+        au.apply_and_restart(str(staged))
+    assert seen["path"] == str(target)
+    for k in poisoned:
+        assert k not in seen["env"], f"{k} leaked into the relaunched process"
 
 
 def test_apply_and_restart_macos_is_notify_only(monkeypatch, tmp_path):

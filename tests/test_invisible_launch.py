@@ -158,6 +158,390 @@ def test_profile_prefs_skip_startup_network_fetch():
     assert prefs["services.settings.server"].startswith("data:")
 
 
+def test_enter_on_worker_bounded_abandons_wedged_launch_and_retries(
+    monkeypatch, tmp_path
+):
+    # #137: a proxied launch of the patched Firefox wedges nondeterministically
+    # inside launch_persistent_context (live: ~half of fresh proxied launches
+    # on Windows never reach the initial page attach), and killing the browser
+    # does NOT make the blocked sync __enter__ raise — the driver keeps
+    # waiting. So the enter runs on an abandonable worker thread: an overrun
+    # attempt is abandoned, this profile's Firefox is killed + settled, and a
+    # FRESH worker retries. The unbounded path hung the child forever — no
+    # BROWSER_STARTED, no stop button.
+    import threading
+    import time as _time
+
+    kills = []
+    attempts = []
+
+    class Ctx:
+        pages = [object()]
+
+    class Engine:
+        def __init__(self, **kw):
+            pass
+
+        def __enter__(self):
+            attempts.append("enter")
+            if len(attempts) == 1:
+                threading.Event().wait(30)  # wedged, never returns
+            return Ctx()
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox",
+        lambda d, known_pids=None: kills.append(d),
+    )
+    settles = []
+    monkeypatch.setattr(
+        invisible_launch, "_wait_profile_released",
+        lambda d: settles.append(d) or True,
+    )
+
+    t0 = _time.monotonic()
+    session = invisible_launch._enter_on_worker(
+        Engine, {}, str(tmp_path), attempts=2, per_try=0.3
+    )
+    assert session is not None
+    assert session.ctx is not None
+    assert len(attempts) == 2
+    # The wedged first attempt is abandoned: its Firefox killed and the profile
+    # confirmed released before the retry (never relaunch over a dying one).
+    assert str(tmp_path) in kills
+    assert settles == [str(tmp_path)]
+    assert _time.monotonic() - t0 < 10
+
+
+def test_enter_on_worker_stop_event_aborts_without_retry(monkeypatch, tmp_path):
+    # Pressing [stop] during a wedged launch aborts it (kill + settle) and does
+    # NOT retry. per_try is large to prove the abort came from STOP, not the
+    # overrun bound.
+    import threading
+    import time as _time
+
+    attempts = []
+
+    class Engine:
+        def __init__(self, **kw):
+            pass
+
+        def __enter__(self):
+            attempts.append("enter")
+            threading.Event().wait(30)
+            raise RuntimeError("browser process exited")
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox", lambda d, known_pids=None: None
+    )
+    monkeypatch.setattr(invisible_launch, "_wait_profile_released", lambda d: True)
+
+    stop = threading.Event()
+    threading.Timer(0.3, stop.set).start()
+    t0 = _time.monotonic()
+    session = invisible_launch._enter_on_worker(
+        Engine, {}, str(tmp_path), attempts=3, per_try=60, stop_event=stop
+    )
+    assert session is None
+    assert attempts == ["enter"]  # no retry after a user cancel
+    assert _time.monotonic() - t0 < 10
+
+
+def test_worker_session_runs_ctx_calls_and_teardown_on_worker():
+    # Playwright's sync ctx is thread-affine: add_init_script and __exit__ must
+    # run on the thread that created ctx. _WorkerSession marshals both onto its
+    # worker.
+    import threading
+
+    class Ctx:
+        pages = [object()]
+
+        def __init__(self):
+            self.calls_thread = []
+
+        def add_init_script(self, _s):
+            self.calls_thread.append(threading.get_ident())
+            return "added"
+
+    class Engine:
+        def __init__(self, **kw):
+            self.exit_thread = None
+
+        def __enter__(self):
+            return self.ctx
+
+        def __exit__(self, *a):
+            self.exit_thread = threading.get_ident()
+            return False
+
+    eng = Engine()
+    eng.ctx = Ctx()
+    session = invisible_launch._enter_on_worker(
+        lambda **kw: eng, {}, "d", attempts=1, per_try=5
+    )
+    assert session is not None
+    worker_id = session._worker.ident
+    assert session.run_on_worker(lambda: session.ctx.add_init_script("x")) == "added"
+    assert eng.ctx.calls_thread == [worker_id]
+    session.teardown()
+    assert eng.exit_thread == worker_id  # teardown ran on the worker
+    assert not session._worker.is_alive()
+    # A second teardown (the stop path: stop_gracefully already tore down,
+    # then _child tears down again) must return instead of waiting forever
+    # for the dead worker to answer run_on_worker.
+    session.teardown()
+
+
+def test_child_stop_during_wedged_launch_emits_cancelled(monkeypatch, tmp_path):
+    # #137 wiring: a launch wedged inside __enter__ that the user STOPs reports
+    # LAUNCH_CANCELLED (the launcher tears the session down on it) and still
+    # closes the pipe. The worker is abandoned after the overrun/stop; killing
+    # the browser does not unblock the wedged sync enter.
+    import os
+    import sys
+    import threading
+    import types
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            threading.Event().wait(30)  # wedged, never returns
+            raise RuntimeError("browser process exited")
+
+        def __exit__(self, *a):
+            return False
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox", lambda d, known_pids=None: None
+    )
+    monkeypatch.setattr(invisible_launch, "_wait_profile_released", lambda d: True)
+
+    stop = threading.Event()
+    threading.Timer(0.3, stop.set).start()
+    r, w = os.pipe()
+    invisible_launch._child(
+        {"profile_dir": str(tmp_path), "profile_name": "t", "seed": 1},
+        w,
+        stop_event=stop,
+    )
+    out = os.read(r, 65536).decode()
+    os.close(r)
+    assert "LAUNCH_CANCELLED" in out
+    assert "BROWSER_CLOSED" in out
+
+
+def test_geo_shortcircuit_skips_egress_lookup_with_concrete_timezone(monkeypatch):
+    # #137: with a proxy set, the engine's prepare_session_geo discovers the
+    # egress IP THROUGH the proxy before every launch. persona always passes a
+    # concrete timezone, so the lookup is pure latency and one more network
+    # step for a proxied launch to wedge on — the installed shortcircuit must
+    # resolve a concrete zone with NO network round-trip.
+    pytest.importorskip("invisible_playwright")
+    pytest.importorskip("invisible_core")
+    import invisible_core._geo as core_geo
+    from invisible_playwright import launcher as iplauncher
+
+    def boom(*a, **k):
+        raise AssertionError("egress lookup must not run for a concrete zone")
+
+    monkeypatch.setattr(core_geo, "discover_egress_ip", boom)
+    invisible_launch._install_geo_shortcircuit()
+    geo = iplauncher.prepare_session_geo(
+        "Europe/Berlin", {"server": "socks5://127.0.0.1:9"}
+    )
+    assert geo.timezone == "Europe/Berlin"
+    assert geo.egress_ip is None
+
+
+def test_visible_window_pids_built_on_shared_enumeration(monkeypatch):
+    # The close-watch pid set and the #136 window raise share one enumeration:
+    # (hwnd, pid) pairs, None staying a distinct no-verdict.
+    monkeypatch.setattr(
+        invisible_launch, "_visible_windows", lambda: [(1, 10), (2, 10), (3, 20)]
+    )
+    assert invisible_launch._visible_window_pids() == {10, 20}
+    monkeypatch.setattr(invisible_launch, "_visible_windows", lambda: None)
+    assert invisible_launch._visible_window_pids() is None
+
+
+def test_raise_profile_window_raises_only_profile_hwnd(monkeypatch):
+    # #136: the raise must target the window owned by THIS profile's Firefox
+    # pid — never another profile's (or any other app's) window.
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(invisible_launch, "_profile_firefox_pids", lambda d: {10})
+    monkeypatch.setattr(
+        invisible_launch, "_visible_windows", lambda: [(111, 999), (222, 10)]
+    )
+    raised = []
+    monkeypatch.setattr(
+        invisible_launch, "_bring_window_to_foreground", raised.append
+    )
+    assert (
+        invisible_launch._raise_profile_window(r"C:\p", timeout=2, interval=0.01)
+        is True
+    )
+    assert raised == [222]
+
+
+def test_raise_profile_window_waits_for_window_to_appear(monkeypatch):
+    # The window can lag BROWSER_STARTED by a beat; poll until it exists
+    # instead of giving up on the first empty enumeration.
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(invisible_launch, "_profile_firefox_pids", lambda d: {10})
+    enums = iter([[], [(5, 999)], [(7, 10)]])
+    monkeypatch.setattr(invisible_launch, "_visible_windows", lambda: next(enums))
+    raised = []
+    monkeypatch.setattr(
+        invisible_launch, "_bring_window_to_foreground", raised.append
+    )
+    assert (
+        invisible_launch._raise_profile_window(r"C:\p", timeout=2, interval=0.01)
+        is True
+    )
+    assert raised == [7]
+
+
+def test_raise_profile_window_noop_off_windows(monkeypatch):
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", False)
+
+    def boom(*a, **k):
+        raise AssertionError("no window work off Windows")
+
+    monkeypatch.setattr(invisible_launch, "_visible_windows", boom)
+    monkeypatch.setattr(invisible_launch, "_profile_firefox_pids", boom)
+    assert invisible_launch._raise_profile_window(r"C:\p") is False
+
+
+def test_child_raises_profile_window_after_started_on_windows(
+    monkeypatch, tmp_path
+):
+    # #136 wiring: the engine's window opens BEHIND persona on Windows (the
+    # launch runs in persona's own process, which holds the foreground), so
+    # once BROWSER_STARTED is reported the profile's window must be raised —
+    # off the session thread.
+    import os
+    import sys
+    import threading
+    import types
+
+    class FakeCtx:
+        pages = [object()]
+
+        def add_init_script(self, *_a, **_k):
+            pass
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            pass
+
+        def _default_context_kwargs(self):
+            return {}
+
+        def __enter__(self):
+            return FakeCtx()
+
+        def __exit__(self, *a):
+            return False
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(
+        invisible_launch, "_thread_close_watch", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None: None
+    )
+
+    raised = []
+    raised_ev = threading.Event()
+
+    def fake_raise(profile_dir):
+        raised.append(profile_dir)
+        raised_ev.set()
+
+    monkeypatch.setattr(invisible_launch, "_raise_profile_window", fake_raise)
+
+    stop = threading.Event()
+    stop.set()
+    r, w = os.pipe()
+    invisible_launch._child(
+        {"profile_dir": str(tmp_path), "profile_name": "t", "seed": 1},
+        w,
+        stop_event=stop,
+    )
+    out = os.read(r, 65536).decode()
+    os.close(r)
+    assert "BROWSER_STARTED" in out
+    assert raised_ev.wait(5)
+    assert raised == [str(tmp_path)]
+
+
+def test_child_does_not_raise_window_off_windows(monkeypatch, tmp_path):
+    import os
+    import sys
+    import threading
+    import types
+
+    class FakeCtx:
+        pages = [object()]
+
+        def add_init_script(self, *_a, **_k):
+            pass
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            pass
+
+        def _default_context_kwargs(self):
+            return {}
+
+        def __enter__(self):
+            return FakeCtx()
+
+        def __exit__(self, *a):
+            return False
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", False)
+    monkeypatch.setattr(
+        invisible_launch, "_thread_close_watch", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None: None
+    )
+
+    def boom(*a, **k):
+        raise AssertionError("no window raise off Windows")
+
+    monkeypatch.setattr(invisible_launch, "_raise_profile_window", boom)
+
+    stop = threading.Event()
+    stop.set()
+    r, w = os.pipe()
+    invisible_launch._child(
+        {"profile_dir": str(tmp_path), "profile_name": "t", "seed": 1},
+        w,
+        stop_event=stop,
+    )
+    out = os.read(r, 65536).decode()
+    os.close(r)
+    assert "BROWSER_STARTED" in out
+
+
 def test_child_accepts_stop_event_for_thread_path():
     # On Windows/macOS _child runs in a thread and is stopped via a stop_event
     # (SIGTERM is main-thread only). The signature must accept it.
@@ -500,6 +884,9 @@ def test_child_force_kills_profile_firefox_after_teardown(monkeypatch, tmp_path)
         "_kill_profile_firefox",
         lambda d, pids: calls.append(("kill", d, pids)),
     )
+    monkeypatch.setattr(
+        invisible_launch, "_raise_profile_window", lambda *a, **k: None
+    )
 
     r, w = os.pipe()
     invisible_launch._child(
@@ -553,6 +940,15 @@ def test_child_renders_at_system_dpr_keeps_spoofed_screen(monkeypatch, tmp_path)
     monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
     monkeypatch.setattr(invisible_launch, "_work_area", lambda: (3840, 2088))
     monkeypatch.setattr(invisible_launch, "_system_dpr", lambda: 1.5)
+    monkeypatch.setattr(
+        invisible_launch, "_thread_close_watch", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_raise_profile_window", lambda *a, **k: None
+    )
 
     stop = threading.Event()
     stop.set()
@@ -698,6 +1094,16 @@ def test_child_thread_path_applies_overrides_and_reports_lifecycle(
     monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
     monkeypatch.setattr(invisible_launch, "_work_area", lambda: (3840, 2088))
     monkeypatch.setattr(invisible_launch, "_system_dpr", lambda: 1.5)
+    # The REAL close-watch runs here on purpose: with stop_event pre-set it
+    # calls stop_gracefully (first teardown, worker exits) and _child then
+    # tears down AGAIN — the second teardown must be a no-op, not a forever-
+    # blocking run_on_worker on the dead worker (the STOP-path deadlock).
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_raise_profile_window", lambda *a, **k: None
+    )
 
     stop = threading.Event()
     stop.set()  # ask for STOP on the first watch tick
@@ -796,6 +1202,15 @@ def test_child_seeds_bookmarks_before_engine_launch(monkeypatch, tmp_path):
     monkeypatch.setattr(invisible_launch, "_seed_firefox_bookmarks", fake_seed)
     monkeypatch.setattr(
         invisible_launch, "_ensure_firefox_policies", lambda: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_thread_close_watch", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_raise_profile_window", lambda *a, **k: None
     )
 
     stop = threading.Event()
@@ -1243,6 +1658,12 @@ def test_child_starts_engine_exactly_once_when_already_seeded(
     monkeypatch.setattr(
         invisible_launch, "_kill_profile_firefox", lambda d, pids=None: None
     )
+    monkeypatch.setattr(
+        invisible_launch, "_thread_close_watch", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_raise_profile_window", lambda *a, **k: None
+    )
 
     marks = [{"name": "a", "url": "https://a/"}]
     _make_places(str(tmp_path / "places.sqlite"))
@@ -1310,6 +1731,15 @@ def test_child_thread_path_closes_pipe_on_normal_exit(monkeypatch, tmp_path):
     mod = types.ModuleType("invisible_playwright")
     mod.InvisiblePlaywright = FakeEngine
     monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(
+        invisible_launch, "_thread_close_watch", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_raise_profile_window", lambda *a, **k: None
+    )
 
     stop = threading.Event()
     stop.set()

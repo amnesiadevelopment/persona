@@ -97,6 +97,32 @@ def test_chromium_unchecked_proxy_ships_host_zone_not_utc(monkeypatch, tmp_path)
     assert "--timezone=UTC" not in captured["args"]
 
 
+def test_linux_chromium_env_keeps_system_fontconfig(monkeypatch, tmp_path):
+    # A per-profile FONTCONFIG_FILE flooded live sessions with "Cannot load
+    # default config file" errors from chromium child processes and rendered
+    # pages with the bundled clone fonts instead of the system set. The
+    # browser must inherit the system fontconfig.
+    captured = {}
+
+    class _FakePopen:
+        def __init__(self, args, **kwargs):
+            captured["env"] = kwargs.get("env")
+
+    monkeypatch.setattr(process, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(process, "ProxyStore", _Store)
+    monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
+    monkeypatch.setattr(process, "write_window_entry", lambda name: None)
+    monkeypatch.setattr(process._platform, "IS_LINUX", True)
+    monkeypatch.setattr(process.subprocess, "Popen", _FakePopen)
+    monkeypatch.delenv("FONTCONFIG_FILE", raising=False)
+    monkeypatch.delenv("FONTCONFIG_PATH", raising=False)
+    profile = Profile(name="fontenv")
+    process.spawn_browser(profile)
+    assert "FONTCONFIG_FILE" not in captured["env"]
+    assert "FONTCONFIG_PATH" not in captured["env"]
+    assert not (tmp_path / "fontenv" / "fonts.conf").exists()
+
+
 def test_effective_engine_mobile_forces_chromium():
     p = Profile(name="m", engine="firefox", os_type="android")
     assert process.effective_engine(p) == "chromium"

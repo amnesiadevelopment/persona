@@ -124,7 +124,10 @@ def main() -> None:
     # made the old probe a false-negative that looped the update forever).
     if os.environ.get("PERSONA_SELFTEST") == "1":
         print("SELFTEST_OK", flush=True)
-        return
+        # In the flet-bundled build, returning from main() leaves the Flutter
+        # host process alive, so the probe's subprocess.run would hang for its
+        # full timeout. Hard-exit so the probe finishes in ~1-2s.
+        os._exit(0)
 
     container = Container()
 
