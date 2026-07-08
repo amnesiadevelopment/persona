@@ -88,8 +88,6 @@ persona aims for a clean, consistent, human-like profile — not magic invisibil
 ```bash
 python -m venv .venv
 .venv/bin/pip install --prefer-binary -r requirements.txt
-# fetch the bundled fonts (not stored in the repo):
-./download-fonts.sh
 ```
 
 fingerprint-chromium is expected at `~/fpchrome/fpchrome.AppImage` (persona can

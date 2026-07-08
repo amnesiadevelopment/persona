@@ -187,11 +187,6 @@ logs/
 # our build spec IS source, keep it
 !persona.spec
 
-# Bundled fonts (heavy binaries) — shipped via setup/download, not committed to git
-src/assets/fonts/**/*.ttf
-src/assets/fonts/**/*.ttc
-src/assets/fonts/**/*.otf
-
 # editor/backup junk
 *.bak
 *.orig
