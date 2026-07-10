@@ -295,6 +295,25 @@ def test_windows_relaunch_waits_for_old_persona_to_die(monkeypatch, tmp_path):
     assert "goto launch" in bat
 
 
+def test_relaunch_bat_settle_is_brief(tmp_path):
+    # #162: the settle between "everything exited" and the relaunch is one
+    # ping beat (~1s), not more — the OS releases the dead processes' file
+    # handles near-instantly, and every extra second here is a second the
+    # user stares at nothing between the update closing and reopening. The
+    # poll cadence stays at ~1s (cmd has no reliable sub-second sleep).
+    exe = tmp_path / "persona.exe"
+    exe.write_bytes(b"MZ")
+    path = au._write_relaunch_bat(str(exe), 4242, 7777)
+    try:
+        with open(path, encoding="ascii", newline="") as f:
+            bat = f.read()
+    finally:
+        au.os.remove(path)
+    settle = bat.split(":settle")[1].split(":launch")[0]
+    assert "ping -n 2 " in settle
+    assert "ping -n 3" not in settle
+
+
 def test_relaunch_bat_is_silent_and_ascii(tmp_path):
     # Mars SAW a console with ping output during a live update. Every command
     # in the bat must have its output swallowed, and nothing in it may pop a

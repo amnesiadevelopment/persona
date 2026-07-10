@@ -20,7 +20,7 @@ import time
 from ..engine.updater import is_newer
 from ...core import platform as _platform
 
-APP_VERSION = "2.4.2"
+APP_VERSION = "2.4.3"
 APP_REPO = "amnesiadevelopment/persona"
 
 
@@ -577,7 +577,10 @@ def _write_relaunch_bat(exe: str, installer_pid: int, old_pid: int) -> str:
         "ping -n 2 127.0.0.1 >nul\r\n"
         "goto wait\r\n"
         ":settle\r\n"
-        "ping -n 3 127.0.0.1 >nul\r\n"
+        # one ping beat (~1s): handle release after the last holder exits is
+        # near-instant, and every extra second here is dead time between the
+        # update closing persona and reopening it
+        "ping -n 2 127.0.0.1 >nul\r\n"
         ":launch\r\n"
         # empty title + quoted path: `start` treats the first quoted token as a
         # window title, so a bare path with spaces would launch nothing

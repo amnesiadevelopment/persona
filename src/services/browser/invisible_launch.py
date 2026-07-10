@@ -382,12 +382,32 @@ def _proxy_dict(proxy_url: str):
 
 
 def _system_dpr() -> float:
-    """The host display's scale factor (1.0 at 100%, 1.5 at 150%, 2.0 at 200%),
-    used to convert the physical work-area size to Firefox CSS px for the
-    initial-window-size seed. Non-Windows desktops fall back to 1.0. Clamped to
-    a sane desktop range so a weird reading can't produce an unusable window."""
-    if not _platform.IS_WINDOWS:
+    """The host display's scale factor (1.0 at 100%, 1.5 at 150%, 2.0 at 200%).
+
+    Drives the Firefox render scale (layout.css.devPixelsPerPx) so a chosen
+    resolution renders at the host's real scale — readable on a HiDPI display
+    instead of physically tiny (#167) — and the initial-window-size seed. Read
+    per-OS: GetDpiForSystem on Windows, the max NSScreen backingScaleFactor on
+    macOS (2.0 on Retina), and the GDK/Wayland/Xft scale on Linux. Clamped to a
+    sane desktop range so a weird reading can't produce an unusable window; a
+    failed read falls back to 1.0."""
+    if _platform.IS_WINDOWS:
+        return _clamp_dpr(_windows_dpr())
+    if _platform.IS_MACOS:
+        return _clamp_dpr(_macos_dpr())
+    if _platform.IS_LINUX:
+        return _clamp_dpr(_linux_dpr())
+    return 1.0
+
+
+def _clamp_dpr(scale: float) -> float:
+    """Keep a scale reading in a sane desktop range; 0/None → 1.0."""
+    if not scale or scale <= 0:
         return 1.0
+    return max(1.0, min(3.0, round(scale, 2)))
+
+
+def _windows_dpr() -> float:
     try:
         import ctypes
 
@@ -397,10 +417,91 @@ def _system_dpr() -> float:
         except Exception:
             pass
         dpi = ctypes.windll.user32.GetDpiForSystem()
-        scale = dpi / 96.0 if dpi else 1.0
-        return max(1.0, min(3.0, round(scale, 2)))
+        return dpi / 96.0 if dpi else 1.0
     except Exception:
         return 1.0
+
+
+def _macos_dpr() -> float:
+    """The primary display's backing scale (2.0 on Retina). Prefers AppKit's
+    NSScreen.backingScaleFactor via PyObjC when present; otherwise reads the
+    active display mode's pixel-vs-point ratio through Quartz, which is in the
+    stdlib-adjacent Core Graphics framework Python can reach with ctypes. Falls
+    back to 2.0 — a Retina Mac tiny-rendering at 1.0 is the exact #167 failure,
+    and modern Macs are overwhelmingly Retina, so 2.0 is the safer default than
+    1.0 when the read fails."""
+    try:
+        from AppKit import NSScreen  # type: ignore
+
+        screens = NSScreen.screens()
+        if screens:
+            return max(float(s.backingScaleFactor()) for s in screens)
+    except Exception:
+        pass
+    try:
+        import ctypes
+        import ctypes.util
+
+        cg = ctypes.cdll.LoadLibrary(ctypes.util.find_library("CoreGraphics"))
+        cg.CGMainDisplayID.restype = ctypes.c_uint32
+        cg.CGDisplayCopyDisplayMode.restype = ctypes.c_void_p
+        cg.CGDisplayCopyDisplayMode.argtypes = [ctypes.c_uint32]
+        cg.CGDisplayModeGetPixelWidth.restype = ctypes.c_size_t
+        cg.CGDisplayModeGetPixelWidth.argtypes = [ctypes.c_void_p]
+        cg.CGDisplayModeGetWidth.restype = ctypes.c_size_t
+        cg.CGDisplayModeGetWidth.argtypes = [ctypes.c_void_p]
+        cg.CGDisplayModeRelease.argtypes = [ctypes.c_void_p]
+        did = cg.CGMainDisplayID()
+        mode = cg.CGDisplayCopyDisplayMode(did)
+        if mode:
+            try:
+                px = cg.CGDisplayModeGetPixelWidth(mode)
+                pt = cg.CGDisplayModeGetWidth(mode)
+            finally:
+                cg.CGDisplayModeRelease(mode)
+            if pt:
+                return px / pt
+    except Exception:
+        pass
+    return 2.0  # Retina default — 1.0 would render tiny (#167)
+
+
+def _linux_dpr() -> float:
+    """The desktop's scale factor. GDK_SCALE / QT_SCALE_FACTOR are the explicit
+    per-session overrides; otherwise GDK's monitor scale (Wayland's wl_output
+    scale, or X's Xft.dpi/96) via a short introspection call. Only integer
+    Wayland scales are exposed by wl_output, but GDK reports fractional Xft/
+    logical scales too. Falls back to 1.0 (a 100% Linux desktop, the common
+    case)."""
+    for var in ("GDK_SCALE", "QT_SCALE_FACTOR"):
+        val = os.environ.get(var)
+        if val:
+            try:
+                return float(val)
+            except ValueError:
+                pass
+    try:
+        import gi  # type: ignore
+
+        gi.require_version("Gdk", "3.0")
+        from gi.repository import Gdk  # type: ignore
+
+        display = Gdk.Display.get_default()
+        if display is not None:
+            monitor = display.get_primary_monitor() or display.get_monitor(0)
+            if monitor is not None:
+                sf = monitor.get_scale_factor()
+                if sf:
+                    return float(sf)
+    except Exception:
+        pass
+    xft = os.environ.get("XFT_DPI")
+    if xft:
+        try:
+            return float(xft) / 96.0
+        except ValueError:
+            pass
+    return 1.0
 
 
 def _context_overrides_for(w: int, h: int) -> dict:
@@ -912,18 +1013,49 @@ def _wait_profile_released(
         time.sleep(0.25)
 
 
+_PERSONA_BOOKMARKS_MARKER = ".persona-bookmarks.json"
+
+
+def _read_persona_bookmark_urls(profile_dir: str) -> "set[str]":
+    """The urls persona placed on the toolbar last launch, from the profile's
+    marker file. Missing/unreadable → empty (a fresh or pre-#171 profile)."""
+    path = os.path.join(profile_dir, _PERSONA_BOOKMARKS_MARKER)
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return {str(u) for u in data}
+    except (OSError, ValueError):
+        pass
+    return set()
+
+
+def _write_persona_bookmark_urls(profile_dir: str, urls) -> None:
+    """Record the urls persona just placed so the next launch reconciles only
+    persona's own footprint (see sync_places_bookmarks)."""
+    path = os.path.join(profile_dir, _PERSONA_BOOKMARKS_MARKER)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(sorted(urls), f)
+    except OSError:
+        pass
+
+
 def _seed_firefox_bookmarks(
     profile_dir: str, bookmarks: list, seed: int, stop_event=None
 ) -> None:
-    """Reconcile the Firefox toolbar to the profile's bookmark set via
-    places.sqlite — runs before every launch, so edits in the profile editor
-    take effect on the next launch: removed bookmarks disappear, nothing ever
-    duplicates, an empty set clears the toolbar (#144).
+    """Reconcile persona's OWN Firefox toolbar bookmarks via places.sqlite —
+    runs before every launch, so edits in the profile editor take effect on the
+    next launch: removed bookmarks disappear, nothing ever duplicates (#144),
+    an empty set clears persona's bookmarks (#147). Bookmarks the user added
+    inside Firefox are preserved across relaunches — persona reconciles only the
+    set it placed, tracked in a per-profile marker (#171).
 
     The engine must have created places.sqlite first (Firefox rejects a
     hand-built one); if it hasn't, do a one-time headless init to create it.
     An empty set on a profile with no places.sqlite yet has nothing to clear —
-    no engine init just to write nothing."""
+    no engine init just to write nothing (and no marker to update: persona has
+    placed nothing)."""
     if not profile_dir:
         return
     try:
@@ -938,7 +1070,9 @@ def _seed_firefox_bookmarks(
                 return
 
         marks = [Bookmark(b.get("name", ""), b.get("url", "")) for b in bookmarks]
-        sync_places_bookmarks(places, marks)
+        prev = _read_persona_bookmark_urls(profile_dir)
+        if sync_places_bookmarks(places, marks, prev_persona_urls=prev):
+            _write_persona_bookmark_urls(profile_dir, {bm.url for bm in marks})
     except Exception:
         pass
 
@@ -1029,6 +1163,19 @@ def _profile_prefs(cfg: dict) -> dict:
             # (live-verified: has_saved_session True after a fast-shutdown
             # X-close), so #148's restore is intact.
             "toolkit.shutdown.fastShutdownStage": 3,
+            # Render emoji as real color glyphs, not tofu boxes (#170). The
+            # engine bundles Firefox's own color-emoji font (TwemojiMozilla),
+            # but its bundle-only font list hides that family under its file
+            # name (StealthSkipFamily keeps only standard-Windows family names),
+            # so emoji fell through to .notdef tofu — the host has no emoji font
+            # either (chromium bundles its own; the FF engine ignores system
+            # fontconfig, #139). "Segoe UI Emoji" IS a standard-Windows family
+            # the engine exposes, and it's backed by the bundled Twemoji glyphs,
+            # so pointing the emoji font-fallback list at it makes emoji render
+            # in color (live-verified: money/hourglass/check/rocket all draw).
+            # Twemoji Mozilla is listed first for hosts that do expose it; Segoe
+            # UI Emoji is the one that resolves on this engine.
+            "font.name-list.emoji": "Twemoji Mozilla, Segoe UI Emoji",
         }
     )
     # The chosen search engine feeds the Home button and the start page a
@@ -1419,39 +1566,34 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
         # With no_viewport Firefox owns the window size; seed a fresh profile's
         # first window so it doesn't open at Firefox's own default.
         _seed_window_size(profile_dir)
-        emit(f"HIDPI_DEBUG chosen={w}x{h} window=native")
-        # Pin the fingerprint screen to the CHOSEN resolution with DPR 1 so
-        # screen.width * devicePixelRatio == screen.width (a spoofed screen at
-        # the host's real 1.5 DPR would report an impossible size — the same
-        # tell fixed in the chromium device ext).
+        # The device-pixel ratio the chosen screen presents. On this engine
+        # window.devicePixelRatio, the CSS resolution media queries, AND the
+        # render scale are ALL driven by the SAME pref (layout.css.devPixelsPerPx)
+        # — proven at the binary level: zoom.stealth.screen.dpr is not read by
+        # xul.dll, only stealth.screen.width/height are, so JS dpr == the render
+        # pref, inseparable. Pinning that pref to 1 rendered content at 1x —
+        # physically tiny on a HiDPI host (#167). A real 2560x1440 HiDPI panel
+        # legitimately reports a dpr > 1 (a "2560-logical" display), so use the
+        # host scale: content renders readable AND the fingerprint stays coherent
+        # (screen.width=2560 stays the chosen value, dpr matches the CSS
+        # resolution media query and the render scale — exactly a genuine HiDPI
+        # monitor, not the doubled-4K skew of a spoofed screen at a mismatched
+        # dpr). Clamped to >=1 by _system_dpr.
         #
         # Firefox has NO --width/--height CLI flags (those are chromium's); a
         # patched-Firefox launch that received them treated the leftover as a URL
         # and opened a bogus "0.0.9.51" page. Size comes ONLY from the profile's
         # xulstore.json (seeded above), never from extra_args.
-        pinned_dpr = 1
+        render_dpr = _system_dpr()
+        emit(f"HIDPI_DEBUG chosen={w}x{h} window=native dpr={render_dpr}")
         kwargs["pin"] = {
             "screen.width": w,
             "screen.height": h,
             "screen.avail_width": w,
             "screen.avail_height": h - 40,
-            "screen.dpr": pinned_dpr,
+            "screen.dpr": render_dpr,
         }
-        # A chosen resolution presents as a device-pixel-ratio-1 monitor (a real
-        # 2560x1440 panel is dpr 1). window.devicePixelRatio, the CSS resolution
-        # media queries (matchMedia("(resolution: Ndppx)")), and the render scale
-        # must ALL report that one dpr, or a scanner cross-checks them and reads
-        # screen.width * dpr as the physical size — a 2560 screen at the host's
-        # own scale reports 3840/5120 ("4K") on a 150%/200% display. The render
-        # pref layout.css.devPixelsPerPx drives the CSS-resolution vector, so
-        # pinning it to the HOST scale (the old #131 render-comfort fix) is
-        # exactly what leaked the doubled resolution. Pin it to the chosen dpr so
-        # every dpr-derived value is coherent at the chosen resolution — the
-        # chromium model (its device ext pins dpr=1 so screen.width*dpr==
-        # screen.width). Content renders at the spoofed dpr's scale, which is the
-        # honest size a real dpr-1 monitor would show. Set explicitly (not
-        # deleted): a stale value in the profile's prefs.js would otherwise win.
-        kwargs["extra_prefs"]["layout.css.devPixelsPerPx"] = str(pinned_dpr)
+        kwargs["extra_prefs"]["layout.css.devPixelsPerPx"] = str(render_dpr)
         # The FIRST paint uses the value already in prefs.js — the user.js
         # override above only kicks in a beat later, and the headless places
         # init leaves the SAMPLED profile's dpr there. A mismatch between the
@@ -1459,7 +1601,7 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
         # flips the window scale mid-open (the initial skew). Carry the same
         # value in prefs.js before Firefox starts so there's no flip.
         _upsert_prefs_js(
-            profile_dir, {"layout.css.devPixelsPerPx": str(pinned_dpr)}
+            profile_dir, {"layout.css.devPixelsPerPx": str(render_dpr)}
         )
     if proxy:
         kwargs["proxy"] = proxy
@@ -1655,13 +1797,17 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     # path watches the Firefox pid (see _fork_close_watch). Neither can use
     # ctx.pages: the ctx lives on the launch worker thread, so the sync API
     # never delivers close events to a poll made from this thread.
+    # Diagnostic lifecycle log (#169): a Firefox profile sometimes died with no
+    # trace in the Activity Log. Emit WHY the close-watch decided closed, and
+    # every teardown/kill with its reason, so a silent death is traceable. These
+    # lines reach the activity log via the launcher's log_callback.
     tracked_pids = None
     if in_thread:
         tracked_pids = _thread_close_watch(
-            profile_dir, closed, stop_event, stop_gracefully
+            profile_dir, closed, stop_event, stop_gracefully, log=emit
         )
     else:
-        tracked_pids = _fork_close_watch(profile_dir, closed)
+        tracked_pids = _fork_close_watch(profile_dir, closed, log=emit)
 
     # Tear down so Firefox actually exits and releases its lock, then report.
     # (On a STOP the close-watch already called stop_gracefully, which tears
@@ -1684,6 +1830,8 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     # early lock release). The tracked parent's tree covers its own children.
     # When the watch never resolved a pid (a dead launch, tracked_pids falsy),
     # fall back to a rescan — there's no live session to protect a relaunch from.
+    emit(f"LIFECYCLE teardown-kill pids={sorted(tracked_pids or ())} "
+         f"rescan={not tracked_pids}")
     _kill_profile_firefox(
         profile_dir, tracked_pids, rescan=not tracked_pids
     )
@@ -1705,7 +1853,7 @@ def _ps_single_quote(s: str) -> str:
 
 
 def _thread_close_watch(profile_dir, closed, stop_event, stop_gracefully,
-                        no_process_timeout=60.0, interval=1.0):
+                        no_process_timeout=60.0, interval=1.0, log=None):
     """Wait until the user closed THIS profile's Firefox or STOP is requested —
     the Windows/macOS thread-path close signal. A persistent context keeps
     ctx.pages at 1 and never fires a close event, and the multi-process
@@ -1742,12 +1890,18 @@ def _thread_close_watch(profile_dir, closed, stop_event, stop_gracefully,
     gone_streak = 0
     no_window_streak = 2
     deadline = time.monotonic() + no_process_timeout
+    def say(msg):
+        if log:
+            log(msg)
+
     while not closed.wait(interval):
         if stop_event is not None and stop_event.is_set():
+            say(f"LIFECYCLE close=stop-requested pids={sorted(pids or ())}")
             stop_gracefully()
             return pids
         if pids is not None:
             if not any(_pid_alive(p) for p in pids):
+                say(f"LIFECYCLE close=all-pids-exit pids={sorted(pids)}")
                 return pids  # every tracked Firefox process exited
             visible = _pids_have_visible_window(pids)
             if visible:
@@ -1756,6 +1910,8 @@ def _thread_close_watch(profile_dir, closed, stop_event, stop_gracefully,
             elif visible is False and window_seen:
                 gone_streak += 1
                 if gone_streak >= no_window_streak:
+                    say(f"LIFECYCLE close=window-gone pids={sorted(pids)} "
+                        f"streak={gone_streak}")
                     return pids  # the window the user saw is gone → they closed it
             # None (no verdict) leaves the streak unchanged — neither a sighting
             # nor a confident miss.
@@ -1763,6 +1919,7 @@ def _thread_close_watch(profile_dir, closed, stop_event, stop_gracefully,
         found = _profile_firefox_pids(profile_dir)
         if found:
             pids = found
+            say(f"LIFECYCLE watch-pids pids={sorted(pids)}")
             continue
         if found is None:
             # No verdict from the WMI scan; the single-pid helper is a second
@@ -1770,15 +1927,76 @@ def _thread_close_watch(profile_dir, closed, stop_event, stop_gracefully,
             p = _firefox_pid(profile_dir)
             if p is not None:
                 pids = {p}
+                say(f"LIFECYCLE watch-pids pids={sorted(pids)}")
                 continue
         if time.monotonic() > deadline:
             # Never confidently saw the process → treat the launch as dead.
+            say("LIFECYCLE close=no-process-timeout (launch never resolved a pid)")
             return pids
+    say(f"LIFECYCLE close=closed-event pids={sorted(pids or ())}")
     return pids
 
 
-def _fork_close_watch(profile_dir, closed, no_process_timeout=60.0, interval=1.0):
-    """Wait until this profile's Firefox process exits or STOP is requested —
+def _firefox_content_proc_count(profile_dir: str, parent: int = None):
+    """How many Firefox content/tab processes (`-contentproc -isForBrowser`)
+    belong to THIS profile's browser (Linux/macOS), or None when the scan
+    can't run.
+
+    A persistent-context Firefox renders each open tab in an `-isForBrowser`
+    content process. Those exist iff a browser window is open: closing the
+    window kills every one of them within ~1s (live-measured #168: 6 → 0),
+    while the launcher parent lingers on shutdown blockers. The content procs
+    don't carry the profile dir on their command line, so they're matched to
+    this profile by descending from the profile's launcher parent.
+
+    `parent` is the launcher pid the close-watch already resolved once; passing
+    it avoids re-running _firefox_pid (a pgrep name+cmdline match) every poll.
+    That re-resolve is a #168 intermittency source: mid-shutdown pgrep can miss
+    the parent for a beat and return None (no verdict), so the window-gone
+    signal is lost on that poll and, depending on timing, the whole close. The
+    tracked pid is stable until the parent dies (checked separately), so the
+    tree walk stays anchored."""
+    if _platform.IS_WINDOWS:
+        return None
+    if parent is None:
+        parent = _firefox_pid(profile_dir)
+    if parent is None:
+        return None
+    # The launcher parent's whole descendant set (content procs sit under a
+    # forkserver child, so a single pgrep -P misses them).
+    tree = set()
+    frontier = [parent]
+    while frontier:
+        nxt = []
+        for p in frontier:
+            try:
+                out = subprocess.check_output(["pgrep", "-P", str(p)], text=True)
+            except subprocess.CalledProcessError:
+                continue  # no children of p
+            except Exception:
+                return None  # pgrep unavailable — no verdict
+            for x in out.split():
+                if x.isdigit() and int(x) not in tree:
+                    tree.add(int(x))
+                    nxt.append(int(x))
+        frontier = nxt
+    if not tree:
+        return 0
+    count = 0
+    for p in tree:
+        try:
+            with open(f"/proc/{p}/cmdline", "rb") as f:
+                cmd = f.read().replace(b"\0", b" ")
+        except OSError:
+            continue
+        if b"-isForBrowser" in cmd:
+            count += 1
+    return count
+
+
+def _fork_close_watch(profile_dir, closed, no_process_timeout=60.0, interval=1.0,
+                      log=None):
+    """Wait until this profile's Firefox window closed or STOP is requested —
     the Linux fork-path close signal.
 
     ctx.pages cannot be the signal: the context is created on
@@ -1786,30 +2004,71 @@ def _fork_close_watch(profile_dir, closed, no_process_timeout=60.0, interval=1.0
     greenlet only pumps events during calls made on THAT thread — polled from
     the child's own thread, ctx.pages is a frozen snapshot that never drops
     to 0, so an X-close was never detected and the profile stayed "running"
-    with no close in the log (#143). Pid death is the close signal. Under the
-    Playwright juggler pipe an X-close does NOT quit Firefox on its own — it
-    runs the full async shutdown whose blockers hold the process alive ~60-90s
-    (live-measured), so the card stayed "running" for a minute after an X-close
-    even with the #143 pid-watch (#149). toolkit.shutdown.fastShutdownStage=3
-    (set in _profile_prefs) makes the process _exit ~2s after the window closes
-    (live-measured), so pid death — and this close — now fire promptly. The pid
-    is resolved once (a pgrep per tick burns CPU), then polled with the cheap
-    liveness check; a launch whose process is never seen within
-    `no_process_timeout` is treated as dead so the profile can't wedge
-    "running" forever.
+    with no close in the log (#143).
 
-    Returns the tracked pid set (None if never seen) so the caller can
-    force-kill survivors after the polite teardown."""
+    Parent-pid death alone is NOT a reliable close signal: under the Playwright
+    juggler pipe an X-close does NOT quit Firefox — it runs the full async
+    shutdown whose blockers hold the PARENT process alive ~60-90s (live-measured
+    #168: after the window closed the parent lingered 65s, so the card stayed
+    "running" a full minute). toolkit.shutdown.fastShutdownStage=3 _exits the
+    parent ~2s after close on SOME hosts but NOT reliably (live-measured: the
+    same profile X-closed 8 times died in 0.4s some runs and lingered tens of
+    seconds others — the #168 "раз через раз" intermittency). So the parent's
+    death time is NOT a dependable signal; the WINDOW closing is. Every one of
+    the profile's `-isForBrowser` content/tab processes exits within ~1s of the
+    window closing regardless of how long the parent lingers (live-measured
+    #168: 6 → 0 in one poll while the parent hung on for another 65s). The close
+    is decided by that content-proc count dropping to zero after it was seen —
+    the Linux window-gone signal — and the caller then force-kills the lingering
+    parent's tree, so detection never waits on the variable shutdown.
+
+    The tracked parent pid is resolved ONCE and reused for the content-proc tree
+    walk (see _firefox_content_proc_count(parent=...)): re-resolving it per poll
+    let a transient pgrep miss return None and drop the window-gone signal for a
+    beat — part of the intermittency. A close needs `gone_streak_needed`
+    consecutive zero-content polls so a single pgrep hiccup can't tear a LIVE
+    session down (#169: never kill a working profile). Returns the tracked pid
+    set (None if never seen) so the caller can force-kill the lingering parent
+    (+tree) after the polite teardown."""
+    def say(msg):
+        if log:
+            log(msg)
+
     pid = None
+    content_seen = False
+    gone_streak = 0
+    gone_streak_needed = 2
     deadline = time.monotonic() + no_process_timeout
     while not closed.wait(interval):
         if pid is not None:
             if not _pid_alive(pid):
-                return {pid}
+                say(f"LIFECYCLE close=parent-pid-exit pid={pid}")
+                return {pid}  # parent exited (crash / fast shutdown fired)
+            content = _firefox_content_proc_count(profile_dir, parent=pid)
+            if content:
+                content_seen = True
+                gone_streak = 0
+            elif content == 0 and content_seen:
+                # The window's content processes are gone after we saw them:
+                # the user closed the window. The parent may still be winding
+                # down its shutdown blockers — don't wait it out; the caller
+                # force-kills the tracked parent's tree right after this returns.
+                gone_streak += 1
+                if gone_streak >= gone_streak_needed:
+                    say(f"LIFECYCLE close=window-gone pid={pid} "
+                        f"streak={gone_streak}")
+                    return {pid}
+            # content is None (pgrep couldn't run) carries no verdict — leave
+            # the streak untouched, same as the thread path's no-window
+            # no-verdict.
             continue
         pid = _firefox_pid(profile_dir)
-        if pid is None and time.monotonic() > deadline:
+        if pid is not None:
+            say(f"LIFECYCLE watch-pid pid={pid}")
+        elif time.monotonic() > deadline:
+            say("LIFECYCLE close=no-process-timeout (launch never resolved a pid)")
             return None
+    say(f"LIFECYCLE close=stop-requested pid={pid}")
     return {pid} if pid is not None else None
 
 

@@ -55,6 +55,7 @@ def build_sidebar(
     log_panel: ft.Control,
     engine_panel: ft.Control | None = None,
     version_panel: ft.Control | None = None,
+    on_logo_click: Callable[[], None] | None = None,
 ) -> ft.Container:
     nav = ft.Column(
         spacing=6,
@@ -63,6 +64,35 @@ def build_sidebar(
             for key, icon, label in _NAV_ITEMS
         ],
     )
+    header: ft.Control = ft.Row(
+        spacing=10,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        controls=[
+            *(
+                [ft.Image(src=_ICON, width=28, height=28)]
+                if os.path.exists(_ICON)
+                else []
+            ),
+            ft.Text(
+                get_string("app_name"),
+                size=22,
+                weight=ft.FontWeight.BOLD,
+                color=COLORS["accent"],
+                font_family=MONO,
+            ),
+        ],
+    )
+    if on_logo_click is not None:
+        header = ft.GestureDetector(
+            mouse_cursor=ft.MouseCursor.CLICK,
+            content=ft.Container(
+                on_click=lambda _: on_logo_click(),
+                ink=True,
+                tooltip="home",
+                border_radius=3,
+                content=header,
+            ),
+        )
     return ft.Container(
         width=200,
         bgcolor=COLORS["sidebar"],
@@ -71,24 +101,7 @@ def build_sidebar(
             spacing=0,
             expand=True,
             controls=[
-                ft.Row(
-                    spacing=10,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    controls=[
-                        *(
-                            [ft.Image(src=_ICON, width=28, height=28)]
-                            if os.path.exists(_ICON)
-                            else []
-                        ),
-                        ft.Text(
-                            get_string("app_name"),
-                            size=22,
-                            weight=ft.FontWeight.BOLD,
-                            color=COLORS["accent"],
-                            font_family=MONO,
-                        ),
-                    ],
-                ),
+                header,
                 ft.Text(
                     get_string("app_subtitle"),
                     size=10,

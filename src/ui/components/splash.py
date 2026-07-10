@@ -11,9 +11,15 @@ import flet as ft
 from ...core.assets import asset_path
 from ..theme.colors import COLORS
 
-# keep the splash up for at least ~one full sweep, so a fast start reads as a
-# deliberate loading screen instead of a single-frame flash
-MIN_SECONDS = 1.2
+# keep the splash up for at least one full sweep cycle (down and back up,
+# 2 x _SWEEP_MS, plus the first-frame delay), so even the fastest start shows
+# a complete scan instead of a beam that dies mid-travel
+MIN_SECONDS = 2.6
+
+# the logo-click ScanFlash is feedback, not a loading screen: one quicker
+# sweep and gone, noticeably shorter than the startup splash
+FLASH_SECONDS = 0.9
+_FLASH_SWEEP_MS = 700
 
 _BOX = 200
 _LOGO = 120
@@ -24,6 +30,12 @@ _BRACKET = 30
 _LINE_W = _BOX - 96
 _LINE_H = 4
 _SWEEP_MS = 1100
+# the first offset change must reach the client only AFTER it has painted the
+# beam at its start position: patches applied within one client frame collapse
+# into a single build, animate_offset then has no rendered state to animate
+# FROM, and the beam lands at the bottom with no sweep and sits there for the
+# whole splash (warm second launches, where patches arrive fast, hit this)
+_FIRST_SWEEP_DELAY = 0.3
 # a tall, soft beam so the red halo fades gradually above and below the bright
 # core — a light beam sweeping the print, not a flat bar
 _BEAM_H = 72
@@ -63,99 +75,109 @@ def _bracket(*, top: bool, left: bool) -> ft.Container:
     )
 
 
+def _beam(sweep_ms: int = _SWEEP_MS) -> ft.Container:
+    """The sweeping scan beam (soft red haze band + hot white core)."""
+    # hot white core with a graded red bloom in several layers, so the glow
+    # falls off smoothly. Its ends fade horizontally (transparent→white→
+    # transparent) so the beam tapers to points instead of ending in a hard
+    # bright rectangle whose glow would clip against the frame.
+    core = ft.Container(
+        height=_LINE_H,
+        width=_LINE_W,
+        top=(_BEAM_H - _LINE_H) / 2,
+        left=0,
+        border_radius=4,
+        gradient=ft.LinearGradient(
+            begin=ft.Alignment.CENTER_LEFT,
+            end=ft.Alignment.CENTER_RIGHT,
+            colors=["#00FFFFFF", "#FFFFFF", "#FFFFFF", "#00FFFFFF"],
+            stops=[0.0, 0.2, 0.8, 1.0],
+        ),
+        # small bloom radii so the shadow's own spread never reaches the
+        # frame edges; the wider, soft red halo is painted by the haze band
+        # below (a gradient we fully control, kept inside the box)
+        shadow=[
+            ft.BoxShadow(blur_radius=5, spread_radius=0, color="#FFFFFF"),
+            ft.BoxShadow(blur_radius=12, spread_radius=1, color=_RED),
+            ft.BoxShadow(blur_radius=22, spread_radius=2, color=_RED_GLOW),
+        ],
+    )
+    # a tall soft haze band around the core, brightest at the line and
+    # fading smoothly to transparent — turns a flat bar into a light beam
+    haze = ft.Container(
+        width=_LINE_W,
+        height=_BEAM_H,
+        left=0,
+        top=0,
+        gradient=ft.LinearGradient(
+            begin=ft.Alignment.TOP_CENTER,
+            end=ft.Alignment.BOTTOM_CENTER,
+            colors=[
+                "#00000000",
+                _RED_HAZE_SOFT,
+                _RED_HAZE_MID,
+                _RED_HAZE,
+                _RED_HAZE_MID,
+                _RED_HAZE_SOFT,
+                "#00000000",
+            ],
+            stops=[0.0, 0.28, 0.42, 0.5, 0.58, 0.72, 1.0],
+        ),
+    )
+    # the whole beam (haze + core) is what sweeps
+    return ft.Container(
+        width=_LINE_W,
+        height=_BEAM_H,
+        left=(_BOX - _LINE_W) / 2,
+        # start with the core aligned to the TOP of the logo, so the sweep
+        # rides over the fingerprint from its top edge down to its bottom
+        top=_LOGO_TOP - (_BEAM_H - _LINE_H) / 2,
+        content=ft.Stack(controls=[haze, core]),
+        offset=ft.Offset(0, 0),
+        animate_offset=ft.Animation(sweep_ms, ft.AnimationCurve.EASE_IN_OUT),
+    )
+
+
+def _scanner(line: ft.Container) -> ft.Container:
+    """The scan box: the persona mark inside corner brackets, under `line`."""
+    logo = ft.Container(
+        width=_LOGO,
+        height=_LOGO,
+        left=(_BOX - _LOGO) / 2,
+        top=(_BOX - _LOGO) / 2,
+        border_radius=24,
+        shadow=ft.BoxShadow(blur_radius=36, spread_radius=4, color=_GREEN_GLOW),
+        # the mark is already neon green on black — tinting it (SRC_IN)
+        # would flood every opaque pixel and erase the fingerprint ridges
+        content=ft.Image(
+            src=asset_path("icon.png"),
+            width=_LOGO,
+            height=_LOGO,
+            border_radius=24,
+        ),
+    )
+    return ft.Container(
+        width=_BOX,
+        height=_BOX,
+        content=ft.Stack(
+            controls=[
+                logo,
+                _bracket(top=True, left=True),
+                _bracket(top=True, left=False),
+                _bracket(top=False, left=True),
+                _bracket(top=False, left=False),
+                line,
+            ],
+        ),
+    )
+
+
 class Splash:
     def __init__(self) -> None:
         self._running = False
         self._at_top = True
-        # hot white core with a graded red bloom in several layers, so the glow
-        # falls off smoothly. Its ends fade horizontally (transparent→white→
-        # transparent) so the beam tapers to points instead of ending in a hard
-        # bright rectangle whose glow would clip against the frame.
-        core = ft.Container(
-            height=_LINE_H,
-            width=_LINE_W,
-            top=(_BEAM_H - _LINE_H) / 2,
-            left=0,
-            border_radius=4,
-            gradient=ft.LinearGradient(
-                begin=ft.Alignment.CENTER_LEFT,
-                end=ft.Alignment.CENTER_RIGHT,
-                colors=["#00FFFFFF", "#FFFFFF", "#FFFFFF", "#00FFFFFF"],
-                stops=[0.0, 0.2, 0.8, 1.0],
-            ),
-            # small bloom radii so the shadow's own spread never reaches the
-            # frame edges; the wider, soft red halo is painted by the haze band
-            # below (a gradient we fully control, kept inside the box)
-            shadow=[
-                ft.BoxShadow(blur_radius=5, spread_radius=0, color="#FFFFFF"),
-                ft.BoxShadow(blur_radius=12, spread_radius=1, color=_RED),
-                ft.BoxShadow(blur_radius=22, spread_radius=2, color=_RED_GLOW),
-            ],
-        )
-        # a tall soft haze band around the core, brightest at the line and
-        # fading smoothly to transparent — turns a flat bar into a light beam
-        haze = ft.Container(
-            width=_LINE_W,
-            height=_BEAM_H,
-            left=0,
-            top=0,
-            gradient=ft.LinearGradient(
-                begin=ft.Alignment.TOP_CENTER,
-                end=ft.Alignment.BOTTOM_CENTER,
-                colors=[
-                    "#00000000",
-                    _RED_HAZE_SOFT,
-                    _RED_HAZE_MID,
-                    _RED_HAZE,
-                    _RED_HAZE_MID,
-                    _RED_HAZE_SOFT,
-                    "#00000000",
-                ],
-                stops=[0.0, 0.28, 0.42, 0.5, 0.58, 0.72, 1.0],
-            ),
-        )
-        # the whole beam (haze + core) is what sweeps
-        self._line = ft.Container(
-            width=_LINE_W,
-            height=_BEAM_H,
-            left=(_BOX - _LINE_W) / 2,
-            # start with the core aligned to the TOP of the logo, so the sweep
-            # rides over the fingerprint from its top edge down to its bottom
-            top=_LOGO_TOP - (_BEAM_H - _LINE_H) / 2,
-            content=ft.Stack(controls=[haze, core]),
-            offset=ft.Offset(0, 0),
-            animate_offset=ft.Animation(_SWEEP_MS, ft.AnimationCurve.EASE_IN_OUT),
-        )
-        logo = ft.Container(
-            width=_LOGO,
-            height=_LOGO,
-            left=(_BOX - _LOGO) / 2,
-            top=(_BOX - _LOGO) / 2,
-            border_radius=24,
-            shadow=ft.BoxShadow(blur_radius=36, spread_radius=4, color=_GREEN_GLOW),
-            # the mark is already neon green on black — tinting it (SRC_IN)
-            # would flood every opaque pixel and erase the fingerprint ridges
-            content=ft.Image(
-                src=asset_path("icon.png"),
-                width=_LOGO,
-                height=_LOGO,
-                border_radius=24,
-            ),
-        )
-        scanner = ft.Container(
-            width=_BOX,
-            height=_BOX,
-            content=ft.Stack(
-                controls=[
-                    logo,
-                    _bracket(top=True, left=True),
-                    _bracket(top=True, left=False),
-                    _bracket(top=False, left=True),
-                    _bracket(top=False, left=False),
-                    self._line,
-                ],
-            ),
-        )
+        self._line = _beam()
+        scanner = _scanner(self._line)
         self.control = ft.Container(
             expand=True,
             bgcolor=COLORS["bg"],
@@ -188,6 +210,7 @@ class Splash:
         page.run_task(self._sweep)
 
     async def _sweep(self) -> None:
+        await asyncio.sleep(_FIRST_SWEEP_DELAY)
         while self._running:
             self._toggle()
             try:
@@ -198,3 +221,32 @@ class Splash:
 
     def stop(self) -> None:
         self._running = False
+
+
+class ScanFlash:
+    """One quick fingerprint-scan sweep over a translucent backdrop — click
+    feedback that reads as "scanned", shown briefly over the live page."""
+
+    def __init__(self) -> None:
+        self._line = _beam(sweep_ms=_FLASH_SWEEP_MS)
+        self.control = ft.Container(
+            expand=True,
+            # the overlay hosts its children positioned (a Stack): pin all four
+            # edges so the flash covers the whole window, not just its content
+            left=0,
+            top=0,
+            right=0,
+            bottom=0,
+            # translucent so the page underneath stays visible through the scan
+            bgcolor="#B3" + COLORS["bg"].lstrip("#"),
+            alignment=ft.Alignment.CENTER,
+            content=_scanner(self._line),
+        )
+
+    async def play(self) -> None:
+        self._line.offset = ft.Offset(0, _TRAVEL)
+        try:
+            self._line.update()
+        except Exception:
+            pass  # detached mid-patch; nothing left to animate
+        await asyncio.sleep(FLASH_SECONDS)

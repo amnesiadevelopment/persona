@@ -212,6 +212,74 @@ def test_session_ready_leaves_bootstraps_to_onboarding(monkeypatch):
     assert starts == []
 
 
+# --- _finish_startup: reveal + splash gates on real loading ---
+
+def test_finish_startup_reveals_window_and_loads_behind_the_splash(monkeypatch):
+    # The window ships hidden (hide_window_on_start): the reveal must be the
+    # first thing the startup task does, with the splash already the page's
+    # first frame. And the splash must cover the real loading work — profile
+    # cards, engine text, the live running snapshot — so the swapped-in UI is
+    # finished instead of popping those in after the splash is gone.
+    from src.ui import app as app_mod
+
+    events = []
+
+    class Page:
+        def __init__(self):
+            self.window = SimpleNamespace(visible=False)
+            self.services = []
+            self.controls = ["splash"]
+
+        def update(self):
+            events.append(("update", self.window.visible))
+
+        def add(self, c):
+            events.append(("add", c))
+
+        def run_task(self, h, *a, **k):
+            events.append(("task", getattr(h, "__name__", "")))
+
+    page = Page()
+    app = App.__new__(App)
+    app.page = page
+    app.pm = SimpleNamespace()
+    app._change_page = lambda delta: None
+    app.state = SimpleNamespace(_last_running_snapshot=None)
+    app.bl = SimpleNamespace(running_profile_names=lambda: {"p1"})
+    app._splash = SimpleNamespace(stop=lambda: events.append("splash_stop"))
+    monkeypatch.setattr(app_mod, "build_ui_refs", lambda **kw: "refs")
+    app._build_root_layout = lambda refs: "root"
+    app._render_active_page = lambda: events.append("render")
+    app._refresh_profiles = lambda: events.append("profiles")
+    app._refresh_engine_text = lambda: events.append("engines")
+    app._show_onboarding = lambda: None
+    app._check_app_update_async = lambda: None
+    app._check_engines_periodic = lambda: None
+    app._start_server_if_enabled = lambda: None
+    app._reconcile_started = True
+
+    async def ready():
+        events.append("session_ready")
+
+    app._on_session_ready = ready
+    monkeypatch.setattr(app_mod.splash_mod, "MIN_SECONDS", 0)
+    monkeypatch.setattr(app_mod.app_settings, "is_onboarding_done", lambda: True)
+
+    asyncio.run(app._finish_startup())
+
+    # the hidden window is revealed before anything else runs
+    assert page.window.visible is True
+    assert events[0] == ("update", True)
+    # the data the first screen shows loads BEFORE the root swap…
+    reveal = events.index(("add", "root"))
+    assert events.index("profiles") < reveal
+    assert events.index("engines") < reveal
+    assert events.index("splash_stop") < reveal
+    # …including the live-status snapshot the reconcile loop diffs against
+    assert app.state._last_running_snapshot == {"p1"}
+    assert "session_ready" in events
+
+
 # --- _safe_update ---
 
 def test_safe_update_marshals_page_update():

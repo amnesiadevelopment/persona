@@ -166,23 +166,65 @@ class App:
         # real UI in the first serviced task while the scan animation runs.
         self.page = page
         configure_page(page)
+        # The packaged build ships hide_window_on_start (pyproject), so the
+        # Flutter window is not on screen while Python boots — it used to open
+        # seconds early as a bare dark rectangle. Keep it hidden through this
+        # first patch too (the explicit False is also what makes the later
+        # True a change the client acts on) and reveal it in _finish_startup,
+        # with the splash as the first visible frame. On a dev/source run the
+        # window is already visible; it blinks hidden for one task cycle.
+        page.window.visible = False
+        self._window_revealed = False
         self._splash = splash_mod.Splash()
         page.add(self._splash.control)
         self._splash.start(page)
+        # Safety net for the hidden-until-splash window: if startup crashes
+        # before _finish_startup reveals it, the window would stay invisible
+        # forever and the user would see nothing at all (worse than the old
+        # dark rectangle — a startup crash, e.g. after a bad self-update,
+        # would be completely silent). A daemon thread force-shows the window
+        # after a grace period regardless, so any crash/error screen is seen.
+        threading.Thread(
+            target=self._reveal_watchdog, args=(page,), daemon=True
+        ).start()
         page.run_task(self._finish_startup)
+
+    def _reveal_watchdog(self, page: ft.Page, timeout: float = 8.0) -> None:
+        """Force the window visible if normal startup didn't reveal it in time
+        (a crash before _finish_startup) so a failed launch is never a blank,
+        invisible window."""
+        import time as _time
+
+        _time.sleep(timeout)
+        if self._window_revealed:
+            return
+        try:
+            page.window.visible = True
+            page.update()
+        except Exception:
+            pass
 
     async def _finish_startup(self) -> None:
         """First task the session loop services after _main: flet runs a sync
         main() directly ON the session loop, so nothing scheduled with
         page.run_task executes until _main returns and the initial page patch
-        (the splash) has been flushed. Build the real UI behind the splash,
-        keep the splash up for at least one scan sweep so it never flashes,
-        then swap the root layout in."""
+        (the splash) has been flushed. Reveal the hidden window on that splash
+        frame, do all the loading the first screen depends on BEHIND the
+        splash — so the reveal below swaps in a finished UI, nothing pops in
+        afterwards — keep it up for at least one full scan cycle, then swap
+        the root layout in. Everything gated here is local, bounded work
+        (files + process checks); network work stays in the background with
+        its own progress UI, so the splash cannot hang on a dead circuit."""
         import time
 
         page = self.page
         assert page is not None
         started = time.monotonic()
+        # the initial patch (the splash) is already flushed: show the window,
+        # which the build keeps hidden until Python has something to paint
+        page.window.visible = True
+        self._window_revealed = True
+        page.update()
         fp = ft.FilePicker()
         page.services.append(fp)
         self.refs = build_ui_refs(
@@ -192,19 +234,19 @@ class App:
         )
         root = self._build_root_layout(self.refs)
         self._render_active_page()
+        self._refresh_profiles()
+        self._refresh_engine_text()
+        self.state._last_running_snapshot = self.bl.running_profile_names()
         remaining = splash_mod.MIN_SECONDS - (time.monotonic() - started)
         if remaining > 0:
             await asyncio.sleep(remaining)
         self._splash.stop()
         page.controls.clear()
         page.add(root)
-        self._refresh_profiles()
-        self._refresh_engine_text()
         if not app_settings.is_onboarding_done():
             self._show_onboarding()
         self._check_app_update_async()
         self._check_engines_periodic()
-        self.state._last_running_snapshot = self.bl.running_profile_names()
         self._start_server_if_enabled()
         if not self._reconcile_started:
             self._reconcile_started = True
@@ -260,6 +302,7 @@ class App:
             log_panel=log_panel,
             engine_panel=engine_panel,
             version_panel=self._build_version_panel(),
+            on_logo_click=self._on_logo_click,
         )
 
     def _update_button(self, label: str) -> ft.Control:
@@ -401,6 +444,35 @@ class App:
                 self._page_host,
             ],
         )
+
+    def _on_logo_click(self) -> None:
+        """Logo click = "scan": flash the fingerprint sweep over the page and
+        land home on the profiles page with the list and live statuses
+        reloaded — even when profiles is already the active page."""
+        page = self.page
+        flash = None
+        if page is not None:
+            flash = splash_mod.ScanFlash()
+            page.overlay.append(flash.control)
+        self._active_page = "profiles"
+        if self._sidebar_host is not None:
+            self._sidebar_host.content = self._build_sidebar()
+        self._render_active_page()
+        self._refresh_profiles()  # pushes the page update, overlay included
+        if page is not None and flash is not None:
+            page.run_task(self._run_scan_flash, flash)
+
+    async def _run_scan_flash(self, flash) -> None:
+        try:
+            await flash.play()
+        except Exception as e:
+            logger.error("scan flash failed: %s", e)
+        finally:
+            # the overlay must never stick around, whatever play() did
+            page = self.page
+            if page is not None and flash.control in page.overlay:
+                page.overlay.remove(flash.control)
+                self._safe_update()
 
     def _navigate(self, page_name: str) -> None:
         if page_name == self._active_page:

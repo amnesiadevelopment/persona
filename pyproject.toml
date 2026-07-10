@@ -34,6 +34,12 @@ build_number = 1
 [tool.flet.app]
 path = "."
 module = "main"
+# Keep the Flutter window hidden while Python boots: without this it opens
+# seconds before the app can paint anything — a bare dark rectangle (worst
+# right after a self-update, when app.zip re-extracts). flet has no native
+# desktop splash (flutter_native_splash is iOS/Android/web only), so the
+# window is revealed from app.py once the scan splash is its first frame.
+hide_window_on_start = true
 exclude = [
     "build",
     "dist",

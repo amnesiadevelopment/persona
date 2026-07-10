@@ -123,6 +123,76 @@ def test_linux_chromium_env_keeps_system_fontconfig(monkeypatch, tmp_path):
     assert not (tmp_path / "fontenv" / "fonts.conf").exists()
 
 
+def _spawn_chromium_args(monkeypatch, tmp_path, profile, linux=False):
+    captured = {}
+
+    class _FakePopen:
+        def __init__(self, args, **kwargs):
+            captured["args"] = args
+            captured["env"] = kwargs.get("env")
+
+    monkeypatch.setattr(process, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(process, "ProxyStore", _Store)
+    monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
+    monkeypatch.setattr(process, "write_window_entry", lambda name: None)
+    monkeypatch.setattr(process.subprocess, "Popen", _FakePopen)
+    if linux:
+        monkeypatch.setattr(process._platform, "IS_LINUX", True)
+    process.spawn_browser(profile)
+    return captured
+
+
+def test_linux_chromium_strips_inherited_fontconfig_env(monkeypatch, tmp_path):
+    # The app's own runtime can export FONTCONFIG_FILE/PATH into os.environ
+    # (AppImage bundle mount); inheriting them re-creates the "Cannot load
+    # default config file" flood. The browser env must be scrubbed even when
+    # the parent process is polluted.
+    monkeypatch.setenv("FONTCONFIG_FILE", "/tmp/.mount_gone/etc/fonts/fonts.conf")
+    monkeypatch.setenv("FONTCONFIG_PATH", "/tmp/.mount_gone/etc/fonts")
+    monkeypatch.setenv("FONTCONFIG_SYSROOT", "/tmp/.mount_gone")
+    captured = _spawn_chromium_args(
+        monkeypatch, tmp_path, Profile(name="fontenv2"), linux=True
+    )
+    assert "FONTCONFIG_FILE" not in captured["env"]
+    assert "FONTCONFIG_PATH" not in captured["env"]
+    assert "FONTCONFIG_SYSROOT" not in captured["env"]
+
+
+def test_linux_chromium_tames_software_compositor_animations(monkeypatch, tmp_path):
+    captured = _spawn_chromium_args(
+        monkeypatch, tmp_path, Profile(name="composite"), linux=True
+    )
+    assert "--disable-threaded-animation" in captured["args"]
+    assert "--animation-duration-scale=0" in captured["args"]
+    assert "--wm-window-animations-disabled" in captured["args"]
+
+
+def test_hidpi_host_gets_render_scale_flag(monkeypatch, tmp_path):
+    monkeypatch.setattr(process, "_host_display_scale", lambda: 1.5)
+    captured = _spawn_chromium_args(
+        monkeypatch, tmp_path, Profile(name="hidpi", resolution="2560x1440")
+    )
+    assert "--force-device-scale-factor=1.5" in captured["args"]
+
+
+def test_scale_100_host_gets_no_render_scale_flag(monkeypatch, tmp_path):
+    monkeypatch.setattr(process, "_host_display_scale", lambda: 1.0)
+    captured = _spawn_chromium_args(
+        monkeypatch, tmp_path, Profile(name="lodpi", resolution="2560x1440")
+    )
+    assert not any(
+        a.startswith("--force-device-scale-factor") for a in captured["args"]
+    )
+
+
+def test_render_scale_flag_leaves_fingerprint_args_alone(monkeypatch, tmp_path):
+    monkeypatch.setattr(process, "_host_display_scale", lambda: 2.0)
+    profile = Profile(name="fp-intact", resolution="2560x1440")
+    captured = _spawn_chromium_args(monkeypatch, tmp_path, profile)
+    assert f"--fingerprint={profile.fingerprint_seed}" in captured["args"]
+    assert "--force-device-scale-factor=2" in captured["args"]
+
+
 def test_effective_engine_mobile_forces_chromium():
     p = Profile(name="m", engine="firefox", os_type="android")
     assert process.effective_engine(p) == "chromium"

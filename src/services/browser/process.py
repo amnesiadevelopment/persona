@@ -210,6 +210,27 @@ def _host_timezone() -> str:
     return "UTC"
 
 
+def _host_display_scale() -> float:
+    """The host display's scale factor (1.0 at 100%, 1.5 at 150%, 2.0 at 200%).
+    Windows reads the system DPI; other desktops render at 1.0. Clamped to a
+    sane range so a weird reading can't blow the window up."""
+    if not _platform.IS_WINDOWS:
+        return 1.0
+    try:
+        import ctypes
+
+        # Per-monitor DPI awareness so GetDpiForSystem returns the real scale.
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            pass
+        dpi = ctypes.windll.user32.GetDpiForSystem()
+        scale = dpi / 96.0 if dpi else 1.0
+        return max(1.0, min(3.0, round(scale, 2)))
+    except Exception:
+        return 1.0
+
+
 def _proxy_timezone(proxy) -> str:
     """The timezone for a proxied profile. An unchecked proxy (no geo data yet)
     falls back to the host zone — UTC against a non-UTC exit IP is a louder
@@ -437,17 +458,27 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
             "--enable-unsafe-swiftshader",
             "--password-store=basic",
             "--use-mock-keychain",
-            # Under the software (SwiftShader) compositor a browser-UI animation
-            # can run forever without ever settling — the log shows
-            # "CompositorAnimationObserver is active for too long (180s)
-            # location=Button". While it churns, the compositor never idles, so
+            # Under the software (SwiftShader) compositor the frame clock is
+            # degenerate ("Frame latency is negative") and a browser-UI
+            # animation can spin without ever reaching its end state — the log
+            # shows "CompositorAnimationObserver is active for too long (180s)
+            # location=Button". While it spins, the compositor never idles, so
             # the "Working…" throbber sticks and Google Sheets' overlays (the
-            # date-cell calendar, the custom-currency menu) never get a frame to
-            # paint into and real clicks land on a busy compositor. Taking UI
-            # animations off the compositor thread lets it settle. It carries no
-            # fingerprint tell (unlike prefers-reduced-motion, which is
-            # page-visible) and doesn't change rendering.
+            # date-cell calendar, the custom-currency menu) never get a frame
+            # to paint into. Starve those animations at the source instead of
+            # trusting the clock: --animation-duration-scale=0 completes every
+            # gfx UI animation on its first tick (read in
+            # ui/compositor/compositor.cc → ScopedAnimationDurationScaleMode →
+            # LinearAnimation::GetDuration) and --wm-window-animations-disabled
+            # drops window show/hide animations outright
+            # (ui/wm/core/window_animations.cc). Both act on browser UI only —
+            # web-content animations are Blink-side — so nothing is
+            # page-visible (unlike prefers-reduced-motion, which is).
+            # --disable-threaded-animation stays so the compositor thread holds
+            # no animation state of its own to get stuck on.
             "--disable-threaded-animation",
+            "--animation-duration-scale=0",
+            "--wm-window-animations-disabled",
         ]
 
     # Wayland app_id (taskbar label/icon per persona) is an X11/Wayland concept;
@@ -461,6 +492,16 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
         # extension fills the JS-visible touch/Client-Hints/screen signals.
         args.append(f"--user-agent={preset.user_agent}")
         args.append(f"--window-size={preset.width},{preset.height}")
+
+    # Render scale is decoupled from the fingerprint: the device/mobile
+    # extension pins the JS-visible screen.*, devicePixelRatio and the
+    # matchMedia dppx answers, while --force-device-scale-factor only sets how
+    # many physical pixels draw one CSS px. Without it a dpr-1 profile paints
+    # 1:1 physical on a 150%/200% display, so a 2560x1440 profile renders
+    # unreadably small even though scanners see the correct 2K/dpr-1 screen.
+    scale = _host_display_scale()
+    if scale != 1.0:
+        args.append(f"--force-device-scale-factor={scale:g}")
 
     if proxy:
         args.append(f"--timezone={_proxy_timezone(proxy)}")
@@ -489,11 +530,16 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
         args.append("--dns-prefetch-disable")
 
     env = os.environ.copy()
-    # Fonts come from the system fontconfig. A per-profile FONTCONFIG_FILE
-    # flooded live sessions with "Cannot load default config file" errors from
-    # chromium child processes and made pages render with the bundled clone
-    # fonts instead of the system set; the engine spoofs the JS-visible font
-    # list itself, so the override bought no anti-detect value.
+    # Fonts come from the system fontconfig. A FONTCONFIG_FILE override floods
+    # live sessions with "Cannot load default config file" errors from chromium
+    # child processes and makes pages render with the wrong fonts; the engine
+    # spoofs the JS-visible font list itself, so an override buys no
+    # anti-detect value. The app's own runtime can export FONTCONFIG_* into
+    # os.environ (an AppImage bundle points them into its mount, which is gone
+    # for the relaunched process after a self-update), so scrub them rather
+    # than trust the inherited environment.
+    for var in ("FONTCONFIG_FILE", "FONTCONFIG_PATH", "FONTCONFIG_SYSROOT"):
+        env.pop(var, None)
     if _platform.IS_LINUX:
         env.setdefault("DISPLAY", ":0")
 

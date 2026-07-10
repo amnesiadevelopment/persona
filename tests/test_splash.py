@@ -1,12 +1,18 @@
+import asyncio
+
 import flet as ft
 
+from src.ui.components import splash as splash_mod
 from src.ui.components.splash import (
     _BEAM_H,
     _BOX,
     _LINE_H,
     _LOGO,
+    _SWEEP_MS,
     _TRAVEL,
+    FLASH_SECONDS,
     MIN_SECONDS,
+    ScanFlash,
     Splash,
 )
 from src.ui.theme.colors import COLORS
@@ -103,8 +109,104 @@ def test_stop_ends_the_sweep_loop():
     asyncio.run(s._sweep())
 
 
-def test_min_display_is_about_one_sweep():
-    assert 0.5 <= MIN_SECONDS <= 3.0
+def test_min_display_covers_a_full_sweep_cycle():
+    # at least one full down-and-back-up pass, so even the fastest start shows
+    # a real scan instead of a beam that dies mid-travel
+    assert MIN_SECONDS >= 2 * _SWEEP_MS / 1000
+    assert MIN_SECONDS <= 3.0
+
+
+def test_sweep_lets_the_first_frame_paint_before_moving(monkeypatch):
+    # The first offset change must reach the client only after it painted the
+    # beam at its start position: two patches applied within one client frame
+    # collapse into a single build, animate_offset has nothing to animate FROM,
+    # and the beam lands at the bottom with no sweep — the frozen splash seen
+    # on warm second launches.
+    s = Splash()
+    s._running = True
+    events = []
+    real_toggle = s._toggle
+    s._toggle = lambda: events.append("toggle") or real_toggle()
+
+    class Stop(Exception):
+        pass
+
+    async def first_sleep(t):
+        events.append(("sleep", t))
+        raise Stop
+
+    monkeypatch.setattr(splash_mod.asyncio, "sleep", first_sleep)
+    try:
+        asyncio.run(s._sweep())
+    except Stop:
+        pass
+    assert events, "the sweep did nothing at all"
+    assert events[0][0] == "sleep" and events[0][1] > 0
+    assert "toggle" not in events
+
+
+def test_sweep_keeps_sweeping_until_stopped(monkeypatch):
+    # the beam must bounce for as long as the splash is up — one lonely toggle
+    # reads as a frozen/broken loading screen
+    s = Splash()
+    s._running = True
+    toggles = []
+    real_toggle = s._toggle
+    s._toggle = lambda: toggles.append(1) or real_toggle()
+    monkeypatch.setattr(ft.Container, "update", lambda self: None)
+    ticks = 0
+
+    async def fake_sleep(t):
+        nonlocal ticks
+        ticks += 1
+        if ticks >= 5:
+            s.stop()
+
+    monkeypatch.setattr(splash_mod.asyncio, "sleep", fake_sleep)
+    asyncio.run(s._sweep())
+    assert len(toggles) >= 3
+
+
+def test_scan_flash_builds_headless():
+    f = ScanFlash()
+    assert isinstance(f.control, ft.Container)
+    assert f.control.expand is True
+    # a translucent backdrop (alpha-prefixed bg colour), NOT the opaque
+    # startup-splash background — the page must show through the flash
+    bg = str(f.control.bgcolor)
+    assert bg != COLORS["bg"]
+    assert bg.lstrip("#").upper().endswith(COLORS["bg"].lstrip("#").upper())
+    assert len(bg.lstrip("#")) == 8
+
+
+def test_scan_flash_reuses_the_scan_beam():
+    f = ScanFlash()
+    line = f._line
+    assert line.animate_offset is not None
+    assert line.offset.y == 0
+    red = COLORS["error"].lstrip("#")
+    core = line.content.controls[-1]
+    assert any(red in str(sh.color) for sh in core.shadow)
+
+
+def test_scan_flash_play_sweeps_once_and_returns(monkeypatch):
+    monkeypatch.setattr(splash_mod, "FLASH_SECONDS", 0)
+    f = ScanFlash()
+    asyncio.run(f.play())  # detached control: must not raise
+    assert f._line.offset.y == _TRAVEL
+
+
+def test_scan_flash_is_a_quick_flash_not_the_startup_splash():
+    assert 0.5 <= FLASH_SECONDS <= 1.2
+    assert FLASH_SECONDS <= MIN_SECONDS
+
+
+def test_startup_splash_structure_unchanged_by_flash():
+    s = Splash()
+    f = ScanFlash()
+    assert s._line is not f._line
+    # the splash keeps its slow bounce sweep; the flash sweep is quicker
+    assert f._line.animate_offset.duration < s._line.animate_offset.duration
 
 
 def test_main_shows_splash_before_anything_else(monkeypatch):
@@ -119,10 +221,15 @@ def test_main_shows_splash_before_anything_else(monkeypatch):
         add=lambda c: added.append(c),
         run_task=lambda h, *a, **k: tasks.append(h),
         services=[],
+        window=SimpleNamespace(visible=None),
     )
     app._main(page)
     assert added, "nothing was added to the page"
     assert added[0] is app._splash.control
+    # the packaged build starts with the window hidden (hide_window_on_start);
+    # the first patch must keep it that way so _finish_startup's True is a
+    # real change that reveals the window on the splash frame
+    assert page.window.visible is False
     # the real UI builds in the first serviced task, behind the splash
     names = [getattr(h, "__name__", "") for h in tasks]
     assert "_finish_startup" in names

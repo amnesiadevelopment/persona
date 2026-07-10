@@ -111,18 +111,39 @@ def _drop_bookmark(cur: sqlite3.Cursor, row_id: int, place_id: int) -> None:
     )
 
 
-def sync_places_bookmarks(places_db: str, bookmarks: list[Bookmark]) -> bool:
-    """Reconcile the toolbar of an engine-created places.sqlite to exactly
-    `bookmarks`, in order: rows whose url isn't in the set (and duplicate rows
-    for the same url) are deleted, missing ones inserted, titles and positions
-    updated in place. Idempotent — running it again with the same set changes
-    nothing; an empty set clears the toolbar.
+def sync_places_bookmarks(
+    places_db: str,
+    bookmarks: list[Bookmark],
+    prev_persona_urls: "set[str] | None" = None,
+) -> bool:
+    """Reconcile the toolbar of an engine-created places.sqlite to persona's
+    `bookmarks`, preserving bookmarks the user added inside Firefox.
+
+    persona owns only the bookmarks IT placed. `prev_persona_urls` is the set
+    of urls persona applied on the previous launch; a toolbar bookmark is
+    persona's to reconcile only when its url is in the new set OR in that
+    previous set. A url in NEITHER is a user's own in-browser addition and is
+    left untouched (#171). So: a bookmark the user removed in the persona editor
+    (in prev, not in new) is deleted; a user's in-browser bookmark (in neither)
+    survives every relaunch; and duplicate rows of a persona url are collapsed.
+
+    An empty new set clears persona's OWN bookmarks (those in the previous set)
+    and still leaves the user's alone (#147). With `prev_persona_urls` None (the
+    profile has no marker yet — a fresh or pre-#171 profile) persona reconciles
+    only the urls it's about to place, so a first run can't delete a user's
+    pre-existing bookmark. Idempotent — the same set twice changes nothing
+    (#144).
 
     Returns True when the toolbar now matches the set; False when the database
     doesn't exist or has no toolbar root yet.
     """
     if not os.path.exists(places_db):
         return False
+
+    new_urls = {bm.url for bm in bookmarks}
+    # persona reconciles only its own footprint: the urls it's placing now plus
+    # the ones it placed last time (so a removed-in-editor bookmark is dropped).
+    owned = new_urls | (prev_persona_urls or set())
 
     conn = sqlite3.connect(places_db)
     try:
@@ -144,7 +165,13 @@ def sync_places_bookmarks(places_db: str, bookmarks: list[Bookmark]) -> bool:
         ).fetchall():
             if btype != 1:
                 others.append(row_id)
-            elif url in existing or not any(bm.url == url for bm in bookmarks):
+            elif url not in owned:
+                # A bookmark persona neither placed now nor last time — the
+                # user added it inside Firefox. Leave it alone.
+                continue
+            elif url in existing or url not in new_urls:
+                # A duplicate of a persona url (collapse), or a persona url the
+                # user removed in the editor (in prev/owned, not in new). Drop.
                 _drop_bookmark(cur, row_id, place_id)
             else:
                 existing[url] = (row_id, title, place_id)

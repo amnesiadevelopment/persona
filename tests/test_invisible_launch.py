@@ -147,6 +147,16 @@ def test_profile_prefs_fast_shutdown_for_prompt_close():
     assert prefs["toolkit.shutdown.fastShutdownStage"] == 3
 
 
+def test_profile_prefs_emoji_font_fallback():
+    # #170: the engine bundles TwemojiMozilla but hides that family (bundle-only
+    # keeps standard-Windows names), and the host has no emoji font, so emoji
+    # rendered as tofu. Pointing the emoji font-fallback list at the exposed
+    # "Segoe UI Emoji" (backed by the bundled Twemoji glyphs) renders emoji in
+    # color (live-verified).
+    prefs = _profile_prefs({"search_engine": "duckduckgo"})
+    assert "Segoe UI Emoji" in prefs["font.name-list.emoji"]
+
+
 def test_activate_dark_theme_flips_extensions_json(tmp_path):
     # #152: the browser chrome (titlebar + tab strip) follows the ACTIVE theme
     # add-on in extensions.json, not extensions.activeThemeID in prefs (proven
@@ -960,10 +970,14 @@ def test_close_watch_still_closes_on_all_pids_dead(monkeypatch):
 def test_fork_close_watch_closes_on_pid_death(monkeypatch):
     import threading
 
-    # #143: the Linux close signal is the profile's Firefox pid dying — the
-    # window's X quits Firefox there. The pid is resolved once (pgrep), then
-    # polled with the cheap liveness check.
+    # #143: parent-pid death stays a valid Linux close signal (a crash, or a
+    # host where fastShutdown fires). The pid is resolved once (pgrep), then
+    # polled with the cheap liveness check. Content procs keep showing up so
+    # the window-gone signal never fires — the death is what closes.
     monkeypatch.setattr(invisible_launch, "_firefox_pid", lambda d: 4242)
+    monkeypatch.setattr(
+        invisible_launch, "_firefox_content_proc_count", lambda d, parent=None: 6
+    )
     liveness = iter([True, True, False])
     monkeypatch.setattr(invisible_launch, "_pid_alive", lambda p: next(liveness))
     got = invisible_launch._fork_close_watch(
@@ -1003,8 +1017,202 @@ def test_fork_close_watch_returns_tracked_pid_on_stop(monkeypatch):
         return True
 
     monkeypatch.setattr(invisible_launch, "_pid_alive", alive)
+    monkeypatch.setattr(
+        invisible_launch, "_firefox_content_proc_count", lambda d, parent=None: 3
+    )
     got = invisible_launch._fork_close_watch("/p", closed, interval=0.0)
     assert got == {7}
+
+
+def test_fork_close_watch_closes_on_content_procs_gone_while_parent_lingers(
+    monkeypatch,
+):
+    import threading
+
+    # #168: under the juggler pipe an X-close does NOT quit Firefox — the parent
+    # lingers on shutdown blockers for ~60-90s (fastShutdown does not always
+    # fire on prod: live-measured the parent stayed alive 65s). What dies
+    # promptly is the window: every -isForBrowser content/tab process exits
+    # within ~1s (live-measured 6 → 0). So the close is decided by the content
+    # count dropping to zero after it was seen, NOT by the parent dying.
+    monkeypatch.setattr(invisible_launch, "_firefox_pid", lambda d: 4242)
+    monkeypatch.setattr(invisible_launch, "_pid_alive", lambda p: True)  # parent hangs on
+    # content present (window up), then zero twice (user closed the window).
+    content = iter([6, 6, 0, 0])
+    monkeypatch.setattr(
+        invisible_launch, "_firefox_content_proc_count",
+        lambda d, parent=None: next(content)
+    )
+    got = invisible_launch._fork_close_watch("/p", threading.Event(), interval=0.0)
+    assert got == {4242}                       # closed while the parent was still alive
+    assert next(content, "done") == "done"     # closed exactly on the 2nd zero poll
+
+
+def test_fork_close_watch_waits_for_content_procs_to_appear_first(monkeypatch):
+    import threading
+
+    # The content processes take a moment to spawn after the parent appears; a
+    # zero count BEFORE they were ever seen is the launch window, not a close.
+    # Only zero-after-seen closes.
+    monkeypatch.setattr(invisible_launch, "_firefox_pid", lambda d: 9)
+    monkeypatch.setattr(invisible_launch, "_pid_alive", lambda p: True)
+    content = iter([0, 0, 4, 0, 0])
+    monkeypatch.setattr(
+        invisible_launch, "_firefox_content_proc_count",
+        lambda d, parent=None: next(content)
+    )
+    invisible_launch._fork_close_watch("/p", threading.Event(), interval=0.0)
+    assert next(content, "done") == "done"
+
+
+def test_fork_close_watch_debounces_a_single_transient_no_content(monkeypatch):
+    import threading
+
+    # A busy navigation can make one pgrep tick miss the content procs for a
+    # beat; a single zero poll must NOT tear the session down — only a
+    # sustained absence (the user actually closed the window) does.
+    monkeypatch.setattr(invisible_launch, "_firefox_pid", lambda d: 11)
+    monkeypatch.setattr(invisible_launch, "_pid_alive", lambda p: True)
+    content = iter([2, 0, 2, 2, 0, 0])
+    monkeypatch.setattr(
+        invisible_launch, "_firefox_content_proc_count",
+        lambda d, parent=None: next(content)
+    )
+    invisible_launch._fork_close_watch("/p", threading.Event(), interval=0.0)
+    assert next(content, "done") == "done"     # lone zero didn't close; the two did
+
+
+def test_fork_close_watch_content_no_verdict_does_not_close(monkeypatch):
+    import threading
+
+    # None from the scan = "can't tell" (a transient failure); acting on it
+    # would tear down a live browser. Only a confident zero after the content
+    # procs were seen closes.
+    monkeypatch.setattr(invisible_launch, "_firefox_pid", lambda d: 13)
+    monkeypatch.setattr(invisible_launch, "_pid_alive", lambda p: True)
+    content = iter([4, None, None, 0, 0])
+    monkeypatch.setattr(
+        invisible_launch, "_firefox_content_proc_count",
+        lambda d, parent=None: next(content)
+    )
+    invisible_launch._fork_close_watch("/p", threading.Event(), interval=0.0)
+    assert next(content, "done") == "done"
+
+
+def test_fork_close_watch_uses_tracked_pid_for_content_count(monkeypatch):
+    import threading
+
+    # #168 intermittency fix: the content-proc tree walk must anchor on the pid
+    # the watch resolved ONCE, not re-resolve _firefox_pid every poll (a
+    # mid-shutdown pgrep miss returns None and drops the window-gone signal for
+    # a beat — the "раз через раз" race). Prove the watch passes its tracked pid
+    # to the content counter, and that _firefox_pid is called only for the
+    # initial resolve.
+    resolves = []
+    monkeypatch.setattr(
+        invisible_launch, "_firefox_pid",
+        lambda d: resolves.append(d) or 555,
+    )
+    monkeypatch.setattr(invisible_launch, "_pid_alive", lambda p: True)
+    seen_parents = []
+    content = iter([3, 3, 0, 0])
+
+    def count(d, parent=None):
+        seen_parents.append(parent)
+        return next(content)
+
+    monkeypatch.setattr(invisible_launch, "_firefox_content_proc_count", count)
+    got = invisible_launch._fork_close_watch("/p", threading.Event(), interval=0.0)
+    assert got == {555}
+    # _firefox_pid resolved the parent exactly once (the initial watch-pid),
+    # never re-resolved per poll.
+    assert len(resolves) == 1
+    # every content count was anchored on the tracked pid.
+    assert seen_parents and all(p == 555 for p in seen_parents)
+
+
+def test_fork_close_watch_logs_window_gone_close(monkeypatch):
+    import threading
+
+    # #169: a silent FF death must become traceable — the watch logs WHY it
+    # decided closed. A window-gone close emits a LIFECYCLE line naming the pid.
+    monkeypatch.setattr(invisible_launch, "_firefox_pid", lambda d: 88)
+    monkeypatch.setattr(invisible_launch, "_pid_alive", lambda p: True)
+    content = iter([2, 2, 0, 0])
+    monkeypatch.setattr(
+        invisible_launch, "_firefox_content_proc_count",
+        lambda d, parent=None: next(content),
+    )
+    logs = []
+    invisible_launch._fork_close_watch(
+        "/p", threading.Event(), interval=0.0, log=logs.append
+    )
+    assert any("close=window-gone" in m and "88" in m for m in logs)
+
+
+def test_fork_close_watch_logs_pid_exit_close(monkeypatch):
+    import threading
+
+    # #169: a parent-pid exit (crash / fast shutdown) is logged with its reason
+    # so a silent death is traceable in the activity log.
+    monkeypatch.setattr(invisible_launch, "_firefox_pid", lambda d: 99)
+    alive = iter([True, False])
+    monkeypatch.setattr(invisible_launch, "_pid_alive", lambda p: next(alive))
+    monkeypatch.setattr(
+        invisible_launch, "_firefox_content_proc_count", lambda d, parent=None: 4
+    )
+    logs = []
+    invisible_launch._fork_close_watch(
+        "/p", threading.Event(), interval=0.0, log=logs.append
+    )
+    assert any("close=parent-pid-exit" in m for m in logs)
+
+
+def test_clamp_dpr_keeps_sane_range():
+    # A weird reading can't produce an unusable window; 0/None → 1.0.
+    assert invisible_launch._clamp_dpr(0) == 1.0
+    assert invisible_launch._clamp_dpr(None) == 1.0
+    assert invisible_launch._clamp_dpr(0.5) == 1.0   # below 1 clamps up
+    assert invisible_launch._clamp_dpr(1.5) == 1.5
+    assert invisible_launch._clamp_dpr(2.0) == 2.0
+    assert invisible_launch._clamp_dpr(9.0) == 3.0   # above 3 clamps down
+
+
+def test_system_dpr_reads_host_scale_per_os(monkeypatch):
+    # #167: FF renders tiny on HiDPI when the render scale is 1.0. The host-scale
+    # reader must return the REAL scale on every OS so content is readable —
+    # Windows GetDpiForSystem, macOS Retina backingScaleFactor, Linux GDK/Wayland.
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(invisible_launch._platform, "IS_MACOS", False)
+    monkeypatch.setattr(invisible_launch._platform, "IS_LINUX", False)
+    monkeypatch.setattr(invisible_launch, "_windows_dpr", lambda: 1.5)
+    assert invisible_launch._system_dpr() == 1.5
+
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", False)
+    monkeypatch.setattr(invisible_launch._platform, "IS_MACOS", True)
+    monkeypatch.setattr(invisible_launch, "_macos_dpr", lambda: 2.0)
+    assert invisible_launch._system_dpr() == 2.0   # Retina renders readable
+
+    monkeypatch.setattr(invisible_launch._platform, "IS_MACOS", False)
+    monkeypatch.setattr(invisible_launch._platform, "IS_LINUX", True)
+    monkeypatch.setattr(invisible_launch, "_linux_dpr", lambda: 1.5)
+    assert invisible_launch._system_dpr() == 1.5
+
+
+def test_linux_dpr_reads_gdk_scale_env(monkeypatch):
+    # An explicit desktop scale override (GDK_SCALE) is honoured on Linux.
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", False)
+    monkeypatch.setattr(invisible_launch._platform, "IS_MACOS", False)
+    monkeypatch.setattr(invisible_launch._platform, "IS_LINUX", True)
+    monkeypatch.setenv("GDK_SCALE", "2")
+    assert invisible_launch._linux_dpr() == 2.0
+
+
+def test_firefox_content_proc_count_none_off_linux(monkeypatch):
+    # On Windows the fork path isn't used; the helper reports no verdict rather
+    # than shelling out to a pgrep/proc scan that doesn't apply there.
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", True)
+    assert invisible_launch._firefox_content_proc_count("/p") is None
 
 
 def test_child_fork_path_teardown_fires_on_pid_exit(monkeypatch, tmp_path):
@@ -1220,14 +1428,15 @@ def test_child_force_kills_profile_firefox_after_teardown(monkeypatch, tmp_path)
     assert calls == ["exit", ("kill", str(tmp_path), {10, 11}, False)]
 
 
-def test_child_pins_render_dpr_to_chosen_resolution_dpr(monkeypatch, tmp_path):
-    # #156: layout.css.devPixelsPerPx drives window.devicePixelRatio AND the CSS
-    # resolution media queries. Pointing it at the HOST scale (the old render-
-    # comfort choice) made a chosen 1920/2560 screen report screen.width * host-
-    # scale as its physical size — a scanner read that as 4K/5120. The render
-    # pref must equal the CHOSEN resolution's dpr (1) so every dpr-derived value
-    # is coherent at the chosen resolution (the chromium model). Independent of
-    # the host scale, so a 1.5/2.0 host can't leak into the reported resolution.
+def test_child_renders_at_host_scale_for_chosen_resolution(monkeypatch, tmp_path):
+    # #167: on this engine layout.css.devPixelsPerPx drives window.devicePixelRatio,
+    # the CSS resolution media queries, AND the render scale from ONE pref —
+    # proven at the binary level (zoom.stealth.screen.dpr is NOT read by xul.dll,
+    # only stealth.screen.width/height are). Pinning it to 1 rendered content at
+    # 1x — physically tiny on a HiDPI host (#167). A real 2560-logical HiDPI panel
+    # legitimately reports a dpr > 1, so the render pref AND the pinned screen.dpr
+    # both take the host scale: content renders readable while screen.width stays
+    # the chosen value, all dpr-derived values coherent (a genuine HiDPI monitor).
     import os
     import sys
     import threading
@@ -1285,11 +1494,11 @@ def test_child_pins_render_dpr_to_chosen_resolution_dpr(monkeypatch, tmp_path):
     os.close(r)
 
     assert captured["pin"]["screen.width"] == 1920   # fingerprint = chosen
-    assert captured["pin"]["screen.dpr"] == 1
-    # devPixelsPerPx follows the pinned dpr (1), NOT the 1.5 host scale — the
-    # render pref is what a scanner reads as the CSS resolution, so it must
-    # agree with the chosen dpr or screen.width * dpr reports a doubled 4K size.
-    assert captured["extra_prefs"]["layout.css.devPixelsPerPx"] == "1"
+    # dpr follows the HOST scale (1.5) so content renders readable, not tiny —
+    # the pinned screen.dpr and the render pref are the SAME value (one pref),
+    # coherent with the CSS resolution media query. screen.width stays 1920.
+    assert captured["pin"]["screen.dpr"] == 1.5
+    assert captured["extra_prefs"]["layout.css.devPixelsPerPx"] == "1.5"
 
 
 def test_render_dpr_override_pins_to_chosen_dpr_in_engine_prefs():
@@ -2003,6 +2212,40 @@ def test_seed_bookmarks_empty_set_without_places_skips_init(monkeypatch, tmp_pat
     monkeypatch.setattr(invisible_launch, "_init_places_db", boom)
     invisible_launch._seed_firefox_bookmarks(str(tmp_path), [], 7)
     assert not (tmp_path / "places.sqlite").exists()
+
+
+def test_seed_bookmarks_marker_roundtrips(tmp_path):
+    # The per-profile marker records the urls persona placed, so the next launch
+    # reconciles only persona's own footprint (#171).
+    urls = {"https://a.example/", "https://b.example/"}
+    invisible_launch._write_persona_bookmark_urls(str(tmp_path), urls)
+    assert invisible_launch._read_persona_bookmark_urls(str(tmp_path)) == urls
+    assert (tmp_path / invisible_launch._PERSONA_BOOKMARKS_MARKER).exists()
+
+
+def test_seed_bookmarks_missing_marker_is_empty_set(tmp_path):
+    # A fresh / pre-#171 profile has no marker → empty previous set, so persona
+    # never deletes a user's pre-existing bookmark on the first run.
+    assert invisible_launch._read_persona_bookmark_urls(str(tmp_path)) == set()
+
+
+def test_seed_bookmarks_user_added_survives_relaunch(monkeypatch, tmp_path):
+    # #171: persona set [a], the user adds a bookmark inside Firefox, relaunch
+    # with the SAME persona set → the user's bookmark survives the reconcile.
+    from tests.test_firefox_bookmarks import (
+        _add_user_bookmark,
+        _make_places,
+        _toolbar_bookmarks,
+    )
+
+    db = str(tmp_path / "places.sqlite")
+    _make_places(db)
+    marks = [{"name": "a", "url": "https://a.example/"}]
+    invisible_launch._seed_firefox_bookmarks(str(tmp_path), marks, 7)
+    _add_user_bookmark(db, "C", "https://c.example/")
+    invisible_launch._seed_firefox_bookmarks(str(tmp_path), marks, 7)
+    urls = {u for _t, u in _toolbar_bookmarks(db)}
+    assert urls == {"https://a.example/", "https://c.example/"}
 
 
 def test_child_starts_engine_exactly_once_when_already_seeded(
