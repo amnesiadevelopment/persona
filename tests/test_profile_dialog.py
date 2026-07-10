@@ -196,6 +196,97 @@ def test_selecting_custom_resolution_reveals_width_height():
     assert custom_row.visible is False
 
 
+_BOOKMARKS = [
+    Bookmark("browserleaks", "https://browserleaks.com/"),
+    Bookmark("iphey", "https://iphey.com/"),
+    Bookmark("mysite", "https://example.com/"),
+]
+
+
+def _open_with_bookmarks(profile, on_save=lambda *a: None):
+    page = _FakePage()
+    open_profile_dialog(
+        page,
+        object(),
+        on_save=on_save,
+        profile=profile,
+        proxy_names=["p1"],
+        pool_names=["pool1"],
+        all_bookmarks=_BOOKMARKS,
+    )
+    return page
+
+
+def _bookmark_checks(page):
+    """Map bookmark name -> its checkbox, from the [Checkbox, Text(name)] rows."""
+    names = {b.name for b in _BOOKMARKS}
+    checks = {}
+    for c in _walk(page.shown):
+        kids = getattr(c, "controls", None) or []
+        if (
+            len(kids) == 2
+            and isinstance(kids[0], ft.Checkbox)
+            and getattr(kids[1], "value", None) in names
+        ):
+            checks[kids[1].value] = kids[0]
+    return checks
+
+
+def test_create_dialog_no_bookmarks_prechecked():
+    # #155: on CREATE nothing is pre-checked — the user picks what they want.
+    page = _open_with_bookmarks(None)
+    checks = _bookmark_checks(page)
+    assert set(checks) == {"browserleaks", "iphey", "mysite"}
+    assert all(cb.value is False for cb in checks.values())
+
+
+def test_edit_dialog_shows_saved_selection():
+    prof = Profile(name="P1", bookmarks=["iphey"])
+    checks = _bookmark_checks(_open_with_bookmarks(prof))
+    assert checks["iphey"].value is True
+    assert checks["browserleaks"].value is False
+    assert checks["mysite"].value is False
+
+
+def test_edit_dialog_shows_explicit_empty_selection():
+    # #147: [] is an intentional empty selection, shown as-is.
+    prof = Profile(name="P1", bookmarks=[])
+    checks = _bookmark_checks(_open_with_bookmarks(prof))
+    assert all(cb.value is False for cb in checks.values())
+
+
+def test_edit_unconfigured_profile_prechecks_defaults():
+    # bookmarks=None = never configured: the profile opens with the stock
+    # defaults, so the editor pre-checks them to reflect that.
+    prof = Profile(name="P1", bookmarks=None)
+    checks = _bookmark_checks(_open_with_bookmarks(prof))
+    assert checks["browserleaks"].value is True     # in DEFAULT_BOOKMARKS
+    assert checks["iphey"].value is True            # in DEFAULT_BOOKMARKS
+    assert checks["mysite"].value is False          # not a default
+
+
+def test_create_with_nothing_checked_saves_empty_selection():
+    # A fresh create with no boxes ticked must save an EXPLICIT [] (empty
+    # toolbar), not None — otherwise the defaults would resurrect on launch.
+    saved = {}
+
+    def on_save(name, proxy, os_type, search, pool, bookmarks, tags, notes,
+                engine, resolution):
+        saved["bookmarks"] = bookmarks
+        return None
+
+    page = _open_with_bookmarks(None, on_save=on_save)
+    for c in _walk(page.shown):
+        if getattr(c, "label", None) == "Profile Name":
+            c.value = "fresh"
+    create_btn = next(
+        c for c in _walk(page.shown)
+        if isinstance(c, ft.Button) and getattr(c, "content", None) == "[ create ]"
+    )
+    create_btn.on_click(None)
+    assert saved["bookmarks"] == []
+
+
 def test_selecting_mobile_os_forces_chromium_and_hides_resolution():
     page = _open(None)
     os_dd = _find_dropdown(page, "Operating System")

@@ -20,7 +20,7 @@ import time
 from ..engine.updater import is_newer
 from ...core import platform as _platform
 
-APP_VERSION = "2.4.1"
+APP_VERSION = "2.4.2"
 APP_REPO = "amnesiadevelopment/persona"
 
 
@@ -63,15 +63,20 @@ def staged_path(tag: str = "") -> str:
     matched it by an identical size and ran the OLD installer. A per-tag name makes
     each version its own file, so a stale one is never reused.
 
-    Windows: a temp file (the installer .exe is run from there — there's no live
-    binary to sit next to). Linux: next to the installed AppImage (same
-    filesystem, so the later os.replace is atomic); '' when not a packaged
-    AppImage."""
+    Windows/macOS: a temp file (the installer .exe / .dmg is used from there —
+    there's no live binary to sit next to). Linux: next to the installed
+    AppImage (same filesystem, so the later os.replace is atomic); '' when not
+    a packaged AppImage."""
     slug = _sanitize_tag(tag)
     if _platform.IS_WINDOWS:
-        import tempfile
-
         name = f"persona-update-setup-{slug}.exe" if slug else "persona-update-setup.exe"
+        return os.path.join(tempfile.gettempdir(), name)
+    if _platform.IS_MACOS:
+        # a temp file, like Windows: the dmg is mounted from there, there is no
+        # live binary to sit next to. Without this branch macOS fell into the
+        # AppImage one below, got '' (no $APPIMAGE on a mac), and every update
+        # ended in "download failed" before a single byte moved.
+        name = f"persona-update-{slug}.dmg" if slug else "persona-update.dmg"
         return os.path.join(tempfile.gettempdir(), name)
     target = installed_appimage_path()
     if target is None:
@@ -89,9 +94,9 @@ def _clear_stale_staged(keep: str) -> None:
     import glob
 
     if _platform.IS_WINDOWS:
-        import tempfile
-
         pattern = os.path.join(tempfile.gettempdir(), "persona-update-setup*.exe")
+    elif _platform.IS_MACOS:
+        pattern = os.path.join(tempfile.gettempdir(), "persona-update*.dmg")
     else:
         target = installed_appimage_path()
         if target is None:
@@ -212,6 +217,30 @@ def installed_appimage_path() -> str | None:
 
 def is_packaged_appimage() -> bool:
     return installed_appimage_path() is not None
+
+
+def installed_macos_app() -> str:
+    """Path to the .app bundle this process runs from ('' when run from a
+    source checkout). In a packaged flet build sys.executable points inside
+    <name>.app/Contents/, which is enough to recover the bundle root."""
+    if not _platform.IS_MACOS:
+        return ""
+    for exe in (sys.executable or "", sys.argv[0] if sys.argv else ""):
+        i = exe.find(".app/Contents/")
+        if i != -1:
+            return exe[: i + len(".app")]
+    return ""
+
+
+def can_self_update() -> bool:
+    """True when this process runs as an installed build the updater knows how
+    to replace: the installed Windows exe, a macOS .app bundle, or a packaged
+    AppImage. From a source checkout there is nothing to swap."""
+    if _platform.IS_WINDOWS:
+        return os.path.basename(sys.executable or "").lower() == "persona.exe"
+    if _platform.IS_MACOS:
+        return bool(installed_macos_app())
+    return is_packaged_appimage()
 
 
 def check_for_update(timeout: int = 30) -> tuple[str, str, int]:
@@ -443,9 +472,12 @@ def fetch_expected_sha256(tag: str, name: str = "", attempts: int = 3) -> str:
 def _tag_from_staged(staged: str) -> str:
     """Recover the release tag baked into the staged filename by staged_path()."""
     name = os.path.basename(staged or "")
-    prefix, suffix = "persona-update-setup-", ".exe"
-    if name.startswith(prefix) and name.endswith(suffix):
-        return name[len(prefix):-len(suffix)]
+    for prefix, suffix in (
+        ("persona-update-setup-", ".exe"),
+        ("persona-update-", ".dmg"),
+    ):
+        if name.startswith(prefix) and name.endswith(suffix):
+            return name[len(prefix):-len(suffix)]
     return ""
 
 
@@ -569,6 +601,117 @@ def _write_relaunch_bat(exe: str, installer_pid: int, old_pid: int) -> str:
     return path
 
 
+def _apply_macos(staged: str, say) -> bool:
+    """Swap the installed .app for the one inside the verified dmg, then
+    relaunch. Returns False (with the working install intact) on any failure;
+    does not return on success."""
+    import shutil
+
+    if not staged or not os.path.isfile(staged):
+        say("Update: downloaded disk image missing.")
+        return False
+    if not verify_staged_installer(staged, log=say):
+        try:
+            os.remove(staged)  # a full-size corrupt file would otherwise
+        except OSError:        # be matched again by find_ready_staged
+            pass
+        return False
+    app = installed_macos_app()
+    if not app:
+        # source checkout / unbundled run: nothing to swap — hand the user the
+        # verified dmg instead of failing silently.
+        say("Update downloaded — install it from the opened disk image.")
+        try:
+            subprocess.Popen(["open", staged])
+        except Exception:
+            say(f"Update saved at {staged}.")
+        return False
+
+    mount = tempfile.mkdtemp(prefix="persona-update-mnt-")
+    say("Update: opening the disk image…")
+    try:
+        rc = subprocess.run(
+            ["hdiutil", "attach", "-nobrowse", "-readonly",
+             "-mountpoint", mount, staged],
+            capture_output=True, timeout=120,
+        ).returncode
+    except Exception as e:
+        say(f"Update: couldn't open the disk image: {e}")
+        return False
+    if rc != 0:
+        say("Update: couldn't open the disk image.")
+        return False
+    backup = app + ".bak"
+    try:
+        new_app = ""
+        try:
+            for entry in sorted(os.listdir(mount)):
+                if entry.endswith(".app"):
+                    new_app = os.path.join(mount, entry)
+                    break
+        except OSError:
+            pass
+        if not new_app:
+            say("Update: no app bundle inside the disk image.")
+            return False
+        say("Update: installing the new version…")
+        shutil.rmtree(backup, ignore_errors=True)
+        try:
+            os.rename(app, backup)
+        except OSError as e:
+            say(f"Update: couldn't move the current app aside ({e}); aborting.")
+            return False
+        # ditto preserves the code signature, resource forks and permissions,
+        # which a plain python copy does not — Gatekeeper would refuse the app.
+        try:
+            rc = subprocess.run(
+                ["ditto", new_app, app], capture_output=True, timeout=600,
+            ).returncode
+        except Exception:
+            rc = 1
+        if rc != 0:
+            say("Update: copying the new app failed; keeping the current "
+                "version.")
+            shutil.rmtree(app, ignore_errors=True)
+            try:
+                os.rename(backup, app)
+            except OSError:
+                pass
+            return False
+        shutil.rmtree(backup, ignore_errors=True)
+    finally:
+        try:
+            subprocess.run(
+                ["hdiutil", "detach", mount], capture_output=True, timeout=60,
+            )
+        except Exception:
+            pass
+    try:
+        os.remove(staged)
+    except OSError:
+        pass
+    # Relaunch after THIS process is gone — `open` on a still-running app just
+    # focuses the old instance. A detached shell waits for our pid, then opens
+    # the freshly installed bundle.
+    say("Update: restarting…")
+    try:
+        subprocess.Popen(
+            ["/bin/sh", "-c",
+             f'while kill -0 {os.getpid()} 2>/dev/null; do sleep 0.5; done; '
+             f'open "{app}"'],
+            close_fds=True,
+            start_new_session=True,
+        )
+    except Exception as e:
+        say(f"Update: couldn't schedule the relaunch: {e}")
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    os._exit(0)
+
+
 def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
     """Replace the running AppImage with the staged download and re-exec into
     it — but ONLY after proving the new binary actually launches, and with the
@@ -673,8 +816,12 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
             pass
         os._exit(0)
 
-    # macOS has no self-updater yet — detect-and-notify rather than risk a broken
-    # swap of a running .app.
+    # macOS: verify the dmg, mount it, swap the installed .app for the one
+    # inside (with the old bundle kept as a backup until the copy succeeds),
+    # then relaunch once this process exits.
+    if _platform.IS_MACOS:
+        return _apply_macos(staged, say)
+
     if not _platform.IS_LINUX:
         say("Update available — download the new version from the releases page.")
         return False

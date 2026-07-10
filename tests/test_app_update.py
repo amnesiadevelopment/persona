@@ -464,11 +464,22 @@ def test_linux_relaunch_scrubs_runtime_env(monkeypatch, tmp_path):
         assert k not in seen["env"], f"{k} leaked into the relaunched process"
 
 
-def test_apply_and_restart_macos_is_notify_only(monkeypatch, tmp_path):
-    # macOS has no self-updater yet; apply must notify and never touch anything.
+def test_apply_and_restart_macos_never_breaks_the_install_on_failure(
+    monkeypatch, tmp_path
+):
+    # macOS applies via _apply_macos (covered in test_app_update_macos.py);
+    # apply_and_restart must route there and, when nothing can be swapped,
+    # return False without touching anything.
     _force_os(monkeypatch, mac=True)
     staged = tmp_path / "staged.dmg"
     staged.write_bytes(b"x")
+    monkeypatch.setattr(au, "installed_macos_app", lambda: "")
+    monkeypatch.setattr(
+        au, "verify_staged_installer", lambda s, tag="", log=None: True
+    )
+    monkeypatch.setattr(
+        au.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError())
+    )
     msgs = []
     assert au.apply_and_restart(str(staged), log=msgs.append) is False
-    assert any("update available" in m.lower() for m in msgs)
+    assert staged.exists()

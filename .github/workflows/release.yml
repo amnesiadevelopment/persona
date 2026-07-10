@@ -107,6 +107,7 @@ jobs:
           Icon=persona
           Categories=Network;WebBrowser;
           Terminal=false
+          StartupWMClass=persona
           EOF
           cat > "$APPDIR/AppRun" <<EOF
           #!/bin/sh

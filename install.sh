@@ -98,6 +98,7 @@ Exec=$DEST/persona
 Icon=persona
 Categories=Network;WebBrowser;
 Terminal=false
+StartupWMClass=persona
 EOF
   # refresh caches so the icon shows without a relogin (best-effort)
   update-desktop-database "$app_dir" 2>/dev/null || true

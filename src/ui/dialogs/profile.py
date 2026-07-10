@@ -342,10 +342,14 @@ def open_profile_dialog(
         text_style=ft.TextStyle(font_family=MONO),
     )
 
-    # profile.bookmarks is None when the profile was never configured — show the
-    # stock defaults pre-checked so a new/unconfigured profile reflects what it
-    # will actually open with. An explicit list (including []) is shown as-is.
-    if profile is not None and profile.bookmarks is not None:
+    # On create nothing is pre-checked — the user picks their own selection
+    # (saving with none checked stores an explicit [] = empty toolbar). When
+    # editing, an explicit list (including []) is shown as-is; bookmarks is None
+    # means never configured, so the stock defaults are pre-checked to reflect
+    # what the profile actually opens with.
+    if not is_edit:
+        selected_bookmarks: set[str] = set()
+    elif profile.bookmarks is not None:
         selected_bookmarks = set(profile.bookmarks)
     else:
         selected_bookmarks = {n for n in DEFAULT_BOOKMARKS if n in {b.name for b in all_bookmarks}}

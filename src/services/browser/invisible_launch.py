@@ -825,6 +825,57 @@ def _scrub_headless_cloak_prefs(profile_dir: str) -> None:
         pass
 
 
+_DARK_THEME_ID = "firefox-compact-dark@mozilla.org"
+
+
+def _activate_dark_theme(profile_dir: str) -> None:
+    """Make Firefox's chrome (titlebar + tab strip) dark by activating the
+    built-in dark theme in the profile's extensions.json.
+
+    extensions.json is the AddonManager's source of truth for WHICH theme is
+    active; on this patched Firefox, extensions.activeThemeID in prefs alone
+    does not switch the active theme (live-proven: the pref is set yet
+    default-theme stays active and the tab strip is light — #152). The browser
+    chrome follows the ACTIVE theme add-on, so flip the built-in dark theme on
+    and the others off (live-proven: the tab strip and toolbar go dark).
+
+    The file is created by the headless bookmarks/places init that runs before
+    the visible launch; when it isn't present yet (a profile with no bookmarks
+    on its first launch) this is a no-op — the theme then applies from the next
+    launch, once Firefox has written extensions.json."""
+    if not profile_dir:
+        return
+    path = os.path.join(profile_dir, "extensions.json")
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return
+    addons = data.get("addons")
+    if not isinstance(addons, list):
+        return
+    changed = False
+    for a in addons:
+        if not isinstance(a, dict) or a.get("type") != "theme":
+            continue
+        want_active = a.get("id") == _DARK_THEME_ID
+        if a.get("active") != want_active or a.get("userDisabled") != (
+            not want_active
+        ):
+            a["active"] = want_active
+            a["userDisabled"] = not want_active
+            changed = True
+    if not changed:
+        return
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except OSError:
+        pass
+
+
 def _profile_released(profile_dir: str) -> bool:
     """Whether no Firefox of THIS profile is running. Prefers the WMI pid scan
     (a confident empty set); on no-verdict falls back to the pgrep/single-pid
@@ -964,6 +1015,20 @@ def _profile_prefs(cfg: dict) -> dict:
             "browser.tabs.warnOnClose": False,
             "browser.warnOnQuit": False,
             "browser.sessionstore.warnOnQuit": False,
+            # Quit promptly when the user closes the last window. Under
+            # Playwright's persistent context + juggler pipe, closing the
+            # window does NOT quit Firefox on its own: it runs the full async
+            # shutdown, whose blockers keep the process alive for ~60-90s
+            # (live-measured). The Linux close-watch waits for that process to
+            # die, so the profile card stayed "running" for a minute after an
+            # X-close (#149). fastShutdownStage=3 _exit()s right after the
+            # essential shutdown notifications — the process dies ~2s after the
+            # window closes (live-measured), so pid-death detection fires
+            # promptly. The restored session survives: sessionstore's periodic
+            # write (interval below) has the tabs on disk before shutdown
+            # (live-verified: has_saved_session True after a fast-shutdown
+            # X-close), so #148's restore is intact.
+            "toolkit.shutdown.fastShutdownStage": 3,
         }
     )
     # The chosen search engine feeds the Home button and the start page a
@@ -1020,20 +1085,31 @@ class _WorkerSession:
         self._requests = requests
         self._results = results
 
-    def run_on_worker(self, fn):
-        """Run `fn()` on the worker thread and return its result (or None on
-        error). Thread-affine ctx calls must go through here."""
+    def run_on_worker(self, fn, timeout=None):
+        """Run `fn()` on the worker thread and return its result. Thread-affine
+        ctx calls must go through here. `timeout` bounds the wait for the
+        result; on overrun returns None and leaves the request in flight (the
+        worker is abandoned by the caller). A None wait is unbounded."""
         self._requests.put(fn)
-        return self._results.get()
+        try:
+            return self._results.get(timeout=timeout)
+        except Exception:
+            return None
 
     def teardown(self):
-        """Politely tear the engine down on its own worker, then join it."""
+        """Politely tear the engine down on its own worker, then join it.
+
+        The polite __exit__ closes the persistent context and stops Playwright;
+        over a proxy against a wedged Firefox that close can itself hang, and an
+        UNBOUNDED wait for it would hold the caller (and the per-profile launch
+        lock #150 wraps around the whole session) forever — the next launch of
+        the profile then waits on the lock and times out (#154 mechanism a). So
+        the teardown is bounded: on overrun the worker is abandoned (a daemon
+        thread whose greenlet dies once its Firefox is force-killed by the
+        caller right after this) rather than blocking the lock release."""
         if not self._worker.is_alive():
             return  # a dead worker never answers run_on_worker — blocking forever
-        try:
-            self.run_on_worker(lambda: self.inv.__exit__(None, None, None))
-        except Exception:
-            pass
+        self.run_on_worker(lambda: self.inv.__exit__(None, None, None), timeout=15)
         self._requests.put(None)  # release the worker loop
         self._worker.join(10)
 
@@ -1230,11 +1306,26 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
             pass
 
     profile_dir = cfg.get("profile_dir", "")
+    _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread)
 
-    # Launches of the SAME profile are serialized (see _profile_launch_lock):
-    # the wait is cancellable so a STOP while the previous launch winds down
-    # can't block this thread forever (#141's lesson: no uninterruptible
-    # waits anywhere in the stop path).
+
+def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
+    """Run one profile's whole browser session: seed the profile, launch the
+    engine, report readiness, watch for the close, tear down.
+
+    Launches of the SAME profile are serialized only through the SETUP+ENTER
+    phase (see _profile_launch_lock): that's where #150's race lives — a
+    relaunch clicked while the previous launch was still in its headless
+    bookmark init or the kill/settle of an abandoned enter attempt ran
+    concurrently, and the predecessor's cleanup shot down the successor's
+    just-launching Firefox. Once the browser is up (BROWSER_STARTED) the lock
+    is RELEASED, so the long close-watch never blocks a legitimate relaunch —
+    holding it through the whole session made a relaunch wait on the previous
+    session's (slow) close and time out (#154). The acquire is cancellable so a
+    STOP while a predecessor winds down can't block this thread forever (#141)."""
+    import threading
+    import time
+
     launch_lock = _profile_launch_lock(profile_dir)
     while not launch_lock.acquire(timeout=0.5):
         if stop_event is not None and stop_event.is_set():
@@ -1242,18 +1333,16 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
             emit("BROWSER_CLOSED")
             _finish()
             return
-    try:
-        _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread)
-    finally:
-        launch_lock.release()
+    _lock_released = False
 
-
-def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
-    """Run one profile's whole browser session: seed the profile, launch the
-    engine, report readiness, watch for the close, tear down. Split from
-    _child so the per-profile serialization wraps it in one try/finally."""
-    import threading
-    import time
+    def _release_lock():
+        nonlocal _lock_released
+        if not _lock_released:
+            _lock_released = True
+            try:
+                launch_lock.release()
+            except RuntimeError:
+                pass
 
     # A killed Firefox leaves lock/.parentlock in the profile; a stale lock makes
     # the next launch think the profile is already running. persona only spawns
@@ -1281,6 +1370,11 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     # running but invisible (#142). Must run after the seeding, before the
     # launch.
     _scrub_headless_cloak_prefs(profile_dir)
+    # Switch the profile's chrome to the built-in dark theme. The headless init
+    # above created extensions.json (the AddonManager's active-theme source of
+    # truth); flip it to dark so the titlebar/tab strip aren't light (#152).
+    # No-op when no init ran (no extensions.json yet).
+    _activate_dark_theme(profile_dir)
     # Decided BEFORE Firefox starts (a running session rewrites the store):
     # with a saved session Firefox restores the user's tabs into the window;
     # without one the launch navigates the lone blank tab to the start page.
@@ -1299,6 +1393,7 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     try:
         from invisible_playwright import InvisiblePlaywright
     except Exception as e:
+        _release_lock()
         emit(f"LAUNCH_FAILED: invisible_playwright import error: {e}")
         emit("BROWSER_CLOSED")
         _finish()  # close the pipe so the monitor's reader unblocks (no fd leak)
@@ -1334,32 +1429,37 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
         # patched-Firefox launch that received them treated the leftover as a URL
         # and opened a bogus "0.0.9.51" page. Size comes ONLY from the profile's
         # xulstore.json (seeded above), never from extra_args.
+        pinned_dpr = 1
         kwargs["pin"] = {
             "screen.width": w,
             "screen.height": h,
             "screen.avail_width": w,
             "screen.avail_height": h - 40,
-            "screen.dpr": 1,
+            "screen.dpr": pinned_dpr,
         }
-        # The pinned screen.dpr feeds BOTH the JS spoof (zoom.stealth.screen.dpr)
-        # and the render scale (layout.css.devPixelsPerPx) — invisible_core.prefs
-        # derives the two from one profile.screen.dpr — so at 1 the window drew
-        # 1:1 physical px, ignoring the OS scale (content ~1/3 too small on a
-        # 150% 4K display). extra_prefs overlays LAST in the engine, so re-point
-        # the RENDER pref alone at the real OS scale: the window draws like any
-        # native browser while JS keeps reporting the chosen resolution at dpr 1
-        # (the chromium model). Set explicitly rather than deleted — a "1" from
-        # an earlier run persists in the profile's prefs.js and would win if
-        # user.js merely dropped the key.
-        kwargs["extra_prefs"]["layout.css.devPixelsPerPx"] = str(_system_dpr())
+        # A chosen resolution presents as a device-pixel-ratio-1 monitor (a real
+        # 2560x1440 panel is dpr 1). window.devicePixelRatio, the CSS resolution
+        # media queries (matchMedia("(resolution: Ndppx)")), and the render scale
+        # must ALL report that one dpr, or a scanner cross-checks them and reads
+        # screen.width * dpr as the physical size — a 2560 screen at the host's
+        # own scale reports 3840/5120 ("4K") on a 150%/200% display. The render
+        # pref layout.css.devPixelsPerPx drives the CSS-resolution vector, so
+        # pinning it to the HOST scale (the old #131 render-comfort fix) is
+        # exactly what leaked the doubled resolution. Pin it to the chosen dpr so
+        # every dpr-derived value is coherent at the chosen resolution — the
+        # chromium model (its device ext pins dpr=1 so screen.width*dpr==
+        # screen.width). Content renders at the spoofed dpr's scale, which is the
+        # honest size a real dpr-1 monitor would show. Set explicitly (not
+        # deleted): a stale value in the profile's prefs.js would otherwise win.
+        kwargs["extra_prefs"]["layout.css.devPixelsPerPx"] = str(pinned_dpr)
         # The FIRST paint uses the value already in prefs.js — the user.js
         # override above only kicks in a beat later, and the headless places
-        # init leaves the SAMPLED profile's dpr there (live: "1.0" at visible-
-        # launch start on a 1.5-scale host → content flips scale right after
-        # first paint, the #131 skew). Make prefs.js carry the right value
-        # before Firefox starts.
+        # init leaves the SAMPLED profile's dpr there. A mismatch between the
+        # prefs.js value at first paint and the user.js value applied just after
+        # flips the window scale mid-open (the initial skew). Carry the same
+        # value in prefs.js before Firefox starts so there's no flip.
         _upsert_prefs_js(
-            profile_dir, {"layout.css.devPixelsPerPx": str(_system_dpr())}
+            profile_dir, {"layout.css.devPixelsPerPx": str(pinned_dpr)}
         )
     if proxy:
         kwargs["proxy"] = proxy
@@ -1406,26 +1506,39 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     # Launch with a bounded timeout and retries. A launch can stall inside
     # launch_persistent_context: over Tor on Firefox's startup remote-settings
     # fetch, and — the #137 wedge — on a proxied FRESH profile whose initial
-    # window is torn down mid-attach ("half-destroyed webProgress"), which
-    # never returns and can't be interrupted by killing the browser. Cap each
+    # window is torn down mid-attach ("half-destroyed webProgress"). Cap each
     # attempt; on overrun kill this profile's Firefox and retry. On the thread
     # path the enter runs on an abandonable worker thread (killing the browser
     # does NOT make the blocked sync call raise there); the fork path kills the
     # launching Firefox so the blocked __enter__ raises and the thread unwinds.
+    #
+    # The per-attempt bound MUST clear the slowest legitimate launch, or it
+    # kills a launch that was about to succeed and every retry repeats the
+    # kill — the #154 regression: a proxied launch (a cold proxy circuit, and a
+    # relaunch that restores a session referencing proxied tabs) routinely
+    # takes far longer than the 25s that a fast local launch needs, so all
+    # attempts overran and the launch reported LAUNCH_FAILED. The engine itself
+    # bounds launch_persistent_context at 180s (a true wedge raises there), so a
+    # proxied launch gets a per-attempt budget just past that — a genuinely
+    # wedged launch still fails and retries, but a merely-slow one completes.
+    per_try = 190 if proxy else 45
+    attempts = 2 if proxy else 3
     session = None
     inv = ctx = None
     if in_thread:
         session = _enter_on_worker(
             InvisiblePlaywright, kwargs, profile_dir,
-            attempts=4, per_try=25, stop_event=stop_event,
+            attempts=attempts, per_try=per_try, stop_event=stop_event,
         )
         if session is not None:
             inv, ctx = session.inv, session.ctx
     else:
         inv, ctx = _enter_with_timeout(
-            InvisiblePlaywright, kwargs, profile_dir, attempts=3, per_try=25,
+            InvisiblePlaywright, kwargs, profile_dir,
+            attempts=attempts, per_try=per_try,
         )
     if ctx is None:
+        _release_lock()
         if stop_event is not None and stop_event.is_set():
             emit("LAUNCH_CANCELLED")
         else:
@@ -1479,6 +1592,13 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
 
     # The window is on screen the moment __enter__ returns, so report ready now.
     emit("BROWSER_STARTED")
+
+    # The browser is up: the #150 launch race is over. Release the per-profile
+    # lock so a later relaunch of this profile isn't blocked by this session's
+    # (potentially slow) close-watch and teardown below (#154). The end-of-
+    # session kill targets only THIS session's tracked pids (never a fresh
+    # profile-dir rescan), so it can't shoot down a relaunch's Firefox.
+    _release_lock()
 
     # Windows opens the engine's window BEHIND persona (the launch runs in
     # persona's own process, which holds the foreground), so the user only
@@ -1556,8 +1676,17 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     # __exit__ is a polite Playwright teardown; a persistent-context
     # multi-process Firefox routinely survives it (parent + GPU/content/socket
     # children stayed alive after an X-close), holding the profile lock and
-    # piling up across launches. Kill whatever still belongs to this profile.
-    _kill_profile_firefox(profile_dir, tracked_pids)
+    # piling up across launches. Kill whatever still belongs to THIS session.
+    # Kill ONLY the tracked pids (+ their process trees), never a fresh
+    # profile-dir rescan: the launch lock was released at BROWSER_STARTED, so a
+    # relaunch of this profile may already be starting, and a fresh rescan would
+    # match — and kill — the relaunch's Firefox (the #150 race, re-armed by the
+    # early lock release). The tracked parent's tree covers its own children.
+    # When the watch never resolved a pid (a dead launch, tracked_pids falsy),
+    # fall back to a rescan — there's no live session to protect a relaunch from.
+    _kill_profile_firefox(
+        profile_dir, tracked_pids, rescan=not tracked_pids
+    )
     emit("BROWSER_CLOSED")
     _finish()
     return
@@ -1597,11 +1726,21 @@ def _thread_close_watch(profile_dir, closed, stop_event, stop_gracefully,
     give up so a half-failed launch can't wedge the profile "running"
     forever.
 
+    A close needs `no_window_streak` CONSECUTIVE confident no-window polls, not
+    one: navigating to a heavy page (a scanner site over a proxy) can make a
+    single EnumWindows tick miss the profile's window for a beat while the
+    window is busy — reacting to that one poll tore the whole session down
+    mid-navigation ("окно закрывается" на pixelscan/iphey, #159). A real user
+    close keeps the window gone; a nav transient recovers on the next tick and
+    resets the streak.
+
     Returns the tracked pid set (None if never seen) — captured while the
     browser was still alive, so the caller can force-kill the survivors after
     the polite teardown (which the multi-process Firefox routinely outlives)."""
     pids = None
     window_seen = False
+    gone_streak = 0
+    no_window_streak = 2
     deadline = time.monotonic() + no_process_timeout
     while not closed.wait(interval):
         if stop_event is not None and stop_event.is_set():
@@ -1613,8 +1752,13 @@ def _thread_close_watch(profile_dir, closed, stop_event, stop_gracefully,
             visible = _pids_have_visible_window(pids)
             if visible:
                 window_seen = True
+                gone_streak = 0
             elif visible is False and window_seen:
-                return pids  # the window the user saw is gone → they closed it
+                gone_streak += 1
+                if gone_streak >= no_window_streak:
+                    return pids  # the window the user saw is gone → they closed it
+            # None (no verdict) leaves the streak unchanged — neither a sighting
+            # nor a confident miss.
             continue
         found = _profile_firefox_pids(profile_dir)
         if found:
@@ -1642,11 +1786,17 @@ def _fork_close_watch(profile_dir, closed, no_process_timeout=60.0, interval=1.0
     greenlet only pumps events during calls made on THAT thread — polled from
     the child's own thread, ctx.pages is a frozen snapshot that never drops
     to 0, so an X-close was never detected and the profile stayed "running"
-    with no close in the log (#143). On Linux, closing the last window quits
-    Firefox, so pid death is the close. The pid is resolved once (a pgrep per
-    tick burns CPU), then polled with the cheap liveness check; a launch
-    whose process is never seen within `no_process_timeout` is treated as
-    dead so the profile can't wedge "running" forever.
+    with no close in the log (#143). Pid death is the close signal. Under the
+    Playwright juggler pipe an X-close does NOT quit Firefox on its own — it
+    runs the full async shutdown whose blockers hold the process alive ~60-90s
+    (live-measured), so the card stayed "running" for a minute after an X-close
+    even with the #143 pid-watch (#149). toolkit.shutdown.fastShutdownStage=3
+    (set in _profile_prefs) makes the process _exit ~2s after the window closes
+    (live-measured), so pid death — and this close — now fire promptly. The pid
+    is resolved once (a pgrep per tick burns CPU), then polled with the cheap
+    liveness check; a launch whose process is never seen within
+    `no_process_timeout` is treated as dead so the profile can't wedge
+    "running" forever.
 
     Returns the tracked pid set (None if never seen) so the caller can
     force-kill survivors after the polite teardown."""
@@ -1663,18 +1813,23 @@ def _fork_close_watch(profile_dir, closed, no_process_timeout=60.0, interval=1.0
     return {pid} if pid is not None else None
 
 
-def _kill_profile_firefox(profile_dir, known_pids=None) -> None:
-    """Force-kill every firefox.exe still running for THIS profile.
+def _kill_profile_firefox(profile_dir, known_pids=None, rescan=True) -> None:
+    """Force-kill the firefox.exe processes of THIS profile.
 
-    The kill set is the union of `known_pids` (resolved by the close-watch
-    while the browser was alive) and a fresh resolve — children spawn/exit
-    over the window's lifetime, and a no-verdict re-resolve must not lose the
-    tracked pids. Only pids matched to this profile_dir are ever killed;
-    other profiles' Firefox is untouchable."""
+    `known_pids` are the pids the close-watch resolved while the browser was
+    alive; each is killed together with its process tree, so a parent's
+    GPU/content/socket children go too without needing a fresh scan. When
+    `rescan` is True the set is also unioned with a fresh profile-dir resolve
+    (children spawn/exit over a window's lifetime). The teardown after a live
+    session passes rescan=False so a rescan can't match — and kill — a
+    concurrently-relaunching Firefox of the same profile (the launch lock is
+    released at BROWSER_STARTED). Only pids matched to this profile_dir are ever
+    killed; other profiles' Firefox is untouchable."""
     pids = set(known_pids or ())
-    fresh = _profile_firefox_pids(profile_dir)
-    if fresh:
-        pids |= fresh
+    if rescan:
+        fresh = _profile_firefox_pids(profile_dir)
+        if fresh:
+            pids |= fresh
     for pid in pids:
         if _pid_alive(pid):
             _force_kill_pid(pid)

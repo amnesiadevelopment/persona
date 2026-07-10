@@ -129,6 +129,12 @@ def main() -> None:
         # full timeout. Hard-exit so the probe finishes in ~1-2s.
         os._exit(0)
 
+    # After the selftest gate: the updater's probe runs the STAGED AppImage,
+    # whose $APPIMAGE must not become the launcher's Exec.
+    from src.core.desktop_entry import install_desktop_entry
+
+    install_desktop_entry()
+
     container = Container()
 
     fastapi_app = create_app(container)

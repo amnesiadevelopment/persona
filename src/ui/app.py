@@ -23,8 +23,10 @@ from .components import (
 )
 from ..services.engine import updater as engine
 from ..services.app_update import updater as app_update
+from ..core import platform as _platform
 from ..core import settings as app_settings
 from .components.onboarding import Onboarding
+from .components import splash as splash_mod
 from . import progress_fmt as pf
 from .dialogs.proxy import open_proxy_dialog
 from .dialogs.bookmark import open_bookmark_dialog
@@ -157,8 +159,30 @@ class App:
         ft.run(self._main)
 
     def _main(self, page: ft.Page) -> None:
+        # The splash must be the whole first frame: flet flushes the initial
+        # patch when _main returns, so anything built here delays that first
+        # paint and the window sits on a bare grey background (worst right
+        # after a self-update restart). Add only the splash, then build the
+        # real UI in the first serviced task while the scan animation runs.
         self.page = page
         configure_page(page)
+        self._splash = splash_mod.Splash()
+        page.add(self._splash.control)
+        self._splash.start(page)
+        page.run_task(self._finish_startup)
+
+    async def _finish_startup(self) -> None:
+        """First task the session loop services after _main: flet runs a sync
+        main() directly ON the session loop, so nothing scheduled with
+        page.run_task executes until _main returns and the initial page patch
+        (the splash) has been flushed. Build the real UI behind the splash,
+        keep the splash up for at least one scan sweep so it never flashes,
+        then swap the root layout in."""
+        import time
+
+        page = self.page
+        assert page is not None
+        started = time.monotonic()
         fp = ft.FilePicker()
         page.services.append(fp)
         self.refs = build_ui_refs(
@@ -166,8 +190,14 @@ class App:
             on_change_page=self._change_page,
             file_picker=fp,
         )
-        page.add(self._build_root_layout(self.refs))
+        root = self._build_root_layout(self.refs)
         self._render_active_page()
+        remaining = splash_mod.MIN_SECONDS - (time.monotonic() - started)
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+        self._splash.stop()
+        page.controls.clear()
+        page.add(root)
         self._refresh_profiles()
         self._refresh_engine_text()
         if not app_settings.is_onboarding_done():
@@ -179,17 +209,14 @@ class App:
         if not self._reconcile_started:
             self._reconcile_started = True
             page.run_task(self._ui_reconcile_loop)
-        page.run_task(self._on_session_ready)
+        await self._on_session_ready()
 
     async def _on_session_ready(self) -> None:
-        """First task the session loop services after _main: flet runs a sync
-        main() directly ON the session loop, so nothing scheduled with
-        page.run_task executes until _main returns and the initial page patch
-        has been flushed. Flush the UI callbacks workers queued while the
-        first window was still building (see _ui), then start the engine
-        bootstraps — kicked off inside _main they streamed marshaled updates
-        into a loop that wasn't servicing tasks yet and froze the first
-        window build on a fresh install (#124)."""
+        """The window is built: flush the UI callbacks workers queued while it
+        was still building (see _ui), then start the engine bootstraps —
+        kicked off during the build they streamed marshaled updates into a
+        loop that wasn't servicing tasks yet and froze the first window build
+        on a fresh install (#124)."""
         with self._ui_backlog_lock:
             self._ui_ready.set()
             backlog = self._ui_backlog
@@ -1203,16 +1230,17 @@ class App:
         threading.Thread(target=loop, daemon=True).start()
 
     def _on_update_found(self, tag: str, url: str) -> None:
-        """Decide what to do when a newer version is available."""
+        """A newer version exists: download it in the background right away,
+        then ask before installing (see _when_update_ready)."""
         # Always refresh the sidebar so the "new version" badge shows.
         self._refresh_sidebar()
-        if not app_update.is_packaged_appimage():
+        if not app_update.can_self_update():
             # running from source: just surface it, can't self-update
             self._log(f"New version {tag} available (update from source).")
             return
         # A previous run may have already finished downloading this update; if a
-        # complete staged file is on disk, offer to restart into it instead of
-        # downloading again (e.g. the user reopened the app before it restarted).
+        # complete staged file is on disk, offer it instead of downloading again
+        # (e.g. the user reopened the app before it restarted).
         if not self._update_staged:
             ready = app_update.find_ready_staged(
                 url, size=self._app_update_size, tag=self._app_update_tag
@@ -1222,22 +1250,8 @@ class App:
                 self._app_update_status = "ready"
                 self._log(f"Update {tag} ready — restart to apply.")
                 self._refresh_sidebar()
-                if (
-                    app_settings.is_auto_update_enabled()
-                    and len(self.bl.running_profile_names()) == 0
-                ):
-                    self._log("Restarting into the new version...")
-                    self._apply_update(ready)
+                self._when_update_ready(tag, ready)
                 return
-        if not app_settings.is_auto_update_enabled():
-            self._log(f"New version {tag} available — update from the sidebar.")
-            return
-        running = len(self.bl.running_profile_names()) > 0
-        if running:
-            # don't interrupt active work; wait for a manual click
-            self._log(f"New version {tag} ready to install when you're idle.")
-            return
-        # no profiles running -> download automatically
         self._log(f"New version {tag} found — downloading...")
         self._start_app_update(url)
 
@@ -1259,21 +1273,64 @@ class App:
                 tag=self._app_update_tag,
             )
             self._update_in_progress = False
+            if staged and not app_update.verify_staged_installer(
+                staged, tag=self._app_update_tag, log=self._log
+            ):
+                try:
+                    os.remove(staged)  # a full-size corrupt file would otherwise
+                except OSError:        # be matched again by find_ready_staged
+                    pass
+                staged = ""
             if staged:
                 self._update_staged = staged
                 self._app_update_status = "ready"
                 self._log("Update downloaded.")
                 self._refresh_sidebar()
-                # if still idle (no profiles running), restart now
-                if len(self.bl.running_profile_names()) == 0 and app_settings.is_auto_update_enabled():
-                    self._log("Restarting into the new version...")
-                    self._apply_update(staged)
+                self._when_update_ready(self._app_latest, staged)
             else:
                 self._app_update_status = "failed"
+                # clear the seen tag so the periodic check re-triggers a fresh
+                # download next cycle (it skips tags it already announced)
+                self._app_latest = ""
                 self._log("Update download failed — will retry.")
                 self._refresh_sidebar()
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _when_update_ready(self, tag: str, staged: str) -> None:
+        """A verified update is staged. The Linux AppImage with auto-update on
+        installs unattended when idle (headless boxes rely on that); everywhere
+        else the user decides, so ask first."""
+        if (
+            _platform.IS_LINUX
+            and app_settings.is_auto_update_enabled()
+            and len(self.bl.running_profile_names()) == 0
+        ):
+            self._log("Restarting into the new version...")
+            self._apply_update(staged)
+            return
+        self._offer_install(tag, staged)
+
+    def _offer_install(self, tag: str, staged: str) -> None:
+        from .dialogs.update_ready import open_update_ready_dialog
+
+        def on_install() -> None:
+            import threading
+
+            self._log("Installing update...")
+            # off the UI thread: the install re-verifies the file (sha256 +
+            # a checksum fetch), which must not freeze the window
+            threading.Thread(
+                target=lambda: self._apply_update(staged), daemon=True
+            ).start()
+
+        def show() -> None:
+            page = self.page
+            if page is None:
+                return
+            open_update_ready_dialog(page, tag=tag, on_install=on_install)
+
+        self._ui(show)
 
     def _update_progress_cb(self, done: int, total: int) -> None:
         import time

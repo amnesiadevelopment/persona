@@ -137,6 +137,55 @@ def test_profile_prefs_force_dark_theme():
     assert prefs["ui.systemUsesDarkTheme"] == 1
 
 
+def test_profile_prefs_fast_shutdown_for_prompt_close():
+    # #149: under the juggler pipe an X-close runs the full async shutdown,
+    # whose blockers keep Firefox alive ~60-90s — so the Linux close-watch (pid
+    # death) left the card "running" for a minute. fastShutdownStage=3 makes the
+    # process exit ~2s after the window closes (live-measured), so the close is
+    # detected promptly.
+    prefs = _profile_prefs({"search_engine": "duckduckgo"})
+    assert prefs["toolkit.shutdown.fastShutdownStage"] == 3
+
+
+def test_activate_dark_theme_flips_extensions_json(tmp_path):
+    # #152: the browser chrome (titlebar + tab strip) follows the ACTIVE theme
+    # add-on in extensions.json, not extensions.activeThemeID in prefs (proven
+    # live: the pref is set yet default-theme stays active and the strip is
+    # light). Activating the built-in dark theme in extensions.json turns the
+    # chrome dark.
+    import json
+
+    ext = tmp_path / "extensions.json"
+    ext.write_text(json.dumps({"schemaVersion": 35, "addons": [
+        {"id": "default-theme@mozilla.org", "type": "theme",
+         "active": True, "userDisabled": False},
+        {"id": "firefox-compact-dark@mozilla.org", "type": "theme",
+         "active": False, "userDisabled": True},
+        {"id": "firefox-compact-light@mozilla.org", "type": "theme",
+         "active": False, "userDisabled": True},
+        {"id": "some-extension@example.com", "type": "extension",
+         "active": True, "userDisabled": False},
+    ]}), encoding="utf-8")
+
+    invisible_launch._activate_dark_theme(str(tmp_path))
+
+    data = json.loads(ext.read_text(encoding="utf-8"))
+    by_id = {a["id"]: a for a in data["addons"]}
+    dark = by_id["firefox-compact-dark@mozilla.org"]
+    assert dark["active"] is True and dark["userDisabled"] is False
+    assert by_id["default-theme@mozilla.org"]["active"] is False
+    assert by_id["default-theme@mozilla.org"]["userDisabled"] is True
+    # A non-theme add-on is left untouched.
+    assert by_id["some-extension@example.com"]["active"] is True
+
+
+def test_activate_dark_theme_noop_without_extensions_json(tmp_path):
+    # A profile whose headless init hasn't created extensions.json yet: no-op,
+    # no crash (the theme applies from the next launch).
+    invisible_launch._activate_dark_theme(str(tmp_path))  # must not raise
+    assert not (tmp_path / "extensions.json").exists()
+
+
 def test_profile_prefs_close_without_confirmation():
     # Closing the window with the X must not pop a "close N tabs?" dialog, which
     # would leave the profile shown as running until dismissed.
@@ -265,7 +314,7 @@ def test_enter_on_worker_bounded_abandons_wedged_launch_and_retries(
 
     monkeypatch.setattr(
         invisible_launch, "_kill_profile_firefox",
-        lambda d, known_pids=None: kills.append(d),
+        lambda d, known_pids=None, rescan=True: kills.append(d),
     )
     settles = []
     monkeypatch.setattr(
@@ -309,7 +358,7 @@ def test_enter_on_worker_stop_event_aborts_without_retry(monkeypatch, tmp_path):
             return False
 
     monkeypatch.setattr(
-        invisible_launch, "_kill_profile_firefox", lambda d, known_pids=None: None
+        invisible_launch, "_kill_profile_firefox", lambda d, known_pids=None, rescan=True: None
     )
     monkeypatch.setattr(invisible_launch, "_wait_profile_released", lambda d: True)
 
@@ -369,6 +418,44 @@ def test_worker_session_runs_ctx_calls_and_teardown_on_worker():
     session.teardown()
 
 
+def test_teardown_bounded_when_exit_hangs():
+    # #154(a): a polite __exit__ can hang over a proxy against a wedged Firefox.
+    # The per-profile launch lock wraps the whole session, so an UNBOUNDED
+    # teardown would hold the lock forever and the next launch of the profile
+    # would wait then time out. teardown must give up on the hung __exit__ and
+    # return so the lock releases (the caller force-kills the Firefox after).
+    import threading
+    import time
+
+    class Ctx:
+        pages = [object()]
+
+    class Engine:
+        def __init__(self, **kw):
+            pass
+
+        def __enter__(self):
+            return self.ctx
+
+        def __exit__(self, *a):
+            time.sleep(60)  # a wedged teardown that never completes in time
+            return False
+
+    eng = Engine()
+    eng.ctx = Ctx()
+    session = invisible_launch._enter_on_worker(
+        lambda **kw: eng, {}, "d", attempts=1, per_try=5
+    )
+    assert session is not None
+    t0 = time.monotonic()
+    done = threading.Event()
+    threading.Thread(target=lambda: (session.teardown(), done.set()), daemon=True).start()
+    # Bounded teardown (15s __exit__ wait + 10s join) returns well under the
+    # 60s hang; an unbounded one would block past it.
+    assert done.wait(40), "teardown blocked on the hung __exit__"
+    assert time.monotonic() - t0 < 40
+
+
 def test_child_stop_during_wedged_launch_emits_cancelled(monkeypatch, tmp_path):
     # #137 wiring: a launch wedged inside __enter__ that the user STOPs reports
     # LAUNCH_CANCELLED (the launcher tears the session down on it) and still
@@ -394,7 +481,7 @@ def test_child_stop_during_wedged_launch_emits_cancelled(monkeypatch, tmp_path):
     mod.InvisiblePlaywright = FakeEngine
     monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
     monkeypatch.setattr(
-        invisible_launch, "_kill_profile_firefox", lambda d, known_pids=None: None
+        invisible_launch, "_kill_profile_firefox", lambda d, known_pids=None, rescan=True: None
     )
     monkeypatch.setattr(invisible_launch, "_wait_profile_released", lambda d: True)
 
@@ -533,7 +620,7 @@ def test_child_raises_profile_window_after_started_on_windows(
         invisible_launch, "_thread_close_watch", lambda *a, **k: None
     )
     monkeypatch.setattr(
-        invisible_launch, "_kill_profile_firefox", lambda d, pids=None: None
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None, rescan=True: None
     )
 
     raised = []
@@ -593,7 +680,7 @@ def test_child_does_not_raise_window_off_windows(monkeypatch, tmp_path):
         invisible_launch, "_thread_close_watch", lambda *a, **k: None
     )
     monkeypatch.setattr(
-        invisible_launch, "_kill_profile_firefox", lambda d, pids=None: None
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None, rescan=True: None
     )
 
     def boom(*a, **k):
@@ -772,7 +859,8 @@ def test_close_watch_closes_when_window_gone_but_processes_alive(monkeypatch):
         invisible_launch, "_profile_firefox_pids", lambda d: {10, 11}
     )
     monkeypatch.setattr(invisible_launch, "_pid_alive", lambda p: True)
-    visibility = iter([True, True, False])
+    # Two consecutive no-window polls are needed to declare the close (#159).
+    visibility = iter([True, True, False, False])
     monkeypatch.setattr(
         invisible_launch, "_pids_have_visible_window", lambda pids: next(visibility)
     )
@@ -793,7 +881,8 @@ def test_close_watch_waits_for_window_to_appear_first(monkeypatch):
     # window" during that launch gap is not a close — only gone-after-seen is.
     monkeypatch.setattr(invisible_launch, "_profile_firefox_pids", lambda d: {10})
     monkeypatch.setattr(invisible_launch, "_pid_alive", lambda p: True)
-    visibility = iter([False, False, True, False])
+    # Two consecutive no-window polls are needed to declare the close (#159).
+    visibility = iter([False, False, True, False, False])
     monkeypatch.setattr(
         invisible_launch, "_pids_have_visible_window", lambda pids: next(visibility)
     )
@@ -811,13 +900,41 @@ def test_close_watch_window_no_verdict_does_not_close(monkeypatch):
     # browser. Only a confident False after the window was seen closes.
     monkeypatch.setattr(invisible_launch, "_profile_firefox_pids", lambda d: {10})
     monkeypatch.setattr(invisible_launch, "_pid_alive", lambda p: True)
-    visibility = iter([True, None, None, False])
+    # None (no verdict) never advances the close streak; two confident False
+    # polls after the window was seen still decide the close (#159 debounce).
+    visibility = iter([True, None, None, False, False])
     monkeypatch.setattr(
         invisible_launch, "_pids_have_visible_window", lambda pids: next(visibility)
     )
     invisible_launch._thread_close_watch(
         r"C:\p", threading.Event(), None, lambda: None, interval=0.0,
     )
+    assert next(visibility, "done") == "done"
+
+
+def test_close_watch_debounces_a_single_transient_no_window(monkeypatch):
+    import threading
+
+    # #159: navigating to a heavy scanner page (pixelscan/iphey over a proxy)
+    # can make ONE EnumWindows tick miss the profile's window for a beat while
+    # it's busy; the window reappears on the next tick. A single no-window poll
+    # must NOT tear the session down mid-navigation — only a sustained absence
+    # (the user actually closed it) does. Here the window blips gone once, comes
+    # back, then is truly gone (two in a row) → closes exactly then.
+    monkeypatch.setattr(invisible_launch, "_profile_firefox_pids", lambda d: {10})
+    monkeypatch.setattr(invisible_launch, "_pid_alive", lambda p: True)
+    visibility = iter([True, False, True, True, False, False])
+    monkeypatch.setattr(
+        invisible_launch, "_pids_have_visible_window", lambda pids: next(visibility)
+    )
+    stops = []
+    invisible_launch._thread_close_watch(
+        r"C:\p", threading.Event(), None, lambda: stops.append("stop"),
+        interval=0.0,
+    )
+    assert stops == []                          # never STOP
+    # Consumed the whole sequence: the lone False did not close; the two
+    # trailing Falses did.
     assert next(visibility, "done") == "done"
 
 
@@ -935,7 +1052,7 @@ def test_child_fork_path_teardown_fires_on_pid_exit(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         invisible_launch, "_kill_profile_firefox",
-        lambda d, pids=None: kills.append((d, pids)),
+        lambda d, pids=None, rescan=True: kills.append((d, pids)),
     )
 
     def no_thread_watch(*_a, **_k):
@@ -1033,7 +1150,8 @@ def test_close_watch_returns_tracked_pids_for_kill(monkeypatch):
         invisible_launch, "_profile_firefox_pids", lambda d: {10, 11}
     )
     monkeypatch.setattr(invisible_launch, "_pid_alive", lambda p: True)
-    visibility = iter([True, False])
+    # Two consecutive no-window polls are needed to declare the close (#159).
+    visibility = iter([True, False, False])
     monkeypatch.setattr(
         invisible_launch, "_pids_have_visible_window", lambda pids: next(visibility)
     )
@@ -1083,7 +1201,7 @@ def test_child_force_kills_profile_firefox_after_teardown(monkeypatch, tmp_path)
     monkeypatch.setattr(
         invisible_launch,
         "_kill_profile_firefox",
-        lambda d, pids: calls.append(("kill", d, pids)),
+        lambda d, pids, rescan=True: calls.append(("kill", d, pids, rescan)),
     )
     monkeypatch.setattr(
         invisible_launch, "_raise_profile_window", lambda *a, **k: None
@@ -1097,19 +1215,19 @@ def test_child_force_kills_profile_firefox_after_teardown(monkeypatch, tmp_path)
     )
     os.close(r)
 
-    assert calls == ["exit", ("kill", str(tmp_path), {10, 11})]
+    # #154: with tracked pids the teardown kill must NOT rescan the profile dir
+    # (that could match a relaunch's Firefox — the lock is freed at start).
+    assert calls == ["exit", ("kill", str(tmp_path), {10, 11}, False)]
 
 
-def test_child_renders_at_system_dpr_keeps_spoofed_screen(monkeypatch, tmp_path):
-    # #131: the pinned screen.dpr=1 feeds BOTH the JS spoof
-    # (zoom.stealth.screen.dpr) and the render scale (layout.css.devPixelsPerPx
-    # — invisible_core.prefs derives the two from one profile.screen.dpr), so
-    # the window rendered at 1:1 physical px, ignoring the OS 150% scale
-    # (content ~1/3 too small on 4K). The render pref alone must be re-pointed
-    # at the real OS scale via extra_prefs (overlaid LAST in the engine), while
-    # the pin keeps the fingerprint at the chosen resolution. The probe proved
-    # window.devicePixelRatio then follows devPixelsPerPx (== the host scale),
-    # so the render is readable AND matchMedia/devicePixelRatio agree.
+def test_child_pins_render_dpr_to_chosen_resolution_dpr(monkeypatch, tmp_path):
+    # #156: layout.css.devPixelsPerPx drives window.devicePixelRatio AND the CSS
+    # resolution media queries. Pointing it at the HOST scale (the old render-
+    # comfort choice) made a chosen 1920/2560 screen report screen.width * host-
+    # scale as its physical size — a scanner read that as 4K/5120. The render
+    # pref must equal the CHOSEN resolution's dpr (1) so every dpr-derived value
+    # is coherent at the chosen resolution (the chromium model). Independent of
+    # the host scale, so a 1.5/2.0 host can't leak into the reported resolution.
     import os
     import sys
     import threading
@@ -1145,7 +1263,7 @@ def test_child_renders_at_system_dpr_keeps_spoofed_screen(monkeypatch, tmp_path)
         invisible_launch, "_thread_close_watch", lambda *a, **k: None
     )
     monkeypatch.setattr(
-        invisible_launch, "_kill_profile_firefox", lambda d, pids=None: None
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None, rescan=True: None
     )
     monkeypatch.setattr(
         invisible_launch, "_raise_profile_window", lambda *a, **k: None
@@ -1168,14 +1286,17 @@ def test_child_renders_at_system_dpr_keeps_spoofed_screen(monkeypatch, tmp_path)
 
     assert captured["pin"]["screen.width"] == 1920   # fingerprint = chosen
     assert captured["pin"]["screen.dpr"] == 1
-    assert captured["extra_prefs"]["layout.css.devPixelsPerPx"] == "1.5"
+    # devPixelsPerPx follows the pinned dpr (1), NOT the 1.5 host scale — the
+    # render pref is what a scanner reads as the CSS resolution, so it must
+    # agree with the chosen dpr or screen.width * dpr reports a doubled 4K size.
+    assert captured["extra_prefs"]["layout.css.devPixelsPerPx"] == "1"
 
 
-def test_render_dpr_override_wins_over_engine_prefs():
-    # #131 against the REAL engine pref pipeline: invisible_core.prefs sets
+def test_render_dpr_override_pins_to_chosen_dpr_in_engine_prefs():
+    # #156 against the REAL engine pref pipeline: invisible_core.prefs sets
     # layout.css.devPixelsPerPx = str(profile.screen.dpr) and applies
-    # extra_prefs LAST, so our render override must survive while the
-    # C++-read JS spoof prefs keep the pinned identity.
+    # extra_prefs LAST, so our render override (the chosen dpr) must survive
+    # while the C++-read JS spoof prefs keep the pinned identity.
     pytest.importorskip("invisible_core")
     from invisible_core._fpforge import generate_profile
     from invisible_core.prefs import translate_profile_to_prefs
@@ -1191,9 +1312,9 @@ def test_render_dpr_override_wins_over_engine_prefs():
         },
     )
     prefs = translate_profile_to_prefs(
-        profile, extra_prefs={"layout.css.devPixelsPerPx": "1.5"}
+        profile, extra_prefs={"layout.css.devPixelsPerPx": "1"}
     )
-    assert prefs["layout.css.devPixelsPerPx"] == "1.5"  # render at OS scale
+    assert prefs["layout.css.devPixelsPerPx"] == "1"    # render at chosen dpr
     assert prefs["zoom.stealth.screen.width"] == 1920   # fingerprint = chosen
 
 
@@ -1300,7 +1421,7 @@ def test_child_thread_path_applies_overrides_and_reports_lifecycle(
     # tears down AGAIN — the second teardown must be a no-op, not a forever-
     # blocking run_on_worker on the dead worker (the STOP-path deadlock).
     monkeypatch.setattr(
-        invisible_launch, "_kill_profile_firefox", lambda d, pids=None: None
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None, rescan=True: None
     )
     monkeypatch.setattr(
         invisible_launch, "_raise_profile_window", lambda *a, **k: None
@@ -1408,7 +1529,7 @@ def test_child_seeds_bookmarks_before_engine_launch(monkeypatch, tmp_path):
         invisible_launch, "_thread_close_watch", lambda *a, **k: None
     )
     monkeypatch.setattr(
-        invisible_launch, "_kill_profile_firefox", lambda d, pids=None: None
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None, rescan=True: None
     )
     monkeypatch.setattr(
         invisible_launch, "_raise_profile_window", lambda *a, **k: None
@@ -1924,7 +2045,7 @@ def test_child_starts_engine_exactly_once_when_already_seeded(
     mod.InvisiblePlaywright = FakeEngine
     monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
     monkeypatch.setattr(
-        invisible_launch, "_kill_profile_firefox", lambda d, pids=None: None
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None, rescan=True: None
     )
     monkeypatch.setattr(
         invisible_launch, "_thread_close_watch", lambda *a, **k: None
@@ -2000,7 +2121,7 @@ def test_child_thread_path_closes_pipe_on_normal_exit(monkeypatch, tmp_path):
         invisible_launch, "_thread_close_watch", lambda *a, **k: None
     )
     monkeypatch.setattr(
-        invisible_launch, "_kill_profile_firefox", lambda d, pids=None: None
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None, rescan=True: None
     )
     monkeypatch.setattr(
         invisible_launch, "_raise_profile_window", lambda *a, **k: None
@@ -2119,7 +2240,7 @@ def test_child_first_launch_swallows_cmdline_url_and_opens_start_page(
         invisible_launch, "_thread_close_watch", lambda *a, **k: None
     )
     monkeypatch.setattr(
-        invisible_launch, "_kill_profile_firefox", lambda d, pids=None: None
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None, rescan=True: None
     )
     monkeypatch.setattr(
         invisible_launch, "_raise_profile_window", lambda *a, **k: None
@@ -2188,7 +2309,7 @@ def test_child_restore_launch_leaves_restored_tabs_alone(monkeypatch, tmp_path):
         invisible_launch, "_thread_close_watch", lambda *a, **k: None
     )
     monkeypatch.setattr(
-        invisible_launch, "_kill_profile_firefox", lambda d, pids=None: None
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None, rescan=True: None
     )
     monkeypatch.setattr(
         invisible_launch, "_raise_profile_window", lambda *a, **k: None
@@ -2446,7 +2567,7 @@ def test_child_serializes_launches_of_same_profile(monkeypatch, tmp_path):
         invisible_launch, "_thread_close_watch", lambda *a, **k: None
     )
     monkeypatch.setattr(
-        invisible_launch, "_kill_profile_firefox", lambda d, pids=None: None
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None, rescan=True: None
     )
 
     gate = threading.Event()
@@ -2483,6 +2604,217 @@ def test_child_serializes_launches_of_same_profile(monkeypatch, tmp_path):
     assert len(constructed) == 2
 
 
+def test_proxied_launch_gets_a_larger_per_attempt_budget(monkeypatch, tmp_path):
+    # #154: a proxied Firefox launch (a cold proxy circuit, or a relaunch
+    # restoring proxied tabs) routinely takes far longer than a fast local
+    # launch, up to the engine's own 180s launch_persistent_context bound. The
+    # per-attempt bound must clear that for a proxied launch, or every attempt
+    # is killed before it can succeed and the launch reports LAUNCH_FAILED. A
+    # local launch keeps the tight bound so a real wedge is caught quickly.
+    import os
+    import sys
+    import threading
+    import types
+
+    captured = {}
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            pass
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", False)
+    monkeypatch.setattr(invisible_launch, "_seed_firefox_bookmarks", lambda *a, **k: None)
+    monkeypatch.setattr(invisible_launch, "_kill_profile_firefox", lambda d, pids=None, rescan=True: None)
+
+    def fake_enter(InvisiblePlaywright, kwargs, profile_dir, attempts, per_try,
+                   stop_event=None):
+        captured["per_try"] = per_try
+        captured["attempts"] = attempts
+        return None  # force LAUNCH_FAILED so _child returns promptly
+
+    monkeypatch.setattr(invisible_launch, "_enter_on_worker", fake_enter)
+
+    def run(proxy_url):
+        captured.clear()
+        r, w = os.pipe()
+        cfg = {"profile_dir": str(tmp_path), "profile_name": "t", "seed": 1}
+        if proxy_url:
+            cfg["proxy_url"] = proxy_url
+        invisible_launch._child(cfg, w, stop_event=threading.Event())
+        os.close(r)
+        return dict(captured)
+
+    proxied = run("socks5://127.0.0.1:9050")
+    local = run("")
+    assert proxied["per_try"] >= 180   # clears the engine's own 180s launch bound
+    assert proxied["per_try"] > local["per_try"]
+
+
+def test_child_releases_launch_lock_on_failed_launch(monkeypatch, tmp_path):
+    # #154: a launch that fails (LAUNCH_FAILED: launch timed out) must release
+    # the per-profile launch lock, or the next launch of the same profile waits
+    # on a still-held lock and can never come up. The lock release lives in
+    # _child's finally around the whole pipeline, so it must fire on the failure
+    # path too.
+    import os
+    import sys
+    import threading
+    import types
+
+    mod = types.ModuleType("invisible_playwright")
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            pass
+
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", False)
+    monkeypatch.setattr(
+        invisible_launch, "_seed_firefox_bookmarks",
+        lambda *a, **k: None,
+    )
+    # The enter never succeeds — the launch times out.
+    monkeypatch.setattr(
+        invisible_launch, "_enter_on_worker", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None, rescan=True: None
+    )
+
+    r, w = os.pipe()
+    invisible_launch._child(
+        {"profile_dir": str(tmp_path), "profile_name": "t", "seed": 1},
+        w,
+        stop_event=threading.Event(),
+    )
+    out = os.read(r, 65536).decode()
+    os.close(r)
+    assert "LAUNCH_FAILED" in out
+    assert "BROWSER_CLOSED" in out
+    # The lock is free: a fresh acquire succeeds immediately.
+    lock = invisible_launch._profile_launch_lock(str(tmp_path))
+    assert lock.acquire(timeout=0)
+    lock.release()
+
+
+def test_child_releases_launch_lock_once_browser_started(monkeypatch, tmp_path):
+    # #154: the launch lock serializes only the SETUP+ENTER race (#150); it must
+    # be RELEASED at BROWSER_STARTED so the long close-watch and teardown that
+    # follow never block a relaunch of the same profile. Holding it through the
+    # whole session made a relaunch wait on the previous session's (slow) close
+    # and time out.
+    import os
+    import queue
+    import sys
+    import threading
+    import types
+
+    class FakeCtx:
+        pages = [object()]
+
+        def add_init_script(self, *_a, **_k):
+            pass
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return FakeCtx()
+
+        def __exit__(self, *a):
+            return False
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(invisible_launch._platform, "IS_LINUX", False)
+    monkeypatch.setattr(
+        invisible_launch, "_seed_firefox_bookmarks", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_raise_profile_window", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox",
+        lambda d, pids=None, rescan=True: None,
+    )
+
+    session = _make_session(FakeCtx())
+    monkeypatch.setattr(
+        invisible_launch, "_enter_on_worker", lambda *a, **k: session
+    )
+
+    # The close-watch blocks until we let it finish — this stands in for the
+    # long-lived session. While it blocks, the lock MUST already be free.
+    started = threading.Event()
+    release_watch = threading.Event()
+    lock_state = {}
+
+    def fake_watch(profile_dir, closed, stop_event, stop_gracefully, **k):
+        started.set()
+        lock = invisible_launch._profile_launch_lock(profile_dir)
+        # A relaunch could acquire the lock now; assert it can.
+        lock_state["free_during_watch"] = lock.acquire(timeout=0)
+        if lock_state["free_during_watch"]:
+            lock.release()
+        release_watch.wait(5)
+        return {10}
+
+    monkeypatch.setattr(invisible_launch, "_thread_close_watch", fake_watch)
+
+    r, w = os.pipe()
+    done = threading.Event()
+
+    def run():
+        invisible_launch._child(
+            {"profile_dir": str(tmp_path), "profile_name": "t", "seed": 1},
+            w,
+            stop_event=threading.Event(),
+        )
+        done.set()
+
+    threading.Thread(target=run, daemon=True).start()
+    assert started.wait(5)
+    release_watch.set()
+    assert done.wait(5)
+    os.close(r)
+    assert lock_state.get("free_during_watch") is True
+
+
+def _make_session(ctx):
+    """A _WorkerSession whose worker thread just services run_on_worker calls,
+    for tests that need a live session object without a real engine."""
+    import queue
+    import threading
+
+    requests: "queue.Queue" = queue.Queue()
+    results: "queue.Queue" = queue.Queue()
+
+    class _Inv:
+        def __exit__(self, *a):
+            return False
+
+    def worker():
+        while True:
+            fn = requests.get()
+            if fn is None:
+                return
+            try:
+                results.put(fn())
+            except Exception:
+                results.put(None)
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    return invisible_launch._WorkerSession(_Inv(), ctx, t, requests, results)
+
+
 def test_child_passes_stop_event_to_bookmark_seeding(monkeypatch, tmp_path):
     # The headless places init runs inside the seeding; a STOP must reach it
     # or the first launch of a bookmarked profile is uncancellable for ~90s.
@@ -2515,7 +2847,7 @@ def test_child_passes_stop_event_to_bookmark_seeding(monkeypatch, tmp_path):
         invisible_launch, "_thread_close_watch", lambda *a, **k: None
     )
     monkeypatch.setattr(
-        invisible_launch, "_kill_profile_firefox", lambda d, pids=None: None
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None, rescan=True: None
     )
 
     seen = {}
@@ -2565,7 +2897,7 @@ def test_init_places_db_cancels_on_stop(monkeypatch, tmp_path):
         invisible_launch, "_wait_profile_released", lambda d: True
     )
     monkeypatch.setattr(
-        invisible_launch, "_kill_profile_firefox", lambda d, pids=None: None
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None, rescan=True: None
     )
     monkeypatch.setattr(invisible_launch._platform, "IS_LINUX", True)
 
@@ -2612,7 +2944,7 @@ def test_init_places_db_retries_wedged_enter(monkeypatch, tmp_path):
         invisible_launch, "_wait_profile_released", lambda d: True
     )
     monkeypatch.setattr(
-        invisible_launch, "_kill_profile_firefox", lambda d, pids=None: None
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None, rescan=True: None
     )
     monkeypatch.setattr(invisible_launch._platform, "IS_LINUX", True)
 
