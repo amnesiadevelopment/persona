@@ -214,6 +214,7 @@ def test_windows_relaunch_waits_for_installer_to_exit(monkeypatch, tmp_path):
 
     monkeypatch.setattr(au.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(au, "_installed_windows_exe", lambda: str(exe))
+    monkeypatch.setattr(au.os, "getpid", lambda: 7777)
 
     def fake_exit(code):
         raise SystemExit(code)
@@ -243,6 +244,80 @@ def test_windows_relaunch_waits_for_installer_to_exit(monkeypatch, tmp_path):
     assert kw.get("close_fds") is True
 
 
+def test_windows_relaunch_waits_for_old_persona_to_die(monkeypatch, tmp_path):
+    # Waiting for the INSTALLER alone raced the OLD persona's own teardown: the
+    # new persona started while the dying one still held the flet app extraction
+    # in %APPDATA%, so flet's delete-and-reextract failed with errno 32 and the
+    # user got an "Error starting app" window. The bat must also wait for the
+    # exiting persona's pid AND for every process with the exe's image name to
+    # vanish, then settle briefly before `start`.
+    _force_os(monkeypatch, win=True)
+    monkeypatch.setattr(au._platform, "no_window_kwargs", lambda: {})
+    monkeypatch.setattr(au.tempfile, "tempdir", str(tmp_path))
+    staged = tmp_path / "persona-windows-setup.exe"
+    staged.write_bytes(b"MZ")
+    exe = tmp_path / "persona.exe"
+    exe.write_bytes(b"MZ")
+    calls = []
+
+    def fake_popen(args, **kw):
+        calls.append((args, kw))
+
+        class P:
+            pid = 4242
+
+        return P()
+
+    monkeypatch.setattr(au.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(au, "_installed_windows_exe", lambda: str(exe))
+    monkeypatch.setattr(au.os, "getpid", lambda: 7777)
+
+    def fake_exit(code):
+        raise SystemExit(code)
+
+    monkeypatch.setattr(au.os, "_exit", fake_exit)
+    msgs = []
+    with pytest.raises(SystemExit):
+        au.apply_and_restart(str(staged), log=msgs.append)
+    assert not any("couldn't schedule the relaunch" in m for m in msgs), msgs
+    args, _kw = next((a, k) for a, k in calls if a and a[0] == "cmd")
+    with open(args[2], encoding="ascii", newline="") as f:
+        bat = f.read()
+    # waits for the exiting persona's own pid, not just the installer's
+    assert 'tasklist /FI "PID eq 7777"' in bat
+    # and for lingering same-named processes (flet/Flutter stragglers)
+    assert 'tasklist /FI "IMAGENAME eq persona.exe"' in bat
+    # a settle pause sits between the wait loop and the launch, giving the OS a
+    # beat to release handles after the last holder exits
+    assert ":settle" in bat
+    assert bat.index(":settle") < bat.index('start ""')
+    # the wait stays bounded — no process check may block the relaunch forever
+    assert "goto launch" in bat
+
+
+def test_relaunch_bat_is_silent_and_ascii(tmp_path):
+    # Mars SAW a console with ping output during a live update. Every command
+    # in the bat must have its output swallowed, and nothing in it may pop a
+    # console of its own: `timeout /t` paints a countdown (and refuses to run
+    # without console input), `pause`/`echo on` print, and the whole file must
+    # be ascii because cmd reads .bat in the OEM codepage.
+    exe = tmp_path / "persona.exe"
+    exe.write_bytes(b"MZ")
+    path = au._write_relaunch_bat(str(exe), 4242, 7777)
+    try:
+        with open(path, encoding="ascii", newline="") as f:
+            bat = f.read()
+    finally:
+        au.os.remove(path)
+    lines = [ln for ln in bat.split("\r\n") if ln]
+    assert lines[0] == "@echo off"
+    assert "timeout" not in bat and "pause" not in bat
+    for ln in lines:
+        if ln.split()[0].lower() in ("tasklist", "ping", "find"):
+            assert ">nul" in ln, f"unredirected output: {ln!r}"
+    bat.encode("ascii")  # raises if anything non-ascii slipped in
+
+
 def test_windows_relaunch_falls_back_to_fixed_wait_without_bat(
     monkeypatch, tmp_path
 ):
@@ -269,7 +344,7 @@ def test_windows_relaunch_falls_back_to_fixed_wait_without_bat(
 
         return P()
 
-    def broken_bat(exe, pid):
+    def broken_bat(exe, *pids):
         raise OSError("no temp dir")
 
     monkeypatch.setattr(au.subprocess, "Popen", fake_popen)
@@ -288,6 +363,11 @@ def test_windows_relaunch_falls_back_to_fixed_wait_without_bat(
     assert args[0] == "cmd"
     assert "ping" in args and "start" in args
     assert kw.get("close_fds") is True
+    # the fallback must be exactly as invisible as the bat path: hidden console
+    # via CREATE_NO_WINDOW, and NEVER DETACHED_PROCESS — a console-less cmd's
+    # console children (ping) allocate a fresh VISIBLE console, which is the
+    # terminal-with-a-countdown Mars saw during the 2.3.10 live update.
+    assert kw["creationflags"] == 0x00000200 | 0x08000000
 
 
 def test_apply_and_restart_never_wipes_engines(monkeypatch, tmp_path):

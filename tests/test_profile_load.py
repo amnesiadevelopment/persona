@@ -47,3 +47,17 @@ def test_all_good_entries_load(make_mgr):
         }
     )
     assert set(mgr.profiles) == {"a", "b"}
+
+
+def test_bookmarks_none_when_key_absent(make_mgr):
+    # A profile saved before the bookmarks field existed loads as None so it
+    # keeps getting the default bookmarks, not an empty toolbar.
+    mgr = make_mgr({"old": {"name": "old", "proxy": None}})
+    assert mgr.profiles["old"].bookmarks is None
+
+
+def test_cleared_bookmarks_round_trip_stays_empty(make_mgr):
+    # An explicitly emptied selection ([]) survives save/reload as [] — the
+    # user cleared them and they must not resurrect as the defaults.
+    mgr = make_mgr({"p": {"name": "p", "proxy": None, "bookmarks": []}})
+    assert mgr.profiles["p"].bookmarks == []

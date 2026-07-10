@@ -437,6 +437,17 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
             "--enable-unsafe-swiftshader",
             "--password-store=basic",
             "--use-mock-keychain",
+            # Under the software (SwiftShader) compositor a browser-UI animation
+            # can run forever without ever settling — the log shows
+            # "CompositorAnimationObserver is active for too long (180s)
+            # location=Button". While it churns, the compositor never idles, so
+            # the "Working…" throbber sticks and Google Sheets' overlays (the
+            # date-cell calendar, the custom-currency menu) never get a frame to
+            # paint into and real clicks land on a busy compositor. Taking UI
+            # animations off the compositor thread lets it settle. It carries no
+            # fingerprint tell (unlike prefers-reduced-motion, which is
+            # page-visible) and doesn't change rendering.
+            "--disable-threaded-animation",
         ]
 
     # Wayland app_id (taskbar label/icon per persona) is an X11/Wayland concept;

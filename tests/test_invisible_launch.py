@@ -660,6 +660,9 @@ def test_profile_pids_query_error_returns_none(monkeypatch):
     # the profile truly has no Firefox process. Collapsing the two is what let
     # the close-watch miss the process forever and wedge the card "running".
     monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(
+        invisible_launch, "_win_firefox_command_lines", lambda: None
+    )
 
     def boom(*a, **k):
         raise RuntimeError("wmi hiccup")
@@ -674,6 +677,9 @@ def test_profile_pids_query_error_returns_none(monkeypatch):
 )
 def test_profile_pids_success_with_no_match_is_confident_empty(monkeypatch):
     monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(
+        invisible_launch, "_win_firefox_command_lines", lambda: None
+    )
     monkeypatch.setattr(
         invisible_launch.subprocess, "check_output", lambda *a, **k: ""
     )
@@ -1390,7 +1396,7 @@ def test_child_seeds_bookmarks_before_engine_launch(monkeypatch, tmp_path):
     mod.InvisiblePlaywright = FakeEngine
     monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
 
-    def fake_seed(profile_dir, bookmarks, seed):
+    def fake_seed(profile_dir, bookmarks, seed, stop_event=None):
         calls.append("seed")
         seeded["args"] = (profile_dir, bookmarks, seed)
 
@@ -1710,7 +1716,9 @@ def test_init_places_db_bounded_when_engine_wedges(monkeypatch, tmp_path):
         )
         assert ok is False
         assert _time.monotonic() - t0 < 5
-        assert settled == [str(tmp_path)]
+        # Settled at least once (per bailed attempt + the final settle), and
+        # only ever for THIS profile.
+        assert settled and set(settled) == {str(tmp_path)}
     finally:
         release.set()
 
@@ -1785,7 +1793,7 @@ def test_seed_bookmarks_reinits_when_toolbar_root_missing(monkeypatch, tmp_path)
     monkeypatch.setattr(
         invisible_launch,
         "_init_places_db",
-        lambda d, s: inits.append((d, s)) or False,
+        lambda d, s, stop_event=None: inits.append((d, s)) or False,
     )
     invisible_launch._seed_firefox_bookmarks(
         str(tmp_path), [{"name": "a", "url": "https://a/"}], 7
@@ -2032,3 +2040,586 @@ def test_non_fork_launch_uses_thread_not_reexec(monkeypatch):
     assert hasattr(proc, "_thread")
     assert hasattr(proc, "_stop_event")
     proc.wait(timeout=5)
+
+
+def test_profile_prefs_session_restore_owns_the_window():
+    # #148: SessionStore only lets the restored session OWN the startup window
+    # (overwriteTabs) when the cmdline URL equals nsIBrowserHandler.defaultArgs.
+    # Playwright hardcodes an "about:blank" cmdline URL on every persistent
+    # launch, and with browser.startup.page=3 defaultArgs is the homepage — so
+    # every relaunch KEPT an extra blank tab next to the restored ones. Restore
+    # must come from resume_session_once (re-armed via user.js each launch)
+    # with startup.page=0, which keeps defaultArgs at "about:blank".
+    prefs = _profile_prefs({"search_engine": "duckduckgo"})
+    assert prefs["browser.startup.page"] == 0
+    assert prefs["browser.sessionstore.resume_session_once"] is True
+    assert prefs["browser.sessionstore.resume_from_crash"] is True
+    # The homepage still feeds the Home button and the first-launch start page.
+    assert "duckduckgo.com" in prefs["browser.startup.homepage"]
+
+
+def test_has_saved_session(tmp_path):
+    assert invisible_launch._has_saved_session(str(tmp_path)) is False
+    assert invisible_launch._has_saved_session("") is False
+
+    store = tmp_path / "sessionstore.jsonlz4"
+    store.write_bytes(b"x")
+    assert invisible_launch._has_saved_session(str(tmp_path)) is True
+
+    store.unlink()
+    backups = tmp_path / "sessionstore-backups"
+    backups.mkdir()
+    (backups / "recovery.jsonlz4").write_bytes(b"x")  # crashed-session backup
+    assert invisible_launch._has_saved_session(str(tmp_path)) is True
+
+
+def test_child_first_launch_swallows_cmdline_url_and_opens_start_page(
+    monkeypatch, tmp_path
+):
+    # #148, fresh profile: the trailing -new-window flag must consume
+    # Playwright's hardcoded "about:blank" cmdline URL (a positional URL makes
+    # SessionStore keep an extra blank tab on every restore launch), and with
+    # nothing to restore the lone about:blank tab is navigated to the chosen
+    # start page so the window isn't empty.
+    import os
+    import sys
+    import threading
+    import types
+
+    captured = {}
+    gotos = []
+
+    class FakePage:
+        def goto(self, url, **kwargs):
+            gotos.append((url, kwargs))
+
+    class FakeCtx:
+        pages = [FakePage()]
+
+        def add_init_script(self, *_a, **_k):
+            pass
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def _default_context_kwargs(self):
+            return {}
+
+        def __enter__(self):
+            return FakeCtx()
+
+        def __exit__(self, *a):
+            return False
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(
+        invisible_launch, "_thread_close_watch", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_raise_profile_window", lambda *a, **k: None
+    )
+
+    stop = threading.Event()
+    stop.set()
+    r, w = os.pipe()
+    invisible_launch._child(
+        {
+            "profile_dir": str(tmp_path),
+            "profile_name": "t",
+            "seed": 1,
+            "search_engine": "duckduckgo",
+        },
+        w,
+        stop_event=stop,
+    )
+    os.close(r)
+
+    assert captured["extra_args"][-1] == "-new-window"
+    assert len(gotos) == 1
+    url, kwargs = gotos[0]
+    assert "duckduckgo.com" in url
+    assert kwargs.get("wait_until") == "commit"  # don't block on a full load
+
+
+def test_child_restore_launch_leaves_restored_tabs_alone(monkeypatch, tmp_path):
+    # #148, relaunch: with a saved session Firefox restores the user's tabs and
+    # the juggler-attached initial page IS a restored tab — navigating it would
+    # clobber the user's session. No page may be touched.
+    import os
+    import sys
+    import threading
+    import types
+
+    gotos = []
+
+    class FakePage:
+        def goto(self, url, **kwargs):
+            gotos.append(url)
+
+    class FakeCtx:
+        pages = [FakePage()]
+
+        def add_init_script(self, *_a, **_k):
+            pass
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            pass
+
+        def _default_context_kwargs(self):
+            return {}
+
+        def __enter__(self):
+            return FakeCtx()
+
+        def __exit__(self, *a):
+            return False
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(
+        invisible_launch, "_thread_close_watch", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_raise_profile_window", lambda *a, **k: None
+    )
+
+    (tmp_path / "sessionstore.jsonlz4").write_bytes(b"x")
+
+    stop = threading.Event()
+    stop.set()
+    r, w = os.pipe()
+    invisible_launch._child(
+        {"profile_dir": str(tmp_path), "profile_name": "t", "seed": 1},
+        w,
+        stop_event=stop,
+    )
+    os.close(r)
+
+    assert gotos == []
+
+
+# ---------------------------------------------------------------------------
+# #149: the Windows pid scan must not depend on spawning PATH-searched tools.
+# In the packaged flet app every powershell/taskkill spawn silently failed, so
+# the close-watch never resolved the profile's pids and every X-close was only
+# "detected" by the 60s give-up (live-proven: persona's own logs show every
+# Firefox close landing at start+60..66s while STOPs resolve in 1s).
+# ---------------------------------------------------------------------------
+
+
+def test_profile_pids_ctypes_scan_scopes_to_profile(monkeypatch):
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(
+        invisible_launch,
+        "_win_firefox_command_lines",
+        lambda: [
+            (10, r"firefox.exe -no-remote -profile C:\p\dir\.invisible-profile"),
+            (11, r"firefox.exe -contentproc -parentPid 10"),
+            (12, r"firefox.exe -no-remote -profile C:\other\.invisible-profile"),
+        ],
+    )
+
+    def boom(*a, **k):
+        raise AssertionError("PowerShell must not be spawned")
+
+    monkeypatch.setattr(invisible_launch.subprocess, "check_output", boom)
+    got = invisible_launch._profile_firefox_pids(r"C:\p\dir\.invisible-profile")
+    assert got == {10}
+
+
+def test_profile_pids_ctypes_confident_empty_skips_powershell(monkeypatch):
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(
+        invisible_launch, "_win_firefox_command_lines", lambda: []
+    )
+
+    def boom(*a, **k):
+        raise AssertionError("PowerShell must not be spawned")
+
+    monkeypatch.setattr(invisible_launch.subprocess, "check_output", boom)
+    assert invisible_launch._profile_firefox_pids(r"C:\p\dir") == set()
+
+
+def test_profile_pids_unreadable_cmdline_falls_back_to_powershell(monkeypatch):
+    # A firefox.exe whose command line can't be read is "no verdict for that
+    # process" — a confident empty can't be claimed, so PowerShell decides.
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(invisible_launch._platform, "no_window_kwargs", lambda: {})
+    monkeypatch.setattr(
+        invisible_launch, "_win_firefox_command_lines", lambda: [(10, None)]
+    )
+    monkeypatch.setattr(
+        invisible_launch.subprocess, "check_output", lambda *a, **k: "10\n"
+    )
+    assert invisible_launch._profile_firefox_pids(r"C:\p\dir") == {10}
+
+
+def test_profile_pids_ctypes_match_wins_despite_unreadable_sibling(monkeypatch):
+    # Positive ctypes evidence is enough even when another process is
+    # unreadable — no PowerShell needed.
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(
+        invisible_launch,
+        "_win_firefox_command_lines",
+        lambda: [
+            (10, r"firefox.exe -profile C:\p\dir\.invisible-profile"),
+            (11, None),
+        ],
+    )
+
+    def boom(*a, **k):
+        raise AssertionError("PowerShell must not be spawned")
+
+    monkeypatch.setattr(invisible_launch.subprocess, "check_output", boom)
+    got = invisible_launch._profile_firefox_pids(r"C:\p\dir\.invisible-profile")
+    assert got == {10}
+
+
+def test_profile_pids_powershell_fallback_uses_absolute_path(monkeypatch):
+    # The packaged app couldn't find PATH-searched tools; when the ctypes scan
+    # has no verdict the fallback must invoke powershell.exe by absolute path.
+    import os as _os
+
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(invisible_launch._platform, "no_window_kwargs", lambda: {})
+    monkeypatch.setattr(
+        invisible_launch, "_win_firefox_command_lines", lambda: None
+    )
+    argvs = []
+
+    def fake_check_output(argv, **k):
+        argvs.append(argv)
+        return "7\n"
+
+    monkeypatch.setattr(
+        invisible_launch.subprocess, "check_output", fake_check_output
+    )
+    assert invisible_launch._profile_firefox_pids(r"C:\p\dir") == {7}
+    exe = argvs[0][0]
+    assert exe.lower().endswith("powershell.exe") or exe == "powershell"
+    if exe.lower().endswith("powershell.exe"):
+        assert _os.path.isabs(exe)
+
+
+def test_force_kill_prefers_ctypes_tree_kill(monkeypatch):
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", True)
+    killed = []
+    monkeypatch.setattr(
+        invisible_launch,
+        "_kill_process_tree_ctypes",
+        lambda pid: killed.append(pid) or True,
+    )
+
+    def boom(*a, **k):
+        raise AssertionError("taskkill must not be spawned when ctypes worked")
+
+    monkeypatch.setattr(invisible_launch.subprocess, "run", boom)
+    invisible_launch._force_kill_pid(5)
+    assert killed == [5]
+
+
+def test_force_kill_falls_back_to_taskkill_by_absolute_path(monkeypatch):
+    import os as _os
+
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(invisible_launch._platform, "no_window_kwargs", lambda: {})
+    monkeypatch.setattr(
+        invisible_launch, "_kill_process_tree_ctypes", lambda pid: False
+    )
+    argvs = []
+    monkeypatch.setattr(
+        invisible_launch.subprocess, "run", lambda argv, **k: argvs.append(argv)
+    )
+    invisible_launch._force_kill_pid(5)
+    assert argvs, "taskkill fallback must run"
+    exe = argvs[0][0]
+    assert exe.lower().endswith("taskkill.exe") or exe == "taskkill"
+    if exe.lower().endswith("taskkill.exe"):
+        assert _os.path.isabs(exe)
+    assert "/PID" in argvs[0] and "5" in argvs[0]
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="exercises the real Toolhelp/PEB process scan",
+)
+def test_win_process_scan_reads_own_command_line():
+    # Live check of the pure-ctypes layer: our own process must be visible and
+    # its command line readable (same-user, like persona's Firefoxes).
+    import os as _os
+
+    cl = invisible_launch._win_process_command_line(_os.getpid())
+    assert cl and "python" in cl.lower()
+    entries = invisible_launch._win_process_entries()
+    assert entries is not None
+    assert any(pid == _os.getpid() for pid, _ppid, _name in entries)
+
+
+# ---------------------------------------------------------------------------
+# #150: a relaunch racing the previous launch of the SAME profile. The
+# predecessor's cleanup (_kill_profile_firefox / the headless places init)
+# used to fire into the successor's launch window and shoot down its Firefox
+# — the intermittent silent no-op needing ~5 relaunches (live-proven in
+# persona's logs: a stopped first-launch's 80s headless init overlapped two
+# later launches, killing one mid-enter).
+# ---------------------------------------------------------------------------
+
+
+def test_launch_lock_is_per_profile_dir():
+    a = invisible_launch._profile_launch_lock(r"C:\p\one")
+    assert a is invisible_launch._profile_launch_lock(r"C:\p\one")
+    if sys.platform == "win32":
+        # normcase folds case only on Windows, where paths are case-insensitive
+        assert a is invisible_launch._profile_launch_lock(r"C:\P\ONE".lower())
+    assert a is not invisible_launch._profile_launch_lock(r"C:\p\two")
+
+
+def test_child_waiting_on_prior_launch_cancels_on_stop(tmp_path):
+    # While the previous _child of the same profile is still winding down, a
+    # STOP during the wait must cancel cleanly (never a blind blocking
+    # acquire — the #141 lesson: no uninterruptible waits in the stop path).
+    import os
+    import threading
+
+    lock = invisible_launch._profile_launch_lock(str(tmp_path))
+    assert lock.acquire(timeout=1)
+    try:
+        stop = threading.Event()
+        threading.Timer(0.6, stop.set).start()
+        r, w = os.pipe()
+        invisible_launch._child(
+            {"profile_dir": str(tmp_path), "profile_name": "t", "seed": 1},
+            w,
+            stop_event=stop,
+        )
+        out = os.read(r, 65536).decode()
+        os.close(r)
+        assert "LAUNCH_CANCELLED" in out
+        assert "BROWSER_CLOSED" in out
+    finally:
+        lock.release()
+
+
+def test_child_serializes_launches_of_same_profile(monkeypatch, tmp_path):
+    # The second launch of a profile must not enter the engine while the
+    # first is still inside its launch pipeline.
+    import os
+    import sys
+    import threading
+    import time
+    import types
+
+    constructed = []
+
+    class FakeCtx:
+        pages = [object()]
+
+        def add_init_script(self, *_a, **_k):
+            pass
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            constructed.append(time.monotonic())
+
+        def __enter__(self):
+            return FakeCtx()
+
+        def __exit__(self, *a):
+            return False
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", False)
+    monkeypatch.setattr(
+        invisible_launch, "_thread_close_watch", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None: None
+    )
+
+    gate = threading.Event()
+    in_seed = threading.Event()
+
+    def slow_seed(profile_dir, bookmarks, seed, stop_event=None):
+        in_seed.set()
+        gate.wait(10)
+
+    monkeypatch.setattr(invisible_launch, "_seed_firefox_bookmarks", slow_seed)
+
+    cfg = {"profile_dir": str(tmp_path), "profile_name": "t", "seed": 1}
+
+    def run_child():
+        r, w = os.pipe()
+        invisible_launch._child(dict(cfg), w, stop_event=threading.Event())
+        os.close(r)
+
+    t1 = threading.Thread(target=run_child, daemon=True)
+    t1.start()
+    assert in_seed.wait(5)
+    in_seed.clear()
+    t2 = threading.Thread(target=run_child, daemon=True)
+    t2.start()
+    time.sleep(0.5)
+    # t1 is wedged in seeding and t2 must be waiting on the profile lock —
+    # not inside its own seeding, and neither in the engine.
+    assert not in_seed.is_set()
+    assert constructed == []
+    gate.set()
+    t1.join(10)
+    t2.join(10)
+    assert not t1.is_alive() and not t2.is_alive()
+    assert len(constructed) == 2
+
+
+def test_child_passes_stop_event_to_bookmark_seeding(monkeypatch, tmp_path):
+    # The headless places init runs inside the seeding; a STOP must reach it
+    # or the first launch of a bookmarked profile is uncancellable for ~90s.
+    import os
+    import sys
+    import threading
+    import types
+
+    class FakeCtx:
+        pages = [object()]
+
+        def add_init_script(self, *_a, **_k):
+            pass
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return FakeCtx()
+
+        def __exit__(self, *a):
+            return False
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", False)
+    monkeypatch.setattr(
+        invisible_launch, "_thread_close_watch", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None: None
+    )
+
+    seen = {}
+
+    def capture_seed(profile_dir, bookmarks, seed, stop_event=None):
+        seen["stop_event"] = stop_event
+
+    monkeypatch.setattr(invisible_launch, "_seed_firefox_bookmarks", capture_seed)
+
+    stop = threading.Event()
+    stop.set()
+    r, w = os.pipe()
+    invisible_launch._child(
+        {"profile_dir": str(tmp_path), "profile_name": "t", "seed": 1},
+        w,
+        stop_event=stop,
+    )
+    os.close(r)
+    assert seen["stop_event"] is stop
+
+
+def test_init_places_db_cancels_on_stop(monkeypatch, tmp_path):
+    # A STOP during the headless places init must abort it early — it used to
+    # run its full ~90s deadline with the user staring at a dead card.
+    import sys
+    import threading
+    import time
+    import types
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    from src.services.browser import firefox_bookmarks
+
+    monkeypatch.setattr(firefox_bookmarks, "places_ready", lambda p: False)
+    monkeypatch.setattr(
+        invisible_launch, "_wait_profile_released", lambda d: True
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None: None
+    )
+    monkeypatch.setattr(invisible_launch._platform, "IS_LINUX", True)
+
+    stop = threading.Event()
+    threading.Timer(0.3, stop.set).start()
+    t0 = time.monotonic()
+    ok = invisible_launch._init_places_db(
+        str(tmp_path), 1, timeout=30.0, close_grace=1.0, stop_event=stop
+    )
+    assert ok is False
+    assert time.monotonic() - t0 < 10
+
+
+def test_init_places_db_retries_wedged_enter(monkeypatch, tmp_path):
+    # A wedged persistent-context enter (the #137 family — live: the driver
+    # crashed and the init ate its whole 90s as dead air) must be bounded and
+    # retried, not waited out.
+    import sys
+    import threading
+    import time
+    import types
+
+    instances = []
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            instances.append(self)
+
+        def __enter__(self):
+            if len(instances) == 1:
+                threading.Event().wait(30)  # wedged first attempt
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    from src.services.browser import firefox_bookmarks
+
+    monkeypatch.setattr(firefox_bookmarks, "places_ready", lambda p: True)
+    monkeypatch.setattr(
+        invisible_launch, "_wait_profile_released", lambda d: True
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None: None
+    )
+    monkeypatch.setattr(invisible_launch._platform, "IS_LINUX", True)
+
+    t0 = time.monotonic()
+    ok = invisible_launch._init_places_db(
+        str(tmp_path), 1, timeout=20.0, close_grace=1.0, enter_timeout=0.4
+    )
+    assert ok is True
+    assert len(instances) == 2
+    assert time.monotonic() - t0 < 15

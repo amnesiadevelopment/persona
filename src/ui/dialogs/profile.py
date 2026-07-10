@@ -11,6 +11,7 @@ from ...services.browser.profile_seed import (
     DEFAULT_SEARCH_ENGINE,
     SEARCH_ENGINE_LABELS,
 )
+from ...services.bookmark.store import DEFAULT_BOOKMARKS
 from ...services.browser.device_presets import is_mobile_os
 from ...services.browser.resolution import parse_resolution
 from ...utils.validation import validate_profile_name
@@ -341,7 +342,13 @@ def open_profile_dialog(
         text_style=ft.TextStyle(font_family=MONO),
     )
 
-    selected_bookmarks = set(profile.bookmarks) if profile is not None else set()
+    # profile.bookmarks is None when the profile was never configured — show the
+    # stock defaults pre-checked so a new/unconfigured profile reflects what it
+    # will actually open with. An explicit list (including []) is shown as-is.
+    if profile is not None and profile.bookmarks is not None:
+        selected_bookmarks = set(profile.bookmarks)
+    else:
+        selected_bookmarks = {n for n in DEFAULT_BOOKMARKS if n in {b.name for b in all_bookmarks}}
     bookmark_checks: dict[str, ft.Checkbox] = {}
     bookmark_rows: list[ft.Control] = []
     for b in all_bookmarks:

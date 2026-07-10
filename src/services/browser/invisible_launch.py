@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 
 from ...core import platform as _platform
@@ -606,7 +607,12 @@ _NO_STARTUP_FETCH = {
 
 
 def _init_places_db(
-    profile_dir: str, seed: int, timeout: float = 90.0, close_grace: float = 15.0
+    profile_dir: str,
+    seed: int,
+    timeout: float = 90.0,
+    close_grace: float = 15.0,
+    enter_timeout: float = 25.0,
+    stop_event=None,
 ) -> bool:
     """Launch the engine once headless so it creates a valid places.sqlite.
 
@@ -616,11 +622,16 @@ def _init_places_db(
     uses. Waits for Places to write the bookmark roots (the toolbar row the
     seeder needs) — the file alone lands on disk long before the roots, and
     seeding a rootless database silently inserts nothing. Playwright's sync
-    API is thread-affine, so the whole init (enter → wait for roots → polite
-    exit) runs on one worker thread, bounded: `timeout` covers reaching the
-    roots, and the polite close gets only `close_grace` on top (Firefox's
-    shutdown blockers hang it for ~90s at times; the settle below kills the
-    leftovers anyway). Returns True once the roots exist.
+    API is thread-affine, so each attempt (enter → wait for roots → polite
+    exit) runs on one worker thread. The enter itself is bounded to
+    `enter_timeout` and retried: a wedged persistent-context launch (the #137
+    family — live: the playwright driver crashed mid-init) used to eat the
+    whole `timeout` as dead air with the user staring at a card that "does
+    nothing". `timeout` still bounds the whole init, the polite close gets
+    only `close_grace` on top (Firefox's shutdown blockers hang it for ~90s
+    at times; the settle below kills the leftovers anyway), and `stop_event`
+    cancels between polls so a STOP doesn't have to wait the init out.
+    Returns True once the roots exist.
     """
     try:
         from invisible_playwright import InvisiblePlaywright
@@ -629,6 +640,9 @@ def _init_places_db(
     import threading
 
     from .firefox_bookmarks import places_ready
+
+    def stopped() -> bool:
+        return stop_event is not None and stop_event.is_set()
 
     # The engine hides this run by passing cloak_windows via user.js, but the
     # cloak gate acts on the value already in prefs.js when the window is
@@ -645,30 +659,63 @@ def _init_places_db(
 
     places = os.path.join(profile_dir, "places.sqlite")
     deadline = time.monotonic() + timeout
-    ready = threading.Event()
 
-    def init() -> None:
-        try:
-            with InvisiblePlaywright(
-                seed=seed,
-                headless=True,
-                profile_dir=profile_dir,
-                # Skip Firefox's startup remote-settings sync — over Tor that
-                # fetch stalls this throwaway run for minutes.
-                extra_prefs=dict(_NO_STARTUP_FETCH),
-            ):
-                while time.monotonic() < deadline and not places_ready(places):
-                    time.sleep(0.5)
+    for _attempt in range(3):
+        if stopped() or time.monotonic() >= deadline:
+            break
+        entered = threading.Event()
+        ready = threading.Event()
+        done = threading.Event()
+
+        def init(entered=entered, ready=ready, done=done) -> None:
+            try:
+                with InvisiblePlaywright(
+                    seed=seed,
+                    headless=True,
+                    profile_dir=profile_dir,
+                    # Skip Firefox's startup remote-settings sync — over Tor
+                    # that fetch stalls this throwaway run for minutes.
+                    extra_prefs=dict(_NO_STARTUP_FETCH),
+                ):
+                    entered.set()
+                    while (
+                        time.monotonic() < deadline
+                        and not stopped()
+                        and not places_ready(places)
+                    ):
+                        time.sleep(0.5)
+                    ready.set()
+            except Exception:
+                pass
+            finally:
                 ready.set()
-        except Exception:
-            pass
-        finally:
-            ready.set()
+                done.set()
 
-    t = threading.Thread(target=init, daemon=True)
-    t.start()
-    ready.wait(timeout)
-    t.join(close_grace)
+        t = threading.Thread(target=init, daemon=True)
+        t.start()
+        enter_deadline = min(deadline, time.monotonic() + enter_timeout)
+        while not entered.wait(0.2):
+            if done.is_set() or stopped() or time.monotonic() > enter_deadline:
+                break
+        if not entered.is_set():
+            # Wedged (or failed) before the engine came up: kill this
+            # profile's Firefox so the blocked enter unwinds, settle, retry.
+            _kill_profile_firefox(profile_dir)
+            _wait_profile_released(profile_dir)
+            for fname in ("lock", ".parentlock"):
+                try:
+                    os.remove(os.path.join(profile_dir, fname))
+                except OSError:
+                    pass
+            continue
+        # Entered: the worker leaves its roots-wait on ready/stop/deadline,
+        # then its polite close gets only close_grace on top (the settle
+        # below kills whatever a hung shutdown leaves behind).
+        while not ready.wait(0.5):
+            if stopped() or time.monotonic() > deadline:
+                break
+        done.wait(close_grace)
+        break
     # The engine's __exit__ is a polite Playwright teardown the multi-process
     # Firefox routinely survives; a REAL launch over a still-dying instance
     # can't come up cleanly. Don't proceed until this profile's Firefox is
@@ -681,7 +728,7 @@ def _init_places_db(
         except OSError:
             pass
     # Drop this run's saved session. The real launch restores the previous
-    # session (browser.startup.page=3) — restoring the throwaway headless
+    # session (sessionstore.resume_session_once) — restoring the throwaway headless
     # window replaces the initial window juggler attaches to (half-destroyed
     # webProgress, endless SimpleChannel churn) and the launch wedges before
     # BROWSER_STARTED. Live-proven: process settling alone did NOT unwedge it,
@@ -814,7 +861,9 @@ def _wait_profile_released(
         time.sleep(0.25)
 
 
-def _seed_firefox_bookmarks(profile_dir: str, bookmarks: list, seed: int) -> None:
+def _seed_firefox_bookmarks(
+    profile_dir: str, bookmarks: list, seed: int, stop_event=None
+) -> None:
     """Reconcile the Firefox toolbar to the profile's bookmark set via
     places.sqlite — runs before every launch, so edits in the profile editor
     take effect on the next launch: removed bookmarks disappear, nothing ever
@@ -832,13 +881,27 @@ def _seed_firefox_bookmarks(profile_dir: str, bookmarks: list, seed: int) -> Non
 
         places = os.path.join(profile_dir, "places.sqlite")
         if not places_ready(places):
-            if not bookmarks or not _init_places_db(profile_dir, seed):
+            if not bookmarks or not _init_places_db(
+                profile_dir, seed, stop_event=stop_event
+            ):
                 return
 
         marks = [Bookmark(b.get("name", ""), b.get("url", "")) for b in bookmarks]
         sync_places_bookmarks(places, marks)
     except Exception:
         pass
+
+
+def _has_saved_session(profile_dir: str) -> bool:
+    """Whether the profile holds a session Firefox will restore at startup —
+    the clean-shutdown store or a crash-recovery backup."""
+    if not profile_dir:
+        return False
+    return os.path.exists(
+        os.path.join(profile_dir, "sessionstore.jsonlz4")
+    ) or os.path.exists(
+        os.path.join(profile_dir, "sessionstore-backups", "recovery.jsonlz4")
+    )
 
 
 def _profile_prefs(cfg: dict) -> dict:
@@ -864,13 +927,32 @@ def _profile_prefs(cfg: dict) -> dict:
             "widget.windows.window_occlusion_tracking.enabled": True,
             # Force the dark UI regardless of the seed. invisible derives the
             # theme from the fingerprint seed, so without this a profile's theme
-            # is random; persona's users expect dark.
+            # is random; persona's users expect dark. systemUsesDarkTheme alone
+            # only darkens page content and the in-content UI — the titlebar and
+            # tab strip stayed light (a light strip across the top, #152). The
+            # browser CHROME follows the active theme, so switch it to Firefox's
+            # built-in dark theme and pin both chrome surfaces to dark (0=dark).
             "ui.systemUsesDarkTheme": 1,
+            "extensions.activeThemeID": "firefox-compact-dark@mozilla.org",
+            "browser.theme.content-theme": 0,
+            "browser.theme.toolbar-theme": 0,
+            "layout.css.prefers-color-scheme.content-override": 0,
             # Restore the previous session's tabs/windows across launches. The
-            # persistent profile_dir holds sessionstore, so page 3 brings the
-            # user's tabs back. Write the store often so a tab opened seconds
-            # before close is still in the restored session.
-            "browser.startup.page": 3,
+            # persistent profile_dir holds sessionstore. Restore is enabled via
+            # resume_session_once (re-armed through user.js on every launch, so
+            # the "once" never expires) and NOT browser.startup.page=3: the
+            # startup-page choice must stay 0 so nsIBrowserHandler.defaultArgs
+            # stays "about:blank" — SessionStore only lets the restored session
+            # OWN the startup window (overwriteTabs) when the cmdline URL
+            # equals defaultArgs, and Playwright hardcodes an "about:blank"
+            # cmdline URL on every persistent launch (swallowed into a string
+            # arg by the trailing -new-window flag, see _child). With page=3
+            # defaultArgs became the homepage instead, so every relaunch KEPT
+            # an extra blank tab next to the restored ones (#148). Write the
+            # store often so a tab opened seconds before close is still in the
+            # restored session.
+            "browser.startup.page": 0,
+            "browser.sessionstore.resume_session_once": True,
             "browser.sessionstore.resume_from_crash": True,
             "browser.sessionstore.interval": 1500,
             # Always show the bookmarks toolbar so the shipped test bookmarks
@@ -884,8 +966,9 @@ def _profile_prefs(cfg: dict) -> dict:
             "browser.sessionstore.warnOnQuit": False,
         }
     )
-    # The chosen search engine drives the start page so the window opens on the
-    # engine the user picked instead of about:home. (Firefox 150 has no
+    # The chosen search engine feeds the Home button and the start page a
+    # first launch navigates to (see _child — with startup.page=0 Firefox
+    # itself never loads the homepage at startup). (Firefox 150 has no
     # per-profile way to set the URL-bar default engine without a network search
     # config, so the address bar keeps its built-in default; the start page is
     # what the user sees open.)
@@ -893,6 +976,26 @@ def _profile_prefs(cfg: dict) -> dict:
     start = _SEARCH_URLS.get(engine, _SEARCH_URLS["duckduckgo"]).split("?", 1)[0]
     prefs["browser.startup.homepage"] = start
     return prefs
+
+
+# One launch pipeline per profile at a time (thread path). A relaunch clicked
+# while the previous _child of the SAME profile was still winding down (its
+# headless places init, or the kill/settle of an abandoned attempt) ran
+# concurrently with it — and the predecessor's _kill_profile_firefox shot down
+# the successor's just-launching Firefox: the intermittent "clicked open,
+# nothing happened" relaunch roulette. Fork children are separate processes
+# and never contend on these in-process locks.
+_launch_locks: dict = {}
+_launch_locks_guard = threading.Lock()
+
+
+def _profile_launch_lock(profile_dir: str) -> threading.Lock:
+    key = os.path.normcase(os.path.abspath(profile_dir or ""))
+    with _launch_locks_guard:
+        lock = _launch_locks.get(key)
+        if lock is None:
+            lock = _launch_locks[key] = threading.Lock()
+        return lock
 
 
 class _WorkerSession:
@@ -1099,9 +1202,6 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     Readiness and closure are reported on the pipe (BROWSER_STARTED /
     BROWSER_CLOSED) so the launcher can treat this like the chromium Popen.
     """
-    import threading
-    import time
-
     in_thread = stop_event is not None
 
     out = os.fdopen(write_fd, "w", buffering=1)
@@ -1131,6 +1231,30 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
 
     profile_dir = cfg.get("profile_dir", "")
 
+    # Launches of the SAME profile are serialized (see _profile_launch_lock):
+    # the wait is cancellable so a STOP while the previous launch winds down
+    # can't block this thread forever (#141's lesson: no uninterruptible
+    # waits anywhere in the stop path).
+    launch_lock = _profile_launch_lock(profile_dir)
+    while not launch_lock.acquire(timeout=0.5):
+        if stop_event is not None and stop_event.is_set():
+            emit("LAUNCH_CANCELLED")
+            emit("BROWSER_CLOSED")
+            _finish()
+            return
+    try:
+        _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread)
+    finally:
+        launch_lock.release()
+
+
+def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
+    """Run one profile's whole browser session: seed the profile, launch the
+    engine, report readiness, watch for the close, tear down. Split from
+    _child so the per-profile serialization wraps it in one try/finally."""
+    import threading
+    import time
+
     # A killed Firefox leaves lock/.parentlock in the profile; a stale lock makes
     # the next launch think the profile is already running. persona only spawns
     # this child when it knows the profile isn't running, so any lock here is
@@ -1151,12 +1275,16 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     # HEADLESS engine init (a real Firefox start, tens of seconds) — it must
     # run here in the child, never on the thread constructing the handle,
     # which on a UI launch is the Flet session thread and would freeze the app.
-    _seed_firefox_bookmarks(profile_dir, cfg.get("bookmarks", []), seed)
+    _seed_firefox_bookmarks(profile_dir, cfg.get("bookmarks", []), seed, stop_event)
     # The headless init above persists the engine's window-hiding pref into
     # prefs.js; left there, THIS launch's window comes up DWM-cloaked —
     # running but invisible (#142). Must run after the seeding, before the
     # launch.
     _scrub_headless_cloak_prefs(profile_dir)
+    # Decided BEFORE Firefox starts (a running session rewrites the store):
+    # with a saved session Firefox restores the user's tabs into the window;
+    # without one the launch navigates the lone blank tab to the start page.
+    restoring = _has_saved_session(profile_dir)
     # Pin DuckDuckGo as the default search engine for every Firefox profile.
     _ensure_firefox_policies()
 
@@ -1247,6 +1375,17 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
         # MOZ_APP_REMOTINGNAME (set above) is the Wayland app_id. Keep both so
         # the taskbar icon matches the .desktop StartupWMClass on either backend.
         extra_args.append(f"--name={_remoting_name(name)}")
+    if profile_dir:
+        # MUST stay the LAST argument. Playwright hardcodes an "about:blank"
+        # positional URL after our args on every persistent-context launch;
+        # a positional URL reaches the first window as an nsIArray, which can
+        # never equal nsIBrowserHandler.defaultArgs — so SessionStore keeps
+        # the cmdline tab and APPENDS the restored ones: an extra blank tab
+        # on every relaunch (#148). A trailing -new-window consumes the
+        # "about:blank" as its own parameter instead: same single window, but
+        # opened through the string path where the URL equals defaultArgs
+        # (startup.page=0), so a restored session fully overwrites it.
+        extra_args.append("-new-window")
     if extra_args:
         kwargs["extra_args"] = extra_args
     if profile_dir:
@@ -1329,11 +1468,14 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     if _res_overrides is not None:
         on_ctx(lambda: ctx.add_init_script(_outer_size_override_script()))
 
-    # The persistent context already opened ONE window (about:home, which the
-    # startup-homepage pref navigates to the chosen engine). Don't open a second
-    # page — new_page() opens a whole new WINDOW in this Firefox, which is the
-    # "two windows, one flashes and dies" bug. The single window is enough; the
-    # user drives it from there.
+    # The persistent context already opened ONE window: with a saved session
+    # Firefox restored the user's tabs into it (the trailing -new-window arg
+    # plus startup.page=0 let the restore fully own the window — no extra
+    # blank tab, #148); on a first launch it holds a single about:blank tab,
+    # navigated to the start page below. Don't open a second page — new_page()
+    # opens a whole new WINDOW in this Firefox, which is the "two windows, one
+    # flashes and dies" bug. The single window is enough; the user drives it
+    # from there.
 
     # The window is on screen the moment __enter__ returns, so report ready now.
     emit("BROWSER_STARTED")
@@ -1346,6 +1488,21 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
         threading.Thread(
             target=_raise_profile_window, args=(profile_dir,), daemon=True
         ).start()
+
+    # First-ever launch of the profile (nothing to restore): the window came
+    # up on the swallowed cmdline's lone about:blank tab — show the chosen
+    # start page instead. Never on a restore launch: pages[0] is then a
+    # RESTORED tab and navigating it would clobber the user's session.
+    # wait_until="commit" + a cap so a stalled proxy can't hold this thread
+    # (the close-watch below) for long; on timeout the tab just stays blank.
+    if not restoring:
+        _start = kwargs["extra_prefs"].get("browser.startup.homepage")
+        if _start:
+            def _open_start_page():
+                pages = ctx.pages
+                if pages:
+                    pages[0].goto(_start, wait_until="commit", timeout=15000)
+            on_ctx(_open_start_page)
 
     # Set by stop_gracefully when a STOP tears the browser down; the
     # platform close-watches below poll it between liveness checks.
@@ -1523,15 +1680,56 @@ def _kill_profile_firefox(profile_dir, known_pids=None) -> None:
             _force_kill_pid(pid)
 
 
+def _kill_process_tree_ctypes(pid: int) -> bool:
+    """Terminate `pid` and every descendant via pure ctypes (Toolhelp children
+    map + TerminateProcess). Returns True when the root process is confirmed
+    gone. No subprocess — the packaged flet app couldn't spawn taskkill, which
+    is how X-closed Firefox trees piled up as zombies."""
+    if not _platform.IS_WINDOWS:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        entries = _win_process_entries()
+        if entries is None:
+            return False
+        children: dict = {}
+        for p, pp, _name in entries:
+            children.setdefault(pp, []).append(p)
+        order = [int(pid)]
+        i = 0
+        while i < len(order):
+            order.extend(children.get(order[i], ()))
+            i += 1
+
+        PROCESS_TERMINATE = 0x0001
+        k32 = ctypes.windll.kernel32
+        k32.OpenProcess.restype = wintypes.HANDLE
+        for p in order:
+            h = k32.OpenProcess(PROCESS_TERMINATE, False, p)
+            if h:
+                try:
+                    k32.TerminateProcess(h, 1)
+                finally:
+                    k32.CloseHandle(h)
+        return not _pid_alive(pid)
+    except Exception:
+        return False
+
+
 def _force_kill_pid(pid: int) -> None:
     """Kill `pid` and, on Windows, its whole process tree. Firefox content/GPU
-    children don't carry the profile dir on their command line, so the WMI
+    children don't carry the profile dir on their command line, so the pid
     match only sees the parent — a single TerminateProcess would orphan the
-    children (the 30 leftover firefox.exe after an X-close)."""
+    children (the 30 leftover firefox.exe after an X-close). Pure ctypes
+    first; taskkill (by absolute path) is the fallback."""
     if _platform.IS_WINDOWS:
+        if _kill_process_tree_ctypes(pid):
+            return
         try:
             subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                [_system32_tool("taskkill.exe"), "/PID", str(pid), "/T", "/F"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 **_platform.no_window_kwargs(),
             )
@@ -1544,13 +1742,178 @@ def _force_kill_pid(pid: int) -> None:
         pass
 
 
+def _system32_tool(*rel: str) -> str:
+    """Absolute path of a System32 tool, falling back to the bare name when
+    the expected file is missing. The packaged flet app failed to spawn
+    PATH-searched tools (powershell/taskkill) while absolute-path spawns kept
+    working — the same reason playwright invokes its node.exe by full path."""
+    root = os.environ.get("SystemRoot") or r"C:\Windows"
+    p = os.path.join(root, "System32", *rel)
+    return p if os.path.exists(p) else rel[-1].rsplit(".", 1)[0]
+
+
+def _win_process_entries():
+    """(pid, parent_pid, exe_name) of every running process (Windows) via a
+    pure-ctypes Toolhelp snapshot, or None when the snapshot failed."""
+    if not _platform.IS_WINDOWS:
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.windll.kernel32
+        k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        TH32CS_SNAPPROCESS = 0x2
+
+        class PROCESSENTRY32W(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.c_void_p),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", ctypes.c_wchar * 260),
+            ]
+
+        snap = k32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if not snap or snap == ctypes.c_void_p(-1).value:
+            return None
+        entries = []
+        try:
+            entry = PROCESSENTRY32W()
+            entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+            ok = k32.Process32FirstW(snap, ctypes.byref(entry))
+            while ok:
+                entries.append(
+                    (
+                        int(entry.th32ProcessID),
+                        int(entry.th32ParentProcessID),
+                        entry.szExeFile,
+                    )
+                )
+                ok = k32.Process32NextW(snap, ctypes.byref(entry))
+        finally:
+            k32.CloseHandle(snap)
+        return entries
+    except Exception:
+        return None
+
+
+def _win_process_command_line(pid: int):
+    """The command line of `pid`, read straight from its PEB
+    (NtQueryInformationProcess + ReadProcessMemory), or None when unreadable.
+    Same-user processes — all of persona's Firefoxes — are readable. No
+    subprocess is spawned, so this works identically in the dev venv and the
+    packaged flet app."""
+    if not _platform.IS_WINDOWS:
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        PROCESS_QUERY_INFORMATION = 0x0400
+        PROCESS_VM_READ = 0x0010
+        k32 = ctypes.windll.kernel32
+        k32.OpenProcess.restype = wintypes.HANDLE
+        h = k32.OpenProcess(
+            PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, int(pid)
+        )
+        if not h:
+            return None
+        try:
+
+            class PBI(ctypes.Structure):
+                _fields_ = [
+                    ("ExitStatus", ctypes.c_void_p),
+                    ("PebBaseAddress", ctypes.c_void_p),
+                    ("AffinityMask", ctypes.c_void_p),
+                    ("BasePriority", ctypes.c_void_p),
+                    ("UniqueProcessId", ctypes.c_void_p),
+                    ("InheritedFromUniqueProcessId", ctypes.c_void_p),
+                ]
+
+            pbi = PBI()
+            ret_len = ctypes.c_ulong(0)
+            if ctypes.windll.ntdll.NtQueryInformationProcess(
+                h, 0, ctypes.byref(pbi), ctypes.sizeof(pbi), ctypes.byref(ret_len)
+            ):
+                return None  # non-zero NTSTATUS = failure
+            if not pbi.PebBaseAddress:
+                return None
+
+            def read(addr, size):
+                buf = ctypes.create_string_buffer(size)
+                got = ctypes.c_size_t(0)
+                if (
+                    not k32.ReadProcessMemory(
+                        h, ctypes.c_void_p(addr), buf, size, ctypes.byref(got)
+                    )
+                    or got.value != size
+                ):
+                    return None
+                return buf.raw
+
+            ptr = ctypes.sizeof(ctypes.c_void_p)
+            # PEB.ProcessParameters: 0x20 on x64, 0x10 on x86.
+            raw = read(pbi.PebBaseAddress + (0x20 if ptr == 8 else 0x10), ptr)
+            if raw is None:
+                return None
+            params = int.from_bytes(raw, "little")
+            if not params:
+                return None
+            # RTL_USER_PROCESS_PARAMETERS.CommandLine (a UNICODE_STRING:
+            # USHORT Length, USHORT MaximumLength, pad, PWSTR Buffer):
+            # 0x70 on x64, 0x40 on x86.
+            raw = read(params + (0x70 if ptr == 8 else 0x40), 2 * ptr)
+            if raw is None:
+                return None
+            length = int.from_bytes(raw[0:2], "little")
+            buf_ptr = int.from_bytes(raw[ptr : 2 * ptr], "little")
+            if not buf_ptr or not length:
+                return None
+            data = read(buf_ptr, length)
+            if data is None:
+                return None
+            return data.decode("utf-16-le", errors="replace")
+        finally:
+            k32.CloseHandle(h)
+    except Exception:
+        return None
+
+
+def _win_firefox_command_lines():
+    """[(pid, command_line_or_None)] for every running firefox.exe (Windows),
+    or None when the process snapshot itself failed. A per-process None means
+    that one process couldn't be read — no verdict for it."""
+    entries = _win_process_entries()
+    if entries is None:
+        return None
+    return [
+        (pid, _win_process_command_line(pid))
+        for pid, _ppid, name in entries
+        if name.lower() == "firefox.exe"
+    ]
+
+
 def _profile_firefox_pids(profile_dir: str):
-    """PIDs of firefox.exe processes belonging to THIS profile (Windows), matched
-    by profile_dir in the command line via WMI. Returns None when the query
-    can't run or failed — a transient WMI error is "no verdict", while an empty
-    set means the query SUCCEEDED and the profile truly has no process; the
-    close-watch must tell the two apart or it either misses a close forever or
-    tears down a live browser.
+    """PIDs of firefox.exe processes belonging to THIS profile (Windows),
+    matched by profile_dir in the command line. Returns None when no resolver
+    could produce a verdict — a transient failure is "no verdict", while an
+    empty set means the scan SUCCEEDED and the profile truly has no process;
+    the close-watch must tell the two apart or it either misses a close
+    forever or tears down a live browser.
+
+    The primary resolver is a pure-ctypes scan (Toolhelp + a PEB read): the
+    packaged flet app silently failed to spawn powershell.exe, so the WMI
+    query below never returned pids and every X-close was only "detected" by
+    the close-watch's 60s give-up (persona's own live logs: every Firefox
+    close landed at start+60..66s while STOPs resolved in 1s). PowerShell —
+    by absolute path now — stays as the fallback verdict for processes the
+    ctypes scan couldn't read.
 
     Counting ALL firefox.exe windows is the bug behind "profile stuck running":
     with several profiles (or a stray/zombie Firefox) open, closing one still
@@ -1559,6 +1922,12 @@ def _profile_firefox_pids(profile_dir: str):
     makes the close-watch reliable regardless of what else is running."""
     if not profile_dir or not _platform.IS_WINDOWS:
         return None
+    entries = _win_firefox_command_lines()
+    if entries is not None:
+        needle = profile_dir.lower()
+        matched = {pid for pid, cl in entries if cl and needle in cl.lower()}
+        if matched or all(cl is not None for _pid, cl in entries):
+            return matched
     try:
         pat = _ps_single_quote("*" + profile_dir + "*")
         ps = (
@@ -1567,7 +1936,8 @@ def _profile_firefox_pids(profile_dir: str):
             "Select-Object -ExpandProperty ProcessId"
         )
         out = subprocess.check_output(
-            ["powershell", "-NoProfile", "-Command", ps],
+            [_system32_tool("WindowsPowerShell", "v1.0", "powershell.exe"),
+             "-NoProfile", "-Command", ps],
             text=True, **_platform.no_window_kwargs(),
         )
         return {int(x) for x in out.split() if x.strip().isdigit()}
@@ -1729,7 +2099,8 @@ def _firefox_pid(profile_dir: str):
                 "Select-Object -First 1 -ExpandProperty ProcessId"
             )
             out = subprocess.check_output(
-                ["powershell", "-NoProfile", "-Command", ps],
+                [_system32_tool("WindowsPowerShell", "v1.0", "powershell.exe"),
+                 "-NoProfile", "-Command", ps],
                 text=True, **_platform.no_window_kwargs(),
             )
             out = out.strip()

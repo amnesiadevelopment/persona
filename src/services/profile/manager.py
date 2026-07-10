@@ -59,7 +59,10 @@ class ProfileManager:
                                 "search_engine", "duckduckgo"
                             ),
                             "bookmark_pool": p_data.get("bookmark_pool"),
-                            "bookmarks": p_data.get("bookmarks", []),
+                            # Absent key = a pre-this-field profile → None so it
+                            # keeps getting the default bookmarks. A saved [] is
+                            # an intentional empty selection and is preserved.
+                            "bookmarks": p_data.get("bookmarks"),
                             "cookie_import_status": p_data.get(
                                 "cookie_import_status"
                             ),
@@ -139,7 +142,7 @@ class ProfileManager:
             resolution=resolution,
             search_engine=search_engine,
             bookmark_pool=bookmark_pool or None,
-            bookmarks=bookmarks or [],
+            bookmarks=bookmarks,
             tags=tags or [],
             notes=notes,
         )

@@ -17,7 +17,11 @@ class Profile:
     resolution: str = "auto"
     search_engine: str = "duckduckgo"
     bookmark_pool: str | None = None
-    bookmarks: list[str] = field(default_factory=list)
+    # None = never configured (the profile gets the stock default bookmarks);
+    # [] = explicitly cleared (opens with an empty toolbar); a list = that exact
+    # selection. Distinguishing None from [] is what lets a user remove every
+    # bookmark and have it stay removed instead of resurrecting the defaults.
+    bookmarks: list[str] | None = None
     cookie_import_status: str | None = None
     tags: list[str] = field(default_factory=list)
     notes: str = ""

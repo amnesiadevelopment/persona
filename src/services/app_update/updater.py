@@ -20,7 +20,7 @@ import time
 from ..engine.updater import is_newer
 from ...core import platform as _platform
 
-APP_VERSION = "2.4.0"
+APP_VERSION = "2.4.1"
 APP_REPO = "amnesiadevelopment/persona"
 
 
@@ -509,23 +509,43 @@ def _installed_windows_exe() -> str:
     return ""
 
 
-def _write_relaunch_bat(exe: str, installer_pid: int) -> str:
-    """A temp .bat that polls until the installer process is gone (bounded, so a
-    hung installer can't block the relaunch forever), then starts the installed
-    exe and deletes itself. A fixed sleep raced slow installs: when the install
-    outlived it, `start` hit persona.exe mid-replace and died silently. Sleeps
-    via ping because `timeout` refuses to run without console input."""
+def _write_relaunch_bat(exe: str, installer_pid: int, old_pid: int) -> str:
+    """A temp .bat that polls until the installer process, the exiting persona
+    itself, and any lingering process with the exe's image name are ALL gone
+    (bounded, so a hung process can't block the relaunch forever), settles a
+    moment, then starts the installed exe and deletes itself.
+
+    Waiting for the installer alone raced the old persona's teardown: the new
+    persona started while the dying one still held the flet app extraction in
+    %APPDATA%, so flet's delete-and-reextract failed with errno 32 and the user
+    got an "Error starting app" window. The image-name check is safe because the
+    NEW persona isn't running yet, and the settle pause gives the OS a beat to
+    release file handles after the last holder exits. Sleeps via ping because
+    `timeout` refuses to run without console input (and paints a countdown)."""
+    image = os.path.basename(exe)
+    checks = ""
+    for pid in (installer_pid, old_pid):
+        checks += (
+            f'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul\r\n'
+            "if not errorlevel 1 set busy=1\r\n"
+        )
+    checks += (
+        f'tasklist /FI "IMAGENAME eq {image}" 2>nul | find /I "{image}" >nul\r\n'
+        "if not errorlevel 1 set busy=1\r\n"
+    )
     content = (
         "@echo off\r\n"
         "set tries=0\r\n"
         ":wait\r\n"
-        f'tasklist /FI "PID eq {installer_pid}" 2>nul'
-        f' | find "{installer_pid}" >nul\r\n'
-        "if errorlevel 1 goto launch\r\n"
+        "set busy=0\r\n"
+        + checks +
+        "if %busy%==0 goto settle\r\n"
         "set /a tries+=1\r\n"
         "if %tries% geq 120 goto launch\r\n"
         "ping -n 2 127.0.0.1 >nul\r\n"
         "goto wait\r\n"
+        ":settle\r\n"
+        "ping -n 3 127.0.0.1 >nul\r\n"
         ":launch\r\n"
         # empty title + quoted path: `start` treats the first quoted token as a
         # window title, so a bare path with spaces would launch nothing
@@ -617,7 +637,8 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
                 if installer_pid:
                     try:
                         cmd = ["cmd", "/c",
-                               _write_relaunch_bat(exe, installer_pid)]
+                               _write_relaunch_bat(exe, installer_pid,
+                                                   os.getpid())]
                     except Exception:
                         cmd = None
                 if cmd is None:
