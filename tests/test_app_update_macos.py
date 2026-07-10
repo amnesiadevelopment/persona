@@ -208,6 +208,278 @@ def test_apply_and_restart_macos_refuses_corrupt_dmg(monkeypatch, tmp_path):
     assert not staged.exists()
 
 
+# --- #172: App Translocation. Gatekeeper runs an unsigned, quarantined app
+# --- from a READ-ONLY mirror under /private/var/folders/.../AppTranslocation/,
+# --- so moving persona.app aside there fails with Errno 30 and the update
+# --- aborted. The update must resolve and replace the ORIGINAL bundle instead.
+
+_TRANSLOCATED = (
+    "/private/var/folders/ls/abc123/T/AppTranslocation/f00-hash/d/persona.app"
+)
+
+
+def test_install_target_is_the_running_bundle_when_not_translocated(tmp_path):
+    app = str(tmp_path / "Applications" / "persona.app")
+    msgs = []
+    assert au._macos_install_target(app, msgs.append) == app
+    assert msgs == []
+
+
+def test_install_target_resolves_the_translocation_original(monkeypatch, tmp_path):
+    original = tmp_path / "Downloads" / "persona.app"
+    (original / "Contents").mkdir(parents=True)
+    monkeypatch.setattr(
+        au, "_translocated_original_path", lambda p: str(original)
+    )
+    msgs = []
+    assert au._macos_install_target(_TRANSLOCATED, msgs.append) == str(original)
+    assert any("translocated" in m for m in msgs)
+
+
+def test_install_target_falls_back_to_applications(monkeypatch):
+    # the Security API couldn't resolve the original: install to /Applications
+    monkeypatch.setattr(au, "_translocated_original_path", lambda p: "")
+    monkeypatch.setattr(au.os, "access", lambda p, m: p == "/Applications")
+    msgs = []
+    assert au._macos_install_target(_TRANSLOCATED, msgs.append) == (
+        "/Applications/persona.app"
+    )
+    assert any("/Applications" in m for m in msgs)
+
+
+def test_install_target_falls_back_when_original_dir_unwritable(
+    monkeypatch, tmp_path
+):
+    # the original resolved but sits somewhere genuinely unwritable (e.g. a
+    # mounted dmg): fall back to /Applications instead of failing the rename
+    original = tmp_path / "ro-volume" / "persona.app"
+    (original / "Contents").mkdir(parents=True)
+    monkeypatch.setattr(
+        au, "_translocated_original_path", lambda p: str(original)
+    )
+    monkeypatch.setattr(au.os, "access", lambda p, m: p == "/Applications")
+    msgs = []
+    assert au._macos_install_target(_TRANSLOCATED, msgs.append) == (
+        "/Applications/persona.app"
+    )
+
+
+def test_install_target_empty_when_nowhere_writable(monkeypatch):
+    monkeypatch.setattr(au, "_translocated_original_path", lambda p: "")
+    monkeypatch.setattr(au.os, "access", lambda p, m: False)
+    msgs = []
+    assert au._macos_install_target(_TRANSLOCATED, msgs.append) == ""
+    assert any("aborting" in m.lower() for m in msgs)
+
+
+class _FakeCFunc:
+    """Stands in for a ctypes foreign function: callable, and accepts the
+    .restype/.argtypes assignments the resolver makes."""
+
+    def __init__(self, fn):
+        self.fn = fn
+        self.restype = None
+        self.argtypes = None
+
+    def __call__(self, *args):
+        return self.fn(*args)
+
+
+def test_translocated_original_path_reads_the_security_api(monkeypatch):
+    import ctypes
+
+    released = []
+    URL, ORIG = 111, 222
+
+    def get_fs_rep(url, resolve, buf, size):
+        assert url == ORIG
+        buf.value = b"/Users/mars/Downloads/persona.app"
+        return True
+
+    class FakeCF:
+        CFURLCreateFromFileSystemRepresentation = _FakeCFunc(
+            lambda alloc, raw, ln, isdir: URL
+        )
+        CFURLGetFileSystemRepresentation = _FakeCFunc(get_fs_rep)
+        CFRelease = _FakeCFunc(released.append)
+
+    class FakeSec:
+        SecTranslocateCreateOriginalPathForURL = _FakeCFunc(
+            lambda url, err: ORIG if url == URL else 0
+        )
+
+    def fake_cdll(path):
+        return FakeSec() if "Security" in path else FakeCF()
+
+    monkeypatch.setattr(ctypes, "CDLL", fake_cdll)
+    assert au._translocated_original_path(_TRANSLOCATED) == (
+        "/Users/mars/Downloads/persona.app"
+    )
+    assert sorted(released) == [URL, ORIG]  # no CF handles leaked
+
+
+def test_translocated_original_path_empty_when_api_unavailable(monkeypatch):
+    import ctypes
+
+    def no_dylib(path):
+        raise OSError("dlopen failed")
+
+    monkeypatch.setattr(ctypes, "CDLL", no_dylib)
+    assert au._translocated_original_path(_TRANSLOCATED) == ""
+
+
+def test_translocated_original_path_empty_when_api_returns_null(monkeypatch):
+    import ctypes
+
+    class FakeCF:
+        CFURLCreateFromFileSystemRepresentation = _FakeCFunc(
+            lambda alloc, raw, ln, isdir: 111
+        )
+        CFURLGetFileSystemRepresentation = _FakeCFunc(lambda *a: True)
+        CFRelease = _FakeCFunc(lambda h: None)
+
+    class FakeSec:
+        # NULL: the path wasn't actually translocated / resolution failed
+        SecTranslocateCreateOriginalPathForURL = _FakeCFunc(lambda url, err: 0)
+
+    monkeypatch.setattr(
+        ctypes, "CDLL", lambda p: FakeSec() if "Security" in p else FakeCF()
+    )
+    assert au._translocated_original_path(_TRANSLOCATED) == ""
+
+
+def test_apply_and_restart_translocated_updates_the_original(
+    monkeypatch, tmp_path
+):
+    # THE #172 scenario: persona runs from the read-only translocated mirror;
+    # the update must replace the real bundle the user has and relaunch it —
+    # not abort with Errno 30 on the mirror.
+    _force_os(monkeypatch, mac=True)
+    staged = tmp_path / "persona-update-v9.9.9.dmg"
+    staged.write_bytes(b"dmg")
+    original = tmp_path / "Downloads" / "persona.app"
+    (original / "Contents").mkdir(parents=True)
+    (original / "Contents" / "old").write_text("old")
+    monkeypatch.setattr(au, "installed_macos_app", lambda: _TRANSLOCATED)
+    monkeypatch.setattr(
+        au, "_translocated_original_path", lambda p: str(original)
+    )
+    monkeypatch.setattr(
+        au, "verify_staged_installer", lambda s, tag="", log=None: True
+    )
+
+    def fake_run(cmd, **kw):
+        class R:
+            returncode = 0
+
+        if cmd[0] == "hdiutil" and cmd[1] == "attach":
+            mount = cmd[cmd.index("-mountpoint") + 1]
+            new_app = os.path.join(mount, "persona.app", "Contents")
+            os.makedirs(new_app, exist_ok=True)
+            with open(os.path.join(new_app, "new"), "w") as f:
+                f.write("new")
+        if cmd[0] == "ditto":
+            import shutil
+
+            shutil.copytree(cmd[1], cmd[2])
+        return R()
+
+    popens = []
+
+    def fake_popen(args, **kw):
+        popens.append(args)
+
+        class P:
+            pid = 1
+
+        return P()
+
+    monkeypatch.setattr(au.subprocess, "run", fake_run)
+    monkeypatch.setattr(au.subprocess, "Popen", fake_popen)
+
+    def fake_exit(code):
+        raise SystemExit(code)
+
+    monkeypatch.setattr(au.os, "_exit", fake_exit)
+    msgs = []
+    with pytest.raises(SystemExit):
+        au.apply_and_restart(str(staged), log=msgs.append)
+    # the ORIGINAL bundle got the new build, no backup left behind
+    assert os.path.exists(os.path.join(str(original), "Contents", "new"))
+    assert not os.path.exists(os.path.join(str(original), "Contents", "old"))
+    assert not os.path.exists(str(original) + ".bak")
+    # and the relaunch opens the original, not the dead translocated mirror
+    sh = next(p for p in popens if p[0] == "/bin/sh")
+    assert f'open "{original}"' in sh[2]
+
+
+def test_apply_and_restart_installs_fresh_when_target_missing(
+    monkeypatch, tmp_path
+):
+    # translocated with no resolvable original: the /Applications fallback has
+    # no persona.app yet — no move-aside, straight copy, relaunch from there.
+    _force_os(monkeypatch, mac=True)
+    staged = tmp_path / "persona-update-v9.9.9.dmg"
+    staged.write_bytes(b"dmg")
+    target = tmp_path / "Applications" / "persona.app"
+    (tmp_path / "Applications").mkdir()
+    monkeypatch.setattr(au, "installed_macos_app", lambda: _TRANSLOCATED)
+    monkeypatch.setattr(
+        au, "_macos_install_target", lambda app, say: str(target)
+    )
+    monkeypatch.setattr(
+        au, "verify_staged_installer", lambda s, tag="", log=None: True
+    )
+
+    def fake_run(cmd, **kw):
+        class R:
+            returncode = 0
+
+        if cmd[0] == "hdiutil" and cmd[1] == "attach":
+            mount = cmd[cmd.index("-mountpoint") + 1]
+            os.makedirs(os.path.join(mount, "persona.app"), exist_ok=True)
+        if cmd[0] == "ditto":
+            import shutil
+
+            shutil.copytree(cmd[1], cmd[2])
+        return R()
+
+    popens = []
+
+    def fake_popen(args, **kw):
+        popens.append(args)
+
+        class P:
+            pid = 1
+
+        return P()
+
+    monkeypatch.setattr(au.subprocess, "run", fake_run)
+    monkeypatch.setattr(au.subprocess, "Popen", fake_popen)
+
+    def fake_exit(code):
+        raise SystemExit(code)
+
+    monkeypatch.setattr(au.os, "_exit", fake_exit)
+    with pytest.raises(SystemExit):
+        au.apply_and_restart(str(staged), log=lambda m: None)
+    assert os.path.isdir(str(target))
+    sh = next(p for p in popens if p[0] == "/bin/sh")
+    assert f'open "{target}"' in sh[2]
+
+
+def test_apply_and_restart_aborts_when_no_writable_target(monkeypatch, tmp_path):
+    _force_os(monkeypatch, mac=True)
+    staged = tmp_path / "persona-update-v9.9.9.dmg"
+    staged.write_bytes(b"dmg")
+    monkeypatch.setattr(au, "installed_macos_app", lambda: _TRANSLOCATED)
+    monkeypatch.setattr(au, "_macos_install_target", lambda app, say: "")
+    monkeypatch.setattr(
+        au, "verify_staged_installer", lambda s, tag="", log=None: True
+    )
+    assert au.apply_and_restart(str(staged), log=lambda m: None) is False
+
+
 def test_apply_and_restart_macos_from_source_hands_over_the_dmg(
     monkeypatch, tmp_path
 ):

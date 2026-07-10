@@ -20,7 +20,7 @@ import time
 from ..engine.updater import is_newer
 from ...core import platform as _platform
 
-APP_VERSION = "2.4.3"
+APP_VERSION = "2.4.4"
 APP_REPO = "amnesiadevelopment/persona"
 
 
@@ -541,11 +541,48 @@ def _installed_windows_exe() -> str:
     return ""
 
 
+# Per-process values the flet runtime plants in os.environ: PYTHONPATH /
+# PYTHONHOME point into THIS install's private extraction dir, and the FLET_*
+# server vars carry this process's socket/port. A relaunched build re-applies
+# any INHERITED values over its own correct ones, so leaking them makes the
+# new persona import from a dead path or wait on a socket nobody binds — it
+# starts and dies with no window (#135 on Linux; the same inheritance runs
+# through the Windows relaunch chain persona -> cmd -> start persona.exe).
+_RUNTIME_ENV_VARS = (
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "PYTHONINSPECT",
+    "PYTHONDONTWRITEBYTECODE",
+    "PYTHONNOUSERSITE",
+    "PYTHONUNBUFFERED",
+    "FLET_SERVER_UDS_PATH",
+    "FLET_SERVER_PORT",
+    "FLET_PYTHON_CALLBACK_SOCKET_ADDR",
+    "FLET_APP_CONSOLE",
+    "FLET_APP_STORAGE_DATA",
+    "FLET_APP_STORAGE_TEMP",
+    "FLET_PLATFORM",
+    "FLET_ASSETS_DIR",
+)
+
+
+def _relaunch_env() -> dict:
+    """A copy of the environment with every flet/python runtime var dropped,
+    for processes that outlive this persona and start the next one."""
+    env = dict(os.environ)
+    for var in _RUNTIME_ENV_VARS:
+        env.pop(var, None)
+    return env
+
+
 def _write_relaunch_bat(exe: str, installer_pid: int, old_pid: int) -> str:
     """A temp .bat that polls until the installer process, the exiting persona
     itself, and any lingering process with the exe's image name are ALL gone
     (bounded, so a hung process can't block the relaunch forever), settles a
-    moment, then starts the installed exe and deletes itself.
+    moment, then starts the installed exe, confirms a process with its image
+    name actually exists (retrying the start, bounded, when it doesn't — a
+    `start` that loses a race with the installer mid-swap fails silently),
+    and deletes itself.
 
     Waiting for the installer alone raced the old persona's teardown: the new
     persona started while the dying one still held the flet app extraction in
@@ -561,13 +598,17 @@ def _write_relaunch_bat(exe: str, installer_pid: int, old_pid: int) -> str:
             f'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul\r\n'
             "if not errorlevel 1 set busy=1\r\n"
         )
+    # /FO CSV: the default table format truncates long image names to fit a
+    # 25-char column, and a truncated name never matches the find
     checks += (
-        f'tasklist /FI "IMAGENAME eq {image}" 2>nul | find /I "{image}" >nul\r\n'
+        f'tasklist /FI "IMAGENAME eq {image}" /FO CSV /NH 2>nul'
+        f' | find /I "{image}" >nul\r\n'
         "if not errorlevel 1 set busy=1\r\n"
     )
     content = (
         "@echo off\r\n"
         "set tries=0\r\n"
+        "set boots=0\r\n"
         ":wait\r\n"
         "set busy=0\r\n"
         + checks +
@@ -585,6 +626,16 @@ def _write_relaunch_bat(exe: str, installer_pid: int, old_pid: int) -> str:
         # empty title + quoted path: `start` treats the first quoted token as a
         # window title, so a bare path with spaces would launch nothing
         f'start "" /D "{os.path.dirname(exe)}" "{exe}"\r\n'
+        # `start` fails SILENTLY when the exe is still locked (an installer
+        # that outlived the pid we watched, an AV scan): confirm the app is
+        # really up and retry the start until it is, bounded
+        "ping -n 3 127.0.0.1 >nul\r\n"
+        f'tasklist /FI "IMAGENAME eq {image}" /FO CSV /NH 2>nul'
+        f' | find /I "{image}" >nul\r\n'
+        "if not errorlevel 1 goto done\r\n"
+        "set /a boots+=1\r\n"
+        "if %boots% lss 30 goto launch\r\n"
+        ":done\r\n"
         '(goto) 2>nul & del "%~f0"\r\n'
     )
     fd, path = tempfile.mkstemp(prefix="persona-relaunch-", suffix=".bat")
@@ -602,6 +653,91 @@ def _write_relaunch_bat(exe: str, installer_pid: int, old_pid: int) -> str:
             pass
         raise
     return path
+
+
+_TRANSLOCATION_MARKER = "/AppTranslocation/"
+
+
+def _translocated_original_path(path: str) -> str:
+    """The pre-translocation location of a bundle Gatekeeper runs from a
+    read-only App Translocation mirror, via the Security framework's
+    SecTranslocateCreateOriginalPathForURL (signature: CFURLRef translocated
+    path in, optional CFErrorRef* out, CFURLRef of the original back — the
+    same private API Sparkle uses). '' when the API is unavailable or the
+    resolution fails."""
+    try:
+        import ctypes
+
+        cf = ctypes.CDLL(
+            "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+        )
+        sec = ctypes.CDLL(
+            "/System/Library/Frameworks/Security.framework/Security"
+        )
+        cf.CFURLCreateFromFileSystemRepresentation.restype = ctypes.c_void_p
+        cf.CFURLCreateFromFileSystemRepresentation.argtypes = [
+            ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long, ctypes.c_bool,
+        ]
+        cf.CFURLGetFileSystemRepresentation.restype = ctypes.c_bool
+        cf.CFURLGetFileSystemRepresentation.argtypes = [
+            ctypes.c_void_p, ctypes.c_bool, ctypes.c_char_p, ctypes.c_long,
+        ]
+        cf.CFRelease.argtypes = [ctypes.c_void_p]
+        resolve = sec.SecTranslocateCreateOriginalPathForURL
+        resolve.restype = ctypes.c_void_p
+        resolve.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        raw = path.encode("utf-8")
+        url = cf.CFURLCreateFromFileSystemRepresentation(
+            None, raw, len(raw), True
+        )
+        if not url:
+            return ""
+        try:
+            original = resolve(url, None)
+            if not original:
+                return ""
+            try:
+                buf = ctypes.create_string_buffer(4096)
+                if not cf.CFURLGetFileSystemRepresentation(
+                    original, True, buf, len(buf)
+                ):
+                    return ""
+                return buf.value.decode("utf-8", "replace")
+            finally:
+                cf.CFRelease(original)
+        finally:
+            cf.CFRelease(url)
+    except Exception:
+        return ""
+
+
+def _macos_install_target(app: str, say) -> str:
+    """The on-disk bundle the update must replace. Normally the running bundle
+    itself — but when Gatekeeper runs an unsigned, quarantined app from a
+    read-only App Translocation mirror under /private/var/folders, replacing
+    THAT copy is impossible (Errno 30) and pointless: the real app lives
+    wherever the user put it. Resolve the original and update it there; fall
+    back to /Applications when the original can't be found or its directory
+    isn't writable. '' when no writable install location exists."""
+    if _TRANSLOCATION_MARKER not in app:
+        return app
+    original = _translocated_original_path(app)
+    if (
+        original
+        and _TRANSLOCATION_MARKER not in original
+        and os.path.isdir(original)
+        and os.access(os.path.dirname(original), os.W_OK | os.X_OK)
+    ):
+        say(f"Update: running from a translocated copy; updating {original}.")
+        return original
+    fallback = "/Applications/" + os.path.basename(original or app)
+    if os.access("/Applications", os.W_OK | os.X_OK):
+        say("Update: running from a translocated copy and the original app "
+            f"can't be updated in place; installing to {fallback}.")
+        return fallback
+    say("Update: running from a read-only translocated path and no writable "
+        "install location was found; aborting.")
+    return ""
 
 
 def _apply_macos(staged: str, say) -> bool:
@@ -628,6 +764,14 @@ def _apply_macos(staged: str, say) -> bool:
             subprocess.Popen(["open", staged])
         except Exception:
             say(f"Update saved at {staged}.")
+        return False
+    # The bundle we run from and the bundle we must REPLACE can differ: under
+    # App Translocation the running copy is a read-only mirror. The download
+    # carries no quarantine xattr (curl doesn't set one), so once the real
+    # bundle is replaced, later launches run from it directly — the update
+    # also cures the translocation.
+    app = _macos_install_target(app, say)
+    if not app:
         return False
 
     mount = tempfile.mkdtemp(prefix="persona-update-mnt-")
@@ -659,11 +803,16 @@ def _apply_macos(staged: str, say) -> bool:
             return False
         say("Update: installing the new version…")
         shutil.rmtree(backup, ignore_errors=True)
-        try:
-            os.rename(app, backup)
-        except OSError as e:
-            say(f"Update: couldn't move the current app aside ({e}); aborting.")
-            return False
+        # the target may not exist yet (translocated run falling back to a
+        # fresh /Applications install) — then there is nothing to move aside
+        moved_aside = os.path.exists(app)
+        if moved_aside:
+            try:
+                os.rename(app, backup)
+            except OSError as e:
+                say(f"Update: couldn't move the current app aside ({e}); "
+                    "aborting.")
+                return False
         # ditto preserves the code signature, resource forks and permissions,
         # which a plain python copy does not — Gatekeeper would refuse the app.
         try:
@@ -676,10 +825,11 @@ def _apply_macos(staged: str, say) -> bool:
             say("Update: copying the new app failed; keeping the current "
                 "version.")
             shutil.rmtree(app, ignore_errors=True)
-            try:
-                os.rename(backup, app)
-            except OSError:
-                pass
+            if moved_aside:
+                try:
+                    os.rename(backup, app)
+                except OSError:
+                    pass
             return False
         shutil.rmtree(backup, ignore_errors=True)
     finally:
@@ -798,6 +948,12 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
                 subprocess.Popen(
                     cmd,
                     close_fds=True,
+                    # the cmd -> start -> persona.exe chain inherits THIS
+                    # dying process's environment; hand it a scrubbed copy or
+                    # the new persona re-applies our stale runtime vars and
+                    # comes up dead (#135's Windows twin: the update installed
+                    # but nothing reopened, while a manual open worked).
+                    env=_relaunch_env(),
                     # ONE merged creationflags — spreading no_window_kwargs()
                     # here as well would pass creationflags twice, a TypeError
                     # at the call site that silently kills the relaunch.
@@ -899,32 +1055,10 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
             break
         except OSError:
             continue
-    # execv also inherits os.environ, which the flet runtime has filled with
-    # per-process values: PYTHONPATH/PYTHONHOME point into THIS AppImage's
-    # private /tmp/.mount_* dir, and the FLET_* server vars carry this
-    # process's socket/port. The new build's Flutter shell re-applies any
-    # inherited values OVER its own correct ones, so a leaked PYTHONPATH makes
-    # every post-update process import site-packages from the first
-    # generation's mount forever (#135: ModuleNotFoundError for a package
-    # that IS in the new bundle), and a leaked FLET_SERVER_UDS_PATH makes the
-    # new UI wait on a socket the new Python never binds. Drop them all; the
-    # relaunched runtime recreates each one for itself.
-    for var in (
-        "PYTHONPATH",
-        "PYTHONHOME",
-        "PYTHONINSPECT",
-        "PYTHONDONTWRITEBYTECODE",
-        "PYTHONNOUSERSITE",
-        "PYTHONUNBUFFERED",
-        "FLET_SERVER_UDS_PATH",
-        "FLET_SERVER_PORT",
-        "FLET_PYTHON_CALLBACK_SOCKET_ADDR",
-        "FLET_APP_CONSOLE",
-        "FLET_APP_STORAGE_DATA",
-        "FLET_APP_STORAGE_TEMP",
-        "FLET_PLATFORM",
-        "FLET_ASSETS_DIR",
-    ):
+    # execv passes os.environ along; drop the runtime vars or the relaunched
+    # build re-applies our stale values over its own (#135) — see
+    # _RUNTIME_ENV_VARS.
+    for var in _RUNTIME_ENV_VARS:
         os.environ.pop(var, None)
     try:
         os.execv(target, args)

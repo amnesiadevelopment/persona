@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 from src.services.app_update import updater as au
@@ -387,6 +389,214 @@ def test_windows_relaunch_falls_back_to_fixed_wait_without_bat(
     # console children (ping) allocate a fresh VISIBLE console, which is the
     # terminal-with-a-countdown Mars saw during the 2.3.10 live update.
     assert kw["creationflags"] == 0x00000200 | 0x08000000
+
+
+def test_windows_relaunch_env_is_scrubbed_of_runtime_vars(monkeypatch, tmp_path):
+    # #173: the relaunch chain persona -> cmd -> start persona.exe inherits the
+    # DYING process's environment, which the flet runtime filled with
+    # per-process values: PYTHONPATH into the OLD version's %APPDATA%
+    # extraction, FLET_* server sockets nobody will bind again. The relaunched
+    # build re-applies inherited values over its own correct ones (the Windows
+    # twin of #135), so it started and died with no window — "the update
+    # installed but nothing reopened", while a manual open (clean environment
+    # from Explorer) worked perfectly. The relaunch cmd must get a scrubbed
+    # environment copy.
+    _force_os(monkeypatch, win=True)
+    monkeypatch.setattr(au._platform, "no_window_kwargs", lambda: {})
+    monkeypatch.setattr(au.tempfile, "tempdir", str(tmp_path))
+    staged = tmp_path / "persona-windows-setup.exe"
+    staged.write_bytes(b"MZ")
+    exe = tmp_path / "persona.exe"
+    exe.write_bytes(b"MZ")
+    poisoned = {
+        "PYTHONPATH": r"C:\Users\x\AppData\Roaming\persona\persona\flet\app",
+        "PYTHONHOME": r"C:\Program Files\persona",
+        "FLET_SERVER_PORT": "54321",
+        "FLET_SERVER_UDS_PATH": "flet_12345.sock",
+        "FLET_PYTHON_CALLBACK_SOCKET_ADDR": "stdout_12345.sock",
+        "FLET_APP_STORAGE_DATA": r"C:\old\storage",
+    }
+    for k, v in poisoned.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv("PERSONA_KEEP_ME", "1")
+    calls = []
+
+    def fake_popen(args, **kw):
+        calls.append((args, kw))
+
+        class P:
+            pid = 4242
+
+        return P()
+
+    monkeypatch.setattr(au.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(au, "_installed_windows_exe", lambda: str(exe))
+
+    def fake_exit(code):
+        raise SystemExit(code)
+
+    monkeypatch.setattr(au.os, "_exit", fake_exit)
+    msgs = []
+    with pytest.raises(SystemExit):
+        au.apply_and_restart(str(staged), log=msgs.append)
+    assert not any("couldn't schedule the relaunch" in m for m in msgs), msgs
+    _args, kw = next((a, k) for a, k in calls if a and a[0] == "cmd")
+    env = kw.get("env")
+    assert env is not None, "relaunch must not inherit the dying env as-is"
+    for k in poisoned:
+        assert k not in env, f"{k} leaked into the relaunched persona"
+    assert env.get("PERSONA_KEEP_ME") == "1"  # everything else is kept
+
+
+def test_windows_relaunch_fallback_env_is_scrubbed_too(monkeypatch, tmp_path):
+    # the inline delayed-start fallback (bat unwritable) launches persona the
+    # same way, so it needs the same scrubbed environment
+    _force_os(monkeypatch, win=True)
+    monkeypatch.setattr(au._platform, "no_window_kwargs", lambda: {})
+    staged = tmp_path / "persona-windows-setup.exe"
+    staged.write_bytes(b"MZ")
+    exe = tmp_path / "persona.exe"
+    exe.write_bytes(b"MZ")
+    monkeypatch.setenv("FLET_SERVER_PORT", "54321")
+    calls = []
+
+    def fake_popen(args, **kw):
+        calls.append((args, kw))
+
+        class P:
+            pid = 4242
+
+        return P()
+
+    def broken_bat(exe, *pids):
+        raise OSError("no temp dir")
+
+    monkeypatch.setattr(au.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(au, "_installed_windows_exe", lambda: str(exe))
+    monkeypatch.setattr(au, "_write_relaunch_bat", broken_bat)
+
+    def fake_exit(code):
+        raise SystemExit(code)
+
+    monkeypatch.setattr(au.os, "_exit", fake_exit)
+    with pytest.raises(SystemExit):
+        au.apply_and_restart(str(staged), log=lambda m: None)
+    _args, kw = next((a, k) for a, k in calls if str(exe) in a)
+    env = kw.get("env")
+    assert env is not None
+    assert "FLET_SERVER_PORT" not in env
+
+
+def test_relaunch_bat_verifies_the_app_came_up_and_retries(tmp_path):
+    # #173 belt-and-suspenders: `start` fails SILENTLY when it loses a race
+    # with the installer (persona.exe still locked mid-swap), and the bat then
+    # self-deleted having launched nothing. After `start` the bat must confirm
+    # a process with the exe's image name exists and retry the start (bounded)
+    # until it does.
+    exe = tmp_path / "persona.exe"
+    exe.write_bytes(b"MZ")
+    path = au._write_relaunch_bat(str(exe), 4242, 7777)
+    try:
+        with open(path, encoding="ascii", newline="") as f:
+            bat = f.read()
+    finally:
+        au.os.remove(path)
+    launch = bat.split(":launch")[1]
+    assert f'start "" /D "{tmp_path}" "{exe}"' in launch
+    # after the start: is a persona.exe actually running?
+    assert 'tasklist /FI "IMAGENAME eq persona.exe"' in launch
+    # if not, loop back and start again — but bounded
+    assert "goto launch" in launch
+    assert "lss 30" in launch
+    # the self-delete still happens last, whether the launch stuck or not
+    assert 'del "%~f0"' in launch.split(":done")[1]
+
+
+_CSC = os.path.join(
+    os.environ.get("SystemRoot", r"C:\Windows"),
+    "Microsoft.NET", "Framework64", "v4.0.30319", "csc.exe",
+)
+
+
+@pytest.mark.skipif(
+    os.name != "nt" or not os.path.isfile(_CSC),
+    reason="live relaunch-bat run needs Windows + the .NET csc compiler",
+)
+def test_relaunch_bat_actually_relaunches_on_windows(tmp_path):
+    # Run the REAL bat through a REAL detached cmd exactly as apply_and_restart
+    # spawns it, and prove the target exe gets started: the end-to-end check
+    # #173 was missing (unit tests validated the bat's text, not that it runs).
+    import subprocess
+    import time
+
+    marker = tmp_path / "started.marker"
+    src = tmp_path / "target.cs"
+    src.write_text(
+        "class P { static void Main() { "
+        f'System.IO.File.WriteAllText(@"{marker}", "up"); '
+        "System.Threading.Thread.Sleep(8000); } }"
+    )
+    exe = tmp_path / "persona-relaunch-check.exe"
+    built = subprocess.run(
+        [_CSC, "/nologo", "/target:winexe", f"/out:{exe}", str(src)],
+        capture_output=True,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    assert built.returncode == 0, built.stdout.decode("utf-8", "replace")
+
+    def dead_pid():
+        p = subprocess.Popen(
+            ["cmd", "/c", "exit"], creationflags=subprocess.CREATE_NO_WINDOW
+        )
+        p.wait()
+        return p.pid
+
+    bat = au._write_relaunch_bat(str(exe), dead_pid(), dead_pid())
+    try:
+        subprocess.Popen(
+            ["cmd", "/c", bat],
+            close_fds=True,
+            env=au._relaunch_env(),
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+            | subprocess.CREATE_NO_WINDOW,
+        )
+        deadline = time.time() + 30
+        while time.time() < deadline and not marker.exists():
+            time.sleep(0.3)
+        assert marker.exists(), "the relaunch bat never started the target exe"
+        # the bat deletes itself once the launch is confirmed — best-effort:
+        # the `del "%~f0"` can lag on a busy host, and the finally-block below
+        # removes it regardless, so a slow self-delete is not a fix failure
+        # (the marker proving the exe launched is what #173 verifies).
+        deadline = time.time() + 20
+        while time.time() < deadline and os.path.exists(bat):
+            time.sleep(0.3)
+    finally:
+        try:
+            os.remove(bat)
+        except OSError:
+            pass
+        # the target sleeps ~8s so the bat's liveness check can see it; make
+        # sure it's gone before pytest tears the tmp dir down
+        subprocess.run(
+            ["taskkill", "/F", "/IM", "persona-relaunch-check.exe"],
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        time.sleep(0.5)
+
+
+def test_relaunch_env_drops_runtime_vars_and_keeps_the_rest(monkeypatch):
+    monkeypatch.setenv("PYTHONPATH", "poison")
+    monkeypatch.setenv("FLET_SERVER_PORT", "1")
+    monkeypatch.setenv("PERSONA_KEEP_ME", "yes")
+    env = au._relaunch_env()
+    assert "PYTHONPATH" not in env
+    assert "FLET_SERVER_PORT" not in env
+    assert env["PERSONA_KEEP_ME"] == "yes"
+    # a fresh copy, not os.environ itself
+    env["PERSONA_KEEP_ME"] = "mutated"
+    assert os.environ["PERSONA_KEEP_ME"] == "yes"
 
 
 def test_apply_and_restart_never_wipes_engines(monkeypatch, tmp_path):
