@@ -24,11 +24,14 @@ def test_remoting_name_is_dbus_valid():
     assert re.fullmatch(r"persona_[A-Za-z0-9_]+", name)
 
 
-def test_installed_version_is_firefox_version_not_build_tag():
-    # The sidebar must show the real Firefox version (e.g. "150.0.1"), not the
-    # engine's internal build tag ("firefox-13").
+def test_installed_version_shows_patched_build_and_upstream():
+    # The sidebar must show the patched engine build (firefox-NN) — it decides
+    # behaviour (emoji, spoofs) — alongside the upstream Firefox version, e.g.
+    # "firefox-15 · FF 150.0.1". Showing the bare upstream number hid which
+    # patched build was running.
     v = installed_version()
-    assert not v.startswith("firefox-")
+    assert v.startswith("firefox-")
+    assert "FF 150" in v
 
 
 def test_ps_single_quote_keeps_backslashes():

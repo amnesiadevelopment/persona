@@ -1,0 +1,113 @@
+"""Firefox (invisible_playwright) engine version check + download.
+
+The patched-Firefox binaries are published as firefox-NN GitHub releases on
+feder-cr/firefox_antidetect_patch — the same releases the engine package's
+ensure_binary() downloads from:
+https://github.com/feder-cr/firefox_antidetect_patch/releases/download/{tag}/{asset}
+
+A newer firefox-NN that still ships the per-OS asset the installed engine
+package expects (ARCHIVE_NAME embeds the upstream Firefox version, e.g.
+firefox-150.0.1-stealth-win-x86_64.zip) is a binary-only rebuild the package
+can download and drive. A release WITHOUT that asset (upstream Firefox bumped,
+or the naming changed) needs a newer engine package — i.e. a persona update —
+so it is reported as incompatible rather than offered for download.
+"""
+
+import json
+import re
+import urllib.request
+
+RELEASES_API = (
+    "https://api.github.com/repos/feder-cr/firefox_antidetect_patch/releases"
+    "?per_page=30"
+)
+
+_TAG_RE = re.compile(r"^firefox-(\d+)$")
+
+
+def build_number(tag: str) -> int:
+    """firefox-15 → 15; anything that isn't a firefox-NN tag → -1."""
+    m = _TAG_RE.match(tag or "")
+    return int(m.group(1)) if m else -1
+
+
+def is_newer(latest: str, current: str) -> bool:
+    """True when `latest` is a strictly higher firefox-NN build than `current`."""
+    n = build_number(latest)
+    if n < 0:
+        return False
+    c = build_number(current)
+    if c < 0:
+        return True
+    return n > c
+
+
+def current_version() -> str:
+    """The installed build launches use (e.g. "firefox-15"), or '' when the
+    engine isn't installed."""
+    from ..browser import invisible_launch as inv
+
+    if not inv.is_invisible_installed():
+        return ""
+    return inv.active_build()
+
+
+def _expected_asset() -> str:
+    """The per-OS archive name the INSTALLED engine package downloads — a
+    release must carry exactly this asset for the package to drive it."""
+    import platform as _pyplatform
+    import sys
+
+    from invisible_playwright.constants import ARCHIVE_NAME
+
+    return ARCHIVE_NAME(sys.platform, _pyplatform.machine())
+
+
+def fetch_latest(timeout: int = 20) -> tuple[str, bool]:
+    """Return (tag, compatible) for the newest usable firefox-NN release, or
+    ('', False) on failure.
+
+    Enumerates the repo's releases (the latest release isn't necessarily a
+    firefox-NN tag — the repo also carries e.g. 'usage-counter'), skips
+    drafts, prereleases and BROKEN_VERSIONS, and picks the highest build
+    number. `compatible` is True when that release ships this OS's expected
+    asset; False means the build needs a newer engine package, i.e. a persona
+    update."""
+    try:
+        from invisible_playwright.constants import BROKEN_VERSIONS
+
+        asset = _expected_asset()
+    except Exception:
+        return "", False
+    try:
+        req = urllib.request.Request(
+            RELEASES_API, headers={"Accept": "application/vnd.github+json"}
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            releases = json.load(resp)
+    except Exception:
+        return "", False
+    best_tag = ""
+    best_assets: list[str] = []
+    for rel in releases if isinstance(releases, list) else []:
+        if rel.get("draft") or rel.get("prerelease"):
+            continue
+        tag = rel.get("tag_name", "")
+        if build_number(tag) < 0 or tag in BROKEN_VERSIONS:
+            continue
+        if build_number(tag) > build_number(best_tag):
+            best_tag = tag
+            best_assets = [a.get("name", "") for a in rel.get("assets", [])]
+    if not best_tag:
+        return "", False
+    return best_tag, asset in best_assets
+
+
+def download_engine(tag: str, progress=None, log=None) -> bool:
+    """Download the given firefox-NN build via the launcher's Tor-resumable
+    fetch: sha256-verified against the release's checksums.txt, extracted into
+    its own versioned cache dir, completion-marked last — so the active build
+    and any running profile stay untouched until the new one is whole."""
+    from ..browser import invisible_launch as inv
+
+    return inv.install_engine_build(tag, progress=progress, log=log)

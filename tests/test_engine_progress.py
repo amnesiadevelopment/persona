@@ -102,6 +102,8 @@ def _panel_app(monkeypatch):
     app._engine2_busy = True
     app._engine2_checking = False
     app._engine2_status = "downloading..."
+    app._engine2_latest = ""
+    app._engine2_compatible = True
     app._engine_start_t = time.monotonic() - 1.0
     app._engine2_start_t = time.monotonic() - 1.0
     app._engine_throttle = pf.ProgressThrottle()

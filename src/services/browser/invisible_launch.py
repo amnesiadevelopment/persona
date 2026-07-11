@@ -18,25 +18,102 @@ import time
 from ...core import platform as _platform
 
 
-def _invisible_binary_path():
-    """Path to the patched Firefox executable, or None if it isn't present yet.
-    Reuses invisible_playwright's own version/layout so we agree on where the
-    binary lives without re-downloading when it's already there."""
-    try:
-        import platform as _pyplatform
+# Written into a build's cache dir after a successful extraction. A build
+# other than the package-pinned one only counts as installed once this exists,
+# so a crash mid-extract can never leave a half build active.
+_INSTALL_MARKER = ".persona-complete"
 
+
+def installed_builds() -> list[str]:
+    """firefox-NN tags with a complete binary in the engine cache, ascending
+    by build number.
+
+    The package's own pinned build (BINARY_VERSION) counts as soon as its
+    binary is present — the engine's ensure_binary() installs it without a
+    marker. Any OTHER build additionally needs the completion marker
+    install_engine_build writes after extraction."""
+    from ..engine.firefox import build_number
+
+    try:
         from invisible_playwright.constants import (
             BINARY_ENTRY_REL,
             BINARY_VERSION,
+            BROKEN_VERSIONS,
         )
+        from invisible_playwright.download import cache_root
+
+        entry_rel = BINARY_ENTRY_REL.get(sys.platform)
+        if entry_rel is None:
+            return []
+        root = cache_root()
+        if not root.is_dir():
+            return []
+        out = []
+        for d in root.iterdir():
+            tag = d.name
+            if build_number(tag) < 0 or tag in BROKEN_VERSIONS:
+                continue
+            if not (d / entry_rel).exists():
+                continue
+            if tag != BINARY_VERSION and not (d / _INSTALL_MARKER).exists():
+                continue
+            out.append(tag)
+        out.sort(key=build_number)
+        return out
+    except Exception:
+        return []
+
+
+def active_build() -> str:
+    """The firefox-NN build launches use: the highest complete installed
+    build, or the package's pinned BINARY_VERSION when nothing is installed
+    yet (that's the build the first download fetches)."""
+    builds = installed_builds()
+    if builds:
+        return builds[-1]
+    try:
+        from invisible_playwright.constants import BINARY_VERSION
+
+        return BINARY_VERSION
+    except Exception:
+        return ""
+
+
+def _invisible_binary_path():
+    """Path to the active build's patched Firefox executable, or None. Reuses
+    invisible_playwright's own layout so we agree on where the binary lives
+    without re-downloading when it's already there."""
+    try:
+        from invisible_playwright.constants import BINARY_ENTRY_REL
         from invisible_playwright.download import cache_dir_for_version
 
         entry_rel = BINARY_ENTRY_REL.get(sys.platform)
         if entry_rel is None:
             return None
-        return cache_dir_for_version(BINARY_VERSION) / entry_rel
+        build = active_build()
+        if not build:
+            return None
+        return cache_dir_for_version(build) / entry_rel
     except Exception:
         return None
+
+
+def _binary_path_override():
+    """Explicit executable path for the engine, or None to let it resolve its
+    own. The engine's ensure_binary() always resolves the package-pinned
+    BINARY_VERSION; when a newer downloaded build is active the launch must
+    point at it explicitly or the update would silently never take effect."""
+    try:
+        from invisible_playwright.constants import BINARY_VERSION
+
+        if active_build() == BINARY_VERSION:
+            return None
+    except Exception:
+        return None
+    p = _invisible_binary_path()
+    if p and p.exists():
+        return str(p)
+    return None
 
 
 def is_invisible_installed() -> bool:
@@ -121,11 +198,15 @@ def _extract_as(archive_path, dst, asset_name: str) -> None:
         raise RuntimeError(f"unknown archive format for asset: {asset_name}")
 
 
-def _download_invisible(progress=None, log=None) -> bool:
+def _download_invisible(progress=None, log=None, version: str | None = None) -> bool:
     import platform as _pyplatform
     import tempfile
 
-    from invisible_playwright.constants import ARCHIVE_NAME, BINARY_VERSION
+    from invisible_playwright.constants import (
+        ARCHIVE_NAME,
+        BINARY_ENTRY_REL,
+        BINARY_VERSION,
+    )
     from invisible_playwright.download import (
         _parse_checksums,
         _resolve_asset_url,
@@ -140,20 +221,27 @@ def _download_invisible(progress=None, log=None) -> bool:
             except Exception:
                 pass
 
+    version = version or BINARY_VERSION
     asset = ARCHIVE_NAME(sys.platform, _pyplatform.machine())
-    version_dir = cache_dir_for_version(BINARY_VERSION)
+    version_dir = cache_dir_for_version(version)
     version_dir.mkdir(parents=True, exist_ok=True)
 
     say("Firefox engine: resolving release over Tor…")
-    url_archive = _resolve_asset_url(BINARY_VERSION, asset)
-    url_sums = _resolve_asset_url(BINARY_VERSION, "checksums.txt")
+    url_archive = _resolve_asset_url(version, asset)
+    url_sums = _resolve_asset_url(version, "checksums.txt")
 
     # Keep the partial next to the cache dir so a dropped Tor circuit resumes
-    # across restarts (same approach as fp-chromium).
-    archive_path = version_dir.parent / (asset + ".download")
+    # across restarts (same approach as fp-chromium). Version-prefixed: builds
+    # share the asset filename (it carries the upstream Firefox version, not
+    # the build number), so an unprefixed leftover from another build would be
+    # resumed into a corrupt archive.
+    archive_path = version_dir.parent / f"{version}-{asset}.download"
 
-    # checksums.txt is tiny; a plain fetch is fine.
-    sums_path = version_dir.parent / "checksums.txt"
+    # checksums.txt is tiny; a plain fetch is fine. Version-prefixed for the
+    # same reason: a completed leftover is reused as-is (the resume sees the
+    # Range past the end and treats the file as done), and another build's
+    # checksums would fail every verify.
+    sums_path = version_dir.parent / f"{version}-checksums.txt"
     if not _resumable_download(str(url_sums), str(sums_path), progress=None):
         say("Firefox engine: couldn't fetch checksums — retrying later.")
         return False
@@ -198,7 +286,35 @@ def _download_invisible(progress=None, log=None) -> bool:
         os.remove(archive_path)
     except OSError:
         pass
-    return is_invisible_installed()
+    try:
+        os.remove(sums_path)
+    except OSError:
+        pass
+    entry_rel = BINARY_ENTRY_REL.get(sys.platform)
+    installed = bool(entry_rel) and (version_dir / entry_rel).exists()
+    if installed:
+        # Marker LAST: only a fully-extracted build may become active.
+        try:
+            (version_dir / _INSTALL_MARKER).touch()
+        except OSError:
+            pass
+    return installed
+
+
+def install_engine_build(version: str, progress=None, log=None) -> bool:
+    """Download a specific firefox-NN engine build into its own versioned
+    cache dir. The currently-active build stays on disk untouched until this
+    one is complete (the marker is written last), so running profiles keep
+    working and a failed download can't leave a half build active."""
+    try:
+        return _download_invisible(progress=progress, log=log, version=version)
+    except Exception as e:
+        if log:
+            try:
+                log(f"Firefox engine: update failed — {type(e).__name__}: {e}")
+            except Exception:
+                pass
+        return False
 
 
 class _KeepRangeRedirect(__import__("urllib.request", fromlist=["HTTPRedirectHandler"]).HTTPRedirectHandler):
@@ -347,21 +463,27 @@ def _resumable_download(
 
 
 def installed_version() -> str:
-    """The underlying Firefox version (e.g. "150.0.1") for display. The engine's
-    own BINARY_VERSION ("firefox-13") is an internal build tag, not a Firefox
-    version, so show the real upstream version the user recognises."""
+    """Display string for the running engine: the patched build the launches
+    actually use plus the upstream Firefox it's built on, e.g.
+    "firefox-15 · FF 150.0.1". The patched build (active_build) is what decides
+    behaviour — emoji, spoof patches — so it's the version the user needs to
+    see (a stale firefox-13 draws flat emoji, firefox-15 draws Fluent); the
+    bare upstream number alone hid which patched build was in play."""
+    build = ""
+    try:
+        build = active_build()
+    except Exception:
+        build = ""
+    upstream = ""
     try:
         from invisible_playwright.constants import FIREFOX_UPSTREAM_VERSION
 
-        return FIREFOX_UPSTREAM_VERSION
+        upstream = FIREFOX_UPSTREAM_VERSION
     except Exception:
-        pass
-    try:
-        from invisible_playwright import BINARY_VERSION
-
-        return BINARY_VERSION
-    except Exception:
-        return ""
+        upstream = ""
+    if build and upstream:
+        return f"{build} · FF {upstream}"
+    return build or upstream or ""
 
 
 def _proxy_dict(proxy_url: str):
@@ -774,6 +896,9 @@ def _init_places_db(
                     seed=seed,
                     headless=True,
                     profile_dir=profile_dir,
+                    # The SAME binary the visible launch uses — the profile
+                    # this init creates must match the build that opens it.
+                    binary_path=_binary_path_override(),
                     # Skip Firefox's startup remote-settings sync — over Tor
                     # that fetch stalls this throwaway run for minutes.
                     extra_prefs=dict(_NO_STARTUP_FETCH),
@@ -1163,19 +1288,18 @@ def _profile_prefs(cfg: dict) -> dict:
             # (live-verified: has_saved_session True after a fast-shutdown
             # X-close), so #148's restore is intact.
             "toolkit.shutdown.fastShutdownStage": 3,
-            # Render emoji as real color glyphs, not tofu boxes (#170). The
-            # engine bundles Firefox's own color-emoji font (TwemojiMozilla),
-            # but its bundle-only font list hides that family under its file
-            # name (StealthSkipFamily keeps only standard-Windows family names),
-            # so emoji fell through to .notdef tofu — the host has no emoji font
-            # either (chromium bundles its own; the FF engine ignores system
-            # fontconfig, #139). "Segoe UI Emoji" IS a standard-Windows family
-            # the engine exposes, and it's backed by the bundled Twemoji glyphs,
-            # so pointing the emoji font-fallback list at it makes emoji render
-            # in color (live-verified: money/hourglass/check/rocket all draw).
-            # Twemoji Mozilla is listed first for hosts that do expose it; Segoe
-            # UI Emoji is the one that resolves on this engine.
-            "font.name-list.emoji": "Twemoji Mozilla, Segoe UI Emoji",
+            # Render emoji as color glyphs, not tofu boxes (#170). The Linux
+            # engine build defaults this list to "Noto Color Emoji, Twemoji
+            # Mozilla" — neither resolves on the bundle-only font list (Noto
+            # isn't bundled; Twemoji Mozilla is hidden by StealthSkipFamily),
+            # so without this pref emoji fall through to .notdef tofu. The
+            # engine bundles the genuine COLRv1 Segoe UI Emoji (fonts/
+            # seguiemj1_60.ttf, mapped in bundle-fonts.list), so this value —
+            # the stock Windows Firefox default — renders the Fluent color set
+            # and matches the engine's always-Windows identity. (Flat Twemoji
+            # glyphs mean the running build shipped the older engine that
+            # bundles only TwemojiMozilla.ttf; a current engine draws Fluent.)
+            "font.name-list.emoji": "Segoe UI Emoji, Twemoji Mozilla",
         }
     )
     # The chosen search engine feeds the Home button and the start page a
@@ -1553,6 +1677,12 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
 
     proxy = _proxy_dict(cfg.get("proxy_url", ""))
     kwargs = {"seed": seed, "headless": False, "extra_prefs": _profile_prefs(cfg)}
+    # When a downloaded build newer than the package's pinned one is active,
+    # point the engine at it — its own ensure_binary() only knows the pinned
+    # build. None → the engine resolves as usual.
+    _binary = _binary_path_override()
+    if _binary:
+        kwargs["binary_path"] = _binary
     # Decouple the spoofed screen (the chosen resolution the fingerprint
     # reports) from the physical window (native, user-sized — the chromium
     # model). Overlaid on the context kwargs below, AFTER the engine's own, so

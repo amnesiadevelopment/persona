@@ -94,6 +94,10 @@ class App:
         self._engine_checking = False
         self._engines_open = False
         self._engine2_latest: str = ""
+        # False when the newest firefox-NN release doesn't ship the asset the
+        # bundled engine package expects — it needs a persona update, not an
+        # engine download.
+        self._engine2_compatible = True
         self._engine2_busy = False
         self._engine2_status: str = ""
         self._engine2_checking = False
@@ -173,20 +177,28 @@ class App:
         # True a change the client acts on) and reveal it in _finish_startup,
         # with the splash as the first visible frame. On a dev/source run the
         # window is already visible; it blinks hidden for one task cycle.
-        page.window.visible = False
-        self._window_revealed = False
+        # macOS has no slow app.zip-unpack dark gap (its splash shows in well
+        # under a second), and hiding the window there risks a far worse
+        # failure: if Python hangs after a self-update the window stays hidden
+        # forever — the app runs with NO window and can't be closed (the Mac
+        # "updated, now it never shows" hang). So on macOS DON'T hide-gate the
+        # window: reveal it immediately, over the splash. Windows/Linux keep
+        # the hidden-until-splash gate (where the dark gap is real).
+        self._window_revealed = _platform.IS_MACOS
+        page.window.visible = _platform.IS_MACOS
         self._splash = splash_mod.Splash()
         page.add(self._splash.control)
         self._splash.start(page)
-        # Safety net for the hidden-until-splash window: if startup crashes
-        # before _finish_startup reveals it, the window would stay invisible
-        # forever and the user would see nothing at all (worse than the old
-        # dark rectangle — a startup crash, e.g. after a bad self-update,
+        # Safety net for the hidden-until-splash window (Windows/Linux): if
+        # startup crashes before _finish_startup reveals it, the window would
+        # stay invisible forever and the user would see nothing (worse than the
+        # old dark rectangle — a startup crash, e.g. after a bad self-update,
         # would be completely silent). A daemon thread force-shows the window
         # after a grace period regardless, so any crash/error screen is seen.
-        threading.Thread(
-            target=self._reveal_watchdog, args=(page,), daemon=True
-        ).start()
+        if not _platform.IS_MACOS:
+            threading.Thread(
+                target=self._reveal_watchdog, args=(page,), daemon=True
+            ).start()
         page.run_task(self._finish_startup)
 
     def _reveal_watchdog(self, page: ft.Page, timeout: float = 8.0) -> None:
@@ -696,16 +708,20 @@ class App:
         return installed_version() or "installed"
 
     def _engine2_update_available(self) -> bool:
-        # The Firefox engine's version is pinned to the invisible_playwright
-        # package, which ships with persona — it updates with the app, not on
-        # its own. So there's never a standalone engine update to offer.
-        return False
+        from ..services.browser.invisible_launch import is_invisible_installed
+        from ..services.engine import firefox as ff_engine
+
+        if not self._engine2_compatible or not is_invisible_installed():
+            return False
+        return ff_engine.is_newer(self._engine2_latest, ff_engine.current_version())
 
     def _engine2_status_text(self) -> str:
         if self._engine2_checking:
             return "checking..."
         if self._engine2_status:
             return self._engine2_status
+        if self._engine2_update_available():
+            return f"update → {self._engine2_latest}"
         return self._engine2_version_text()
 
     def _assign_tag(self, names: list[str], tag: str) -> None:
@@ -1147,7 +1163,7 @@ class App:
                     padding=ft.Padding.symmetric(horizontal=10),
                     on_click=lambda _: self._on_engine2_click(),
                     ink=True,
-                    tooltip="Download the Firefox engine",
+                    tooltip="Check / update the Firefox engine",
                     content=self._engine_row(
                         self._engine_logo("firefox"),
                         "firefox",
@@ -1201,43 +1217,74 @@ class App:
 
             threading.Thread(target=work, daemon=True).start()
 
-        # The Firefox engine's version is pinned to the bundled package, so
-        # there's no upstream update to fetch. If it's already installed there's
-        # nothing to do (its version is shown); if it's missing, download it.
-        # (An earlier attempt to flash a "checking..." via a sleeping thread that
-        # rebuilt the sidebar is what jammed the panel open/closed — dropped.)
+        # The Firefox engine updates on-demand like fp-chromium: binary-only
+        # rebuilds are published as firefox-NN releases on the engine repo,
+        # and the bundled package can download any build that still ships its
+        # expected per-OS asset. Missing → download it; installed → check the
+        # repo for a newer build.
         from ..services.browser import invisible_launch as inv
 
         try:
             if not inv.is_invisible_installed() and not self._engine2_busy:
                 self._ensure_engine2_async()
-            elif not self._engine2_busy and not self._engine2_checking:
-                # Already installed: no upstream feed to poll (its version is
-                # pinned to the bundled package), but flash a brief "checking..."
-                # so the row reads the same as the chromium one instead of
-                # sitting inert. Short thread + refresh_engine_text (no sidebar
-                # rebuild from the thread — that's what jammed the panel before).
-                self._engine2_checking = True
-                self._refresh_engine_text()
-
-                def settle() -> None:
-                    import time
-
-                    time.sleep(0.6)
-                    self._engine2_checking = False
-                    self._refresh_engine_text()
-
-                threading.Thread(target=settle, daemon=True).start()
+            elif (
+                not self._engine2_busy
+                and not self._engine2_checking
+                and not self._engine2_update_available()
+            ):
+                self._check_engine2_async()
         except Exception as e:
             logger.error("firefox engine check failed: %s", e)
 
+    def _check_engine2_async(self) -> None:
+        """Check the engine repo for a newer firefox-NN build. Spinner only —
+        a version check moves no bytes, so never the download bar (same rules
+        as the chromium row)."""
+        from ..services.engine import firefox as ff_engine
+
+        self._engine2_checking = True
+        self._refresh_engine_text()
+
+        def work() -> None:
+            tag, compatible = ff_engine.fetch_latest()
+            if tag:
+                self._engine2_latest = tag
+                self._engine2_compatible = compatible
+            self._engine2_checking = False
+            if self._engine2_update_available():
+                self._engine2_status = ""
+                self._log(f"Firefox engine update available: {tag}")
+            elif (
+                tag
+                and not compatible
+                and ff_engine.is_newer(tag, ff_engine.current_version())
+            ):
+                # The newest build ships assets this persona's engine package
+                # doesn't know how to fetch or drive — downloading it here
+                # would 404 or produce an unlaunchable engine.
+                self._engine2_status = "update persona for the newest engine"
+                self._log(
+                    f"Firefox engine {tag} needs a newer persona — "
+                    "update the app to get it"
+                )
+            self._refresh_engine_text()
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _on_engine2_click(self) -> None:
-        """Clicking the Firefox-engine row downloads it if it isn't installed.
-        There's no separate update to check — the engine version is pinned to
-        the bundled invisible_playwright package."""
-        if self._engine2_busy:
+        """Clicking the Firefox-engine row: download the engine if it's
+        missing, download the newer build when one is known, otherwise
+        re-check the repo."""
+        if self._engine2_busy or self._engine2_checking:
             return
-        self._ensure_engine2_async()
+        from ..services.browser import invisible_launch as inv
+
+        if not inv.is_invisible_installed():
+            self._ensure_engine2_async()
+        elif self._engine2_update_available():
+            self._update_engine2_async()
+        else:
+            self._check_engine2_async()
 
     def _refresh_engine_text(self, status: str = "") -> None:
         def apply() -> None:
@@ -1740,6 +1787,47 @@ class App:
                 self._refresh_engine_text()
 
             threading.Thread(target=work, daemon=True).start()
+
+    def _update_engine2_async(self) -> None:
+        """Download the newer firefox-NN build. It lands in its own versioned
+        cache dir with a completion marker written last, so the active build —
+        and any profile running on it — is untouched until the new one is
+        whole; the next launch picks it up."""
+        from ..services.engine import firefox as ff_engine
+
+        tag = self._engine2_latest
+
+        def work() -> None:
+            import time
+
+            self._engine2_busy = True
+            self._engine2_status = "downloading..."
+            self._engine2_start_t = time.monotonic()
+            self._engine2_throttle = pf.ProgressThrottle()
+            self._engine2_pstate = pf.ProgressState()
+            self._engine2_bar.value = None
+            self._engine2_detail.value = "connecting..."
+            self._log(f"Downloading Firefox engine {tag}...")
+            self._refresh_sidebar()
+            ok = False
+            for attempt in range(3):
+                ok = ff_engine.download_engine(
+                    tag, progress=self._engine2_progress_cb, log=self._log
+                )
+                if ok:
+                    break
+                if attempt < 2:
+                    self._log("Firefox engine download interrupted — retrying...")
+            self._engine2_busy = False
+            self._engine2_detail.value = ""
+            self._engine2_status = ""
+            if ok:
+                self._log(f"Firefox engine updated to {tag}")
+            else:
+                self._log("Firefox engine update failed — will retry on next check")
+            self._refresh_sidebar()
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _update_engine_async(self) -> None:
         self._engine_busy = True

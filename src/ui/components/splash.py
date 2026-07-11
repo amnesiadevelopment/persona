@@ -223,24 +223,38 @@ class Splash:
         self._running = False
 
 
+# the logo-click flash is a SMALL scanner pinned in the top-left corner (near
+# the sidebar logo it was clicked from), not a full-window centered overlay —
+# a compact "scanned" tick, no translucent backdrop over the whole page
+_FLASH_BOX = 96
+_FLASH_SCALE = _FLASH_BOX / _BOX
+
+
 class ScanFlash:
-    """One quick fingerprint-scan sweep over a translucent backdrop — click
-    feedback that reads as "scanned", shown briefly over the live page."""
+    """One quick fingerprint-scan sweep in a small box at the top-left — click
+    feedback that reads as "scanned", shown briefly near the logo."""
 
     def __init__(self) -> None:
         self._line = _beam(sweep_ms=_FLASH_SWEEP_MS)
-        self.control = ft.Container(
-            expand=True,
-            # the overlay hosts its children positioned (a Stack): pin all four
-            # edges so the flash covers the whole window, not just its content
-            left=0,
-            top=0,
-            right=0,
-            bottom=0,
-            # translucent so the page underneath stays visible through the scan
-            bgcolor="#B3" + COLORS["bg"].lstrip("#"),
-            alignment=ft.Alignment.CENTER,
+        # the scanner is built at the full _BOX size; scale it down to the small
+        # corner badge so the beam/logo geometry stays consistent
+        scanner = ft.Container(
+            width=_BOX,
+            height=_BOX,
+            scale=_FLASH_SCALE,
+            alignment=ft.Alignment.TOP_LEFT,
             content=_scanner(self._line),
+        )
+        self.control = ft.Container(
+            # pinned to the top-left corner, sized to the small badge; NO
+            # full-window translucent backdrop (that looked huge and janky over
+            # the content) — just the compact scanner near the logo
+            left=8,
+            top=8,
+            width=_FLASH_BOX,
+            height=_FLASH_BOX,
+            alignment=ft.Alignment.TOP_LEFT,
+            content=scanner,
         )
 
     async def play(self) -> None:

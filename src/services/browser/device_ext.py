@@ -59,12 +59,17 @@ _CONTENT_SCRIPT = r"""
   // real window extent the screen must contain
   var needW = Math.max(window.outerWidth || 0, window.innerWidth || 0);
   var needH = (Math.max(window.outerHeight || 0, window.innerHeight || 0)) + TASKBAR;
-  // A forced resolution (user picked a specific one) wins outright, as long as
-  // it still contains the window; otherwise fall back to the seeded pick so the
-  // screen is never smaller than its own window (an instant tell).
   var FORCED = __FORCED_RES__;
   var W, H;
-  if (FORCED && FORCED[0] >= needW && FORCED[1] >= needH) {
+  if (FORCED) {
+    // A user-picked resolution is honored outright: it's what the scanner
+    // should report, and the window can never be physically larger than the
+    // monitor it was sized against. Gating it on needW leaked the render scale:
+    // under --force-device-scale-factor the window extent (outerWidth) reads in
+    // PHYSICAL px (3840 on a 4K/150% panel), so a chosen 2560 failed the old
+    // containment check, fell through, and reported ~4K. The containment guard
+    // below governs only the seeded auto-pick, where a screen smaller than its
+    // own window is an instant tell.
     W = FORCED[0]; H = FORCED[1];
   } else {
     var fits = RES.filter(function (r) { return r[0] >= needW && r[1] >= needH; });

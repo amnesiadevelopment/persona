@@ -127,6 +127,7 @@ def test_apply_and_restart_windows_runs_installer_silently(monkeypatch, tmp_path
 
     monkeypatch.setattr(au.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(au._platform, "no_window_kwargs", lambda: {})
+    monkeypatch.setattr(au.tempfile, "tempdir", str(tmp_path))
     # point the relaunch at our fake exe so the relaunch branch runs
     monkeypatch.setattr(au, "_installed_windows_exe", lambda: str(exe))
 
@@ -140,9 +141,12 @@ def test_apply_and_restart_windows_runs_installer_silently(monkeypatch, tmp_path
     # 1) the installer was launched fully silently (no visible progress window)
     installer_call = next(c for c in calls if str(staged) in c)
     assert any(a.lower() == "/verysilent" for a in installer_call)
-    # 2) persona is relaunched by US afterward (the installed exe, via a waiting cmd)
-    relaunch_call = next(c for c in calls if str(exe) in c)
-    assert relaunch_call[0] == "cmd"
+    # 2) persona is relaunched by US afterward (the installed exe, via a
+    #    waiting cmd running the temp bat)
+    relaunch_call = next(c for c in calls if c and c[0] == "cmd")
+    assert relaunch_call[2].endswith(".bat")
+    with open(relaunch_call[2], encoding="ascii", newline="") as f:
+        assert str(exe) in f.read()
 
 
 def test_windows_relaunch_has_single_merged_creationflags(monkeypatch, tmp_path):
@@ -158,6 +162,7 @@ def test_windows_relaunch_has_single_merged_creationflags(monkeypatch, tmp_path)
         au.subprocess, "CREATE_NEW_PROCESS_GROUP", NEW_GROUP, raising=False
     )
     monkeypatch.setattr(au.subprocess, "CREATE_NO_WINDOW", NO_WINDOW, raising=False)
+    monkeypatch.setattr(au.tempfile, "tempdir", str(tmp_path))
     staged = tmp_path / "persona-windows-setup.exe"
     staged.write_bytes(b"MZ")
     exe = tmp_path / "persona.exe"
@@ -183,7 +188,7 @@ def test_windows_relaunch_has_single_merged_creationflags(monkeypatch, tmp_path)
     with pytest.raises(SystemExit):
         au.apply_and_restart(str(staged), log=msgs.append)
     assert not any("couldn't schedule the relaunch" in m for m in msgs), msgs
-    relaunch_kw = next(kw for args, kw in calls if str(exe) in args)
+    relaunch_kw = next(kw for args, kw in calls if args and args[0] == "cmd")
     assert relaunch_kw["creationflags"] == NEW_GROUP | NO_WINDOW
     assert relaunch_kw.get("close_fds") is True
 
@@ -297,6 +302,87 @@ def test_windows_relaunch_waits_for_old_persona_to_die(monkeypatch, tmp_path):
     assert "goto launch" in bat
 
 
+def test_relaunch_bat_waits_for_installer_image_not_just_broker_pid(tmp_path):
+    # #174: the setup.exe needs admin, so the Popen pid is only the
+    # medium-integrity UAC broker — it exits the moment the user clicks Yes,
+    # while the REAL elevated installer keeps running as a separate process.
+    # Waiting on that pid relaunched the OLD persona mid-install and the
+    # installer's /CLOSEAPPLICATIONS closed it right back: install succeeded,
+    # persona never reopened. The bat must poll the installer's IMAGE NAMES
+    # (the downloaded loader AND Inno's <name>.tmp second stage, which is the
+    # process that actually runs elevated) until NONE remain, before :settle.
+    exe = tmp_path / "persona.exe"
+    exe.write_bytes(b"MZ")
+    installer = tmp_path / "persona-windows-setup-v2.4.5.exe"
+    path = au._write_relaunch_bat(str(exe), str(installer), 4242, 7777)
+    try:
+        with open(path, encoding="ascii", newline="") as f:
+            bat = f.read()
+    finally:
+        au.os.remove(path)
+    wait = bat.split(":settle")[0]
+    # the whole installer family, by image name, at any integrity level
+    assert (
+        'tasklist /FI "IMAGENAME eq persona-windows-setup-v2.4.5.exe" /FO CSV'
+        in wait
+    )
+    assert (
+        'tasklist /FI "IMAGENAME eq persona-windows-setup-v2.4.5.tmp" /FO CSV'
+        in wait
+    )
+    # the broker pid is still checked (harmless, and right while it lives)
+    assert 'tasklist /FI "PID eq 4242"' in wait
+    # the bound must cover the user staring at the UAC prompt plus the
+    # install itself — ~5 minutes, not the old ~2
+    assert "geq 300" in wait
+
+
+def test_windows_relaunch_uses_bat_even_without_installer_pid(
+    monkeypatch, tmp_path
+):
+    # #174: the image-name wait works with no pid at all, so a Popen that
+    # yields no usable pid must still get the polling bat — the fixed ~14s
+    # fallback can't cover UAC dwell time and is reserved for "bat unwritable".
+    _force_os(monkeypatch, win=True)
+    monkeypatch.setattr(au._platform, "no_window_kwargs", lambda: {})
+    monkeypatch.setattr(au.tempfile, "tempdir", str(tmp_path))
+    staged = tmp_path / "persona-windows-setup.exe"
+    staged.write_bytes(b"MZ")
+    exe = tmp_path / "persona.exe"
+    exe.write_bytes(b"MZ")
+    calls = []
+
+    def fake_popen(args, **kw):
+        calls.append((args, kw))
+
+        class P:
+            pid = None
+
+        return P()
+
+    monkeypatch.setattr(au.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(au, "_installed_windows_exe", lambda: str(exe))
+    monkeypatch.setattr(au.os, "getpid", lambda: 7777)
+
+    def fake_exit(code):
+        raise SystemExit(code)
+
+    monkeypatch.setattr(au.os, "_exit", fake_exit)
+    msgs = []
+    with pytest.raises(SystemExit):
+        au.apply_and_restart(str(staged), log=msgs.append)
+    assert not any("couldn't schedule the relaunch" in m for m in msgs), msgs
+    args, _kw = next((a, k) for a, k in calls if a and a[0] == "cmd")
+    assert args[2].endswith(".bat")
+    with open(args[2], encoding="ascii", newline="") as f:
+        bat = f.read()
+    # no bogus "PID eq None" check, but the image-name wait is all there
+    assert "None" not in bat
+    assert 'tasklist /FI "PID eq 7777"' in bat
+    assert 'IMAGENAME eq persona-windows-setup.exe' in bat
+    assert 'IMAGENAME eq persona-windows-setup.tmp' in bat
+
+
 def test_relaunch_bat_settle_is_brief(tmp_path):
     # #162: the settle between "everything exited" and the relaunch is one
     # ping beat (~1s), not more — the OS releases the dead processes' file
@@ -305,7 +391,9 @@ def test_relaunch_bat_settle_is_brief(tmp_path):
     # poll cadence stays at ~1s (cmd has no reliable sub-second sleep).
     exe = tmp_path / "persona.exe"
     exe.write_bytes(b"MZ")
-    path = au._write_relaunch_bat(str(exe), 4242, 7777)
+    path = au._write_relaunch_bat(
+        str(exe), str(tmp_path / "persona-windows-setup.exe"), 4242, 7777
+    )
     try:
         with open(path, encoding="ascii", newline="") as f:
             bat = f.read()
@@ -324,7 +412,9 @@ def test_relaunch_bat_is_silent_and_ascii(tmp_path):
     # be ascii because cmd reads .bat in the OEM codepage.
     exe = tmp_path / "persona.exe"
     exe.write_bytes(b"MZ")
-    path = au._write_relaunch_bat(str(exe), 4242, 7777)
+    path = au._write_relaunch_bat(
+        str(exe), str(tmp_path / "persona-windows-setup.exe"), 4242, 7777
+    )
     try:
         with open(path, encoding="ascii", newline="") as f:
             bat = f.read()
@@ -495,7 +585,9 @@ def test_relaunch_bat_verifies_the_app_came_up_and_retries(tmp_path):
     # until it does.
     exe = tmp_path / "persona.exe"
     exe.write_bytes(b"MZ")
-    path = au._write_relaunch_bat(str(exe), 4242, 7777)
+    path = au._write_relaunch_bat(
+        str(exe), str(tmp_path / "persona-windows-setup.exe"), 4242, 7777
+    )
     try:
         with open(path, encoding="ascii", newline="") as f:
             bat = f.read()
@@ -551,7 +643,12 @@ def test_relaunch_bat_actually_relaunches_on_windows(tmp_path):
         p.wait()
         return p.pid
 
-    bat = au._write_relaunch_bat(str(exe), dead_pid(), dead_pid())
+    bat = au._write_relaunch_bat(
+        str(exe),
+        str(tmp_path / "persona-relaunch-check-setup.exe"),
+        dead_pid(),
+        dead_pid(),
+    )
     try:
         subprocess.Popen(
             ["cmd", "/c", bat],
@@ -712,3 +809,57 @@ def test_apply_and_restart_macos_never_breaks_the_install_on_failure(
     msgs = []
     assert au.apply_and_restart(str(staged), log=msgs.append) is False
     assert staged.exists()
+
+
+def test_verify_probe_passes_selftest_flag(monkeypatch, tmp_path):
+    # The fast self-test probe must run the build with PERSONA_SELFTEST=1 so it
+    # exits at the gate before ft.run — no window ever appears.
+    import subprocess
+
+    staged = tmp_path / "new.AppImage"
+    staged.write_bytes(b"x")
+    seen = {}
+
+    class _Out:
+        stdout = b"SELFTEST_OK\n"
+        returncode = 0
+
+    def fake_run(cmd, **kw):
+        seen["env"] = kw.get("env", {})
+        return _Out()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert au.verify_appimage_runs(str(staged)) is True
+    assert seen["env"].get("PERSONA_SELFTEST") == "1"
+
+
+def test_verify_fallback_stays_windowless(monkeypatch, tmp_path):
+    # A cold FUSE mount can make the first probe time out before the hook
+    # prints. The fallback re-run must KEEP PERSONA_SELFTEST=1, so a build with
+    # the hook (every current release) still exits before ft.run and never
+    # flashes a bare pre-splash window next to the live app (#177: the "two
+    # personas + black window" the user saw). The old code dropped the flag and
+    # launched a full GUI here.
+    import subprocess
+
+    staged = tmp_path / "new.AppImage"
+    staged.write_bytes(b"x")
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, kw.get("timeout", 30))
+
+    class _Proc:
+        pid = 4321
+
+        def poll(self):
+            return 0  # exited cleanly at the self-test gate
+
+    def fake_popen(cmd, **kw):
+        seen["env"] = kw.get("env", {})
+        return _Proc()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    assert au.verify_appimage_runs(str(staged)) is True
+    assert seen["env"].get("PERSONA_SELFTEST") == "1"

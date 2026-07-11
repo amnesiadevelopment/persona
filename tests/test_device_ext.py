@@ -54,3 +54,19 @@ def test_script_pins_device_pixel_ratio(tmp_path):
     assert "devicePixelRatio" in js
     assert "matchMedia" in js
     assert "dppx" in js
+
+
+def test_forced_resolution_wins_without_containment_gate(tmp_path):
+    # A user-picked resolution must be honored outright. Gating it on the window
+    # extent (needW) leaked the render scale (#167): under
+    # --force-device-scale-factor the window's outerWidth reads in PHYSICAL px
+    # (3840 on a 4K/150% panel), so a chosen 2560 failed FORCED[0] >= needW,
+    # fell through to the seeded pick, and reported ~4K instead of 2560x1440.
+    js = pathlib.Path(
+        build_device_extension(1, str(tmp_path / "dev"), resolution=(2560, 1440))
+        + "/device.js"
+    ).read_text()
+    assert "[2560, 1440]" in js
+    assert "if (FORCED) {" in js
+    # the containment comparison must no longer gate the forced branch
+    assert "FORCED[0] >= needW" not in js

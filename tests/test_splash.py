@@ -170,13 +170,14 @@ def test_sweep_keeps_sweeping_until_stopped(monkeypatch):
 def test_scan_flash_builds_headless():
     f = ScanFlash()
     assert isinstance(f.control, ft.Container)
-    assert f.control.expand is True
-    # a translucent backdrop (alpha-prefixed bg colour), NOT the opaque
-    # startup-splash background — the page must show through the flash
-    bg = str(f.control.bgcolor)
-    assert bg != COLORS["bg"]
-    assert bg.lstrip("#").upper().endswith(COLORS["bg"].lstrip("#").upper())
-    assert len(bg.lstrip("#")) == 8
+    # a small badge pinned to the top-left corner, NOT a full-window overlay:
+    # no expand, no translucent backdrop over the whole page
+    assert f.control.expand is not True
+    assert f.control.bgcolor is None
+    assert f.control.left == 8
+    assert f.control.top == 8
+    assert f.control.width == splash_mod._FLASH_BOX
+    assert f.control.height == splash_mod._FLASH_BOX
 
 
 def test_scan_flash_reuses_the_scan_beam():

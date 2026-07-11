@@ -62,6 +62,25 @@ jobs:
           pip install flet==0.85.3
           pip install --prefer-binary -r requirements.txt
 
+      - name: Guard against an engine downgrade
+        # invisible_playwright is pinned to git HEAD (no commit) so builds always
+        # take the latest patched Firefox engine — but a stale HEAD once shipped
+        # the older firefox-13 (flat Twemoji emoji) in a release that already had
+        # firefox-15. Never ship an engine build LOWER than the last release's:
+        # compare the resolved BINARY_VERSION against the committed baseline in
+        # engine-baseline.txt and fail if it regressed. The baseline is bumped
+        # by hand when tagging a release that intentionally moves the engine
+        # forward, so the floor only ever rises. (Numeric compare on firefox-NN.)
+        run: |
+          installed="$(python -c 'from invisible_core.constants import BINARY_VERSION; print(BINARY_VERSION)')"
+          baseline="$(cat engine-baseline.txt 2>/dev/null | tr -d '[:space:]')"
+          echo "installed engine=$installed  baseline=$baseline"
+          num() { echo "${1#firefox-}"; }
+          if [ -n "$baseline" ] && [ "$(num "$installed")" -lt "$(num "$baseline")" ]; then
+            echo "ERROR: engine $installed is OLDER than the baseline $baseline — refusing to ship a downgrade." >&2
+            exit 1
+          fi
+
       - name: Build the Linux bundle
         run: flet build linux -v --no-rich-output
 

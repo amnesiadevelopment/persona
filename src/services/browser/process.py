@@ -479,6 +479,13 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
             "--disable-threaded-animation",
             "--animation-duration-scale=0",
             "--wm-window-animations-disabled",
+            # The VM has no VA-API hardware, so chromium's attempt to init
+            # hardware video decode logs a red "vaInitialize failed: unknown
+            # libva error" (media/gpu/vaapi/vaapi_wrapper.cc). Harmless, but it
+            # noises the log AND is a VM tell — real desktop Chrome on a GPU
+            # inits VA-API fine, a hard failure says "no hardware". Don't try:
+            # software decode is what a machine without video hardware uses.
+            "--disable-features=VaapiVideoDecoder,VaapiVideoEncoder",
         ]
 
     # Wayland app_id (taskbar label/icon per persona) is an X11/Wayland concept;

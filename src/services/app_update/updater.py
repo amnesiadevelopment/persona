@@ -20,7 +20,7 @@ import time
 from ..engine.updater import is_newer
 from ...core import platform as _platform
 
-APP_VERSION = "2.4.4"
+APP_VERSION = "2.4.5"
 APP_REPO = "amnesiadevelopment/persona"
 
 
@@ -409,17 +409,23 @@ def verify_appimage_runs(path: str, settle: float = 4.0, timeout: int = 30) -> b
     except Exception:
         return False
 
-    # 2) Fallback for builds without the self-test hook: launch normally and
-    #    accept it if it survives a couple of seconds.
-    env2 = dict(os.environ)
-    env2.setdefault("DISPLAY", ":0")
+    # 2) Fallback for a build whose first probe timed out — a cold FUSE mount
+    #    can take longer than the self-test timeout, so the hook never got to
+    #    print before we gave up. Re-run it: keep PERSONA_SELFTEST=1 so a build
+    #    that DOES have the hook (every current release) still exits at the gate
+    #    BEFORE ft.run — no window. Only a build without the hook (none in the
+    #    field) would fall through to the GUI; for it, "survives a couple of
+    #    seconds" is the launchability signal, and we kill it before it settles.
+    #    Reusing env (with the selftest flag) keeps the probe windowless — the
+    #    old code dropped the flag here and flashed a bare pre-splash window next
+    #    to the live app (the "two personas + black window" the user saw).
     try:
         proc = subprocess.Popen(
             [path],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
-            env=env2,
+            env=env,
             start_new_session=True,
         )
     except Exception:
@@ -575,14 +581,25 @@ def _relaunch_env() -> dict:
     return env
 
 
-def _write_relaunch_bat(exe: str, installer_pid: int, old_pid: int) -> str:
-    """A temp .bat that polls until the installer process, the exiting persona
-    itself, and any lingering process with the exe's image name are ALL gone
-    (bounded, so a hung process can't block the relaunch forever), settles a
-    moment, then starts the installed exe, confirms a process with its image
-    name actually exists (retrying the start, bounded, when it doesn't — a
-    `start` that loses a race with the installer mid-swap fails silently),
-    and deletes itself.
+def _write_relaunch_bat(exe: str, installer: str, installer_pid, old_pid: int) -> str:
+    """A temp .bat that polls until the installer (by IMAGE NAME, see below),
+    the exiting persona itself, and any lingering process with the exe's image
+    name are ALL gone (bounded, so a hung process can't block the relaunch
+    forever), settles a moment, then starts the installed exe, confirms a
+    process with its image name actually exists (retrying the start, bounded,
+    when it doesn't — a `start` that loses a race with the installer mid-swap
+    fails silently), and deletes itself.
+
+    The installer wait goes by image name, NOT just the Popen pid (#174): the
+    setup.exe needs admin, so the pid we captured is the medium-integrity
+    process that merely brokers the UAC prompt — it EXITS right after the user
+    clicks Yes, while the REAL elevated installer carries on as a separate
+    process we never got a handle to. Waiting on that pid alone relaunched the
+    OLD persona mid-install, and the installer's /CLOSEAPPLICATIONS promptly
+    closed it again — "the update installed but persona never reopened". The
+    image-name poll covers the whole Inno process family regardless of
+    integrity level: the downloaded setup loader AND its second stage, which
+    Inno re-runs (elevated) as `<name>.tmp` from %TEMP%\\is-*.tmp.
 
     Waiting for the installer alone raced the old persona's teardown: the new
     persona started while the dying one still held the flet app extraction in
@@ -592,19 +609,24 @@ def _write_relaunch_bat(exe: str, installer_pid: int, old_pid: int) -> str:
     release file handles after the last holder exits. Sleeps via ping because
     `timeout` refuses to run without console input (and paints a countdown)."""
     image = os.path.basename(exe)
+    installer_image = os.path.basename(installer)
+    installer_stage2 = os.path.splitext(installer_image)[0] + ".tmp"
     checks = ""
     for pid in (installer_pid, old_pid):
+        if not pid:
+            continue
         checks += (
             f'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul\r\n'
             "if not errorlevel 1 set busy=1\r\n"
         )
     # /FO CSV: the default table format truncates long image names to fit a
     # 25-char column, and a truncated name never matches the find
-    checks += (
-        f'tasklist /FI "IMAGENAME eq {image}" /FO CSV /NH 2>nul'
-        f' | find /I "{image}" >nul\r\n'
-        "if not errorlevel 1 set busy=1\r\n"
-    )
+    for name in dict.fromkeys((installer_image, installer_stage2, image)):
+        checks += (
+            f'tasklist /FI "IMAGENAME eq {name}" /FO CSV /NH 2>nul'
+            f' | find /I "{name}" >nul\r\n'
+            "if not errorlevel 1 set busy=1\r\n"
+        )
     content = (
         "@echo off\r\n"
         "set tries=0\r\n"
@@ -614,7 +636,9 @@ def _write_relaunch_bat(exe: str, installer_pid: int, old_pid: int) -> str:
         + checks +
         "if %busy%==0 goto settle\r\n"
         "set /a tries+=1\r\n"
-        "if %tries% geq 120 goto launch\r\n"
+        # ~5 min: the clock runs while the UAC prompt sits waiting for the
+        # user, so the bound must cover human dwell time plus the install
+        "if %tries% geq 300 goto launch\r\n"
         "ping -n 2 127.0.0.1 >nul\r\n"
         "goto wait\r\n"
         ":settle\r\n"
@@ -854,6 +878,11 @@ def _apply_macos(staged: str, say) -> bool:
              f'open "{app}"'],
             close_fds=True,
             start_new_session=True,
+            # Scrub the inherited PYTHONPATH/FLET_* before reopening — the same
+            # env poisoning that left the reopened app hung with no window on
+            # Windows (#173) and Linux (#135). `open` hands off to launchd, but
+            # pass a clean env anyway so nothing stale can leak into the child.
+            env=_relaunch_env(),
         )
     except Exception as e:
         say(f"Update: couldn't schedule the relaunch: {e}")
@@ -923,25 +952,26 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
         # (normal) user context — NOT from the installer's [Run] entry. The
         # installer's runasoriginaluser relaunch ran persona in a lowered-token
         # shell where the flet/Flutter client came up to a black window that never
-        # painted. An invisible cmd waits for the installer process to exit (it
-        # outlives our own exit — child processes aren't tied to the parent on
-        # Windows), then starts the new persona.exe normally.
+        # painted. An invisible cmd waits for the whole installer process FAMILY
+        # to exit — by image name, because the setup.exe elevates via UAC and
+        # the pid Popen gave us is only the un-elevated broker that dies as soon
+        # as the user clicks Yes (#174) — then starts the new persona.exe. The
+        # cmd chain is spawned by THIS un-elevated persona before it exits, so
+        # everything it starts (including the new persona) stays at normal user
+        # integrity; the elevated installer never touches the relaunch.
         if exe:
             try:
-                cmd = None
-                installer_pid = getattr(installer, "pid", None)
-                if installer_pid:
-                    try:
-                        cmd = ["cmd", "/c",
-                               _write_relaunch_bat(exe, installer_pid,
-                                                   os.getpid())]
-                    except Exception:
-                        cmd = None
-                if cmd is None:
+                try:
+                    cmd = ["cmd", "/c",
+                           _write_relaunch_bat(exe, staged,
+                                               getattr(installer, "pid", None),
+                                               os.getpid())]
+                except Exception:
                     cmd = [
                         "cmd", "/c",
-                        # no installer pid to watch — wait a fixed ~14s for the
-                        # silent install to finish swapping files, then launch
+                        # waiter .bat unwritable (broken temp dir, non-ascii
+                        # path) — wait a fixed ~14s for the silent install to
+                        # finish swapping files, then launch
                         "ping", "-n", "15", "127.0.0.1", ">nul", "&",
                         "start", "", "/D", os.path.dirname(exe), exe,
                     ]
