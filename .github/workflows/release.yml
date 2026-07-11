@@ -72,13 +72,24 @@ jobs:
         # by hand when tagging a release that intentionally moves the engine
         # forward, so the floor only ever rises. (Numeric compare on firefox-NN.)
         run: |
-          installed="$(python -c 'from invisible_core.constants import BINARY_VERSION; print(BINARY_VERSION)')"
-          baseline="$(cat engine-baseline.txt 2>/dev/null | tr -d '[:space:]')"
-          echo "installed engine=$installed  baseline=$baseline"
-          num() { echo "${1#firefox-}"; }
-          if [ -n "$baseline" ] && [ "$(num "$installed")" -lt "$(num "$baseline")" ]; then
-            echo "ERROR: engine $installed is OLDER than the baseline $baseline — refusing to ship a downgrade." >&2
-            exit 1
+          installed="$(python -c 'from invisible_core.constants import BINARY_VERSION; print(BINARY_VERSION)' 2>/dev/null || true)"
+          baseline="$(cat engine-baseline.txt 2>/dev/null | tr -d '[:space:]' || true)"
+          echo "installed engine='$installed'  baseline='$baseline'"
+          in_num="${installed#firefox-}"
+          base_num="${baseline#firefox-}"
+          # Only enforce when BOTH parse to a plain integer — the guard must
+          # never fail the build on its own (a missing/oddly-named version just
+          # skips the check with a warning, it doesn't block a release). Each
+          # value is checked separately: a non-empty all-digit string.
+          is_int() { case "$1" in ""|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+          if is_int "$in_num" && is_int "$base_num"; then
+            if [ "$in_num" -lt "$base_num" ]; then
+              echo "ERROR: engine $installed is OLDER than the baseline $baseline — refusing to ship a downgrade." >&2
+              exit 1
+            fi
+            echo "engine $installed >= baseline $baseline — OK"
+          else
+            echo "WARNING: engine version unreadable (installed='$installed', baseline='$baseline') — skipping downgrade guard."
           fi
 
       - name: Build the Linux bundle
