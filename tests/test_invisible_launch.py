@@ -1497,11 +1497,22 @@ def test_child_renders_at_host_scale_for_chosen_resolution(monkeypatch, tmp_path
     os.close(r)
 
     assert captured["pin"]["screen.width"] == 1920   # fingerprint = chosen
-    # dpr follows the HOST scale (1.5) so content renders readable, not tiny —
-    # the pinned screen.dpr and the render pref are the SAME value (one pref),
-    # coherent with the CSS resolution media query. screen.width stays 1920.
-    assert captured["pin"]["screen.dpr"] == 1.5
+    # The render pref stays at the HOST scale (1.5) so content is readable, but
+    # the JS-visible dpr is pinned to 1 (via _dpr_pin_script, mirroring the
+    # chromium device_ext) so the scanner reads physical = width*1 = 1920, not
+    # width*1.5 = 2880 (#187). screen.dpr in the pin is the honest 1.0.
+    assert captured["pin"]["screen.dpr"] == 1.0
     assert captured["extra_prefs"]["layout.css.devPixelsPerPx"] == "1.5"
+
+
+def test_dpr_pin_script_forces_js_dpr_to_one():
+    # #187: the MAIN-world init script must pin window.devicePixelRatio=1 and
+    # wrap matchMedia so a chosen screen at a large render scale still reports
+    # physical == screen.width (no 4K/2880 tell), the chromium device_ext model.
+    js = invisible_launch._dpr_pin_script()
+    assert "devicePixelRatio" in js
+    assert "matchMedia" in js
+    assert "dppx" in js
 
 
 def test_render_dpr_override_pins_to_chosen_dpr_in_engine_prefs():

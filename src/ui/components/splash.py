@@ -223,42 +223,84 @@ class Splash:
         self._running = False
 
 
-# the logo-click flash is a SMALL scanner pinned in the top-left corner (near
-# the sidebar logo it was clicked from), not a full-window centered overlay —
-# a compact "scanned" tick, no translucent backdrop over the whole page
-_FLASH_BOX = 96
-_FLASH_SCALE = _FLASH_BOX / _BOX
+# The logo-click flash is a red scan line that sweeps down OVER the sidebar
+# logo itself — the mark being "scanned", not a separate box overlaid on top
+# of it (which read as garbled clutter). The sidebar logo is a 28px image at
+# the top-left, inset by the sidebar's 16px horizontal / 22px vertical padding;
+# these place the sweep exactly over it.
+_LOGO_PX = 28
+_LOGO_LEFT = 16
+_LOGO_TOP_INSET = 22
+# a short beam whose bright core spans the logo width and whose haze is only a
+# little taller than the logo, so the glow stays on the mark
+_FLASH_LINE_W = _LOGO_PX
+_FLASH_BEAM_H = 20
+_FLASH_TRAVEL = (_LOGO_PX - _LINE_H) / _FLASH_BEAM_H
+
+
+def _logo_beam() -> ft.Container:
+    """A compact red scan beam sized to sweep across the 28px sidebar logo."""
+    core = ft.Container(
+        height=_LINE_H,
+        width=_FLASH_LINE_W,
+        top=(_FLASH_BEAM_H - _LINE_H) / 2,
+        left=0,
+        border_radius=2,
+        gradient=ft.LinearGradient(
+            begin=ft.Alignment.CENTER_LEFT,
+            end=ft.Alignment.CENTER_RIGHT,
+            colors=["#00FFFFFF", "#FFFFFF", "#FFFFFF", "#00FFFFFF"],
+            stops=[0.0, 0.2, 0.8, 1.0],
+        ),
+        shadow=[
+            ft.BoxShadow(blur_radius=4, spread_radius=0, color="#FFFFFF"),
+            ft.BoxShadow(blur_radius=8, spread_radius=1, color=_RED),
+            ft.BoxShadow(blur_radius=14, spread_radius=1, color=_RED_GLOW),
+        ],
+    )
+    haze = ft.Container(
+        width=_FLASH_LINE_W,
+        height=_FLASH_BEAM_H,
+        left=0,
+        top=0,
+        gradient=ft.LinearGradient(
+            begin=ft.Alignment.TOP_CENTER,
+            end=ft.Alignment.BOTTOM_CENTER,
+            colors=["#00000000", _RED_HAZE_MID, _RED_HAZE, _RED_HAZE_MID, "#00000000"],
+            stops=[0.0, 0.35, 0.5, 0.65, 1.0],
+        ),
+    )
+    return ft.Container(
+        width=_FLASH_LINE_W,
+        height=_FLASH_BEAM_H,
+        left=0,
+        top=-(_FLASH_BEAM_H - _LINE_H) / 2,
+        content=ft.Stack(controls=[haze, core]),
+        offset=ft.Offset(0, 0),
+        animate_offset=ft.Animation(_FLASH_SWEEP_MS, ft.AnimationCurve.EASE_IN_OUT),
+    )
 
 
 class ScanFlash:
-    """One quick fingerprint-scan sweep in a small box at the top-left — click
-    feedback that reads as "scanned", shown briefly near the logo."""
+    """One quick red scan sweep down over the sidebar logo — click feedback that
+    reads as "scanning the mark", pinned exactly over the 28px logo image."""
 
     def __init__(self) -> None:
-        self._line = _beam(sweep_ms=_FLASH_SWEEP_MS)
-        # the scanner is built at the full _BOX size; scale it down to the small
-        # corner badge so the beam/logo geometry stays consistent
-        scanner = ft.Container(
-            width=_BOX,
-            height=_BOX,
-            scale=_FLASH_SCALE,
-            alignment=ft.Alignment.TOP_LEFT,
-            content=_scanner(self._line),
-        )
+        self._line = _logo_beam()
         self.control = ft.Container(
-            # pinned to the top-left corner, sized to the small badge; NO
-            # full-window translucent backdrop (that looked huge and janky over
-            # the content) — just the compact scanner near the logo
-            left=8,
-            top=8,
-            width=_FLASH_BOX,
-            height=_FLASH_BOX,
-            alignment=ft.Alignment.TOP_LEFT,
-            content=scanner,
+            # pinned over the sidebar logo image (not the whole corner): the
+            # 28px mark, inset by the sidebar padding. clip so the beam's glow
+            # never bleeds past the logo onto the wordmark beside it.
+            left=_LOGO_LEFT,
+            top=_LOGO_TOP_INSET,
+            width=_LOGO_PX,
+            height=_LOGO_PX,
+            clip_behavior=ft.ClipBehavior.HARD_EDGE,
+            content=ft.Stack(controls=[self._line]),
         )
 
     async def play(self) -> None:
-        self._line.offset = ft.Offset(0, _TRAVEL)
+        self._line.offset = ft.Offset(0, _FLASH_TRAVEL)
         try:
             self._line.update()
         except Exception:

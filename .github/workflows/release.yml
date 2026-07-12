@@ -281,7 +281,15 @@ jobs:
           AppName=persona
           AppVersion=$ver
           AppPublisher=persona contributors
-          DefaultDirName={autopf}\persona
+          ; Per-user install into %LOCALAPPDATA%\persona (like Chrome/Discord/VS
+          ; Code): PrivilegesRequired=lowest means NO UAC prompt at all, and the
+          ; self-updater's silent install + relaunch run in the normal user
+          ; session with no elevation — which is what made the post-UAC relaunch
+          ; fail (the elevated installer ran under a raised broker token that
+          ; died, so persona never came back). A per-user install has no broker,
+          ; no elevation, so the updater relaunches the app directly.
+          PrivilegesRequired=lowest
+          DefaultDirName={localappdata}\persona
           DefaultGroupName=persona
           DisableProgramGroupPage=yes
           OutputDir=.
@@ -302,8 +310,8 @@ jobs:
           $wizLines
           [InstallDelete]
           ; Clear the previous app payload before copying the new one so a file
-          ; dropped between versions doesn't linger. Only touches {app} (Program
-          ; Files\persona), NOT the user's .persona data.
+          ; dropped between versions doesn't linger. Only touches {app}
+          ; (%LOCALAPPDATA%\persona), NOT the user's .persona data.
           Type: filesandordirs; Name: "{app}\*"
           [Files]
           Source: "build\windows\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
@@ -374,10 +382,25 @@ jobs:
             DelTree(ExpandConstant('{localappdata}\invisible-playwright'), True, True, True);
           end;
 
+          // Earlier versions installed per-MACHINE into Program Files\persona
+          // (needing UAC). This build installs per-USER into %LOCALAPPDATA%, so
+          // a fresh install would sit ALONGSIDE the old Program Files copy —
+          // two personas, two shortcuts. Remove the stale machine-wide payload
+          // and its shortcuts on install. (The old install may be under either
+          // Program Files variant; try both. User data in .persona is untouched.)
+          procedure RemoveOldMachineInstall;
+          begin
+            DelTree(ExpandConstant('{commonpf}\persona'), True, True, True);
+            DelTree(ExpandConstant('{commonpf64}\persona'), True, True, True);
+            DeleteFile(ExpandConstant('{commonprograms}\persona\persona.lnk'));
+            DeleteFile(ExpandConstant('{commondesktop}\persona.lnk'));
+          end;
+
           procedure CurStepChanged(CurStep: TSetupStep);
           begin
             if CurStep = ssInstall then
             begin
+              RemoveOldMachineInstall;
               if WizardIsTaskSelected('wipedata') then
                 WipePersonaDataKeepEngines;
               if WizardIsTaskSelected('wipeengines') then

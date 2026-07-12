@@ -20,7 +20,7 @@ import time
 from ..engine.updater import is_newer
 from ...core import platform as _platform
 
-APP_VERSION = "2.4.6"
+APP_VERSION = "2.4.7"
 APP_REPO = "amnesiadevelopment/persona"
 
 
@@ -534,6 +534,10 @@ def _installed_windows_exe() -> str:
             candidates.append(os.path.join(os.path.dirname(exe), "persona.exe"))
     except Exception:
         pass
+    # per-user install location (current), then the old per-machine one
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        candidates.append(os.path.join(local, "persona", "persona.exe"))
     candidates.append(
         os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"),
                      "persona", "persona.exe")

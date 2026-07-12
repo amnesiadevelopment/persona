@@ -23,12 +23,12 @@ def test_built_app_starts_with_hidden_window():
 
 
 def test_hidden_start_has_the_python_side_reveal():
-    # hide_window_on_start without the matching page.window.visible = True in
-    # the app would ship a build whose window NEVER appears. On macOS the window
-    # is revealed immediately (not hide-gated) so a post-update Python hang can't
-    # leave an invisible zombie (#176); Windows/Linux keep the hidden-until-
-    # splash gate. So the initial visibility is IS_MACOS-conditional, and the
-    # later reveal sets it True.
+    # hide_window_on_start without the matching False→True visibility dance in
+    # the app would ship a build whose window NEVER appears: flet's sparse Prop
+    # tracking drops `visible = True` on a fresh window (it equals the default)
+    # without sending it, so only an explicit False in the first patch makes
+    # the later True a transmitted change the client can act on (#189 — the
+    # macOS build skipped the False and launched with no window at all).
     src = (ROOT / "src" / "ui" / "app.py").read_text(encoding="utf-8")
-    assert "page.window.visible = _platform.IS_MACOS" in src
+    assert "page.window.visible = False" in src
     assert "page.window.visible = True" in src

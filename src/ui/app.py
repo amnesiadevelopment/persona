@@ -51,9 +51,14 @@ class App:
         self,
         container: Container | None = None,
         api_server=None,
+        api_server_factory=None,
     ) -> None:
         c = container or Container()
+        # api_server may be supplied ready-made (tests) or built lazily off the
+        # startup path via api_server_factory (production — see main.py); it's
+        # only needed when the user turns Claude control on.
         self.api_server = api_server
+        self._api_server_factory = api_server_factory
         self.pm: IProfileManager = c.profile_manager
         self.bl: IBrowserLauncher = c.browser_launcher
         self.ps: IProxyService = c.proxy_service
@@ -173,32 +178,30 @@ class App:
         # The packaged build ships hide_window_on_start (pyproject), so the
         # Flutter window is not on screen while Python boots — it used to open
         # seconds early as a bare dark rectangle. Keep it hidden through this
-        # first patch too (the explicit False is also what makes the later
-        # True a change the client acts on) and reveal it in _finish_startup,
-        # with the splash as the first visible frame. On a dev/source run the
-        # window is already visible; it blinks hidden for one task cycle.
-        # macOS has no slow app.zip-unpack dark gap (its splash shows in well
-        # under a second), and hiding the window there risks a far worse
-        # failure: if Python hangs after a self-update the window stays hidden
-        # forever — the app runs with NO window and can't be closed (the Mac
-        # "updated, now it never shows" hang). So on macOS DON'T hide-gate the
-        # window: reveal it immediately, over the splash. Windows/Linux keep
-        # the hidden-until-splash gate (where the dark gap is real).
-        self._window_revealed = _platform.IS_MACOS
-        page.window.visible = _platform.IS_MACOS
+        # first patch and reveal it in _finish_startup, with the splash as the
+        # first visible frame. On a dev/source run the window is already
+        # visible; it blinks hidden for one task cycle.
+        # The explicit False here is NOT optional on any OS: Window.visible
+        # defaults to True and flet's sparse Prop tracking drops assignments
+        # equal to the default without ever sending them, so a bare
+        # `visible = True` never reaches the client and cannot reveal a
+        # hide_window_on_start window. Only the False→True transition is
+        # transmitted — skipping the False leaves the window hidden forever
+        # (the app runs with no window at all).
+        self._window_revealed = False
+        page.window.visible = False
         self._splash = splash_mod.Splash()
         page.add(self._splash.control)
         self._splash.start(page)
-        # Safety net for the hidden-until-splash window (Windows/Linux): if
-        # startup crashes before _finish_startup reveals it, the window would
-        # stay invisible forever and the user would see nothing (worse than the
-        # old dark rectangle — a startup crash, e.g. after a bad self-update,
+        # Safety net for the hidden-until-splash window: if startup crashes or
+        # wedges before _finish_startup reveals it, the window would stay
+        # invisible forever and the user would see nothing (worse than the old
+        # dark rectangle — a startup crash, e.g. after a bad self-update,
         # would be completely silent). A daemon thread force-shows the window
         # after a grace period regardless, so any crash/error screen is seen.
-        if not _platform.IS_MACOS:
-            threading.Thread(
-                target=self._reveal_watchdog, args=(page,), daemon=True
-            ).start()
+        threading.Thread(
+            target=self._reveal_watchdog, args=(page,), daemon=True
+        ).start()
         page.run_task(self._finish_startup)
 
     def _reveal_watchdog(self, page: ft.Page, timeout: float = 8.0) -> None:
@@ -259,6 +262,7 @@ class App:
             self._show_onboarding()
         self._check_app_update_async()
         self._check_engines_periodic()
+        self._auto_update_engine2_async()
         self._start_server_if_enabled()
         if not self._reconcile_started:
             self._reconcile_started = True
@@ -1271,6 +1275,49 @@ class App:
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _auto_update_engine2_async(self) -> None:
+        """On startup: check the engine repo and, if a newer AND compatible
+        firefox-NN build exists, download it automatically in the background —
+        so a stale engine (e.g. an old firefox-13 with flat emoji) is upgraded
+        without the user hunting through the cache or clicking anything. The new
+        build lands in its own versioned dir, marker-last, so the running engine
+        is untouched until it's whole; the next launch uses it. An incompatible
+        newer build (needs a newer persona) is surfaced, not downloaded."""
+        threading.Thread(target=self._auto_update_engine2, daemon=True).start()
+
+    def _auto_update_engine2(self) -> None:
+        """The startup engine check (runs on the thread _auto_update_engine2_async
+        spawns; split out so it's directly testable). Downloads a newer,
+        compatible build; surfaces an incompatible one; no-ops when current."""
+        from ..services.browser import invisible_launch as inv
+        from ..services.engine import firefox as ff_engine
+
+        if self._engine2_busy or not inv.is_invisible_installed():
+            return
+        try:
+            tag, compatible = ff_engine.fetch_latest()
+        except Exception:
+            return
+        if not tag:
+            return
+        self._engine2_latest = tag
+        self._engine2_compatible = compatible
+        current = ff_engine.current_version()
+        if not ff_engine.is_newer(tag, current):
+            self._log(f"Firefox engine is up to date ({current})")
+            self._refresh_engine_text()
+            return
+        if not compatible:
+            self._engine2_status = "update persona for the newest engine"
+            self._log(
+                f"Firefox engine {tag} needs a newer persona — "
+                "update the app to get it"
+            )
+            self._refresh_engine_text()
+            return
+        self._log(f"Firefox engine {current} is out of date — fetching {tag}")
+        self._update_engine2_async()
+
     def _on_engine2_click(self) -> None:
         """Clicking the Firefox-engine row: download the engine if it's
         missing, download the newer build when one is known, otherwise
@@ -1327,8 +1374,8 @@ class App:
         """Quietly poll the chromium engine for an upstream update once an hour
         so the sidebar dot lights up on its own. This only refreshes the
         'latest' version (no spinner, no auto-download) — installing stays a
-        click. The Firefox engine has no standalone update (its version is
-        pinned to the bundled package), so it isn't polled."""
+        click. The Firefox engine is auto-updated once at startup
+        (_auto_update_engine2_async) rather than polled hourly."""
         import threading
         import time
 
@@ -1522,25 +1569,43 @@ class App:
         ):
             self._start_app_update(self._app_update_url)
 
+    def _ensure_api_server(self):
+        """The Claude control server, built on first need from the factory (its
+        FastAPI/uvicorn import is kept off the startup path). Returns None only
+        when neither a server nor a factory was supplied (some tests)."""
+        if self.api_server is None and self._api_server_factory is not None:
+            self.api_server = self._api_server_factory()
+        return self.api_server
+
+    def stop_api_server(self) -> None:
+        """Stop the server on shutdown — only if it was ever built."""
+        if self.api_server is not None:
+            self.api_server.stop()
+
     def _server_running(self) -> bool:
         return bool(self.api_server is not None and self.api_server.is_running)
 
     def _set_server(self, enabled: bool) -> None:
-        if self.api_server is None:
+        server = self._ensure_api_server()
+        if server is None:
             return
-        if enabled and not self.api_server.is_running:
-            self.api_server.start()
+        if enabled and not server.is_running:
+            server.start()
             self._log("Claude control server started")
-        elif not enabled and self.api_server.is_running:
-            self.api_server.stop()
+        elif not enabled and server.is_running:
+            server.stop()
             self._log("Claude control server stopped")
         app_settings.set_server_enabled(enabled)
         self._render_active_page()
         self._safe_update()
 
     def _start_server_if_enabled(self) -> None:
+        # Build + start (if the user left it enabled) in the background so the
+        # FastAPI/uvicorn import never blocks the just-shown window.
         if app_settings.is_server_enabled():
-            self._set_server(True)
+            threading.Thread(
+                target=lambda: self._set_server(True), daemon=True
+            ).start()
 
     def _show_onboarding(self) -> None:
         page = self.page

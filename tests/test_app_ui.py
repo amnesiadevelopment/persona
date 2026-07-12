@@ -255,6 +255,7 @@ def test_finish_startup_reveals_window_and_loads_behind_the_splash(monkeypatch):
     app._show_onboarding = lambda: None
     app._check_app_update_async = lambda: None
     app._check_engines_periodic = lambda: None
+    app._auto_update_engine2_async = lambda: None
     app._start_server_if_enabled = lambda: None
     app._reconcile_started = True
 
@@ -358,3 +359,48 @@ def test_apply_update_keeps_staged_when_file_still_present(monkeypatch, tmp_path
 
     app._apply_update(str(staged))
     assert app._app_update_status == "ready"   # still offer restart
+
+
+def _make_engine2_app(monkeypatch, *, installed, current, latest, compatible):
+    """An App stub wired so _auto_update_engine2_async can run: fake the
+    engine module + record whether the download path was triggered."""
+    from src.services.browser import invisible_launch as inv
+    from src.services.engine import firefox as ff
+
+    monkeypatch.setattr(inv, "is_invisible_installed", lambda: installed)
+    monkeypatch.setattr(ff, "fetch_latest", lambda: (latest, compatible))
+    monkeypatch.setattr(ff, "current_version", lambda: current)
+
+    app = make_app(None)
+    app._engine2_busy = False
+    app._engine2_latest = ""
+    app._engine2_compatible = True
+    app._engine2_status = ""
+    logs = []
+    app._log = lambda m: logs.append(m)
+    app._refresh_engine_text = lambda *a, **k: None
+    downloaded = []
+    app._update_engine2_async = lambda: downloaded.append(app._engine2_latest)
+    return app, logs, downloaded
+
+
+def test_auto_update_engine2_downloads_when_stale(monkeypatch):
+    # A stale engine (firefox-13 installed, firefox-15 available + compatible)
+    # must auto-download without a click — the flat-emoji upgrade path (#183).
+    app, logs, downloaded = _make_engine2_app(
+        monkeypatch, installed=True, current="firefox-13",
+        latest="firefox-15", compatible=True,
+    )
+    app._auto_update_engine2()  # synchronous check path
+    assert downloaded == ["firefox-15"]
+
+
+def test_auto_update_engine2_noop_when_current(monkeypatch):
+    # Already on the newest build → no download, a reassuring log line.
+    app, logs, downloaded = _make_engine2_app(
+        monkeypatch, installed=True, current="firefox-15",
+        latest="firefox-15", compatible=True,
+    )
+    app._auto_update_engine2()
+    assert downloaded == []
+    assert any("up to date" in m for m in logs)

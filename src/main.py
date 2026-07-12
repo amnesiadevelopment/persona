@@ -105,14 +105,28 @@ def _ensure_flet_desktop_mode() -> None:
 _ensure_flet_desktop_mode()
 
 
-from src.api.app import create_app
-from src.api.server import APIServer
-from src.core.config import API_HOST, API_PORT
 from src.core.container import Container
 from src.core.logging import get_logger
 from src.ui.app import App
 
 logger = get_logger("main")
+
+
+def _build_api_server(container):
+    """Create the (off-by-default) Claude control server. Importing FastAPI +
+    uvicorn + httpx costs ~0.7s; deferring it out of module import and into a
+    background call AFTER the window is up keeps that cost off the startup path
+    — the API is only needed when the user turns Claude control on."""
+    from src.api.app import create_app
+    from src.api.server import APIServer
+    from src.core.config import API_HOST, API_PORT
+
+    server = APIServer(create_app(container))
+    logger.info(
+        "Claude control server available at http://%s:%s (off until enabled)",
+        API_HOST, API_PORT,
+    )
+    return server
 
 
 def main() -> None:
@@ -137,15 +151,14 @@ def main() -> None:
 
     container = Container()
 
-    fastapi_app = create_app(container)
-    api_server = APIServer(fastapi_app)
-    logger.info("Claude control server available at http://%s:%s (off until enabled)", API_HOST, API_PORT)
-
+    # Build the API server lazily, in the background, once the UI is up — its
+    # FastAPI/uvicorn import is the biggest chunk of pre-window startup and the
+    # server is off until the user enables Claude control.
+    gui = App(container, api_server_factory=lambda: _build_api_server(container))
     try:
-        gui = App(container, api_server=api_server)
         gui.run()
     finally:
-        api_server.stop()
+        gui.stop_api_server()
 
 
 if __name__ == "__main__":

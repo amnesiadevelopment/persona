@@ -332,3 +332,38 @@ def test_check_engine2_incompatible_says_update_persona(monkeypatch):
     assert stub._engine2_checking is False
     assert stub._engine2_status == "update persona for the newest engine"
     assert any("newer persona" in m for m in logs)
+
+
+def test_prune_removes_old_marked_builds_keeps_new_and_pinned(monkeypatch, tmp_path):
+    # After firefox-16 is installed, prune the old firefox-14 (marked, ours);
+    # keep firefox-16 (the new active), firefox-15 (the package-pinned
+    # BINARY_VERSION, markerless) and anything >= keep.
+    _fake_cache(
+        monkeypatch,
+        tmp_path,
+        [
+            ("firefox-14", True, True),   # old, ours → pruned
+            ("firefox-15", True, False),  # pinned BINARY_VERSION → kept
+            ("firefox-16", True, True),   # new active → kept
+        ],
+        binary_version="firefox-15",
+    )
+    logs = []
+    inv._prune_old_engine_builds(keep="firefox-16", log=logs.append)
+    assert not (tmp_path / "firefox-14").exists()
+    assert (tmp_path / "firefox-15").exists()
+    assert (tmp_path / "firefox-16").exists()
+    assert any("firefox-14" in m for m in logs)
+
+
+def test_prune_leaves_unmarked_half_downloads(monkeypatch, tmp_path):
+    # A crashed mid-extract build (binary, no marker) is not ours to delete —
+    # leave it (a later download resumes/overwrites it).
+    _fake_cache(
+        monkeypatch,
+        tmp_path,
+        [("firefox-14", True, False), ("firefox-16", True, True)],
+        binary_version="firefox-15",
+    )
+    inv._prune_old_engine_builds(keep="firefox-16")
+    assert (tmp_path / "firefox-14").exists()

@@ -305,9 +305,10 @@ def install_engine_build(version: str, progress=None, log=None) -> bool:
     """Download a specific firefox-NN engine build into its own versioned
     cache dir. The currently-active build stays on disk untouched until this
     one is complete (the marker is written last), so running profiles keep
-    working and a failed download can't leave a half build active."""
+    working and a failed download can't leave a half build active. Once the new
+    build is whole, older cached builds are pruned (each is ~320MB)."""
     try:
-        return _download_invisible(progress=progress, log=log, version=version)
+        ok = _download_invisible(progress=progress, log=log, version=version)
     except Exception as e:
         if log:
             try:
@@ -315,6 +316,45 @@ def install_engine_build(version: str, progress=None, log=None) -> bool:
             except Exception:
                 pass
         return False
+    if ok:
+        _prune_old_engine_builds(keep=version, log=log)
+    return ok
+
+
+def _prune_old_engine_builds(keep: str, log=None) -> None:
+    """Delete downloaded firefox-NN builds older than `keep`, now that `keep` is
+    installed and active — reclaiming ~320MB per stale build. Only prunes builds
+    LOWER than `keep`; never the package's own pinned BINARY_VERSION (it has no
+    completion marker and the engine re-downloads it), and never `keep` itself.
+    Best-effort: a build in use / undeletable is left alone."""
+    from ..engine.firefox import build_number
+
+    try:
+        from invisible_playwright.constants import BINARY_VERSION
+        from invisible_playwright.download import cache_root
+    except Exception:
+        return
+    keep_n = build_number(keep)
+    if keep_n < 0:
+        return
+    root = cache_root()
+    if not root.is_dir():
+        return
+    import shutil
+
+    for d in root.iterdir():
+        tag = d.name
+        n = build_number(tag)
+        if n < 0 or n >= keep_n or tag == BINARY_VERSION:
+            continue
+        if not (d / _INSTALL_MARKER).exists():
+            continue  # only prune builds we fully installed (not a half download)
+        try:
+            shutil.rmtree(d)
+            if log:
+                log(f"Firefox engine: removed old build {tag}")
+        except OSError:
+            pass
 
 
 class _KeepRangeRedirect(__import__("urllib.request", fromlist=["HTTPRedirectHandler"]).HTTPRedirectHandler):
@@ -685,6 +725,34 @@ def _outer_size_override_script() -> str:
         "{get:()=>v,configurable:true})}catch(e){}};"
         "def(window,'outerWidth', window.innerWidth + 14);"
         "def(window,'outerHeight', window.innerHeight + 91);"
+        "})();"
+    )
+
+
+def _dpr_pin_script() -> str:
+    """JS that pins window.devicePixelRatio to 1 and answers the resolution
+    media queries consistently — the chromium device_ext.py model on Firefox.
+
+    The render is enlarged to the host scale (layout.css.devPixelsPerPx) so
+    content is readable on a HiDPI display, which also raises the native dpr;
+    that render scale must not leak into the fingerprint. Scanners read the
+    "physical" resolution as screen.width * devicePixelRatio, so a chosen
+    2560 screen at a leaked 1.5 dpr reports 3840 = a "4K" tell (#187). Pin dpr
+    to 1 so physical == the chosen screen (the overwhelmingly common desktop
+    case), and make matchMedia('(resolution: Ndppx)') / device-pixel-ratio
+    agree: only a 1dppx / 96dpi query matches."""
+    return (
+        "(() => {"
+        "const def=(o,k,v)=>{try{Object.defineProperty(o,k,"
+        "{get:()=>v,configurable:true})}catch(e){}};"
+        "def(window,'devicePixelRatio',1);"
+        "const mm=window.matchMedia;"
+        "if(mm){window.matchMedia=function(q){const r=mm.call(window,q);"
+        "if(/resolution|dppx|device-pixel-ratio/i.test(q)){"
+        "const one=/(^|[^\\d.])1(\\.0+)?\\s*dppx/i.test(q)"
+        "||/device-pixel-ratio\\s*:\\s*1(\\.0+)?\\s*\\)/.test(q)"
+        "||/(^|[^\\d.])96(\\.0+)?\\s*dpi/i.test(q);"
+        "try{def(r,'matches',one)}catch(e){}}return r;};}"
         "})();"
     )
 
@@ -1696,32 +1764,37 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
         # With no_viewport Firefox owns the window size; seed a fresh profile's
         # first window so it doesn't open at Firefox's own default.
         _seed_window_size(profile_dir)
-        # The device-pixel ratio the chosen screen presents. On this engine
-        # window.devicePixelRatio, the CSS resolution media queries, AND the
-        # render scale are ALL driven by the SAME pref (layout.css.devPixelsPerPx)
-        # — proven at the binary level: zoom.stealth.screen.dpr is not read by
-        # xul.dll, only stealth.screen.width/height are, so JS dpr == the render
-        # pref, inseparable. Pinning that pref to 1 rendered content at 1x —
-        # physically tiny on a HiDPI host (#167). A real 2560x1440 HiDPI panel
-        # legitimately reports a dpr > 1 (a "2560-logical" display), so use the
-        # host scale: content renders readable AND the fingerprint stays coherent
-        # (screen.width=2560 stays the chosen value, dpr matches the CSS
-        # resolution media query and the render scale — exactly a genuine HiDPI
-        # monitor, not the doubled-4K skew of a spoofed screen at a mismatched
-        # dpr). Clamped to >=1 by _system_dpr.
+        # Render scale and the JS-visible device-pixel ratio are DECOUPLED the
+        # chromium way (device_ext.py): the render is enlarged for a HiDPI host
+        # while the fingerprint reports dpr=1, so the scanner reads the chosen
+        # screen honestly (2560x1440 profile -> screen.width=2560,
+        # devicePixelRatio=1 -> physical 2560x1440, a real 100% monitor).
+        #
+        # layout.css.devPixelsPerPx enlarges the render to the host scale so
+        # content isn't physically tiny on a HiDPI display (#167). At the native
+        # level that same pref also raises window.devicePixelRatio and the CSS
+        # resolution media queries — one quantity, not separable through prefs
+        # (no stealth pref overrides dpr alone: only stealth.screen.width/height
+        # are read by xul.dll, and forcing device_scale_factor down drags the
+        # render back to 1x). The JS-visible dpr is instead pinned to 1 in a
+        # MAIN-world init script (_dpr_pin_script, added on the context below,
+        # mirroring device_ext.py) — the render stays large, the fingerprint
+        # stays honest. Left at the host scale in prefs, dpr leaked: a 2560 screen
+        # at a real 1.5 dpr reported physical 3840 = a "4K" tell (#187), and a
+        # 1920 pick reported 2880.
         #
         # Firefox has NO --width/--height CLI flags (those are chromium's); a
         # patched-Firefox launch that received them treated the leftover as a URL
         # and opened a bogus "0.0.9.51" page. Size comes ONLY from the profile's
         # xulstore.json (seeded above), never from extra_args.
         render_dpr = _system_dpr()
-        emit(f"HIDPI_DEBUG chosen={w}x{h} window=native dpr={render_dpr}")
+        emit(f"HIDPI_DEBUG chosen={w}x{h} window=native render_dpr={render_dpr} js_dpr=1")
         kwargs["pin"] = {
             "screen.width": w,
             "screen.height": h,
             "screen.avail_width": w,
             "screen.avail_height": h - 40,
-            "screen.dpr": render_dpr,
+            "screen.dpr": 1.0,
         }
         kwargs["extra_prefs"]["layout.css.devPixelsPerPx"] = str(render_dpr)
         # The FIRST paint uses the value already in prefs.js — the user.js
@@ -1852,6 +1925,11 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     # where outer already agrees.
     if _res_overrides is not None:
         on_ctx(lambda: ctx.add_init_script(_outer_size_override_script()))
+        # Report the chosen screen honestly: pin the JS devicePixelRatio to 1 so
+        # the enlarged render scale (layout.css.devPixelsPerPx, for HiDPI
+        # readability) doesn't leak into the fingerprint as a doubled resolution
+        # (#187). The chromium device_ext.py model on Firefox.
+        on_ctx(lambda: ctx.add_init_script(_dpr_pin_script()))
 
     # The persistent context already opened ONE window: with a saved session
     # Firefox restored the user's tabs into it (the trailing -new-window arg

@@ -170,14 +170,15 @@ def test_sweep_keeps_sweeping_until_stopped(monkeypatch):
 def test_scan_flash_builds_headless():
     f = ScanFlash()
     assert isinstance(f.control, ft.Container)
-    # a small badge pinned to the top-left corner, NOT a full-window overlay:
-    # no expand, no translucent backdrop over the whole page
+    # a red sweep pinned exactly over the 28px sidebar logo (not a box in the
+    # corner, not a full-window overlay), clipped so its glow stays on the mark
     assert f.control.expand is not True
     assert f.control.bgcolor is None
-    assert f.control.left == 8
-    assert f.control.top == 8
-    assert f.control.width == splash_mod._FLASH_BOX
-    assert f.control.height == splash_mod._FLASH_BOX
+    assert f.control.left == splash_mod._LOGO_LEFT
+    assert f.control.top == splash_mod._LOGO_TOP_INSET
+    assert f.control.width == splash_mod._LOGO_PX
+    assert f.control.height == splash_mod._LOGO_PX
+    assert f.control.clip_behavior == ft.ClipBehavior.HARD_EDGE
 
 
 def test_scan_flash_reuses_the_scan_beam():
@@ -194,7 +195,7 @@ def test_scan_flash_play_sweeps_once_and_returns(monkeypatch):
     monkeypatch.setattr(splash_mod, "FLASH_SECONDS", 0)
     f = ScanFlash()
     asyncio.run(f.play())  # detached control: must not raise
-    assert f._line.offset.y == _TRAVEL
+    assert f._line.offset.y == splash_mod._FLASH_TRAVEL
 
 
 def test_scan_flash_is_a_quick_flash_not_the_startup_splash():
@@ -236,3 +237,39 @@ def test_main_shows_splash_before_anything_else(monkeypatch):
     assert "_finish_startup" in names
     # the scan sweep is scheduled too
     assert "_sweep" in names
+
+
+def test_main_hide_gates_and_watchdogs_on_macos_too(monkeypatch):
+    # flet transmits only non-default window props: `visible = True` on a
+    # fresh window equals the default, is dropped by sparse Prop tracking,
+    # and can never reveal a hide_window_on_start window (#189 — the macOS
+    # app ran with no window at all). Every OS must set False in the first
+    # patch and let _finish_startup's False→True transition do the reveal,
+    # with the watchdog as the crash safety net.
+    from types import SimpleNamespace
+
+    from src.ui import app as ui_app
+
+    monkeypatch.setattr(ui_app, "configure_page", lambda p: None)
+    monkeypatch.setattr(ui_app._platform, "IS_MACOS", True)
+    threads = []
+
+    class FakeThread:
+        def __init__(self, *a, **k):
+            threads.append(k)
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(ui_app.threading, "Thread", FakeThread)
+    app = ui_app.App.__new__(ui_app.App)
+    page = SimpleNamespace(
+        add=lambda c: None,
+        run_task=lambda h, *a, **k: None,
+        services=[],
+        window=SimpleNamespace(visible=None),
+    )
+    app._main(page)
+    assert page.window.visible is False
+    assert app._window_revealed is False
+    assert any(k.get("target") == app._reveal_watchdog for k in threads)
