@@ -18,8 +18,13 @@ MIN_SECONDS = 2.6
 
 # the logo-click ScanFlash is feedback, not a loading screen: one quicker
 # sweep and gone, noticeably shorter than the startup splash
-FLASH_SECONDS = 0.9
-_FLASH_SWEEP_MS = 700
+# the flash is a smooth there-and-back scan: sweep down, a light pause at the
+# bottom, sweep back up, then a gentle fade. each leg is slow enough to read as
+# a deliberate scan, not a flicker.
+_FLASH_SWEEP_MS = 900
+_FLASH_PAUSE_MS = 200
+_FLASH_FADE_MS = 300
+FLASH_SECONDS = (2 * _FLASH_SWEEP_MS + _FLASH_PAUSE_MS + _FLASH_FADE_MS) / 1000
 
 _BOX = 200
 _LOGO = 120
@@ -231,23 +236,25 @@ class Splash:
 _LOGO_PX = 28
 _LOGO_LEFT = 16
 _LOGO_TOP_INSET = 22
-# a short beam whose bright core spans the logo width and whose haze is only a
-# little taller than the logo, so the glow stays on the mark. The flash line is
-# THINNER than the startup splash's beam (2px vs 4px) with a tighter glow —
-# over a 28px logo a fat, heavily-bloomed bar washed the mark out.
+# the scan beam: a thin bright line with a soft red glow, sized to the logo
+# width. It sweeps by its transform offset (GPU-smooth, unlike animating top):
+# offset.y is in units of the line's own height. It starts a few px BELOW the
+# logo's top edge and stops a few px ABOVE the bottom, so the line's soft glow
+# stays inside the 28px mark at both ends instead of peeking out past it.
 _FLASH_LINE_H = 2
 _FLASH_LINE_W = _LOGO_PX
-_FLASH_BEAM_H = 16
-_FLASH_TRAVEL = (_LOGO_PX - _FLASH_LINE_H) / _FLASH_BEAM_H
+_FLASH_INSET = 3  # keep the glow off the logo's top/bottom edges
+_FLASH_TRAVEL = (_LOGO_PX - _FLASH_LINE_H - 2 * _FLASH_INSET) / _FLASH_LINE_H
 
 
 def _logo_beam() -> ft.Container:
-    """A compact red scan beam sized to sweep across the 28px sidebar logo."""
-    core = ft.Container(
+    """A compact red scan line the width of the 28px sidebar logo, inset from its
+    top edge and swept down/up by its offset."""
+    return ft.Container(
         height=_FLASH_LINE_H,
         width=_FLASH_LINE_W,
-        top=(_FLASH_BEAM_H - _FLASH_LINE_H) / 2,
         left=0,
+        top=_FLASH_INSET,
         border_radius=1,
         gradient=ft.LinearGradient(
             begin=ft.Alignment.CENTER_LEFT,
@@ -260,29 +267,10 @@ def _logo_beam() -> ft.Container:
             ft.BoxShadow(blur_radius=5, spread_radius=0, color=_RED),
             ft.BoxShadow(blur_radius=9, spread_radius=0, color=_RED_GLOW),
         ],
-    )
-    haze = ft.Container(
-        width=_FLASH_LINE_W,
-        height=_FLASH_BEAM_H,
-        left=0,
-        top=0,
-        gradient=ft.LinearGradient(
-            begin=ft.Alignment.TOP_CENTER,
-            end=ft.Alignment.BOTTOM_CENTER,
-            # lighter haze than the startup splash: a thin soft band, not a
-            # thick red wash, so the fingerprint stays readable under the sweep
-            colors=["#00000000", _RED_HAZE_SOFT, _RED_HAZE_MID, _RED_HAZE_SOFT, "#00000000"],
-            stops=[0.0, 0.4, 0.5, 0.6, 1.0],
-        ),
-    )
-    return ft.Container(
-        width=_FLASH_LINE_W,
-        height=_FLASH_BEAM_H,
-        left=0,
-        top=-(_FLASH_BEAM_H - _LINE_H) / 2,
-        content=ft.Stack(controls=[haze, core]),
         offset=ft.Offset(0, 0),
-        animate_offset=ft.Animation(_FLASH_SWEEP_MS, ft.AnimationCurve.EASE_IN_OUT),
+        animate_offset=ft.Animation(
+            _FLASH_SWEEP_MS, ft.AnimationCurve.EASE_IN_OUT
+        ),
     )
 
 
@@ -301,48 +289,78 @@ class ScanFlash:
             width=_LOGO_PX,
             height=_LOGO_PX,
             clip_behavior=ft.ClipBehavior.HARD_EDGE,
+            # the overlay sits ON TOP of the logo; let clicks pass through it to
+            # the logo's own tap handler, or after the first flash it would eat
+            # every further click on the icon (only the wordmark stayed clickable)
+            ignore_interactions=True,
             content=ft.Stack(controls=[self._line]),
         )
 
     def reset(self) -> None:
-        """Snap the beam back to the TOP with no animation, so a fresh play()
-        always sweeps from the top — a click during an in-flight sweep restarts
-        it cleanly instead of continuing from wherever it was."""
+        """Snap the beam back to the logo's TOP edge with no animation, so a
+        fresh play() always starts from the top — a click during an in-flight
+        sweep restarts it cleanly. Also restore full opacity, since a finished
+        sweep fades the beam out."""
         self._line.animate_offset = None
         self._line.offset = ft.Offset(0, 0)
+        self._line.opacity = 1.0
         try:
             self._line.update()
         except Exception:
             pass
 
     async def play(self, cancelled=None) -> None:
-        """One full scan: sweep DOWN over the logo, then back UP — a there-and-
-        back pass. The caller reuses a single ScanFlash so repeated clicks never
-        stack multiple beams; reset() re-homes the beam to the top first, and
-        `cancelled` (a no-arg predicate) lets a newer click's sweep supersede
-        this one so an in-flight pass bows out instead of fighting it."""
+        """One smooth scan: the line sweeps DOWN from the logo's top edge to its
+        bottom, a light pause, back UP to the top, then fades out — a deliberate
+        there-and-back pass that leaves a clean mark. The caller reuses a single
+        ScanFlash so repeated clicks never stack beams; reset() re-homes the line
+        to the top (and restores opacity) first, and `cancelled` (a no-arg
+        predicate) lets a newer click supersede an in-flight sweep."""
         def _stop() -> bool:
             return cancelled is not None and cancelled()
 
-        # let the reset()'d top position paint before re-enabling the animation,
-        # or the down move collapses into the same frame and there's no sweep
+        def _paint() -> bool:
+            try:
+                self._line.update()
+                return True
+            except Exception:
+                return False  # detached mid-patch; nothing left to animate
+
+        # Paint the beam at the top WITH the animation already enabled, as its
+        # own client frame, before moving it. If the enable + the first move land
+        # in one frame the client has no rendered "from" state, so the down leg
+        # snaps instantly (the ultra-fast drop) while only the return leg
+        # animates. A real paint-and-settle here gives the down leg a start state
+        # to ease from, so it sweeps as smoothly as the way back up.
         self._line.animate_offset = ft.Animation(
             _FLASH_SWEEP_MS, ft.AnimationCurve.EASE_IN_OUT
         )
-        await asyncio.sleep(0.02)
+        self._line.offset = ft.Offset(0, 0)
+        if not _paint():
+            return
+        await asyncio.sleep(0.08)
         if _stop():
             return
         self._line.offset = ft.Offset(0, _FLASH_TRAVEL)  # sweep down
-        try:
-            self._line.update()
-        except Exception:
-            return  # detached mid-patch; nothing left to animate
+        if not _paint():
+            return
         await asyncio.sleep(_FLASH_SWEEP_MS / 1000)
         if _stop():
             return
+        await asyncio.sleep(_FLASH_PAUSE_MS / 1000)  # light pause at the bottom
+        if _stop():
+            return
         self._line.offset = ft.Offset(0, 0)  # sweep back up
-        try:
-            self._line.update()
-        except Exception:
+        if not _paint():
             return
         await asyncio.sleep(_FLASH_SWEEP_MS / 1000)
+        if _stop():
+            return
+        # fade the line out at the top, so the flash ends on a clean mark
+        self._line.animate_opacity = ft.Animation(
+            _FLASH_FADE_MS, ft.AnimationCurve.EASE_OUT
+        )
+        self._line.opacity = 0.0
+        if not _paint():
+            return
+        await asyncio.sleep(_FLASH_FADE_MS / 1000)

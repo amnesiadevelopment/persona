@@ -123,7 +123,7 @@ def test_linux_chromium_env_keeps_system_fontconfig(monkeypatch, tmp_path):
     assert not (tmp_path / "fontenv" / "fonts.conf").exists()
 
 
-def _spawn_chromium_args(monkeypatch, tmp_path, profile, linux=False):
+def _spawn_chromium_args(monkeypatch, tmp_path, profile, linux=False, store=_Store):
     captured = {}
 
     class _FakePopen:
@@ -132,12 +132,14 @@ def _spawn_chromium_args(monkeypatch, tmp_path, profile, linux=False):
             captured["env"] = kwargs.get("env")
 
     monkeypatch.setattr(process, "DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(process, "ProxyStore", _Store)
+    monkeypatch.setattr(process, "ProxyStore", store)
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
     monkeypatch.setattr(process, "write_window_entry", lambda name: None)
     monkeypatch.setattr(process.subprocess, "Popen", _FakePopen)
-    if linux:
-        monkeypatch.setattr(process._platform, "IS_LINUX", True)
+    # Pin IS_LINUX to the case under test regardless of the host running the
+    # suite — a non-linux case left the real platform in place, so the VA-API
+    # assertions failed on a Linux CI/dev box while passing on Windows.
+    monkeypatch.setattr(process._platform, "IS_LINUX", bool(linux))
     process.spawn_browser(profile)
     return captured
 
@@ -165,6 +167,55 @@ def test_linux_chromium_tames_software_compositor_animations(monkeypatch, tmp_pa
     assert "--disable-threaded-animation" in captured["args"]
     assert "--animation-duration-scale=0" in captured["args"]
     assert "--wm-window-animations-disabled" in captured["args"]
+
+
+def _disable_features_values(args):
+    return [a.split("=", 1)[1] for a in args if a.startswith("--disable-features=")]
+
+
+def test_linux_chromium_suppresses_vaapi_probe(monkeypatch, tmp_path):
+    captured = _spawn_chromium_args(
+        monkeypatch, tmp_path, Profile(name="vaapi"), linux=True
+    )
+    values = _disable_features_values(captured["args"])
+    assert len(values) == 1
+    features = values[0].split(",")
+    assert "VaapiVideoDecoder" in features
+    assert "VaapiVideoEncoder" in features
+
+
+def test_non_linux_chromium_gets_no_vaapi_flags(monkeypatch, tmp_path):
+    captured = _spawn_chromium_args(monkeypatch, tmp_path, Profile(name="vaapi-win"))
+    assert not any("Vaapi" in a for a in captured["args"])
+
+
+def test_proxied_linux_chromium_keeps_vaapi_suppression(monkeypatch, tmp_path):
+    # Chromium honors only the LAST --disable-features switch, so the proxy's
+    # DnsOverHttps entry must merge with the VA-API suppression, not replace it.
+    captured = _spawn_chromium_args(
+        monkeypatch,
+        tmp_path,
+        Profile(name="vaapi-proxy", proxy="p1"),
+        linux=True,
+        store=_StoreWithGeolessProxy,
+    )
+    values = _disable_features_values(captured["args"])
+    assert len(values) == 1
+    features = values[0].split(",")
+    assert "VaapiVideoDecoder" in features
+    assert "VaapiVideoEncoder" in features
+    assert "DnsOverHttps" in features
+
+
+def test_proxied_non_linux_chromium_disables_doh_only(monkeypatch, tmp_path):
+    captured = _spawn_chromium_args(
+        monkeypatch,
+        tmp_path,
+        Profile(name="doh-win", proxy="p1"),
+        store=_StoreWithGeolessProxy,
+    )
+    values = _disable_features_values(captured["args"])
+    assert values == ["DnsOverHttps"]
 
 
 def test_hidpi_host_gets_render_scale_flag(monkeypatch, tmp_path):

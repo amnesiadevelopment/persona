@@ -206,6 +206,37 @@ def test_profile_prefs_zoom_is_text_only_not_full_page():
     assert prefs["browser.zoom.full"] is False
 
 
+def test_chrome_scale_css_scales_only_chrome_containers(tmp_path):
+    # #196: with devPixelsPerPx pinned to 1 (#187) the browser's own UI renders
+    # physically tiny on a HiDPI host. The scale goes through the profile's
+    # userChrome.css — a sheet the engine loads ONLY into chrome documents — and
+    # zooms #navigator-toolbox (menubar/tab strip/toolbars/urlbar) and
+    # #mainPopupSet (menus/panels). The content <browser> is a SIBLING of both
+    # in browser.xhtml, so the zoom has no path into a web page: nothing here
+    # can move devicePixelRatio, screen.*, or the resolution media queries.
+    invisible_launch._write_chrome_scale_css(str(tmp_path), 1.5)
+    css = (tmp_path / "chrome" / "userChrome.css").read_text(encoding="utf-8")
+    assert "#navigator-toolbox" in css
+    assert "#mainPopupSet" in css
+    assert "zoom: 1.5" in css
+
+
+def test_chrome_scale_css_noop_at_unity_scale(tmp_path):
+    # A non-HiDPI host needs no chrome scaling — nothing is written.
+    invisible_launch._write_chrome_scale_css(str(tmp_path), 1.0)
+    assert not (tmp_path / "chrome").exists()
+
+
+def test_chrome_scale_css_rewrite_replaces_scale(tmp_path):
+    # Relaunching (e.g. the host scale changed) rewrites the sheet in place —
+    # one zoom rule at the current scale, never stacked duplicates.
+    invisible_launch._write_chrome_scale_css(str(tmp_path), 1.5)
+    invisible_launch._write_chrome_scale_css(str(tmp_path), 2.0)
+    css = (tmp_path / "chrome" / "userChrome.css").read_text(encoding="utf-8")
+    assert css.count("zoom:") == 1
+    assert "zoom: 2.0" in css
+
+
 def test_outer_size_override_script_ties_outer_to_window():
     # outerWidth/outerHeight must track the real window (inner + chrome), NOT the
     # spoofed screen — otherwise outerWidth leaks the 4K screen on a physically
@@ -933,6 +964,9 @@ def test_close_watch_gives_up_when_process_never_seen(monkeypatch):
     # caller emits BROWSER_CLOSED and tears down.
     monkeypatch.setattr(invisible_launch, "_profile_firefox_pids", lambda d: None)
     monkeypatch.setattr(invisible_launch, "_firefox_pid", lambda d: None)
+    monkeypatch.setattr(
+        invisible_launch, "_any_firefox_window_visible", lambda: None
+    )
 
     t0 = _time.monotonic()
     invisible_launch._thread_close_watch(
@@ -1080,6 +1114,7 @@ def test_fork_close_watch_gives_up_when_process_never_seen(monkeypatch):
     # "running" forever — give up after no_process_timeout so the child emits
     # BROWSER_CLOSED and tears down.
     monkeypatch.setattr(invisible_launch, "_firefox_pid", lambda d: None)
+    monkeypatch.setattr(invisible_launch, "_forked_firefox_alive", lambda: None)
     t0 = _time.monotonic()
     got = invisible_launch._fork_close_watch(
         "/p", threading.Event(), no_process_timeout=0.05, interval=0.01
@@ -1585,6 +1620,157 @@ def test_child_reports_chosen_resolution_at_consistent_dpr_one(monkeypatch, tmp_
     # no script-masked inconsistency.
     assert captured["pin"]["screen.dpr"] == 1.0
     assert captured["extra_prefs"]["layout.css.devPixelsPerPx"] == "1.0"
+
+
+def test_child_hidpi_scales_chrome_ui_without_touching_page_dpr(
+    monkeypatch, tmp_path
+):
+    # #196: dpr=1 (#187) leaves the browser's own toolbar/tabs/menus physically
+    # tiny on a HiDPI host. The launch scales the CHROME UI via the profile's
+    # userChrome.css + its enabling pref, while every page-facing value #187
+    # pinned stays honest — screen.dpr=1 and devPixelsPerPx="1.0" untouched.
+    import os
+    import sys
+    import threading
+    import types
+
+    captured = {}
+
+    class FakeCtx:
+        pages = [object()]
+
+        def add_init_script(self, *_a, **_k):
+            pass
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def _default_context_kwargs(self):
+            return {}
+
+        def __enter__(self):
+            return FakeCtx()
+
+        def __exit__(self, *a):
+            return False
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(invisible_launch, "_work_area", lambda: (3840, 2088))
+    monkeypatch.setattr(invisible_launch, "_system_dpr", lambda: 1.5)
+    monkeypatch.setattr(
+        invisible_launch, "_thread_close_watch", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None, rescan=True: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_raise_profile_window", lambda *a, **k: None
+    )
+
+    stop = threading.Event()
+    stop.set()
+    r, w = os.pipe()
+    invisible_launch._child(
+        {
+            "profile_dir": str(tmp_path),
+            "profile_name": "t",
+            "seed": 1,
+            "resolution": [1920, 1080],
+        },
+        w,
+        stop_event=stop,
+    )
+    os.close(r)
+
+    css = (tmp_path / "chrome" / "userChrome.css").read_text(encoding="utf-8")
+    assert "zoom: 1.5" in css  # chrome UI scaled to the host display scale
+    # The sheet only loads with the customization pref on — set for the engine
+    # AND carried in prefs.js so it's in force for the profile's first window.
+    assert (
+        captured["extra_prefs"][
+            "toolkit.legacyUserProfileCustomizations.stylesheets"
+        ]
+        is True
+    )
+    prefs_js = (tmp_path / "prefs.js").read_text(encoding="utf-8")
+    assert (
+        'user_pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);'
+        in prefs_js
+    )
+    # #187 fingerprint intact: the page still reads the chosen resolution at a
+    # consistent dpr=1 — the chrome scale must not move any page-facing value.
+    assert captured["pin"]["screen.dpr"] == 1.0
+    assert captured["extra_prefs"]["layout.css.devPixelsPerPx"] == "1.0"
+    assert 'user_pref("layout.css.devPixelsPerPx", "1.0");' in prefs_js
+
+
+def test_child_no_chrome_scale_on_unity_dpr_host(monkeypatch, tmp_path):
+    # #196: a non-HiDPI host renders the chrome at its natural size — no
+    # userChrome.css, no customization pref.
+    import os
+    import sys
+    import threading
+    import types
+
+    captured = {}
+
+    class FakeCtx:
+        pages = [object()]
+
+        def add_init_script(self, *_a, **_k):
+            pass
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def _default_context_kwargs(self):
+            return {}
+
+        def __enter__(self):
+            return FakeCtx()
+
+        def __exit__(self, *a):
+            return False
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(invisible_launch, "_work_area", lambda: (2560, 1392))
+    monkeypatch.setattr(invisible_launch, "_system_dpr", lambda: 1.0)
+    monkeypatch.setattr(
+        invisible_launch, "_thread_close_watch", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None, rescan=True: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_raise_profile_window", lambda *a, **k: None
+    )
+
+    stop = threading.Event()
+    stop.set()
+    r, w = os.pipe()
+    invisible_launch._child(
+        {
+            "profile_dir": str(tmp_path),
+            "profile_name": "t",
+            "seed": 1,
+            "resolution": [1920, 1080],
+        },
+        w,
+        stop_event=stop,
+    )
+    os.close(r)
+
+    assert not (tmp_path / "chrome").exists()
+    assert (
+        "toolkit.legacyUserProfileCustomizations.stylesheets"
+        not in captured["extra_prefs"]
+    )
 
 
 def test_devpixelsperpx_one_keeps_dpr_consistent_in_engine_prefs():
@@ -2217,7 +2403,9 @@ def test_seed_bookmarks_reinits_when_toolbar_root_missing(monkeypatch, tmp_path)
     invisible_launch._seed_firefox_bookmarks(
         str(tmp_path), [{"name": "a", "url": "https://a/"}], 7
     )
-    assert inits == [(str(tmp_path), 7)]
+    # One init per attempt (the seed retries a failed init, #202) — the point
+    # here is that a rootless db triggers the init at all.
+    assert inits and inits[0] == (str(tmp_path), 7)
 
 
 def test_seed_bookmarks_ready_db_needs_no_engine_start(monkeypatch, tmp_path):
@@ -2335,6 +2523,176 @@ def test_seed_bookmarks_user_added_survives_relaunch(monkeypatch, tmp_path):
     invisible_launch._seed_firefox_bookmarks(str(tmp_path), marks, 7)
     urls = {u for _t, u in _toolbar_bookmarks(db)}
     assert urls == {"https://a.example/", "https://c.example/"}
+
+
+def test_seed_bookmarks_retries_when_init_fails_transiently(
+    monkeypatch, tmp_path
+):
+    # #202: on the FIRST launch of a fresh profile the headless places init can
+    # fail transiently (budget ran out, or the dying headless Firefox still held
+    # places.sqlite when the verdict was read). One silent skip is what opened
+    # the first visible window on an unseeded db — the seed must retry and land.
+    from tests.test_firefox_bookmarks import _make_places, _toolbar_bookmarks
+
+    db = str(tmp_path / "places.sqlite")
+    inits = []
+
+    def flaky_init(d, s, stop_event=None):
+        inits.append((d, s))
+        if len(inits) == 1:
+            return False
+        _make_places(db)
+        return True
+
+    monkeypatch.setattr(invisible_launch, "_init_places_db", flaky_init)
+    ok = invisible_launch._seed_firefox_bookmarks(
+        str(tmp_path), [{"name": "a", "url": "https://a.example/"}], 7
+    )
+    assert ok is True
+    assert inits == [(str(tmp_path), 7), (str(tmp_path), 7)]
+    assert _toolbar_bookmarks(db) == [("a", "https://a.example/")]
+
+
+def test_seed_bookmarks_reports_failure_after_bounded_retries(
+    monkeypatch, tmp_path
+):
+    # #202: when the init never yields a rooted db the seed must say so —
+    # returning falsy after a BOUNDED number of attempts (never an unbounded
+    # loop, never a silent None on the first miss).
+    inits = []
+    monkeypatch.setattr(
+        invisible_launch,
+        "_init_places_db",
+        lambda d, s, stop_event=None: inits.append(d) or False,
+    )
+    ok = invisible_launch._seed_firefox_bookmarks(
+        str(tmp_path), [{"name": "a", "url": "https://a.example/"}], 7
+    )
+    assert ok is False
+    assert len(inits) == 2
+
+
+def test_seed_bookmarks_locked_db_seeds_on_retry(monkeypatch, tmp_path):
+    # #202: right after the headless init, places.sqlite can still be held
+    # EXCLUSIVE by the dying headless Firefox — the reconcile hits "database is
+    # locked". The retry runs after the straggler released it and must land.
+    import sqlite3
+
+    from src.services.browser import firefox_bookmarks
+    from tests.test_firefox_bookmarks import _make_places, _toolbar_bookmarks
+
+    db = str(tmp_path / "places.sqlite")
+    _make_places(db)
+    real_sync = firefox_bookmarks.sync_places_bookmarks
+    calls = []
+
+    def locked_once(*a, **k):
+        calls.append(1)
+        if len(calls) == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real_sync(*a, **k)
+
+    monkeypatch.setattr(firefox_bookmarks, "sync_places_bookmarks", locked_once)
+    ok = invisible_launch._seed_firefox_bookmarks(
+        str(tmp_path), [{"name": "a", "url": "https://a.example/"}], 7
+    )
+    assert ok is True
+    assert len(calls) == 2
+    assert _toolbar_bookmarks(db) == [("a", "https://a.example/")]
+
+
+def test_seed_bookmarks_stop_aborts_without_engine_init(monkeypatch, tmp_path):
+    # A STOP before/inside the seed must bail out (no engine init, no retry
+    # burn) — the launch is being cancelled anyway.
+    import threading
+
+    def boom(*a, **k):
+        raise AssertionError("no engine init after STOP")
+
+    monkeypatch.setattr(invisible_launch, "_init_places_db", boom)
+    stop = threading.Event()
+    stop.set()
+    ok = invisible_launch._seed_firefox_bookmarks(
+        str(tmp_path),
+        [{"name": "a", "url": "https://a.example/"}],
+        7,
+        stop_event=stop,
+    )
+    assert ok is False
+
+
+def test_seed_bookmarks_nothing_to_apply_is_success(monkeypatch, tmp_path):
+    # An empty set on a fresh profile (no places.sqlite) has nothing to apply —
+    # that is success, not a seed failure for the launch to warn about.
+    def boom(*a, **k):
+        raise AssertionError("no engine init for an empty set on a fresh profile")
+
+    monkeypatch.setattr(invisible_launch, "_init_places_db", boom)
+    assert invisible_launch._seed_firefox_bookmarks(str(tmp_path), [], 7) is True
+
+
+def test_child_reports_unseeded_bookmarks_before_launch(monkeypatch, tmp_path):
+    # #202: a bookmarked profile whose seed did NOT land must say so on the
+    # pipe (the card log) instead of opening an empty toolbar in silence — and
+    # the launch itself still proceeds (bookmarks never hold the browser
+    # hostage).
+    import os
+    import sys
+    import threading
+    import types
+
+    class FakeCtx:
+        pages = [object()]
+
+        def add_init_script(self, *_a, **_k):
+            pass
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return FakeCtx()
+
+        def __exit__(self, *a):
+            return False
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(
+        invisible_launch, "_seed_firefox_bookmarks", lambda *a, **k: False
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_ensure_firefox_policies", lambda: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_thread_close_watch", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox",
+        lambda d, pids=None, rescan=True: None,
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_raise_profile_window", lambda *a, **k: None
+    )
+
+    stop = threading.Event()
+    stop.set()
+    r, w = os.pipe()
+    invisible_launch._child(
+        {
+            "profile_dir": str(tmp_path),
+            "profile_name": "t",
+            "seed": 42,
+            "bookmarks": [{"name": "a", "url": "https://a"}],
+        },
+        w,
+        stop_event=stop,
+    )
+    out = os.read(r, 65536).decode()
+    os.close(r)
+    assert "BOOKMARK_SEED_FAILED" in out
 
 
 def test_child_starts_engine_exactly_once_when_already_seeded(
@@ -3287,3 +3645,271 @@ def test_init_places_db_retries_wedged_enter(monkeypatch, tmp_path):
     assert ok is True
     assert len(instances) == 2
     assert time.monotonic() - t0 < 15
+
+
+def test_profile_pids_matches_mixed_separator_profile_dir(monkeypatch):
+    # #203: expanduser("~/.persona") keeps the caller's forward slash on
+    # Windows (C:\Users\u/.persona\...), while the engine normalizes
+    # profile_dir through pathlib before it lands on firefox.exe's command
+    # line (all backslashes). A raw substring match therefore NEVER hit: the
+    # watch resolved no pid for a LIVE session and the 60s give-up tore it
+    # down mid-use. The match must fold separators on both sides.
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", True)
+    cl = (
+        r"C:\eng\firefox.exe -no-remote -wait-for-browser -foreground "
+        r"-profile C:\Users\u\.persona\persona_data\1к\.invisible-profile "
+        r"-juggler-pipe -new-window about:blank"
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_win_firefox_command_lines", lambda: [(49, cl)]
+    )
+
+    def boom(*a, **k):
+        raise AssertionError("PowerShell must not be spawned")
+
+    monkeypatch.setattr(invisible_launch.subprocess, "check_output", boom)
+    got = invisible_launch._profile_firefox_pids(
+        "C:\\Users\\u/.persona\\persona_data\\1к\\.invisible-profile"
+    )
+    assert got == {49}
+
+
+def test_profile_pids_powershell_pattern_normalizes_separators(monkeypatch):
+    # The WMI -like pattern compares against the real command line, which
+    # holds the pathlib-normalized (backslash) profile dir.
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(invisible_launch._platform, "no_window_kwargs", lambda: {})
+    monkeypatch.setattr(
+        invisible_launch, "_win_firefox_command_lines", lambda: None
+    )
+    argvs = []
+
+    def fake_check_output(argv, **k):
+        argvs.append(argv)
+        return "7\n"
+
+    monkeypatch.setattr(
+        invisible_launch.subprocess, "check_output", fake_check_output
+    )
+    got = invisible_launch._profile_firefox_pids(
+        "C:\\Users\\u/.persona\\persona_data\\p\\.invisible-profile"
+    )
+    assert got == {7}
+    ps = argvs[0][-1]
+    assert r"C:\Users\u\.persona\persona_data\p\.invisible-profile" in ps
+    assert "u/.persona" not in ps
+
+
+def test_firefox_pid_windows_query_normalizes_separators(monkeypatch):
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(invisible_launch._platform, "no_window_kwargs", lambda: {})
+    argvs = []
+
+    def fake_check_output(argv, **k):
+        argvs.append(argv)
+        return "7\n"
+
+    monkeypatch.setattr(
+        invisible_launch.subprocess, "check_output", fake_check_output
+    )
+    got = invisible_launch._firefox_pid(
+        "C:\\Users\\u/.persona\\persona_data\\p\\.invisible-profile"
+    )
+    assert got == 7
+    ps = argvs[0][-1]
+    assert r"C:\Users\u\.persona\persona_data\p\.invisible-profile" in ps
+    assert "u/.persona" not in ps
+
+
+def test_any_firefox_window_visible_scopes_to_engine_parents(monkeypatch):
+    # The user's own (non-engine) Firefox must not count as a live engine
+    # window; only a juggler-launched parent owns the session's window.
+    entries = [
+        (1, r"C:\Program Files\Mozilla Firefox\firefox.exe"),
+        (2, r"C:\eng\firefox.exe -no-remote -profile C:\p -juggler-pipe"),
+        (3, None),
+    ]
+    monkeypatch.setattr(
+        invisible_launch, "_win_firefox_command_lines", lambda: entries
+    )
+    monkeypatch.setattr(invisible_launch, "_visible_window_pids", lambda: {1})
+    assert invisible_launch._any_firefox_window_visible() is False
+    monkeypatch.setattr(invisible_launch, "_visible_window_pids", lambda: {2})
+    assert invisible_launch._any_firefox_window_visible() is True
+
+
+def test_any_firefox_window_visible_no_verdict_paths(monkeypatch):
+    monkeypatch.setattr(
+        invisible_launch, "_win_firefox_command_lines", lambda: None
+    )
+    assert invisible_launch._any_firefox_window_visible() is None
+    monkeypatch.setattr(
+        invisible_launch, "_win_firefox_command_lines", lambda: []
+    )
+    assert invisible_launch._any_firefox_window_visible() is False
+    monkeypatch.setattr(
+        invisible_launch,
+        "_win_firefox_command_lines",
+        lambda: [(2, "firefox.exe -juggler-pipe")],
+    )
+    monkeypatch.setattr(invisible_launch, "_visible_window_pids", lambda: None)
+    assert invisible_launch._any_firefox_window_visible() is None
+
+
+def test_thread_watch_never_kills_live_window_when_pid_unresolved(monkeypatch):
+    import threading
+
+    # #203: BROWSER_STARTED fired and the user is working in the window, but
+    # the pid resolve is broken (confident-empty every poll). The old timeout
+    # returned the teardown verdict and killed the healthy session. A live
+    # window must keep the watch alive indefinitely.
+    closed = threading.Event()
+    monkeypatch.setattr(
+        invisible_launch, "_profile_firefox_pids", lambda d: set()
+    )
+    monkeypatch.setattr(invisible_launch, "_firefox_pid", lambda d: None)
+    probes = []
+
+    def probe():
+        probes.append(1)
+        if len(probes) >= 4:
+            closed.set()
+        return True
+
+    monkeypatch.setattr(
+        invisible_launch, "_any_firefox_window_visible", probe
+    )
+    logs = []
+    invisible_launch._thread_close_watch(
+        r"C:\p", closed, None, lambda: None,
+        no_process_timeout=0.0, interval=0.0, log=logs.append,
+    )
+    assert len(probes) >= 4  # watched well past the (expired) deadline
+    assert not any("close=no-process-timeout" in m for m in logs)
+
+
+def test_thread_watch_falls_back_to_window_close_when_pid_unresolved(monkeypatch):
+    import threading
+
+    # #203 degraded mode: pid never resolves but the window is there — the
+    # close signal becomes the window disappearing (sustained, #159 debounce),
+    # never the launch-was-dead verdict.
+    monkeypatch.setattr(
+        invisible_launch, "_profile_firefox_pids", lambda d: set()
+    )
+    monkeypatch.setattr(invisible_launch, "_firefox_pid", lambda d: None)
+    visibility = iter([True, True, False, False])
+    monkeypatch.setattr(
+        invisible_launch, "_any_firefox_window_visible",
+        lambda: next(visibility),
+    )
+    logs = []
+    invisible_launch._thread_close_watch(
+        r"C:\p", threading.Event(), None, lambda: None,
+        no_process_timeout=0.0, interval=0.0, log=logs.append,
+    )
+    assert next(visibility, "done") == "done"  # closed exactly on window-gone
+    assert any("close=window-gone" in m for m in logs)
+    assert not any("close=no-process-timeout" in m for m in logs)
+
+
+def test_thread_watch_timeout_fires_only_when_no_window_ever(monkeypatch):
+    import threading
+    import time as _time
+
+    # A wedged launch with no window in sight must still clear (the original
+    # purpose of no_process_timeout) — both on a confident no-window and on a
+    # platform with no window enumeration at all (macOS).
+    monkeypatch.setattr(
+        invisible_launch, "_profile_firefox_pids", lambda d: None
+    )
+    monkeypatch.setattr(invisible_launch, "_firefox_pid", lambda d: None)
+    for verdict in (False, None):
+        monkeypatch.setattr(
+            invisible_launch, "_any_firefox_window_visible", lambda v=verdict: v
+        )
+        logs = []
+        t0 = _time.monotonic()
+        got = invisible_launch._thread_close_watch(
+            r"C:\p", threading.Event(), None, lambda: None,
+            no_process_timeout=0.05, interval=0.01, log=logs.append,
+        )
+        assert got is None
+        assert _time.monotonic() - t0 < 5
+        assert any("close=no-process-timeout" in m for m in logs)
+
+
+def test_fork_watch_never_kills_live_firefox_when_pid_unresolved(monkeypatch):
+    import threading
+
+    closed = threading.Event()
+    monkeypatch.setattr(invisible_launch, "_firefox_pid", lambda d: None)
+    probes = []
+
+    def probe():
+        probes.append(1)
+        if len(probes) >= 4:
+            closed.set()
+        return True
+
+    monkeypatch.setattr(invisible_launch, "_forked_firefox_alive", probe)
+    logs = []
+    invisible_launch._fork_close_watch(
+        "/p", closed, no_process_timeout=0.0, interval=0.0, log=logs.append,
+    )
+    assert len(probes) >= 4
+    assert not any("close=no-process-timeout" in m for m in logs)
+
+
+def test_fork_watch_falls_back_to_firefox_exit_when_pid_unresolved(monkeypatch):
+    import threading
+
+    monkeypatch.setattr(invisible_launch, "_firefox_pid", lambda d: None)
+    alive = iter([True, True, False, False])
+    monkeypatch.setattr(
+        invisible_launch, "_forked_firefox_alive", lambda: next(alive)
+    )
+    logs = []
+    got = invisible_launch._fork_close_watch(
+        "/p", threading.Event(), no_process_timeout=0.0, interval=0.0,
+        log=logs.append,
+    )
+    assert got is None
+    assert next(alive, "done") == "done"
+    assert any("close=window-gone" in m for m in logs)
+    assert not any("close=no-process-timeout" in m for m in logs)
+
+
+def test_forked_firefox_alive_finds_descendant_firefox(monkeypatch):
+    # The fork child launched exactly one browser, so any firefox among its
+    # own descendants is THIS profile's — a verdict that doesn't depend on
+    # the profile-dir cmdline match (#203).
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", False)
+    monkeypatch.setattr(
+        invisible_launch, "_descendant_pids", lambda root: {5, 6}
+    )
+    cmds = {
+        5: b"node\x00/driver/cli.js\x00run-driver",
+        6: b"/cache/firefox-15/firefox\x00-no-remote\x00-profile\x00/p",
+    }
+    monkeypatch.setattr(
+        invisible_launch, "_proc_cmdline", lambda p: cmds.get(p)
+    )
+    assert invisible_launch._forked_firefox_alive() is True
+
+
+def test_forked_firefox_alive_confident_false_and_no_verdict(monkeypatch):
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", False)
+    monkeypatch.setattr(
+        invisible_launch, "_descendant_pids", lambda root: {5}
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_proc_cmdline", lambda p: b"node\x00driver"
+    )
+    assert invisible_launch._forked_firefox_alive() is False
+    monkeypatch.setattr(
+        invisible_launch, "_descendant_pids", lambda root: None
+    )
+    assert invisible_launch._forked_firefox_alive() is None
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", True)
+    assert invisible_launch._forked_firefox_alive() is None

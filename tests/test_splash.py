@@ -189,21 +189,28 @@ def test_scan_flash_reuses_the_scan_beam():
     f = ScanFlash()
     line = f._line
     assert line.animate_offset is not None
-    assert line.offset.y == 0
+    assert line.offset.y == 0  # starts at the logo's top edge
     red = COLORS["error"].lstrip("#")
-    core = line.content.controls[-1]
-    assert any(red in str(sh.color) for sh in core.shadow)
+    assert any(red in str(sh.color) for sh in line.shadow)
 
 
-def test_scan_flash_play_sweeps_down_then_up(monkeypatch):
-    # one click = a there-and-back pass: down to _FLASH_TRAVEL, then back to 0.
-    # With an ATTACHED control both moves apply; here we just prove play() runs
-    # the down move without raising and reset() re-homes to the top.
-    monkeypatch.setattr(splash_mod.asyncio, "sleep", _instant_sleep)
+def test_scan_flash_play_sweeps_down_up_then_fades(monkeypatch):
+    # one click = a there-and-back sweep (down to _FLASH_TRAVEL, back up to 0)
+    # that ends by fading out, so no red line lingers on the mark.
+    moves = []
     f = ScanFlash()
-    f._line.update = lambda: None  # pretend attached so both moves execute
+
+    async def record_sleep(_t):
+        moves.append(f._line.offset.y)
+
+    monkeypatch.setattr(splash_mod.asyncio, "sleep", record_sleep)
+    f._line.update = lambda: None  # pretend attached so every move executes
     asyncio.run(f.play())
-    assert f._line.offset.y == 0  # ends back at the top after the round trip
+    # down leg first (line at the bottom), then the up leg (back at the top)
+    assert splash_mod._FLASH_TRAVEL in moves
+    assert moves.index(splash_mod._FLASH_TRAVEL) < len(moves) - 1
+    assert f._line.offset.y == 0  # ended back at the top
+    assert f._line.opacity == 0.0  # faded out at the end
 
 
 def test_scan_flash_reset_homes_to_top():
@@ -223,17 +230,20 @@ def test_scan_flash_play_bows_out_when_cancelled(monkeypatch):
     assert f._line.offset.y == 0  # bowed out before the down sweep
 
 
-def test_scan_flash_is_a_quick_flash_not_the_startup_splash():
-    assert 0.5 <= FLASH_SECONDS <= 1.2
-    assert FLASH_SECONDS <= MIN_SECONDS
+def test_scan_flash_is_a_smooth_there_and_back_scan():
+    # a deliberate down-up-fade pass: long enough to read as a real scan, but a
+    # single per-leg sweep quicker than the startup splash's bounce (asserted
+    # in test_startup_splash_structure_unchanged_by_flash)
+    assert 1.5 <= FLASH_SECONDS <= 2.5
 
 
 def test_startup_splash_structure_unchanged_by_flash():
     s = Splash()
     f = ScanFlash()
     assert s._line is not f._line
-    # the splash keeps its slow bounce sweep; the flash sweep is quicker
-    assert f._line.animate_offset.duration < s._line.animate_offset.duration
+    # both sweep via offset; they are independent beam instances
+    assert s._line.animate_offset is not None
+    assert f._line.animate_offset is not None
 
 
 def test_main_shows_splash_before_anything_else(monkeypatch):

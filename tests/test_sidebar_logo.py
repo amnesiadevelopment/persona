@@ -38,15 +38,12 @@ def test_logo_click_wraps_header_in_clickable():
     header = _header(_sidebar(on_logo_click=lambda: fired.append(1)))
     assert isinstance(header, ft.GestureDetector)
     assert header.mouse_cursor == ft.MouseCursor.CLICK
-    clickable = header.content
-    assert isinstance(clickable, ft.Container)
-    assert clickable.ink is True
-    assert clickable.tooltip == "home"
-    # the original logo + title row is inside the clickable
-    assert isinstance(clickable.content, ft.Row)
-    texts = [c for c in _walk(clickable) if isinstance(c, ft.Text)]
+    # the whole logo + title row is the detector's content, so a tap anywhere
+    # on it — including the logo image — fires the scan
+    assert isinstance(header.content, ft.Row)
+    texts = [c for c in _walk(header) if isinstance(c, ft.Text)]
     assert any(t.value for t in texts)
-    clickable.on_click(None)
+    header.on_tap(None)
     assert fired == [1]
 
 
@@ -57,7 +54,7 @@ def test_logo_click_does_not_hit_navigation():
         on_navigate=lambda k: navigated.append(k),
         on_logo_click=lambda: fired.append(1),
     )
-    _header(sidebar).content.on_click(None)
+    _header(sidebar).on_tap(None)
     assert fired == [1]
     assert navigated == []
 

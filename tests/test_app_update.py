@@ -404,6 +404,38 @@ def test_relaunch_bat_settle_is_brief(tmp_path):
     assert "ping -n 3" not in settle
 
 
+def test_relaunch_bat_clears_the_flet_extraction_before_start(tmp_path):
+    # #195, the un-retryable half: the new persona's bootstrap deletes
+    # %APPDATA%\persona\persona\flet\app to re-extract the updated app.zip,
+    # and that delete happens before our Python runs — it CANNOT retry. Any
+    # handle still open under the dir at that instant (release lag, an AV
+    # sweep, a straggler child of the old persona) is a startup crash on a
+    # white screen. The bat clears the extraction itself, with bounded
+    # retries, before `start`: the new persona then finds nothing to delete.
+    # It must cd out of the way first — rd can't remove the directory the
+    # shell itself occupies — and the wait-timeout path must skip the purge
+    # (never pull the extraction from under an instance that may be alive).
+    exe = tmp_path / "persona.exe"
+    exe.write_bytes(b"MZ")
+    path = au._write_relaunch_bat(
+        str(exe), str(tmp_path / "persona-windows-setup.exe"), 4242, 7777
+    )
+    try:
+        with open(path, encoding="ascii", newline="") as f:
+            bat = f.read()
+    finally:
+        au.os.remove(path)
+    cache = r"%APPDATA%\persona\persona\flet\app"
+    assert bat.index('cd /d "%~dp0"') < bat.index(":wait")
+    purge = bat.split(":settle")[1].split(":launch")[0]
+    assert f'rd /s /q "{cache}"' in purge
+    assert f'if not exist "{cache}" goto launch' in purge
+    # bounded — a holder that never dies must not block the relaunch forever
+    assert "geq 60" in purge
+    # only the clean settle path purges; the wait loop never runs rd
+    assert "rd /s /q" not in bat.split(":settle")[0]
+
+
 def test_relaunch_bat_is_silent_and_ascii(tmp_path):
     # Mars SAW a console with ping output during a live update. Every command
     # in the bat must have its output swallowed, and nothing in it may pop a
@@ -424,7 +456,7 @@ def test_relaunch_bat_is_silent_and_ascii(tmp_path):
     assert lines[0] == "@echo off"
     assert "timeout" not in bat and "pause" not in bat
     for ln in lines:
-        if ln.split()[0].lower() in ("tasklist", "ping", "find"):
+        if ln.split()[0].lower() in ("tasklist", "ping", "find", "rd", "cd"):
             assert ">nul" in ln, f"unredirected output: {ln!r}"
     bat.encode("ascii")  # raises if anything non-ascii slipped in
 
@@ -577,6 +609,92 @@ def test_windows_relaunch_fallback_env_is_scrubbed_too(monkeypatch, tmp_path):
     assert "FLET_SERVER_PORT" not in env
 
 
+def test_windows_update_children_get_cwd_outside_the_flet_extraction(
+    monkeypatch, tmp_path
+):
+    # #195 root: the flet host runs with its current directory INSIDE the app
+    # extraction — serious_python sets Directory.current to the unpacked
+    # %APPDATA%\persona\persona\flet\app. A child spawned without an explicit
+    # cwd inherits it, and the relaunch cmd is — by design — still alive when
+    # it `start`s the new persona, so its inherited cwd holds a directory
+    # handle on the very tree the new instance's bootstrap deletes to
+    # re-extract the updated app.zip. RemoveDirectory on another process's cwd
+    # is ERROR_SHARING_VIOLATION (winerror 32): "Deletion failed ... errno 32,
+    # file held by another process" on a white screen. No pid/image wait can
+    # fix that — the holder is the waiter itself — so every process the update
+    # spawns (installer AND relaunch chain) must get a cwd outside the
+    # extraction.
+    _force_os(monkeypatch, win=True)
+    monkeypatch.setattr(au._platform, "no_window_kwargs", lambda: {})
+    monkeypatch.setattr(au.tempfile, "tempdir", str(tmp_path))
+    staged = tmp_path / "persona-windows-setup.exe"
+    staged.write_bytes(b"MZ")
+    exe = tmp_path / "persona.exe"
+    exe.write_bytes(b"MZ")
+    calls = []
+
+    def fake_popen(args, **kw):
+        calls.append((args, kw))
+
+        class P:
+            pid = 4242
+
+        return P()
+
+    monkeypatch.setattr(au.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(au, "_installed_windows_exe", lambda: str(exe))
+
+    def fake_exit(code):
+        raise SystemExit(code)
+
+    monkeypatch.setattr(au.os, "_exit", fake_exit)
+    msgs = []
+    with pytest.raises(SystemExit):
+        au.apply_and_restart(str(staged), log=msgs.append)
+    assert not any("couldn't schedule the relaunch" in m for m in msgs), msgs
+    assert len(calls) == 2  # the installer and the relaunch cmd
+    for args, kw in calls:
+        assert kw.get("cwd") == au.tempfile.gettempdir(), args
+
+
+def test_windows_relaunch_fallback_cwd_is_outside_the_extraction_too(
+    monkeypatch, tmp_path
+):
+    # the inline delayed-start fallback (bat unwritable) is alive at `start`
+    # time just the same, so it needs the same explicit cwd (#195)
+    _force_os(monkeypatch, win=True)
+    monkeypatch.setattr(au._platform, "no_window_kwargs", lambda: {})
+    staged = tmp_path / "persona-windows-setup.exe"
+    staged.write_bytes(b"MZ")
+    exe = tmp_path / "persona.exe"
+    exe.write_bytes(b"MZ")
+    calls = []
+
+    def fake_popen(args, **kw):
+        calls.append((args, kw))
+
+        class P:
+            pid = 4242
+
+        return P()
+
+    def broken_bat(exe, *pids):
+        raise OSError("no temp dir")
+
+    monkeypatch.setattr(au.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(au, "_installed_windows_exe", lambda: str(exe))
+    monkeypatch.setattr(au, "_write_relaunch_bat", broken_bat)
+
+    def fake_exit(code):
+        raise SystemExit(code)
+
+    monkeypatch.setattr(au.os, "_exit", fake_exit)
+    with pytest.raises(SystemExit):
+        au.apply_and_restart(str(staged), log=lambda m: None)
+    _args, kw = next((a, k) for a, k in calls if str(exe) in a)
+    assert kw.get("cwd") == au.tempfile.gettempdir()
+
+
 def test_relaunch_bat_verifies_the_app_came_up_and_retries(tmp_path):
     # #173 belt-and-suspenders: `start` fails SILENTLY when it loses a race
     # with the installer (persona.exe still locked mid-swap), and the bat then
@@ -649,11 +767,19 @@ def test_relaunch_bat_actually_relaunches_on_windows(tmp_path):
         dead_pid(),
         dead_pid(),
     )
+    # a fake %APPDATA% so the bat's flet-extraction purge (#195) is exercised
+    # against a real cmd without touching the machine's real persona cache
+    fake_appdata = tmp_path / "appdata"
+    cache = fake_appdata / "persona" / "persona" / "flet" / "app"
+    cache.mkdir(parents=True)
+    (cache / "stale.py").write_text("x")
+    env = au._relaunch_env()
+    env["APPDATA"] = str(fake_appdata)
     try:
         subprocess.Popen(
             ["cmd", "/c", bat],
             close_fds=True,
-            env=au._relaunch_env(),
+            env=env,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
             | subprocess.CREATE_NO_WINDOW,
         )
@@ -661,6 +787,8 @@ def test_relaunch_bat_actually_relaunches_on_windows(tmp_path):
         while time.time() < deadline and not marker.exists():
             time.sleep(0.3)
         assert marker.exists(), "the relaunch bat never started the target exe"
+        # the purge ran before the start: the extraction dir is already gone
+        assert not cache.exists(), "flet extraction survived the pre-launch purge"
         # the bat deletes itself once the launch is confirmed — best-effort:
         # the `del "%~f0"` can lag on a busy host, and the finally-block below
         # removes it regardless, so a slow self-delete is not a fix failure
@@ -790,6 +918,62 @@ def test_linux_relaunch_scrubs_runtime_env(monkeypatch, tmp_path):
         assert k not in seen["env"], f"{k} leaked into the relaunched process"
 
 
+def test_linux_swap_and_execv_wait_for_the_probe_to_be_reaped(
+    monkeypatch, tmp_path
+):
+    # #199: no second instance may exist when the update swaps files and
+    # execv's — the verify probe's whole process group is killed AND waited on
+    # before os.replace runs, so nothing of the probe survives into the
+    # relaunch (or still holds a flet cache when the new persona comes up).
+    import subprocess
+
+    _force_os(monkeypatch, linux=True)
+    target = tmp_path / "persona.AppImage"
+    target.write_bytes(b"old")
+    staged = tmp_path / "staged.AppImage"
+    staged.write_bytes(b"new")
+    monkeypatch.setattr(au, "installed_appimage_path", lambda: str(target))
+    monkeypatch.setattr(au.os, "fsync", lambda fd: None)
+    events = []
+
+    class P:
+        pid = 4321
+        returncode = 0
+
+        def communicate(self, timeout=None):
+            return b"SELFTEST_OK\n", None
+
+        def wait(self, timeout=None):
+            events.append("wait")
+            return 0
+
+        def kill(self):
+            events.append("kill")
+
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: P())
+    monkeypatch.setattr(
+        au.os, "killpg", lambda pid, sig: events.append("killpg"), raising=False
+    )
+    real_replace = au.os.replace
+
+    def replace(src, dst):
+        events.append("swap")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(au.os, "replace", replace)
+
+    def execv(path, args):
+        events.append("execv")
+        raise SystemExit(0)
+
+    monkeypatch.setattr(au.os, "execv", execv)
+    with pytest.raises(SystemExit):
+        au.apply_and_restart(str(staged))
+    assert events.index("killpg") < events.index("swap")
+    assert events.index("wait") < events.index("swap")
+    assert events.index("swap") < events.index("execv")
+
+
 def test_apply_and_restart_macos_never_breaks_the_install_on_failure(
     monkeypatch, tmp_path
 ):
@@ -820,15 +1004,26 @@ def test_verify_probe_passes_selftest_flag(monkeypatch, tmp_path):
     staged.write_bytes(b"x")
     seen = {}
 
-    class _Out:
-        stdout = b"SELFTEST_OK\n"
-        returncode = 0
-
-    def fake_run(cmd, **kw):
+    def fake_popen(cmd, **kw):
         seen["env"] = kw.get("env", {})
-        return _Out()
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+        class P:
+            pid = 4321
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return b"SELFTEST_OK\n", None
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        return P()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(au.os, "killpg", lambda *a: None, raising=False)
     assert au.verify_appimage_runs(str(staged)) is True
     assert seen["env"].get("PERSONA_SELFTEST") == "1"
 
@@ -844,22 +1039,160 @@ def test_verify_fallback_stays_windowless(monkeypatch, tmp_path):
 
     staged = tmp_path / "new.AppImage"
     staged.write_bytes(b"x")
-    seen = {}
+    envs = []
 
-    def fake_run(cmd, **kw):
-        raise subprocess.TimeoutExpired(cmd, kw.get("timeout", 30))
+    class _Hung:
+        pid = 111
+        returncode = None
 
-    class _Proc:
-        pid = 4321
+        def communicate(self, timeout=None):
+            raise subprocess.TimeoutExpired("probe", timeout)
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    class _Clean:
+        pid = 222
+        returncode = 0
 
         def poll(self):
             return 0  # exited cleanly at the self-test gate
 
-    def fake_popen(cmd, **kw):
-        seen["env"] = kw.get("env", {})
-        return _Proc()
+        def wait(self, timeout=None):
+            return 0
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+        def kill(self):
+            pass
+
+    procs = [_Hung(), _Clean()]
+
+    def fake_popen(cmd, **kw):
+        envs.append(kw.get("env", {}))
+        return procs.pop(0)
+
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(au.os, "killpg", lambda *a: None, raising=False)
     assert au.verify_appimage_runs(str(staged)) is True
-    assert seen["env"].get("PERSONA_SELFTEST") == "1"
+    assert len(envs) == 2
+    for env in envs:
+        assert env.get("PERSONA_SELFTEST") == "1"
+
+
+def test_verify_probe_runs_in_an_isolated_scrubbed_home(monkeypatch, tmp_path):
+    # #199: the probe boots the NEW build while the CURRENT persona is still
+    # running, and both would use the same per-user flet cache — which the new
+    # build's bootstrap deletes and re-extracts on hash change. Fighting the
+    # live app over that dir is the "Deletion failed" error window standing
+    # NEXT to the running persona. The probe must get a throwaway HOME/XDG_*
+    # so it can never touch the live cache, plus a scrubbed runtime env
+    # (#135: inherited PYTHONPATH/FLET_* poison the probed build), and run in
+    # its own session so it is killable as a group. The throwaway home is
+    # removed once the probe is reaped.
+    import subprocess
+
+    staged = tmp_path / "new.AppImage"
+    staged.write_bytes(b"x")
+    monkeypatch.setenv("PYTHONPATH", "/tmp/.mount_persXXXXXX/usr/site-packages")
+    seen = {}
+
+    def fake_popen(cmd, **kw):
+        seen.update(kw)
+
+        class P:
+            pid = 4321
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return b"SELFTEST_OK\n", None
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        return P()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(au.os, "killpg", lambda *a: None, raising=False)
+    assert au.verify_appimage_runs(str(staged)) is True
+    env = seen["env"]
+    assert env.get("PERSONA_SELFTEST") == "1"
+    assert "PYTHONPATH" not in env
+    home = env.get("HOME")
+    assert home and home != os.path.expanduser("~")
+    for var in (
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_STATE_HOME",
+    ):
+        assert env.get(var, "").startswith(home), var
+    assert seen.get("start_new_session") is True
+    assert not os.path.exists(home)
+
+
+def test_verify_probe_group_is_reaped_before_anything_else_runs(
+    monkeypatch, tmp_path
+):
+    # #199: the AppImage runtime forks (FUSE-mount parent + app child), so
+    # killing only the direct child leaves the app process — and any window it
+    # managed to open — alive into the swap and execv: the "second persona"
+    # standing behind the updated one. A hung probe must be killed as a whole
+    # process GROUP and waited on before the fallback probe spawns, and the
+    # fallback probe must be reaped the same way before verify returns.
+    import subprocess
+
+    staged = tmp_path / "new.AppImage"
+    staged.write_bytes(b"x")
+    events = []
+
+    class _Hung:
+        pid = 111
+        returncode = None
+
+        def communicate(self, timeout=None):
+            raise subprocess.TimeoutExpired("probe", timeout)
+
+        def wait(self, timeout=None):
+            events.append("wait-111")
+            return 0
+
+        def kill(self):
+            events.append("kill-111")
+
+    class _Clean:
+        pid = 222
+        returncode = 0
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            events.append("wait-222")
+            return 0
+
+        def kill(self):
+            events.append("kill-222")
+
+    procs = [_Hung(), _Clean()]
+
+    def fake_popen(cmd, **kw):
+        proc = procs.pop(0)
+        events.append(f"spawn-{proc.pid}")
+        return proc
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        au.os,
+        "killpg",
+        lambda pid, sig: events.append(f"killpg-{pid}"),
+        raising=False,
+    )
+    assert au.verify_appimage_runs(str(staged)) is True
+    assert events.index("killpg-111") < events.index("spawn-222")
+    assert events.index("wait-111") < events.index("spawn-222")
+    assert "killpg-222" in events and "wait-222" in events

@@ -78,6 +78,47 @@ def test_save_passes_rotate_url():
     assert page.popped is True
 
 
+def test_paste_fills_all_fields_from_provider_string():
+    page = _FakePage()
+    open_proxy_dialog(page, _FakeService(), on_save=lambda *a: None)
+    dlg = page.shown
+    paste = _field(dlg, "Paste proxy string")
+    paste.value = (
+        "socks5://01kx0f7zfhvrexcnfgeh4hm0t4:RXuosXF1wj26ySsn@190.2.142.241:10496"
+        ":MobUnited States - Miami"
+        "[https://api.asocks.com/proxy/4e712f5b-7aab-11f1-ae21-bc24114c89e8/refresh-ip]"
+    )
+    paste.on_change(None)
+    assert _field(dlg, "Host").value == "190.2.142.241"
+    assert _field(dlg, "Port").value == "10496"
+    assert _field(dlg, "Username (optional)").value == "01kx0f7zfhvrexcnfgeh4hm0t4"
+    assert _field(dlg, "Password (optional)").value == "RXuosXF1wj26ySsn"
+    assert _field(dlg, "Name").value == "MobUnited States - Miami"
+    assert _field(dlg, "Rotate URL (optional)").value == (
+        "https://api.asocks.com/proxy/4e712f5b-7aab-11f1-ae21-bc24114c89e8/refresh-ip"
+    )
+    dd = next(
+        c for c in _controls(dlg) if isinstance(c, ft.Dropdown) and c.label == "Type"
+    )
+    assert dd.value == "socks5"
+    assert paste.value == ""
+
+
+def test_empty_paste_keeps_manual_entry():
+    page = _FakePage()
+    open_proxy_dialog(page, _FakeService(), on_save=lambda *a: None)
+    dlg = page.shown
+    _field(dlg, "Name").value = "manual"
+    _field(dlg, "Host").value = "h"
+    _field(dlg, "Port").value = "1080"
+    paste = _field(dlg, "Paste proxy string")
+    paste.value = ""
+    paste.on_change(None)
+    assert _field(dlg, "Name").value == "manual"
+    assert _field(dlg, "Host").value == "h"
+    assert _field(dlg, "Port").value == "1080"
+
+
 def test_check_passes_geo_with_lat_lon_to_on_checked():
     page = _FakePage()
     checked = []

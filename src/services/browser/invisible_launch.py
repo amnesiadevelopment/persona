@@ -885,6 +885,41 @@ def _seed_default_zoom(profile_dir: str, scale: float) -> None:
         pass
 
 
+def _write_chrome_scale_css(profile_dir: str, scale: float) -> None:
+    """Scale the browser's own UI (menubar/tab strip/toolbars/urlbar/menus) to
+    the host display scale via the profile's userChrome.css.
+
+    With devPixelsPerPx pinned to 1 (#187) the chrome renders physically tiny
+    on a HiDPI monitor, and every render-scale pref is off limits:
+    layout.css.devPixelsPerPx drives window.devicePixelRatio and the CSS
+    resolution media queries together, and ui.textScaleFactor is aliased to it
+    — raising either re-leaks the resolution #187 made honest. userChrome.css
+    is the one knob that reaches ONLY chrome documents: the engine's xul.dll
+    loads it from the profile's chrome/ dir solely into the browser's own UI
+    documents (web content gets userContent.css instead), so nothing here can
+    move devicePixelRatio, screen.*, or a page's media queries. The zoom lands
+    on #navigator-toolbox and #mainPopupSet; the content <browser> is a
+    SIBLING of both in browser.xhtml, so the scale has no path into a page.
+    Rewritten on every launch so a changed host scale takes effect; 1.0 (a
+    non-HiDPI host) writes nothing."""
+    if not profile_dir or scale <= 1.0:
+        return
+    chrome_dir = os.path.join(profile_dir, "chrome")
+    try:
+        os.makedirs(chrome_dir, exist_ok=True)
+        with open(
+            os.path.join(chrome_dir, "userChrome.css"), "w", encoding="utf-8"
+        ) as f:
+            f.write(
+                "#navigator-toolbox,\n"
+                "#mainPopupSet {\n"
+                f"  zoom: {scale};\n"
+                "}\n"
+            )
+    except OSError:
+        pass
+
+
 def _screen_metrics() -> str:
     """A compact string of the host display metrics for debugging HiDPI sizing:
     physical pixel size, virtual (scaled) size, and the work area. Windows only;
@@ -1291,8 +1326,9 @@ def _write_persona_bookmark_urls(profile_dir: str, urls) -> None:
 
 
 def _seed_firefox_bookmarks(
-    profile_dir: str, bookmarks: list, seed: int, stop_event=None
-) -> None:
+    profile_dir: str, bookmarks: list, seed: int, stop_event=None,
+    attempts: int = 2,
+) -> bool:
     """Reconcile persona's OWN Firefox toolbar bookmarks via places.sqlite —
     runs before every launch, so edits in the profile editor take effect on the
     next launch: removed bookmarks disappear, nothing ever duplicates (#144),
@@ -1304,26 +1340,52 @@ def _seed_firefox_bookmarks(
     hand-built one); if it hasn't, do a one-time headless init to create it.
     An empty set on a profile with no places.sqlite yet has nothing to clear —
     no engine init just to write nothing (and no marker to update: persona has
-    placed nothing)."""
+    placed nothing).
+
+    Returns True once the toolbar matches the configured set (or there was
+    nothing to apply). A fresh profile's first seed can fail transiently — the
+    headless init can run out of budget, and right after it places.sqlite can
+    still be held EXCLUSIVE by the dying headless Firefox, failing both the
+    readiness check and the reconcile with "database is locked" — so the whole
+    ready→init→reconcile pipeline gets `attempts` tries (a retry re-checks
+    readiness first, so a roots-exist-but-was-locked miss heals without a
+    second engine run). A single silent skip here is what opened the first
+    visible window of a bookmarked profile on an unseeded database (#202);
+    False means the seed is NOT in place, so the launch can report it."""
     if not profile_dir:
-        return
-    try:
-        from ...models.bookmark import Bookmark
-        from .firefox_bookmarks import places_ready, sync_places_bookmarks
+        return True
 
-        places = os.path.join(profile_dir, "places.sqlite")
-        if not places_ready(places):
-            if not bookmarks or not _init_places_db(
-                profile_dir, seed, stop_event=stop_event
-            ):
-                return
+    def stopped() -> bool:
+        return stop_event is not None and stop_event.is_set()
 
-        marks = [Bookmark(b.get("name", ""), b.get("url", "")) for b in bookmarks]
-        prev = _read_persona_bookmark_urls(profile_dir)
-        if sync_places_bookmarks(places, marks, prev_persona_urls=prev):
-            _write_persona_bookmark_urls(profile_dir, {bm.url for bm in marks})
-    except Exception:
-        pass
+    places = os.path.join(profile_dir, "places.sqlite")
+    for _attempt in range(attempts):
+        if stopped():
+            return False
+        try:
+            from ...models.bookmark import Bookmark
+            from .firefox_bookmarks import places_ready, sync_places_bookmarks
+
+            if not places_ready(places):
+                if not bookmarks:
+                    return True
+                if not _init_places_db(
+                    profile_dir, seed, stop_event=stop_event
+                ):
+                    continue
+
+            marks = [
+                Bookmark(b.get("name", ""), b.get("url", "")) for b in bookmarks
+            ]
+            prev = _read_persona_bookmark_urls(profile_dir)
+            if sync_places_bookmarks(places, marks, prev_persona_urls=prev):
+                _write_persona_bookmark_urls(
+                    profile_dir, {bm.url for bm in marks}
+                )
+                return True
+        except Exception:
+            pass
+    return False
 
 
 def _has_saved_session(profile_dir: str) -> bool:
@@ -1765,7 +1827,12 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     # HEADLESS engine init (a real Firefox start, tens of seconds) — it must
     # run here in the child, never on the thread constructing the handle,
     # which on a UI launch is the Flet session thread and would freeze the app.
-    _seed_firefox_bookmarks(profile_dir, cfg.get("bookmarks", []), seed, stop_event)
+    # A seed that didn't land after its bounded retries is reported, not
+    # swallowed (#202) — but never blocks the launch itself.
+    if not _seed_firefox_bookmarks(
+        profile_dir, cfg.get("bookmarks", []), seed, stop_event
+    ) and cfg.get("bookmarks"):
+        emit("BOOKMARK_SEED_FAILED: opening without the profile's bookmarks")
     # The headless init above persists the engine's window-hiding pref into
     # prefs.js; left there, THIS launch's window comes up DWM-cloaked —
     # running but invisible (#142). Must run after the seeding, before the
@@ -1878,7 +1945,22 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
         # (browser.zoom.full=false, set in _profile_prefs) this doesn't touch
         # devicePixelRatio or the resolution media queries, so the honest #187
         # fingerprint is preserved. 1.0 (a non-HiDPI host) seeds nothing.
-        _seed_default_zoom(profile_dir, _system_dpr())
+        dpr = _system_dpr()
+        _seed_default_zoom(profile_dir, dpr)
+        # Text zoom reaches only page CONTENT — the browser's own toolbar/tab
+        # strip/menus still render tiny at dpr=1 on a HiDPI host (#196).
+        # Scale the chrome UI through userChrome.css (chrome-documents-only,
+        # see _write_chrome_scale_css) and enable the customization sheet —
+        # in prefs.js too so it's in force for the profile's first window.
+        if dpr > 1.0:
+            _write_chrome_scale_css(profile_dir, dpr)
+            kwargs["extra_prefs"][
+                "toolkit.legacyUserProfileCustomizations.stylesheets"
+            ] = True
+            _upsert_prefs_js(
+                profile_dir,
+                {"toolkit.legacyUserProfileCustomizations.stylesheets": True},
+            )
     if proxy:
         kwargs["proxy"] = proxy
     locale = cfg.get("locale", "")
@@ -2146,9 +2228,12 @@ def _thread_close_watch(profile_dir, closed, stop_event, stop_gracefully,
     verdict: it must NOT count as "process/window gone", or a transient
     failure would tear down a live browser — only a confident dead poll, or a
     confident no-window after the window was actually seen, decides the
-    close. If no process is ever confidently seen within `no_process_timeout`,
-    give up so a half-failed launch can't wedge the profile "running"
-    forever.
+    close. When no process is confidently seen within `no_process_timeout`,
+    the watch falls back to the engine's visible windows (the pid resolve can
+    be broken while the session lives, #203): a window in sight keeps the
+    watch alive and its sustained disappearance closes; only no-pid AND
+    no-window-ever is a dead launch, given up so a half-failed launch can't
+    wedge the profile "running" forever.
 
     A close needs `no_window_streak` CONSECUTIVE confident no-window polls, not
     one: navigating to a heavy page (a scanner site over a proxy) can make a
@@ -2165,6 +2250,8 @@ def _thread_close_watch(profile_dir, closed, stop_event, stop_gracefully,
     window_seen = False
     gone_streak = 0
     no_window_streak = 2
+    engine_window_seen = False
+    engine_window_gone = 0
     deadline = time.monotonic() + no_process_timeout
     def say(msg):
         if log:
@@ -2205,10 +2292,33 @@ def _thread_close_watch(profile_dir, closed, stop_event, stop_gracefully,
                 pids = {p}
                 say(f"LIFECYCLE watch-pids pids={sorted(pids)}")
                 continue
-        if time.monotonic() > deadline:
-            # Never confidently saw the process → treat the launch as dead.
+        if time.monotonic() <= deadline:
+            continue
+        # Deadline passed with no pid ever resolved. That alone is NOT a dead
+        # launch: BROWSER_STARTED already fired, and the pid resolve can be
+        # broken while the user works in the window — returning here tore a
+        # healthy session down mid-use (#203). Fall back to watching the
+        # engine's own visible windows: close on a sustained window-gone
+        # (the #159 debounce), give up only when no window was ever in sight.
+        visible = _any_firefox_window_visible()
+        if visible:
+            if not engine_window_seen:
+                say("LIFECYCLE watch-window (pid unresolved, watching windows)")
+            engine_window_seen = True
+            engine_window_gone = 0
+        elif visible is False and engine_window_seen:
+            engine_window_gone += 1
+            if engine_window_gone >= no_window_streak:
+                say(f"LIFECYCLE close=window-gone pids=[] "
+                    f"streak={engine_window_gone} (pid never resolved)")
+                return pids
+        elif not engine_window_seen:
+            # Never confidently saw a process OR a window → a dead launch;
+            # give up so it can't wedge the profile "running" forever.
             say("LIFECYCLE close=no-process-timeout (launch never resolved a pid)")
             return pids
+        # visible is None with a window seen before: no verdict — neither a
+        # sighting nor a confident miss, same as the profile-scoped poll.
     say(f"LIFECYCLE close=closed-event pids={sorted(pids or ())}")
     return pids
 
@@ -2238,10 +2348,23 @@ def _firefox_content_proc_count(profile_dir: str, parent: int = None):
         parent = _firefox_pid(profile_dir)
     if parent is None:
         return None
-    # The launcher parent's whole descendant set (content procs sit under a
-    # forkserver child, so a single pgrep -P misses them).
+    tree = _descendant_pids(parent)
+    if tree is None:
+        return None  # pgrep unavailable — no verdict
+    count = 0
+    for p in tree:
+        cmd = _proc_cmdline(p)
+        if cmd is not None and b"-isForBrowser" in cmd:
+            count += 1
+    return count
+
+
+def _descendant_pids(root: int):
+    """Every descendant pid of `root` via a pgrep -P tree walk (a single
+    pgrep -P misses grandchildren, e.g. content procs under a forkserver
+    child), or None when pgrep can't run — no verdict."""
     tree = set()
-    frontier = [parent]
+    frontier = [root]
     while frontier:
         nxt = []
         for p in frontier:
@@ -2250,24 +2373,44 @@ def _firefox_content_proc_count(profile_dir: str, parent: int = None):
             except subprocess.CalledProcessError:
                 continue  # no children of p
             except Exception:
-                return None  # pgrep unavailable — no verdict
+                return None
             for x in out.split():
                 if x.isdigit() and int(x) not in tree:
                     tree.add(int(x))
                     nxt.append(int(x))
         frontier = nxt
-    if not tree:
-        return 0
-    count = 0
+    return tree
+
+
+def _proc_cmdline(pid: int):
+    """The raw /proc cmdline of `pid` (NUL separators replaced with spaces),
+    or None when unreadable (the process exited, or no /proc)."""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return f.read().replace(b"\0", b" ")
+    except OSError:
+        return None
+
+
+def _forked_firefox_alive():
+    """Whether this fork child still has a live Firefox among its own
+    descendants (Linux fork path), or None when the scan can't run.
+
+    The fork child launched exactly one browser, so any firefox in its
+    process tree is THIS profile's — a liveness verdict that doesn't depend
+    on the profile-dir cmdline match, which can be broken while the session
+    lives (#203). The engine binary path always carries "firefox"
+    (.../firefox-NN/firefox)."""
+    if _platform.IS_WINDOWS:
+        return None
+    tree = _descendant_pids(os.getpid())
+    if tree is None:
+        return None
     for p in tree:
-        try:
-            with open(f"/proc/{p}/cmdline", "rb") as f:
-                cmd = f.read().replace(b"\0", b" ")
-        except OSError:
-            continue
-        if b"-isForBrowser" in cmd:
-            count += 1
-    return count
+        cmd = _proc_cmdline(p)
+        if cmd is not None and b"firefox" in cmd:
+            return True
+    return False
 
 
 def _fork_close_watch(profile_dir, closed, no_process_timeout=60.0, interval=1.0,
@@ -2314,6 +2457,8 @@ def _fork_close_watch(profile_dir, closed, no_process_timeout=60.0, interval=1.0
     content_seen = False
     gone_streak = 0
     gone_streak_needed = 2
+    tree_seen = False
+    tree_gone = 0
     deadline = time.monotonic() + no_process_timeout
     while not closed.wait(interval):
         if pid is not None:
@@ -2341,7 +2486,28 @@ def _fork_close_watch(profile_dir, closed, no_process_timeout=60.0, interval=1.0
         pid = _firefox_pid(profile_dir)
         if pid is not None:
             say(f"LIFECYCLE watch-pid pid={pid}")
-        elif time.monotonic() > deadline:
+            continue
+        if time.monotonic() <= deadline:
+            continue
+        # Deadline passed with no pid resolved — NOT a dead launch by itself:
+        # the profile-dir cmdline match can be broken while the session lives
+        # (#203). The fork child launched exactly one browser, so its own
+        # process tree is a profile-scoped liveness verdict: firefox among
+        # the descendants keeps the watch alive; its sustained disappearance
+        # closes; only no-pid AND no-firefox-ever gives up.
+        alive = _forked_firefox_alive()
+        if alive:
+            if not tree_seen:
+                say("LIFECYCLE watch-tree (pid unresolved, watching process tree)")
+            tree_seen = True
+            tree_gone = 0
+        elif alive is False and tree_seen:
+            tree_gone += 1
+            if tree_gone >= gone_streak_needed:
+                say(f"LIFECYCLE close=window-gone pid=None "
+                    f"streak={tree_gone} (pid never resolved)")
+                return None
+        elif not tree_seen:
             say("LIFECYCLE close=no-process-timeout (launch never resolved a pid)")
             return None
     say(f"LIFECYCLE close=stop-requested pid={pid}")
@@ -2589,6 +2755,17 @@ def _win_firefox_command_lines():
     ]
 
 
+def _win_path_needle(path: str) -> str:
+    """A Windows path as it appears on a command line, for substring matching:
+    lowercased with forward slashes folded to backslashes. profile_dir can
+    carry a forward slash (expanduser keeps the '/' of "~/.persona"), while
+    the engine normalizes it through pathlib before it reaches firefox.exe's
+    command line — a raw substring match therefore never hit, the watch
+    resolved NO pid for a live session, and the no-process give-up tore the
+    working browser down (#203)."""
+    return path.replace("/", "\\").lower()
+
+
 def _profile_firefox_pids(profile_dir: str):
     """PIDs of firefox.exe processes belonging to THIS profile (Windows),
     matched by profile_dir in the command line. Returns None when no resolver
@@ -2614,12 +2791,14 @@ def _profile_firefox_pids(profile_dir: str):
         return None
     entries = _win_firefox_command_lines()
     if entries is not None:
-        needle = profile_dir.lower()
-        matched = {pid for pid, cl in entries if cl and needle in cl.lower()}
+        needle = _win_path_needle(profile_dir)
+        matched = {
+            pid for pid, cl in entries if cl and needle in _win_path_needle(cl)
+        }
         if matched or all(cl is not None for _pid, cl in entries):
             return matched
     try:
-        pat = _ps_single_quote("*" + profile_dir + "*")
+        pat = _ps_single_quote("*" + profile_dir.replace("/", "\\") + "*")
         ps = (
             "Get-CimInstance Win32_Process -Filter \"Name='firefox.exe'\" | "
             f"Where-Object {{ $_.CommandLine -like {pat} }} | "
@@ -2766,6 +2945,29 @@ def _pids_have_visible_window(pids):
     return bool(visible & set(pids))
 
 
+def _any_firefox_window_visible():
+    """Whether ANY engine-launched Firefox owns a visible top-level window
+    (Windows). True/False are confident verdicts; None means no verdict
+    (non-Windows, or a failed scan/enumeration).
+
+    The no-process-timeout guard: when the profile-scoped pid resolve is
+    broken, profile scoping is by definition unavailable — this is the widest
+    honest check that a session the user can see is still alive, so the watch
+    never declares a dead launch under an open window (#203). Only juggler
+    parents count: the user's own Firefox is not an engine session, and
+    counting it would keep a genuinely dead launch "running"."""
+    entries = _win_firefox_command_lines()
+    if entries is None:
+        return None
+    parents = {pid for pid, cl in entries if cl and "-juggler-pipe" in cl}
+    if not parents:
+        return False
+    visible = _visible_window_pids()
+    if visible is None:
+        return None
+    return bool(visible & parents)
+
+
 def _firefox_pid(profile_dir: str):
     """The pid of a Firefox process owning this profile, or None.
 
@@ -2780,8 +2982,9 @@ def _firefox_pid(profile_dir: str):
         try:
             # Query the command line of every firefox.exe and match the profile
             # dir. CIM/WMI exposes CommandLine; PowerShell keeps this dependency
-            # free of extra packages.
-            pat = _ps_single_quote("*" + profile_dir + "*")
+            # free of extra packages. The real command line holds the pathlib-
+            # normalized (backslash) dir — fold separators like _win_path_needle.
+            pat = _ps_single_quote("*" + profile_dir.replace("/", "\\") + "*")
             ps = (
                 "Get-CimInstance Win32_Process -Filter "
                 "\"Name='firefox.exe'\" | "

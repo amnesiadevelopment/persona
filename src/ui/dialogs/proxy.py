@@ -6,6 +6,7 @@ import flet as ft
 from ...core.strings import get_string
 from ...interfaces.protocols import IProxyService
 from ...models.proxy import Proxy
+from ...utils.proxy_parse import parse_proxy_line
 from ...utils.proxy_parser import build_proxy_url, split_proxy_url
 from ...utils.validation import validate_proxy_format
 from ..flags import flag_path
@@ -49,8 +50,8 @@ def open_proxy_dialog(
     fields = split_proxy_url(proxy.url) if proxy is not None else split_proxy_url("")
 
     paste_field = ft.TextField(
-        label="Paste full proxy URL",
-        hint_text="scheme://user:pass@host:port",
+        label="Paste proxy string",
+        hint_text="any provider line: scheme://user:pass@host:port…",
         **DLG_FIELD_KWARGS,
     )
     name_field = ft.TextField(
@@ -103,15 +104,19 @@ def open_proxy_dialog(
         raw = (paste_field.value or "").strip()
         if ":" not in raw:
             return
-        parts = split_proxy_url(raw)
-        if not parts["host"] or not parts["port"]:
+        parsed = parse_proxy_line(raw)
+        if parsed is None or not parsed["ip"] or not parsed["port"]:
             return
-        host_field.value = parts["host"]
-        port_field.value = parts["port"]
-        user_field.value = parts["username"]
-        pass_field.value = parts["password"]
-        if parts["scheme"] in _SCHEMES:
-            type_dd.value = parts["scheme"]
+        host_field.value = parsed["ip"]
+        port_field.value = parsed["port"]
+        user_field.value = parsed["login"]
+        pass_field.value = parsed["password"]
+        if parsed["scheme"] in _SCHEMES:
+            type_dd.value = parsed["scheme"]
+        if parsed["name"]:
+            name_field.value = parsed["name"]
+        if parsed["rotate_url"]:
+            rotate_field.value = parsed["rotate_url"]
         paste_field.value = ""
         page.update()
 

@@ -83,15 +83,19 @@ def build_sidebar(
         ],
     )
     if on_logo_click is not None:
+        # A transparent click layer laid OVER the whole header (via a Stack)
+        # catches clicks anywhere on it, including the logo image — the image
+        # otherwise swallows pointer events, so only the wordmark's gaps (and
+        # the icon's frame edge) triggered the scan.
+        # Wrap the whole header row in a GestureDetector: it receives taps across
+        # its entire content subtree, including the logo image, so a click on the
+        # icon triggers the scan too — a Container.on_click only fires on the
+        # container's own painted pixels, which the image child covered, leaving
+        # just the wordmark's gaps and the icon's frame edge clickable.
         header = ft.GestureDetector(
             mouse_cursor=ft.MouseCursor.CLICK,
-            content=ft.Container(
-                on_click=lambda _: on_logo_click(),
-                ink=True,
-                tooltip="home",
-                border_radius=3,
-                content=header,
-            ),
+            on_tap=lambda _: on_logo_click(),
+            content=header,
         )
     return ft.Container(
         width=200,

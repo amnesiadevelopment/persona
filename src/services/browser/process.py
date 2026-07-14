@@ -439,6 +439,10 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
         engine_platform = "macos" if profile.os_type == "ios" else "linux"
 
     args = [FINGERPRINT_CHROMIUM]
+    # Chromium honors only the LAST --disable-features switch on the command
+    # line — repeated switches replace, not merge. Collect every disabled
+    # feature here and emit a single merged flag below.
+    disabled_features = []
     # --appimage-extract-and-run only applies to the Linux AppImage engine; the
     # Windows .exe / macOS .app are launched directly.
     if _platform.IS_LINUX:
@@ -498,14 +502,14 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
             "--disable-threaded-animation",
             "--animation-duration-scale=0",
             "--wm-window-animations-disabled",
-            # The VM has no VA-API hardware, so chromium's attempt to init
-            # hardware video decode logs a red "vaInitialize failed: unknown
-            # libva error" (media/gpu/vaapi/vaapi_wrapper.cc). Harmless, but it
-            # noises the log AND is a VM tell — real desktop Chrome on a GPU
-            # inits VA-API fine, a hard failure says "no hardware". Don't try:
-            # software decode is what a machine without video hardware uses.
-            "--disable-features=VaapiVideoDecoder,VaapiVideoEncoder",
         ]
+        # The VM has no VA-API hardware, so chromium's attempt to init
+        # hardware video decode logs a red "vaInitialize failed: unknown
+        # libva error" (media/gpu/vaapi/vaapi_wrapper.cc). Harmless, but it
+        # noises the log AND is a VM tell — real desktop Chrome on a GPU
+        # inits VA-API fine, a hard failure says "no hardware". Don't try:
+        # software decode is what a machine without video hardware uses.
+        disabled_features += ["VaapiVideoDecoder", "VaapiVideoEncoder"]
 
     # Wayland app_id (taskbar label/icon per persona) is an X11/Wayland concept;
     # only pass it on Linux. Matches the .desktop StartupWMClass via app_id_for.
@@ -548,12 +552,15 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
         # the SOCKS proxy entirely (so the DNS test shows a country unrelated
         # to the exit IP). Turn DoH off so name lookups go through the proxy,
         # and forbid WebRTC's non-proxied UDP which can reveal the real IP.
-        args.append("--disable-features=DnsOverHttps")
+        disabled_features.append("DnsOverHttps")
         args.append("--dns-over-https-mode=off")
         args.append(
             "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"
         )
         args.append("--dns-prefetch-disable")
+
+    if disabled_features:
+        args.append("--disable-features=" + ",".join(disabled_features))
 
     env = os.environ.copy()
     # Fonts come from the system fontconfig. A FONTCONFIG_FILE override floods

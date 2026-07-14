@@ -20,7 +20,7 @@ import time
 from ..engine.updater import is_newer
 from ...core import platform as _platform
 
-APP_VERSION = "2.4.8"
+APP_VERSION = "2.4.9"
 APP_REPO = "amnesiadevelopment/persona"
 
 
@@ -371,7 +371,20 @@ def verify_appimage_runs(path: str, settle: float = 4.0, timeout: int = 30) -> b
     token. If the token check is inconclusive (e.g. an older build without the
     self-test hook), we fall back to the alive-after-settle heuristic so we
     don't regress older versions.
+
+    The probe boots the NEW build while the CURRENT persona is still running,
+    and both would use the same per-user flet cache — which the new build's
+    bootstrap deletes and re-extracts on a hash change, BEFORE the self-test
+    gate in Python can run. Fighting the live app over that dir is a
+    "Deletion failed" error window standing next to the running persona
+    (#199), so the probe gets a throwaway HOME/XDG_* sandbox it can never
+    collide in, plus a scrubbed runtime env (#135: inherited PYTHONPATH/FLET_*
+    poison the probed build). And every probe is killed as a whole process
+    GROUP and waited on before this returns: the AppImage runtime forks, so
+    killing only the direct child leaves the app process — and any window it
+    managed to open — running into the swap and execv.
     """
+    import shutil
     import signal
     import subprocess
 
@@ -381,69 +394,98 @@ def verify_appimage_runs(path: str, settle: float = 4.0, timeout: int = 30) -> b
         os.chmod(path, 0o755)
     except OSError:
         pass
-    env = dict(os.environ)
+    env = _relaunch_env()
     env.setdefault("DISPLAY", ":0")
     env["PERSONA_SELFTEST"] = "1"
+    probe_home = tempfile.mkdtemp(prefix="persona-verify-")
+    env["HOME"] = probe_home
+    for var, sub in (
+        ("XDG_DATA_HOME", "data"),
+        ("XDG_CACHE_HOME", "cache"),
+        ("XDG_CONFIG_HOME", "config"),
+        ("XDG_STATE_HOME", "state"),
+    ):
+        env[var] = os.path.join(probe_home, sub)
 
-    # 1) Fast self-test: the build proves it boots and prints the token.
-    try:
-        out = subprocess.run(
-            [path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            env=env,
-            timeout=timeout,
-        )
-        if b"SELFTEST_OK" in (out.stdout or b""):
-            return True
-        # exit 0 without the token = an older build that ignores the flag and
-        # ran the GUI then exited cleanly; treat as launchable.
-        if out.returncode == 0:
-            return True
-    except subprocess.TimeoutExpired:
-        # It didn't exit on the self-test flag (older build that launched the
-        # GUI and kept running) — fall through to the alive heuristic, which
-        # for an older build means "still alive = good".
-        pass
-    except Exception:
-        return False
-
-    # 2) Fallback for a build whose first probe timed out — a cold FUSE mount
-    #    can take longer than the self-test timeout, so the hook never got to
-    #    print before we gave up. Re-run it: keep PERSONA_SELFTEST=1 so a build
-    #    that DOES have the hook (every current release) still exits at the gate
-    #    BEFORE ft.run — no window. Only a build without the hook (none in the
-    #    field) would fall through to the GUI; for it, "survives a couple of
-    #    seconds" is the launchability signal, and we kill it before it settles.
-    #    Reusing env (with the selftest flag) keeps the probe windowless — the
-    #    old code dropped the flag here and flashed a bare pre-splash window next
-    #    to the live app (the "two personas + black window" the user saw).
-    try:
-        proc = subprocess.Popen(
-            [path],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            env=env,
-            start_new_session=True,
-        )
-    except Exception:
-        return False
-    deadline = time.time() + min(settle, timeout)
-    while time.time() < deadline:
-        rc = proc.poll()
-        if rc is not None:
-            return rc == 0
-        time.sleep(0.2)
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except Exception:
+    def reap(proc) -> None:
         try:
-            proc.kill()
+            # start_new_session makes the probe its own group leader (pgid ==
+            # pid), and the pgid stays valid while ANY member lives — even
+            # after the leader itself was reaped
+            os.killpg(proc.pid, getattr(signal, "SIGKILL", 9))
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        try:
+            proc.wait(timeout=5)
         except Exception:
             pass
-    return True
+
+    try:
+        # 1) Fast self-test: the build proves it boots and prints the token.
+        try:
+            proc = subprocess.Popen(
+                [path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                env=env,
+                start_new_session=True,
+            )
+        except Exception:
+            return False
+        try:
+            out, _ = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # It didn't exit on the self-test flag (cold FUSE mount, or an
+            # older build that launched the GUI and kept running) — reap it
+            # and fall through to the alive heuristic.
+            reap(proc)
+        except Exception:
+            reap(proc)
+            return False
+        else:
+            reap(proc)  # sweep forked stragglers the exit left behind
+            if b"SELFTEST_OK" in (out or b""):
+                return True
+            # exit 0 without the token = an older build that ignores the flag
+            # and ran the GUI then exited cleanly; treat as launchable.
+            if proc.returncode == 0:
+                return True
+
+        # 2) Fallback for a build whose first probe timed out — a cold FUSE
+        #    mount can take longer than the self-test timeout, so the hook
+        #    never got to print before we gave up. Re-run it: PERSONA_SELFTEST
+        #    stays set, so a build that has the hook (every current release)
+        #    still exits at the gate BEFORE ft.run — no window. Only a build
+        #    without the hook (none in the field) would fall through to the
+        #    GUI; for it, "survives a couple of seconds" is the launchability
+        #    signal, and we kill it before it settles.
+        try:
+            proc = subprocess.Popen(
+                [path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                env=env,
+                start_new_session=True,
+            )
+        except Exception:
+            return False
+        try:
+            deadline = time.time() + min(settle, timeout)
+            while time.time() < deadline:
+                rc = proc.poll()
+                if rc is not None:
+                    return rc == 0
+                time.sleep(0.2)
+            return True
+        finally:
+            reap(proc)
+    finally:
+        shutil.rmtree(probe_home, ignore_errors=True)
 
 
 def _sha256_file(path: str) -> str:
@@ -617,7 +659,20 @@ def _write_relaunch_bat(exe: str, installer: str, installer_pid, old_pid: int) -
     got an "Error starting app" window. The image-name check is safe because the
     NEW persona isn't running yet, and the settle pause gives the OS a beat to
     release file handles after the last holder exits. Sleeps via ping because
-    `timeout` refuses to run without console input (and paints a countdown)."""
+    `timeout` refuses to run without console input (and paints a countdown).
+
+    Pid and image waits alone still weren't enough (#195): the new persona's
+    bootstrap deletes the flet extraction to unpack the updated app.zip BEFORE
+    our Python runs, so that delete cannot retry — any handle still open under
+    the dir at that instant (release lag, an AV sweep, a straggler child of
+    the old persona) crashes the new instance on a white screen with
+    "Deletion failed ... errno 32". So after the settle the bat deletes the
+    extraction itself, with bounded retries, and only then starts the exe:
+    the new persona finds nothing to delete and unpacks fresh. The bat cd's
+    to its own directory up front — rd can't remove the directory the shell
+    itself occupies, and the spawner's cwd is nothing to rely on. The
+    wait-timeout path skips the purge: never pull the extraction from under
+    an instance that may still be alive."""
     image = os.path.basename(exe)
     installer_image = os.path.basename(installer)
     installer_stage2 = os.path.splitext(installer_image)[0] + ".tmp"
@@ -637,10 +692,16 @@ def _write_relaunch_bat(exe: str, installer: str, installer_pid, old_pid: int) -
             f' | find /I "{name}" >nul\r\n'
             "if not errorlevel 1 set busy=1\r\n"
         )
+    # path_provider resolves the app-data root as %APPDATA%\<company>\<product>
+    # (both "persona" in pyproject.toml), and the flet bootstrap unpacks
+    # app.zip to flet\app beneath it — the dir it deletes on a hash change
+    flet_app = r"%APPDATA%\persona\persona\flet\app"
     content = (
         "@echo off\r\n"
+        'cd /d "%~dp0" >nul 2>&1\r\n'
         "set tries=0\r\n"
         "set boots=0\r\n"
+        "set purges=0\r\n"
         ":wait\r\n"
         "set busy=0\r\n"
         + checks +
@@ -656,6 +717,16 @@ def _write_relaunch_bat(exe: str, installer: str, installer_pid, old_pid: int) -
         # near-instant, and every extra second here is dead time between the
         # update closing persona and reopening it
         "ping -n 2 127.0.0.1 >nul\r\n"
+        ":purge\r\n"
+        f'if not exist "{flet_app}" goto launch\r\n'
+        f'rd /s /q "{flet_app}" >nul 2>&1\r\n'
+        f'if not exist "{flet_app}" goto launch\r\n'
+        "set /a purges+=1\r\n"
+        # ~1 min: covers handle-release stragglers; a holder that never dies
+        # must not block the relaunch forever
+        "if %purges% geq 60 goto launch\r\n"
+        "ping -n 2 127.0.0.1 >nul\r\n"
+        "goto purge\r\n"
         ":launch\r\n"
         # empty title + quoted path: `start` treats the first quoted token as a
         # window title, so a bare path with spaces would launch nothing
@@ -959,6 +1030,12 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
                 # process's runtime vars can't poison a persona started from
                 # inside the installer's process tree (see _RUNTIME_ENV_VARS)
                 env=_relaunch_env(),
+                # this process's cwd IS the flet app extraction dir
+                # (serious_python chdirs there); a child that inherits it
+                # holds a directory handle the new persona's
+                # delete-and-reextract trips over with errno 32 (#195) —
+                # every process the update spawns gets a cwd outside it
+                cwd=tempfile.gettempdir(),
                 **_platform.no_window_kwargs(),
             )
         except Exception as e:
@@ -1000,6 +1077,10 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
                     # comes up dead (#135's Windows twin: the update installed
                     # but nothing reopened, while a manual open worked).
                     env=_relaunch_env(),
+                    # the cmd is ALIVE — by design — when the new persona
+                    # boots; an inherited cwd inside the flet extraction is a
+                    # handle its delete-and-reextract dies on (#195)
+                    cwd=tempfile.gettempdir(),
                     # ONE merged creationflags — spreading no_window_kwargs()
                     # here as well would pass creationflags twice, a TypeError
                     # at the call site that silently kills the relaunch.

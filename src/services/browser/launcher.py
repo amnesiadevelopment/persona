@@ -1,7 +1,9 @@
 import atexit
 import contextlib
+import re
 import subprocess
 import threading
+from collections import deque
 from collections.abc import Callable
 
 from ...core.logging import get_logger
@@ -9,6 +11,23 @@ from ...models.profile import Profile
 from .process import spawn_browser, terminate, wait_for_exit
 
 logger = get_logger("browser.launcher")
+
+_CLOSE_REASON = re.compile(r"LIFECYCLE close=(\S+)")
+
+# Close reasons that need no extra diagnostics in the log: the user ended the
+# session (stop/X-close), the browser exited on its own and said so, or the
+# failure was already reported loudly (LAUNCH_FAILED). Anything else — the
+# watch's give-up, or the engine dying with no close signal at all — is an
+# unexpected end and must say why, or a real crash reads like a normal close
+# in the Activity Log.
+_QUIET_CLOSE_REASONS = {
+    "stop-requested",
+    "window-gone",
+    "all-pids-exit",
+    "parent-pid-exit",
+    "closed-event",
+    "launch-failed",
+}
 
 _NOISY_PREFIXES = (
     "- [pid=",
@@ -79,6 +98,8 @@ class BrowserLauncher:
 
         stop_event = threading.Event()
         notify_lock = threading.Lock()
+        close_reason: list[str | None] = [None]
+        last_output: deque[str] = deque(maxlen=5)
 
         def notify_stopped() -> None:
             with notify_lock:
@@ -88,8 +109,27 @@ class BrowserLauncher:
                 with self._lock:
                     self._active_sessions.pop(profile.name, None)
                     self._stop_notifiers.pop(profile.name, None)
-                log_callback(f"Session ended: {profile.name}")
-                logger.info(f"Session ended for profile: {profile.name}")
+                reason = close_reason[0]
+                if reason in _QUIET_CLOSE_REASONS:
+                    log_callback(f"Session ended: {profile.name}")
+                    logger.info(
+                        "Session ended for profile: %s (close=%s)",
+                        profile.name, reason,
+                    )
+                else:
+                    detail = reason or "engine exited with no close signal"
+                    exit_code = None
+                    with contextlib.suppress(Exception):
+                        exit_code = proc.poll()
+                    log_callback(
+                        f"Session ended unexpectedly: {profile.name} ({detail})"
+                    )
+                    logger.warning(
+                        "Session ended unexpectedly for profile %s: %s "
+                        "(exit code %s); last engine output: %s",
+                        profile.name, detail, exit_code,
+                        list(last_output) or "none",
+                    )
                 if on_stop:
                     on_stop()
 
@@ -102,7 +142,7 @@ class BrowserLauncher:
             threading.Thread(
                 target=self._monitor_process,
                 args=(proc, profile.name, log_callback, on_ready,
-                      notify_stopped),
+                      notify_stopped, close_reason, last_output),
                 daemon=True,
             ).start()
             threading.Thread(
@@ -158,6 +198,8 @@ class BrowserLauncher:
         log_callback: Callable[[str], None],
         on_ready: Callable[[], None] | None,
         notify_stopped: Callable[[], None],
+        close_reason: "list[str | None]",
+        last_output: "deque[str]",
     ) -> None:
         # The process being up is what makes the profile stoppable: report
         # ready NOW so the card shows a killable [stop] while the engine is
@@ -173,6 +215,10 @@ class BrowserLauncher:
                 msg = line.strip()
                 if not msg:
                     continue
+                last_output.append(msg)
+                m = _CLOSE_REASON.search(msg)
+                if m:
+                    close_reason[0] = m.group(1)
                 if msg == "BROWSER_STARTED":
                     log_callback("Browser started!")
                     logger.info("Browser started for profile: %s", name)
@@ -185,6 +231,7 @@ class BrowserLauncher:
                 if msg.startswith("LAUNCH_FAILED:") or msg == "LAUNCH_CANCELLED":
                     log_callback(f"[{name}] {msg}")
                     logger.warning("Launch failed for profile %s: %s", name, msg)
+                    close_reason[0] = "launch-failed"
                     notify_stopped()
                     terminate(proc, name, timeout=1)
                     break

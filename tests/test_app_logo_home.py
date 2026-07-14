@@ -166,8 +166,10 @@ def test_build_sidebar_wires_logo_click():
     fired = []
     app._on_logo_click = lambda: fired.append(1)
     sidebar = app._build_sidebar()
+    # the header is wrapped in a GestureDetector whose on_tap fires across the
+    # whole content subtree, so a click on the logo image triggers the scan too
     header = next(
         c for c in _walk(sidebar) if isinstance(c, ft.GestureDetector)
     )
-    header.content.on_click(None)
+    header.on_tap(None)
     assert fired == [1]
