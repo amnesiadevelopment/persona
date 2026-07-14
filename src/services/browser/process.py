@@ -26,6 +26,7 @@ from .geo_ext import build_geo_extension
 from .locale_ext import build_locale_extension
 from .stealth_ext import build_stealth_extension
 from .profile_seed import seed_profile_prefs
+from .search_ext import build_search_extension
 from .title_ext import build_title_extension
 from .window_entry import app_id_for, write_window_entry
 
@@ -364,6 +365,19 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
             os.path.join(profile_dir, ".persona-measuretext-ext")
         )
     )
+    # On Windows/macOS the seeded default_search_provider_data pref is reset by
+    # tracked-preference (default-search) enforcement, so a settings-override
+    # extension is the per-profile mechanism that actually applies the chosen
+    # engine. On Linux enforcement is off and the plaintext seed already sticks,
+    # so skip the extension there (it would raise the "an extension changed your
+    # search settings" bubble on a path that already works silently).
+    if not _platform.IS_LINUX:
+        extensions.append(
+            build_search_extension(
+                profile.search_engine,
+                os.path.join(profile_dir, ".persona-search-ext"),
+            )
+        )
     extensions.append(
         build_audio_extension(
             profile.fingerprint_seed,
@@ -439,6 +453,11 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
         f"--load-extension={','.join(extensions)}",
         "--no-first-run",
         "--no-default-browser-check",
+        # Chromium 130+ shows a default-search choice screen (EEA) and, until the
+        # choice is recorded, drives the default from the prepopulated set —
+        # which overrides the profile's chosen engine. Suppress it so the seeded
+        # engine / search-override extension is what takes effect.
+        "--disable-search-engine-choice-screen",
         "--restore-last-session",
         "--hide-crash-restore-bubble",
         "--force-dark-mode",

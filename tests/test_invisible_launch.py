@@ -124,6 +124,88 @@ def test_window_size_seed_noop_without_work_area(monkeypatch, tmp_path):
     assert not (tmp_path / "xulstore.json").exists()
 
 
+def _read_default_zoom(profile_dir):
+    """The global (NULL group) browser.content.full-zoom value from a seeded
+    content-prefs.sqlite, or None when no default row exists."""
+    import os
+    import sqlite3
+
+    conn = sqlite3.connect(os.path.join(profile_dir, "content-prefs.sqlite"))
+    try:
+        row = conn.execute(
+            "SELECT p.value FROM prefs p JOIN settings s ON p.settingID=s.id "
+            "WHERE s.name='browser.content.full-zoom' AND p.groupID IS NULL"
+        ).fetchone()
+    finally:
+        conn.close()
+    return None if row is None else row[0]
+
+
+def test_default_zoom_seed_writes_global_row(tmp_path):
+    # A HiDPI host seeds the browser-wide default zoom (NULL group) so every
+    # site renders text at the host scale.
+    invisible_launch._seed_default_zoom(str(tmp_path), 1.5)
+    assert _read_default_zoom(str(tmp_path)) == 1.5
+
+
+def test_default_zoom_seed_noop_at_unity_scale(tmp_path):
+    # A non-HiDPI host (scale 1.0) gets no zoom database at all — the default
+    # render is left untouched.
+    invisible_launch._seed_default_zoom(str(tmp_path), 1.0)
+    assert not (tmp_path / "content-prefs.sqlite").exists()
+
+
+def test_default_zoom_seed_idempotent_reseeds_single_row(tmp_path):
+    # Re-seeding (e.g. the host scale changed) replaces the default rather than
+    # stacking duplicate rows.
+    import sqlite3
+
+    invisible_launch._seed_default_zoom(str(tmp_path), 1.5)
+    invisible_launch._seed_default_zoom(str(tmp_path), 2.0)
+    conn = sqlite3.connect(str(tmp_path / "content-prefs.sqlite"))
+    try:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM prefs p JOIN settings s ON p.settingID=s.id "
+            "WHERE s.name='browser.content.full-zoom' AND p.groupID IS NULL"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert count == 1
+    assert _read_default_zoom(str(tmp_path)) == 2.0
+
+
+def test_default_zoom_seed_upserts_into_engine_created_db(tmp_path):
+    # The engine's places init creates content-prefs.sqlite before persona seeds;
+    # the seed must upsert into that existing database, not require a fresh one.
+    import sqlite3
+
+    db = tmp_path / "content-prefs.sqlite"
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE TABLE groups (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+    conn.execute(
+        "CREATE TABLE settings (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE prefs (id INTEGER PRIMARY KEY, "
+        "groupID INTEGER REFERENCES groups(id), "
+        "settingID INTEGER NOT NULL REFERENCES settings(id), "
+        "value BLOB, timestamp INTEGER NOT NULL DEFAULT 0)"
+    )
+    conn.commit()
+    conn.close()
+
+    invisible_launch._seed_default_zoom(str(tmp_path), 1.5)
+    assert _read_default_zoom(str(tmp_path)) == 1.5
+
+
+def test_profile_prefs_zoom_is_text_only_not_full_page():
+    # The seeded default zoom must apply as TEXT zoom; full-page zoom would
+    # multiply devicePixelRatio and the resolution media queries, re-leaking the
+    # honest #187 resolution.
+    prefs = _profile_prefs({"search_engine": "duckduckgo"})
+    assert prefs["browser.zoom.full"] is False
+
+
 def test_outer_size_override_script_ties_outer_to_window():
     # outerWidth/outerHeight must track the real window (inner + chrome), NOT the
     # spoofed screen — otherwise outerWidth leaks the 4K screen on a physically
@@ -1431,15 +1513,15 @@ def test_child_force_kills_profile_firefox_after_teardown(monkeypatch, tmp_path)
     assert calls == ["exit", ("kill", str(tmp_path), {10, 11}, False)]
 
 
-def test_child_renders_at_host_scale_for_chosen_resolution(monkeypatch, tmp_path):
-    # #167: on this engine layout.css.devPixelsPerPx drives window.devicePixelRatio,
+def test_child_reports_chosen_resolution_at_consistent_dpr_one(monkeypatch, tmp_path):
+    # #187: on this engine layout.css.devPixelsPerPx drives window.devicePixelRatio,
     # the CSS resolution media queries, AND the render scale from ONE pref —
-    # proven at the binary level (zoom.stealth.screen.dpr is NOT read by xul.dll,
-    # only stealth.screen.width/height are). Pinning it to 1 rendered content at
-    # 1x — physically tiny on a HiDPI host (#167). A real 2560-logical HiDPI panel
-    # legitimately reports a dpr > 1, so the render pref AND the pinned screen.dpr
-    # both take the host scale: content renders readable while screen.width stays
-    # the chosen value, all dpr-derived values coherent (a genuine HiDPI monitor).
+    # proven page-side (no CDP) on firefox-15. At the host scale (1.5) a 1920 pick
+    # reported physical 1920*1.5 = 2880 with matchMedia 1.5dppx/144dpi true = a
+    # resolution tell. A page init-script can mask window.devicePixelRatio but not
+    # the media queries, so script-pinning left an inconsistent fingerprint. The
+    # render pref is pinned to 1 alongside screen.dpr=1 so the scanner reads the
+    # chosen resolution at a fully consistent dpr=1 (physical == screen.width).
     import os
     import sys
     import threading
@@ -1497,29 +1579,21 @@ def test_child_renders_at_host_scale_for_chosen_resolution(monkeypatch, tmp_path
     os.close(r)
 
     assert captured["pin"]["screen.width"] == 1920   # fingerprint = chosen
-    # The render pref stays at the HOST scale (1.5) so content is readable, but
-    # the JS-visible dpr is pinned to 1 (via _dpr_pin_script, mirroring the
-    # chromium device_ext) so the scanner reads physical = width*1 = 1920, not
-    # width*1.5 = 2880 (#187). screen.dpr in the pin is the honest 1.0.
+    # dpr is honest AND consistent: screen.dpr=1 and devPixelsPerPx=1 so
+    # window.devicePixelRatio, the CSS resolution media queries and the physical
+    # resolution (screen.width*1 = 1920) all agree — no 2880/4K tell (#187), and
+    # no script-masked inconsistency.
     assert captured["pin"]["screen.dpr"] == 1.0
-    assert captured["extra_prefs"]["layout.css.devPixelsPerPx"] == "1.5"
+    assert captured["extra_prefs"]["layout.css.devPixelsPerPx"] == "1.0"
 
 
-def test_dpr_pin_script_forces_js_dpr_to_one():
-    # #187: the MAIN-world init script must pin window.devicePixelRatio=1 and
-    # wrap matchMedia so a chosen screen at a large render scale still reports
-    # physical == screen.width (no 4K/2880 tell), the chromium device_ext model.
-    js = invisible_launch._dpr_pin_script()
-    assert "devicePixelRatio" in js
-    assert "matchMedia" in js
-    assert "dppx" in js
-
-
-def test_render_dpr_override_pins_to_chosen_dpr_in_engine_prefs():
-    # #156 against the REAL engine pref pipeline: invisible_core.prefs sets
-    # layout.css.devPixelsPerPx = str(profile.screen.dpr) and applies
-    # extra_prefs LAST, so our render override (the chosen dpr) must survive
-    # while the C++-read JS spoof prefs keep the pinned identity.
+def test_devpixelsperpx_one_keeps_dpr_consistent_in_engine_prefs():
+    # #187 against the REAL engine pref pipeline: invisible_core.prefs sets BOTH
+    # layout.css.devPixelsPerPx AND zoom.stealth.screen.dpr from profile.screen.dpr
+    # and applies extra_prefs LAST. Our extra_prefs override to "1.0" must win, so
+    # devPixelsPerPx (which natively drives window.devicePixelRatio AND the CSS
+    # resolution media queries) is 1 — the scanner reads physical == screen.width,
+    # no 2880/4K tell — while the pinned screen identity stays the chosen value.
     pytest.importorskip("invisible_core")
     from invisible_core._fpforge import generate_profile
     from invisible_core.prefs import translate_profile_to_prefs
@@ -1535,9 +1609,10 @@ def test_render_dpr_override_pins_to_chosen_dpr_in_engine_prefs():
         },
     )
     prefs = translate_profile_to_prefs(
-        profile, extra_prefs={"layout.css.devPixelsPerPx": "1"}
+        profile, extra_prefs={"layout.css.devPixelsPerPx": "1.0"}
     )
-    assert prefs["layout.css.devPixelsPerPx"] == "1"    # render at chosen dpr
+    assert prefs["layout.css.devPixelsPerPx"] == "1.0"  # honest, consistent dpr
+    assert prefs["zoom.stealth.screen.dpr"] == 1        # agrees with the render
     assert prefs["zoom.stealth.screen.width"] == 1920   # fingerprint = chosen
 
 

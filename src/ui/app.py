@@ -68,6 +68,10 @@ class App:
         self.state = AppState()
         self.page: ft.Page | None = None
         self._reconcile_started = False
+        # one reusable logo-scan overlay + a generation token so rapid clicks
+        # restart the sweep instead of stacking beams
+        self._scan_flash = None
+        self._scan_gen = 0
         # Set once the session loop is servicing tasks after the first page
         # build; until then worker threads must not marshal into it (see _ui).
         self._ui_ready = threading.Event()
@@ -170,88 +174,68 @@ class App:
     def _main(self, page: ft.Page) -> None:
         # The splash must be the whole first frame: flet flushes the initial
         # patch when _main returns, so anything built here delays that first
-        # paint and the window sits on a bare grey background (worst right
-        # after a self-update restart). Add only the splash, then build the
-        # real UI in the first serviced task while the scan animation runs.
+        # paint and the window sits on the client's startup screen. Add only
+        # the splash, then build the real UI in the first serviced task while
+        # the scan animation runs.
         self.page = page
         configure_page(page)
-        # The packaged build ships hide_window_on_start (pyproject), so the
-        # Flutter window is not on screen while Python boots — it used to open
-        # seconds early as a bare dark rectangle. Keep it hidden through this
-        # first patch and reveal it in _finish_startup, with the splash as the
-        # first visible frame. On a dev/source run the window is already
-        # visible; it blinks hidden for one task cycle.
-        # The explicit False here is NOT optional on any OS: Window.visible
-        # defaults to True and flet's sparse Prop tracking drops assignments
-        # equal to the default without ever sending them, so a bare
-        # `visible = True` never reaches the client and cannot reveal a
-        # hide_window_on_start window. Only the False→True transition is
-        # transmitted — skipping the False leaves the window hidden forever
-        # (the app runs with no window at all).
-        self._window_revealed = False
-        page.window.visible = False
+        # The window is visible from the client's first frame — pyproject bans
+        # hide_window_on_start, because a hidden window can only be shown again
+        # by a healthy Python session: any startup failure (torn app.zip
+        # re-extraction after a self-update, poisoned relaunch env, dead
+        # interpreter) turned into an invisible zombie process. Python-side
+        # code must therefore never touch page.window.visible either: a False
+        # here would hide a live window with nothing guaranteed to bring it
+        # back.
         self._splash = splash_mod.Splash()
         page.add(self._splash.control)
         self._splash.start(page)
-        # Safety net for the hidden-until-splash window: if startup crashes or
-        # wedges before _finish_startup reveals it, the window would stay
-        # invisible forever and the user would see nothing (worse than the old
-        # dark rectangle — a startup crash, e.g. after a bad self-update,
-        # would be completely silent). A daemon thread force-shows the window
-        # after a grace period regardless, so any crash/error screen is seen.
-        threading.Thread(
-            target=self._reveal_watchdog, args=(page,), daemon=True
-        ).start()
         page.run_task(self._finish_startup)
-
-    def _reveal_watchdog(self, page: ft.Page, timeout: float = 8.0) -> None:
-        """Force the window visible if normal startup didn't reveal it in time
-        (a crash before _finish_startup) so a failed launch is never a blank,
-        invisible window."""
-        import time as _time
-
-        _time.sleep(timeout)
-        if self._window_revealed:
-            return
-        try:
-            page.window.visible = True
-            page.update()
-        except Exception:
-            pass
 
     async def _finish_startup(self) -> None:
         """First task the session loop services after _main: flet runs a sync
         main() directly ON the session loop, so nothing scheduled with
         page.run_task executes until _main returns and the initial page patch
-        (the splash) has been flushed. Reveal the hidden window on that splash
-        frame, do all the loading the first screen depends on BEHIND the
-        splash — so the reveal below swaps in a finished UI, nothing pops in
-        afterwards — keep it up for at least one full scan cycle, then swap
-        the root layout in. Everything gated here is local, bounded work
-        (files + process checks); network work stays in the background with
-        its own progress UI, so the splash cannot hang on a dead circuit."""
+        (the splash) has been flushed. Do all the loading the first screen
+        depends on BEHIND the splash — so the swap below brings in a finished
+        UI, nothing pops in afterwards — keep it up for at least one full scan
+        cycle, then swap the root layout in. Everything gated here is local,
+        bounded work (files + process checks); network work stays in the
+        background with its own progress UI, so the splash cannot hang on a
+        dead circuit. The window is visible throughout, so a failure here is
+        caught and painted as a readable error instead of leaving the splash
+        sweeping forever over a broken app."""
         import time
 
         page = self.page
         assert page is not None
         started = time.monotonic()
-        # the initial patch (the splash) is already flushed: show the window,
-        # which the build keeps hidden until Python has something to paint
-        page.window.visible = True
-        self._window_revealed = True
-        page.update()
-        fp = ft.FilePicker()
-        page.services.append(fp)
-        self.refs = build_ui_refs(
-            pm=self.pm,
-            on_change_page=self._change_page,
-            file_picker=fp,
-        )
-        root = self._build_root_layout(self.refs)
-        self._render_active_page()
-        self._refresh_profiles()
-        self._refresh_engine_text()
-        self.state._last_running_snapshot = self.bl.running_profile_names()
+        try:
+            fp = ft.FilePicker()
+            page.services.append(fp)
+            self.refs = build_ui_refs(
+                pm=self.pm,
+                on_change_page=self._change_page,
+                file_picker=fp,
+            )
+            root = self._build_root_layout(self.refs)
+            self._render_active_page()
+            self._refresh_profiles()
+            self._refresh_engine_text()
+            self.state._last_running_snapshot = self.bl.running_profile_names()
+        except Exception as e:
+            logger.exception("Startup failed while building the first screen")
+            self._splash.stop()
+            page.controls.clear()
+            page.add(
+                ft.Text(
+                    f"persona failed to start: {e}",
+                    color=COLORS["text_main"],
+                    selectable=True,
+                )
+            )
+            page.update()
+            return
         remaining = splash_mod.MIN_SECONDS - (time.monotonic() - started)
         if remaining > 0:
             await asyncio.sleep(remaining)
@@ -462,33 +446,36 @@ class App:
         )
 
     def _on_logo_click(self) -> None:
-        """Logo click = "scan": flash the fingerprint sweep over the page and
-        land home on the profiles page with the list and live statuses
-        reloaded — even when profiles is already the active page."""
+        """Logo click = "scan": a single red beam sweeps down-and-back-up over
+        the sidebar logo, and we land home on the profiles page with the list
+        and live statuses reloaded (even when profiles is already active).
+
+        ONE reusable ScanFlash lives in the overlay for the app's lifetime, so
+        rapid clicks never stack a second beam — each click just re-homes the
+        beam to the top and restarts the sweep (bumping a generation token so a
+        still-running previous sweep bows out)."""
         page = self.page
-        flash = None
-        if page is not None:
-            flash = splash_mod.ScanFlash()
-            page.overlay.append(flash.control)
+        if page is not None and self._scan_flash is None:
+            self._scan_flash = splash_mod.ScanFlash()
+            page.overlay.append(self._scan_flash.control)
         self._active_page = "profiles"
         if self._sidebar_host is not None:
             self._sidebar_host.content = self._build_sidebar()
         self._render_active_page()
         self._refresh_profiles()  # pushes the page update, overlay included
-        if page is not None and flash is not None:
-            page.run_task(self._run_scan_flash, flash)
+        if page is not None and self._scan_flash is not None:
+            self._scan_flash.reset()
+            self._scan_gen += 1
+            page.run_task(self._run_scan_flash, self._scan_gen)
 
-    async def _run_scan_flash(self, flash) -> None:
+    async def _run_scan_flash(self, gen: int) -> None:
+        flash = self._scan_flash
+        if flash is None:
+            return
         try:
-            await flash.play()
+            await flash.play(lambda: gen != self._scan_gen)
         except Exception as e:
             logger.error("scan flash failed: %s", e)
-        finally:
-            # the overlay must never stick around, whatever play() did
-            page = self.page
-            if page is not None and flash.control in page.overlay:
-                page.overlay.remove(flash.control)
-                self._safe_update()
 
     def _navigate(self, page_name: str) -> None:
         if page_name == self._active_page:
@@ -509,6 +496,7 @@ class App:
                 on_edit=self._edit_proxy,
                 on_delete=self._delete_proxy,
                 on_check=self._check_proxy,
+                on_rotate=self._rotate_proxy,
                 checking=self._checking_proxies,
             )
         elif self._active_page == "bookmarks":
@@ -757,12 +745,14 @@ class App:
         assert page is not None
         existing = self.pstore.get(name) if name else None
 
-        def on_save(new_name: str, new_url: str) -> str | None:
+        def on_save(new_name: str, new_url: str, new_rotate_url: str) -> str | None:
             if existing is None:
-                if not self.pstore.add(new_name, new_url):
+                if not self.pstore.add(new_name, new_url, new_rotate_url):
                     return "Proxy name already exists"
             else:
-                if not self.pstore.update(existing.name, new_name, new_url):
+                if not self.pstore.update(
+                    existing.name, new_name, new_url, new_rotate_url
+                ):
                     return "Proxy name already exists"
             self._render_active_page()
             self._safe_update()
@@ -862,6 +852,44 @@ class App:
                 self._refresh_proxy_views()
 
         threading.Thread(target=do_check, daemon=True).start()
+
+    def _rotate_proxy(self, name: str) -> None:
+        proxy = self.pstore.get(name)
+        if proxy is None or name in self._checking_proxies:
+            return
+        self._checking_proxies.add(name)
+        self._refresh_proxy_views()
+
+        def do_rotate() -> None:
+            try:
+                old_ip = proxy.last_ip
+                url, note = self.ps.rotate_proxy(proxy.url, proxy.rotate_url)
+                if note:
+                    self._log(f"[{name}] {note}")
+                if url != proxy.url:
+                    self.pstore.set_url(name, url)
+                ok, message, code, country, ip, tz, lat, lon = (
+                    self.ps.check_proxy_detailed_sync(url)
+                )
+                if ok:
+                    self.pstore.mark_checked(name, code, country, ip, tz, lat, lon)
+                    if old_ip and ip == old_ip:
+                        self._log(
+                            f"Proxy {name}: IP unchanged ({ip}) — "
+                            "this proxy may be static or sticky"
+                        )
+                    else:
+                        self._log(
+                            f"Proxy {name}: rotated IP {old_ip or 'unknown'} → {ip}"
+                        )
+                else:
+                    self.pstore.mark_check_failed(name)
+                    self._log(f"[{name}] {message}")
+            finally:
+                self._checking_proxies.discard(name)
+                self._refresh_proxy_views()
+
+        threading.Thread(target=do_rotate, daemon=True).start()
 
     # --- Bookmarks ---
 

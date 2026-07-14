@@ -32,6 +32,7 @@ class ProxyStore:
                 self.proxies[name] = Proxy(
                     name=p["name"],
                     url=p["url"],
+                    rotate_url=p.get("rotate_url", ""),
                     country_code=p.get("country_code", ""),
                     country_name=p.get("country_name", ""),
                     last_ip=p.get("last_ip", ""),
@@ -85,15 +86,21 @@ class ProxyStore:
             return proxy.url
         return ref if parse_proxy_server(ref) else None
 
-    def add(self, name: str, url: str) -> bool:
+    def add(self, name: str, url: str, rotate_url: str = "") -> bool:
         if not name or name in self.proxies:
             return False
-        self.proxies[name] = Proxy(name=name, url=url)
+        self.proxies[name] = Proxy(name=name, url=url, rotate_url=rotate_url)
         self._save()
         logger.info("Added proxy: %s", name)
         return True
 
-    def update(self, original_name: str, new_name: str, new_url: str) -> bool:
+    def update(
+        self,
+        original_name: str,
+        new_name: str,
+        new_url: str,
+        new_rotate_url: str = "",
+    ) -> bool:
         if original_name not in self.proxies:
             return False
         if new_name != original_name and new_name in self.proxies:
@@ -103,6 +110,7 @@ class ProxyStore:
         self.proxies[new_name] = Proxy(
             name=new_name,
             url=new_url,
+            rotate_url=new_rotate_url,
             country_code=old.country_code if keep_geo else "",
             country_name=old.country_name if keep_geo else "",
             last_ip=old.last_ip if keep_geo else "",
@@ -114,6 +122,19 @@ class ProxyStore:
         )
         self._save()
         logger.info("Updated proxy: %s -> %s", original_name, new_name)
+        return True
+
+    def set_url(self, name: str, url: str) -> bool:
+        """Change a proxy's URL in place, keeping geo and rotate settings.
+
+        Used after session-token rotation, where the follow-up check refreshes
+        the geo fields anyway.
+        """
+        proxy = self.proxies.get(name)
+        if proxy is None:
+            return False
+        proxy.url = url
+        self._save()
         return True
 
     def mark_checked(

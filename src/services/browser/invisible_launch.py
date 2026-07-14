@@ -729,34 +729,6 @@ def _outer_size_override_script() -> str:
     )
 
 
-def _dpr_pin_script() -> str:
-    """JS that pins window.devicePixelRatio to 1 and answers the resolution
-    media queries consistently — the chromium device_ext.py model on Firefox.
-
-    The render is enlarged to the host scale (layout.css.devPixelsPerPx) so
-    content is readable on a HiDPI display, which also raises the native dpr;
-    that render scale must not leak into the fingerprint. Scanners read the
-    "physical" resolution as screen.width * devicePixelRatio, so a chosen
-    2560 screen at a leaked 1.5 dpr reports 3840 = a "4K" tell (#187). Pin dpr
-    to 1 so physical == the chosen screen (the overwhelmingly common desktop
-    case), and make matchMedia('(resolution: Ndppx)') / device-pixel-ratio
-    agree: only a 1dppx / 96dpi query matches."""
-    return (
-        "(() => {"
-        "const def=(o,k,v)=>{try{Object.defineProperty(o,k,"
-        "{get:()=>v,configurable:true})}catch(e){}};"
-        "def(window,'devicePixelRatio',1);"
-        "const mm=window.matchMedia;"
-        "if(mm){window.matchMedia=function(q){const r=mm.call(window,q);"
-        "if(/resolution|dppx|device-pixel-ratio/i.test(q)){"
-        "const one=/(^|[^\\d.])1(\\.0+)?\\s*dppx/i.test(q)"
-        "||/device-pixel-ratio\\s*:\\s*1(\\.0+)?\\s*\\)/.test(q)"
-        "||/(^|[^\\d.])96(\\.0+)?\\s*dpi/i.test(q);"
-        "try{def(r,'matches',one)}catch(e){}}return r;};}"
-        "})();"
-    )
-
-
 def _work_area() -> tuple[int, int]:
     """The usable desktop size in PHYSICAL pixels (excludes the taskbar).
     SPI_GETWORKAREA returns physical pixels on a DPI-aware process; divide by
@@ -826,6 +798,90 @@ def _seed_window_size(profile_dir: str) -> None:
                 f,
             )
     except OSError:
+        pass
+
+
+def _seed_default_zoom(profile_dir: str, scale: float) -> None:
+    """Seed the profile's default page zoom to `scale` via content-prefs.sqlite,
+    so a HiDPI host renders text at a comfortable size.
+
+    This is TEXT zoom (paired with browser.zoom.full=false in the prefs), not
+    full-page zoom. On this engine full-page zoom multiplies
+    window.devicePixelRatio and the CSS resolution media queries — so a 1.5x
+    full zoom on a 2560 screen reports devicePixelRatio 1.5 / 1.5dppx, the exact
+    4K tell #187 removed. Text zoom enlarges the rendered text WITHOUT touching
+    devicePixelRatio, screen.*, or the resolution media queries (live-proven page-
+    side: at scale 1.5 the text is ~1.5x larger while devicePixelRatio stays 1,
+    screen.width stays the chosen value and matchMedia('(resolution:1dppx)') stays
+    true), keeping the honest #187 fingerprint intact.
+
+    Firefox stores the browser-wide default zoom as a global (NULL group) row of
+    browser.content.full-zoom in content-prefs.sqlite; it applies to every site
+    that has no per-site override. The engine's places init creates the database
+    first, but unlike places.sqlite Firefox accepts a hand-built content-prefs.
+    sqlite, so this creates one when absent too. `scale` at 1.0 is a no-op — a
+    non-HiDPI host gets no zoom row at all."""
+    if not profile_dir or scale <= 1.0:
+        return
+    import sqlite3
+
+    path = os.path.join(profile_dir, "content-prefs.sqlite")
+    try:
+        os.makedirs(profile_dir, exist_ok=True)
+        conn = sqlite3.connect(path)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS groups "
+                "(id INTEGER PRIMARY KEY, name TEXT NOT NULL)"
+            )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS settings "
+                "(id INTEGER PRIMARY KEY, name TEXT NOT NULL)"
+            )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS prefs "
+                "(id INTEGER PRIMARY KEY, "
+                "groupID INTEGER REFERENCES groups(id), "
+                "settingID INTEGER NOT NULL REFERENCES settings(id), "
+                "value BLOB, timestamp INTEGER NOT NULL DEFAULT 0)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS groups_idx ON groups(name)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS settings_idx ON settings(name)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS prefs_idx "
+                "ON prefs(timestamp, groupID, settingID)"
+            )
+            row = cur.execute(
+                "SELECT id FROM settings WHERE name='browser.content.full-zoom'"
+            ).fetchone()
+            if row is None:
+                cur.execute(
+                    "INSERT INTO settings(name) "
+                    "VALUES('browser.content.full-zoom')"
+                )
+                setting_id = cur.lastrowid
+            else:
+                setting_id = row[0]
+            # One global default row (NULL group) — replace any prior default so
+            # the seed is idempotent and a changed host scale re-seeds cleanly.
+            cur.execute(
+                "DELETE FROM prefs WHERE settingID=? AND groupID IS NULL",
+                (setting_id,),
+            )
+            cur.execute(
+                "INSERT INTO prefs(groupID, settingID, value, timestamp) "
+                "VALUES (NULL,?,?,0)",
+                (setting_id, float(scale)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except sqlite3.Error:
         pass
 
 
@@ -1333,6 +1389,12 @@ def _profile_prefs(cfg: dict) -> dict:
             "browser.sessionstore.resume_session_once": True,
             "browser.sessionstore.resume_from_crash": True,
             "browser.sessionstore.interval": 1500,
+            # Apply the seeded default zoom (_seed_default_zoom) as TEXT zoom,
+            # not full-page zoom: full-page zoom multiplies devicePixelRatio and
+            # the CSS resolution media queries, which would re-leak the resolution
+            # #187 made honest; text zoom enlarges the rendered text alone and
+            # leaves every dpr-derived value untouched.
+            "browser.zoom.full": False,
             # Always show the bookmarks toolbar so the shipped test bookmarks
             # are visible (default only shows it on the new-tab page).
             "browser.toolbars.bookmarks.visibility": "always",
@@ -1764,31 +1826,36 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
         # With no_viewport Firefox owns the window size; seed a fresh profile's
         # first window so it doesn't open at Firefox's own default.
         _seed_window_size(profile_dir)
-        # Render scale and the JS-visible device-pixel ratio are DECOUPLED the
-        # chromium way (device_ext.py): the render is enlarged for a HiDPI host
-        # while the fingerprint reports dpr=1, so the scanner reads the chosen
-        # screen honestly (2560x1440 profile -> screen.width=2560,
-        # devicePixelRatio=1 -> physical 2560x1440, a real 100% monitor).
+        # On this engine ONE pref, layout.css.devPixelsPerPx, drives the render
+        # scale, window.devicePixelRatio AND the CSS resolution media queries
+        # together — proven page-side (no CDP) on firefox-15: at 1.5 a 2560 screen
+        # reports devicePixelRatio 1.5, matchMedia('(resolution:1.5dppx)') true and
+        # '(resolution:144dpi)' true, so a scanner reads physical = 2560*1.5 = 3840
+        # = a "4K" tell (#187); a 1920 pick reported 2880. zoom.stealth.screen.dpr
+        # is NOT read for devicePixelRatio (only stealth.screen.width/height are
+        # read by xul.dll), and a page init-script can only mask window.
+        # devicePixelRatio — it CANNOT change the CSS resolution media queries, so
+        # a script-pinned dpr left an INCONSISTENT fingerprint (JS says 1, media
+        # queries say 1.5), a stronger tell than either honest value.
         #
-        # layout.css.devPixelsPerPx enlarges the render to the host scale so
-        # content isn't physically tiny on a HiDPI display (#167). At the native
-        # level that same pref also raises window.devicePixelRatio and the CSS
-        # resolution media queries — one quantity, not separable through prefs
-        # (no stealth pref overrides dpr alone: only stealth.screen.width/height
-        # are read by xul.dll, and forcing device_scale_factor down drags the
-        # render back to 1x). The JS-visible dpr is instead pinned to 1 in a
-        # MAIN-world init script (_dpr_pin_script, added on the context below,
-        # mirroring device_ext.py) — the render stays large, the fingerprint
-        # stays honest. Left at the host scale in prefs, dpr leaked: a 2560 screen
-        # at a real 1.5 dpr reported physical 3840 = a "4K" tell (#187), and a
-        # 1920 pick reported 2880.
+        # Report the chosen resolution honestly at a consistent dpr=1: pin
+        # screen.dpr=1 AND render at devPixelsPerPx=1 so every dpr-derived value
+        # agrees (devicePixelRatio 1, physical = screen.width, only 1dppx/96dpi
+        # media queries match). Content renders at dpr 1, so on a HiDPI host it
+        # is physically tiny — the TEXT zoom seeded below enlarges the rendered
+        # text to the host scale WITHOUT raising devicePixelRatio. Full-page zoom
+        # cannot be used for this: it multiplies devicePixelRatio and the
+        # resolution media queries (re-leaking the resolution #187 removed), and
+        # ui.textScaleFactor is aliased to devPixelsPerPx. Text zoom is the one
+        # knob that enlarges the render while every dpr-derived value stays honest
+        # (live-proven page-side: at scale 1.5 the text is ~1.5x larger yet
+        # devicePixelRatio stays 1 and matchMedia('(resolution:1dppx)') stays true).
         #
         # Firefox has NO --width/--height CLI flags (those are chromium's); a
         # patched-Firefox launch that received them treated the leftover as a URL
         # and opened a bogus "0.0.9.51" page. Size comes ONLY from the profile's
         # xulstore.json (seeded above), never from extra_args.
-        render_dpr = _system_dpr()
-        emit(f"HIDPI_DEBUG chosen={w}x{h} window=native render_dpr={render_dpr} js_dpr=1")
+        emit(f"HIDPI_DEBUG chosen={w}x{h} window=native dpr=1")
         kwargs["pin"] = {
             "screen.width": w,
             "screen.height": h,
@@ -1796,7 +1863,7 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
             "screen.avail_height": h - 40,
             "screen.dpr": 1.0,
         }
-        kwargs["extra_prefs"]["layout.css.devPixelsPerPx"] = str(render_dpr)
+        kwargs["extra_prefs"]["layout.css.devPixelsPerPx"] = "1.0"
         # The FIRST paint uses the value already in prefs.js — the user.js
         # override above only kicks in a beat later, and the headless places
         # init leaves the SAMPLED profile's dpr there. A mismatch between the
@@ -1804,8 +1871,14 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
         # flips the window scale mid-open (the initial skew). Carry the same
         # value in prefs.js before Firefox starts so there's no flip.
         _upsert_prefs_js(
-            profile_dir, {"layout.css.devPixelsPerPx": str(render_dpr)}
+            profile_dir, {"layout.css.devPixelsPerPx": "1.0"}
         )
+        # Enlarge the rendered text to the host's display scale so a chosen
+        # resolution isn't physically tiny on a HiDPI monitor. As TEXT zoom
+        # (browser.zoom.full=false, set in _profile_prefs) this doesn't touch
+        # devicePixelRatio or the resolution media queries, so the honest #187
+        # fingerprint is preserved. 1.0 (a non-HiDPI host) seeds nothing.
+        _seed_default_zoom(profile_dir, _system_dpr())
     if proxy:
         kwargs["proxy"] = proxy
     locale = cfg.get("locale", "")
@@ -1925,11 +1998,6 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     # where outer already agrees.
     if _res_overrides is not None:
         on_ctx(lambda: ctx.add_init_script(_outer_size_override_script()))
-        # Report the chosen screen honestly: pin the JS devicePixelRatio to 1 so
-        # the enlarged render scale (layout.css.devPixelsPerPx, for HiDPI
-        # readability) doesn't leak into the fingerprint as a doubled resolution
-        # (#187). The chromium device_ext.py model on Firefox.
-        on_ctx(lambda: ctx.add_init_script(_dpr_pin_script()))
 
     # The persistent context already opened ONE window: with a saved session
     # Firefox restored the user's tabs into it (the trailing -new-window arg

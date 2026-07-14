@@ -166,11 +166,9 @@ def test_switching_engine_to_firefox_hides_dropdown():
 
 
 def test_resolution_picker_omits_4k_keeps_common_sizes():
-    # #131: 4K (3840x2160) is not offered — on the Firefox engine it can't
-    # render readable AND stay a plausible physical size on a HiDPI host (the
-    # devicePixelRatio follows the render scale, so 3840 * 1.5 = 5760, an
-    # impossible panel), and the engine's launch hangs at that size there. The
-    # remaining presets — 2K and the common desktop sizes — stay.
+    # #131: 4K (3840x2160) is not offered — the Firefox engine's launch hangs at
+    # that spoofed size. The remaining presets — 2K and the common desktop sizes —
+    # stay.
     page = _open(None)
     res_dd = _find_dropdown(page, "Screen resolution")
     keys = {o.key for o in res_dd.options}

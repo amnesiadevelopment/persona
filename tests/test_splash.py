@@ -18,6 +18,10 @@ from src.ui.components.splash import (
 from src.ui.theme.colors import COLORS
 
 
+async def _instant_sleep(_t):
+    return None
+
+
 def _walk(control):
     yield control
     for attr in ("content", "controls", "actions"):
@@ -191,11 +195,32 @@ def test_scan_flash_reuses_the_scan_beam():
     assert any(red in str(sh.color) for sh in core.shadow)
 
 
-def test_scan_flash_play_sweeps_once_and_returns(monkeypatch):
-    monkeypatch.setattr(splash_mod, "FLASH_SECONDS", 0)
+def test_scan_flash_play_sweeps_down_then_up(monkeypatch):
+    # one click = a there-and-back pass: down to _FLASH_TRAVEL, then back to 0.
+    # With an ATTACHED control both moves apply; here we just prove play() runs
+    # the down move without raising and reset() re-homes to the top.
+    monkeypatch.setattr(splash_mod.asyncio, "sleep", _instant_sleep)
     f = ScanFlash()
-    asyncio.run(f.play())  # detached control: must not raise
-    assert f._line.offset.y == splash_mod._FLASH_TRAVEL
+    f._line.update = lambda: None  # pretend attached so both moves execute
+    asyncio.run(f.play())
+    assert f._line.offset.y == 0  # ends back at the top after the round trip
+
+
+def test_scan_flash_reset_homes_to_top():
+    f = ScanFlash()
+    f._line.offset = ft.Offset(0, splash_mod._FLASH_TRAVEL)
+    f.reset()
+    assert f._line.offset.y == 0
+
+
+def test_scan_flash_play_bows_out_when_cancelled(monkeypatch):
+    # a newer click supersedes an in-flight sweep: cancelled() true → play stops
+    # early at the top position (never sweeps down), so beams never stack.
+    monkeypatch.setattr(splash_mod.asyncio, "sleep", _instant_sleep)
+    f = ScanFlash()
+    f._line.update = lambda: None
+    asyncio.run(f.play(cancelled=lambda: True))
+    assert f._line.offset.y == 0  # bowed out before the down sweep
 
 
 def test_scan_flash_is_a_quick_flash_not_the_startup_splash():
@@ -228,10 +253,6 @@ def test_main_shows_splash_before_anything_else(monkeypatch):
     app._main(page)
     assert added, "nothing was added to the page"
     assert added[0] is app._splash.control
-    # the packaged build starts with the window hidden (hide_window_on_start);
-    # the first patch must keep it that way so _finish_startup's True is a
-    # real change that reveals the window on the splash frame
-    assert page.window.visible is False
     # the real UI builds in the first serviced task, behind the splash
     names = [getattr(h, "__name__", "") for h in tasks]
     assert "_finish_startup" in names
@@ -239,37 +260,26 @@ def test_main_shows_splash_before_anything_else(monkeypatch):
     assert "_sweep" in names
 
 
-def test_main_hide_gates_and_watchdogs_on_macos_too(monkeypatch):
-    # flet transmits only non-default window props: `visible = True` on a
-    # fresh window equals the default, is dropped by sparse Prop tracking,
-    # and can never reveal a hide_window_on_start window (#189 — the macOS
-    # app ran with no window at all). Every OS must set False in the first
-    # patch and let _finish_startup's False→True transition do the reveal,
-    # with the watchdog as the crash safety net.
+def test_main_never_touches_window_visibility(monkeypatch):
+    # the window is visible from the client's first frame (pyproject bans
+    # hide_window_on_start); a Python-side `visible = False` would hide a
+    # live window that only a healthy Python session could bring back — any
+    # startup failure after it would leave an invisible zombie process. The
+    # first patch must leave window visibility completely untouched, on
+    # every OS.
     from types import SimpleNamespace
 
     from src.ui import app as ui_app
 
     monkeypatch.setattr(ui_app, "configure_page", lambda p: None)
-    monkeypatch.setattr(ui_app._platform, "IS_MACOS", True)
-    threads = []
-
-    class FakeThread:
-        def __init__(self, *a, **k):
-            threads.append(k)
-
-        def start(self):
-            pass
-
-    monkeypatch.setattr(ui_app.threading, "Thread", FakeThread)
-    app = ui_app.App.__new__(ui_app.App)
-    page = SimpleNamespace(
-        add=lambda c: None,
-        run_task=lambda h, *a, **k: None,
-        services=[],
-        window=SimpleNamespace(visible=None),
-    )
-    app._main(page)
-    assert page.window.visible is False
-    assert app._window_revealed is False
-    assert any(k.get("target") == app._reveal_watchdog for k in threads)
+    for is_macos in (False, True):
+        monkeypatch.setattr(ui_app._platform, "IS_MACOS", is_macos)
+        app = ui_app.App.__new__(ui_app.App)
+        page = SimpleNamespace(
+            add=lambda c: None,
+            run_task=lambda h, *a, **k: None,
+            services=[],
+            window=SimpleNamespace(visible=None),
+        )
+        app._main(page)
+        assert page.window.visible is None

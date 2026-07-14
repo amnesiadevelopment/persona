@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 class Proxy:
     name: str
     url: str
+    rotate_url: str = ""
     country_code: str = ""
     country_name: str = ""
     last_ip: str = ""

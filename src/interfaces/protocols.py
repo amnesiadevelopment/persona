@@ -64,3 +64,16 @@ class IProxyService(Protocol):
         proxy_str: str,
         timeout: int = 10,
     ) -> tuple[bool, str]: ...
+
+    def check_proxy_detailed_sync(
+        self,
+        proxy_str: str,
+        timeout: int | None = None,
+    ) -> tuple[bool, str, str, str, str, str, float | None, float | None]: ...
+
+    def rotate_proxy(
+        self,
+        proxy_url: str,
+        rotate_url: str = "",
+        timeout: int | None = None,
+    ) -> tuple[str, str]: ...

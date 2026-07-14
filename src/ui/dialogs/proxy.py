@@ -40,7 +40,7 @@ def _initial_status_control(proxy: Proxy | None) -> ft.Control:
 def open_proxy_dialog(
     page: ft.Page,
     proxy_service: IProxyService,
-    on_save: Callable[[str, str], str | None],
+    on_save: Callable[[str, str, str], str | None],
     proxy: Proxy | None = None,
     on_checked: Callable[..., None] | None = None,
     on_check_failed: Callable[[str], None] | None = None,
@@ -88,6 +88,12 @@ def open_proxy_dialog(
         label="Password (optional)", value=fields["password"], hint_text="optional",
         password=True, can_reveal_password=True, expand=True, **DLG_FIELD_KWARGS,
     )
+    rotate_field = ft.TextField(
+        label="Rotate URL (optional)",
+        value=proxy.rotate_url if proxy is not None else "",
+        hint_text="provider endpoint that forces a new exit IP",
+        **DLG_FIELD_KWARGS,
+    )
     name_error = ft.Text("", size=12, color=COLORS["error"], visible=False)
     addr_error = ft.Text("", size=12, color=COLORS["error"], visible=False)
 
@@ -123,7 +129,13 @@ def open_proxy_dialog(
     check_btn = ft.OutlinedButton("[ check ]", height=38, style=OUTLINE_STYLE)
 
     def on_check_result(
-        success: bool, code: str, country: str, ip: str, tz: str
+        success: bool,
+        code: str,
+        country: str,
+        ip: str,
+        tz: str,
+        lat: float | None,
+        lon: float | None,
     ) -> None:
         if success:
             flag_holder.content = _flag_control(code)
@@ -168,7 +180,7 @@ def open_proxy_dialog(
             page.update()
             return
 
-        error = on_save(name, url)
+        error = on_save(name, url, (rotate_field.value or "").strip())
         if error:
             name_error.value = error
             name_error.visible = True
@@ -212,6 +224,7 @@ def open_proxy_dialog(
                     type_dd,
                     ft.Row(spacing=12, controls=[host_field, port_field]),
                     ft.Row(spacing=12, controls=[user_field, pass_field]),
+                    rotate_field,
                     addr_error,
                     check_btn,
                     ft.Container(height=10),
@@ -240,14 +253,14 @@ def _do_check(
     addr_error: ft.Text,
     check_btn: ft.OutlinedButton,
     proxy_service: IProxyService,
-    on_result: Callable[[bool, str, str, str, str], None],
+    on_result: Callable[[bool, str, str, str, str, float | None, float | None], None],
 ) -> None:
     url = current_url()
     if not url or "://:" in url or url.endswith("://"):
         addr_error.value = "Enter host and port to check"
         addr_error.color = COLORS["warning"]
         addr_error.visible = True
-        on_result(False, "", "", "", "")
+        on_result(False, "", "", "", "", None, None)
         page.update()
         return
 
@@ -265,7 +278,7 @@ def _do_check(
         addr_error.value = message
         addr_error.color = COLORS["success"] if success else COLORS["error"]
         addr_error.visible = True
-        on_result(success, code, name, ip, tz)
+        on_result(success, code, name, ip, tz, lat, lon)
         page.update()
 
     threading.Thread(target=do_check, daemon=True).start()

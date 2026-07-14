@@ -17,12 +17,16 @@ def build_network_page(
     on_edit: Callable[[str], None],
     on_delete: Callable[[str], None],
     on_check: Callable[[str], None],
+    on_rotate: Callable[[str], None],
     checking: set[str] | None = None,
 ) -> ft.Container:
     checking = checking or set()
     now = time.time()
     rows: list[ft.Control] = (
-        [_proxy_row(p, now, on_edit, on_delete, on_check, p.name in checking) for p in proxies]
+        [
+            _proxy_row(p, now, on_edit, on_delete, on_check, on_rotate, p.name in checking)
+            for p in proxies
+        ]
         if proxies
         else [_empty()]
     )
@@ -124,6 +128,7 @@ def _proxy_row(
     on_edit: Callable[[str], None],
     on_delete: Callable[[str], None],
     on_check: Callable[[str], None],
+    on_rotate: Callable[[str], None],
     is_checking: bool,
 ) -> ft.Container:
     check_label = "[ ... ]" if is_checking else "[ check ]"
@@ -165,6 +170,7 @@ def _proxy_row(
                     spacing=6,
                     controls=[
                         _btn(check_label, COLORS["accent"], lambda _, n=proxy.name: on_check(n), is_checking),
+                        _btn("[ rotate ]", COLORS["accent"], lambda _, n=proxy.name: on_rotate(n), is_checking),
                         _btn("[ edit ]", COLORS["text_sub"], lambda _, n=proxy.name: on_edit(n)),
                         _btn("[ x ]", COLORS["error"], lambda _, n=proxy.name: on_delete(n)),
                     ],

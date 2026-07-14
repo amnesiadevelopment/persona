@@ -34,12 +34,15 @@ build_number = 1
 [tool.flet.app]
 path = "."
 module = "main"
-# Keep the Flutter window hidden while Python boots: without this it opens
-# seconds before the app can paint anything — a bare dark rectangle (worst
-# right after a self-update, when app.zip re-extracts). flet has no native
-# desktop splash (flutter_native_splash is iOS/Android/web only), so the
-# window is revealed from app.py once the scan splash is its first frame.
-hide_window_on_start = true
+# hide_window_on_start must NEVER be set here (or in any per-platform app
+# section): the build template renders its boot/startup/ERROR screens into
+# the app window, and a hidden window can only be shown again by a healthy
+# Python session — so any startup failure (a torn app.zip re-extraction
+# after a self-update, a poisoned relaunch environment, a dead interpreter)
+# becomes an invisible zombie process the user can neither see nor close.
+# The window is visible from the client's first frame; the screens below
+# give it honest content until the in-app splash takes over as the first
+# Python-rendered frame.
 exclude = [
     "build",
     "dist",
@@ -54,3 +57,14 @@ exclude = [
     "logs",
     "ci",
 ]
+
+# Spinner + message while the client extracts app.zip (first launch and the
+# first launch after every self-update — the window is up before Python is).
+[tool.flet.app.boot_screen]
+show = true
+message = "Preparing persona…"
+
+# Spinner + message while the Python session boots and connects.
+[tool.flet.app.startup_screen]
+show = true
+message = "Starting persona…"

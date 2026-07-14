@@ -200,3 +200,82 @@ def test_update_changed_url_resets_check_status(tmp_path):
     s.mark_check_failed("home")
     s.update("home", "home", "socks5://9.9.9.9:1080")
     assert s.get("home").last_check_ok is None
+
+
+def test_rotate_url_defaults_empty(tmp_path):
+    s = _store(tmp_path)
+    s.add("home", "socks5://1.2.3.4:1080")
+    assert s.get("home").rotate_url == ""
+
+
+def test_rotate_url_round_trips(tmp_path):
+    path = str(tmp_path / "proxies.json")
+    s1 = ProxyStore(path=path)
+    s1.add("mob", "socks5://1.2.3.4:1080", "https://api.asocks.com/v2/proxy/refresh/1")
+    s2 = ProxyStore(path=path)
+    assert s2.get("mob").rotate_url == "https://api.asocks.com/v2/proxy/refresh/1"
+
+
+def test_old_format_without_rotate_url_loads(tmp_path):
+    import json
+    import pathlib
+
+    path = tmp_path / "proxies.json"
+    path.write_text(
+        json.dumps(
+            {
+                "home": {
+                    "name": "home",
+                    "url": "socks5://1.2.3.4:1080",
+                    "country_code": "CA",
+                    "country_name": "Canada",
+                    "last_ip": "5.5.5.5",
+                    "timezone": "",
+                    "lat": None,
+                    "lon": None,
+                    "checked_at": 100.0,
+                    "last_check_ok": True,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    s = ProxyStore(path=str(path))
+    p = s.get("home")
+    assert p is not None
+    assert p.rotate_url == ""
+    assert p.last_ip == "5.5.5.5"
+    assert pathlib.Path(path).exists()
+
+
+def test_update_sets_rotate_url(tmp_path):
+    s = _store(tmp_path)
+    s.add("home", "socks5://1.2.3.4:1080")
+    s.update("home", "home", "socks5://1.2.3.4:1080", "https://rotate.example/x")
+    assert s.get("home").rotate_url == "https://rotate.example/x"
+
+
+def test_set_url_changes_url_and_keeps_rest(tmp_path):
+    s = _fixed_store(tmp_path, 1000.0)
+    s.add("home", "socks5://sess-a:p@1.2.3.4:1080", "https://rotate.example/x")
+    s.mark_checked("home", "CA", "Canada", "5.5.5.5")
+    assert s.set_url("home", "socks5://sess-b:p@1.2.3.4:1080") is True
+    p = s.get("home")
+    assert p.url == "socks5://sess-b:p@1.2.3.4:1080"
+    assert p.rotate_url == "https://rotate.example/x"
+    assert p.country_code == "CA"
+    assert p.last_ip == "5.5.5.5"
+
+
+def test_set_url_persists(tmp_path):
+    path = str(tmp_path / "proxies.json")
+    s1 = ProxyStore(path=path)
+    s1.add("home", "socks5://1.2.3.4:1080")
+    s1.set_url("home", "socks5://9.9.9.9:1080")
+    s2 = ProxyStore(path=path)
+    assert s2.get("home").url == "socks5://9.9.9.9:1080"
+
+
+def test_set_url_unknown(tmp_path):
+    s = _store(tmp_path)
+    assert s.set_url("missing", "socks5://9.9.9.9:1080") is False

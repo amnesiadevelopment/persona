@@ -20,7 +20,7 @@ import time
 from ..engine.updater import is_newer
 from ...core import platform as _platform
 
-APP_VERSION = "2.4.7"
+APP_VERSION = "2.4.8"
 APP_REPO = "amnesiadevelopment/persona"
 
 
@@ -554,10 +554,12 @@ def _installed_windows_exe() -> str:
 # Per-process values the flet runtime plants in os.environ: PYTHONPATH /
 # PYTHONHOME point into THIS install's private extraction dir, and the FLET_*
 # server vars carry this process's socket/port. A relaunched build re-applies
-# any INHERITED values over its own correct ones, so leaking them makes the
-# new persona import from a dead path or wait on a socket nobody binds — it
-# starts and dies with no window (#135 on Linux; the same inheritance runs
-# through the Windows relaunch chain persona -> cmd -> start persona.exe).
+# any INHERITED values over its own correct ones (the build template sets every
+# one of these with putIfAbsent — an inherited value silently beats the fresh
+# one), so leaking them makes the new persona import from a dead path or bind a
+# stale port the client never connects to — it starts and dies with no window
+# (#135 on Linux; the same inheritance runs through the Windows relaunch chain
+# persona -> cmd -> start persona.exe).
 _RUNTIME_ENV_VARS = (
     "PYTHONPATH",
     "PYTHONHOME",
@@ -573,6 +575,10 @@ _RUNTIME_ENV_VARS = (
     "FLET_APP_STORAGE_TEMP",
     "FLET_PLATFORM",
     "FLET_ASSETS_DIR",
+    # the client hides its window when this is merely PRESENT (any value) and
+    # nothing client-side ever shows it again — inherited across a relaunch it
+    # turns the new persona into an invisible zombie
+    "FLET_HIDE_WINDOW_ON_START",
 )
 
 
@@ -947,6 +953,12 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
                     "/MERGETASKS=!wipedata,!wipeengines",
                 ],
                 close_fds=True,
+                # the installer outlives this persona and everything IT may
+                # start (its own relaunch entries, Restart Manager restarts)
+                # inherits its environment — hand it the scrubbed copy so this
+                # process's runtime vars can't poison a persona started from
+                # inside the installer's process tree (see _RUNTIME_ENV_VARS)
+                env=_relaunch_env(),
                 **_platform.no_window_kwargs(),
             )
         except Exception as e:

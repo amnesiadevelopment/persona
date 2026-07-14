@@ -212,14 +212,12 @@ def test_session_ready_leaves_bootstraps_to_onboarding(monkeypatch):
     assert starts == []
 
 
-# --- _finish_startup: reveal + splash gates on real loading ---
+# --- _finish_startup: splash gates on real loading ---
 
-def test_finish_startup_reveals_window_and_loads_behind_the_splash(monkeypatch):
-    # The window ships hidden (hide_window_on_start): the reveal must be the
-    # first thing the startup task does, with the splash already the page's
-    # first frame. And the splash must cover the real loading work — profile
-    # cards, engine text, the live running snapshot — so the swapped-in UI is
-    # finished instead of popping those in after the splash is gone.
+def test_finish_startup_loads_behind_the_splash(monkeypatch):
+    # The splash must cover the real loading work — profile cards, engine
+    # text, the live running snapshot — so the swapped-in UI is finished
+    # instead of popping those in after the splash is gone.
     from src.ui import app as app_mod
 
     events = []
@@ -268,17 +266,60 @@ def test_finish_startup_reveals_window_and_loads_behind_the_splash(monkeypatch):
 
     asyncio.run(app._finish_startup())
 
-    # the hidden window is revealed before anything else runs
-    assert page.window.visible is True
-    assert events[0] == ("update", True)
+    # window visibility is never touched — the window is visible from the
+    # client's first frame and must stay that way
+    assert page.window.visible is False  # untouched sentinel from the fixture
     # the data the first screen shows loads BEFORE the root swap…
-    reveal = events.index(("add", "root"))
-    assert events.index("profiles") < reveal
-    assert events.index("engines") < reveal
-    assert events.index("splash_stop") < reveal
+    swap = events.index(("add", "root"))
+    assert events.index("profiles") < swap
+    assert events.index("engines") < swap
+    assert events.index("splash_stop") < swap
     # …including the live-status snapshot the reconcile loop diffs against
     assert app.state._last_running_snapshot == {"p1"}
     assert "session_ready" in events
+
+
+def test_finish_startup_failure_paints_a_readable_error(monkeypatch):
+    # The window is always visible, so a startup failure must not leave the
+    # splash sweeping forever over a broken app: any exception while building
+    # the first screen swaps in a readable error instead of raising out of
+    # the task (where only flet's logger would see it).
+    from src.ui import app as app_mod
+
+    events = []
+
+    class Page:
+        def __init__(self):
+            self.window = SimpleNamespace(visible=False)
+            self.services = []
+            self.controls = ["splash"]
+
+        def update(self):
+            events.append("update")
+
+        def add(self, c):
+            events.append(("add", c))
+
+        def run_task(self, h, *a, **k):
+            pass
+
+    page = Page()
+    app = App.__new__(App)
+    app.page = page
+    app.pm = SimpleNamespace()
+    app._change_page = lambda delta: None
+    app._splash = SimpleNamespace(stop=lambda: events.append("splash_stop"))
+
+    def boom(**kw):
+        raise RuntimeError("torn extraction")
+
+    monkeypatch.setattr(app_mod, "build_ui_refs", boom)
+
+    asyncio.run(app._finish_startup())  # must not raise
+
+    assert "splash_stop" in events
+    added = [ev[1] for ev in events if isinstance(ev, tuple) and ev[0] == "add"]
+    assert added and "torn extraction" in added[0].value
 
 
 # --- _safe_update ---

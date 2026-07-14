@@ -232,20 +232,23 @@ _LOGO_PX = 28
 _LOGO_LEFT = 16
 _LOGO_TOP_INSET = 22
 # a short beam whose bright core spans the logo width and whose haze is only a
-# little taller than the logo, so the glow stays on the mark
+# little taller than the logo, so the glow stays on the mark. The flash line is
+# THINNER than the startup splash's beam (2px vs 4px) with a tighter glow —
+# over a 28px logo a fat, heavily-bloomed bar washed the mark out.
+_FLASH_LINE_H = 2
 _FLASH_LINE_W = _LOGO_PX
-_FLASH_BEAM_H = 20
-_FLASH_TRAVEL = (_LOGO_PX - _LINE_H) / _FLASH_BEAM_H
+_FLASH_BEAM_H = 16
+_FLASH_TRAVEL = (_LOGO_PX - _FLASH_LINE_H) / _FLASH_BEAM_H
 
 
 def _logo_beam() -> ft.Container:
     """A compact red scan beam sized to sweep across the 28px sidebar logo."""
     core = ft.Container(
-        height=_LINE_H,
+        height=_FLASH_LINE_H,
         width=_FLASH_LINE_W,
-        top=(_FLASH_BEAM_H - _LINE_H) / 2,
+        top=(_FLASH_BEAM_H - _FLASH_LINE_H) / 2,
         left=0,
-        border_radius=2,
+        border_radius=1,
         gradient=ft.LinearGradient(
             begin=ft.Alignment.CENTER_LEFT,
             end=ft.Alignment.CENTER_RIGHT,
@@ -253,9 +256,9 @@ def _logo_beam() -> ft.Container:
             stops=[0.0, 0.2, 0.8, 1.0],
         ),
         shadow=[
-            ft.BoxShadow(blur_radius=4, spread_radius=0, color="#FFFFFF"),
-            ft.BoxShadow(blur_radius=8, spread_radius=1, color=_RED),
-            ft.BoxShadow(blur_radius=14, spread_radius=1, color=_RED_GLOW),
+            ft.BoxShadow(blur_radius=2, spread_radius=0, color="#FFFFFF"),
+            ft.BoxShadow(blur_radius=5, spread_radius=0, color=_RED),
+            ft.BoxShadow(blur_radius=9, spread_radius=0, color=_RED_GLOW),
         ],
     )
     haze = ft.Container(
@@ -266,8 +269,10 @@ def _logo_beam() -> ft.Container:
         gradient=ft.LinearGradient(
             begin=ft.Alignment.TOP_CENTER,
             end=ft.Alignment.BOTTOM_CENTER,
-            colors=["#00000000", _RED_HAZE_MID, _RED_HAZE, _RED_HAZE_MID, "#00000000"],
-            stops=[0.0, 0.35, 0.5, 0.65, 1.0],
+            # lighter haze than the startup splash: a thin soft band, not a
+            # thick red wash, so the fingerprint stays readable under the sweep
+            colors=["#00000000", _RED_HAZE_SOFT, _RED_HAZE_MID, _RED_HAZE_SOFT, "#00000000"],
+            stops=[0.0, 0.4, 0.5, 0.6, 1.0],
         ),
     )
     return ft.Container(
@@ -299,10 +304,45 @@ class ScanFlash:
             content=ft.Stack(controls=[self._line]),
         )
 
-    async def play(self) -> None:
-        self._line.offset = ft.Offset(0, _FLASH_TRAVEL)
+    def reset(self) -> None:
+        """Snap the beam back to the TOP with no animation, so a fresh play()
+        always sweeps from the top — a click during an in-flight sweep restarts
+        it cleanly instead of continuing from wherever it was."""
+        self._line.animate_offset = None
+        self._line.offset = ft.Offset(0, 0)
         try:
             self._line.update()
         except Exception:
-            pass  # detached mid-patch; nothing left to animate
-        await asyncio.sleep(FLASH_SECONDS)
+            pass
+
+    async def play(self, cancelled=None) -> None:
+        """One full scan: sweep DOWN over the logo, then back UP — a there-and-
+        back pass. The caller reuses a single ScanFlash so repeated clicks never
+        stack multiple beams; reset() re-homes the beam to the top first, and
+        `cancelled` (a no-arg predicate) lets a newer click's sweep supersede
+        this one so an in-flight pass bows out instead of fighting it."""
+        def _stop() -> bool:
+            return cancelled is not None and cancelled()
+
+        # let the reset()'d top position paint before re-enabling the animation,
+        # or the down move collapses into the same frame and there's no sweep
+        self._line.animate_offset = ft.Animation(
+            _FLASH_SWEEP_MS, ft.AnimationCurve.EASE_IN_OUT
+        )
+        await asyncio.sleep(0.02)
+        if _stop():
+            return
+        self._line.offset = ft.Offset(0, _FLASH_TRAVEL)  # sweep down
+        try:
+            self._line.update()
+        except Exception:
+            return  # detached mid-patch; nothing left to animate
+        await asyncio.sleep(_FLASH_SWEEP_MS / 1000)
+        if _stop():
+            return
+        self._line.offset = ft.Offset(0, 0)  # sweep back up
+        try:
+            self._line.update()
+        except Exception:
+            return
+        await asyncio.sleep(_FLASH_SWEEP_MS / 1000)

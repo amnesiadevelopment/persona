@@ -42,16 +42,20 @@ class FakeFlash:
         self.control = ft.Container()
         self.played_while_on_overlay = None
         self.page = None
+        self.resets = 0
 
-    async def play(self):
+    def reset(self):
+        self.resets += 1
+
+    async def play(self, cancelled=None):
         self.played_while_on_overlay = (
             self.page is not None and self.control in self.page.overlay
         )
 
 
 class BoomFlash(FakeFlash):
-    async def play(self):
-        await super().play()
+    async def play(self, cancelled=None):
+        await super().play(cancelled)
         raise RuntimeError("boom")
 
 
@@ -65,6 +69,8 @@ def make_app(page, active_page="network"):
     app._ui_backlog_lock = threading.Lock()
     app._active_page = active_page
     app._sidebar_host = ft.Container()
+    app._scan_flash = None
+    app._scan_gen = 0
     calls = []
     app._build_sidebar = lambda: ft.Text("sidebar")
     app._render_active_page = lambda: calls.append("render")
@@ -104,25 +110,39 @@ def test_logo_click_refreshes_even_when_already_home(monkeypatch):
     assert "refresh" in calls
 
 
-def test_logo_click_shows_flash_then_clears_it(monkeypatch):
+def test_logo_click_shows_one_reusable_flash(monkeypatch):
     page = FakePage()
     app, _calls = make_app(page)
     made = use_flash(monkeypatch, page)
     app._on_logo_click()
     assert len(made) == 1
-    # the flash was on the overlay while it played...
+    # the flash plays while pinned on the overlay...
     assert made[0].played_while_on_overlay is True
-    # ...and is gone once the sweep finished
-    assert page.overlay == []
+    # ...and STAYS on the overlay, reused for the next click (no re-add churn)
+    assert page.overlay == [made[0].control]
 
 
-def test_flash_always_clears_even_when_play_raises(monkeypatch):
+def test_rapid_clicks_reuse_one_flash_and_restart_it(monkeypatch):
+    # spamming the logo must NOT stack beams: one ScanFlash ever, each click
+    # resets it to the top and bumps the generation token.
+    page = FakePage()
+    app, _calls = make_app(page)
+    made = use_flash(monkeypatch, page)
+    app._on_logo_click()
+    app._on_logo_click()
+    app._on_logo_click()
+    assert len(made) == 1                 # only one flash object, ever
+    assert len(page.overlay) == 1         # only one beam on the overlay
+    assert made[0].resets == 3            # each click re-homed it to the top
+    assert app._scan_gen == 3             # generation bumped per click
+
+
+def test_flash_failure_does_not_break_click(monkeypatch):
     page = FakePage()
     app, _calls = make_app(page)
     made = use_flash(monkeypatch, page, BoomFlash)
-    app._on_logo_click()  # must not raise
+    app._on_logo_click()  # a raising play() must not propagate
     assert made[0].played_while_on_overlay is True
-    assert page.overlay == []
 
 
 def test_logo_click_without_page_still_goes_home(monkeypatch):
