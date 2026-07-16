@@ -885,37 +885,26 @@ def _seed_default_zoom(profile_dir: str, scale: float) -> None:
         pass
 
 
-def _write_chrome_scale_css(profile_dir: str, scale: float) -> None:
-    """Scale the browser's own UI (menubar/tab strip/toolbars/urlbar/menus) to
-    the host display scale via the profile's userChrome.css.
+def _scrub_chrome_zoom_css(profile_dir: str) -> None:
+    """Remove a userChrome.css that zooms the browser's own UI.
 
-    With devPixelsPerPx pinned to 1 (#187) the chrome renders physically tiny
-    on a HiDPI monitor, and every render-scale pref is off limits:
-    layout.css.devPixelsPerPx drives window.devicePixelRatio and the CSS
-    resolution media queries together, and ui.textScaleFactor is aliased to it
-    — raising either re-leaks the resolution #187 made honest. userChrome.css
-    is the one knob that reaches ONLY chrome documents: the engine's xul.dll
-    loads it from the profile's chrome/ dir solely into the browser's own UI
-    documents (web content gets userContent.css instead), so nothing here can
-    move devicePixelRatio, screen.*, or a page's media queries. The zoom lands
-    on #navigator-toolbox and #mainPopupSet; the content <browser> is a
-    SIBLING of both in browser.xhtml, so the scale has no path into a page.
-    Rewritten on every launch so a changed host scale takes effect; 1.0 (a
-    non-HiDPI host) writes nothing."""
-    if not profile_dir or scale <= 1.0:
+    Profiles may carry a chrome/userChrome.css with a zoom rule on
+    #navigator-toolbox/#mainPopupSet (an attempt to enlarge the tiny dpr=1
+    chrome on a HiDPI host). CSS zoom participates in layout, so the zoomed
+    toolbox moves the content area's geometry out from under the compositor:
+    pages render shifted/overlapping with a paint artifact down the left edge,
+    worse at Retina 2.0 (#206). Being a SIBLING of the content <browser> in
+    browser.xhtml does NOT decouple them — siblings share the window's layout
+    flow. A sheet with no zoom rule (a user's own customization) can't skew
+    content and is left alone."""
+    if not profile_dir:
         return
-    chrome_dir = os.path.join(profile_dir, "chrome")
+    path = os.path.join(profile_dir, "chrome", "userChrome.css")
     try:
-        os.makedirs(chrome_dir, exist_ok=True)
-        with open(
-            os.path.join(chrome_dir, "userChrome.css"), "w", encoding="utf-8"
-        ) as f:
-            f.write(
-                "#navigator-toolbox,\n"
-                "#mainPopupSet {\n"
-                f"  zoom: {scale};\n"
-                "}\n"
-            )
+        with open(path, encoding="utf-8", errors="replace") as f:
+            css = f.read()
+        if "zoom" in css:
+            os.remove(path)
     except OSError:
         pass
 
@@ -1058,9 +1047,29 @@ def _init_places_db(
                     # The SAME binary the visible launch uses — the profile
                     # this init creates must match the build that opens it.
                     binary_path=_binary_path_override(),
+                    # The engine's __enter__ resolves geo BEFORE Firefox
+                    # starts: with no timezone it discovers the egress IP
+                    # (three HTTPS echo endpoints, 10s timeout each) and
+                    # refreshes the geoip mmdb — over Tor that's 30-60s per
+                    # attempt, blowing enter_timeout and looping the init
+                    # into a 3-4 minute first launch (#207) whose seed never
+                    # lands (#208). Any concrete IANA zone short-circuits all
+                    # of it before the first request; this run is throwaway
+                    # (its session state is wiped below), so the zone itself
+                    # doesn't matter.
+                    timezone="UTC",
                     # Skip Firefox's startup remote-settings sync — over Tor
-                    # that fetch stalls this throwaway run for minutes.
-                    extra_prefs=dict(_NO_STARTUP_FETCH),
+                    # that fetch stalls this throwaway run for minutes. The
+                    # fast-shutdown stage spares the polite close below from
+                    # Firefox's async shutdown blockers (~60-90s at times,
+                    # burning the whole close_grace plus the settle's kill):
+                    # the roots are committed before the close is requested,
+                    # and the visible launch runs this same profile with the
+                    # same pref.
+                    extra_prefs={
+                        **_NO_STARTUP_FETCH,
+                        "toolkit.shutdown.fastShutdownStage": 3,
+                    },
                 ):
                     entered.set()
                     while (
@@ -1343,15 +1352,18 @@ def _seed_firefox_bookmarks(
     placed nothing).
 
     Returns True once the toolbar matches the configured set (or there was
-    nothing to apply). A fresh profile's first seed can fail transiently — the
-    headless init can run out of budget, and right after it places.sqlite can
-    still be held EXCLUSIVE by the dying headless Firefox, failing both the
-    readiness check and the reconcile with "database is locked" — so the whole
-    ready→init→reconcile pipeline gets `attempts` tries (a retry re-checks
-    readiness first, so a roots-exist-but-was-locked miss heals without a
-    second engine run). A single silent skip here is what opened the first
-    visible window of a bookmarked profile on an unseeded database (#202);
-    False means the seed is NOT in place, so the launch can report it."""
+    nothing to apply). Right after the init, places.sqlite can still be held
+    EXCLUSIVE by the dying headless Firefox, failing the reconcile with
+    "database is locked" — so the ready→reconcile pipeline gets `attempts`
+    tries (a retry re-checks readiness first, so a roots-exist-but-was-locked
+    miss heals without another engine run). The engine init itself runs at
+    most ONCE per seed: a failed init has already exhausted its own budget of
+    bounded enter retries, and re-running it from scratch is what stretched a
+    fresh profile's first launch to minutes (#207). A single silent skip here
+    is what opened the first visible window of a bookmarked profile on an
+    unseeded database (#202); False means the seed is NOT in place, so the
+    launch can report it — and the next launch, finding the db still rootless,
+    inits again."""
     if not profile_dir:
         return True
 
@@ -1359,6 +1371,7 @@ def _seed_firefox_bookmarks(
         return stop_event is not None and stop_event.is_set()
 
     places = os.path.join(profile_dir, "places.sqlite")
+    init_ran = False
     for _attempt in range(attempts):
         if stopped():
             return False
@@ -1369,6 +1382,9 @@ def _seed_firefox_bookmarks(
             if not places_ready(places):
                 if not bookmarks:
                     return True
+                if init_ran:
+                    continue
+                init_ran = True
                 if not _init_places_db(
                     profile_dir, seed, stop_event=stop_event
                 ):
@@ -1838,6 +1854,10 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     # running but invisible (#142). Must run after the seeding, before the
     # launch.
     _scrub_headless_cloak_prefs(profile_dir)
+    # A zoom rule in the profile's userChrome.css skews the page render (#206,
+    # see _scrub_chrome_zoom_css). Removed before the launch so the first
+    # window paints clean.
+    _scrub_chrome_zoom_css(profile_dir)
     # Switch the profile's chrome to the built-in dark theme. The headless init
     # above created extensions.json (the AddonManager's active-theme source of
     # truth); flip it to dark so the titlebar/tab strip aren't light (#152).
@@ -1949,18 +1969,19 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
         _seed_default_zoom(profile_dir, dpr)
         # Text zoom reaches only page CONTENT — the browser's own toolbar/tab
         # strip/menus still render tiny at dpr=1 on a HiDPI host (#196).
-        # Scale the chrome UI through userChrome.css (chrome-documents-only,
-        # see _write_chrome_scale_css) and enable the customization sheet —
-        # in prefs.js too so it's in force for the profile's first window.
+        # Enlarge the chrome with the built-in touch density: the same shipped
+        # mode as Customize Toolbar's "Touch", switched through browser.
+        # uidensity (0 normal / 1 compact / 2 touch). It swaps the toolbar/tab
+        # controls to their touch sizing and reflows the window through normal
+        # layout — no surface is zoomed or scaled, so nothing page-facing
+        # (devicePixelRatio, screen.*, the resolution media queries, content
+        # geometry) can move. A userChrome.css zoom on the toolbox DID scale a
+        # surface and skewed the page render (#206). Coarser than a per-scale
+        # factor, but a correct render wins. In prefs.js too so it's in force
+        # for the profile's first window.
         if dpr > 1.0:
-            _write_chrome_scale_css(profile_dir, dpr)
-            kwargs["extra_prefs"][
-                "toolkit.legacyUserProfileCustomizations.stylesheets"
-            ] = True
-            _upsert_prefs_js(
-                profile_dir,
-                {"toolkit.legacyUserProfileCustomizations.stylesheets": True},
-            )
+            kwargs["extra_prefs"]["browser.uidensity"] = 2
+            _upsert_prefs_js(profile_dir, {"browser.uidensity": 2})
     if proxy:
         kwargs["proxy"] = proxy
     locale = cfg.get("locale", "")

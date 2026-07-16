@@ -206,35 +206,37 @@ def test_profile_prefs_zoom_is_text_only_not_full_page():
     assert prefs["browser.zoom.full"] is False
 
 
-def test_chrome_scale_css_scales_only_chrome_containers(tmp_path):
-    # #196: with devPixelsPerPx pinned to 1 (#187) the browser's own UI renders
-    # physically tiny on a HiDPI host. The scale goes through the profile's
-    # userChrome.css — a sheet the engine loads ONLY into chrome documents — and
-    # zooms #navigator-toolbox (menubar/tab strip/toolbars/urlbar) and
-    # #mainPopupSet (menus/panels). The content <browser> is a SIBLING of both
-    # in browser.xhtml, so the zoom has no path into a web page: nothing here
-    # can move devicePixelRatio, screen.*, or the resolution media queries.
-    invisible_launch._write_chrome_scale_css(str(tmp_path), 1.5)
-    css = (tmp_path / "chrome" / "userChrome.css").read_text(encoding="utf-8")
-    assert "#navigator-toolbox" in css
-    assert "#mainPopupSet" in css
-    assert "zoom: 1.5" in css
+def test_scrub_chrome_zoom_css_removes_zoom_sheet(tmp_path):
+    # #206: CSS zoom participates in layout, so a zoom rule on
+    # #navigator-toolbox in the profile's userChrome.css moves the content
+    # area's geometry out from under the compositor — pages render shifted/
+    # overlapping with a paint artifact down the left edge, worse at Retina
+    # 2.0. Profiles carrying such a sheet must have it removed.
+    chrome_dir = tmp_path / "chrome"
+    chrome_dir.mkdir()
+    (chrome_dir / "userChrome.css").write_text(
+        "#navigator-toolbox,\n#mainPopupSet {\n  zoom: 1.5;\n}\n",
+        encoding="utf-8",
+    )
+    invisible_launch._scrub_chrome_zoom_css(str(tmp_path))
+    assert not (chrome_dir / "userChrome.css").exists()
 
 
-def test_chrome_scale_css_noop_at_unity_scale(tmp_path):
-    # A non-HiDPI host needs no chrome scaling — nothing is written.
-    invisible_launch._write_chrome_scale_css(str(tmp_path), 1.0)
+def test_scrub_chrome_zoom_css_keeps_sheet_without_zoom(tmp_path):
+    # A customization sheet with no zoom rule can't skew the content render —
+    # a user's own userChrome.css is left alone.
+    chrome_dir = tmp_path / "chrome"
+    chrome_dir.mkdir()
+    (chrome_dir / "userChrome.css").write_text(
+        "#urlbar { font-weight: bold; }\n", encoding="utf-8"
+    )
+    invisible_launch._scrub_chrome_zoom_css(str(tmp_path))
+    assert (chrome_dir / "userChrome.css").exists()
+
+
+def test_scrub_chrome_zoom_css_noop_without_sheet(tmp_path):
+    invisible_launch._scrub_chrome_zoom_css(str(tmp_path))
     assert not (tmp_path / "chrome").exists()
-
-
-def test_chrome_scale_css_rewrite_replaces_scale(tmp_path):
-    # Relaunching (e.g. the host scale changed) rewrites the sheet in place —
-    # one zoom rule at the current scale, never stacked duplicates.
-    invisible_launch._write_chrome_scale_css(str(tmp_path), 1.5)
-    invisible_launch._write_chrome_scale_css(str(tmp_path), 2.0)
-    css = (tmp_path / "chrome" / "userChrome.css").read_text(encoding="utf-8")
-    assert css.count("zoom:") == 1
-    assert "zoom: 2.0" in css
 
 
 def test_outer_size_override_script_ties_outer_to_window():
@@ -1622,13 +1624,15 @@ def test_child_reports_chosen_resolution_at_consistent_dpr_one(monkeypatch, tmp_
     assert captured["extra_prefs"]["layout.css.devPixelsPerPx"] == "1.0"
 
 
-def test_child_hidpi_scales_chrome_ui_without_touching_page_dpr(
+def test_child_hidpi_enlarges_chrome_ui_without_touching_page_geometry(
     monkeypatch, tmp_path
 ):
     # #196: dpr=1 (#187) leaves the browser's own toolbar/tabs/menus physically
-    # tiny on a HiDPI host. The launch scales the CHROME UI via the profile's
-    # userChrome.css + its enabling pref, while every page-facing value #187
-    # pinned stays honest — screen.dpr=1 and devPixelsPerPx="1.0" untouched.
+    # tiny on a HiDPI host. The launch enlarges the CHROME UI via the built-in
+    # touch density (browser.uidensity=2) — a chrome-theme pref with no
+    # zoom/scale of any surface, so no path into the content render (#206) —
+    # while every page-facing value #187 pinned stays honest: screen.dpr=1 and
+    # devPixelsPerPx="1.0" untouched.
     import os
     import sys
     import threading
@@ -1685,31 +1689,96 @@ def test_child_hidpi_scales_chrome_ui_without_touching_page_dpr(
     )
     os.close(r)
 
-    css = (tmp_path / "chrome" / "userChrome.css").read_text(encoding="utf-8")
-    assert "zoom: 1.5" in css  # chrome UI scaled to the host display scale
-    # The sheet only loads with the customization pref on — set for the engine
-    # AND carried in prefs.js so it's in force for the profile's first window.
-    assert (
-        captured["extra_prefs"][
-            "toolkit.legacyUserProfileCustomizations.stylesheets"
-        ]
-        is True
-    )
+    # Touch density set for the engine AND carried in prefs.js so it's in
+    # force for the profile's first window.
+    assert captured["extra_prefs"]["browser.uidensity"] == 2
     prefs_js = (tmp_path / "prefs.js").read_text(encoding="utf-8")
+    assert 'user_pref("browser.uidensity", 2);' in prefs_js
+    # Nothing zoom/scale-like reaches the profile: no userChrome.css and no
+    # customization sheet enabled — a toolbox zoom rule skewed pages (#206).
+    assert not (tmp_path / "chrome").exists()
     assert (
-        'user_pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);'
-        in prefs_js
+        "toolkit.legacyUserProfileCustomizations.stylesheets"
+        not in captured["extra_prefs"]
     )
     # #187 fingerprint intact: the page still reads the chosen resolution at a
-    # consistent dpr=1 — the chrome scale must not move any page-facing value.
+    # consistent dpr=1 — the chrome enlarge must not move any page-facing value.
     assert captured["pin"]["screen.dpr"] == 1.0
     assert captured["extra_prefs"]["layout.css.devPixelsPerPx"] == "1.0"
     assert 'user_pref("layout.css.devPixelsPerPx", "1.0");' in prefs_js
 
 
+def test_child_scrubs_stale_chrome_zoom_sheet(monkeypatch, tmp_path):
+    # #206: profiles carry a userChrome.css zooming the toolbox; a relaunch
+    # must remove it BEFORE the engine opens the window so the page renders
+    # clean again.
+    import os
+    import sys
+    import threading
+    import types
+
+    class FakeCtx:
+        pages = [object()]
+
+        def add_init_script(self, *_a, **_k):
+            pass
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            pass
+
+        def _default_context_kwargs(self):
+            return {}
+
+        def __enter__(self):
+            return FakeCtx()
+
+        def __exit__(self, *a):
+            return False
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(invisible_launch, "_work_area", lambda: (3840, 2088))
+    monkeypatch.setattr(invisible_launch, "_system_dpr", lambda: 1.5)
+    monkeypatch.setattr(
+        invisible_launch, "_thread_close_watch", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None, rescan=True: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_raise_profile_window", lambda *a, **k: None
+    )
+
+    chrome_dir = tmp_path / "chrome"
+    chrome_dir.mkdir()
+    (chrome_dir / "userChrome.css").write_text(
+        "#navigator-toolbox,\n#mainPopupSet {\n  zoom: 1.5;\n}\n",
+        encoding="utf-8",
+    )
+
+    stop = threading.Event()
+    stop.set()
+    r, w = os.pipe()
+    invisible_launch._child(
+        {
+            "profile_dir": str(tmp_path),
+            "profile_name": "t",
+            "seed": 1,
+            "resolution": [1920, 1080],
+        },
+        w,
+        stop_event=stop,
+    )
+    os.close(r)
+
+    assert not (chrome_dir / "userChrome.css").exists()
+
+
 def test_child_no_chrome_scale_on_unity_dpr_host(monkeypatch, tmp_path):
     # #196: a non-HiDPI host renders the chrome at its natural size — no
-    # userChrome.css, no customization pref.
+    # density pref, no userChrome.css, no customization pref.
     import os
     import sys
     import threading
@@ -1767,6 +1836,9 @@ def test_child_no_chrome_scale_on_unity_dpr_host(monkeypatch, tmp_path):
     os.close(r)
 
     assert not (tmp_path / "chrome").exists()
+    assert "browser.uidensity" not in captured["extra_prefs"]
+    prefs_js = (tmp_path / "prefs.js").read_text(encoding="utf-8")
+    assert "browser.uidensity" not in prefs_js
     assert (
         "toolkit.legacyUserProfileCustomizations.stylesheets"
         not in captured["extra_prefs"]
@@ -2234,6 +2306,80 @@ def test_init_places_db_skips_startup_network_fetch(monkeypatch, tmp_path):
     assert captured["extra_prefs"]["services.settings.server"].startswith("data:")
 
 
+def test_init_places_db_concrete_timezone_skips_geo_network(
+    monkeypatch, tmp_path
+):
+    # #207: the engine's __enter__ resolves geo BEFORE Firefox starts — with no
+    # timezone it discovers the egress IP (three HTTPS echo endpoints, 10s
+    # timeout each) and refreshes the geoip mmdb, all over Tor on Mars's
+    # Linux/Mac hosts: 30-60s per attempt, the whole 3-4 minute first launch.
+    # A concrete IANA zone short-circuits every one of those requests inside
+    # prepare_session_geo, so the throwaway init must always pass one.
+    import sys
+    import types
+
+    from tests.test_firefox_bookmarks import _make_places
+
+    captured = {}
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def __enter__(self):
+            _make_places(str(tmp_path / "places.sqlite"))
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(
+        invisible_launch, "_wait_profile_released", lambda d: True
+    )
+
+    assert invisible_launch._init_places_db(str(tmp_path), 1) is True
+    tz = captured.get("timezone")
+    assert tz and tz.strip().lower() != "auto"
+
+
+def test_init_places_db_fast_shutdown_pref(monkeypatch, tmp_path):
+    # The init's polite close otherwise waits on Firefox's async shutdown
+    # blockers (~60-90s live-measured, burning the full close_grace plus the
+    # settle's kill path on every fresh profile). fastShutdownStage=3 _exits
+    # ~2s after the close — the roots are committed before the close is even
+    # requested, and the visible launch runs this profile with the same pref.
+    import sys
+    import types
+
+    from tests.test_firefox_bookmarks import _make_places
+
+    captured = {}
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def __enter__(self):
+            _make_places(str(tmp_path / "places.sqlite"))
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(
+        invisible_launch, "_wait_profile_released", lambda d: True
+    )
+
+    assert invisible_launch._init_places_db(str(tmp_path), 1) is True
+    assert captured["extra_prefs"]["toolkit.shutdown.fastShutdownStage"] == 3
+
+
 def test_init_places_db_hung_close_bounded_by_close_grace(monkeypatch, tmp_path):
     # Live-observed: with the database already ready, the headless run's polite
     # __exit__ sometimes hangs ~90s on Firefox shutdown blockers. Once the roots
@@ -2403,9 +2549,7 @@ def test_seed_bookmarks_reinits_when_toolbar_root_missing(monkeypatch, tmp_path)
     invisible_launch._seed_firefox_bookmarks(
         str(tmp_path), [{"name": "a", "url": "https://a/"}], 7
     )
-    # One init per attempt (the seed retries a failed init, #202) — the point
-    # here is that a rootless db triggers the init at all.
-    assert inits and inits[0] == (str(tmp_path), 7)
+    assert inits == [(str(tmp_path), 7)]
 
 
 def test_seed_bookmarks_ready_db_needs_no_engine_start(monkeypatch, tmp_path):
@@ -2525,40 +2669,13 @@ def test_seed_bookmarks_user_added_survives_relaunch(monkeypatch, tmp_path):
     assert urls == {"https://a.example/", "https://c.example/"}
 
 
-def test_seed_bookmarks_retries_when_init_fails_transiently(
-    monkeypatch, tmp_path
-):
-    # #202: on the FIRST launch of a fresh profile the headless places init can
-    # fail transiently (budget ran out, or the dying headless Firefox still held
-    # places.sqlite when the verdict was read). One silent skip is what opened
-    # the first visible window on an unseeded db — the seed must retry and land.
-    from tests.test_firefox_bookmarks import _make_places, _toolbar_bookmarks
-
-    db = str(tmp_path / "places.sqlite")
-    inits = []
-
-    def flaky_init(d, s, stop_event=None):
-        inits.append((d, s))
-        if len(inits) == 1:
-            return False
-        _make_places(db)
-        return True
-
-    monkeypatch.setattr(invisible_launch, "_init_places_db", flaky_init)
-    ok = invisible_launch._seed_firefox_bookmarks(
-        str(tmp_path), [{"name": "a", "url": "https://a.example/"}], 7
-    )
-    assert ok is True
-    assert inits == [(str(tmp_path), 7), (str(tmp_path), 7)]
-    assert _toolbar_bookmarks(db) == [("a", "https://a.example/")]
-
-
-def test_seed_bookmarks_reports_failure_after_bounded_retries(
-    monkeypatch, tmp_path
-):
-    # #202: when the init never yields a rooted db the seed must say so —
-    # returning falsy after a BOUNDED number of attempts (never an unbounded
-    # loop, never a silent None on the first miss).
+def test_seed_bookmarks_failed_init_is_not_rerun(monkeypatch, tmp_path):
+    # #207: an init that fails does so by exhausting its whole budget (~90s of
+    # bounded enter retries) — re-running it from scratch is what stretched a
+    # fresh profile's first launch to 3-4 minutes. The seed runs the engine
+    # init at most ONCE; a miss is reported (False → BOOKMARK_SEED_FAILED in
+    # the card log, #202) and heals on the next launch, which finds the db
+    # still rootless and inits again.
     inits = []
     monkeypatch.setattr(
         invisible_launch,
@@ -2569,7 +2686,31 @@ def test_seed_bookmarks_reports_failure_after_bounded_retries(
         str(tmp_path), [{"name": "a", "url": "https://a.example/"}], 7
     )
     assert ok is False
-    assert len(inits) == 2
+    assert len(inits) == 1
+
+
+def test_seed_bookmarks_successful_init_seeds_first_launch(
+    monkeypatch, tmp_path
+):
+    # #208: the whole point of the init — a fresh bookmarked profile must have
+    # its toolbar seeded before the FIRST visible window.
+    from tests.test_firefox_bookmarks import _make_places, _toolbar_bookmarks
+
+    db = str(tmp_path / "places.sqlite")
+    inits = []
+
+    def init(d, s, stop_event=None):
+        inits.append((d, s))
+        _make_places(db)
+        return True
+
+    monkeypatch.setattr(invisible_launch, "_init_places_db", init)
+    ok = invisible_launch._seed_firefox_bookmarks(
+        str(tmp_path), [{"name": "a", "url": "https://a.example/"}], 7
+    )
+    assert ok is True
+    assert inits == [(str(tmp_path), 7)]
+    assert _toolbar_bookmarks(db) == [("a", "https://a.example/")]
 
 
 def test_seed_bookmarks_locked_db_seeds_on_retry(monkeypatch, tmp_path):

@@ -55,10 +55,40 @@ _NOISY_SUBSTRINGS = (
 )
 
 
+# Chromium ERROR-level stderr that is provably benign: USB enumeration
+# probing device properties the host doesn't expose, EV-cert OID metadata
+# decode chatter, and VA-API probing without a usable GPU. Rendered red in
+# the Activity Log they read like failures, so keep them file-log only.
+_BENIGN_ENGINE_ERRORS = (
+    "device_event_log_impl.cc",
+    "usb_service_win.cc",
+    "SetupDiGetDeviceProperty",
+    "Failed to decode OID",
+    "vaInitialize failed",
+    "vaapi_wrapper.cc",
+)
+
+# net_error -100 = ERR_CONNECTION_CLOSED: the connection was dropped
+# mid-handshake (closed tab, cancelled prefetch) — not a TLS failure. Any
+# other net_error on a handshake is a real problem and must stay visible.
+_BENIGN_SSL_HANDSHAKE = re.compile(r"handshake failed.*net_error -100\b")
+
+
+def _is_benign_engine_error(msg: str) -> bool:
+    if any(s in msg for s in _BENIGN_ENGINE_ERRORS):
+        return True
+    return (
+        "ssl_client_socket_impl.cc" in msg
+        and _BENIGN_SSL_HANDSHAKE.search(msg) is not None
+    )
+
+
 def is_engine_noise(msg: str) -> bool:
     """True for engine stderr chatter that shouldn't reach the activity log."""
-    return msg.startswith(_NOISY_PREFIXES) or any(
-        s in msg for s in _NOISY_SUBSTRINGS
+    return (
+        msg.startswith(_NOISY_PREFIXES)
+        or any(s in msg for s in _NOISY_SUBSTRINGS)
+        or _is_benign_engine_error(msg)
     )
 
 

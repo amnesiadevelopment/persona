@@ -115,18 +115,15 @@ _REAL = next(
 
 @pytest.mark.skipif(_REAL is None, reason="no real AppImage available")
 def test_probe_accepts_a_real_launchable_appimage():
-    assert au.verify_appimage_runs(_REAL, settle=4.0) is True
+    assert au.verify_appimage_runs(_REAL) is True
 
 
 @pytest.mark.skipif(_REAL is None, reason="no real AppImage available")
-def test_probe_rejects_a_broken_mount(monkeypatch, tmp_path):
-    # reproduce the v2.1.3 brick: a working AppImage whose runtime can neither
-    # FUSE-mount nor extract (unwritable TMPDIR) exits 127 with "open dir error"
-    nd = tmp_path / "nd"
-    nd.mkdir()
-    nd.chmod(0)
-    monkeypatch.setenv("TMPDIR", str(nd / "x"))
-    try:
-        assert au.verify_appimage_runs(_REAL, settle=4.0) is False
-    finally:
-        nd.chmod(0o755)
+def test_probe_rejects_a_truncated_appimage(tmp_path):
+    # the v2.1.3 brick class: the runtime starts but the squashfs payload is
+    # unreadable (truncated/corrupt download) — the swap must never happen
+    broken = tmp_path / "broken.AppImage"
+    with open(_REAL, "rb") as f:
+        broken.write_bytes(f.read(1 << 20))
+    broken.chmod(0o755)
+    assert au.verify_appimage_runs(str(broken)) is False

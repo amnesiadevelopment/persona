@@ -20,7 +20,7 @@ import time
 from ..engine.updater import is_newer
 from ...core import platform as _platform
 
-APP_VERSION = "2.4.9"
+APP_VERSION = "2.5.0"
 APP_REPO = "amnesiadevelopment/persona"
 
 
@@ -351,38 +351,28 @@ def download_update(
     return ""
 
 
-def verify_appimage_runs(path: str, settle: float = 4.0, timeout: int = 30) -> bool:
-    """True if `path` boots far enough to be trusted as the next version.
+def verify_appimage_runs(path: str, timeout: int = 30) -> bool:
+    """True if `path` is an AppImage whose runtime executes on this host and
+    whose payload is readable — proven WITHOUT ever booting the app.
 
-    The old probe launched the AppImage as a full GUI app and required it to
-    stay ALIVE for `settle` seconds. That is too fragile: the probe instance
-    exits early for reasons that have nothing to do with the build being broken
-    — no usable DISPLAY in the probe's context, or a second persona instance
-    bailing on the single-instance/API-port guard. An early exit was then read
-    as "broken", the update was refused, and because the app restarts to apply
-    it looped forever offering the same version ("restart to apply" → restart →
-    same version again). That loop is the bug this rewrite fixes.
+    A probe that starts the app cannot be windowless: AppRun execs the
+    Flutter host, which paints the boot screen BEFORE the Python side (and
+    the PERSONA_SELFTEST gate in main.py) gets to run, so for the whole
+    verify a second persona window and taskbar button stand next to the live
+    one, ending on the engine's error screen when the gate exits under it
+    (#199). So the probe never runs the payload at all: `--appimage-extract
+    AppRun` is handled by the AppImage RUNTIME itself, which extracts and
+    exits with nothing inside the payload ever starting. That still catches
+    the launch-blockers the swap must never let through — a runtime that
+    can't execute or read its squashfs (v2.1.3's exit-127 "open dir error",
+    truncated/corrupt download) — needs no display, no FUSE and no flet
+    cache, and works the same on a headless box. Whether the bytes match the
+    CI-published build is the download-time sha256 check
+    (verify_staged_installer), not this probe's job.
 
-    Instead we run a fast, headless SELF-TEST: launch the AppImage with
-    PERSONA_SELFTEST=1, which main.py answers by importing the app and printing
-    'SELFTEST_OK' then exiting 0 — proving the runtime mounts and Python +
-    imports load, WITHOUT needing a display or a free API port. A broken
-    AppImage (bad FUSE mount, exit 127, corrupt squashfs) never prints the
-    token. If the token check is inconclusive (e.g. an older build without the
-    self-test hook), we fall back to the alive-after-settle heuristic so we
-    don't regress older versions.
-
-    The probe boots the NEW build while the CURRENT persona is still running,
-    and both would use the same per-user flet cache — which the new build's
-    bootstrap deletes and re-extracts on a hash change, BEFORE the self-test
-    gate in Python can run. Fighting the live app over that dir is a
-    "Deletion failed" error window standing next to the running persona
-    (#199), so the probe gets a throwaway HOME/XDG_* sandbox it can never
-    collide in, plus a scrubbed runtime env (#135: inherited PYTHONPATH/FLET_*
-    poison the probed build). And every probe is killed as a whole process
-    GROUP and waited on before this returns: the AppImage runtime forks, so
-    killing only the direct child leaves the app process — and any window it
-    managed to open — running into the swap and execv.
+    The runtime may fork, so the probe is killed as a whole process GROUP and
+    waited on before this returns — nothing of it survives into the swap and
+    execv.
     """
     import shutil
     import signal
@@ -394,18 +384,12 @@ def verify_appimage_runs(path: str, settle: float = 4.0, timeout: int = 30) -> b
         os.chmod(path, 0o755)
     except OSError:
         pass
-    env = _relaunch_env()
-    env.setdefault("DISPLAY", ":0")
-    env["PERSONA_SELFTEST"] = "1"
-    probe_home = tempfile.mkdtemp(prefix="persona-verify-")
-    env["HOME"] = probe_home
-    for var, sub in (
-        ("XDG_DATA_HOME", "data"),
-        ("XDG_CACHE_HOME", "cache"),
-        ("XDG_CONFIG_HOME", "config"),
-        ("XDG_STATE_HOME", "state"),
-    ):
-        env[var] = os.path.join(probe_home, sub)
+    try:
+        # the runtime drops squashfs-root into its cwd — never the live app's
+        # cwd (serious_python chdirs into the flet extraction dir, #195)
+        workdir = tempfile.mkdtemp(prefix="persona-verify-")
+    except OSError:
+        return False
 
     def reap(proc) -> None:
         try:
@@ -424,68 +408,34 @@ def verify_appimage_runs(path: str, settle: float = 4.0, timeout: int = 30) -> b
             pass
 
     try:
-        # 1) Fast self-test: the build proves it boots and prints the token.
         try:
             proc = subprocess.Popen(
-                [path],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-                env=env,
-                start_new_session=True,
-            )
-        except Exception:
-            return False
-        try:
-            out, _ = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            # It didn't exit on the self-test flag (cold FUSE mount, or an
-            # older build that launched the GUI and kept running) — reap it
-            # and fall through to the alive heuristic.
-            reap(proc)
-        except Exception:
-            reap(proc)
-            return False
-        else:
-            reap(proc)  # sweep forked stragglers the exit left behind
-            if b"SELFTEST_OK" in (out or b""):
-                return True
-            # exit 0 without the token = an older build that ignores the flag
-            # and ran the GUI then exited cleanly; treat as launchable.
-            if proc.returncode == 0:
-                return True
-
-        # 2) Fallback for a build whose first probe timed out — a cold FUSE
-        #    mount can take longer than the self-test timeout, so the hook
-        #    never got to print before we gave up. Re-run it: PERSONA_SELFTEST
-        #    stays set, so a build that has the hook (every current release)
-        #    still exits at the gate BEFORE ft.run — no window. Only a build
-        #    without the hook (none in the field) would fall through to the
-        #    GUI; for it, "survives a couple of seconds" is the launchability
-        #    signal, and we kill it before it settles.
-        try:
-            proc = subprocess.Popen(
-                [path],
+                [path, "--appimage-extract", "AppRun"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,
-                env=env,
+                cwd=workdir,
+                env=_relaunch_env(),  # #135: scrubbed runtime vars
                 start_new_session=True,
             )
         except Exception:
             return False
         try:
-            deadline = time.time() + min(settle, timeout)
-            while time.time() < deadline:
-                rc = proc.poll()
-                if rc is not None:
-                    return rc == 0
-                time.sleep(0.2)
-            return True
-        finally:
+            proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # a runtime without pattern support extracts the whole payload
+            # and can outlive the timeout — AppRun lands early, so its
+            # presence below still proves the runtime
+            pass
+        except Exception:
             reap(proc)
+            return False
+        reap(proc)
+        if os.path.isfile(os.path.join(workdir, "squashfs-root", "AppRun")):
+            return True
+        return proc.returncode == 0
     finally:
-        shutil.rmtree(probe_home, ignore_errors=True)
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 def _sha256_file(path: str) -> str:
@@ -672,7 +622,18 @@ def _write_relaunch_bat(exe: str, installer: str, installer_pid, old_pid: int) -
     to its own directory up front — rd can't remove the directory the shell
     itself occupies, and the spawner's cwd is nothing to rely on. The
     wait-timeout path skips the purge: never pull the extraction from under
-    an instance that may still be alive."""
+    an instance that may still be alive.
+
+    Every second the bat spends polling is black screen for the user (#205),
+    and tasklist itself costs hundreds of ms per invocation — the dominant
+    piece of a poll beat. So a beat pays at most one tasklist per check
+    still worth making: each check jumps straight to the sleep on its first
+    live hit, and all the image names are matched against a single
+    unfiltered tasklist snapshot rather than one filtered run each. The
+    beat itself stays ~1s (cmd has no reliable sub-second sleep: `ping -w`
+    against a blackhole address returns instantly when a gateway answers
+    with unreachable, and a near-zero sleep would burn the iteration bound
+    while the installer still runs)."""
     image = os.path.basename(exe)
     installer_image = os.path.basename(installer)
     installer_stage2 = os.path.splitext(installer_image)[0] + ".tmp"
@@ -682,16 +643,20 @@ def _write_relaunch_bat(exe: str, installer: str, installer_pid, old_pid: int) -
             continue
         checks += (
             f'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul\r\n'
-            "if not errorlevel 1 set busy=1\r\n"
+            "if not errorlevel 1 goto hold\r\n"
         )
     # /FO CSV: the default table format truncates long image names to fit a
-    # 25-char column, and a truncated name never matches the find
-    for name in dict.fromkeys((installer_image, installer_stage2, image)):
-        checks += (
-            f'tasklist /FI "IMAGENAME eq {name}" /FO CSV /NH 2>nul'
-            f' | find /I "{name}" >nul\r\n'
-            "if not errorlevel 1 set busy=1\r\n"
-        )
+    # 25-char column, and a truncated name never matches. /L: the names
+    # carry regex-special dots. A substring hit against another CSV field is
+    # harmless — it only keeps a beat busy, and the wait stays bounded.
+    names = " ".join(
+        f'/C:"{name}"'
+        for name in dict.fromkeys((installer_image, installer_stage2, image))
+    )
+    checks += (
+        f"tasklist /FO CSV /NH 2>nul | findstr /I /L {names} >nul\r\n"
+        "if not errorlevel 1 goto hold\r\n"
+    )
     # path_provider resolves the app-data root as %APPDATA%\<company>\<product>
     # (both "persona" in pyproject.toml), and the flet bootstrap unpacks
     # app.zip to flet\app beneath it — the dir it deletes on a hash change
@@ -703,9 +668,9 @@ def _write_relaunch_bat(exe: str, installer: str, installer_pid, old_pid: int) -
         "set boots=0\r\n"
         "set purges=0\r\n"
         ":wait\r\n"
-        "set busy=0\r\n"
         + checks +
-        "if %busy%==0 goto settle\r\n"
+        "goto settle\r\n"
+        ":hold\r\n"
         "set /a tries+=1\r\n"
         # ~5 min: the clock runs while the UAC prompt sits waiting for the
         # user, so the bound must cover human dwell time plus the install
@@ -733,8 +698,10 @@ def _write_relaunch_bat(exe: str, installer: str, installer_pid, old_pid: int) -
         f'start "" /D "{os.path.dirname(exe)}" "{exe}"\r\n'
         # `start` fails SILENTLY when the exe is still locked (an installer
         # that outlived the pid we watched, an AV scan): confirm the app is
-        # really up and retry the start until it is, bounded
-        "ping -n 3 127.0.0.1 >nul\r\n"
+        # really up and retry the start until it is, bounded. One beat is
+        # enough — `start` returns once CreateProcess succeeded, so a
+        # launched image is already visible to tasklist.
+        "ping -n 2 127.0.0.1 >nul\r\n"
         f'tasklist /FI "IMAGENAME eq {image}" /FO CSV /NH 2>nul'
         f' | find /I "{image}" >nul\r\n'
         "if not errorlevel 1 goto done\r\n"

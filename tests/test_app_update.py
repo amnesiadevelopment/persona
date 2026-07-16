@@ -322,14 +322,8 @@ def test_relaunch_bat_waits_for_installer_image_not_just_broker_pid(tmp_path):
         au.os.remove(path)
     wait = bat.split(":settle")[0]
     # the whole installer family, by image name, at any integrity level
-    assert (
-        'tasklist /FI "IMAGENAME eq persona-windows-setup-v2.4.5.exe" /FO CSV'
-        in wait
-    )
-    assert (
-        'tasklist /FI "IMAGENAME eq persona-windows-setup-v2.4.5.tmp" /FO CSV'
-        in wait
-    )
+    assert '/C:"persona-windows-setup-v2.4.5.exe"' in wait
+    assert '/C:"persona-windows-setup-v2.4.5.tmp"' in wait
     # the broker pid is still checked (harmless, and right while it lives)
     assert 'tasklist /FI "PID eq 4242"' in wait
     # the bound must cover the user staring at the UAC prompt plus the
@@ -379,8 +373,8 @@ def test_windows_relaunch_uses_bat_even_without_installer_pid(
     # no bogus "PID eq None" check, but the image-name wait is all there
     assert "None" not in bat
     assert 'tasklist /FI "PID eq 7777"' in bat
-    assert 'IMAGENAME eq persona-windows-setup.exe' in bat
-    assert 'IMAGENAME eq persona-windows-setup.tmp' in bat
+    assert '/C:"persona-windows-setup.exe"' in bat
+    assert '/C:"persona-windows-setup.tmp"' in bat
 
 
 def test_relaunch_bat_settle_is_brief(tmp_path):
@@ -434,6 +428,50 @@ def test_relaunch_bat_clears_the_flet_extraction_before_start(tmp_path):
     assert "geq 60" in purge
     # only the clean settle path purges; the wait loop never runs rd
     assert "rd /s /q" not in bat.split(":settle")[0]
+
+
+def test_relaunch_bat_polls_with_one_snapshot_and_short_circuits(tmp_path):
+    # #205: install→window took ~40s and the bat contributed seconds of its
+    # own — every poll beat ran five tasklist invocations (hundreds of ms
+    # each) back to back, on top of the ~1s ping. A beat must pay at most
+    # one tasklist per still-alive check: the image names share ONE
+    # unfiltered snapshot, and the first live hit short-circuits straight
+    # to the sleep. The #174 bound (geq 300 beats, covers UAC dwell), both
+    # pid waits, and the settle→purge→launch ordering (#195) all survive.
+    exe = tmp_path / "persona.exe"
+    exe.write_bytes(b"MZ")
+    path = au._write_relaunch_bat(
+        str(exe), str(tmp_path / "persona-windows-setup.exe"), 4242, 7777
+    )
+    try:
+        with open(path, encoding="ascii", newline="") as f:
+            bat = f.read()
+    finally:
+        au.os.remove(path)
+    wait = bat.split(":settle")[0]
+    # two pid checks + one snapshot — no per-image filtered tasklist runs
+    assert wait.count("tasklist") == 3
+    assert "IMAGENAME eq" not in wait
+    snapshot = [ln for ln in wait.split("\r\n") if "findstr" in ln]
+    assert len(snapshot) == 1
+    for name in (
+        "persona-windows-setup.exe",
+        "persona-windows-setup.tmp",
+        "persona.exe",
+    ):
+        assert f'/C:"{name}"' in snapshot[0]
+    # every check bails to the sleep on its first hit
+    assert wait.count("goto hold") == 3
+    assert ":hold" in wait
+    assert 'tasklist /FI "PID eq 4242"' in wait
+    assert 'tasklist /FI "PID eq 7777"' in wait
+    assert "geq 300" in wait
+    assert bat.index(":settle") < bat.index(":purge") < bat.index(":launch")
+    # the post-start liveness check needs one ~1s beat, not two: `start`
+    # returns once CreateProcess succeeded, so the image is already visible
+    launch = bat.split(":launch")[1]
+    assert "ping -n 2 " in launch
+    assert "ping -n 3" not in launch
 
 
 def test_relaunch_bat_is_silent_and_ascii(tmp_path):
@@ -941,7 +979,7 @@ def test_linux_swap_and_execv_wait_for_the_probe_to_be_reaped(
         returncode = 0
 
         def communicate(self, timeout=None):
-            return b"SELFTEST_OK\n", None
+            return b"", b""
 
         def wait(self, timeout=None):
             events.append("wait")
@@ -995,102 +1033,68 @@ def test_apply_and_restart_macos_never_breaks_the_install_on_failure(
     assert staged.exists()
 
 
-def test_verify_probe_passes_selftest_flag(monkeypatch, tmp_path):
-    # The fast self-test probe must run the build with PERSONA_SELFTEST=1 so it
-    # exits at the gate before ft.run — no window ever appears.
-    import subprocess
+class _RuntimeProbe:
+    """Fake Popen result for the AppImage runtime handling --appimage-extract."""
 
-    staged = tmp_path / "new.AppImage"
-    staged.write_bytes(b"x")
-    seen = {}
+    def __init__(self, returncode=0, extract_to=None, hang=False, pid=4321):
+        self.returncode = returncode
+        self.pid = pid
+        self._extract_to = extract_to
+        self._hang = hang
 
-    def fake_popen(cmd, **kw):
-        seen["env"] = kw.get("env", {})
+    def communicate(self, timeout=None):
+        import subprocess
 
-        class P:
-            pid = 4321
-            returncode = 0
-
-            def communicate(self, timeout=None):
-                return b"SELFTEST_OK\n", None
-
-            def wait(self, timeout=None):
-                return 0
-
-            def kill(self):
-                pass
-
-        return P()
-
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(au.os, "killpg", lambda *a: None, raising=False)
-    assert au.verify_appimage_runs(str(staged)) is True
-    assert seen["env"].get("PERSONA_SELFTEST") == "1"
-
-
-def test_verify_fallback_stays_windowless(monkeypatch, tmp_path):
-    # A cold FUSE mount can make the first probe time out before the hook
-    # prints. The fallback re-run must KEEP PERSONA_SELFTEST=1, so a build with
-    # the hook (every current release) still exits before ft.run and never
-    # flashes a bare pre-splash window next to the live app (#177: the "two
-    # personas + black window" the user saw). The old code dropped the flag and
-    # launched a full GUI here.
-    import subprocess
-
-    staged = tmp_path / "new.AppImage"
-    staged.write_bytes(b"x")
-    envs = []
-
-    class _Hung:
-        pid = 111
-        returncode = None
-
-        def communicate(self, timeout=None):
+        if self._extract_to:
+            apprun = os.path.join(self._extract_to, "squashfs-root", "AppRun")
+            os.makedirs(os.path.dirname(apprun), exist_ok=True)
+            with open(apprun, "w") as f:
+                f.write("#!/bin/sh\n")
+        if self._hang:
             raise subprocess.TimeoutExpired("probe", timeout)
+        return b"", b""
 
-        def wait(self, timeout=None):
-            return 0
+    def wait(self, timeout=None):
+        if self._hang:
+            self.returncode = -9
+        return self.returncode
 
-        def kill(self):
-            pass
+    def kill(self):
+        pass
 
-    class _Clean:
-        pid = 222
-        returncode = 0
 
-        def poll(self):
-            return 0  # exited cleanly at the self-test gate
+def test_verify_probe_never_boots_the_app(monkeypatch, tmp_path):
+    # #199: ANY probe that starts the app paints a window — AppRun execs the
+    # Flutter host, which shows the boot screen BEFORE the Python side (and
+    # its PERSONA_SELFTEST gate) ever runs, standing a second persona next to
+    # the live one for the whole verify. Every process the probe spawns must
+    # be the AppImage RUNTIME handling one of its own --appimage-* commands,
+    # which exits before anything inside the payload can start.
+    import subprocess
 
-        def wait(self, timeout=None):
-            return 0
-
-        def kill(self):
-            pass
-
-    procs = [_Hung(), _Clean()]
+    staged = tmp_path / "new.AppImage"
+    staged.write_bytes(b"x")
+    cmds = []
 
     def fake_popen(cmd, **kw):
-        envs.append(kw.get("env", {}))
-        return procs.pop(0)
+        cmds.append(list(cmd))
+        return _RuntimeProbe(extract_to=kw.get("cwd"))
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
     monkeypatch.setattr(au.os, "killpg", lambda *a: None, raising=False)
     assert au.verify_appimage_runs(str(staged)) is True
-    assert len(envs) == 2
-    for env in envs:
-        assert env.get("PERSONA_SELFTEST") == "1"
+    assert cmds, "the probe must actually exercise the runtime"
+    for cmd in cmds:
+        assert cmd[0] == str(staged)
+        assert len(cmd) > 1 and cmd[1].startswith("--appimage-"), cmd
 
 
-def test_verify_probe_runs_in_an_isolated_scrubbed_home(monkeypatch, tmp_path):
-    # #199: the probe boots the NEW build while the CURRENT persona is still
-    # running, and both would use the same per-user flet cache — which the new
-    # build's bootstrap deletes and re-extracts on hash change. Fighting the
-    # live app over that dir is the "Deletion failed" error window standing
-    # NEXT to the running persona. The probe must get a throwaway HOME/XDG_*
-    # so it can never touch the live cache, plus a scrubbed runtime env
-    # (#135: inherited PYTHONPATH/FLET_* poison the probed build), and run in
-    # its own session so it is killable as a group. The throwaway home is
-    # removed once the probe is reaped.
+def test_verify_probe_extracts_into_a_throwaway_dir(monkeypatch, tmp_path):
+    # The runtime drops squashfs-root into its cwd; that must be a throwaway
+    # dir (never the live app's cwd — serious_python chdirs into the flet
+    # extraction dir, #195) removed once the probe is done, and the child env
+    # must be scrubbed of runtime vars (#135) with the probe in its own
+    # session so it is killable as a group.
     import subprocess
 
     staged = tmp_path / "new.AppImage"
@@ -1100,89 +1104,33 @@ def test_verify_probe_runs_in_an_isolated_scrubbed_home(monkeypatch, tmp_path):
 
     def fake_popen(cmd, **kw):
         seen.update(kw)
-
-        class P:
-            pid = 4321
-            returncode = 0
-
-            def communicate(self, timeout=None):
-                return b"SELFTEST_OK\n", None
-
-            def wait(self, timeout=None):
-                return 0
-
-            def kill(self):
-                pass
-
-        return P()
+        seen["cwd_existed"] = os.path.isdir(kw.get("cwd") or "")
+        return _RuntimeProbe(extract_to=kw.get("cwd"))
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
     monkeypatch.setattr(au.os, "killpg", lambda *a: None, raising=False)
     assert au.verify_appimage_runs(str(staged)) is True
-    env = seen["env"]
-    assert env.get("PERSONA_SELFTEST") == "1"
-    assert "PYTHONPATH" not in env
-    home = env.get("HOME")
-    assert home and home != os.path.expanduser("~")
-    for var in (
-        "XDG_DATA_HOME",
-        "XDG_CACHE_HOME",
-        "XDG_CONFIG_HOME",
-        "XDG_STATE_HOME",
-    ):
-        assert env.get(var, "").startswith(home), var
+    assert "PYTHONPATH" not in seen["env"]
     assert seen.get("start_new_session") is True
-    assert not os.path.exists(home)
+    cwd = seen.get("cwd")
+    assert cwd and seen["cwd_existed"] and cwd != os.getcwd()
+    assert not os.path.exists(cwd)
 
 
-def test_verify_probe_group_is_reaped_before_anything_else_runs(
-    monkeypatch, tmp_path
-):
-    # #199: the AppImage runtime forks (FUSE-mount parent + app child), so
-    # killing only the direct child leaves the app process — and any window it
-    # managed to open — alive into the swap and execv: the "second persona"
-    # standing behind the updated one. A hung probe must be killed as a whole
-    # process GROUP and waited on before the fallback probe spawns, and the
-    # fallback probe must be reaped the same way before verify returns.
+def test_verify_probe_group_is_reaped_before_returning(monkeypatch, tmp_path):
+    # #199: the AppImage runtime forks, so killing only the direct child can
+    # leave a straggler alive into the swap and execv. The probe must be
+    # killed as a whole process GROUP and waited on before verify returns.
     import subprocess
 
     staged = tmp_path / "new.AppImage"
     staged.write_bytes(b"x")
     events = []
 
-    class _Hung:
-        pid = 111
-        returncode = None
-
-        def communicate(self, timeout=None):
-            raise subprocess.TimeoutExpired("probe", timeout)
-
-        def wait(self, timeout=None):
-            events.append("wait-111")
-            return 0
-
-        def kill(self):
-            events.append("kill-111")
-
-    class _Clean:
-        pid = 222
-        returncode = 0
-
-        def poll(self):
-            return 0
-
-        def wait(self, timeout=None):
-            events.append("wait-222")
-            return 0
-
-        def kill(self):
-            events.append("kill-222")
-
-    procs = [_Hung(), _Clean()]
-
     def fake_popen(cmd, **kw):
-        proc = procs.pop(0)
-        events.append(f"spawn-{proc.pid}")
+        proc = _RuntimeProbe(extract_to=kw.get("cwd"), pid=111)
+        proc.wait = lambda timeout=None: events.append("wait") or 0
+        events.append("spawn")
         return proc
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
@@ -1193,6 +1141,60 @@ def test_verify_probe_group_is_reaped_before_anything_else_runs(
         raising=False,
     )
     assert au.verify_appimage_runs(str(staged)) is True
-    assert events.index("killpg-111") < events.index("spawn-222")
-    assert events.index("wait-111") < events.index("spawn-222")
-    assert "killpg-222" in events and "wait-222" in events
+    assert events.index("killpg-111") > events.index("spawn")
+    assert "wait" in events
+
+
+def test_verify_probe_accepts_a_slow_patternless_extraction(
+    monkeypatch, tmp_path
+):
+    # An older runtime without pattern support extracts the WHOLE payload and
+    # can outlive the timeout — but AppRun lands early, and its presence
+    # already proves the runtime executes here and the squashfs is readable.
+    # The timed-out probe is reaped, not re-run (a second spawn was the old
+    # GUI fallback that doubled the #199 window).
+    import subprocess
+
+    staged = tmp_path / "new.AppImage"
+    staged.write_bytes(b"x")
+    spawns = []
+
+    def fake_popen(cmd, **kw):
+        spawns.append(list(cmd))
+        return _RuntimeProbe(extract_to=kw.get("cwd"), hang=True)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(au.os, "killpg", lambda *a: None, raising=False)
+    assert au.verify_appimage_runs(str(staged)) is True
+    assert len(spawns) == 1
+
+
+def test_verify_probe_rejects_a_runtime_that_cant_read_the_payload(
+    monkeypatch, tmp_path
+):
+    # The v2.1.3 brick class: the runtime exits nonzero ("open dir error",
+    # truncated/corrupt squashfs) and nothing was extracted — the swap must
+    # never happen.
+    import subprocess
+
+    staged = tmp_path / "new.AppImage"
+    staged.write_bytes(b"x")
+    monkeypatch.setattr(
+        subprocess, "Popen", lambda cmd, **kw: _RuntimeProbe(returncode=127)
+    )
+    monkeypatch.setattr(au.os, "killpg", lambda *a: None, raising=False)
+    assert au.verify_appimage_runs(str(staged)) is False
+
+
+def test_verify_probe_rejects_a_hung_runtime_with_nothing_extracted(
+    monkeypatch, tmp_path
+):
+    import subprocess
+
+    staged = tmp_path / "new.AppImage"
+    staged.write_bytes(b"x")
+    monkeypatch.setattr(
+        subprocess, "Popen", lambda cmd, **kw: _RuntimeProbe(hang=True)
+    )
+    monkeypatch.setattr(au.os, "killpg", lambda *a: None, raising=False)
+    assert au.verify_appimage_runs(str(staged)) is False

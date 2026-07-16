@@ -87,6 +87,43 @@ def test_watch_timeout_end_logs_reason(monkeypatch):
     assert "Session ended: fox" not in messages
 
 
+def test_benign_engine_errors_skip_activity_log_but_hit_file_log(
+    monkeypatch, caplog,
+):
+    # Benign chromium stderr (USB enumeration, OID metadata, aborted-
+    # connection handshakes) must not reach the activity log as red ERROR
+    # lines, but must stay in the app log for diagnosis. A real engine error
+    # on the same stream must still surface.
+    benign_usb = (
+        "[21324:9448:0715/120000.123:ERROR:components\\device_event_log\\"
+        "device_event_log_impl.cc:202] USB: usb_service_win.cc:108 "
+        "SetupDiGetDeviceProperty(...) failed: Элемент не найден. (0x490)"
+    )
+    benign_ssl = (
+        "[1:2:0715/120000.123:ERROR:net/socket/ssl_client_socket_impl.cc:926]"
+        " handshake failed; returned -1, SSL error code 1, net_error -100"
+    )
+    real_error = (
+        "[1:1:0715/120000.123:ERROR:gpu_process_host.cc(999)] "
+        "GPU process exited unexpectedly: exit_code=139"
+    )
+    with caplog.at_level("DEBUG", logger="persona.browser.launcher"):
+        messages = _run_session(monkeypatch, [
+            "BROWSER_STARTED",
+            benign_usb,
+            benign_ssl,
+            real_error,
+            "LIFECYCLE close=window-gone pids=[10] streak=2",
+            "BROWSER_CLOSED",
+        ])
+    assert not any("device_event_log_impl" in m for m in messages)
+    assert not any("handshake failed" in m for m in messages)
+    assert any("gpu_process_host" in m for m in messages)
+    logged = [r.getMessage() for r in caplog.records]
+    assert any("device_event_log_impl" in m for m in logged)
+    assert any("handshake failed" in m for m in logged)
+
+
 def test_engine_death_without_close_signal_logs_unexpected(monkeypatch, caplog):
     # The engine process dying with no BROWSER_CLOSED (segfault, python-level
     # crash) used to end in the same bare "Session ended". It must be flagged

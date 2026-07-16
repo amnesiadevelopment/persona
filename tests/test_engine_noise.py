@@ -22,3 +22,51 @@ def test_real_messages_are_kept():
     ]
     for m in keep:
         assert not is_engine_noise(m), f"should be kept: {m!r}"
+
+
+def test_benign_chromium_error_lines_are_filtered():
+    benign = [
+        # Windows USB enumeration probing properties the host doesn't have
+        "[21324:9448:0715/120000.123:ERROR:components\\device_event_log\\"
+        "device_event_log_impl.cc:202] [12:00:00.123] USB: "
+        "usb_service_win.cc:108 SetupDiGetDeviceProperty"
+        "({{A45C254E-DF1C-4EFD-8020-67D146A850E0}}, 6) failed: "
+        "Элемент не "
+        "найден. (0x490)",
+        # EV-cert OID metadata decode chatter
+        "[21324:9448:0715/120000.123:ERROR:net\\cert\\"
+        "ev_root_ca_metadata.cc:161] Failed to decode OID: 0",
+        "[123:456:0715/120000.123:ERROR:net/cert/ev_root_ca_metadata.cc:161]"
+        " Failed to decode OID: 0",
+        # net_error -100 = ERR_CONNECTION_CLOSED: connection dropped
+        # mid-handshake (closed tab, cancelled prefetch), not a TLS failure
+        "[12345:67890:0715/120000.123:ERROR:net/socket/"
+        "ssl_client_socket_impl.cc:926] handshake failed; returned -1, "
+        "SSL error code 1, net_error -100",
+        # Linux VA-API probing without a usable GPU
+        "[12345:12345:ERROR:vaapi_wrapper.cc(1616)] vaInitialize failed: "
+        "unknown libva error",
+    ]
+    for m in benign:
+        assert is_engine_noise(m), f"should be filtered: {m!r}"
+
+
+def test_real_error_lines_still_surface():
+    real = [
+        # any handshake net_error other than -100 is a real TLS problem
+        "[12345:67890:0715/120000.123:ERROR:net/socket/"
+        "ssl_client_socket_impl.cc:926] handshake failed; returned -1, "
+        "SSL error code 1, net_error -101",
+        "[12345:67890:0715/120000.123:ERROR:net/socket/"
+        "ssl_client_socket_impl.cc:926] handshake failed; returned -1, "
+        "SSL error code 1, net_error -1002",
+        # -100 elsewhere in the net stack is not the benign handshake shape
+        "[1:2:ERROR:net/socket/ssl_client_socket_impl.cc:926] "
+        "certificate verification failed, net_error -100",
+        "[1:1:0715/120000.123:ERROR:gpu_process_host.cc(999)] "
+        "GPU process exited unexpectedly: exit_code=139",
+        "[1:1:ERROR:cert_verify_proc.cc(345)] "
+        "CertVerifyProc failed: ERR_CERT_DATE_INVALID",
+    ]
+    for m in real:
+        assert not is_engine_noise(m), f"should be kept: {m!r}"
