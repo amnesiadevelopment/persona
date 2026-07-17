@@ -1322,6 +1322,13 @@ class App:
 
         if self._engine2_busy or not inv.is_invisible_installed():
             return
+        # Reclaim any engine build a past update left stale (e.g. the ~600MB
+        # pinned firefox-15 an upgrade to firefox-16 kept around) before the
+        # network check, so disk is freed even when nothing new is fetched.
+        try:
+            inv.prune_superseded_builds(log=self._log)
+        except Exception:
+            pass
         try:
             tag, compatible = ff_engine.fetch_latest()
         except Exception:

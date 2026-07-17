@@ -100,6 +100,11 @@ class FakeUpstream(threading.Thread):
             conn.sendall(b"\x05\x05\x00\x01\x00\x00\x00\x00\x00\x00")
             return
         conn.sendall(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
+        if self.behavior == "drop_after_first":
+            data = conn.recv(4096)
+            if data:
+                conn.sendall(data)
+            return  # close the upstream side after one echo (upstream EOF)
         while True:
             data = conn.recv(4096)
             if not data:
@@ -181,3 +186,51 @@ def test_upstream_hang_times_out_with_failure_reply(monkeypatch):
         client.close()
         bridge.stop()
         upstream.join(timeout=5)
+
+
+def test_tunnel_sockets_have_tcp_keepalive():
+    # #184: a silent proxy circuit (Tor wedges, socket stays open with no bytes
+    # and no EOF) left both _pipe directions blocked on read() forever — Sheets
+    # stuck on "Working". TCP keepalive lets the OS detect the dead half-open
+    # tunnel and drop it, so the pipe unblocks and the browser reconnects. Both
+    # the client-side and upstream-side tunnel sockets must have SO_KEEPALIVE on.
+    bridge_mod._debug_tunnel_sockets().clear()
+    upstream, reply, client, bridge = _run_bridge_case("ok")
+    try:
+        assert reply[1] == 0x00
+        # round-trip proves the tunnel is fully established before we inspect it
+        client.sendall(b"ping")
+        assert _recvn(client, 4) == b"ping"
+        # both tunnel ends were captured (client-accept + upstream) and each has
+        # keepalive enabled. Inspect only still-open sockets — a fd=-1 means it
+        # already closed, which the OS reports as an error, not a missing option.
+        socks = [s for s in bridge_mod._debug_tunnel_sockets() if s.fileno() != -1]
+        assert len(socks) >= 2, "expected both tunnel sockets captured"
+        for sock in socks:
+            assert (
+                sock.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE) != 0
+            ), "tunnel socket missing SO_KEEPALIVE"
+    finally:
+        client.close()
+        upstream.join(timeout=5)
+        bridge.stop()
+
+
+def test_one_dead_pipe_direction_tears_the_whole_tunnel():
+    # #184: when one direction of the tunnel ends (upstream EOF), the browser's
+    # side must close too instead of hanging on its own read() — otherwise a
+    # one-way stall leaks a half-open tunnel. Upstream closes after echoing;
+    # the client read must return EOF promptly, not block.
+    upstream, reply, client, bridge = _run_bridge_case("drop_after_first")
+    try:
+        assert reply[1] == 0x00
+        client.sendall(b"hi")
+        assert _recvn(client, 2) == b"hi"
+        # upstream closed its side after the echo; the bridge must propagate the
+        # teardown so our recv returns EOF quickly, not hang.
+        client.settimeout(5)
+        assert client.recv(4096) == b""
+    finally:
+        client.close()
+        upstream.join(timeout=5)
+        bridge.stop()

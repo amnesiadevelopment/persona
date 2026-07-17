@@ -57,8 +57,13 @@ _NOISY_SUBSTRINGS = (
 
 # Chromium ERROR-level stderr that is provably benign: USB enumeration
 # probing device properties the host doesn't expose, EV-cert OID metadata
-# decode chatter, and VA-API probing without a usable GPU. Rendered red in
-# the Activity Log they read like failures, so keep them file-log only.
+# decode chatter, VA-API probing without a usable GPU, and WebRTC P2P/ICE
+# gathering against unreachable STUN/TURN (a scanner's WebRTC test drives ICE
+# with no real servers, so name-resolution and TURN-socket failures are
+# expected probe chatter). Rendered red in the Activity Log they read like
+# failures, so keep them file-log only. The WebRTC entries key on the P2P
+# source-file markers, not on bare "Failed to …", so a real DNS/socket error
+# elsewhere still surfaces.
 _BENIGN_ENGINE_ERRORS = (
     "device_event_log_impl.cc",
     "usb_service_win.cc",
@@ -66,6 +71,9 @@ _BENIGN_ENGINE_ERRORS = (
     "Failed to decode OID",
     "vaInitialize failed",
     "vaapi_wrapper.cc",
+    "socket_manager.cc",
+    "turn_port.cc",
+    "stun_port.cc",
 )
 
 # net_error -100 = ERR_CONNECTION_CLOSED: the connection was dropped

@@ -20,7 +20,7 @@ import time
 from ..engine.updater import is_newer
 from ...core import platform as _platform
 
-APP_VERSION = "2.5.0"
+APP_VERSION = "2.5.1"
 APP_REPO = "amnesiadevelopment/persona"
 
 
@@ -672,25 +672,31 @@ def _write_relaunch_bat(exe: str, installer: str, installer_pid, old_pid: int) -
         "goto settle\r\n"
         ":hold\r\n"
         "set /a tries+=1\r\n"
-        # ~5 min: the clock runs while the UAC prompt sits waiting for the
-        # user, so the bound must cover human dwell time plus the install
-        "if %tries% geq 300 goto launch\r\n"
-        "ping -n 2 127.0.0.1 >nul\r\n"
+        # The poll beat is a near-instant `ping -n 1` (~10ms), not a full ~1s
+        # `ping -n 2`: the ~0.3s tasklist snapshot above is throttle enough,
+        # so the loop catches the installer's exit within a fraction of a
+        # second instead of up to a second late — every one of those seconds
+        # is the user staring at nothing. The bound rises to ~900 beats to
+        # keep the same ~5-minute wall-clock headroom for a slow silent
+        # install now that each beat is a fraction of what it was.
+        "if %tries% geq 900 goto launch\r\n"
+        "ping -n 1 127.0.0.1 >nul\r\n"
         "goto wait\r\n"
         ":settle\r\n"
-        # one ping beat (~1s): handle release after the last holder exits is
-        # near-instant, and every extra second here is dead time between the
-        # update closing persona and reopening it
-        "ping -n 2 127.0.0.1 >nul\r\n"
+        # No sleep here: the wait loop already proved every holder is gone, so
+        # handle release is done, and the purge below retries rd on the rare
+        # straggler handle. A settle ping was a full second of dead time
+        # between the update closing persona and reopening it.
         ":purge\r\n"
         f'if not exist "{flet_app}" goto launch\r\n'
         f'rd /s /q "{flet_app}" >nul 2>&1\r\n'
         f'if not exist "{flet_app}" goto launch\r\n'
         "set /a purges+=1\r\n"
-        # ~1 min: covers handle-release stragglers; a holder that never dies
-        # must not block the relaunch forever
+        # bounded: covers handle-release stragglers; a holder that never dies
+        # must not block the relaunch forever. Recheck near-instantly — the
+        # exists probe is the throttle, not the ping.
         "if %purges% geq 60 goto launch\r\n"
-        "ping -n 2 127.0.0.1 >nul\r\n"
+        "ping -n 1 127.0.0.1 >nul\r\n"
         "goto purge\r\n"
         ":launch\r\n"
         # empty title + quoted path: `start` treats the first quoted token as a
@@ -698,10 +704,10 @@ def _write_relaunch_bat(exe: str, installer: str, installer_pid, old_pid: int) -
         f'start "" /D "{os.path.dirname(exe)}" "{exe}"\r\n'
         # `start` fails SILENTLY when the exe is still locked (an installer
         # that outlived the pid we watched, an AV scan): confirm the app is
-        # really up and retry the start until it is, bounded. One beat is
-        # enough — `start` returns once CreateProcess succeeded, so a
-        # launched image is already visible to tasklist.
-        "ping -n 2 127.0.0.1 >nul\r\n"
+        # really up and retry the start until it is, bounded. `start` returns
+        # only once CreateProcess succeeded, so the image is already visible
+        # to tasklist the instant we look — a near-instant ping is enough.
+        "ping -n 1 127.0.0.1 >nul\r\n"
         f'tasklist /FI "IMAGENAME eq {image}" /FO CSV /NH 2>nul'
         f' | find /I "{image}" >nul\r\n'
         "if not errorlevel 1 goto done\r\n"

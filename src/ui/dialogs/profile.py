@@ -288,10 +288,29 @@ def open_profile_dialog(
             except Exception:
                 pass
 
+    # The full engine/OS option sets, captured before any constraint narrows
+    # them, so the restrictions below can restore the complete choice.
+    _all_engine_options = list(engine_dropdown.options)
+    _all_os_options = list(os_dropdown.options)
+
+    def _apply_firefox_os_lock() -> None:
+        # stealth-Firefox reports a Windows platform regardless of os_type
+        # (#211): a macOS/Linux Firefox profile is an inconsistent lie. Pin the
+        # Firefox engine to windows and drop every other OS so none can be
+        # picked; chromium (which honors os_type) gets the full OS list back.
+        if _engine() == "firefox":
+            os_dropdown.value = "windows"
+            os_dropdown.options = [
+                o for o in _all_os_options if o.key == "windows"
+            ]
+        else:
+            os_dropdown.options = _all_os_options
+
     def on_engine_change(_: ft.ControlEvent) -> None:
         get_logger("ui.dialog").info(
             "engine on_select fired: engine=%s", engine_dropdown.value
         )
+        _apply_firefox_os_lock()
         _apply_engine_dependent()
         page.update()
         _refresh_search_controls()
@@ -303,26 +322,28 @@ def open_profile_dialog(
     # picks a mobile OS: force the engine to chromium, drop the Firefox option so
     # it can't be chosen, and hide the desktop resolution picker. Restore the full
     # engine choice when they switch back to a desktop OS.
-    _desktop_engine_options = list(engine_dropdown.options)
-
     def on_os_change(_: ft.ControlEvent) -> None:
-        mobile = is_mobile_os(os_dropdown.value or "windows")
+        os_value = os_dropdown.value or "windows"
+        mobile = is_mobile_os(os_value)
+        # A non-windows OS is incompatible with the windows-only Firefox engine:
+        # flip to chromium (mobile already does this; extend it to macOS/Linux).
+        if os_value != "windows" and _engine() == "firefox":
+            engine_dropdown.value = "chromium"
         if mobile:
-            if _engine() == "firefox":
-                engine_dropdown.value = "chromium"
             engine_dropdown.options = [
-                o for o in _desktop_engine_options if o.key != "firefox"
+                o for o in _all_engine_options if o.key != "firefox"
             ]
         else:
-            engine_dropdown.options = _desktop_engine_options
+            engine_dropdown.options = _all_engine_options
         resolution_section.visible = not mobile
+        _apply_firefox_os_lock()
         _apply_engine_dependent()
         page.update()
 
     os_dropdown.on_select = on_os_change
-    # Apply the mobile constraints for a profile that already has a mobile OS
-    # (editing one, or a create dialog defaulted to mobile).
-    if is_mobile_os(os_dropdown.value or "windows"):
+    # Apply the constraints for a profile that already has a mobile OS (editing
+    # one, or a create dialog defaulted to mobile) or the Firefox engine.
+    if is_mobile_os(os_dropdown.value or "windows") or _engine() == "firefox":
         on_os_change(None)  # type: ignore[arg-type]
 
     current_pool = (profile.bookmark_pool or "") if profile is not None else ""

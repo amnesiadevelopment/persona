@@ -334,16 +334,18 @@ def test_check_engine2_incompatible_says_update_persona(monkeypatch):
     assert any("newer persona" in m for m in logs)
 
 
-def test_prune_removes_old_marked_builds_keeps_new_and_pinned(monkeypatch, tmp_path):
-    # After firefox-16 is installed, prune the old firefox-14 (marked, ours);
-    # keep firefox-16 (the new active), firefox-15 (the package-pinned
-    # BINARY_VERSION, markerless) and anything >= keep.
+def test_prune_removes_old_builds_including_superseded_pinned(monkeypatch, tmp_path):
+    # #213: once firefox-16 is installed and active, the shipped pinned
+    # firefox-15 (markerless BINARY_VERSION) is dead weight — launches and the
+    # install check both resolve firefox-16, so removing firefox-15 reclaims
+    # ~600MB and never triggers a re-download. Prune firefox-14 (marked, ours)
+    # AND firefox-15 (superseded pinned); keep firefox-16 (the new active).
     _fake_cache(
         monkeypatch,
         tmp_path,
         [
             ("firefox-14", True, True),   # old, ours → pruned
-            ("firefox-15", True, False),  # pinned BINARY_VERSION → kept
+            ("firefox-15", True, False),  # superseded pinned → pruned (#213)
             ("firefox-16", True, True),   # new active → kept
         ],
         binary_version="firefox-15",
@@ -351,14 +353,50 @@ def test_prune_removes_old_marked_builds_keeps_new_and_pinned(monkeypatch, tmp_p
     logs = []
     inv._prune_old_engine_builds(keep="firefox-16", log=logs.append)
     assert not (tmp_path / "firefox-14").exists()
-    assert (tmp_path / "firefox-15").exists()
+    assert not (tmp_path / "firefox-15").exists()
     assert (tmp_path / "firefox-16").exists()
     assert any("firefox-14" in m for m in logs)
+    assert any("firefox-15" in m for m in logs)
+
+
+def test_prune_superseded_builds_cleans_stale_pinned_at_startup(monkeypatch, tmp_path):
+    # #213: a firefox-15→16 upgrade that happened on an earlier run left the
+    # ~600MB pinned firefox-15 behind (the old prune kept it). The startup
+    # housekeeping prune reclaims it now that firefox-16 is active — without a
+    # fresh download.
+    _fake_cache(
+        monkeypatch,
+        tmp_path,
+        [
+            ("firefox-15", True, False),  # superseded pinned, left stale
+            ("firefox-16", True, True),   # active
+        ],
+        binary_version="firefox-15",
+    )
+    logs = []
+    inv.prune_superseded_builds(log=logs.append)
+    assert not (tmp_path / "firefox-15").exists()
+    assert (tmp_path / "firefox-16").exists()
+    assert any("firefox-15" in m for m in logs)
+
+
+def test_prune_superseded_builds_keeps_sole_engine(monkeypatch, tmp_path):
+    # Only the pinned build installed — nothing higher is active, so it must
+    # NOT be pruned (that would delete the only engine and force a re-download).
+    _fake_cache(
+        monkeypatch,
+        tmp_path,
+        [("firefox-15", True, False)],
+        binary_version="firefox-15",
+    )
+    inv.prune_superseded_builds()
+    assert (tmp_path / "firefox-15").exists()
 
 
 def test_prune_leaves_unmarked_half_downloads(monkeypatch, tmp_path):
-    # A crashed mid-extract build (binary, no marker) is not ours to delete —
-    # leave it (a later download resumes/overwrites it).
+    # A crashed mid-extract build at a NON-pinned version (binary, no marker)
+    # is a half download, not ours to delete — leave it (a later download
+    # resumes/overwrites it). Only the pinned version is safe to prune markerless.
     _fake_cache(
         monkeypatch,
         tmp_path,

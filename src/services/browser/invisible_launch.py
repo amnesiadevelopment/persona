@@ -16,6 +16,7 @@ import threading
 import time
 
 from ...core import platform as _platform
+from .firefox_bookmarks import places_ready
 
 
 # Written into a build's cache dir after a successful extraction. A build
@@ -322,11 +323,16 @@ def install_engine_build(version: str, progress=None, log=None) -> bool:
 
 
 def _prune_old_engine_builds(keep: str, log=None) -> None:
-    """Delete downloaded firefox-NN builds older than `keep`, now that `keep` is
-    installed and active — reclaiming ~320MB per stale build. Only prunes builds
-    LOWER than `keep`; never the package's own pinned BINARY_VERSION (it has no
-    completion marker and the engine re-downloads it), and never `keep` itself.
-    Best-effort: a build in use / undeletable is left alone."""
+    """Delete firefox-NN builds older than `keep`, now that `keep` is installed
+    and active — reclaiming ~320-600MB per stale build. Prunes any build LOWER
+    than `keep`, including the package's own pinned BINARY_VERSION once a newer
+    build has superseded it: launches resolve the highest installed build
+    (active_build → _invisible_binary_path), and is_invisible_installed checks
+    that same active build — so with `keep` present the pinned dir is dead
+    weight and its removal never triggers a re-download. Never `keep` itself.
+    A markerless dir at the pinned version is the shipped engine, safe to
+    remove; a markerless dir at any OTHER version is a half-finished download,
+    left alone. Best-effort: a build in use / undeletable is left alone."""
     from ..engine.firefox import build_number
 
     try:
@@ -345,16 +351,39 @@ def _prune_old_engine_builds(keep: str, log=None) -> None:
     for d in root.iterdir():
         tag = d.name
         n = build_number(tag)
-        if n < 0 or n >= keep_n or tag == BINARY_VERSION:
+        if n < 0 or n >= keep_n:
             continue
-        if not (d / _INSTALL_MARKER).exists():
-            continue  # only prune builds we fully installed (not a half download)
+        # Prune a build we fully installed (has our marker) OR the shipped
+        # pinned build now that a newer one is active. Any other markerless
+        # dir is a half-finished download — leave it for a later resume.
+        if not (d / _INSTALL_MARKER).exists() and tag != BINARY_VERSION:
+            continue
         try:
             shutil.rmtree(d)
             if log:
                 log(f"Firefox engine: removed old build {tag}")
         except OSError:
             pass
+
+
+def prune_superseded_builds(log=None) -> None:
+    """Housekeeping prune to run at startup: reclaim disk from any build older
+    than the active one, including a pinned build a past engine update already
+    superseded (the ~600MB firefox-15 an upgrade to firefox-16 left behind).
+
+    _prune_old_engine_builds only runs right after a fresh download, so a build
+    that went stale on an EARLIER run (or before this cleanup existed) would sit
+    forever. Only prunes when a strictly-higher build is active, so it never
+    touches the sole installed engine."""
+    from ..engine.firefox import build_number
+
+    builds = installed_builds()
+    if len(builds) < 2:
+        return  # nothing older than the active build to reclaim
+    active = builds[-1]
+    if build_number(active) < 0:
+        return
+    _prune_old_engine_builds(keep=active, log=log)
 
 
 class _KeepRangeRedirect(__import__("urllib.request", fromlist=["HTTPRedirectHandler"]).HTTPRedirectHandler):
@@ -977,6 +1006,34 @@ _NO_STARTUP_FETCH = {
 }
 
 
+def _wal_settled(places_db: str) -> bool:
+    """Whether the places `-wal` has stopped growing — Places has finished its
+    initial writes (the bookmark roots among them) and quiesced.
+
+    This is a plain stat of the -wal file, so it needs NO sqlite connection and
+    NO lock. On macOS the stealth-Firefox holds places.sqlite under an exclusive
+    lock for its whole run, so a separate-connection readiness read (places_ready)
+    is locked out the entire headless init and can't be used to detect when the
+    roots have landed. The -wal size settling is the lock-free signal that the
+    engine has done its initial Places work and is safe to close, after which
+    the roots become readable to the post-close places_ready check."""
+    wal = places_db + "-wal"
+    try:
+        size = os.path.getsize(wal)
+    except OSError:
+        return False
+    # A fresh -wal that hasn't grown past the header yet hasn't seen the roots.
+    if size <= 0:
+        return False
+    prev = _wal_settled._sizes.get(places_db)
+    _wal_settled._sizes[places_db] = size
+    # Settled once we observe the same non-trivial size on two consecutive polls.
+    return prev is not None and prev == size
+
+
+_wal_settled._sizes = {}
+
+
 def _init_places_db(
     profile_dir: str,
     seed: int,
@@ -1010,8 +1067,6 @@ def _init_places_db(
         return False
     import threading
 
-    from .firefox_bookmarks import places_ready
-
     def stopped() -> bool:
         return stop_event is not None and stop_event.is_set()
 
@@ -1030,6 +1085,17 @@ def _init_places_db(
 
     places = os.path.join(profile_dir, "places.sqlite")
     deadline = time.monotonic() + timeout
+
+    # macOS stealth-Firefox holds places.sqlite under an EXCLUSIVE lock for its
+    # whole run, so a separate-connection readiness read (places_ready) is
+    # locked out the entire headless init and never returns True until the
+    # engine exits — the init used to burn the full timeout (~83-90s) waiting
+    # on a read that can't succeed (#207, Mac-only). There, gate readiness on
+    # the lock-free -wal settle instead; the post-close places_ready confirms
+    # the roots once the lock releases. Win/Linux WAL allows a concurrent
+    # reader, so places_ready stays the direct, precise signal.
+    roots_ready = _wal_settled if _platform.IS_MACOS else places_ready
+    _wal_settled._sizes.pop(places, None)
 
     for _attempt in range(3):
         if stopped() or time.monotonic() >= deadline:
@@ -1075,7 +1141,7 @@ def _init_places_db(
                     while (
                         time.monotonic() < deadline
                         and not stopped()
-                        and not places_ready(places)
+                        and not roots_ready(places)
                     ):
                         time.sleep(0.5)
                     ready.set()
@@ -1984,6 +2050,16 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
             _upsert_prefs_js(profile_dir, {"browser.uidensity": 2})
     if proxy:
         kwargs["proxy"] = proxy
+        # Firefox owns its own proxy sockets (playwright's native proxy), so the
+        # bridge's SO_KEEPALIVE can't cover them. Turn on Firefox's TCP keepalive
+        # so a silent half-open proxy circuit (Tor wedges: socket open, no bytes,
+        # no EOF) is detected and dropped instead of leaving a long-lived stream
+        # — a Sheets collab websocket — hung on "Working" (#184). idle_time is in
+        # seconds; the default is off for content sockets over a proxy.
+        kwargs["extra_prefs"]["network.tcp.keepalive.enabled"] = True
+        kwargs["extra_prefs"]["network.tcp.keepalive.idle_time"] = 30
+        kwargs["extra_prefs"]["network.tcp.keepalive.retry_interval"] = 10
+        kwargs["extra_prefs"]["network.tcp.keepalive.probe_count"] = 4
     locale = cfg.get("locale", "")
     timezone = cfg.get("timezone", "")
     if locale:

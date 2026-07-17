@@ -51,6 +51,23 @@ def test_benign_chromium_error_lines_are_filtered():
         assert is_engine_noise(m), f"should be filtered: {m!r}"
 
 
+def test_benign_webrtc_p2p_lines_are_filtered():
+    # A fingerprint scanner's WebRTC test (iphey) drives ICE gathering with no
+    # reachable STUN/TURN, so chromium's P2P stack logs name-resolution and
+    # TURN-socket failures at ERROR level. They are expected probe chatter, not
+    # a persona failure — file-log only, never a red Activity Log line (#212).
+    benign = [
+        "[12345:67890:0716/120000.123:ERROR:socket_manager.cc(120)] "
+        "Failed to resolve address example.com: net_error -105",
+        "[12345:67890:0716/120000.123:ERROR:turn_port.cc(456)] "
+        "Failed to create TURN client socket",
+        "[12345:67890:0716/120000.123:ERROR:stun_port.cc(200)] "
+        "Jingle:Port[...] UDP send of 0 bytes failed with error 1",
+    ]
+    for m in benign:
+        assert is_engine_noise(m), f"should be filtered: {m!r}"
+
+
 def test_real_error_lines_still_surface():
     real = [
         # any handshake net_error other than -100 is a real TLS problem

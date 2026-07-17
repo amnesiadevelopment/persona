@@ -15,6 +15,60 @@ from urllib.parse import urlparse
 
 _UPSTREAM_TIMEOUT = 15.0
 
+# TCP keepalive on both ends of a tunnel so the OS detects a SILENT half-open
+# proxy circuit (Tor wedges: the socket stays open with no bytes and no EOF)
+# and drops it — otherwise both _pipe directions block on read() forever and a
+# long-lived stream (a Sheets collab websocket) hangs on "Working" (#184). Probe
+# after 30s idle, every 10s, give up after 4 misses (~70s to a forced RST).
+_KEEPALIVE_IDLE = 30
+_KEEPALIVE_INTVL = 10
+_KEEPALIVE_CNT = 4
+
+# Test hook: every tunnel socket (client-accept + upstream) we enabled keepalive
+# on, so a test can assert the option is really set on the live sockets.
+_tunnel_sockets: "list[socket.socket]" = []
+
+
+def _debug_tunnel_sockets() -> "list[socket.socket]":
+    return list(_tunnel_sockets)
+
+
+def _enable_keepalive(sock: "socket.socket | None") -> None:
+    """Turn on TCP keepalive with aggressive timers on a stream socket. Silent
+    on any platform/option the socket doesn't support — keepalive is a
+    best-effort safety net, never a hard requirement for the tunnel to work."""
+    if sock is None:
+        return
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    except OSError:
+        return
+    _tunnel_sockets.append(sock)
+    # Per-connection idle/interval/count where the platform exposes them.
+    # Linux: TCP_KEEPIDLE/INTVL/CNT. macOS: TCP_KEEPALIVE is the idle time.
+    # Windows: no per-socket tunables here (system defaults apply); the
+    # SO_KEEPALIVE flag above is enough to get the OS probing.
+    for opt, val in (
+        ("TCP_KEEPIDLE", _KEEPALIVE_IDLE),
+        ("TCP_KEEPALIVE", _KEEPALIVE_IDLE),
+        ("TCP_KEEPINTVL", _KEEPALIVE_INTVL),
+        ("TCP_KEEPCNT", _KEEPALIVE_CNT),
+    ):
+        code = getattr(socket, opt, None)
+        if code is None:
+            continue
+        try:
+            sock.setsockopt(socket.IPPROTO_TCP, code, val)
+        except OSError:
+            pass
+
+
+def _sock_of(writer: "asyncio.StreamWriter") -> "socket.socket | None":
+    try:
+        return writer.get_extra_info("socket")
+    except Exception:
+        return None
+
 
 class _ConnectRejected(ConnectionError):
     def __init__(self, rep: int) -> None:
@@ -96,10 +150,10 @@ class ProxyBridge:
                 return
             writer.write(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")  # success
             await writer.drain()
-            await asyncio.gather(
-                _pipe(reader, up_w),
-                _pipe(up_r, writer),
-            )
+            # Keepalive on the browser-facing socket too: the browser end can go
+            # silent-dead the same way the upstream can.
+            _enable_keepalive(_sock_of(writer))
+            await _splice(reader, up_w, up_r, writer)
         except Exception:
             pass
         finally:
@@ -112,6 +166,7 @@ class ProxyBridge:
         port: int,
     ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
         r, w = await asyncio.open_connection(self._up_host, self._up_port)
+        _enable_keepalive(_sock_of(w))
         try:
             # greeting: offer no-auth + user/pass
             w.write(b"\x05\x02\x00\x02")
@@ -191,6 +246,32 @@ async def _read_connect_reply(reader: asyncio.StreamReader) -> None:
     elif atyp == 0x04:
         await reader.readexactly(16)
     await reader.readexactly(2)
+
+
+async def _splice(
+    client_r: asyncio.StreamReader,
+    up_w: asyncio.StreamWriter,
+    up_r: asyncio.StreamReader,
+    client_w: asyncio.StreamWriter,
+) -> None:
+    """Pump both directions of a tunnel until EITHER ends, then tear down the
+    whole tunnel. Running the two pipes under a gather let one direction end
+    (upstream EOF) while its sibling stayed blocked on read() — on a half-open
+    circuit that read never returns, leaking a one-way-dead tunnel (#184).
+    Closing both writers when the first pipe finishes turns the peer's next
+    read into an EOF, so the sibling unwinds instead of hanging."""
+    c2u = asyncio.ensure_future(_pipe(client_r, up_w))
+    u2c = asyncio.ensure_future(_pipe(up_r, client_w))
+    try:
+        await asyncio.wait({c2u, u2c}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for w in (up_w, client_w):
+            with _suppress():
+                w.close()
+        for task in (c2u, u2c):
+            task.cancel()
+        with _suppress():
+            await asyncio.gather(c2u, u2c, return_exceptions=True)
 
 
 async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:

@@ -285,6 +285,58 @@ def test_create_with_nothing_checked_saves_empty_selection():
     assert saved["bookmarks"] == []
 
 
+def test_firefox_engine_restricts_os_to_windows():
+    # #211: stealth-Firefox reports Windows platform regardless of os_type, so a
+    # macOS/Linux Firefox profile is an inconsistent lie. Picking the Firefox
+    # engine forces the OS to windows and drops every non-windows option, so no
+    # inconsistent profile can be created.
+    page = _open(None)  # fresh create, defaults to chromium/windows
+    os_dd = _find_dropdown(page, "Operating System")
+    engine_dd = _find_dropdown(page, "Engine")
+    assert os_dd is not None and engine_dd is not None
+    # Pick a non-windows desktop OS first, then switch engine to firefox.
+    os_dd.value = "macos"
+    os_dd.on_select(None)
+    engine_dd.value = "firefox"
+    engine_dd.on_select(None)
+    assert os_dd.value == "windows"
+    assert {o.key for o in os_dd.options} == {"windows"}
+    # Switching back to chromium restores the full OS choice.
+    engine_dd.value = "chromium"
+    engine_dd.on_select(None)
+    keys = {o.key for o in os_dd.options}
+    assert {"windows", "macos", "linux", "android", "ios"} <= keys
+
+
+def test_selecting_nonwindows_os_forces_chromium_off_firefox():
+    # #211 (the other direction): if a Firefox profile is somehow on a
+    # non-windows OS and the user picks macOS/Linux, the engine flips to
+    # chromium — the only engine that honors a non-windows platform.
+    page = _open(None)
+    os_dd = _find_dropdown(page, "Operating System")
+    engine_dd = _find_dropdown(page, "Engine")
+    engine_dd.value = "firefox"
+    engine_dd.on_select(None)
+    assert os_dd.value == "windows"  # firefox pinned it to windows
+    # Now force a linux pick; the restriction re-opens the OS list, but a
+    # non-windows desktop choice must knock the engine back to chromium.
+    os_dd.options = [ft.dropdown.Option("windows"), ft.dropdown.Option("linux")]
+    os_dd.value = "linux"
+    os_dd.on_select(None)
+    assert engine_dd.value == "chromium"
+
+
+def test_edit_firefox_profile_keeps_windows_os():
+    # An existing Firefox profile (engine locked on edit) shows windows and only
+    # windows in the OS list — consistent with what the engine actually spoofs.
+    prof = Profile(name="FFwin", engine="firefox", os_type="windows",
+                   resolution="auto")
+    page = _open(prof)
+    os_dd = _find_dropdown(page, "Operating System")
+    assert os_dd.value == "windows"
+    assert {o.key for o in os_dd.options} == {"windows"}
+
+
 def test_selecting_mobile_os_forces_chromium_and_hides_resolution():
     page = _open(None)
     os_dd = _find_dropdown(page, "Operating System")

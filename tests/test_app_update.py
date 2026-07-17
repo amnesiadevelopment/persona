@@ -326,9 +326,10 @@ def test_relaunch_bat_waits_for_installer_image_not_just_broker_pid(tmp_path):
     assert '/C:"persona-windows-setup-v2.4.5.tmp"' in wait
     # the broker pid is still checked (harmless, and right while it lives)
     assert 'tasklist /FI "PID eq 4242"' in wait
-    # the bound must cover the user staring at the UAC prompt plus the
-    # install itself — ~5 minutes, not the old ~2
-    assert "geq 300" in wait
+    # the bound must cover a slow silent install — the beat is now near-instant
+    # (tasklist-throttled, ~0.3s), so the iteration count rises to keep the same
+    # ~5-minute wall-clock headroom
+    assert "geq 900" in wait
 
 
 def test_windows_relaunch_uses_bat_even_without_installer_pid(
@@ -377,12 +378,12 @@ def test_windows_relaunch_uses_bat_even_without_installer_pid(
     assert '/C:"persona-windows-setup.tmp"' in bat
 
 
-def test_relaunch_bat_settle_is_brief(tmp_path):
-    # #162: the settle between "everything exited" and the relaunch is one
-    # ping beat (~1s), not more — the OS releases the dead processes' file
-    # handles near-instantly, and every extra second here is a second the
-    # user stares at nothing between the update closing and reopening. The
-    # poll cadence stays at ~1s (cmd has no reliable sub-second sleep).
+def test_relaunch_bat_settle_costs_no_dead_time(tmp_path):
+    # #205: the settle between "everything exited" and the purge was a full
+    # ping beat (~1s) of the user staring at nothing. It's redundant: the
+    # wait loop already proved every holder is gone, and the purge retries
+    # rd on the rare straggler handle — so the settle drops straight into
+    # the purge with no sleep. No ping may sit between :settle and :purge.
     exe = tmp_path / "persona.exe"
     exe.write_bytes(b"MZ")
     path = au._write_relaunch_bat(
@@ -393,9 +394,8 @@ def test_relaunch_bat_settle_is_brief(tmp_path):
             bat = f.read()
     finally:
         au.os.remove(path)
-    settle = bat.split(":settle")[1].split(":launch")[0]
-    assert "ping -n 2 " in settle
-    assert "ping -n 3" not in settle
+    settle = bat.split(":settle")[1].split(":purge")[0]
+    assert "ping" not in settle
 
 
 def test_relaunch_bat_clears_the_flet_extraction_before_start(tmp_path):
@@ -428,6 +428,10 @@ def test_relaunch_bat_clears_the_flet_extraction_before_start(tmp_path):
     assert "geq 60" in purge
     # only the clean settle path purges; the wait loop never runs rd
     assert "rd /s /q" not in bat.split(":settle")[0]
+    # #205: the retry beat is the near-instant ping — a lingering handle is
+    # rechecked ~0.3s later (the exists probe is the throttle), not 1s later
+    assert "ping -n 1 " in purge
+    assert "ping -n 2" not in purge
 
 
 def test_relaunch_bat_polls_with_one_snapshot_and_short_circuits(tmp_path):
@@ -436,8 +440,8 @@ def test_relaunch_bat_polls_with_one_snapshot_and_short_circuits(tmp_path):
     # each) back to back, on top of the ~1s ping. A beat must pay at most
     # one tasklist per still-alive check: the image names share ONE
     # unfiltered snapshot, and the first live hit short-circuits straight
-    # to the sleep. The #174 bound (geq 300 beats, covers UAC dwell), both
-    # pid waits, and the settle→purge→launch ordering (#195) all survive.
+    # to the sleep. The install bound (geq 900 beats of the faster poll),
+    # both pid waits, and the settle→purge→launch ordering (#195) all survive.
     exe = tmp_path / "persona.exe"
     exe.write_bytes(b"MZ")
     path = au._write_relaunch_bat(
@@ -465,13 +469,22 @@ def test_relaunch_bat_polls_with_one_snapshot_and_short_circuits(tmp_path):
     assert ":hold" in wait
     assert 'tasklist /FI "PID eq 4242"' in wait
     assert 'tasklist /FI "PID eq 7777"' in wait
-    assert "geq 300" in wait
+    # #205: the poll beat drops the 1s ping for a near-instant one — the
+    # ~0.3s tasklist snapshot is throttle enough, so the loop catches the
+    # installer's exit within a fraction of a second instead of up to 1s
+    # late. The bound moves to time-based headroom (geq 900) so the faster
+    # beat still covers a slow silent install without an early relaunch.
+    hold = wait.split(":hold")[1]
+    assert "ping -n 1 " in hold
+    assert "ping -n 2" not in hold
+    assert "geq 900" in wait
     assert bat.index(":settle") < bat.index(":purge") < bat.index(":launch")
-    # the post-start liveness check needs one ~1s beat, not two: `start`
-    # returns once CreateProcess succeeded, so the image is already visible
+    # #205: the post-start liveness check drops the 1s ping too — `start`
+    # returns only once CreateProcess succeeded, so the image is already
+    # visible to tasklist the instant we look.
     launch = bat.split(":launch")[1]
-    assert "ping -n 2 " in launch
-    assert "ping -n 3" not in launch
+    assert "ping -n 1 " in launch
+    assert "ping -n 2" not in launch
 
 
 def test_relaunch_bat_is_silent_and_ascii(tmp_path):

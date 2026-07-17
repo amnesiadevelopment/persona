@@ -2188,6 +2188,82 @@ def test_init_places_db_waits_for_toolbar_root_not_a_fixed_sleep(
     assert places_ready(db) is True
 
 
+def test_init_places_db_macos_lock_does_not_burn_the_timeout(
+    monkeypatch, tmp_path
+):
+    # #207 (macOS half): on macOS stealth-Firefox holds places.sqlite under an
+    # EXCLUSIVE lock the whole time it runs, so places_ready() — which opens a
+    # SEPARATE connection — is locked out and returns False for the entire
+    # headless run. The in-run readiness gate must therefore NOT poll
+    # places_ready on macOS; it watches the -wal file settle (a stat, no sqlite
+    # lock) and closes as soon as Places has quiesced. Once the engine exits and
+    # the lock releases, the post-close places_ready read succeeds and the init
+    # reports success — WITHOUT sitting out the 90s timeout.
+    import sys
+    import threading
+    import time as _time
+    import types
+
+    from tests.test_firefox_bookmarks import _make_places
+
+    db = str(tmp_path / "places.sqlite")
+    wal = db + "-wal"
+    running = threading.Event()
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            # The DB file and its -wal appear immediately; Places writes the
+            # roots into the -wal shortly after and then quiesces (the -wal
+            # stops growing). The rows only become visible to a SEPARATE reader
+            # after the exclusive lock releases at __exit__.
+            running.set()
+            with open(wal, "wb") as f:
+                f.write(b"\x00" * 512)
+
+            def grow():
+                with open(wal, "ab") as f:
+                    f.write(b"\x00" * 4096)  # roots land, -wal grows once...
+
+            threading.Timer(0.2, grow).start()
+            return self
+
+        def __exit__(self, *a):
+            running.clear()
+            _make_places(db)  # lock released → roots now readable
+            return False
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(invisible_launch._platform, "IS_MACOS", True)
+    monkeypatch.setattr(invisible_launch._platform, "IS_LINUX", False)
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", False)
+    # places_ready is locked out (returns False) while FF runs; it only reads
+    # true after __exit__ built the roots.
+    import src.services.browser.firefox_bookmarks as fb
+    real_ready = fb.places_ready
+
+    def locked_ready(path):
+        if running.is_set():
+            return False  # separate connection locked out on macOS
+        return real_ready(path)
+
+    monkeypatch.setattr(invisible_launch, "places_ready", locked_ready)
+    monkeypatch.setattr(
+        invisible_launch, "_wait_profile_released", lambda d: True
+    )
+
+    t0 = _time.monotonic()
+    ok = invisible_launch._init_places_db(str(tmp_path), 1, timeout=90)
+    elapsed = _time.monotonic() - t0
+    assert ok is True
+    # The whole point: no 90s burn. A few seconds of -wal settling, not 83s.
+    assert elapsed < 15, f"macOS init took {elapsed:.1f}s (lock-wait not fixed)"
+
+
 def test_init_places_db_settles_profile_release_after_engine_exit(
     monkeypatch, tmp_path
 ):
@@ -3484,6 +3560,59 @@ def test_proxied_launch_gets_a_larger_per_attempt_budget(monkeypatch, tmp_path):
     assert proxied["per_try"] > local["per_try"]
 
 
+def test_proxied_launch_enables_firefox_tcp_keepalive(monkeypatch, tmp_path):
+    # #184: Firefox owns its own proxy sockets, so the bridge's SO_KEEPALIVE
+    # can't reach them. A proxied launch must turn on Firefox's own TCP
+    # keepalive so a silent half-open proxy circuit is detected and dropped
+    # instead of hanging a long-lived stream (Sheets collab websocket) on
+    # "Working". A DIRECT launch leaves it off (no proxy circuit to watch).
+    import os
+    import sys
+    import threading
+    import types
+
+    captured = {}
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            pass
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", False)
+    monkeypatch.setattr(invisible_launch, "_seed_firefox_bookmarks", lambda *a, **k: None)
+    monkeypatch.setattr(invisible_launch, "_kill_profile_firefox", lambda d, pids=None, rescan=True: None)
+
+    def fake_enter(InvisiblePlaywright, kwargs, profile_dir, attempts, per_try,
+                   stop_event=None):
+        captured["extra_prefs"] = dict(kwargs.get("extra_prefs", {}))
+        captured["proxy"] = kwargs.get("proxy")
+        return None
+
+    monkeypatch.setattr(invisible_launch, "_enter_on_worker", fake_enter)
+
+    def run(proxy_url):
+        captured.clear()
+        r, w = os.pipe()
+        cfg = {"profile_dir": str(tmp_path), "profile_name": "t", "seed": 1}
+        if proxy_url:
+            cfg["proxy_url"] = proxy_url
+        invisible_launch._child(cfg, w, stop_event=threading.Event())
+        os.close(r)
+        return dict(captured)
+
+    proxied = run("socks5://127.0.0.1:9050")
+    prefs = proxied["extra_prefs"]
+    assert prefs.get("network.tcp.keepalive.enabled") is True
+    assert prefs.get("network.tcp.keepalive.idle_time") == 30
+    assert prefs.get("network.tcp.keepalive.retry_interval") == 10
+    assert prefs.get("network.tcp.keepalive.probe_count") == 4
+
+    local = run("")
+    assert "network.tcp.keepalive.enabled" not in local["extra_prefs"]
+
+
 def test_child_releases_launch_lock_on_failed_launch(monkeypatch, tmp_path):
     # #154: a launch that fails (LAUNCH_FAILED: launch timed out) must release
     # the per-profile launch lock, or the next launch of the same profile waits
@@ -3721,9 +3850,8 @@ def test_init_places_db_cancels_on_stop(monkeypatch, tmp_path):
     mod = types.ModuleType("invisible_playwright")
     mod.InvisiblePlaywright = FakeEngine
     monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
-    from src.services.browser import firefox_bookmarks
-
-    monkeypatch.setattr(firefox_bookmarks, "places_ready", lambda p: False)
+    # readiness is checked through the module-level name (bound at import).
+    monkeypatch.setattr(invisible_launch, "places_ready", lambda p: False)
     monkeypatch.setattr(
         invisible_launch, "_wait_profile_released", lambda d: True
     )
@@ -3768,9 +3896,9 @@ def test_init_places_db_retries_wedged_enter(monkeypatch, tmp_path):
     mod = types.ModuleType("invisible_playwright")
     mod.InvisiblePlaywright = FakeEngine
     monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
-    from src.services.browser import firefox_bookmarks
-
-    monkeypatch.setattr(firefox_bookmarks, "places_ready", lambda p: True)
+    # places_ready is used through the module-level name (bound at import), so
+    # patch it there, not on the source module.
+    monkeypatch.setattr(invisible_launch, "places_ready", lambda p: True)
     monkeypatch.setattr(
         invisible_launch, "_wait_profile_released", lambda d: True
     )
