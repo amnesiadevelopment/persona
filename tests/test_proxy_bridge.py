@@ -216,6 +216,31 @@ def test_tunnel_sockets_have_tcp_keepalive():
         bridge.stop()
 
 
+def test_tunnel_sockets_have_tcp_nodelay():
+    # #184 (v2.5.1 live: keepalive alone didn't fix Sheets "Working" on a
+    # chromium+proxy profile): a live tunnel was stalling the collab websocket,
+    # not dying. Nagle's algorithm batches the tiny interactive WS frames Sheets
+    # sends, and combined with delayed-ACK downstream that compounds into
+    # multi-hundred-ms stalls that read as a permanent "Working". Disabling Nagle
+    # (TCP_NODELAY) on both tunnel ends sends each frame immediately.
+    bridge_mod._debug_tunnel_sockets().clear()
+    upstream, reply, client, bridge = _run_bridge_case("ok")
+    try:
+        assert reply[1] == 0x00
+        client.sendall(b"ping")
+        assert _recvn(client, 4) == b"ping"
+        socks = [s for s in bridge_mod._debug_tunnel_sockets() if s.fileno() != -1]
+        assert len(socks) >= 2, "expected both tunnel sockets captured"
+        for sock in socks:
+            assert (
+                sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY) != 0
+            ), "tunnel socket missing TCP_NODELAY (Nagle still batching frames)"
+    finally:
+        client.close()
+        upstream.join(timeout=5)
+        bridge.stop()
+
+
 def test_one_dead_pipe_direction_tears_the_whole_tunnel():
     # #184: when one direction of the tunnel ends (upstream EOF), the browser's
     # side must close too instead of hanging on its own read() — otherwise a

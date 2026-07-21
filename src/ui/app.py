@@ -242,8 +242,7 @@ class App:
         self._splash.stop()
         page.controls.clear()
         page.add(root)
-        if not app_settings.is_onboarding_done():
-            self._show_onboarding()
+        self._show_startup_notice()
         self._check_app_update_async()
         self._check_engines_periodic()
         self._auto_update_engine2_async()
@@ -1641,6 +1640,36 @@ class App:
             threading.Thread(
                 target=lambda: self._set_server(True), daemon=True
             ).start()
+
+    def _show_startup_notice(self) -> None:
+        """First frame after the UI builds: show the full onboarding on a real
+        first run, a short what's-new changelog after an update, or nothing when
+        the version is unchanged (#214/#215). The current version is recorded
+        LAST so the next start knows what the user has already seen — a lost
+        onboarding_done no longer re-triggers the welcome (#214)."""
+        from .changelog import notes_for
+        from .startup_notice import Notice, decide_startup_notice
+
+        current = app_update.APP_VERSION
+        notice = decide_startup_notice(
+            onboarding_done=app_settings.is_onboarding_done(),
+            last_version=app_settings.last_seen_version(),
+            current_version=current,
+        )
+        if notice is Notice.ONBOARDING:
+            self._show_onboarding()
+        elif notice is Notice.CHANGELOG:
+            notes = notes_for(current)
+            if notes:
+                from .dialogs.changelog import open_changelog_dialog
+
+                page = self.page
+                if page is not None:
+                    open_changelog_dialog(page, current, notes)
+        # Record what this session runs so the next start can tell first-run
+        # from update from unchanged. Onboarding still marks its own flag; this
+        # only tracks the version.
+        app_settings.set_last_seen_version(current)
 
     def _show_onboarding(self) -> None:
         page = self.page

@@ -1011,19 +1011,27 @@ def _wal_settled(places_db: str) -> bool:
     initial writes (the bookmark roots among them) and quiesced.
 
     This is a plain stat of the -wal file, so it needs NO sqlite connection and
-    NO lock. On macOS the stealth-Firefox holds places.sqlite under an exclusive
-    lock for its whole run, so a separate-connection readiness read (places_ready)
-    is locked out the entire headless init and can't be used to detect when the
-    roots have landed. The -wal size settling is the lock-free signal that the
-    engine has done its initial Places work and is safe to close, after which
-    the roots become readable to the post-close places_ready check."""
+    NO lock. The stealth-Firefox can hold places.sqlite under an exclusive lock
+    for its whole run — reliably on macOS, INTERMITTENTLY on Windows/Linux
+    (proven live in v2.5.1: fresh FF profiles hung 75s-3min there too) — so a
+    separate-connection readiness read (places_ready) gets locked out and can't
+    tell when the roots have landed. The -wal size settling is the lock-free
+    signal that the engine has done its initial Places work and is safe to
+    close, after which the roots become readable to the post-close places_ready
+    check.
+
+    Requires the -wal to have grown to a real size AND held it across two polls:
+    a rootless first-write -wal is only a few pages, and a page-cache checkpoint
+    can momentarily shrink it, so a minimum-size floor plus the stability check
+    avoids declaring 'settled' before Places has actually written the roots."""
     wal = places_db + "-wal"
     try:
         size = os.path.getsize(wal)
     except OSError:
         return False
-    # A fresh -wal that hasn't grown past the header yet hasn't seen the roots.
-    if size <= 0:
+    # A -wal that hasn't grown past a few pages hasn't seen the roots yet. The
+    # roots + their origins/places rows push it well past this floor.
+    if size < _WAL_ROOTS_FLOOR:
         return False
     prev = _wal_settled._sizes.get(places_db)
     _wal_settled._sizes[places_db] = size
@@ -1031,7 +1039,25 @@ def _wal_settled(places_db: str) -> bool:
     return prev is not None and prev == size
 
 
+# ~16 KiB: four 4KiB pages. A fresh Places -wal with only its schema is smaller;
+# writing the bookmark roots (moz_bookmarks + moz_places + moz_origins rows and
+# their indexes) pushes it past this. Tuned to sit above the empty-DB baseline
+# and below the roots-written size on all three OS.
+_WAL_ROOTS_FLOOR = 16 * 1024
 _wal_settled._sizes = {}
+
+
+def _roots_ready(places_db: str) -> bool:
+    """Readiness gate for the headless places init, robust on every OS.
+
+    True if EITHER the concurrent reader can see the toolbar root (places_ready
+    — the precise, fast signal, available whenever the writer isn't holding an
+    exclusive lock) OR the -wal has settled (the lock-free fallback for when the
+    reader is locked out). Preferring places_ready keeps the common case instant;
+    the -wal fallback stops a locked-out read from burning the whole 90s timeout
+    (#207) on ANY platform. The post-close places_ready is still the correctness
+    check — a false-early -wal settle only costs one re-init, never a bad seed."""
+    return places_ready(places_db) or _wal_settled(places_db)
 
 
 def _init_places_db(
@@ -1086,15 +1112,15 @@ def _init_places_db(
     places = os.path.join(profile_dir, "places.sqlite")
     deadline = time.monotonic() + timeout
 
-    # macOS stealth-Firefox holds places.sqlite under an EXCLUSIVE lock for its
-    # whole run, so a separate-connection readiness read (places_ready) is
-    # locked out the entire headless init and never returns True until the
-    # engine exits — the init used to burn the full timeout (~83-90s) waiting
-    # on a read that can't succeed (#207, Mac-only). There, gate readiness on
-    # the lock-free -wal settle instead; the post-close places_ready confirms
-    # the roots once the lock releases. Win/Linux WAL allows a concurrent
-    # reader, so places_ready stays the direct, precise signal.
-    roots_ready = _wal_settled if _platform.IS_MACOS else places_ready
+    # The stealth-Firefox can hold places.sqlite under an EXCLUSIVE lock for its
+    # whole run (reliably on macOS, intermittently on Win/Linux — proven live in
+    # v2.5.1), locking out the separate-connection places_ready read so the init
+    # burned the full ~90s timeout waiting on a read that can't succeed, then
+    # closed too late/hard and the seed failed (#207/#208). _roots_ready gates on
+    # places_ready OR the lock-free -wal settle on EVERY platform: instant when
+    # the reader is free, still bounded when it's locked out. The post-close
+    # places_ready stays the correctness check.
+    roots_ready = _roots_ready
     _wal_settled._sizes.pop(places, None)
 
     for _attempt in range(3):

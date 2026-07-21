@@ -20,7 +20,7 @@ import time
 from ..engine.updater import is_newer
 from ...core import platform as _platform
 
-APP_VERSION = "2.5.1"
+APP_VERSION = "2.5.2"
 APP_REPO = "amnesiadevelopment/persona"
 
 

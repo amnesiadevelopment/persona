@@ -50,3 +50,48 @@ def test_corrupt_file_treated_as_empty(tmp_path, monkeypatch):
     path.write_text("{not json")
     monkeypatch.setenv("PERSONA_SETTINGS_FILE", str(path))
     assert settings.get("x", "d") == "d"
+
+
+def test_set_never_loses_existing_keys_when_read_transiently_fails(
+    tmp_path, monkeypatch
+):
+    # #214: after a Windows auto-update the "Welcome" onboarding re-appeared —
+    # onboarding_done was being LOST. If a startup set() (server_enabled /
+    # auto_update) runs while _load() transiently can't read an existing file
+    # (a permission blip / race at relaunch), the old code overwrote the file
+    # with just the one key, dropping onboarding_done. A set() must NEVER
+    # clobber a settings file that exists on disk but couldn't be read this
+    # instant — it must back off rather than persist a partial.
+    path = tmp_path / "settings.json"
+    monkeypatch.setenv("PERSONA_SETTINGS_FILE", str(path))
+    settings.mark_onboarding_done()
+    assert settings.is_onboarding_done() is True
+
+    # Simulate a transient read failure on the NEXT read of the settings file
+    # (it's still there and valid on disk), then a set() during that window.
+    import builtins
+
+    real_open = builtins.open
+    state = {"fail_next": True}
+
+    def flaky_open(p, *a, **k):
+        if str(p) == str(path) and state["fail_next"]:
+            state["fail_next"] = False
+            raise OSError("transient read failure")
+        return real_open(p, *a, **k)
+
+    monkeypatch.setattr(builtins, "open", flaky_open)
+    settings.set_server_enabled(True)  # its _read fails → must back off, not clobber
+    monkeypatch.setattr(builtins, "open", real_open)
+
+    # onboarding_done must survive — the transient read must not have wiped it.
+    assert settings.is_onboarding_done() is True
+
+
+def test_last_seen_version_absent_by_default():
+    assert settings.last_seen_version() == ""
+
+
+def test_last_seen_version_persists():
+    settings.set_last_seen_version("2.5.1")
+    assert settings.last_seen_version() == "2.5.1"

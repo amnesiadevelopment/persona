@@ -33,21 +33,41 @@ def _debug_tunnel_sockets() -> "list[socket.socket]":
     return list(_tunnel_sockets)
 
 
-def _enable_keepalive(sock: "socket.socket | None") -> None:
-    """Turn on TCP keepalive with aggressive timers on a stream socket. Silent
-    on any platform/option the socket doesn't support — keepalive is a
-    best-effort safety net, never a hard requirement for the tunnel to work."""
+def _tune_tunnel_socket(sock: "socket.socket | None") -> None:
+    """Tune a tunnel-end stream socket for a long-lived interactive proxy hop.
+
+    Two things, both best-effort (silent on any platform/option the socket
+    doesn't support — the tunnel works without them, they only make it behave):
+
+    1. TCP_NODELAY: disable Nagle's algorithm. Google Sheets' collab websocket
+       sends a steady stream of TINY frames; Nagle holds each one waiting for the
+       previous segment's ACK, and with delayed-ACK on the far side that stacks
+       into multi-hundred-ms stalls that surface as a permanent "Working" (#184 —
+       keepalive alone didn't fix it because the tunnel was stalling, not dying).
+       A proxy relaying interactive traffic must never batch frames.
+
+    2. TCP keepalive with aggressive timers: let the OS detect and drop a SILENT
+       half-open circuit (Tor wedges: socket open, no bytes, no EOF) instead of
+       both _pipe directions blocking on read() forever."""
     if sock is None:
         return
+    tuned = False
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        tuned = True
+    except OSError:
+        pass
     try:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        tuned = True
     except OSError:
-        return
-    _tunnel_sockets.append(sock)
-    # Per-connection idle/interval/count where the platform exposes them.
-    # Linux: TCP_KEEPIDLE/INTVL/CNT. macOS: TCP_KEEPALIVE is the idle time.
-    # Windows: no per-socket tunables here (system defaults apply); the
-    # SO_KEEPALIVE flag above is enough to get the OS probing.
+        pass
+    if tuned:
+        _tunnel_sockets.append(sock)
+    # Per-connection keepalive idle/interval/count where the platform exposes
+    # them. Linux: TCP_KEEPIDLE/INTVL/CNT. macOS: TCP_KEEPALIVE is the idle time.
+    # Windows: no per-socket tunables here (system defaults apply); SO_KEEPALIVE
+    # above is enough to get the OS probing.
     for opt, val in (
         ("TCP_KEEPIDLE", _KEEPALIVE_IDLE),
         ("TCP_KEEPALIVE", _KEEPALIVE_IDLE),
@@ -150,9 +170,10 @@ class ProxyBridge:
                 return
             writer.write(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")  # success
             await writer.drain()
-            # Keepalive on the browser-facing socket too: the browser end can go
+            # Tune the browser-facing socket too (NODELAY + keepalive): the WS
+            # frames arrive from the browser on this end, and it can go
             # silent-dead the same way the upstream can.
-            _enable_keepalive(_sock_of(writer))
+            _tune_tunnel_socket(_sock_of(writer))
             await _splice(reader, up_w, up_r, writer)
         except Exception:
             pass
@@ -166,7 +187,7 @@ class ProxyBridge:
         port: int,
     ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
         r, w = await asyncio.open_connection(self._up_host, self._up_port)
-        _enable_keepalive(_sock_of(w))
+        _tune_tunnel_socket(_sock_of(w))
         try:
             # greeting: offer no-auth + user/pass
             w.write(b"\x05\x02\x00\x02")

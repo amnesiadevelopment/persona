@@ -13,6 +13,7 @@ SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
 _ONBOARDING_KEY = "onboarding_done"
 _SERVER_KEY = "server_enabled"
 _AUTO_UPDATE_KEY = "auto_update"
+_LAST_VERSION_KEY = "last_seen_version"
 
 
 def _path() -> str:
@@ -28,13 +29,25 @@ def _quarantine(path: str) -> None:
         pass
 
 
-def _load() -> dict:
-    path = _path()
+class _UnreadableSettings(Exception):
+    """The settings file exists on disk but couldn't be read this instant (a
+    permission blip, a race with the atomic replace at relaunch). Distinct from
+    a genuinely absent file — the caller must NOT overwrite it with a partial."""
+
+
+def _read(path: str) -> dict:
+    """Parse the settings file. Returns {} when the file is genuinely absent;
+    raises _UnreadableSettings when a file exists but this read failed, so a
+    write can back off instead of clobbering real preferences (#214)."""
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-    except OSError:
+    except FileNotFoundError:
         return {}
+    except OSError as e:
+        # The file is there (or we can't even tell) but we couldn't read it —
+        # a transient failure, never treat it as "empty settings".
+        raise _UnreadableSettings(str(e)) from e
     except ValueError:
         _quarantine(path)
         return {}
@@ -42,6 +55,14 @@ def _load() -> dict:
         return data
     _quarantine(path)
     return {}
+
+
+def _load() -> dict:
+    # Read-only callers tolerate a transient failure as "no value yet".
+    try:
+        return _read(_path())
+    except _UnreadableSettings:
+        return {}
 
 
 def _save(data: dict) -> None:
@@ -58,7 +79,14 @@ def get(key: str, default=None):
 
 
 def set(key: str, value) -> None:
-    data = _load()
+    # Merge into whatever is on disk. If the existing file can't be read right
+    # now, DON'T persist — writing {key: value} alone would drop every other
+    # preference (onboarding_done among them, which re-triggered onboarding
+    # after an update, #214). A missed write self-heals on the next set().
+    try:
+        data = _read(_path())
+    except _UnreadableSettings:
+        return
     data[key] = value
     _save(data)
 
@@ -85,3 +113,16 @@ def is_auto_update_enabled() -> bool:
 
 def set_auto_update_enabled(enabled: bool) -> None:
     set(_AUTO_UPDATE_KEY, bool(enabled))
+
+
+def last_seen_version() -> str:
+    """The APP_VERSION the last session recorded, or "" if never recorded (a
+    first run, or a pre-changelog install). Drives the after-update changelog
+    (#215): "" + not onboarded = first install → onboarding; a value that
+    differs from the current APP_VERSION = just updated → changelog."""
+    v = get(_LAST_VERSION_KEY, "")
+    return v if isinstance(v, str) else ""
+
+
+def set_last_seen_version(version: str) -> None:
+    set(_LAST_VERSION_KEY, str(version))

@@ -2218,14 +2218,15 @@ def test_init_places_db_macos_lock_does_not_burn_the_timeout(
             # The DB file and its -wal appear immediately; Places writes the
             # roots into the -wal shortly after and then quiesces (the -wal
             # stops growing). The rows only become visible to a SEPARATE reader
-            # after the exclusive lock releases at __exit__.
+            # after the exclusive lock releases at __exit__. The roots write
+            # pushes the -wal well past the roots floor (one 32KB WAL frame).
             running.set()
             with open(wal, "wb") as f:
-                f.write(b"\x00" * 512)
+                f.write(b"\x00" * 512)  # header-ish, below the roots floor
 
             def grow():
                 with open(wal, "ab") as f:
-                    f.write(b"\x00" * 4096)  # roots land, -wal grows once...
+                    f.write(b"\x00" * 40000)  # roots land: past the 16KiB floor
 
             threading.Timer(0.2, grow).start()
             return self
@@ -2262,6 +2263,116 @@ def test_init_places_db_macos_lock_does_not_burn_the_timeout(
     assert ok is True
     # The whole point: no 90s burn. A few seconds of -wal settling, not 83s.
     assert elapsed < 15, f"macOS init took {elapsed:.1f}s (lock-wait not fixed)"
+
+
+def test_init_places_db_locked_reader_does_not_burn_timeout_on_any_os(
+    monkeypatch, tmp_path
+):
+    # #207/#208 (v2.5.1 live regression): the exclusive-lock / late-roots hang is
+    # NOT macOS-only — on Windows AND Linux a fresh FF profile's first launch hit
+    # it too (75s-3min + BOOKMARK_SEED_FAILED), just less reliably. The readiness
+    # gate must fall back to the lock-free -wal settle on EVERY platform, not just
+    # macOS, so a locked-out places_ready read never burns the whole timeout.
+    import sys
+    import threading
+    import time as _time
+    import types
+
+    from tests.test_firefox_bookmarks import _make_places
+
+    db = str(tmp_path / "places.sqlite")
+    wal = db + "-wal"
+    running = threading.Event()
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            running.set()
+            with open(wal, "wb") as f:
+                f.write(b"\x00" * 512)
+            threading.Timer(
+                0.2, lambda: open(wal, "ab").write(b"\x00" * 40000)
+            ).start()
+            return self
+
+        def __exit__(self, *a):
+            running.clear()
+            _make_places(db)
+            return False
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    # Force a NON-macOS platform (Linux) — the bug reproduced here in the field.
+    monkeypatch.setattr(invisible_launch._platform, "IS_MACOS", False)
+    monkeypatch.setattr(invisible_launch._platform, "IS_LINUX", True)
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", False)
+
+    import src.services.browser.firefox_bookmarks as fb
+    real_ready = fb.places_ready
+
+    def locked_ready(path):
+        if running.is_set():
+            return False  # the separate reader is locked out here too
+        return real_ready(path)
+
+    monkeypatch.setattr(invisible_launch, "places_ready", locked_ready)
+    monkeypatch.setattr(
+        invisible_launch, "_wait_profile_released", lambda d: True
+    )
+
+    t0 = _time.monotonic()
+    ok = invisible_launch._init_places_db(str(tmp_path), 1, timeout=90)
+    elapsed = _time.monotonic() - t0
+    assert ok is True
+    assert elapsed < 15, f"non-macOS init took {elapsed:.1f}s (lock-wait not fixed)"
+
+
+def test_init_places_db_prefers_fast_places_ready_when_unlocked(
+    monkeypatch, tmp_path
+):
+    # When the concurrent read is NOT locked out (the common case), the gate must
+    # still resolve on the precise places_ready signal the instant the roots
+    # appear — WITHOUT waiting for the -wal to settle over two poll beats. So a
+    # DB whose roots are readable early finishes fast even if its -wal keeps
+    # changing.
+    import sys
+    import threading
+    import time as _time
+    import types
+
+    from tests.test_firefox_bookmarks import _make_places
+
+    db = str(tmp_path / "places.sqlite")
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            # roots readable immediately; no -wal settling needed
+            _make_places(db)
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(invisible_launch._platform, "IS_MACOS", False)
+    monkeypatch.setattr(invisible_launch._platform, "IS_LINUX", True)
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", False)
+    monkeypatch.setattr(
+        invisible_launch, "_wait_profile_released", lambda d: True
+    )
+
+    t0 = _time.monotonic()
+    ok = invisible_launch._init_places_db(str(tmp_path), 1, timeout=90)
+    assert ok is True
+    assert _time.monotonic() - t0 < 5
 
 
 def test_init_places_db_settles_profile_release_after_engine_exit(

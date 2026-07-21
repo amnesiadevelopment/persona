@@ -14,6 +14,7 @@ from src.models.bookmark import Bookmark, Pool
 from src.models.profile import Profile
 from src.services.ssh.store import SSHHost
 from src.ui.dialogs.bulk import open_bulk_dialog
+from src.ui.dialogs.changelog import open_changelog_dialog
 from src.ui.dialogs.confirm import open_confirm_dialog
 from src.ui.dialogs.export import open_export_dialog
 from src.ui.dialogs.pool import open_pool_dialog
@@ -36,7 +37,7 @@ class _FakePage:
 
 def _walk(control):
     yield control
-    for attr in ("content", "controls", "actions"):
+    for attr in ("title", "content", "controls", "actions"):
         child = getattr(control, attr, None)
         if child is None:
             continue
@@ -151,3 +152,26 @@ def test_confirm_dialog_custom_title_body_builds():
     )
     assert isinstance(page.shown, ft.AlertDialog)
     assert any("sure" in str(getattr(c, "value", "")) for c in _walk(page.shown))
+
+
+def test_changelog_dialog_builds_with_notes():
+    page = _FakePage()
+    open_changelog_dialog(
+        page, "2.5.2", ["Faster launch", "Proxy fix"], on_dismiss=lambda: None
+    )
+    assert isinstance(page.shown, ft.AlertDialog)
+    assert _has_button(page)
+    assert any("2.5.2" in str(getattr(c, "value", "")) for c in _walk(page.shown))
+    assert any("Faster launch" in str(getattr(c, "value", "")) for c in _walk(page.shown))
+
+
+def test_changelog_dialog_dismiss_calls_callback_and_pops():
+    page = _FakePage()
+    dismissed = []
+    open_changelog_dialog(
+        page, "2.5.2", ["x"], on_dismiss=lambda: dismissed.append(True)
+    )
+    btn = next(c for c in _walk(page.shown) if isinstance(c, _BUTTON_TYPES))
+    btn.on_click(None)
+    assert dismissed == [True]
+    assert page.shown is None  # dialog popped
