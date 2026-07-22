@@ -20,7 +20,7 @@ import time
 from ..engine.updater import is_newer
 from ...core import platform as _platform
 
-APP_VERSION = "2.5.2"
+APP_VERSION = "2.6.0"
 APP_REPO = "amnesiadevelopment/persona"
 
 
@@ -948,6 +948,41 @@ def _apply_macos(staged: str, say) -> bool:
     os._exit(0)
 
 
+def _try_windows_fast_update(say) -> bool:
+    """Attempt a Windows code-only update from the latest release's manifest.
+    Returns False (falls back to the full installer) when the manifest is
+    missing, requires a full install, or the swap can't be staged. Does not
+    return on success — the process exits so the swap .bat can replace app.zip.
+    Isolated in fast_update so the well-tested full-installer path is untouched."""
+    try:
+        from . import fast_update as fu
+    except Exception:
+        return False
+    if not fu.can_fast_update():
+        return False
+    api = releases_api()
+    if not api:
+        return False
+    body = _curl_get(api, headers={"Accept": "application/vnd.github+json"})
+    if not body:
+        return False
+    try:
+        import json
+
+        data = json.loads(body)
+    except Exception:
+        return False
+    assets = data.get("assets", []) or []
+    manifest_url, app_zip_url = fu.manifest_and_appzip_urls(assets)
+    if not manifest_url or not app_zip_url:
+        return False
+    manifest = fu.parse_manifest(_curl_get(manifest_url))
+    if not fu.should_fast_update(manifest, APP_VERSION):
+        return False
+    sha = str(manifest.get("app_zip_sha256", ""))
+    return fu.apply_code_only_and_restart(app_zip_url, sha, log=say)
+
+
 def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
     """Replace the running AppImage with the staged download and re-exec into
     it — but ONLY after proving the new binary actually launches, and with the
@@ -969,6 +1004,15 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
     # .exe can't replace itself, but a SEPARATE installer process can replace it
     # while persona exits, which is exactly what Chrome/Discord-style updaters do.
     if _platform.IS_WINDOWS:
+        # Fast path (#205): most releases change only the app's Python code
+        # (app.zip, ~1MB), not the 218MB runtime the Inno installer reinstalls.
+        # When the release's manifest says a code-only update is safe (runtime /
+        # deps unchanged), swap app.zip + its hash and relaunch — seconds instead
+        # of the ~30s reinstall. Does not return on success. Any decline/failure
+        # falls through to the full installer below (unchanged), so a bad manifest
+        # or a runtime-changing release always degrades to the working full path.
+        if _try_windows_fast_update(say):
+            return True  # unreachable on success (process exited); safety net
         if not staged or not os.path.isfile(staged):
             say("Update: installer missing.")
             return False

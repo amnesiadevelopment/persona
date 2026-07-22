@@ -207,7 +207,7 @@ def test_proxied_linux_chromium_keeps_vaapi_suppression(monkeypatch, tmp_path):
     assert "DnsOverHttps" in features
 
 
-def test_proxied_non_linux_chromium_disables_doh_only(monkeypatch, tmp_path):
+def test_proxied_non_linux_chromium_disables_doh_and_quic(monkeypatch, tmp_path):
     captured = _spawn_chromium_args(
         monkeypatch,
         tmp_path,
@@ -215,7 +215,36 @@ def test_proxied_non_linux_chromium_disables_doh_only(monkeypatch, tmp_path):
         store=_StoreWithGeolessProxy,
     )
     values = _disable_features_values(captured["args"])
-    assert values == ["DnsOverHttps"]
+    assert len(values) == 1
+    features = values[0].split(",")
+    assert "DnsOverHttps" in features
+    assert "EnableQuic" in features
+
+
+def test_proxied_chromium_disables_quic(monkeypatch, tmp_path):
+    # #184: SOCKS5 tunnels only TCP, but Google apps prefer QUIC (UDP/HTTP3) for
+    # their realtime collab channel. Behind the proxy that UDP can't traverse, so
+    # Sheets' channel never connects and the "Working" throbber sticks (and the
+    # calendar / currency overlays that load over it never paint). Disable QUIC so
+    # everything falls back to HTTP/2 over TCP, which the proxy carries. Both the
+    # switch and the feature-disable, per current Chromium.
+    captured = _spawn_chromium_args(
+        monkeypatch,
+        tmp_path,
+        Profile(name="quic-proxy", proxy="p1"),
+        store=_StoreWithGeolessProxy,
+    )
+    assert "--disable-quic" in captured["args"]
+    assert "EnableQuic" in _disable_features_values(captured["args"])[0].split(",")
+
+
+def test_unproxied_chromium_keeps_quic(monkeypatch, tmp_path):
+    # No proxy means QUIC's UDP flows freely and is the fingerprint-correct
+    # behaviour of a real Chrome — only kill it when a TCP-only proxy forces the
+    # fallback, so a direct profile isn't left without HTTP/3.
+    captured = _spawn_chromium_args(monkeypatch, tmp_path, Profile(name="quic-direct"))
+    assert "--disable-quic" not in captured["args"]
+    assert not any("EnableQuic" in v for v in _disable_features_values(captured["args"]))
 
 
 def test_hidpi_host_gets_render_scale_flag(monkeypatch, tmp_path):

@@ -45,6 +45,11 @@ def _force_os(monkeypatch, *, win=False, mac=False, linux=False):
     monkeypatch.setattr(au._platform, "IS_WINDOWS", win)
     monkeypatch.setattr(au._platform, "IS_MACOS", mac)
     monkeypatch.setattr(au._platform, "IS_LINUX", linux)
+    if win:
+        # Windows apply tests exercise the FULL-installer path; keep the #205
+        # code-only fast path from probing the real installed app.zip on a dev
+        # host (it would add a manifest-fetch curl before the installer).
+        monkeypatch.setattr(au, "_try_windows_fast_update", lambda say: False)
 
 
 _ASSETS = [

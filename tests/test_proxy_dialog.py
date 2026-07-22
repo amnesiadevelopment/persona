@@ -104,6 +104,33 @@ def test_paste_fills_all_fields_from_provider_string():
     assert paste.value == ""
 
 
+def test_bare_ip_port_splits_into_host_and_port():
+    page = _FakePage()
+    open_proxy_dialog(page, _FakeService(), on_save=lambda *a: None)
+    dlg = page.shown
+    paste = _field(dlg, "Paste proxy string")
+    paste.value = "190.2.142.241:10496"
+    paste.on_change(None)
+    assert _field(dlg, "Host").value == "190.2.142.241"
+    assert _field(dlg, "Port").value == "10496"
+    assert paste.value == ""
+
+
+def test_paste_splits_on_blur_when_change_didnt_fire():
+    # macOS flet may not emit on_change for a paste; on_blur must still split
+    # the pasted string when the user clicks away (#220).
+    page = _FakePage()
+    open_proxy_dialog(page, _FakeService(), on_save=lambda *a: None)
+    dlg = page.shown
+    paste = _field(dlg, "Paste proxy string")
+    # simulate a paste that fired NO change event: set value, then blur
+    paste.value = "190.2.142.241:10496"
+    assert paste.on_blur is not None
+    paste.on_blur(None)
+    assert _field(dlg, "Host").value == "190.2.142.241"
+    assert _field(dlg, "Port").value == "10496"
+
+
 def test_empty_paste_keeps_manual_entry():
     page = _FakePage()
     open_proxy_dialog(page, _FakeService(), on_save=lambda *a: None)

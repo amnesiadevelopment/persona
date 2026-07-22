@@ -25,6 +25,26 @@ from .firefox_bookmarks import places_ready
 _INSTALL_MARKER = ".persona-complete"
 
 
+# The FF engine speaks juggler, not CDP, so the MCP browser tools can't attach
+# over a debugging port the way they do for chromium. A running FF session
+# publishes an eval callable here (running JS on its live page through the
+# thread-affine worker); MCP looks it up by profile name for firefox profiles.
+_ff_eval_registry: "dict[str, object]" = {}
+
+
+def register_ff_eval(name: str, fn) -> None:
+    if name:
+        _ff_eval_registry[name] = fn
+
+
+def unregister_ff_eval(name: str) -> None:
+    _ff_eval_registry.pop(name, None)
+
+
+def get_ff_eval(name: str):
+    return _ff_eval_registry.get(name)
+
+
 def installed_builds() -> list[str]:
     """firefox-NN tags with a complete binary in the engine cache, ascending
     by build number.
@@ -758,6 +778,34 @@ def _outer_size_override_script() -> str:
     )
 
 
+def _language_override_script(locale: str) -> str:
+    """JS that pins navigator.language/languages to `locale`.
+
+    firefox-17 applies the locale to the Accept-Language HEADER (through
+    intl.accept_languages, built from the Playwright locale) but NOT to
+    navigator.language — that reports the host OS locale instead (uk-UA on a
+    Ukrainian Windows even behind a US proxy). Header en-US + JS uk-UA is an
+    internal contradiction a scanner flags as masking. Pin the JS getters to the
+    SAME locale the header already carries so the two agree. languages is
+    [locale, base] (e.g. ["en-US","en"]) to mirror the q-valued header. Empty
+    locale is a no-op — nothing to pin."""
+    if not locale:
+        return ""
+    base = locale.split("-", 1)[0]
+    langs = [locale] if base == locale else [locale, base]
+    langs_js = json.dumps(langs)
+    loc_js = json.dumps(locale)
+    return (
+        "(() => {"
+        "const L=" + loc_js + ",LS=" + langs_js + ";"
+        "const def=(k,v)=>{try{Object.defineProperty(Navigator.prototype,k,"
+        "{get:()=>v,configurable:true})}catch(e){}};"
+        "def('language', L);"
+        "def('languages', Object.freeze(LS.slice()));"
+        "})();"
+    )
+
+
 def _work_area() -> tuple[int, int]:
     """The usable desktop size in PHYSICAL pixels (excludes the taskbar).
     SPI_GETWORKAREA returns physical pixels on a DPI-aware process; divide by
@@ -793,7 +841,7 @@ def _work_area() -> tuple[int, int]:
         return (0, 0)
 
 
-def _seed_window_size(profile_dir: str) -> None:
+def _seed_window_size(profile_dir: str, screen: "tuple[int, int] | None" = None) -> None:
     """Seed the profile's INITIAL Firefox window size to half the work area
     so a fresh profile opens a normal mid-size window — the same feel as
     chromium's default. xulstore.json's main-window size restores in DEVICE
@@ -801,7 +849,15 @@ def _seed_window_size(profile_dir: str) -> None:
     scale persisted and restored as "1920"/"1068"), so the seed is physical
     px, NOT divided by the OS scale. Only when xulstore.json is absent:
     Firefox persists the user's own window size there, and a manual resize
-    must survive relaunches."""
+    must survive relaunches.
+
+    When a resolution was chosen the window is CAPPED to that spoofed screen:
+    at dpr=1 the CSS innerWidth equals the physical window width, so a window
+    wider than the spoofed screen made innerWidth > screen.width — an
+    impossible-for-a-real-browser combination (a window can't be wider than its
+    screen) that a scanner flags and that skews layout on non-responsive pages
+    (#216: a 1280-screen profile opened a ~1900px window, innerWidth 1898 >
+    screen 1280). Cap at screen minus a little chrome so inner stays ≤ screen."""
     if not profile_dir:
         return
     path = os.path.join(profile_dir, "xulstore.json")
@@ -811,6 +867,15 @@ def _seed_window_size(profile_dir: str) -> None:
     if not (aw and ah):
         return
     w, h = aw // 2, ah // 2
+    if screen:
+        sw, sh = screen
+        # Keep the whole window within the spoofed screen: the content area
+        # (innerWidth/Height at dpr=1) must not exceed screen.*, and the frame
+        # adds a little chrome, so cap the window a touch under the screen size.
+        if sw:
+            w = min(w, max(320, sw - 16))
+        if sh:
+            h = min(h, max(240, sh - 96))
     try:
         os.makedirs(profile_dir, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
@@ -1194,19 +1259,31 @@ def _init_places_db(
                 except OSError:
                     pass
             continue
-        # Entered: the worker leaves its roots-wait on ready/stop/deadline,
-        # then its polite close gets only close_grace on top (the settle
-        # below kills whatever a hung shutdown leaves behind).
+        # Entered: the worker leaves its roots-wait on ready/stop/deadline.
         while not ready.wait(0.5):
             if stopped() or time.monotonic() > deadline:
                 break
-        done.wait(close_grace)
+        # The roots are committed to places.sqlite the moment ready fires, and
+        # this throwaway run's session is wiped below — so there's nothing to
+        # gain by waiting out its polite close. On Windows that polite close ran
+        # the full close_grace (Firefox's async shutdown blockers survive
+        # fastShutdownStage here), and the release-wait added more on top — ~35s
+        # of pure teardown dead-air on top of every FIRST launch of a bookmarked
+        # profile (#219). Kill the headless engine immediately once the roots
+        # exist; _wait_profile_released below confirms it's gone before the
+        # visible launch. A brief nudge for the polite exit that's usually enough.
+        done.wait(1.0)
+        if not done.is_set():
+            _kill_profile_firefox(profile_dir)
         break
     # The engine's __exit__ is a polite Playwright teardown the multi-process
     # Firefox routinely survives; a REAL launch over a still-dying instance
     # can't come up cleanly. Don't proceed until this profile's Firefox is
-    # confirmed gone.
-    _wait_profile_released(profile_dir)
+    # confirmed gone. The headless engine was just killed above, so give the
+    # polite exit almost no grace before force-killing survivors — the roots are
+    # already on disk (#219: the default 5s grace + slow Windows shutdown was
+    # dead-air on every first launch).
+    _wait_profile_released(profile_dir, grace=0.5)
     # Clear the lock the headless run leaves so the real launch isn't blocked.
     for fname in ("lock", ".parentlock"):
         try:
@@ -2003,8 +2080,9 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
         w, h = int(res[0]), int(res[1])
         _res_overrides = _context_overrides_for(w, h)
         # With no_viewport Firefox owns the window size; seed a fresh profile's
-        # first window so it doesn't open at Firefox's own default.
-        _seed_window_size(profile_dir)
+        # first window so it doesn't open at Firefox's own default. Cap it to the
+        # spoofed screen so innerWidth/Height never exceed screen.* (#216).
+        _seed_window_size(profile_dir, screen=(w, h))
         # On this engine ONE pref, layout.css.devPixelsPerPx, drives the render
         # scale, window.devicePixelRatio AND the CSS resolution media queries
         # together — proven page-side (no CDP) on firefox-15: at 1.5 a 2560 screen
@@ -2204,6 +2282,17 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     if _res_overrides is not None:
         on_ctx(lambda: ctx.add_init_script(_outer_size_override_script()))
 
+    # firefox-17 leaks the host OS locale through navigator.language even when the
+    # Accept-Language header is the intended locale (the header follows
+    # intl.accept_languages, navigator.language does not on this build). Pin the JS
+    # getters to the same locale the header carries so a scanner sees one
+    # consistent language, not a header/JS mismatch (masking). Live-proven: without
+    # this a US-proxy profile on a Ukrainian host reported navigator.language=uk-UA
+    # while the header was en-US.
+    _lang = cfg.get("locale", "")
+    if _lang:
+        on_ctx(lambda: ctx.add_init_script(_language_override_script(_lang)))
+
     # The persistent context already opened ONE window: with a saved session
     # Firefox restored the user's tabs into it (the trailing -new-window arg
     # plus startup.page=0 let the restore fully own the window — no extra
@@ -2215,6 +2304,28 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
 
     # The window is on screen the moment __enter__ returns, so report ready now.
     emit("BROWSER_STARTED")
+
+    # Publish an eval hook so the MCP browser tools can drive this FF session
+    # (FF has no CDP). Runs JS on the live page through on_ctx, which marshals
+    # onto the worker that owns the thread-affine ctx. Bounded so a wedged page
+    # can't hang the MCP request forever.
+    def _ff_eval(expr: str):
+        def _do():
+            page = ctx.pages[0] if ctx.pages else None
+            if page is None:
+                return None
+            return page.evaluate(expr)
+        return on_ctx(_do)
+
+    def _ff_goto(url: str):
+        def _do():
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            page.goto(url, wait_until="commit", timeout=30000)
+            return {"url": page.url}
+        return on_ctx(_do)
+
+    if name:
+        register_ff_eval(name, {"eval": _ff_eval, "goto": _ff_goto})
 
     # The browser is up: the #150 launch race is over. Release the per-profile
     # lock so a later relaunch of this profile isn't blocked by this session's
@@ -2311,6 +2422,7 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     # early lock release). The tracked parent's tree covers its own children.
     # When the watch never resolved a pid (a dead launch, tracked_pids falsy),
     # fall back to a rescan — there's no live session to protect a relaunch from.
+    unregister_ff_eval(cfg.get("profile_name", ""))
     emit(f"LIFECYCLE teardown-kill pids={sorted(tracked_pids or ())} "
          f"rescan={not tracked_pids}")
     _kill_profile_firefox(
@@ -2375,6 +2487,13 @@ def _thread_close_watch(profile_dir, closed, stop_event, stop_gracefully,
     no_window_streak = 2
     engine_window_seen = False
     engine_window_gone = 0
+    # macOS has no window enumeration (_pids_have_visible_window → None) and the
+    # X-closed parent lingers, so neither window-gone nor pid-death fires — the
+    # close went undetected (#168 on Mac). The content/tab procs DO die on close;
+    # track a debounced drop to 0 as the close signal where the window has no
+    # verdict.
+    content_seen = False
+    content_gone = 0
     deadline = time.monotonic() + no_process_timeout
     def say(msg):
         if log:
@@ -2401,6 +2520,22 @@ def _thread_close_watch(profile_dir, closed, stop_event, stop_gracefully,
                     return pids  # the window the user saw is gone → they closed it
             # None (no verdict) leaves the streak unchanged — neither a sighting
             # nor a confident miss.
+            if visible is None:
+                # No window enumeration (macOS): fall back to the content/tab
+                # process count, which drops to 0 when the user closes the window
+                # even though the parent lingers on shutdown blockers. Debounced
+                # (a transient 0 between navigations doesn't close, like the
+                # window-gone #159 streak).
+                n = _firefox_content_proc_count(profile_dir, parent=next(iter(pids)))
+                if n:
+                    content_seen = True
+                    content_gone = 0
+                elif n == 0 and content_seen:
+                    content_gone += 1
+                    if content_gone >= no_window_streak:
+                        say(f"LIFECYCLE close=content-procs-gone pids={sorted(pids)} "
+                            f"streak={content_gone}")
+                        return pids
             continue
         found = _profile_firefox_pids(profile_dir)
         if found:

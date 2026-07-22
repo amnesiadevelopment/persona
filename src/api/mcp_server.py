@@ -95,9 +95,28 @@ def build_mcp(container: Container) -> FastMCP:
         ok = bl.stop_profile(name)
         return {"stopped": ok, "name": name}
 
+    def _engine_of(name: str) -> str:
+        from ..services.browser.process import effective_engine
+
+        pm = container.profile_manager
+        profile = pm.profiles.get(name)
+        if profile is None:
+            raise ValueError("no such profile")
+        if not container.browser_launcher.is_running(name):
+            raise ValueError("profile is not running (launch it first)")
+        return effective_engine(profile)
+
+    def _ff_hook(name: str):
+        """The FF session's published eval/goto hooks, or None for chromium.
+        FF has no CDP; its live page is driven through this registry instead."""
+        from ..services.browser.invisible_launch import get_ff_eval
+
+        return get_ff_eval(name)
+
     async def _page(name: str):
-        """Attach to a running ai_control profile via CDP and return its page.
-        Raises a clear error if the profile isn't AI-enabled/running.
+        """Attach to a running chromium ai_control profile via CDP and return its
+        page. Raises a clear error if the profile isn't AI-enabled/running. FF is
+        handled separately (no CDP) via _ff_hook.
         """
         from playwright.async_api import async_playwright
 
@@ -119,7 +138,15 @@ def build_mcp(container: Container) -> FastMCP:
 
     @mcp.tool()
     async def browser_navigate(name: str, url: str) -> dict:
-        """Navigate the AI-controlled profile's browser to a URL."""
+        """Navigate the running profile's browser to a URL (chromium or FF)."""
+        import asyncio
+
+        if _engine_of(name) == "firefox":
+            hook = _ff_hook(name)
+            if hook is None:
+                raise ValueError("firefox session not ready for control")
+            res = await asyncio.to_thread(hook["goto"], url)
+            return {"ok": True, **(res or {})}
         pw, browser, page = await _page(name)
         try:
             await page.goto(url)
@@ -131,6 +158,17 @@ def build_mcp(container: Container) -> FastMCP:
     @mcp.tool()
     async def browser_content(name: str) -> dict:
         """Return the current page's URL, title, and visible text."""
+        import asyncio
+
+        if _engine_of(name) == "firefox":
+            hook = _ff_hook(name)
+            if hook is None:
+                raise ValueError("firefox session not ready for control")
+            text = await asyncio.to_thread(
+                hook["eval"], "document.body ? document.body.innerText : ''")
+            url = await asyncio.to_thread(hook["eval"], "location.href")
+            title = await asyncio.to_thread(hook["eval"], "document.title")
+            return {"url": url, "title": title, "text": (text or "")[:5000]}
         pw, browser, page = await _page(name)
         try:
             text = await page.inner_text("body")
@@ -146,6 +184,16 @@ def build_mcp(container: Container) -> FastMCP:
     @mcp.tool()
     async def browser_click(name: str, selector: str) -> dict:
         """Click the element matching a CSS selector."""
+        import asyncio
+
+        if _engine_of(name) == "firefox":
+            hook = _ff_hook(name)
+            if hook is None:
+                raise ValueError("firefox session not ready for control")
+            expr = ("(()=>{const el=document.querySelector(" + repr(selector)
+                    + ");if(!el)return false;el.click();return true;})()")
+            ok = await asyncio.to_thread(hook["eval"], expr)
+            return {"ok": bool(ok)}
         pw, browser, page = await _page(name)
         try:
             await page.click(selector, timeout=5000)
@@ -157,6 +205,18 @@ def build_mcp(container: Container) -> FastMCP:
     @mcp.tool()
     async def browser_type(name: str, selector: str, text: str) -> dict:
         """Type text into the element matching a CSS selector."""
+        import asyncio
+
+        if _engine_of(name) == "firefox":
+            hook = _ff_hook(name)
+            if hook is None:
+                raise ValueError("firefox session not ready for control")
+            expr = ("(()=>{const el=document.querySelector(" + repr(selector)
+                    + ");if(!el)return false;el.focus();el.value=" + repr(text)
+                    + ";el.dispatchEvent(new Event('input',{bubbles:true}));"
+                    "return true;})()")
+            ok = await asyncio.to_thread(hook["eval"], expr)
+            return {"ok": bool(ok)}
         pw, browser, page = await _page(name)
         try:
             await page.fill(selector, text, timeout=5000)
@@ -167,7 +227,15 @@ def build_mcp(container: Container) -> FastMCP:
 
     @mcp.tool()
     async def browser_evaluate(name: str, expression: str) -> dict:
-        """Evaluate a JavaScript expression in the page and return the result."""
+        """Evaluate a JavaScript expression in the page and return the result
+        (chromium over CDP, or firefox over its juggler eval hook)."""
+        import asyncio
+
+        if _engine_of(name) == "firefox":
+            hook = _ff_hook(name)
+            if hook is None:
+                raise ValueError("firefox session not ready for control")
+            return {"result": await asyncio.to_thread(hook["eval"], expression)}
         pw, browser, page = await _page(name)
         try:
             return {"result": await page.evaluate(expression)}

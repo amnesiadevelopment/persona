@@ -434,6 +434,77 @@ jobs:
           sha256sum persona-windows-setup.exe > checksums.txt
           cat checksums.txt
 
+      - name: Stage the code-only fast-update assets (#205)
+        # Most releases change only the app's Python code (app.zip, ~1MB) — not
+        # the ~218MB runtime the Inno installer reinstalls. Ship app.zip + its
+        # hash + a manifest so the Windows updater can swap just the code and
+        # relaunch (seconds), and fall back to the full installer only when the
+        # runtime or dependencies changed. requires_full_install is computed from
+        # a fingerprint of the shipped runtime (every file OUTSIDE flutter_assets/
+        # app) vs the previous release's manifest: any change to a DLL, .pyd,
+        # site-packages entry, or Python/Flutter/flet version flips it true.
+        shell: pwsh
+        run: |
+          $appDir = Get-ChildItem build/windows -Recurse -Directory `
+            | Where-Object { $_.FullName -like '*flutter_assets\app' } `
+            | Select-Object -First 1
+          if (-not $appDir) { Write-Error "no flutter_assets/app in build"; exit 1 }
+          $zip  = Join-Path $appDir.FullName 'app.zip'
+          $hash = Join-Path $appDir.FullName 'app.zip.hash'
+          if (-not (Test-Path $zip) -or -not (Test-Path $hash)) {
+            Write-Error "app.zip / app.zip.hash missing from the build"; exit 1
+          }
+          Copy-Item $zip  app.zip -Force
+          Copy-Item $hash app.zip.hash -Force
+          $appSha = (Get-Content app.zip.hash -Raw).Trim()
+
+          # Runtime fingerprint: sha256 over the sorted list of every build file
+          # EXCEPT the app.zip/app.zip.hash (the code that legitimately changes
+          # every release). Path + size + sha256 of each, so a bumped DLL or a
+          # new/removed site-packages file changes the fingerprint.
+          $root = (Resolve-Path build/windows).Path
+          $entries = Get-ChildItem $root -Recurse -File `
+            | Where-Object { $_.Name -ne 'app.zip' -and $_.Name -ne 'app.zip.hash' } `
+            | ForEach-Object {
+                $rel = $_.FullName.Substring($root.Length).TrimStart('\','/') -replace '\\','/'
+                $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+                "$rel|$($_.Length)|$h"
+              } | Sort-Object
+          $fpBytes = [System.Text.Encoding]::UTF8.GetBytes(($entries -join "`n"))
+          $sha = [System.Security.Cryptography.SHA256]::Create()
+          $runtimeFp = ([System.BitConverter]::ToString($sha.ComputeHash($fpBytes)) `
+            -replace '-','').ToLower()
+
+          # Compare against the PREVIOUS release's manifest to decide fast-vs-full.
+          # No previous manifest (first release with this feature) or a changed
+          # fingerprint => requires_full_install (the installer carries the new
+          # runtime). Same fingerprint => a code-only fast update is safe.
+          $prevFp = ""
+          try {
+            $prev = Invoke-RestMethod -Headers @{ 'User-Agent'='persona-ci' } `
+              -Uri "https://api.github.com/repos/${{ github.repository }}/releases/latest"
+            $murl = ($prev.assets | Where-Object { $_.name -eq 'update-manifest.json' }).browser_download_url
+            if ($murl) {
+              $pm = Invoke-RestMethod -Headers @{ 'User-Agent'='persona-ci' } -Uri $murl
+              $prevFp = "$($pm.runtime_fingerprint)"
+            }
+          } catch { Write-Host "no previous manifest: $_" }
+
+          $ver = "${{ github.ref_name }}" -replace '^v',''
+          if (-not $ver) { $ver = "0.0.0" }
+          $requiresFull = ($prevFp -eq "") -or ($prevFp -ne $runtimeFp)
+          $manifest = [ordered]@{
+            version               = $ver
+            app_zip_sha256        = $appSha
+            requires_full_install = [bool]$requiresFull
+            runtime_fingerprint   = $runtimeFp
+            full_installer        = "persona-windows-setup.exe"
+          }
+          ($manifest | ConvertTo-Json) | Set-Content -Path update-manifest.json -Encoding ascii
+          Write-Host "manifest:"; Get-Content update-manifest.json
+          # fold the fast-update asset checksums into the same checksums.txt
+          "$appSha *app.zip" | Add-Content checksums.txt
+
       - name: Upload the Windows artifact
         uses: actions/upload-artifact@v4
         with:
@@ -441,6 +512,9 @@ jobs:
           path: |
             persona-windows-setup.exe
             checksums.txt
+            app.zip
+            app.zip.hash
+            update-manifest.json
           if-no-files-found: error
 
       - name: Publish to the GitHub Release
@@ -450,6 +524,9 @@ jobs:
           files: |
             persona-windows-setup.exe
             checksums.txt
+            app.zip
+            app.zip.hash
+            update-manifest.json
           generate_release_notes: true
 
   build-macos:

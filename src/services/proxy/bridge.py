@@ -18,14 +18,14 @@ _UPSTREAM_TIMEOUT = 15.0
 # TCP keepalive on both ends of a tunnel so the OS detects a SILENT half-open
 # proxy circuit (Tor wedges: the socket stays open with no bytes and no EOF)
 # and drops it — otherwise both _pipe directions block on read() forever and a
-# long-lived stream (a Sheets collab websocket) hangs on "Working" (#184). Probe
-# after 30s idle, every 10s, give up after 4 misses (~70s to a forced RST).
+# long-lived stream leaks a one-way-dead tunnel. Probe after 30s idle, every
+# 10s, give up after 4 misses (~70s to a forced RST).
 _KEEPALIVE_IDLE = 30
 _KEEPALIVE_INTVL = 10
 _KEEPALIVE_CNT = 4
 
-# Test hook: every tunnel socket (client-accept + upstream) we enabled keepalive
-# on, so a test can assert the option is really set on the live sockets.
+# Test hook: every tunnel socket (client-accept + upstream) we tuned, so a test
+# can assert the options are really set on the live sockets.
 _tunnel_sockets: "list[socket.socket]" = []
 
 
@@ -39,12 +39,9 @@ def _tune_tunnel_socket(sock: "socket.socket | None") -> None:
     Two things, both best-effort (silent on any platform/option the socket
     doesn't support — the tunnel works without them, they only make it behave):
 
-    1. TCP_NODELAY: disable Nagle's algorithm. Google Sheets' collab websocket
-       sends a steady stream of TINY frames; Nagle holds each one waiting for the
-       previous segment's ACK, and with delayed-ACK on the far side that stacks
-       into multi-hundred-ms stalls that surface as a permanent "Working" (#184 —
-       keepalive alone didn't fix it because the tunnel was stalling, not dying).
-       A proxy relaying interactive traffic must never batch frames.
+    1. TCP_NODELAY: disable Nagle's algorithm so a relayed interactive stream's
+       small writes go out immediately instead of being held to coalesce with the
+       next segment. A proxy carrying interactive traffic should never batch.
 
     2. TCP keepalive with aggressive timers: let the OS detect and drop a SILENT
        half-open circuit (Tor wedges: socket open, no bytes, no EOF) instead of

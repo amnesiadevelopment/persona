@@ -558,6 +558,18 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
             "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"
         )
         args.append("--dns-prefetch-disable")
+        # A SOCKS5 proxy tunnels only TCP; it has no UDP path. Google apps
+        # (Sheets/Docs) prefer QUIC — HTTP/3 over UDP — for their realtime
+        # collaboration channel, so behind the proxy that channel's UDP never
+        # reaches Google, Chromium doesn't fall back cleanly, and the app hangs
+        # on a permanent "Working" while the calendar / custom-currency overlays
+        # that load through it never paint. Disable QUIC so every request uses
+        # HTTP/2 over TCP, which the proxy carries. The webrtc flag above only
+        # covers WebRTC's UDP, not QUIC's, so this is a separate switch. A Chrome
+        # behind a UDP-blocking proxy runs without HTTP/3 too, so this reads as
+        # normal, not as a spoof tell.
+        args.append("--disable-quic")
+        disabled_features.append("EnableQuic")
 
     if disabled_features:
         args.append("--disable-features=" + ",".join(disabled_features))

@@ -120,7 +120,12 @@ def open_proxy_dialog(
         paste_field.value = ""
         page.update()
 
+    # on_change catches keystroke entry; on_blur catches a PASTE that some
+    # platforms (macOS flet) don't emit a change event for — a bare "ip:port"
+    # pasted then clicked away wasn't splitting into fields (#220). Both call the
+    # same splitter, which no-ops when the field doesn't hold a proxy string.
     paste_field.on_change = on_paste
+    paste_field.on_blur = on_paste
 
     def current_url() -> str:
         return build_proxy_url(

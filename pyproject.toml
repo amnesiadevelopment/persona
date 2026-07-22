@@ -11,6 +11,12 @@ dependencies = [
     "uvicorn[standard]>=0.30.0",
     "cryptography>=42.0.0",
     "mcp>=1.28.0",
+    # mcp pulls pywin32 (for pywintypes) only as a platform-conditional
+    # TRANSITIVE dep, and flet build doesn't resolve those — so the built
+    # Windows app raised "No module named 'pywintypes'" and the MCP control
+    # server silently failed to mount (/mcp 404, whole management layer dead).
+    # Declare it directly, Windows-only, so the bundle carries it.
+    "pywin32>=311; sys_platform == 'win32'",
     # 2nd browser engine (patched Firefox 150). MUST be here, not just in
     # requirements.txt — flet build bundles deps from pyproject, so a package
     # that's only in requirements.txt is missing from the built app (that's

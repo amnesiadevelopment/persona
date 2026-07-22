@@ -189,11 +189,11 @@ def test_upstream_hang_times_out_with_failure_reply(monkeypatch):
 
 
 def test_tunnel_sockets_have_tcp_keepalive():
-    # #184: a silent proxy circuit (Tor wedges, socket stays open with no bytes
-    # and no EOF) left both _pipe directions blocked on read() forever — Sheets
-    # stuck on "Working". TCP keepalive lets the OS detect the dead half-open
-    # tunnel and drop it, so the pipe unblocks and the browser reconnects. Both
-    # the client-side and upstream-side tunnel sockets must have SO_KEEPALIVE on.
+    # A silent proxy circuit (Tor wedges, socket stays open with no bytes and no
+    # EOF) leaves both _pipe directions blocked on read() forever. TCP keepalive
+    # lets the OS detect the dead half-open tunnel and drop it, so the pipe
+    # unblocks and the browser reconnects. Both the client-side and upstream-side
+    # tunnel sockets must have SO_KEEPALIVE on.
     bridge_mod._debug_tunnel_sockets().clear()
     upstream, reply, client, bridge = _run_bridge_case("ok")
     try:

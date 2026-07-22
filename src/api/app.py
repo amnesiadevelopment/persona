@@ -20,12 +20,34 @@ logger = get_logger("api")
 API_PREFIX = "/api/v1"
 
 
+def _ensure_win32_stubs() -> None:
+    """mcp's FastMCP unconditionally imports mcp.os.win32.utilities, which imports
+    pywin32 (pywintypes/win32api/win32con/win32job). flet build doesn't bundle
+    that platform-conditional transitive dep, so the built Windows app raised
+    "No module named 'pywintypes'" and the whole MCP layer failed to mount. Those
+    win32 bits are only used by mcp's STDIO client; persona serves streamable-http
+    and never touches them. When pywin32 is genuinely present (dev, or a bundle
+    that carried it) this is a no-op; when it's absent, register harmless stub
+    modules so the import chain succeeds and the http server still mounts."""
+    import sys
+    import types
+
+    for name in ("pywintypes", "win32api", "win32con", "win32job"):
+        if name in sys.modules:
+            continue
+        try:
+            __import__(name)
+        except Exception:
+            sys.modules[name] = types.ModuleType(name)
+
+
 def _try_build_mcp(container: Container):
     """Build the MCP control server, or return None if its dependencies are
     unavailable. The MCP stack pulls platform-specific packages (e.g. pywin32 on
     Windows); when those are missing it must not take the whole app down — the
     server is off by default anyway, so the app stays fully usable without it."""
     try:
+        _ensure_win32_stubs()
         from .mcp_server import build_mcp
 
         return build_mcp(container)

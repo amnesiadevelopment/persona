@@ -96,6 +96,10 @@ def test_verify_uses_tag_from_staged_filename(monkeypatch, tmp_path):
 
 def _force_windows(monkeypatch):
     monkeypatch.setattr(au._platform, "IS_WINDOWS", True)
+    # These tests exercise the FULL-installer path; keep the #205 code-only fast
+    # path out of the way (it would otherwise probe the real installed app.zip on
+    # a Windows dev host and add a manifest-fetch curl before the installer).
+    monkeypatch.setattr(au, "_try_windows_fast_update", lambda say: False)
 
 
 def test_apply_refuses_to_launch_on_checksum_mismatch(monkeypatch, tmp_path):

@@ -105,6 +105,33 @@ def test_window_size_seed_writes_half_work_area(monkeypatch, tmp_path):
     assert win["sizemode"] == "normal"
 
 
+def test_window_size_seed_caps_window_to_spoofed_screen(monkeypatch, tmp_path):
+    # #216: a 1280x720 screen on a 4K host opened a ~1900px window, so
+    # innerWidth (1898) > screen.width (1280) — impossible for a real browser and
+    # a scanner tell. The seeded window must stay within the spoofed screen.
+    import json as _json
+
+    monkeypatch.setattr(invisible_launch, "_work_area", lambda: (3840, 2088))
+    invisible_launch._seed_window_size(str(tmp_path), screen=(1280, 720))
+    data = _json.loads((tmp_path / "xulstore.json").read_text(encoding="utf-8"))
+    win = data["chrome://browser/content/browser.xhtml"]["main-window"]
+    assert int(win["width"]) <= 1280
+    assert int(win["height"]) <= 720
+
+
+def test_window_size_seed_uncapped_when_screen_bigger_than_half_area(monkeypatch, tmp_path):
+    # A big spoofed screen doesn't shrink the window below the half-work-area
+    # default — the cap only kicks in when the screen is the smaller of the two.
+    import json as _json
+
+    monkeypatch.setattr(invisible_launch, "_work_area", lambda: (3840, 2088))
+    invisible_launch._seed_window_size(str(tmp_path), screen=(3840, 2160))
+    data = _json.loads((tmp_path / "xulstore.json").read_text(encoding="utf-8"))
+    win = data["chrome://browser/content/browser.xhtml"]["main-window"]
+    assert win["width"] == "1920"   # half work area, uncapped
+    assert win["height"] == "1044"
+
+
 def test_window_size_seed_keeps_existing_xulstore(monkeypatch, tmp_path):
     # Firefox persists the user's own window size in xulstore.json; a manual
     # resize must survive relaunches, so an existing file is never touched.
@@ -447,7 +474,7 @@ def test_enter_on_worker_bounded_abandons_wedged_launch_and_retries(
     settles = []
     monkeypatch.setattr(
         invisible_launch, "_wait_profile_released",
-        lambda d: settles.append(d) or True,
+        lambda d, **k: settles.append(d) or True,
     )
 
     t0 = _time.monotonic()
@@ -488,7 +515,7 @@ def test_enter_on_worker_stop_event_aborts_without_retry(monkeypatch, tmp_path):
     monkeypatch.setattr(
         invisible_launch, "_kill_profile_firefox", lambda d, known_pids=None, rescan=True: None
     )
-    monkeypatch.setattr(invisible_launch, "_wait_profile_released", lambda d: True)
+    monkeypatch.setattr(invisible_launch, "_wait_profile_released", lambda d, **k: True)
 
     stop = threading.Event()
     threading.Timer(0.3, stop.set).start()
@@ -611,7 +638,7 @@ def test_child_stop_during_wedged_launch_emits_cancelled(monkeypatch, tmp_path):
     monkeypatch.setattr(
         invisible_launch, "_kill_profile_firefox", lambda d, known_pids=None, rescan=True: None
     )
-    monkeypatch.setattr(invisible_launch, "_wait_profile_released", lambda d: True)
+    monkeypatch.setattr(invisible_launch, "_wait_profile_released", lambda d, **k: True)
 
     stop = threading.Event()
     threading.Timer(0.3, stop.set).start()
@@ -1086,6 +1113,56 @@ def test_close_watch_still_closes_on_all_pids_dead(monkeypatch):
         r"C:\p", threading.Event(), None, lambda: None, interval=0.0,
     )
     assert next(liveness, "done") == "done"
+
+
+def test_close_watch_closes_on_content_procs_gone_when_no_window_verdict(monkeypatch):
+    import threading
+
+    # #168 macOS: X-close leaves the multi-process Firefox parent + children
+    # alive, and macOS has no window enumeration (_pids_have_visible_window
+    # returns None), so neither the pid-death nor the window-gone signal fires —
+    # the close was never detected. The content/tab processes DO die when the
+    # window closes even though the parent lingers; a sustained drop to 0 after
+    # they were seen is the close signal on the no-window-verdict platform.
+    monkeypatch.setattr(invisible_launch, "_profile_firefox_pids", lambda d: {10})
+    monkeypatch.setattr(invisible_launch, "_pid_alive", lambda p: True)
+    monkeypatch.setattr(
+        invisible_launch, "_pids_have_visible_window", lambda pids: None
+    )
+    # content procs: present (window open), then gone (X-closed). Two zero polls
+    # debounce a transient, same as the window-gone streak.
+    counts = iter([3, 3, 0, 0])
+    monkeypatch.setattr(
+        invisible_launch, "_firefox_content_proc_count",
+        lambda d, parent=None: next(counts),
+    )
+    invisible_launch._thread_close_watch(
+        r"/p", threading.Event(), None, lambda: None, interval=0.0,
+    )
+    assert next(counts, "done") == "done"
+
+
+def test_close_watch_content_proc_transient_zero_does_not_close(monkeypatch):
+    import threading
+
+    # A single 0 (a beat between navigations) must not close — only a sustained
+    # absence does, mirroring the window-gone #159 debounce.
+    monkeypatch.setattr(invisible_launch, "_profile_firefox_pids", lambda d: {10})
+    monkeypatch.setattr(invisible_launch, "_pid_alive", lambda p: True)
+    monkeypatch.setattr(
+        invisible_launch, "_pids_have_visible_window", lambda pids: None
+    )
+    counts = iter([3, 0, 3, 3, 0, 0])
+    monkeypatch.setattr(
+        invisible_launch, "_firefox_content_proc_count",
+        lambda d, parent=None: next(counts),
+    )
+    stops = []
+    invisible_launch._thread_close_watch(
+        r"/p", threading.Event(), None, lambda: stops.append("s"), interval=0.0,
+    )
+    assert stops == []
+    assert next(counts, "done") == "done"
 
 
 def test_fork_close_watch_closes_on_pid_death(monkeypatch):
@@ -2137,7 +2214,7 @@ def test_init_places_db_uses_profile_seed(monkeypatch, tmp_path):
     mod.InvisiblePlaywright = FakeEngine
     monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
     monkeypatch.setattr(
-        invisible_launch, "_wait_profile_released", lambda d: True
+        invisible_launch, "_wait_profile_released", lambda d, **k: True
     )
 
     assert invisible_launch._init_places_db(str(tmp_path), 4242) is True
@@ -2179,7 +2256,7 @@ def test_init_places_db_waits_for_toolbar_root_not_a_fixed_sleep(
     mod.InvisiblePlaywright = FakeEngine
     monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
     monkeypatch.setattr(
-        invisible_launch, "_wait_profile_released", lambda d: True
+        invisible_launch, "_wait_profile_released", lambda d, **k: True
     )
 
     assert invisible_launch._init_places_db(str(tmp_path), 1, timeout=10) is True
@@ -2254,7 +2331,7 @@ def test_init_places_db_macos_lock_does_not_burn_the_timeout(
 
     monkeypatch.setattr(invisible_launch, "places_ready", locked_ready)
     monkeypatch.setattr(
-        invisible_launch, "_wait_profile_released", lambda d: True
+        invisible_launch, "_wait_profile_released", lambda d, **k: True
     )
 
     t0 = _time.monotonic()
@@ -2320,7 +2397,7 @@ def test_init_places_db_locked_reader_does_not_burn_timeout_on_any_os(
 
     monkeypatch.setattr(invisible_launch, "places_ready", locked_ready)
     monkeypatch.setattr(
-        invisible_launch, "_wait_profile_released", lambda d: True
+        invisible_launch, "_wait_profile_released", lambda d, **k: True
     )
 
     t0 = _time.monotonic()
@@ -2366,7 +2443,7 @@ def test_init_places_db_prefers_fast_places_ready_when_unlocked(
     monkeypatch.setattr(invisible_launch._platform, "IS_LINUX", True)
     monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", False)
     monkeypatch.setattr(
-        invisible_launch, "_wait_profile_released", lambda d: True
+        invisible_launch, "_wait_profile_released", lambda d, **k: True
     )
 
     t0 = _time.monotonic()
@@ -2408,7 +2485,7 @@ def test_init_places_db_settles_profile_release_after_engine_exit(
     monkeypatch.setattr(
         invisible_launch,
         "_wait_profile_released",
-        lambda d: calls.append(("settle", d)) or True,
+        lambda d, **k: calls.append(("settle", d)) or True,
     )
 
     assert invisible_launch._init_places_db(str(tmp_path), 1) is True
@@ -2450,7 +2527,7 @@ def test_init_places_db_wipes_throwaway_session_state(monkeypatch, tmp_path):
     mod.InvisiblePlaywright = FakeEngine
     monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
     monkeypatch.setattr(
-        invisible_launch, "_wait_profile_released", lambda d: True
+        invisible_launch, "_wait_profile_released", lambda d, **k: True
     )
 
     assert invisible_launch._init_places_db(str(tmp_path), 1) is True
@@ -2486,7 +2563,7 @@ def test_init_places_db_skips_startup_network_fetch(monkeypatch, tmp_path):
     mod.InvisiblePlaywright = FakeEngine
     monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
     monkeypatch.setattr(
-        invisible_launch, "_wait_profile_released", lambda d: True
+        invisible_launch, "_wait_profile_released", lambda d, **k: True
     )
 
     assert invisible_launch._init_places_db(str(tmp_path), 1) is True
@@ -2524,7 +2601,7 @@ def test_init_places_db_concrete_timezone_skips_geo_network(
     mod.InvisiblePlaywright = FakeEngine
     monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
     monkeypatch.setattr(
-        invisible_launch, "_wait_profile_released", lambda d: True
+        invisible_launch, "_wait_profile_released", lambda d, **k: True
     )
 
     assert invisible_launch._init_places_db(str(tmp_path), 1) is True
@@ -2560,7 +2637,7 @@ def test_init_places_db_fast_shutdown_pref(monkeypatch, tmp_path):
     mod.InvisiblePlaywright = FakeEngine
     monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
     monkeypatch.setattr(
-        invisible_launch, "_wait_profile_released", lambda d: True
+        invisible_launch, "_wait_profile_released", lambda d, **k: True
     )
 
     assert invisible_launch._init_places_db(str(tmp_path), 1) is True
@@ -2600,7 +2677,7 @@ def test_init_places_db_hung_close_bounded_by_close_grace(monkeypatch, tmp_path)
     monkeypatch.setattr(
         invisible_launch,
         "_wait_profile_released",
-        lambda d: settled.append(d) or True,
+        lambda d, **k: settled.append(d) or True,
     )
 
     try:
@@ -2644,7 +2721,7 @@ def test_init_places_db_bounded_when_engine_wedges(monkeypatch, tmp_path):
     monkeypatch.setattr(
         invisible_launch,
         "_wait_profile_released",
-        lambda d: settled.append(d) or True,
+        lambda d, **k: settled.append(d) or True,
     )
 
     try:
@@ -3964,7 +4041,7 @@ def test_init_places_db_cancels_on_stop(monkeypatch, tmp_path):
     # readiness is checked through the module-level name (bound at import).
     monkeypatch.setattr(invisible_launch, "places_ready", lambda p: False)
     monkeypatch.setattr(
-        invisible_launch, "_wait_profile_released", lambda d: True
+        invisible_launch, "_wait_profile_released", lambda d, **k: True
     )
     monkeypatch.setattr(
         invisible_launch, "_kill_profile_firefox", lambda d, pids=None, rescan=True: None
@@ -4011,7 +4088,7 @@ def test_init_places_db_retries_wedged_enter(monkeypatch, tmp_path):
     # patch it there, not on the source module.
     monkeypatch.setattr(invisible_launch, "places_ready", lambda p: True)
     monkeypatch.setattr(
-        invisible_launch, "_wait_profile_released", lambda d: True
+        invisible_launch, "_wait_profile_released", lambda d, **k: True
     )
     monkeypatch.setattr(
         invisible_launch, "_kill_profile_firefox", lambda d, pids=None, rescan=True: None
