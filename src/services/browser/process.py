@@ -44,6 +44,10 @@ FINGERPRINT_CHROMIUM = os.path.join(
 def _proxy_arg(proxy_url: str | None) -> tuple[str | None, ProxyBridge | None]:
     """Resolve the --proxy-server value, starting a local bridge when the
     upstream proxy needs username/password auth (Chromium can't pass creds).
+
+    Chromium's SOCKS5 client already resolves the destination at the proxy
+    (remote DNS) — socks5h is a curl-ism Chromium rejects with
+    ERR_NO_SUPPORTED_PROXIES — so the scheme stays socks5.
     """
     if not proxy_url:
         return None, None

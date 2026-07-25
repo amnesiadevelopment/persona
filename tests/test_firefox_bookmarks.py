@@ -402,3 +402,41 @@ def test_guids_are_unique_12_char(tmp_path):
     assert len(guids) == 2
     assert len(set(guids)) == 2
     assert all(len(g) == 12 for g in guids)
+
+
+def test_sync_survives_a_write_lock_held_past_the_default_timeout(tmp_path):
+    # #208 on Linux: right after the headless places-init is killed (#219's
+    # immediate kill), a dying Firefox can hold places.sqlite's write lock for
+    # longer than sqlite3's default 5s busy timeout — the sync then failed with
+    # "database is locked", the seed was reported failed, and the profile opened
+    # without bookmarks. The lock holder is released here from the SAME thread
+    # (sqlite objects are thread-affine) via a background timer that talks to a
+    # connection it owns.
+    import sqlite3 as _sql
+    import threading
+
+    db = str(tmp_path / "places.sqlite")
+    _make_places(db)
+
+    lock_ready = threading.Event()
+    release = threading.Event()
+
+    def hold_lock():
+        conn = _sql.connect(db, timeout=30)
+        conn.execute("BEGIN EXCLUSIVE")
+        lock_ready.set()
+        # Hold well past sqlite's 5s default so a non-extended busy timeout loses.
+        release.wait(7.0)
+        conn.rollback()
+        conn.close()
+
+    holder = threading.Thread(target=hold_lock, daemon=True)
+    holder.start()
+    assert lock_ready.wait(5), "lock holder never acquired"
+
+    ok = sync_places_bookmarks(db, [Bookmark("A", "https://a.example/")])
+    release.set()
+    holder.join(10)
+
+    assert ok is True
+    assert {u for _t, u in _toolbar_bookmarks(db)} == {"https://a.example/"}

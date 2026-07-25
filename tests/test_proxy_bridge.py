@@ -1,6 +1,7 @@
 import socket
 import struct
 import threading
+import time
 
 import src.services.proxy.bridge as bridge_mod
 from src.services.proxy.bridge import ProxyBridge
@@ -49,6 +50,7 @@ class FakeUpstream(threading.Thread):
         self.behavior = behavior
         self.auth: tuple[str, str] | None = None
         self.target: tuple[str, int] | None = None
+        self.streamed_request: bytes | None = None
         self._srv = socket.socket()
         self._srv.bind(("127.0.0.1", 0))
         self._srv.listen(1)
@@ -105,6 +107,30 @@ class FakeUpstream(threading.Thread):
             if data:
                 conn.sendall(data)
             return  # close the upstream side after one echo (upstream EOF)
+        if self.behavior == "silent_forever":
+            # Simulate a silently-reaped upstream: after CONNECT, send NOTHING and
+            # never close (no bytes, no FIN) — a dead half-open leg. The bridge
+            # must reap the tunnel on its idle timeout, not hang forever.
+            try:
+                while True:
+                    if not conn.recv(4096):
+                        return
+            except OSError:
+                return
+        if self.behavior == "stream_after_client_eof":
+            # A browserchannel long-poll: the client sends its request then
+            # half-closes its write side (client->up EOF); the server keeps the
+            # response open and streams data back AFTER that. Read the request,
+            # wait for the client's half-close, then stream the reply.
+            req = conn.recv(4096)
+            self.streamed_request = req
+            # Drain until the client's write half is closed (recv returns b"").
+            while conn.recv(4096):
+                pass
+            for chunk in (b"chunk-1;", b"chunk-2;", b"chunk-3;"):
+                conn.sendall(chunk)
+                time.sleep(0.05)
+            return
         while True:
             data = conn.recv(4096)
             if not data:
@@ -255,6 +281,60 @@ def test_one_dead_pipe_direction_tears_the_whole_tunnel():
         # teardown so our recv returns EOF quickly, not hang.
         client.settimeout(5)
         assert client.recv(4096) == b""
+    finally:
+        client.close()
+        upstream.join(timeout=5)
+        bridge.stop()
+
+
+def test_client_half_close_keeps_upstream_stream_alive():
+    # #184 THE root: Google Sheets' realtime collab channel is a browserchannel
+    # long-poll — the client sends its request then HALF-CLOSES its write side
+    # and waits for the server to STREAM the response back. Tearing the whole
+    # tunnel down the instant the client->upstream pipe EOFs (FIRST_COMPLETED)
+    # killed that streamed response mid-flight, so the calendar/overlays never
+    # painted and "Working" stuck forever. A client half-close must NOT tear
+    # down the still-active upstream->client direction.
+    upstream, reply, client, bridge = _run_bridge_case("stream_after_client_eof")
+    try:
+        assert reply[1] == 0x00
+        client.sendall(b"GET /bind?long-poll HTTP/1.1\r\n\r\n")
+        # Half-close: the browser is done sending, now waits for the stream.
+        client.shutdown(socket.SHUT_WR)
+        client.settimeout(5)
+        got = b""
+        while len(got) < len(b"chunk-1;chunk-2;chunk-3;"):
+            part = client.recv(4096)
+            if not part:
+                break
+            got += part
+        assert got == b"chunk-1;chunk-2;chunk-3;"
+    finally:
+        client.close()
+        upstream.join(timeout=5)
+        bridge.stop()
+
+
+def test_idle_tunnel_is_reaped_so_the_browser_can_rebuild(monkeypatch):
+    # #184 root: a commercial residential/mobile upstream silently reaps a
+    # low-traffic long-poll leg with NO FIN/RST — reader.read() would hang
+    # forever and the collab channel dies (permanent "Working"). A bounded idle
+    # timeout must reap the whole tunnel cleanly so the browser rebuilds the
+    # poll. Here the upstream sends nothing and never closes; with no bytes
+    # either way, the bridge must close the client's connection within the idle
+    # window instead of hanging.
+    monkeypatch.setattr(bridge_mod, "_TUNNEL_IDLE_TIMEOUT", 1.0)
+    upstream, reply, client, bridge = _run_bridge_case("silent_forever")
+    try:
+        assert reply[1] == 0x00
+        client.settimeout(6)  # generous vs the 1.0s idle reap
+        # No bytes flow either way. The bridge must reap the idle tunnel and
+        # close our side (recv returns EOF) well within the timeout, not hang.
+        t0 = time.time()
+        data = client.recv(4096)
+        dt = time.time() - t0
+        assert data == b"", "tunnel should be reaped (EOF), not deliver data"
+        assert dt < 5, f"idle tunnel not reaped promptly ({dt:.1f}s)"
     finally:
         client.close()
         upstream.join(timeout=5)

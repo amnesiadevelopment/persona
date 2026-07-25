@@ -247,6 +247,56 @@ def test_unproxied_chromium_keeps_quic(monkeypatch, tmp_path):
     assert not any("EnableQuic" in v for v in _disable_features_values(captured["args"]))
 
 
+def _proxy_server_value(args):
+    for a in args:
+        if a.startswith("--proxy-server="):
+            return a.split("=", 1)[1]
+    return None
+
+
+def test_proxied_chromium_uses_socks5_not_socks5h(monkeypatch, tmp_path):
+    # Chromium already does remote DNS for socks5 and REJECTS socks5h (a curl-ism)
+    # with ERR_NO_SUPPORTED_PROXIES, which would kill all proxied traffic. Keep
+    # the scheme socks5 for the no-auth path.
+    captured = _spawn_chromium_args(
+        monkeypatch,
+        tmp_path,
+        Profile(name="dns-noauth", proxy="p1"),
+        store=_StoreWithGeolessProxy,  # socks5://1.2.3.4:1080 (no creds)
+    )
+    assert _proxy_server_value(captured["args"]) == "socks5://1.2.3.4:1080"
+
+
+def test_proxied_chromium_bridge_uses_socks5(monkeypatch, tmp_path):
+    # A credentialed upstream goes through the local ProxyBridge; Chromium is
+    # pointed at it with socks5 (socks5h would be rejected).
+    class _StoreWithAuthProxy:
+        def resolve(self, name):
+            return "socks5://user:pass@1.2.3.4:1080"
+
+        def get(self, name):
+            return _GeolessProxy()
+
+    class _FakeBridge:
+        def __init__(self, url):
+            pass
+
+        def start(self):
+            return 40555
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(process, "ProxyBridge", _FakeBridge)
+    captured = _spawn_chromium_args(
+        monkeypatch,
+        tmp_path,
+        Profile(name="dns-auth", proxy="p1"),
+        store=_StoreWithAuthProxy,
+    )
+    assert _proxy_server_value(captured["args"]) == "socks5://127.0.0.1:40555"
+
+
 def test_hidpi_host_gets_render_scale_flag(monkeypatch, tmp_path):
     monkeypatch.setattr(process, "_host_display_scale", lambda: 1.5)
     captured = _spawn_chromium_args(

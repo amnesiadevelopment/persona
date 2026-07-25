@@ -5,6 +5,17 @@ not a git log. When cutting a release, add the new version's highlights here.
 """
 
 CHANGELOG: dict[str, list[str]] = {
+    "2.6.1": [
+        "Google Sheets loads fully through a proxy — the calendar date-picker "
+        "opens, custom currency and dates compute, no more permanent \"Working\".",
+        "Firefox windows render at the display's real pixel ratio, so pages are "
+        "sharp and nothing is shifted or over-zoomed.",
+        "Fresh Firefox profiles open in a few seconds on Windows too, with their "
+        "bookmarks and dark theme from the first launch.",
+        "Closing a profile with its window's X reliably stops it on macOS.",
+        "Profiles with a non-Latin name (e.g. Cyrillic) create without an error.",
+        "Fewer false-red lines in the Activity Log.",
+    ],
     "2.6.0": [
         "Google Sheets and other Google apps now work through a proxy — no more "
         "stuck on \"Working\".",

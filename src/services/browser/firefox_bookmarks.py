@@ -145,7 +145,12 @@ def sync_places_bookmarks(
     # the ones it placed last time (so a removed-in-editor bookmark is dropped).
     owned = new_urls | (prev_persona_urls or set())
 
-    conn = sqlite3.connect(places_db)
+    # The headless places-init is force-killed the moment the roots land (#219),
+    # so a dying Firefox can still hold this database's write lock for several
+    # seconds when the seed runs. sqlite3's 5s default busy timeout was too short
+    # for that window on Linux, failing the seed with "database is locked" and
+    # opening the profile with no bookmarks (#208). Wait the transient lock out.
+    conn = sqlite3.connect(places_db, timeout=30)
     try:
         cur = conn.cursor()
         row = cur.execute(

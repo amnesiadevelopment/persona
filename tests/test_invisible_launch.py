@@ -119,6 +119,23 @@ def test_window_size_seed_caps_window_to_spoofed_screen(monkeypatch, tmp_path):
     assert int(win["height"]) <= 720
 
 
+def test_window_size_seed_caps_in_device_px_at_hidpi(monkeypatch, tmp_path):
+    # #216 at HiDPI: xulstore stores DEVICE px, screen.* is CSS px. At dpr=1.5 a
+    # 1280 CSS screen allows a physical window up to 1280*1.5=1920, because the
+    # CSS innerWidth is physical/1.5. Capping in CSS px (1280) would wrongly
+    # shrink the window; the cap must be screen*dpr so CSS inner stays ≤ screen.
+    import json as _json
+
+    monkeypatch.setattr(invisible_launch, "_work_area", lambda: (3840, 2088))
+    invisible_launch._seed_window_size(str(tmp_path), screen=(1280, 720), dpr=1.5)
+    data = _json.loads((tmp_path / "xulstore.json").read_text(encoding="utf-8"))
+    win = data["chrome://browser/content/browser.xhtml"]["main-window"]
+    # Physical cap = screen*dpr minus a little chrome; CSS inner = physical/dpr.
+    assert int(win["width"]) <= int(1280 * 1.5)
+    assert int(win["width"]) / 1.5 <= 1280
+    assert int(win["height"]) / 1.5 <= 720
+
+
 def test_window_size_seed_uncapped_when_screen_bigger_than_half_area(monkeypatch, tmp_path):
     # A big spoofed screen doesn't shrink the window below the half-work-area
     # default — the cap only kicks in when the screen is the smaller of the two.
@@ -149,88 +166,6 @@ def test_window_size_seed_noop_without_work_area(monkeypatch, tmp_path):
     monkeypatch.setattr(invisible_launch, "_work_area", lambda: (0, 0))
     invisible_launch._seed_window_size(str(tmp_path))
     assert not (tmp_path / "xulstore.json").exists()
-
-
-def _read_default_zoom(profile_dir):
-    """The global (NULL group) browser.content.full-zoom value from a seeded
-    content-prefs.sqlite, or None when no default row exists."""
-    import os
-    import sqlite3
-
-    conn = sqlite3.connect(os.path.join(profile_dir, "content-prefs.sqlite"))
-    try:
-        row = conn.execute(
-            "SELECT p.value FROM prefs p JOIN settings s ON p.settingID=s.id "
-            "WHERE s.name='browser.content.full-zoom' AND p.groupID IS NULL"
-        ).fetchone()
-    finally:
-        conn.close()
-    return None if row is None else row[0]
-
-
-def test_default_zoom_seed_writes_global_row(tmp_path):
-    # A HiDPI host seeds the browser-wide default zoom (NULL group) so every
-    # site renders text at the host scale.
-    invisible_launch._seed_default_zoom(str(tmp_path), 1.5)
-    assert _read_default_zoom(str(tmp_path)) == 1.5
-
-
-def test_default_zoom_seed_noop_at_unity_scale(tmp_path):
-    # A non-HiDPI host (scale 1.0) gets no zoom database at all — the default
-    # render is left untouched.
-    invisible_launch._seed_default_zoom(str(tmp_path), 1.0)
-    assert not (tmp_path / "content-prefs.sqlite").exists()
-
-
-def test_default_zoom_seed_idempotent_reseeds_single_row(tmp_path):
-    # Re-seeding (e.g. the host scale changed) replaces the default rather than
-    # stacking duplicate rows.
-    import sqlite3
-
-    invisible_launch._seed_default_zoom(str(tmp_path), 1.5)
-    invisible_launch._seed_default_zoom(str(tmp_path), 2.0)
-    conn = sqlite3.connect(str(tmp_path / "content-prefs.sqlite"))
-    try:
-        count = conn.execute(
-            "SELECT COUNT(*) FROM prefs p JOIN settings s ON p.settingID=s.id "
-            "WHERE s.name='browser.content.full-zoom' AND p.groupID IS NULL"
-        ).fetchone()[0]
-    finally:
-        conn.close()
-    assert count == 1
-    assert _read_default_zoom(str(tmp_path)) == 2.0
-
-
-def test_default_zoom_seed_upserts_into_engine_created_db(tmp_path):
-    # The engine's places init creates content-prefs.sqlite before persona seeds;
-    # the seed must upsert into that existing database, not require a fresh one.
-    import sqlite3
-
-    db = tmp_path / "content-prefs.sqlite"
-    conn = sqlite3.connect(str(db))
-    conn.execute("CREATE TABLE groups (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
-    conn.execute(
-        "CREATE TABLE settings (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"
-    )
-    conn.execute(
-        "CREATE TABLE prefs (id INTEGER PRIMARY KEY, "
-        "groupID INTEGER REFERENCES groups(id), "
-        "settingID INTEGER NOT NULL REFERENCES settings(id), "
-        "value BLOB, timestamp INTEGER NOT NULL DEFAULT 0)"
-    )
-    conn.commit()
-    conn.close()
-
-    invisible_launch._seed_default_zoom(str(tmp_path), 1.5)
-    assert _read_default_zoom(str(tmp_path)) == 1.5
-
-
-def test_profile_prefs_zoom_is_text_only_not_full_page():
-    # The seeded default zoom must apply as TEXT zoom; full-page zoom would
-    # multiply devicePixelRatio and the resolution media queries, re-leaking the
-    # honest #187 resolution.
-    prefs = _profile_prefs({"search_engine": "duckduckgo"})
-    assert prefs["browser.zoom.full"] is False
 
 
 def test_scrub_chrome_zoom_css_removes_zoom_sheet(tmp_path):
@@ -1627,15 +1562,14 @@ def test_child_force_kills_profile_firefox_after_teardown(monkeypatch, tmp_path)
     assert calls == ["exit", ("kill", str(tmp_path), {10, 11}, False)]
 
 
-def test_child_reports_chosen_resolution_at_consistent_dpr_one(monkeypatch, tmp_path):
-    # #187: on this engine layout.css.devPixelsPerPx drives window.devicePixelRatio,
-    # the CSS resolution media queries, AND the render scale from ONE pref —
-    # proven page-side (no CDP) on firefox-15. At the host scale (1.5) a 1920 pick
-    # reported physical 1920*1.5 = 2880 with matchMedia 1.5dppx/144dpi true = a
-    # resolution tell. A page init-script can mask window.devicePixelRatio but not
-    # the media queries, so script-pinning left an inconsistent fingerprint. The
-    # render pref is pinned to 1 alongside screen.dpr=1 so the scanner reads the
-    # chosen resolution at a fully consistent dpr=1 (physical == screen.width).
+def test_child_renders_chosen_resolution_at_host_dpr(monkeypatch, tmp_path):
+    # #216: render at the HOST dpr so chrome + content are readable and scale
+    # together (no content zoom, nothing skews). On this engine ONE pref,
+    # layout.css.devPixelsPerPx, drives the render scale, window.devicePixelRatio
+    # AND the CSS resolution media queries together (live-proven on the engine).
+    # screen.* stays the CHOSEN resolution in CSS px, so at host dpr 1.5 a scanner
+    # sees screen=1920 with dpr=1.5 — a coherent scaled HiDPI monitor, NOT the
+    # #187 "4K tell" (that was screen*dpr with an unrelated chosen res).
     import os
     import sys
     import threading
@@ -1692,97 +1626,90 @@ def test_child_reports_chosen_resolution_at_consistent_dpr_one(monkeypatch, tmp_
     )
     os.close(r)
 
-    assert captured["pin"]["screen.width"] == 1920   # fingerprint = chosen
-    # dpr is honest AND consistent: screen.dpr=1 and devPixelsPerPx=1 so
-    # window.devicePixelRatio, the CSS resolution media queries and the physical
-    # resolution (screen.width*1 = 1920) all agree — no 2880/4K tell (#187), and
-    # no script-masked inconsistency.
-    assert captured["pin"]["screen.dpr"] == 1.0
-    assert captured["extra_prefs"]["layout.css.devPixelsPerPx"] == "1.0"
-
-
-def test_child_hidpi_enlarges_chrome_ui_without_touching_page_geometry(
-    monkeypatch, tmp_path
-):
-    # #196: dpr=1 (#187) leaves the browser's own toolbar/tabs/menus physically
-    # tiny on a HiDPI host. The launch enlarges the CHROME UI via the built-in
-    # touch density (browser.uidensity=2) — a chrome-theme pref with no
-    # zoom/scale of any surface, so no path into the content render (#206) —
-    # while every page-facing value #187 pinned stays honest: screen.dpr=1 and
-    # devPixelsPerPx="1.0" untouched.
-    import os
-    import sys
-    import threading
-    import types
-
-    captured = {}
-
-    class FakeCtx:
-        pages = [object()]
-
-        def add_init_script(self, *_a, **_k):
-            pass
-
-    class FakeEngine:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-        def _default_context_kwargs(self):
-            return {}
-
-        def __enter__(self):
-            return FakeCtx()
-
-        def __exit__(self, *a):
-            return False
-
-    mod = types.ModuleType("invisible_playwright")
-    mod.InvisiblePlaywright = FakeEngine
-    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
-    monkeypatch.setattr(invisible_launch, "_work_area", lambda: (3840, 2088))
-    monkeypatch.setattr(invisible_launch, "_system_dpr", lambda: 1.5)
-    monkeypatch.setattr(
-        invisible_launch, "_thread_close_watch", lambda *a, **k: None
-    )
-    monkeypatch.setattr(
-        invisible_launch, "_kill_profile_firefox", lambda d, pids=None, rescan=True: None
-    )
-    monkeypatch.setattr(
-        invisible_launch, "_raise_profile_window", lambda *a, **k: None
-    )
-
-    stop = threading.Event()
-    stop.set()
-    r, w = os.pipe()
-    invisible_launch._child(
-        {
-            "profile_dir": str(tmp_path),
-            "profile_name": "t",
-            "seed": 1,
-            "resolution": [1920, 1080],
-        },
-        w,
-        stop_event=stop,
-    )
-    os.close(r)
-
-    # Touch density set for the engine AND carried in prefs.js so it's in
-    # force for the profile's first window.
-    assert captured["extra_prefs"]["browser.uidensity"] == 2
+    # screen stays the CHOSEN resolution; render dpr == host dpr; both agree.
+    assert captured["pin"]["screen.width"] == 1920
+    assert captured["pin"]["screen.dpr"] == 1.5
+    assert captured["extra_prefs"]["layout.css.devPixelsPerPx"] == "1.5"
+    # The prefs.js first-paint value matches so the window doesn't flip scale.
     prefs_js = (tmp_path / "prefs.js").read_text(encoding="utf-8")
-    assert 'user_pref("browser.uidensity", 2);' in prefs_js
-    # Nothing zoom/scale-like reaches the profile: no userChrome.css and no
-    # customization sheet enabled — a toolbox zoom rule skewed pages (#206).
+    assert 'user_pref("layout.css.devPixelsPerPx", "1.5");' in prefs_js
+    # No content zoom is seeded — nothing overflows its layout boxes.
+    assert not (tmp_path / "content-prefs.sqlite").exists()
+
+
+def test_child_hidpi_uses_no_zoom_or_uidensity_hack(monkeypatch, tmp_path):
+    # #216/#196: rendering at the host dpr scales the whole browser (chrome +
+    # content) together, so the old crutches are GONE — no content zoom
+    # (content-prefs.sqlite), no browser.uidensity chrome-density hack, no
+    # userChrome.css. The one render pref carries the scale for everything.
+    import os
+    import sys
+    import threading
+    import types
+
+    captured = {}
+
+    class FakeCtx:
+        pages = [object()]
+
+        def add_init_script(self, *_a, **_k):
+            pass
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def _default_context_kwargs(self):
+            return {}
+
+        def __enter__(self):
+            return FakeCtx()
+
+        def __exit__(self, *a):
+            return False
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(invisible_launch, "_work_area", lambda: (3840, 2088))
+    monkeypatch.setattr(invisible_launch, "_system_dpr", lambda: 1.5)
+    monkeypatch.setattr(
+        invisible_launch, "_thread_close_watch", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None, rescan=True: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_raise_profile_window", lambda *a, **k: None
+    )
+
+    stop = threading.Event()
+    stop.set()
+    r, w = os.pipe()
+    invisible_launch._child(
+        {
+            "profile_dir": str(tmp_path),
+            "profile_name": "t",
+            "seed": 1,
+            "resolution": [1920, 1080],
+        },
+        w,
+        stop_event=stop,
+    )
+    os.close(r)
+
+    # The render dpr alone carries the scale — no zoom, no uidensity crutch.
+    assert captured["extra_prefs"]["layout.css.devPixelsPerPx"] == "1.5"
+    assert "browser.uidensity" not in captured["extra_prefs"]
+    prefs_js = (tmp_path / "prefs.js").read_text(encoding="utf-8")
+    assert "browser.uidensity" not in prefs_js
+    # No content zoom and no chrome customization sheet reach the profile.
+    assert not (tmp_path / "content-prefs.sqlite").exists()
     assert not (tmp_path / "chrome").exists()
     assert (
         "toolkit.legacyUserProfileCustomizations.stylesheets"
         not in captured["extra_prefs"]
     )
-    # #187 fingerprint intact: the page still reads the chosen resolution at a
-    # consistent dpr=1 — the chrome enlarge must not move any page-facing value.
-    assert captured["pin"]["screen.dpr"] == 1.0
-    assert captured["extra_prefs"]["layout.css.devPixelsPerPx"] == "1.0"
-    assert 'user_pref("layout.css.devPixelsPerPx", "1.0");' in prefs_js
 
 
 def test_child_scrubs_stale_chrome_zoom_sheet(monkeypatch, tmp_path):
@@ -1922,13 +1849,13 @@ def test_child_no_chrome_scale_on_unity_dpr_host(monkeypatch, tmp_path):
     )
 
 
-def test_devpixelsperpx_one_keeps_dpr_consistent_in_engine_prefs():
-    # #187 against the REAL engine pref pipeline: invisible_core.prefs sets BOTH
-    # layout.css.devPixelsPerPx AND zoom.stealth.screen.dpr from profile.screen.dpr
-    # and applies extra_prefs LAST. Our extra_prefs override to "1.0" must win, so
-    # devPixelsPerPx (which natively drives window.devicePixelRatio AND the CSS
-    # resolution media queries) is 1 — the scanner reads physical == screen.width,
-    # no 2880/4K tell — while the pinned screen identity stays the chosen value.
+def test_devpixelsperpx_matches_host_dpr_in_engine_prefs():
+    # #216 against the REAL engine pref pipeline: invisible_core.prefs sets both
+    # layout.css.devPixelsPerPx AND zoom.stealth.screen.dpr from the pin and
+    # applies extra_prefs LAST. Rendering at the host dpr (1.5) must reach the
+    # engine intact: devPixelsPerPx (which natively drives window.devicePixelRatio
+    # AND the CSS resolution media queries) is 1.5, the pinned screen dpr agrees,
+    # and screen.width stays the chosen value — a coherent scaled HiDPI monitor.
     pytest.importorskip("invisible_core")
     from invisible_core._fpforge import generate_profile
     from invisible_core.prefs import translate_profile_to_prefs
@@ -1940,14 +1867,14 @@ def test_devpixelsperpx_one_keeps_dpr_consistent_in_engine_prefs():
             "screen.height": 1080,
             "screen.avail_width": 1920,
             "screen.avail_height": 1040,
-            "screen.dpr": 1,
+            "screen.dpr": 1.5,
         },
     )
     prefs = translate_profile_to_prefs(
-        profile, extra_prefs={"layout.css.devPixelsPerPx": "1.0"}
+        profile, extra_prefs={"layout.css.devPixelsPerPx": "1.5"}
     )
-    assert prefs["layout.css.devPixelsPerPx"] == "1.0"  # honest, consistent dpr
-    assert prefs["zoom.stealth.screen.dpr"] == 1        # agrees with the render
+    assert prefs["layout.css.devPixelsPerPx"] == "1.5"  # render at host dpr
+    assert prefs["zoom.stealth.screen.dpr"] == 1.5      # agrees with the render
     assert prefs["zoom.stealth.screen.width"] == 1920   # fingerprint = chosen
 
 
@@ -2150,7 +2077,7 @@ def test_child_seeds_bookmarks_before_engine_launch(monkeypatch, tmp_path):
     mod.InvisiblePlaywright = FakeEngine
     monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
 
-    def fake_seed(profile_dir, bookmarks, seed, stop_event=None):
+    def fake_seed(profile_dir, bookmarks, seed, stop_event=None, **k):
         calls.append("seed")
         seeded["args"] = (profile_dir, bookmarks, seed)
 
@@ -2808,7 +2735,7 @@ def test_seed_bookmarks_reinits_when_toolbar_root_missing(monkeypatch, tmp_path)
     monkeypatch.setattr(
         invisible_launch,
         "_init_places_db",
-        lambda d, s, stop_event=None: inits.append((d, s)) or False,
+        lambda d, s, stop_event=None, **k: inits.append((d, s)) or False,
     )
     invisible_launch._seed_firefox_bookmarks(
         str(tmp_path), [{"name": "a", "url": "https://a/"}], 7
@@ -2944,7 +2871,7 @@ def test_seed_bookmarks_failed_init_is_not_rerun(monkeypatch, tmp_path):
     monkeypatch.setattr(
         invisible_launch,
         "_init_places_db",
-        lambda d, s, stop_event=None: inits.append(d) or False,
+        lambda d, s, stop_event=None, **k: inits.append(d) or False,
     )
     ok = invisible_launch._seed_firefox_bookmarks(
         str(tmp_path), [{"name": "a", "url": "https://a.example/"}], 7
@@ -2963,7 +2890,7 @@ def test_seed_bookmarks_successful_init_seeds_first_launch(
     db = str(tmp_path / "places.sqlite")
     inits = []
 
-    def init(d, s, stop_event=None):
+    def init(d, s, stop_event=None, **k):
         inits.append((d, s))
         _make_places(db)
         return True
@@ -3668,7 +3595,7 @@ def test_child_serializes_launches_of_same_profile(monkeypatch, tmp_path):
     gate = threading.Event()
     in_seed = threading.Event()
 
-    def slow_seed(profile_dir, bookmarks, seed, stop_event=None):
+    def slow_seed(profile_dir, bookmarks, seed, stop_event=None, **k):
         in_seed.set()
         gate.wait(10)
 
@@ -4000,7 +3927,7 @@ def test_child_passes_stop_event_to_bookmark_seeding(monkeypatch, tmp_path):
 
     seen = {}
 
-    def capture_seed(profile_dir, bookmarks, seed, stop_event=None):
+    def capture_seed(profile_dir, bookmarks, seed, stop_event=None, **k):
         seen["stop_event"] = stop_event
 
     monkeypatch.setattr(invisible_launch, "_seed_firefox_bookmarks", capture_seed)
@@ -4370,3 +4297,39 @@ def test_forked_firefox_alive_confident_false_and_no_verdict(monkeypatch):
     assert invisible_launch._forked_firefox_alive() is None
     monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", True)
     assert invisible_launch._forked_firefox_alive() is None
+
+
+def test_proc_cmdline_reads_via_ps_where_no_proc(monkeypatch):
+    # #168 on macOS: there is no /proc, so reading /proc/<pid>/cmdline always
+    # failed → _firefox_content_proc_count saw 0 -isForBrowser procs from the
+    # start, content_seen never went True, and the X-close was never detected.
+    # Off Linux the cmdline must come from `ps`, so the content-proc count works
+    # and the window-close self-stop fires.
+    monkeypatch.setattr(invisible_launch._platform, "IS_LINUX", False)
+    calls = {}
+
+    def fake_check_output(argv, **kwargs):
+        calls["argv"] = argv
+        return "/cache/firefox-17/firefox -contentproc -isForBrowser -profile /p\n"
+
+    monkeypatch.setattr(
+        invisible_launch.subprocess, "check_output", fake_check_output
+    )
+    out = invisible_launch._proc_cmdline(4242)
+    assert out is not None
+    assert b"-isForBrowser" in out
+    # Went through ps, not a /proc read.
+    assert calls["argv"][0] == "ps"
+    assert "4242" in calls["argv"]
+
+
+def test_proc_cmdline_ps_failure_is_no_verdict(monkeypatch):
+    # A dead/unreadable pid off Linux returns None (no verdict), never a crash —
+    # same contract as the /proc OSError path on Linux.
+    monkeypatch.setattr(invisible_launch._platform, "IS_LINUX", False)
+
+    def boom(argv, **kwargs):
+        raise invisible_launch.subprocess.CalledProcessError(1, argv)
+
+    monkeypatch.setattr(invisible_launch.subprocess, "check_output", boom)
+    assert invisible_launch._proc_cmdline(999999) is None

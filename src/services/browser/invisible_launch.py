@@ -841,7 +841,11 @@ def _work_area() -> tuple[int, int]:
         return (0, 0)
 
 
-def _seed_window_size(profile_dir: str, screen: "tuple[int, int] | None" = None) -> None:
+def _seed_window_size(
+    profile_dir: str,
+    screen: "tuple[int, int] | None" = None,
+    dpr: float = 1.0,
+) -> None:
     """Seed the profile's INITIAL Firefox window size to half the work area
     so a fresh profile opens a normal mid-size window — the same feel as
     chromium's default. xulstore.json's main-window size restores in DEVICE
@@ -852,12 +856,12 @@ def _seed_window_size(profile_dir: str, screen: "tuple[int, int] | None" = None)
     must survive relaunches.
 
     When a resolution was chosen the window is CAPPED to that spoofed screen:
-    at dpr=1 the CSS innerWidth equals the physical window width, so a window
-    wider than the spoofed screen made innerWidth > screen.width — an
-    impossible-for-a-real-browser combination (a window can't be wider than its
-    screen) that a scanner flags and that skews layout on non-responsive pages
-    (#216: a 1280-screen profile opened a ~1900px window, innerWidth 1898 >
-    screen 1280). Cap at screen minus a little chrome so inner stays ≤ screen."""
+    the CSS innerWidth is the physical window width divided by `dpr`, so a
+    window whose inner CSS size exceeds the spoofed screen is impossible for a
+    real browser (a window can't be wider than its screen) — a scanner flags it
+    and it skews layout on non-responsive pages (#216). screen is in CSS px, the
+    window is device px, so the physical cap is screen*dpr minus a little chrome
+    to leave inner ≤ screen."""
     if not profile_dir:
         return
     path = os.path.join(profile_dir, "xulstore.json")
@@ -869,13 +873,14 @@ def _seed_window_size(profile_dir: str, screen: "tuple[int, int] | None" = None)
     w, h = aw // 2, ah // 2
     if screen:
         sw, sh = screen
-        # Keep the whole window within the spoofed screen: the content area
-        # (innerWidth/Height at dpr=1) must not exceed screen.*, and the frame
-        # adds a little chrome, so cap the window a touch under the screen size.
+        # screen.* is CSS px; the window is device px. Physical inner ≤
+        # screen*dpr keeps CSS inner (physical/dpr) ≤ screen. Trim a little for
+        # the window frame so the content area stays under the screen.
+        scale = dpr if dpr and dpr > 0 else 1.0
         if sw:
-            w = min(w, max(320, sw - 16))
+            w = min(w, max(320, int(sw * scale) - 16))
         if sh:
-            h = min(h, max(240, sh - 96))
+            h = min(h, max(240, int(sh * scale) - 96))
     try:
         os.makedirs(profile_dir, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
@@ -892,90 +897,6 @@ def _seed_window_size(profile_dir: str, screen: "tuple[int, int] | None" = None)
                 f,
             )
     except OSError:
-        pass
-
-
-def _seed_default_zoom(profile_dir: str, scale: float) -> None:
-    """Seed the profile's default page zoom to `scale` via content-prefs.sqlite,
-    so a HiDPI host renders text at a comfortable size.
-
-    This is TEXT zoom (paired with browser.zoom.full=false in the prefs), not
-    full-page zoom. On this engine full-page zoom multiplies
-    window.devicePixelRatio and the CSS resolution media queries — so a 1.5x
-    full zoom on a 2560 screen reports devicePixelRatio 1.5 / 1.5dppx, the exact
-    4K tell #187 removed. Text zoom enlarges the rendered text WITHOUT touching
-    devicePixelRatio, screen.*, or the resolution media queries (live-proven page-
-    side: at scale 1.5 the text is ~1.5x larger while devicePixelRatio stays 1,
-    screen.width stays the chosen value and matchMedia('(resolution:1dppx)') stays
-    true), keeping the honest #187 fingerprint intact.
-
-    Firefox stores the browser-wide default zoom as a global (NULL group) row of
-    browser.content.full-zoom in content-prefs.sqlite; it applies to every site
-    that has no per-site override. The engine's places init creates the database
-    first, but unlike places.sqlite Firefox accepts a hand-built content-prefs.
-    sqlite, so this creates one when absent too. `scale` at 1.0 is a no-op — a
-    non-HiDPI host gets no zoom row at all."""
-    if not profile_dir or scale <= 1.0:
-        return
-    import sqlite3
-
-    path = os.path.join(profile_dir, "content-prefs.sqlite")
-    try:
-        os.makedirs(profile_dir, exist_ok=True)
-        conn = sqlite3.connect(path)
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                "CREATE TABLE IF NOT EXISTS groups "
-                "(id INTEGER PRIMARY KEY, name TEXT NOT NULL)"
-            )
-            cur.execute(
-                "CREATE TABLE IF NOT EXISTS settings "
-                "(id INTEGER PRIMARY KEY, name TEXT NOT NULL)"
-            )
-            cur.execute(
-                "CREATE TABLE IF NOT EXISTS prefs "
-                "(id INTEGER PRIMARY KEY, "
-                "groupID INTEGER REFERENCES groups(id), "
-                "settingID INTEGER NOT NULL REFERENCES settings(id), "
-                "value BLOB, timestamp INTEGER NOT NULL DEFAULT 0)"
-            )
-            cur.execute(
-                "CREATE INDEX IF NOT EXISTS groups_idx ON groups(name)"
-            )
-            cur.execute(
-                "CREATE INDEX IF NOT EXISTS settings_idx ON settings(name)"
-            )
-            cur.execute(
-                "CREATE INDEX IF NOT EXISTS prefs_idx "
-                "ON prefs(timestamp, groupID, settingID)"
-            )
-            row = cur.execute(
-                "SELECT id FROM settings WHERE name='browser.content.full-zoom'"
-            ).fetchone()
-            if row is None:
-                cur.execute(
-                    "INSERT INTO settings(name) "
-                    "VALUES('browser.content.full-zoom')"
-                )
-                setting_id = cur.lastrowid
-            else:
-                setting_id = row[0]
-            # One global default row (NULL group) — replace any prior default so
-            # the seed is idempotent and a changed host scale re-seeds cleanly.
-            cur.execute(
-                "DELETE FROM prefs WHERE settingID=? AND groupID IS NULL",
-                (setting_id,),
-            )
-            cur.execute(
-                "INSERT INTO prefs(groupID, settingID, value, timestamp) "
-                "VALUES (NULL,?,?,0)",
-                (setting_id, float(scale)),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-    except sqlite3.Error:
         pass
 
 
@@ -1130,8 +1051,9 @@ def _init_places_db(
     seed: int,
     timeout: float = 90.0,
     close_grace: float = 15.0,
-    enter_timeout: float = 25.0,
+    enter_timeout: float = 8.0,
     stop_event=None,
+    log=None,
 ) -> bool:
     """Launch the engine once headless so it creates a valid places.sqlite.
 
@@ -1143,10 +1065,14 @@ def _init_places_db(
     seeding a rootless database silently inserts nothing. Playwright's sync
     API is thread-affine, so each attempt (enter → wait for roots → polite
     exit) runs on one worker thread. The enter itself is bounded to
-    `enter_timeout` and retried: a wedged persistent-context launch (the #137
-    family — live: the playwright driver crashed mid-init) used to eat the
-    whole `timeout` as dead air with the user staring at a card that "does
-    nothing". `timeout` still bounds the whole init, the polite close gets
+    `enter_timeout` and retried: on Windows the FIRST headless __enter__ RACES —
+    usually ~2.5s, but ~1 in 5 wedges the cold engine start; a 25s bound made
+    that wedge cost the full 25s before the fast retry, the whole 28s first
+    launch (#219). At 8s the normal enter still fits and a wedge costs ~8s + a
+    ~2.5s retry (~10s worst case) instead of 28s. A wedged persistent-context
+    launch (the #137 family — live: the playwright driver crashed mid-init) used
+    to eat the whole `timeout` as dead air with the user staring at a card that
+    "does nothing". `timeout` still bounds the whole init, the polite close gets
     only `close_grace` on top (Firefox's shutdown blockers hang it for ~90s
     at times; the settle below kills the leftovers anyway), and `stop_event`
     cancels between polls so a STOP doesn't have to wait the init out.
@@ -1188,9 +1114,16 @@ def _init_places_db(
     roots_ready = _roots_ready
     _wal_settled._sizes.pop(places, None)
 
+    _t0 = time.monotonic()
+
+    def phase(msg):
+        if log:
+            log(f"PLACES_INIT {msg} t={time.monotonic() - _t0:.1f}s")
+
     for _attempt in range(3):
         if stopped() or time.monotonic() >= deadline:
             break
+        phase(f"attempt={_attempt} enter-begin")
         entered = threading.Event()
         ready = threading.Event()
         done = threading.Event()
@@ -1251,6 +1184,7 @@ def _init_places_db(
         if not entered.is_set():
             # Wedged (or failed) before the engine came up: kill this
             # profile's Firefox so the blocked enter unwinds, settle, retry.
+            phase(f"attempt={_attempt} enter-wedged")
             _kill_profile_firefox(profile_dir)
             _wait_profile_released(profile_dir)
             for fname in ("lock", ".parentlock"):
@@ -1259,10 +1193,12 @@ def _init_places_db(
                 except OSError:
                     pass
             continue
+        phase(f"attempt={_attempt} entered")
         # Entered: the worker leaves its roots-wait on ready/stop/deadline.
         while not ready.wait(0.5):
             if stopped() or time.monotonic() > deadline:
                 break
+        phase(f"attempt={_attempt} roots-ready")
         # The roots are committed to places.sqlite the moment ready fires, and
         # this throwaway run's session is wiped below — so there's nothing to
         # gain by waiting out its polite close. On Windows that polite close ran
@@ -1275,6 +1211,7 @@ def _init_places_db(
         done.wait(1.0)
         if not done.is_set():
             _kill_profile_firefox(profile_dir)
+        phase(f"attempt={_attempt} killed")
         break
     # The engine's __exit__ is a polite Playwright teardown the multi-process
     # Firefox routinely survives; a REAL launch over a still-dying instance
@@ -1284,6 +1221,7 @@ def _init_places_db(
     # already on disk (#219: the default 5s grace + slow Windows shutdown was
     # dead-air on every first launch).
     _wait_profile_released(profile_dir, grace=0.5)
+    phase("released")
     # Clear the lock the headless run leaves so the real launch isn't blocked.
     for fname in ("lock", ".parentlock"):
         try:
@@ -1505,7 +1443,7 @@ def _write_persona_bookmark_urls(profile_dir: str, urls) -> None:
 
 def _seed_firefox_bookmarks(
     profile_dir: str, bookmarks: list, seed: int, stop_event=None,
-    attempts: int = 2,
+    attempts: int = 2, log=None,
 ) -> bool:
     """Reconcile persona's OWN Firefox toolbar bookmarks via places.sqlite —
     runs before every launch, so edits in the profile editor take effect on the
@@ -1555,7 +1493,7 @@ def _seed_firefox_bookmarks(
                     continue
                 init_ran = True
                 if not _init_places_db(
-                    profile_dir, seed, stop_event=stop_event
+                    profile_dir, seed, stop_event=stop_event, log=log
                 ):
                     continue
 
@@ -1636,12 +1574,6 @@ def _profile_prefs(cfg: dict) -> dict:
             "browser.sessionstore.resume_session_once": True,
             "browser.sessionstore.resume_from_crash": True,
             "browser.sessionstore.interval": 1500,
-            # Apply the seeded default zoom (_seed_default_zoom) as TEXT zoom,
-            # not full-page zoom: full-page zoom multiplies devicePixelRatio and
-            # the CSS resolution media queries, which would re-leak the resolution
-            # #187 made honest; text zoom enlarges the rendered text alone and
-            # leaves every dpr-derived value untouched.
-            "browser.zoom.full": False,
             # Always show the bookmarks toolbar so the shipped test bookmarks
             # are visible (default only shows it on the new-tab page).
             "browser.toolbars.bookmarks.visibility": "always",
@@ -2015,7 +1947,7 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     # A seed that didn't land after its bounded retries is reported, not
     # swallowed (#202) — but never blocks the launch itself.
     if not _seed_firefox_bookmarks(
-        profile_dir, cfg.get("bookmarks", []), seed, stop_event
+        profile_dir, cfg.get("bookmarks", []), seed, stop_event, log=emit
     ) and cfg.get("bookmarks"):
         emit("BOOKMARK_SEED_FAILED: opening without the profile's bookmarks")
     # The headless init above persists the engine's window-hiding pref into
@@ -2079,79 +2011,49 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     if res:
         w, h = int(res[0]), int(res[1])
         _res_overrides = _context_overrides_for(w, h)
+        # Render at the HOST's display scale (layout.css.devPixelsPerPx = host
+        # dpr) so the browser chrome AND page content are drawn at a readable
+        # size on a HiDPI display, scaled together by the engine — no content
+        # zoom, so nothing overflows its layout boxes. On this engine that one
+        # pref moves the render scale, window.devicePixelRatio AND the CSS
+        # resolution media queries TOGETHER (live-proven on the engine: at 1.5,
+        # devicePixelRatio=1.5, matchMedia('(resolution:1.5dppx)') and
+        # '(resolution:144dpi)' true, '(resolution:1dppx)' false). screen.* stays
+        # the chosen resolution in CSS px, so a scanner reads an honest scaled
+        # HiDPI monitor — screen 2560 at dpr 1.5, physical 2560*1.5 — a coherent
+        # device, NOT the #187 "4K tell" (which was screen*dpr with an unrelated
+        # chosen res). Only zoom.stealth.screen.width/height are read by xul.dll
+        # for JS screen.*; screen.dpr in the pin is not read for devicePixelRatio,
+        # so it's kept equal to the render dpr purely for coherence.
+        dpr = _system_dpr()
         # With no_viewport Firefox owns the window size; seed a fresh profile's
         # first window so it doesn't open at Firefox's own default. Cap it to the
-        # spoofed screen so innerWidth/Height never exceed screen.* (#216).
-        _seed_window_size(profile_dir, screen=(w, h))
-        # On this engine ONE pref, layout.css.devPixelsPerPx, drives the render
-        # scale, window.devicePixelRatio AND the CSS resolution media queries
-        # together — proven page-side (no CDP) on firefox-15: at 1.5 a 2560 screen
-        # reports devicePixelRatio 1.5, matchMedia('(resolution:1.5dppx)') true and
-        # '(resolution:144dpi)' true, so a scanner reads physical = 2560*1.5 = 3840
-        # = a "4K" tell (#187); a 1920 pick reported 2880. zoom.stealth.screen.dpr
-        # is NOT read for devicePixelRatio (only stealth.screen.width/height are
-        # read by xul.dll), and a page init-script can only mask window.
-        # devicePixelRatio — it CANNOT change the CSS resolution media queries, so
-        # a script-pinned dpr left an INCONSISTENT fingerprint (JS says 1, media
-        # queries say 1.5), a stronger tell than either honest value.
-        #
-        # Report the chosen resolution honestly at a consistent dpr=1: pin
-        # screen.dpr=1 AND render at devPixelsPerPx=1 so every dpr-derived value
-        # agrees (devicePixelRatio 1, physical = screen.width, only 1dppx/96dpi
-        # media queries match). Content renders at dpr 1, so on a HiDPI host it
-        # is physically tiny — the TEXT zoom seeded below enlarges the rendered
-        # text to the host scale WITHOUT raising devicePixelRatio. Full-page zoom
-        # cannot be used for this: it multiplies devicePixelRatio and the
-        # resolution media queries (re-leaking the resolution #187 removed), and
-        # ui.textScaleFactor is aliased to devPixelsPerPx. Text zoom is the one
-        # knob that enlarges the render while every dpr-derived value stays honest
-        # (live-proven page-side: at scale 1.5 the text is ~1.5x larger yet
-        # devicePixelRatio stays 1 and matchMedia('(resolution:1dppx)') stays true).
-        #
+        # spoofed screen so the CSS innerWidth/Height (physical / dpr) never
+        # exceed screen.* — a window wider than its own screen is impossible for a
+        # real browser (#216).
+        _seed_window_size(profile_dir, screen=(w, h), dpr=dpr)
         # Firefox has NO --width/--height CLI flags (those are chromium's); a
         # patched-Firefox launch that received them treated the leftover as a URL
         # and opened a bogus "0.0.9.51" page. Size comes ONLY from the profile's
         # xulstore.json (seeded above), never from extra_args.
-        emit(f"HIDPI_DEBUG chosen={w}x{h} window=native dpr=1")
+        emit(f"HIDPI_DEBUG chosen={w}x{h} window=capped dpr={dpr}")
         kwargs["pin"] = {
             "screen.width": w,
             "screen.height": h,
             "screen.avail_width": w,
             "screen.avail_height": h - 40,
-            "screen.dpr": 1.0,
+            "screen.dpr": dpr,
         }
-        kwargs["extra_prefs"]["layout.css.devPixelsPerPx"] = "1.0"
+        kwargs["extra_prefs"]["layout.css.devPixelsPerPx"] = str(dpr)
         # The FIRST paint uses the value already in prefs.js — the user.js
-        # override above only kicks in a beat later, and the headless places
-        # init leaves the SAMPLED profile's dpr there. A mismatch between the
-        # prefs.js value at first paint and the user.js value applied just after
-        # flips the window scale mid-open (the initial skew). Carry the same
-        # value in prefs.js before Firefox starts so there's no flip.
+        # override only kicks in a beat later, and the headless places init
+        # leaves the SAMPLED profile's dpr there. A mismatch between the prefs.js
+        # value at first paint and the user.js value applied just after flips the
+        # window scale mid-open (the initial skew). Carry the same value in
+        # prefs.js before Firefox starts so there's no flip.
         _upsert_prefs_js(
-            profile_dir, {"layout.css.devPixelsPerPx": "1.0"}
+            profile_dir, {"layout.css.devPixelsPerPx": str(dpr)}
         )
-        # Enlarge the rendered text to the host's display scale so a chosen
-        # resolution isn't physically tiny on a HiDPI monitor. As TEXT zoom
-        # (browser.zoom.full=false, set in _profile_prefs) this doesn't touch
-        # devicePixelRatio or the resolution media queries, so the honest #187
-        # fingerprint is preserved. 1.0 (a non-HiDPI host) seeds nothing.
-        dpr = _system_dpr()
-        _seed_default_zoom(profile_dir, dpr)
-        # Text zoom reaches only page CONTENT — the browser's own toolbar/tab
-        # strip/menus still render tiny at dpr=1 on a HiDPI host (#196).
-        # Enlarge the chrome with the built-in touch density: the same shipped
-        # mode as Customize Toolbar's "Touch", switched through browser.
-        # uidensity (0 normal / 1 compact / 2 touch). It swaps the toolbar/tab
-        # controls to their touch sizing and reflows the window through normal
-        # layout — no surface is zoomed or scaled, so nothing page-facing
-        # (devicePixelRatio, screen.*, the resolution media queries, content
-        # geometry) can move. A userChrome.css zoom on the toolbox DID scale a
-        # surface and skewed the page render (#206). Coarser than a per-scale
-        # factor, but a correct render wins. In prefs.js too so it's in force
-        # for the profile's first window.
-        if dpr > 1.0:
-            kwargs["extra_prefs"]["browser.uidensity"] = 2
-            _upsert_prefs_js(profile_dir, {"browser.uidensity": 2})
     if proxy:
         kwargs["proxy"] = proxy
         # Firefox owns its own proxy sockets (playwright's native proxy), so the
@@ -2641,13 +2543,24 @@ def _descendant_pids(root: int):
 
 
 def _proc_cmdline(pid: int):
-    """The raw /proc cmdline of `pid` (NUL separators replaced with spaces),
-    or None when unreadable (the process exited, or no /proc)."""
+    """The command line of `pid` as bytes, or None when unreadable (the process
+    exited). Reads /proc/<pid>/cmdline on Linux; macOS has no /proc, so it reads
+    the command through `ps` there (without which every content-proc match failed
+    and the macOS X-close went undetected, #168)."""
+    if _platform.IS_LINUX:
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                return f.read().replace(b"\0", b" ")
+        except OSError:
+            return None
     try:
-        with open(f"/proc/{pid}/cmdline", "rb") as f:
-            return f.read().replace(b"\0", b" ")
-    except OSError:
+        out = subprocess.check_output(
+            ["ps", "-p", str(pid), "-o", "command="], text=True
+        )
+    except Exception:
         return None
+    out = out.strip()
+    return out.encode("utf-8", "replace") if out else None
 
 
 def _forked_firefox_alive():

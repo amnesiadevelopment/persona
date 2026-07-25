@@ -74,6 +74,12 @@ _BENIGN_ENGINE_ERRORS = (
     "socket_manager.cc",
     "turn_port.cc",
     "stun_port.cc",
+    # Shutdown chatter: the parent polls a content child that already exited, so
+    # the zygote GetTerminationStatus send fails on close — not a failure.
+    "zygote_communication_linux.cc",
+    # Benign fontconfig chatter from chromium children when the host fontconfig
+    # isn't ideal; the engine spoofs its own fonts and the page still renders.
+    "Fontconfig error: Cannot load default config file",
 )
 
 # net_error -100 = ERR_CONNECTION_CLOSED: the connection was dropped

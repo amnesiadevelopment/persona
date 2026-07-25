@@ -51,6 +51,25 @@ def test_benign_chromium_error_lines_are_filtered():
         assert is_engine_noise(m), f"should be filtered: {m!r}"
 
 
+def test_benign_shutdown_and_fontconfig_lines_are_filtered():
+    # Chromium shutdown chatter: the parent polls a content child that already
+    # exited, so the zygote GetTerminationStatus send fails — expected on close,
+    # not a persona failure. And fontconfig "Cannot load default config file" is
+    # benign chromium-child noise when the host fontconfig isn't ideal (the
+    # engine spoofs fonts itself); the page still renders. Both are file-log
+    # only, never a red Activity Log line (#212).
+    benign = [
+        "[951814:951814:0724/131544.095515:ERROR:content/common/zygote/"
+        "zygote_communication_linux.cc:291] Failed to send GetTerminationStatus "
+        "message to zygote",
+        "Fontconfig error: Cannot load default config file: File not found",
+        "Fontconfig error: Cannot load default config file: No such file or "
+        "directory",
+    ]
+    for m in benign:
+        assert is_engine_noise(m), f"should be filtered: {m!r}"
+
+
 def test_benign_webrtc_p2p_lines_are_filtered():
     # A fingerprint scanner's WebRTC test (iphey) drives ICE gathering with no
     # reachable STUN/TURN, so chromium's P2P stack logs name-resolution and

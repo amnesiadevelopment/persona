@@ -54,7 +54,40 @@ def _force_utf8() -> None:
             pass
 
 
+_REEXEC_UTF8_FLAG = "PERSONA_UTF8_REEXEC"
+
+
+def _ensure_utf8_fs() -> None:
+    """Re-exec the interpreter in UTF-8 mode when the filesystem encoding is
+    ASCII, so a profile with a non-ASCII (e.g. Cyrillic) name can be created.
+
+    The filesystem encoding is fixed at interpreter startup from the locale. On
+    a Linux desktop launched with a POSIX/C locale (no UTF-8 LANG/LC_ALL — the
+    AppImage can inherit a bare environment) it is 'ascii', so os.mkdir of a
+    Cyrillic profile dir raises UnicodeEncodeError and profile creation crashes
+    (#222). PYTHONUTF8 is read only at startup, so setting it in-process can't
+    fix THIS interpreter — re-exec once with it set. Guarded by an env flag so
+    the re-exec can't loop, and only where the fs encoding is actually not UTF-8
+    (Windows/macOS default to UTF-8; a UTF-8 Linux locale is already fine)."""
+    if os.environ.get(_REEXEC_UTF8_FLAG):
+        return
+    enc = (sys.getfilesystemencoding() or "").lower()
+    if enc.startswith("utf"):
+        return
+    os.environ[_REEXEC_UTF8_FLAG] = "1"
+    os.environ["PYTHONUTF8"] = "1"
+    os.environ["PYTHONIOENCODING"] = "utf-8"
+    try:
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    except OSError:
+        # Can't re-exec (frozen build with no discrete interpreter, or execv
+        # denied) — carry on; a UTF-8 profile name may still fail, but the app
+        # must not refuse to start.
+        os.environ.pop(_REEXEC_UTF8_FLAG, None)
+
+
 _force_utf8()
+_ensure_utf8_fs()
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
