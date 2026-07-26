@@ -196,8 +196,10 @@ class ProfileManager:
             profile.ai_control = new_ai_control
 
         if new_name != original_name:
-            del self.profiles[original_name]
-            self.profiles[new_name] = profile
+            self.profiles = {
+                (new_name if k == original_name else k): v
+                for k, v in self.profiles.items()
+            }
 
             old_dir = self._data_path(original_name)
             if pathlib.Path(old_dir).exists():
