@@ -315,6 +315,27 @@ def test_client_half_close_keeps_upstream_stream_alive():
         bridge.stop()
 
 
+def test_reader_buffers_are_large_enough_for_multiplexed_streams():
+    # #184 real root: one tunnel carries a multiplexed HTTP/2 connection — a large
+    # download (Sheets' 375 KB calc-worker) AND small client->server control
+    # frames (WINDOW_UPDATE / the /bind long-poll) share it. With asyncio's 64 KiB
+    # default StreamReader limit, a busy download fills the buffer, asyncio pauses
+    # reading the transport, the reverse control frames stall, and over a
+    # high-latency proxy the whole h2 connection wedges — Sheets sticks on
+    # "Working". The bridge must give both directions a buffer big enough that one
+    # busy stream can't starve the others.
+    upstream = FakeUpstream("ok")
+    upstream.start()
+    bridge = ProxyBridge(upstream.url)
+    bridge.start()
+    try:
+        _socks5_request(bridge.port)
+        assert bridge_mod._STREAM_LIMIT >= 4 * 1024 * 1024
+    finally:
+        bridge.stop()
+        upstream.join(timeout=5)
+
+
 def test_idle_tunnel_is_reaped_so_the_browser_can_rebuild(monkeypatch):
     # #184 root: a commercial residential/mobile upstream silently reaps a
     # low-traffic long-poll leg with NO FIN/RST — reader.read() would hang

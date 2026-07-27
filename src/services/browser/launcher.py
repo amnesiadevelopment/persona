@@ -80,6 +80,11 @@ _BENIGN_ENGINE_ERRORS = (
     # Benign fontconfig chatter from chromium children when the host fontconfig
     # isn't ideal; the engine spoofs its own fonts and the page still renders.
     "Fontconfig error: Cannot load default config file",
+    # No session D-Bus in a headless/VM session: chromium spams bus-connect and
+    # NameHasOwner failures. The browser runs fine; on a real host with a bus
+    # these don't appear.
+    "dbus/bus.cc",
+    "dbus/object_proxy.cc",
 )
 
 # net_error -100 = ERR_CONNECTION_CLOSED: the connection was dropped

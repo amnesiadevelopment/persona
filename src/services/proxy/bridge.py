@@ -17,6 +17,15 @@ from urllib.parse import urlparse
 
 _UPSTREAM_TIMEOUT = 15.0
 
+# StreamReader buffer per tunnel direction. One tunnel carries a whole
+# multiplexed HTTP/2 connection: a large download and small control frames
+# (WINDOW_UPDATE, the browserchannel /bind long-poll) share it. asyncio's 64 KiB
+# default is far too small — a busy download fills the buffer, asyncio pauses the
+# transport, and the reverse control frames stall. Over a high-latency proxy that
+# wedges the whole h2 connection and Sheets sticks on "Working" (#184). A wide
+# buffer lets one busy stream fill without starving the others.
+_STREAM_LIMIT = 8 * 1024 * 1024
+
 # Opt-in tunnel tracing for #184 debugging: set PERSONA_BRIDGE_LOG=/path to log
 # every tunnel's open/close (target host, bytes each way, lifetime, close
 # reason). Off by default — no prod overhead, no output unless the env is set.
@@ -170,7 +179,7 @@ class ProxyBridge:
 
     async def _serve(self) -> None:
         self._server = await asyncio.start_server(
-            self._handle_client, "127.0.0.1", 0
+            self._handle_client, "127.0.0.1", 0, limit=_STREAM_LIMIT
         )
         self._port = self._server.sockets[0].getsockname()[1]
         self._ready.set()
@@ -222,7 +231,9 @@ class ProxyBridge:
         host: str,
         port: int,
     ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-        r, w = await asyncio.open_connection(self._up_host, self._up_port)
+        r, w = await asyncio.open_connection(
+            self._up_host, self._up_port, limit=_STREAM_LIMIT
+        )
         _tune_tunnel_socket(_sock_of(w))
         try:
             # greeting: offer no-auth + user/pass
@@ -402,11 +413,15 @@ async def _pipe(
     full speed without unbounded buffering."""
     total = 0
     reason = "eof"
+    _chunks = 0
     try:
         while True:
             data = await reader.read(262144)
             if not data:
                 break
+            _chunks += 1
+            if _TRACE_PATH:
+                _trace(f"conn={cid} host={host} pipe={dir} CHUNK #{_chunks} n={len(data)} total={total+len(data)}")
             if bump is not None:
                 bump()
             total += len(data)

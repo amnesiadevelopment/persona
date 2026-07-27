@@ -31,6 +31,26 @@ def test_override_script_empty_locale_is_noop():
     assert il._language_override_script(None) == ""
 
 
+def test_override_script_pins_intl_locale():
+    # pixelscan reads the Intl "Internationalization API" locale from
+    # Intl.DateTimeFormat().resolvedOptions().locale — firefox-17 leaves it at the
+    # host default (uk-UA) even when navigator.language is pinned. The mismatch is
+    # the masking tell. The script must pin every Intl formatter's resolved locale.
+    js = il._language_override_script("en-US")
+    assert "resolvedOptions" in js
+    assert "DateTimeFormat" in js
+    assert "NumberFormat" in js
+
+
+def test_override_script_pins_date_locale_formatting():
+    # Date.prototype.toString / toLocaleString on firefox-17 render the timezone
+    # description in the host locale ("за північноамериканським…" on a Ukrainian
+    # host) — another uk leak a scanner catches. The script must force Date's
+    # default locale to the pinned one.
+    js = il._language_override_script("en-US")
+    assert "toLocaleString" in js or "DateTimeFormat" in js
+
+
 def test_override_script_defines_both_getters():
     js = il._language_override_script("fr-FR")
     # defines both navigator getters via the shared def() helper

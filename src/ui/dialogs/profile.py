@@ -13,6 +13,7 @@ from ...services.browser.profile_seed import (
 )
 from ...services.bookmark.store import DEFAULT_BOOKMARKS
 from ...services.browser.device_presets import is_mobile_os
+from ...services.browser.invisible_launch import _system_dpr
 from ...services.browser.resolution import parse_resolution
 from ...utils.validation import validate_profile_name
 from ..theme.colors import COLORS
@@ -189,12 +190,32 @@ def open_profile_dialog(
     )
     resolution_dropdown.on_select = on_res_change
 
+    # The Firefox engine renders at the host display's scale for readable text, so
+    # a scanner reads the reported resolution as chosen * host-scale. On a HiDPI
+    # host (e.g. 150%) a 2560 pick reports 3840. Warn the user their monitor's
+    # scale multiplies the value so the shown resolution isn't a surprise.
+    _dpr = _system_dpr()
+    if _dpr and _dpr != 1.0:
+        res_hint_text = (
+            f"note: your display scale is {int(_dpr * 100)}% — the reported "
+            f"resolution is your choice x{_dpr:g} (e.g. 2560 shows as "
+            f"{int(2560 * _dpr)})"
+        )
+    else:
+        res_hint_text = (
+            "note: the reported resolution follows your monitor's display scale"
+        )
+    res_hint = ft.Text(
+        res_hint_text, size=11, color=COLORS["text_sub"], font_family=MONO
+    )
+
     # A mobile profile's screen geometry comes from its device preset (the
     # phone/tablet the fingerprint impersonates), not this desktop picker — a 4K
     # "phone" is an instant tell. Hide the whole resolution picker for mobile OSes
     # so it's never even offered there.
     resolution_section = ft.Column(
-        spacing=6, controls=[ft.Row(controls=[resolution_dropdown]), custom_row]
+        spacing=6,
+        controls=[ft.Row(controls=[resolution_dropdown]), custom_row, res_hint],
     )
     resolution_section.visible = not is_mobile_os(
         os_dropdown.value or "windows"

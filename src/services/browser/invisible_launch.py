@@ -24,6 +24,15 @@ from .firefox_bookmarks import places_ready
 # so a crash mid-extract can never leave a half build active.
 _INSTALL_MARKER = ".persona-complete"
 
+# A markerless pinned build (BINARY_VERSION, installed by the package's own
+# ensure_binary) is trusted only if its entry executable is a real, whole binary
+# — not a stub left by an aborted first download. An interrupted fetch over Tor
+# can leave the entry path present but tiny (or 0 bytes) so is_invisible_installed
+# wrongly read True and the auto-download never re-ran, leaving FF unlaunchable
+# forever (#225). A real Firefox executable is many MB; 1 MB safely clears any
+# real build and rejects a truncated one.
+_MIN_ENTRY_BYTES = 1_000_000
+
 
 # The FF engine speaks juggler, not CDP, so the MCP browser tools can't attach
 # over a debugging port the way they do for chromium. A running FF session
@@ -74,9 +83,22 @@ def installed_builds() -> list[str]:
             tag = d.name
             if build_number(tag) < 0 or tag in BROKEN_VERSIONS:
                 continue
-            if not (d / entry_rel).exists():
+            entry = d / entry_rel
+            if not entry.exists():
                 continue
-            if tag != BINARY_VERSION and not (d / _INSTALL_MARKER).exists():
+            if (d / _INSTALL_MARKER).exists():
+                out.append(tag)
+                continue
+            # No completion marker. Only the package-pinned BINARY_VERSION may be
+            # markerless (ensure_binary installs it that way) — and only if its
+            # entry is a real whole binary, not a stub left by an aborted first
+            # download (#225). Any other markerless build is a crashed mid-extract.
+            if tag != BINARY_VERSION:
+                continue
+            try:
+                if entry.stat().st_size < _MIN_ENTRY_BYTES:
+                    continue
+            except OSError:
                 continue
             out.append(tag)
         out.sort(key=build_number)
@@ -138,8 +160,12 @@ def _binary_path_override():
 
 
 def is_invisible_installed() -> bool:
-    p = _invisible_binary_path()
-    return bool(p and p.exists())
+    # "Installed" means at least one COMPLETE build (installed_builds already
+    # rejects a markerless truncated pinned stub, #225). NOT "the active-build
+    # path exists" — active_build() falls back to naming BINARY_VERSION even when
+    # nothing is installed, so an aborted first download left that path present and
+    # this read True, blocking the auto-redownload and leaving FF unlaunchable.
+    return bool(installed_builds())
 
 
 def _ensure_firefox_policies() -> None:
@@ -802,6 +828,54 @@ def _language_override_script(locale: str) -> str:
         "{get:()=>v,configurable:true})}catch(e){}};"
         "def('language', L);"
         "def('languages', Object.freeze(LS.slice()));"
+        # firefox-17 also leaks the host locale through the Intl API and Date's
+        # locale-aware formatting (pixelscan's "Internationalization API" reads
+        # Intl.DateTimeFormat().resolvedOptions().locale; Date.toString renders the
+        # timezone name in the host locale). navigator.language alone isn't enough —
+        # force every Intl formatter and Date's default locale to L so a scanner
+        # sees one consistent locale.
+        "try{"
+        "const forceLocale=(ctor)=>{if(!ctor)return;"
+        "const Orig=ctor.wrapped||ctor;"
+        "const Wrapped=function(locales,options){"
+        "const l=(locales===undefined||locales===null||"
+        "(Array.isArray(locales)&&locales.length===0))?L:locales;"
+        "return new.target?Reflect.construct(Orig,[l,options],new.target)"
+        ":Orig(l,options);};"
+        "Wrapped.prototype=Orig.prototype;"
+        "Wrapped.wrapped=Orig;"
+        "if(Orig.supportedLocalesOf)Wrapped.supportedLocalesOf="
+        "Orig.supportedLocalesOf.bind(Orig);"
+        "const ro=Orig.prototype&&Orig.prototype.resolvedOptions;"
+        "if(ro){Orig.prototype.resolvedOptions=function(){"
+        "const o=ro.call(this);o.locale=L;return o;};}"
+        "return Wrapped;};"
+        "['DateTimeFormat','NumberFormat','RelativeTimeFormat','Collator',"
+        "'PluralRules','ListFormat','DisplayNames','Segmenter'].forEach(k=>{"
+        "if(Intl[k]){const w=forceLocale(Intl[k]);if(w)Intl[k]=w;}});"
+        # Date locale-aware methods default to L when no locale is passed.
+        "const patchDate=(name)=>{const orig=Date.prototype[name];if(!orig)return;"
+        "Date.prototype[name]=function(locales,options){"
+        "return orig.call(this,locales===undefined?L:locales,options);};};"
+        "['toLocaleString','toLocaleDateString','toLocaleTimeString']"
+        ".forEach(patchDate);"
+        # Date.prototype.toString/toTimeString/toDateString render the timezone
+        # name in the host OS locale ("(за східноєвропейським…)" on a Ukrainian
+        # host) — pixelscan's "Time from JS" reads exactly this. They bypass Intl,
+        # so rebuild the zone suffix with an en-US long-timezone formatter.
+        "const OP=String.fromCharCode(40),CP=String.fromCharCode(41);"
+        "const zoneName=(d)=>{try{const p=new Intl.DateTimeFormat(L,"
+        "{timeZoneName:'long'}).formatToParts(d);"
+        "const z=p.find(x=>x.type==='timeZoneName');return z?z.value:'';}"
+        "catch(e){return '';}};"
+        "const reZone=(s,d)=>{if(isNaN(d.getTime()))return s;"
+        "const i=s.indexOf(' '+OP);const zn=zoneName(d);"
+        "return i<0||!zn?s:s.slice(0,i)+' '+OP+zn+CP;};"
+        "const oTS=Date.prototype.toString,oTTS=Date.prototype.toTimeString;"
+        "Date.prototype.toString=function(){return reZone(oTS.call(this),this);};"
+        "Date.prototype.toTimeString=function(){"
+        "return reZone(oTTS.call(this),this);};"
+        "}catch(e){}"
         "})();"
     )
 
@@ -2066,10 +2140,13 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
         kwargs["extra_prefs"]["network.tcp.keepalive.idle_time"] = 30
         kwargs["extra_prefs"]["network.tcp.keepalive.retry_interval"] = 10
         kwargs["extra_prefs"]["network.tcp.keepalive.probe_count"] = 4
-    locale = cfg.get("locale", "")
+    # A profile with no explicit locale must still present a consistent one, or
+    # firefox-17 leaves the header/JS/Intl at the host OS locale (uk-UA on a
+    # Ukrainian host) — a masking tell. Default an unset locale to en-US so the
+    # Accept-Language header, navigator.language, and Intl all agree.
+    locale = cfg.get("locale") or "en-US"
     timezone = cfg.get("timezone", "")
-    if locale:
-        kwargs["locale"] = locale
+    kwargs["locale"] = locale
     if timezone:
         kwargs["timezone"] = timezone
     extra_args: list = []
@@ -2191,9 +2268,10 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     # consistent language, not a header/JS mismatch (masking). Live-proven: without
     # this a US-proxy profile on a Ukrainian host reported navigator.language=uk-UA
     # while the header was en-US.
-    _lang = cfg.get("locale", "")
-    if _lang:
-        on_ctx(lambda: ctx.add_init_script(_language_override_script(_lang)))
+    # Mirror the effective locale (en-US when the profile leaves it unset) so the
+    # override always runs — an unset-locale profile otherwise kept the host Intl.
+    _lang = cfg.get("locale") or "en-US"
+    on_ctx(lambda: ctx.add_init_script(_language_override_script(_lang)))
 
     # The persistent context already opened ONE window: with a saved session
     # Firefox restored the user's tabs into it (the trailing -new-window arg

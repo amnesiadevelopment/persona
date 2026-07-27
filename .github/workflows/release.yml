@@ -439,10 +439,11 @@ jobs:
         # the ~218MB runtime the Inno installer reinstalls. Ship app.zip + its
         # hash + a manifest so the Windows updater can swap just the code and
         # relaunch (seconds), and fall back to the full installer only when the
-        # runtime or dependencies changed. requires_full_install is computed from
-        # a fingerprint of the shipped runtime (every file OUTSIDE flutter_assets/
-        # app) vs the previous release's manifest: any change to a DLL, .pyd,
-        # site-packages entry, or Python/Flutter/flet version flips it true.
+        # runtime or dependencies changed. requires_full_install is computed by
+        # fingerprinting the dependency set + toolchain versions (requirements.txt,
+        # flet, Python, Flutter) vs the previous release's manifest: a code-only
+        # release keeps the fingerprint stable (fast update), a dependency or
+        # toolchain bump flips it true (full installer).
         shell: pwsh
         run: |
           $appDir = Get-ChildItem build/windows -Recurse -Directory `
@@ -458,22 +459,26 @@ jobs:
           Copy-Item $hash app.zip.hash -Force
           $appSha = (Get-Content app.zip.hash -Raw).Trim()
 
-          # Runtime fingerprint: sha256 over the sorted list of every build file
-          # EXCEPT the app.zip/app.zip.hash (the code that legitimately changes
-          # every release). Path + size + sha256 of each, so a bumped DLL or a
-          # new/removed site-packages file changes the fingerprint.
-          $root = (Resolve-Path build/windows).Path
-          $entries = Get-ChildItem $root -Recurse -File `
-            | Where-Object { $_.Name -ne 'app.zip' -and $_.Name -ne 'app.zip.hash' } `
-            | ForEach-Object {
-                $rel = $_.FullName.Substring($root.Length).TrimStart('\','/') -replace '\\','/'
-                $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
-                "$rel|$($_.Length)|$h"
-              } | Sort-Object
-          $fpBytes = [System.Text.Encoding]::UTF8.GetBytes(($entries -join "`n"))
+          # Runtime fingerprint: sha256 over what actually determines the bundled
+          # runtime — the dependency set and the toolchain versions — NOT the built
+          # bytes. Flutter/MSVC stamp a fresh build timestamp into persona.exe and
+          # the runner DLLs every build, so hashing the bundle bytes produced a
+          # different fingerprint every release even when nothing but Python code
+          # changed, which pinned requires_full_install to true forever and the
+          # fast-update path never ran. The runtime only genuinely changes when a
+          # dependency (requirements.txt) or the flet/Python/Flutter version moves;
+          # fingerprint exactly those so a code-only release keeps the fingerprint
+          # stable and updates over the seconds-fast app.zip swap.
+          $reqHash = (Get-FileHash requirements.txt -Algorithm SHA256).Hash.ToLower()
+          $fletVer = (pip show flet | Select-String '^Version:').ToString().Trim()
+          $pyVer   = (python --version 2>&1).ToString().Trim()
+          $fluVer  = (flutter --version 2>&1 | Select-Object -First 1).ToString().Trim()
+          $fpInput = "$reqHash|$fletVer|$pyVer|$fluVer"
           $sha = [System.Security.Cryptography.SHA256]::Create()
-          $runtimeFp = ([System.BitConverter]::ToString($sha.ComputeHash($fpBytes)) `
+          $runtimeFp = ([System.BitConverter]::ToString(
+            $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($fpInput))) `
             -replace '-','').ToLower()
+          Write-Host "fingerprint input: $fpInput"
 
           # Compare against the PREVIOUS release's manifest to decide fast-vs-full.
           # No previous manifest (first release with this feature) or a changed

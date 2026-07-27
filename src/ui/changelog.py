@@ -5,6 +5,23 @@ not a git log. When cutting a release, add the new version's highlights here.
 """
 
 CHANGELOG: dict[str, list[str]] = {
+    "2.6.2": [
+        "Firefox no longer leaks the host system language — the browser's "
+        "internal date/number formatting now matches the profile locale, so a "
+        "scanner sees one consistent language.",
+        "Google Sheets is snappier through a proxy — large documents load "
+        "without stalling on \"Working\".",
+        "The Firefox engine repairs itself: an interrupted first download no "
+        "longer leaves it half-installed and unable to open — it re-downloads "
+        "automatically.",
+        "Renaming a profile keeps it in place in the list instead of moving it "
+        "to the end.",
+        "Windows updates that only change app code now install in seconds "
+        "instead of running the full installer every time.",
+        "The screen-resolution picker now notes how your monitor's display "
+        "scale affects the reported resolution.",
+        "Fewer false-red lines in the Activity Log.",
+    ],
     "2.6.1": [
         "Google Sheets loads fully through a proxy — the calendar date-picker "
         "opens, custom currency and dates compute, no more permanent \"Working\".",

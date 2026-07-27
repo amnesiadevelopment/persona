@@ -140,7 +140,10 @@ def _fake_cache(monkeypatch, tmp_path, builds, binary_version="firefox-15"):
         if has_binary:
             p = d / Path(entry_rel)
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.touch()
+            # A whole entry executable is many MB — write past the completeness
+            # threshold so a markerless pinned build reads as installed (an
+            # aborted-download stub is exercised separately, #225).
+            p.write_bytes(b"\0" * (inv._MIN_ENTRY_BYTES + 1))
         else:
             d.mkdir(parents=True, exist_ok=True)
         if has_marker:
@@ -154,6 +157,44 @@ def test_active_build_pinned_only(monkeypatch, tmp_path):
     assert inv.installed_builds() == ["firefox-15"]
     assert inv.active_build() == "firefox-15"
     assert inv._binary_path_override() is None
+    assert inv.is_invisible_installed() is True
+
+
+def test_pinned_build_with_truncated_entry_is_not_installed(monkeypatch, tmp_path):
+    # #225: an aborted first download (common over Tor, esp. on Mac) can leave the
+    # entry path present but tiny. is_invisible_installed must read False so the
+    # auto-download re-runs — otherwise FF is unlaunchable forever.
+    import invisible_core.constants as consts
+    import invisible_core.download as dl
+    from invisible_playwright.constants import BINARY_ENTRY_REL
+
+    monkeypatch.setattr(dl, "cache_root", lambda: tmp_path)
+    monkeypatch.setattr(consts, "BINARY_VERSION", "firefox-15")
+    entry = tmp_path / "firefox-15" / Path(BINARY_ENTRY_REL[sys.platform])
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.write_bytes(b"\0" * 4096)  # truncated stub, not a real binary
+
+    # No COMPLETE build → not installed, so the auto-download re-runs. (active_build
+    # still names BINARY_VERSION — that's simply the build the next fetch targets.)
+    assert inv.installed_builds() == []
+    assert inv.is_invisible_installed() is False
+
+
+def test_truncated_pinned_entry_installed_once_marker_written(monkeypatch, tmp_path):
+    # Even a small entry counts if the completion marker is present (a real
+    # install our resumable downloader finished and marked).
+    import invisible_core.constants as consts
+    import invisible_core.download as dl
+    from invisible_playwright.constants import BINARY_ENTRY_REL
+
+    monkeypatch.setattr(dl, "cache_root", lambda: tmp_path)
+    monkeypatch.setattr(consts, "BINARY_VERSION", "firefox-15")
+    d = tmp_path / "firefox-15"
+    entry = d / Path(BINARY_ENTRY_REL[sys.platform])
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.write_bytes(b"\0" * 4096)
+    (d / inv._INSTALL_MARKER).touch()
+
     assert inv.is_invisible_installed() is True
 
 

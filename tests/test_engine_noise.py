@@ -70,6 +70,23 @@ def test_benign_shutdown_and_fontconfig_lines_are_filtered():
         assert is_engine_noise(m), f"should be filtered: {m!r}"
 
 
+def test_benign_dbus_lines_are_filtered():
+    # Chromium in a headless/VM session with no session D-Bus floods stderr with
+    # bus-connect and NameHasOwner failures. They're expected where there's no
+    # desktop bus and the browser runs fine; on a real host with a bus they don't
+    # appear. File-log only, never a red Activity Log line.
+    benign = [
+        "[3171652:3171669:0726/195434.638314:ERROR:dbus/bus.cc:405] Failed to "
+        "connect to the bus: Could not parse server address: Unknown address type "
+        '(examples of valid types are "tcp" and on UNIX "unix")',
+        "[3171652:3171652:0726/195434.755830:ERROR:dbus/object_proxy.cc:572] "
+        "Failed to call method: org.freedesktop.DBus.NameHasOwner: "
+        "object_path= /org/freedesktop/DBus: unknown error type:",
+    ]
+    for m in benign:
+        assert is_engine_noise(m), f"should be filtered: {m!r}"
+
+
 def test_benign_webrtc_p2p_lines_are_filtered():
     # A fingerprint scanner's WebRTC test (iphey) drives ICE gathering with no
     # reachable STUN/TURN, so chromium's P2P stack logs name-resolution and
