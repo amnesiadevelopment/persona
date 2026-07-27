@@ -22,6 +22,14 @@ dependencies = [
     # that's only in requirements.txt is missing from the built app (that's
     # exactly why Camoufox showed ModuleNotFoundError in prod).
     "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git",
+    # invisible_core MUST be pinned to the SAME git source, not left transitive:
+    # flet build resolves deps from pyproject, and a transitive invisible_core
+    # could resolve to an OLD PyPI build that lacks the release-pin check
+    # (invisible_core._pin) the newer invisible_playwright imports at startup.
+    # That mismatch made the bundled Firefox engine raise ImportError / read as
+    # "not ready yet" and re-download forever on the boevaya 2.6.3 build. Pinning
+    # both to git HEAD keeps invisible_playwright and invisible_core in lockstep.
+    "invisible_core @ git+https://github.com/feder-cr/invisible_core.git",
 ]
 
 [tool.pytest.ini_options]

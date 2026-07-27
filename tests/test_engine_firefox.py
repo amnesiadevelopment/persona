@@ -23,6 +23,12 @@ def test_build_number():
     assert ff.build_number("usage-counter") == -1
     assert ff.build_number("firefox-15-beta") == -1
     assert ff.build_number("") == -1
+    # #234: the newer engine package names the cache dir with an upstream+
+    # timestamp suffix; build_number must parse the leading firefox-NN so the
+    # downloaded build is recognised as installed.
+    assert ff.build_number("firefox-18_151.0_20260724001829") == 18
+    assert ff.build_number("firefox-18.151.0") == 18
+    assert ff.build_number("firefox-180") == 180  # not firefox-18
 
 
 def test_is_newer():
@@ -68,8 +74,13 @@ def test_fetch_latest_picks_highest_firefox_tag(monkeypatch):
 
 
 def test_fetch_latest_skips_broken_versions(monkeypatch):
-    # firefox-8 is in the package's real BROKEN_VERSIONS (shipped without the
-    # juggler layer) — it must never be picked even when it's the highest.
+    # A version listed in BROKEN_VERSIONS must never be picked even when it's the
+    # highest. Mock the set explicitly so the test doesn't depend on whatever the
+    # currently-installed engine package happens to ship (it changes across
+    # package versions — firefox-8 was broken in 0.3.0, not in 0.4.6).
+    import invisible_core.constants as consts
+
+    monkeypatch.setattr(consts, "BROKEN_VERSIONS", frozenset({"firefox-8"}))
     _serve(
         monkeypatch,
         [
@@ -162,6 +173,30 @@ def test_active_build_pinned_only(monkeypatch, tmp_path):
     assert inv.installed_builds() == ["firefox-15"]
     assert inv.active_build() == "firefox-15"
     assert inv._binary_path_override() is None
+    assert inv.is_invisible_installed() is True
+
+
+def test_installed_build_in_suffixed_cache_dir_is_recognised(monkeypatch, tmp_path):
+    # #234: the newer engine package names the cache dir with an upstream+
+    # timestamp suffix (firefox-18_151.0_20260724001829) while BINARY_VERSION
+    # stays the short 'firefox-18'. installed_builds must canonicalise the dir
+    # name to 'firefox-18' so a fully-downloaded (marker) build is recognised —
+    # not read as "not installed" and re-downloaded forever.
+    import invisible_core.constants as consts
+    import invisible_core.download as dl
+    from pathlib import Path
+    from invisible_playwright.constants import BINARY_ENTRY_REL
+
+    monkeypatch.setattr(dl, "cache_root", lambda: tmp_path)
+    monkeypatch.setattr(consts, "BINARY_VERSION", "firefox-18")
+    d = tmp_path / "firefox-18_151.0_20260724001829"
+    entry = d / Path(BINARY_ENTRY_REL[sys.platform])
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.write_bytes(b"\0" * 4096)  # thin launcher
+    (d / inv._INSTALL_MARKER).touch()  # complete build
+
+    assert inv.installed_builds() == ["firefox-18"]
+    assert inv.active_build() == "firefox-18"
     assert inv.is_invisible_installed() is True
 
 

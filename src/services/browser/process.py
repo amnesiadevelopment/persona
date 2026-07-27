@@ -508,27 +508,13 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
             "--wm-window-animations-disabled",
             # Under SwiftShader the frame clock is degenerate, and chromium's
             # vsync throttle paces the compositor off it: measured
-            # requestAnimationFrame ran at ~6fps in Google Sheets through a proxy.
-            # Detaching from the broken vsync clock lifts the frame rate back to
-            # ~60fps.
+            # requestAnimationFrame ran at ~6fps in Google Sheets. Detaching from
+            # the broken vsync clock lifts it back to ~60fps. (Harmless, no GPU
+            # readback stalls — unlike --disable-gpu-compositing, which forced a
+            # CPU readback that spammed "GL_CLOSE_PATH_NV: GPU stall due to
+            # ReadPixels" and did NOT fix the real Sheets-through-proxy hang.)
             "--disable-gpu-vsync",
-            # …but 60fps rAF alone didn't paint Sheets' menus/calendar/custom-
-            # currency: Google Sheets renders its grid AND its menus onto a
-            # <canvas>, and that canvas is GPU-composited + OOP-rasterized. On the
-            # SwiftShader software-GL stack that path stalls, so the canvas (grid
-            # and every overlay drawn into it) crawls while "Working" hangs — the
-            # chromium-only half of #184 (Firefox draws with its own renderer and
-            # is fine). Force compositing + raster onto the CPU (Skia) instead of
-            # the buckling SwiftShader GL, so the canvas paints promptly. The GPU
-            # process still stays up for the WebGL fingerprint (a separate
-            # context), so the spoof is unaffected.
-            "--disable-gpu-compositing",
         ]
-        # OOP canvas rasterization routes Sheets' <canvas> through the GPU
-        # process; on SwiftShader that's the slow path. Raster it in-renderer
-        # (CPU) instead. MUST go in disabled_features (chromium honours only the
-        # LAST --disable-features switch), not as its own flag.
-        disabled_features += ["CanvasOopRasterization"]
         # The VM has no VA-API hardware, so chromium's attempt to init
         # hardware video decode logs a red "vaInitialize failed: unknown
         # libva error" (media/gpu/vaapi/vaapi_wrapper.cc). Harmless, but it

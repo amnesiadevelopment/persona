@@ -103,10 +103,19 @@ def installed_builds() -> list[str]:
         root = cache_root()
         if not root.is_dir():
             return []
+        pinned_num = build_number(BINARY_VERSION)
         out = []
         for d in root.iterdir():
-            tag = d.name
-            if build_number(tag) < 0 or tag in BROKEN_VERSIONS:
+            # The cache dir is named after the tag, but the newer engine package
+            # appends the upstream version + a timestamp
+            # (firefox-18_151.0_20260724001829). Canonicalise to the firefox-NN
+            # tag so a build in such a dir is recognised (#234) and matches the
+            # short BINARY_VERSION the package reports.
+            num = build_number(d.name)
+            if num < 0:
+                continue
+            tag = f"firefox-{num}"
+            if tag in BROKEN_VERSIONS or d.name in BROKEN_VERSIONS:
                 continue
             entry = d / entry_rel
             if not entry.exists():
@@ -119,7 +128,7 @@ def installed_builds() -> list[str]:
             # engine core is actually unpacked, not just the thin entry launcher
             # left by an aborted first download (#225). Any other markerless build
             # is a crashed mid-extract.
-            if tag != BINARY_VERSION:
+            if num != pinned_num:
                 continue
             if not _build_is_whole(d):
                 continue

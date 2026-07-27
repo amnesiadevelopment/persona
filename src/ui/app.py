@@ -1375,6 +1375,13 @@ class App:
         from ..services.browser import invisible_launch as inv
 
         if not inv.is_invisible_installed():
+            # Claim the busy flag SYNCHRONOUSLY, before spawning the worker, so a
+            # second click during the gap between here and the worker actually
+            # flipping _engine2_busy can't start a second download (#234: Mars
+            # clicked while a download was already in flight and it restarted
+            # from scratch). The worker keeps its own is_invisible_installed
+            # guard and clears the flag if there's nothing to fetch.
+            self._engine2_busy = True
             self._ensure_engine2_async()
         elif self._engine2_update_available():
             self._update_engine2_async()
@@ -1862,6 +1869,9 @@ class App:
             import time
 
             if inv.is_invisible_installed():
+                # nothing to fetch — release the flag the click may have claimed
+                # synchronously (#234) so the row is interactive again.
+                self._engine2_busy = False
                 return
             self._engine2_busy = True
             self._engine2_status = "downloading..."

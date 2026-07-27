@@ -5,6 +5,16 @@ not a git log. When cutting a release, add the new version's highlights here.
 """
 
 CHANGELOG: dict[str, list[str]] = {
+    "2.6.4": [
+        "The Firefox engine is recognised once it's downloaded — no more stuck "
+        "on \"not ready\" or re-downloading the same build over and over.",
+        "Google Sheets menus and overlays (the date calendar, custom currency) "
+        "paint promptly again through a proxy — a rendering flag from the last "
+        "release was making them stall.",
+        "Clicking the engine row while it's already downloading no longer starts "
+        "a second download from scratch.",
+        "Fewer false-red GPU lines in the Activity Log.",
+    ],
     "2.6.3": [
         "Google Sheets works through a proxy again — the Format menu, the date "
         "calendar and custom-currency all open, and \"Working\" no longer sticks. "

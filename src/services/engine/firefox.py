@@ -22,11 +22,21 @@ RELEASES_API = (
     "?per_page=30"
 )
 
-_TAG_RE = re.compile(r"^firefox-(\d+)$")
+# Match the firefox-NN build number whether the tag is bare (firefox-18) OR
+# carries the newer engine package's cache-dir suffix
+# (firefox-18_151.0_20260724001829 — upstream version + timestamp, joined by '_'
+# or '.'). Suffix only via '_'/'.', NOT '-', so firefox-15-beta stays unmatched
+# and firefox-180 stays 180.
+_TAG_RE = re.compile(r"^firefox-(\d+)(?:[_.].*)?$")
 
 
 def build_number(tag: str) -> int:
-    """firefox-15 → 15; anything that isn't a firefox-NN tag → -1."""
+    """firefox-15 → 15; firefox-18_151.0_20260724 → 18; anything else → -1.
+
+    The engine cache directory is named after the tag, and the newer package
+    appends the upstream version + a timestamp to it, so the on-disk dir name is
+    firefox-18_151.0_20260724001829. Parse the leading firefox-NN so a downloaded
+    build in such a dir is still recognised as installed (#234)."""
     m = _TAG_RE.match(tag or "")
     return int(m.group(1)) if m else -1
 

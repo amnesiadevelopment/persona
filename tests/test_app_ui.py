@@ -447,6 +447,27 @@ def test_auto_update_engine2_noop_when_current(monkeypatch):
     assert any("up to date" in m for m in logs)
 
 
+def test_engine2_click_claims_busy_before_worker_and_second_click_is_noop(monkeypatch):
+    # #234: clicking the engine row when it's not installed must claim busy
+    # SYNCHRONOUSLY, so a second click during the gap before the worker spawns
+    # can't start a second download from scratch.
+    app, logs, downloaded = _make_engine2_app(
+        monkeypatch, installed=False, current="", latest="firefox-18",
+        compatible=True,
+    )
+    ensure_calls = []
+    app._ensure_engine2_async = lambda: ensure_calls.append(1)
+    app._engine2_checking = False
+
+    app._on_engine2_click()
+    assert app._engine2_busy is True, "busy must be set synchronously on the click"
+    assert ensure_calls == [1]
+
+    # a second click while busy must do nothing (no second download)
+    app._on_engine2_click()
+    assert ensure_calls == [1], "a second click during download must be a no-op"
+
+
 # --- _show_startup_notice (#214/#215) ---
 
 def _make_notice_app(monkeypatch, *, onboarded, last_version, current="2.5.2"):
