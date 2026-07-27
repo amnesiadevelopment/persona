@@ -85,6 +85,9 @@ _BENIGN_ENGINE_ERRORS = (
     # these don't appear.
     "dbus/bus.cc",
     "dbus/object_proxy.cc",
+    # A spoofed/guest-type profile can't host the WebUI new-tab page, so chromium
+    # logs an ERROR and opens a plain new tab instead. Expected, not a failure.
+    "new_tab_ui.cc",
 )
 
 # net_error -100 = ERR_CONNECTION_CLOSED: the connection was dropped

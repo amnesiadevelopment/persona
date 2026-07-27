@@ -76,6 +76,13 @@ def configure_page(page: ft.Page) -> None:
         page.window.icon = icon_path
 
     page.padding = page.spacing = 0
+    # Stretch page children to the full window WIDTH (#227). Controls are added
+    # straight to page.controls (the splash, then the root layout), both
+    # expand=True. expand already fills the height, but the page's cross-axis
+    # default (START) left children at their natural width — so the splash sat
+    # in the corner and a window resize mid-load left a black gap and a white
+    # artifact strip. STRETCH makes them span the window.
+    page.horizontal_alignment = ft.CrossAxisAlignment.STRETCH
     page.theme_mode = ft.ThemeMode.DARK
     page.bgcolor = COLORS["bg"]
     page.theme = build_page_theme()

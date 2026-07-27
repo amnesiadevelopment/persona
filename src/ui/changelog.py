@@ -5,6 +5,23 @@ not a git log. When cutting a release, add the new version's highlights here.
 """
 
 CHANGELOG: dict[str, list[str]] = {
+    "2.6.3": [
+        "Google Sheets works through a proxy again — the Format menu, the date "
+        "calendar and custom-currency all open, and \"Working\" no longer sticks. "
+        "Chrome profiles paint their menus/overlays properly under the VM's "
+        "software renderer.",
+        "Firefox profiles launch reliably: the engine now re-downloads itself if "
+        "an earlier download was interrupted, instead of getting stuck \"not "
+        "ready\".",
+        "After an update you see the what's-new notes, not the first-run welcome "
+        "screen again.",
+        "The startup scan fills the window even if you move or resize it while it "
+        "loads.",
+        "Engine and app downloads over a slow connection keep resuming and can be "
+        "nudged by clicking the version line.",
+        "Renaming a profile keeps it in place in the list.",
+        "Fewer false-red lines in the Activity Log.",
+    ],
     "2.6.2": [
         "Firefox no longer leaks the host system language — the browser's "
         "internal date/number formatting now matches the profile locale, so a "

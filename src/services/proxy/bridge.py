@@ -15,7 +15,19 @@ import threading
 import time
 from urllib.parse import urlparse
 
-_UPSTREAM_TIMEOUT = 15.0
+# Time budget for ONE upstream CONNECT attempt (TCP to the proxy + SOCKS5
+# greeting/auth/CONNECT). Over Tor the proxy leg double-hops, so a single attempt
+# can take much longer than a direct connection: the bridge trace showed Google
+# hosts hitting exactly 15.0s and being REJECTED to the browser (rep=1 →
+# ERR_SOCKS_CONNECTION_FAILED), which is what left Sheets stuck on "Working" —
+# chromium's realtime/widget channels never opened (#184). 45s comfortably clears
+# a slow-but-live Tor circuit; a genuinely dead attempt is retried on a fresh one.
+_UPSTREAM_TIMEOUT = 45.0
+
+# A rejected/timed-out CONNECT over Tor is usually a transient bad circuit, not a
+# dead target — retry a couple of times before failing the browser's request, so
+# one unlucky circuit doesn't drop a channel Sheets needs and hang on "Working".
+_UPSTREAM_ATTEMPTS = 3
 
 # StreamReader buffer per tunnel direction. One tunnel carries a whole
 # multiplexed HTTP/2 connection: a large download and small control frames
@@ -48,19 +60,17 @@ def _trace(msg: str) -> None:
 # and drops it — otherwise both _pipe directions block on read() forever and a
 # long-lived stream leaks a one-way-dead tunnel. Probe after 30s idle, every
 # 10s, give up after 4 misses (~70s to a forced RST).
-_KEEPALIVE_IDLE = 30
-_KEEPALIVE_INTVL = 10
-_KEEPALIVE_CNT = 4
-
-# Max idle (no bytes either way) before the whole tunnel is reaped so the
-# browser rebuilds it. A commercial residential/mobile upstream silently reaps a
-# low-traffic long-poll leg with NO FIN/RST, leaving reader.read() hung forever —
-# TCP keepalive often doesn't survive the far NAT, so the collab channel dies and
-# Sheets sticks on "Working" (#184). A bounded idle reap (microsocks/gost/socat
-# pattern) ends the dead poll cleanly; Google's browserchannel immediately opens
-# a fresh `bind`. Must sit ABOVE a legal long-poll hold (Google holds ~tens of
-# seconds with no bytes) and BELOW the upstream's reap window (~60-120s).
-_TUNNEL_IDLE_TIMEOUT = 55.0
+# Keepalive detects a truly dead half-open circuit (Tor wedge: socket open, no
+# bytes, no EOF). Timers must be GENEROUS over Tor: an aggressive 30s idle + 4x10s
+# probe window (~70s to RST) tore down slow-but-LIVE transfers — a big Sheets JS
+# bundle (waffle/date-picker/currency) crawling in over Tor can pause >30s, and
+# the keepalive probe's own reply may not survive the far NAT in time, so the OS
+# RST'd a live channel and the widget never finished loading (#184: 'Trying to
+# connect', dead calendar/custom-currency). 120s idle + 5x15s (~195s to RST) lets
+# a slow live channel breathe while still reaping a genuinely dead one.
+_KEEPALIVE_IDLE = 120
+_KEEPALIVE_INTVL = 15
+_KEEPALIVE_CNT = 5
 
 # Test hook: every tunnel socket (client-accept + upstream) we tuned, so a test
 # can assert the options are really set on the live sockets.
@@ -200,14 +210,36 @@ class ProxyBridge:
                 _trace(f"conn={cid} REJECT no-handshake")
                 return
             host, port = target
-            try:
-                up_r, up_w = await asyncio.wait_for(
-                    self._open_upstream(host, port), _UPSTREAM_TIMEOUT
-                )
-            except Exception as exc:
-                rep = exc.rep if isinstance(exc, _ConnectRejected) else 0x01
+            up_r = up_w = None
+            last_exc: Exception | None = None
+            for attempt in range(_UPSTREAM_ATTEMPTS):
+                try:
+                    up_r, up_w = await asyncio.wait_for(
+                        self._open_upstream(host, port), _UPSTREAM_TIMEOUT
+                    )
+                    last_exc = None
+                    break
+                except _ConnectRejected as exc:
+                    # The proxy gave a definitive SOCKS reply (host not allowed,
+                    # connection refused, auth): retrying the same target won't
+                    # change it — fail fast, don't burn attempts.
+                    last_exc = exc
+                    break
+                except Exception as exc:
+                    # A timeout / dropped connection to the proxy is a transient
+                    # Tor circuit problem (#184): retry on a fresh circuit before
+                    # failing the browser, so one unlucky circuit doesn't leave a
+                    # Sheets channel unopened and stuck on "Working".
+                    last_exc = exc
+                    _trace(f"conn={cid} host={host}:{port} UPSTREAM-TRY{attempt} "
+                           f"{type(exc).__name__} t={time.monotonic()-t0:.1f}s")
+                    if attempt < _UPSTREAM_ATTEMPTS - 1:
+                        await asyncio.sleep(0.5)
+            if last_exc is not None:
+                rep = last_exc.rep if isinstance(last_exc, _ConnectRejected) else 0x01
                 _trace(f"conn={cid} host={host}:{port} UPSTREAM-FAIL "
-                       f"{type(exc).__name__} rep={rep} t={time.monotonic()-t0:.1f}s")
+                       f"{type(last_exc).__name__} rep={rep} "
+                       f"t={time.monotonic()-t0:.1f}s")
                 writer.write(b"\x05" + bytes([rep]) + b"\x00\x01" + b"\x00" * 6)
                 await writer.drain()
                 return
@@ -252,7 +284,9 @@ class ProxyBridge:
                 await w.drain()
                 _, status = await r.readexactly(2)
                 if status != 0x00:
-                    raise ConnectionError("upstream auth failed")
+                    # bad credentials — definitive, retrying won't help, so raise
+                    # a _ConnectRejected (the handler fails fast, no retry loop).
+                    raise _ConnectRejected(0x01)
             # CONNECT request, domain name
             host_b = host.encode()
             req = b"\x05\x01\x00\x03" + bytes([len(host_b)]) + host_b + struct.pack(">H", port)
@@ -324,8 +358,7 @@ async def _splice(
     cid: int = 0,
     host: str = "?",
 ) -> None:
-    """Pump both directions of a tunnel until BOTH ends EOF or the tunnel goes
-    idle past `_TUNNEL_IDLE_TIMEOUT`.
+    """Pump both directions of a tunnel until BOTH ends EOF.
 
     Each direction, on EOF, half-closes ITS peer's write side (a TCP FIN) so the
     peer learns "no more data this way" — the OTHER direction keeps running.
@@ -335,60 +368,25 @@ async def _splice(
     FIRST direction's EOF killed that streamed response mid-flight (#184), so we
     await BOTH directions.
 
-    But a commercial residential/mobile upstream silently reaps a low-traffic
-    long-poll leg with NO FIN/RST — reader.read() then hangs forever, the collab
-    channel never re-opens, and Sheets sticks on "Working". TCP keepalive often
-    doesn't survive the far NAT. A shared idle watchdog reaps the whole tunnel
-    when NO byte flows either way for `_TUNNEL_IDLE_TIMEOUT`; closing both writers
-    unblocks the hung reads, and the browser immediately rebuilds the poll. The
-    timeout sits above a legal long-poll hold and below the upstream reap window
-    (microsocks/gost/socat use the same bounded-idle safety net)."""
-    activity = [_loop_time()]  # last time ANY byte crossed the tunnel
-    closed = asyncio.Event()
-
-    def bump():
-        activity[0] = _loop_time()
-
-    c2u = asyncio.ensure_future(_pipe(client_r, up_w, bump, cid, host, "c2u"))
-    u2c = asyncio.ensure_future(_pipe(up_r, client_w, bump, cid, host, "u2c"))
-    watch = asyncio.ensure_future(
-        _idle_watchdog(activity, closed, up_w, client_w, cid, host)
-    )
+    NO blind idle timer here (#184, chromium-only): the /bind long-poll holds the
+    connection OPEN and SILENT for tens of seconds waiting for a collab event. A
+    bounded idle-reap treated that legitimate silence as dead and tore the tunnel
+    down, so chromium kept losing the channel and Sheets stuck on "Working"
+    (Firefox uses native SOCKS, never this bridge, so it never saw this). A truly
+    dead half-open circuit is caught WITHOUT a byte-idle timer: `_pipe`'s read
+    returns EOF on a real FIN, and the aggressive TCP keepalive set by
+    `_tune_tunnel_socket` (idle 30s, 4 probes/10s) forces an RST on a silently
+    dropped socket, which surfaces as a read error and ends the pump. A live but
+    idle long-poll keeps its socket open, so keepalive stays happy and it
+    survives — exactly the behaviour Firefox's native proxy path already has."""
+    c2u = asyncio.ensure_future(_pipe(client_r, up_w, None, cid, host, "c2u"))
+    u2c = asyncio.ensure_future(_pipe(up_r, client_w, None, cid, host, "u2c"))
     try:
         await asyncio.gather(c2u, u2c, return_exceptions=True)
     finally:
-        closed.set()
-        watch.cancel()
-        with _suppress():
-            await asyncio.gather(watch, return_exceptions=True)
         for w in (up_w, client_w):
             with _suppress():
                 w.close()
-
-
-def _loop_time() -> float:
-    try:
-        return asyncio.get_event_loop().time()
-    except Exception:
-        return time.monotonic()
-
-
-async def _idle_watchdog(activity, closed, up_w, client_w, cid=0, host="?"):
-    """Reap the tunnel when no byte has crossed it for _TUNNEL_IDLE_TIMEOUT."""
-    while not closed.is_set():
-        idle = _loop_time() - activity[0]
-        remaining = _TUNNEL_IDLE_TIMEOUT - idle
-        if remaining <= 0:
-            _trace(f"conn={cid} host={host} IDLE-REAP after "
-                   f"{_TUNNEL_IDLE_TIMEOUT:.0f}s")
-            for w in (up_w, client_w):
-                with _suppress():
-                    w.close()
-            return
-        try:
-            await asyncio.wait_for(closed.wait(), timeout=remaining)
-        except asyncio.TimeoutError:
-            pass
 
 
 async def _pipe(

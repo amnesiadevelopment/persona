@@ -102,6 +102,11 @@ class App:
         self._engine_busy = False
         self._engine_checking = False
         self._engines_open = False
+        # An onboarding/changelog dialog owns the screen at startup; a staged
+        # update that lands while it's open is held here and offered once the
+        # onboarding closes, so the two dialogs never stack (#226).
+        self._onboarding_open = False
+        self._pending_update: tuple[str, str] | None = None
         self._engine2_latest: str = ""
         # False when the newest firefox-NN release doesn't ship the asset the
         # bundled engine package expects — it needs a persona update, not an
@@ -335,28 +340,37 @@ class App:
 
         rows: list[ft.Control] = []
 
-        # version line (+ badge when an update is available)
-        version_row = ft.Row(
-            spacing=8,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            controls=[
-                ft.Text(
-                    f"persona v{ver}",
-                    size=11,
-                    color=COLORS["text_sub"],
-                    font_family="monospace",
-                ),
-                *(
-                    [
-                        ft.Container(
-                            width=7, height=7, border_radius=4,
-                            bgcolor=COLORS["accent"],
-                        )
-                    ]
-                    if has_update
-                    else []
-                ),
-            ],
+        # version line (+ badge when an update is available). Clicking it acts
+        # now instead of waiting on the 60s poll: install a staged update,
+        # resume a stalled download, or check for a newer release (#228).
+        version_row = ft.Container(
+            on_click=lambda _: self._on_version_click(),
+            ink=True,
+            tooltip="check for updates",
+            border_radius=3,
+            padding=ft.Padding.symmetric(horizontal=2, vertical=1),
+            content=ft.Row(
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Text(
+                        f"persona v{ver}",
+                        size=11,
+                        color=COLORS["text_sub"],
+                        font_family="monospace",
+                    ),
+                    *(
+                        [
+                            ft.Container(
+                                width=7, height=7, border_radius=4,
+                                bgcolor=COLORS["accent"],
+                            )
+                        ]
+                        if has_update
+                        else []
+                    ),
+                ],
+            ),
         )
         rows.append(version_row)
 
@@ -1497,6 +1511,45 @@ class App:
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _on_version_click(self) -> None:
+        """Click the version line to act now instead of waiting on the 60s
+        poll (#228): install a staged update, resume a download that stalled
+        over a slow Tor circuit, or check the repo for a newer release."""
+        if self._update_staged:
+            self._apply_update_now()
+            return
+        if self._update_in_progress:
+            return  # a download is live; the resume loop handles the stalls
+        if self._app_latest and self._app_update_url:
+            # a newer version is known but not yet on disk — (re)start the
+            # download; it resumes from any partial left on disk
+            self._log(f"Resuming download of {self._app_latest}...")
+            self._start_app_update(self._app_update_url)
+            return
+        self._check_app_update_now()
+
+    def _check_app_update_now(self) -> None:
+        """Force one update check off the UI thread, outside the 60s poll."""
+        import threading
+
+        def work() -> None:
+            self._log("Checking for updates...")
+            try:
+                tag, url, size = app_update.check_for_update()
+            except Exception:
+                tag = url = ""
+                size = 0
+            if tag and url and tag != app_update.APP_VERSION:
+                self._app_latest = tag
+                self._app_update_url = url
+                self._app_update_size = size
+                self._app_update_tag = tag
+                self._on_update_found(tag, url)
+            else:
+                self._log("persona is up to date.")
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _when_update_ready(self, tag: str, staged: str) -> None:
         """A verified update is staged. The Linux AppImage with auto-update on
         installs unattended when idle (headless boxes rely on that); everywhere
@@ -1513,6 +1566,12 @@ class App:
 
     def _offer_install(self, tag: str, staged: str) -> None:
         from .dialogs.update_ready import open_update_ready_dialog
+
+        # Don't stack the install prompt on top of the first-run onboarding
+        # (#226) — hold it and offer it the moment onboarding finishes.
+        if self._onboarding_open:
+            self._pending_update = (tag, staged)
+            return
 
         def on_install() -> None:
             import threading
@@ -1705,6 +1764,7 @@ class App:
             threading.Thread(target=work, daemon=True).start()
 
         def on_finish() -> None:
+            self._onboarding_open = False
             app_settings.mark_onboarding_done()
             # if the operator skipped the download, fetch in the background
             if not engine.is_installed() and not self._engine_busy:
@@ -1713,7 +1773,14 @@ class App:
             self._ensure_engine2_async()
             self._refresh_engine_text()
             self._safe_update()
+            # an update that staged while onboarding was open was held back so
+            # the dialogs wouldn't stack — offer it now (#226)
+            pending = self._pending_update
+            if pending is not None:
+                self._pending_update = None
+                self._offer_install(*pending)
 
+        self._onboarding_open = True
         ob = Onboarding(
             page,
             on_finish=on_finish,

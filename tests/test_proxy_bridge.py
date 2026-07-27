@@ -214,6 +214,54 @@ def test_upstream_hang_times_out_with_failure_reply(monkeypatch):
         upstream.join(timeout=5)
 
 
+def test_upstream_connect_retries_a_transient_failure(monkeypatch):
+    # #184 real root on Tor: a single CONNECT to a Google host would hit the
+    # 15s timeout on a slow circuit, get REJECTED to the browser (rep=1 →
+    # ERR_SOCKS_CONNECTION_FAILED), and Sheets stuck on "Working". A transient
+    # bad circuit must be RETRIED on a fresh one before failing the browser.
+    # Here the first two upstream opens fail, the third succeeds — the browser
+    # must receive a SUCCESS reply, not a failure.
+    import asyncio
+
+    monkeypatch.setattr(bridge_mod, "_UPSTREAM_TIMEOUT", 2.0)
+    monkeypatch.setattr(bridge_mod, "_UPSTREAM_ATTEMPTS", 3)
+
+    bridge = ProxyBridge("socks5://user:pass@1.2.3.4:1080")
+    calls = {"n": 0}
+
+    async def flaky_open(host, port):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            # a transient Tor-circuit failure (dropped connection), NOT a
+            # definitive proxy reject — this is the case that must be retried
+            raise ConnectionResetError("circuit dropped")
+        # succeed on the 3rd: an already-EOF reader plus a stub writer so the
+        # splice has something to pump (it EOFs at once, which is fine here).
+        r = asyncio.StreamReader()
+        r.feed_eof()
+
+        class _StubWriter:
+            def write(self, *_): pass
+            async def drain(self): pass
+            def close(self): pass
+            def get_extra_info(self, *_): return None
+            def can_write_eof(self): return False
+            def write_eof(self): pass
+
+        return r, _StubWriter()
+
+    monkeypatch.setattr(bridge, "_open_upstream", flaky_open)
+    port = bridge.start()
+    try:
+        client, reply = _socks5_request(port)
+        # 3 attempts were made and the browser got SUCCESS (rep=0), not rep=1
+        assert calls["n"] == 3, f"expected 3 attempts, got {calls['n']}"
+        assert reply[1] == 0x00, f"browser should see success, got rep={reply[1]}"
+        client.close()
+    finally:
+        bridge.stop()
+
+
 def test_tunnel_sockets_have_tcp_keepalive():
     # A silent proxy circuit (Tor wedges, socket stays open with no bytes and no
     # EOF) leaves both _pipe directions blocked on read() forever. TCP keepalive
@@ -336,26 +384,52 @@ def test_reader_buffers_are_large_enough_for_multiplexed_streams():
         upstream.join(timeout=5)
 
 
-def test_idle_tunnel_is_reaped_so_the_browser_can_rebuild(monkeypatch):
-    # #184 root: a commercial residential/mobile upstream silently reaps a
-    # low-traffic long-poll leg with NO FIN/RST — reader.read() would hang
-    # forever and the collab channel dies (permanent "Working"). A bounded idle
-    # timeout must reap the whole tunnel cleanly so the browser rebuilds the
-    # poll. Here the upstream sends nothing and never closes; with no bytes
-    # either way, the bridge must close the client's connection within the idle
-    # window instead of hanging.
-    monkeypatch.setattr(bridge_mod, "_TUNNEL_IDLE_TIMEOUT", 1.0)
+def test_silent_but_open_tunnel_is_NOT_reaped():
+    # #184 TRUE root: the bridge used to reap ANY tunnel with no bytes for N
+    # seconds. But Google Sheets' realtime /bind long-poll legitimately holds a
+    # connection OPEN and SILENT for tens of seconds waiting for an event. Reaping
+    # it killed the collab channel → chromium reopened → permanent "Working"
+    # (chromium-only, because Firefox uses native SOCKS and never goes through
+    # this bridge). A silent-but-OPEN upstream must be LEFT ALIVE; only a truly
+    # dead half-open circuit (EOF/RST, caught by _pipe's read or TCP keepalive)
+    # gets torn down. Here the upstream stays open and silent; the tunnel must
+    # SURVIVE (no blind idle-reap kills a live long-poll anymore).
     upstream, reply, client, bridge = _run_bridge_case("silent_forever")
     try:
         assert reply[1] == 0x00
-        client.settimeout(6)  # generous vs the 1.0s idle reap
-        # No bytes flow either way. The bridge must reap the idle tunnel and
-        # close our side (recv returns EOF) well within the timeout, not hang.
+        client.settimeout(3)
+        # No bytes flow either way, but the upstream socket is still OPEN. The
+        # bridge must NOT reap it: recv should TIME OUT (tunnel alive, waiting),
+        # not return EOF (reaped).
+        raised = False
+        try:
+            data = client.recv(4096)
+        except socket.timeout:
+            raised = True
+            data = None
+        assert raised, f"tunnel was reaped (got {data!r}) — a silent long-poll must survive"
+    finally:
+        client.close()
+        upstream.join(timeout=5)
+        bridge.stop()
+
+
+def test_dead_upstream_eof_tears_the_tunnel_down():
+    # The other half: a truly dead upstream (it closes after one exchange = EOF)
+    # MUST tear the tunnel down so the browser rebuilds — the real half-open case,
+    # now handled by EOF propagation (_pipe's read returns b'') + TCP keepalive,
+    # NOT a blind idle timer that also killed live long-polls.
+    upstream, reply, client, bridge = _run_bridge_case("drop_after_first")
+    try:
+        assert reply[1] == 0x00
+        client.sendall(b"ping")          # upstream echoes then closes (EOF)
+        client.settimeout(6)
+        assert client.recv(4096) == b"ping"
         t0 = time.time()
-        data = client.recv(4096)
+        data = client.recv(4096)         # upstream EOF must propagate to us
         dt = time.time() - t0
-        assert data == b"", "tunnel should be reaped (EOF), not deliver data"
-        assert dt < 5, f"idle tunnel not reaped promptly ({dt:.1f}s)"
+        assert data == b"", "dead upstream (EOF) should close our side"
+        assert dt < 5, f"dead tunnel not torn down promptly ({dt:.1f}s)"
     finally:
         client.close()
         upstream.join(timeout=5)

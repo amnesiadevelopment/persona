@@ -140,10 +140,15 @@ def _fake_cache(monkeypatch, tmp_path, builds, binary_version="firefox-15"):
         if has_binary:
             p = d / Path(entry_rel)
             p.parent.mkdir(parents=True, exist_ok=True)
-            # A whole entry executable is many MB — write past the completeness
-            # threshold so a markerless pinned build reads as installed (an
-            # aborted-download stub is exercised separately, #225).
-            p.write_bytes(b"\0" * (inv._MIN_ENTRY_BYTES + 1))
+            # The entry executable is a THIN launcher (~700KB on every OS); the
+            # engine's real weight is the shared core (libxul, hundreds of MB)
+            # beside it. A whole build is recognised by that unpacked bulk, not
+            # the entry's size — write a small entry plus a large core file so a
+            # markerless pinned build reads as installed (an aborted-download
+            # stub, which has no core, is exercised separately, #225).
+            p.write_bytes(b"\0" * 4096)
+            core = p.parent / "libxul.so"
+            core.write_bytes(b"\0" * (inv._WHOLE_BUILD_BYTES + 1))
         else:
             d.mkdir(parents=True, exist_ok=True)
         if has_marker:
@@ -160,10 +165,11 @@ def test_active_build_pinned_only(monkeypatch, tmp_path):
     assert inv.is_invisible_installed() is True
 
 
-def test_pinned_build_with_truncated_entry_is_not_installed(monkeypatch, tmp_path):
+def test_pinned_build_with_stub_only_is_not_installed(monkeypatch, tmp_path):
     # #225: an aborted first download (common over Tor, esp. on Mac) can leave the
-    # entry path present but tiny. is_invisible_installed must read False so the
-    # auto-download re-runs — otherwise FF is unlaunchable forever.
+    # thin entry launcher present but the engine core unpacked. is_invisible_installed
+    # must read False so the auto-download re-runs — otherwise FF is unlaunchable
+    # forever.
     import invisible_core.constants as consts
     import invisible_core.download as dl
     from invisible_playwright.constants import BINARY_ENTRY_REL
@@ -172,7 +178,7 @@ def test_pinned_build_with_truncated_entry_is_not_installed(monkeypatch, tmp_pat
     monkeypatch.setattr(consts, "BINARY_VERSION", "firefox-15")
     entry = tmp_path / "firefox-15" / Path(BINARY_ENTRY_REL[sys.platform])
     entry.parent.mkdir(parents=True, exist_ok=True)
-    entry.write_bytes(b"\0" * 4096)  # truncated stub, not a real binary
+    entry.write_bytes(b"\0" * 4096)  # thin launcher only, engine core missing
 
     # No COMPLETE build → not installed, so the auto-download re-runs. (active_build
     # still names BINARY_VERSION — that's simply the build the next fetch targets.)
@@ -180,8 +186,29 @@ def test_pinned_build_with_truncated_entry_is_not_installed(monkeypatch, tmp_pat
     assert inv.is_invisible_installed() is False
 
 
-def test_truncated_pinned_entry_installed_once_marker_written(monkeypatch, tmp_path):
-    # Even a small entry counts if the completion marker is present (a real
+def test_whole_pinned_build_with_thin_entry_is_installed(monkeypatch, tmp_path):
+    # The regression #225 REALLY caused: a fully-installed markerless pinned build
+    # has a THIN entry launcher (~700KB) plus the large engine core. It must read
+    # as installed — a size gate on the entry wrongly rejected it and re-downloaded
+    # the engine on every start.
+    import invisible_core.constants as consts
+    import invisible_core.download as dl
+    from invisible_playwright.constants import BINARY_ENTRY_REL
+
+    monkeypatch.setattr(dl, "cache_root", lambda: tmp_path)
+    monkeypatch.setattr(consts, "BINARY_VERSION", "firefox-15")
+    d = tmp_path / "firefox-15"
+    entry = d / Path(BINARY_ENTRY_REL[sys.platform])
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.write_bytes(b"\0" * 4096)  # thin launcher, like the real one
+    (entry.parent / "libxul.so").write_bytes(b"\0" * (inv._WHOLE_BUILD_BYTES + 1))
+
+    assert inv.installed_builds() == ["firefox-15"]
+    assert inv.is_invisible_installed() is True
+
+
+def test_stub_pinned_build_installed_once_marker_written(monkeypatch, tmp_path):
+    # Even a stub-only dir counts if the completion marker is present (a real
     # install our resumable downloader finished and marked).
     import invisible_core.constants as consts
     import invisible_core.download as dl

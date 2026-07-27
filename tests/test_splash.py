@@ -270,6 +270,27 @@ def test_main_shows_splash_before_anything_else(monkeypatch):
     assert "_sweep" in names
 
 
+def test_configure_page_stretches_children_to_fill_window():
+    # #227: the splash (expand=True) is added straight to page.controls. Without
+    # a stretch alignment the page lays its children out top-left at their
+    # natural size, so the splash sat in the corner and, when the window was
+    # dragged/resized mid-load, only partially repainted (black gap + a white
+    # artifact strip). Stretch alignment makes the splash AND the real root
+    # layout always fill the window.
+    from types import SimpleNamespace
+
+    from src.ui.theme.page import configure_page
+
+    page = SimpleNamespace(
+        window=SimpleNamespace(),
+        title=None, padding=None, spacing=None,
+        theme_mode=None, bgcolor=None, theme=None,
+        horizontal_alignment=None, vertical_alignment=None,
+    )
+    configure_page(page)
+    assert page.horizontal_alignment == ft.CrossAxisAlignment.STRETCH
+
+
 def test_main_never_touches_window_visibility(monkeypatch):
     # the window is visible from the client's first frame (pyproject bans
     # hide_window_on_start); a Python-side `visible = False` would hide a

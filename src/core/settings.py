@@ -58,11 +58,20 @@ def _read(path: str) -> dict:
 
 
 def _load() -> dict:
-    # Read-only callers tolerate a transient failure as "no value yet".
-    try:
-        return _read(_path())
-    except _UnreadableSettings:
-        return {}
+    # A transient read failure is NOT "no settings" (#226): right after a Windows
+    # update the relaunched persona can hit a momentary lock on settings.json (the
+    # installer's /CLOSEAPPLICATIONS, an AV sweep, or the relaunch purge still
+    # holding a handle). Treating that first failed read as {} made
+    # is_onboarding_done() False and re-ran the whole onboarding after every
+    # update. Retry a few times before falling back so the real value survives a
+    # brief lock; a genuinely absent file returns {} on the first try (no raise).
+    for attempt in range(5):
+        try:
+            return _read(_path())
+        except _UnreadableSettings:
+            if attempt < 4:
+                time.sleep(0.1)
+    return {}
 
 
 def _save(data: dict) -> None:
@@ -80,12 +89,19 @@ def get(key: str, default=None):
 
 def set(key: str, value) -> None:
     # Merge into whatever is on disk. If the existing file can't be read right
-    # now, DON'T persist — writing {key: value} alone would drop every other
-    # preference (onboarding_done among them, which re-triggered onboarding
-    # after an update, #214). A missed write self-heals on the next set().
-    try:
-        data = _read(_path())
-    except _UnreadableSettings:
+    # now, DON'T persist a partial — writing {key: value} alone would drop every
+    # other preference (onboarding_done among them, which re-triggered onboarding
+    # after an update, #214). Retry through a transient lock first (#226); only
+    # skip the write if it stays unreadable, and that self-heals on the next set.
+    data = None
+    for attempt in range(5):
+        try:
+            data = _read(_path())
+            break
+        except _UnreadableSettings:
+            if attempt < 4:
+                time.sleep(0.1)
+    if data is None:
         return
     data[key] = value
     _save(data)

@@ -39,6 +39,8 @@ def make_app(*, running=()):
     app._update_start_t = 0.0
     app._ui = lambda fn: fn()
     app._refresh_sidebar = lambda: None
+    app._onboarding_open = False
+    app._pending_update = None
     app.logs = []
     app._log = app.logs.append
     app.applied = []
@@ -186,3 +188,66 @@ def test_update_ready_dialog_builds_headless():
     later = next(a for a in dlg.actions if "later" in str(a.content).lower())
     later.on_click(None)
     assert page.popped == 1 and calls == []
+
+
+def test_offer_install_held_while_onboarding_open():
+    # #226: a staged update that lands while first-run onboarding owns the
+    # screen must NOT stack a second dialog — it's held and re-offered later.
+    app = make_app()
+    app._onboarding_open = True
+
+    app._offer_install("v9.9.9", "/tmp/staged")
+
+    assert app.page.dialogs == []  # nothing shown over onboarding
+    assert app._pending_update == ("v9.9.9", "/tmp/staged")
+
+
+def test_offer_install_shown_when_no_onboarding():
+    app = make_app()
+    app._onboarding_open = False
+
+    app._offer_install("v9.9.9", "/tmp/staged")
+
+    assert len(app.page.dialogs) == 1
+    assert app._pending_update is None
+
+
+def test_version_click_installs_a_staged_update():
+    # #228: clicking the version line with an update already downloaded applies
+    # it immediately, no waiting on the poll.
+    app = make_app()
+    app._update_staged = "/tmp/staged"
+    applied = []
+    app._apply_update_now = lambda: applied.append(1)
+
+    app._on_version_click()
+    assert applied == [1]
+
+
+def test_version_click_resumes_a_known_pending_download():
+    # a newer version is known but not on disk (a download that stalled/failed
+    # over slow Tor) → clicking (re)starts it; it resumes from any partial.
+    app = make_app()
+    app._update_staged = ""
+    app._update_in_progress = False
+    app._app_latest = "v9.9.9"
+    app._app_update_url = "http://x/setup"
+    started = []
+    app._start_app_update = lambda url: started.append(url)
+
+    app._on_version_click()
+    assert started == ["http://x/setup"]
+
+
+def test_version_click_checks_when_nothing_known(monkeypatch):
+    # no update known yet → clicking forces a check off the UI thread.
+    app = make_app()
+    app._update_staged = ""
+    app._update_in_progress = False
+    app._app_latest = ""
+    app._app_update_url = ""
+    checked = []
+    app._check_app_update_now = lambda: checked.append(1)
+
+    app._on_version_click()
+    assert checked == [1]

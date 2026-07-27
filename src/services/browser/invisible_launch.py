@@ -25,13 +25,38 @@ from .firefox_bookmarks import places_ready
 _INSTALL_MARKER = ".persona-complete"
 
 # A markerless pinned build (BINARY_VERSION, installed by the package's own
-# ensure_binary) is trusted only if its entry executable is a real, whole binary
-# — not a stub left by an aborted first download. An interrupted fetch over Tor
-# can leave the entry path present but tiny (or 0 bytes) so is_invisible_installed
-# wrongly read True and the auto-download never re-ran, leaving FF unlaunchable
-# forever (#225). A real Firefox executable is many MB; 1 MB safely clears any
-# real build and rejects a truncated one.
-_MIN_ENTRY_BYTES = 1_000_000
+# ensure_binary) is trusted only if the engine's core is actually unpacked next
+# to the entry — not just the thin launcher left by an aborted first download.
+#
+# The entry executable (firefox / firefox.exe / Firefox.app/.../firefox) is a
+# ~700KB LAUNCHER on every OS; the engine's real weight is the shared core
+# (libxul, ~230MB) beside it. Gauging completeness by the entry's own size was
+# the #225 regression: it rejected even a fully-installed build (thin entry <
+# threshold) and re-downloaded the engine on every start. Completeness is the
+# unpacked BULK: a whole build carries hundreds of MB, an interrupted fetch
+# carries only the stub. 50 MB clears any real build (libxul alone is ~5x that)
+# and rejects a stub.
+_WHOLE_BUILD_BYTES = 50_000_000
+
+
+def _build_is_whole(build_dir) -> bool:
+    """True when `build_dir` holds an unpacked engine, not just an aborted
+    download's stub. Sums file sizes with an early exit the moment the total
+    clears the threshold — a real build trips it within the first core file, so
+    this rarely walks the whole tree."""
+    total = 0
+    try:
+        for root, _dirs, names in os.walk(str(build_dir)):
+            for n in names:
+                try:
+                    total += os.path.getsize(os.path.join(root, n))
+                except OSError:
+                    continue
+                if total >= _WHOLE_BUILD_BYTES:
+                    return True
+    except OSError:
+        return False
+    return False
 
 
 # The FF engine speaks juggler, not CDP, so the MCP browser tools can't attach
@@ -90,15 +115,13 @@ def installed_builds() -> list[str]:
                 out.append(tag)
                 continue
             # No completion marker. Only the package-pinned BINARY_VERSION may be
-            # markerless (ensure_binary installs it that way) — and only if its
-            # entry is a real whole binary, not a stub left by an aborted first
-            # download (#225). Any other markerless build is a crashed mid-extract.
+            # markerless (ensure_binary installs it that way) — and only if the
+            # engine core is actually unpacked, not just the thin entry launcher
+            # left by an aborted first download (#225). Any other markerless build
+            # is a crashed mid-extract.
             if tag != BINARY_VERSION:
                 continue
-            try:
-                if entry.stat().st_size < _MIN_ENTRY_BYTES:
-                    continue
-            except OSError:
+            if not _build_is_whole(d):
                 continue
             out.append(tag)
         out.sort(key=build_number)
@@ -161,10 +184,11 @@ def _binary_path_override():
 
 def is_invisible_installed() -> bool:
     # "Installed" means at least one COMPLETE build (installed_builds already
-    # rejects a markerless truncated pinned stub, #225). NOT "the active-build
-    # path exists" — active_build() falls back to naming BINARY_VERSION even when
-    # nothing is installed, so an aborted first download left that path present and
-    # this read True, blocking the auto-redownload and leaving FF unlaunchable.
+    # rejects a markerless pinned stub whose engine core never unpacked, #225).
+    # NOT "the active-build path exists" — active_build() falls back to naming
+    # BINARY_VERSION even when nothing is installed, so an aborted first download
+    # left that path present and this read True, blocking the auto-redownload and
+    # leaving FF unlaunchable.
     return bool(installed_builds())
 
 
@@ -472,10 +496,20 @@ def _resumable_download(
 
     opener = urllib.request.build_opener(_KeepRangeRedirect)
 
-    attempts = 0
-    while attempts < 80:
-        attempts += 1
+    # Bound the retries by CONSECUTIVE no-progress attempts, not total attempts:
+    # over a slow Tor circuit (Mars saw ~0.1 MB/s) a 118MB archive drops its
+    # circuit many times but keeps advancing, and a flat attempt cap would give
+    # up mid-download. Any attempt that moves bytes resets this counter, so only
+    # a truly stuck transfer (nothing arriving for a run of tries) bails.
+    idle_attempts = 0
+    while idle_attempts < 12:
+        # Short backoff between failed tries so a dead circuit isn't hammered
+        # open-and-drop with no pause (that just piled up timeouts); grows to a
+        # few seconds, capped. No wait before the first try or after progress.
+        if idle_attempts:
+            time.sleep(min(0.5 * idle_attempts, 4.0))
         have = os.path.getsize(path) if os.path.exists(path) else 0
+        progressed = False
         req = urllib.request.Request(url)
         if have:
             req.add_header("Range", f"bytes={have}-")
@@ -551,6 +585,7 @@ def _resumable_download(
                             break
                         out.write(chunk)
                         done += len(chunk)
+                        progressed = True
                         last_progress[0] = time.monotonic()
                         if progress is not None:
                             progress(done, total)
@@ -560,14 +595,20 @@ def _resumable_download(
 
             size = os.path.getsize(path)
             if total and size < total:
-                continue  # dropped early, resume with a fresh circuit
+                # Dropped early; resume with a fresh circuit. Only count it
+                # against the give-up budget if this try moved NO bytes.
+                idle_attempts = 0 if progressed else idle_attempts + 1
+                continue
             if total and size > total:
                 # Safety net: trim any overshoot back to the real size.
                 with open(path, "r+b") as out:
                     out.truncate(total)
             return True
         except Exception:
-            continue  # keep the partial for the next resume attempt
+            # keep the partial for the next resume attempt; a try that still
+            # moved bytes before the drop doesn't burn the give-up budget
+            idle_attempts = 0 if progressed else idle_attempts + 1
+            continue
         finally:
             if resp is not None:
                 try:

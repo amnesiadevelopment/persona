@@ -104,6 +104,20 @@ def test_benign_webrtc_p2p_lines_are_filtered():
         assert is_engine_noise(m), f"should be filtered: {m!r}"
 
 
+def test_benign_newtab_profile_type_lines_are_filtered():
+    # chromium logs an ERROR when a page/extension requests chrome://newtab for a
+    # profile type that doesn't allow the WebUI new-tab page (a spoofed/guest-ish
+    # profile). The browser opens a plain new tab and runs fine — expected
+    # chatter, not a persona failure. File-log only, never a red line (#212).
+    benign = [
+        "[7023:7023:0727/141355.984646:ERROR:chrome/browser/ui/webui/ntp/"
+        "new_tab_ui.cc:54] Requested load of chrome://newtab/ for incorrect "
+        "profile type.",
+    ]
+    for m in benign:
+        assert is_engine_noise(m), f"should be filtered: {m!r}"
+
+
 def test_real_error_lines_still_surface():
     real = [
         # any handshake net_error other than -100 is a real TLS problem
