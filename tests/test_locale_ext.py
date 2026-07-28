@@ -26,3 +26,14 @@ def test_js_embeds_locale(tmp_path):
     assert '"fr-FR"' in js
     assert "Intl.DateTimeFormat" in js
     assert "Intl.NumberFormat" in js
+
+
+def test_js_is_iife_no_globals(tmp_path):
+    # #233: in the MAIN world a bare top-level const (LOCALE, _resolved) becomes a
+    # page global and collides with the page's own bundle ("Identifier '…' has
+    # already been declared"), killing the script — Google Sheets' calc worker
+    # died and the sheet stuck on "Working". Wrap everything in an IIFE.
+    d = build_locale_extension("fr-FR", str(tmp_path / "ext"))
+    js = (pathlib.Path(d) / "locale.js").read_text().strip()
+    assert js.startswith("(function"), f"locale.js must start with an IIFE, got: {js[:30]!r}"
+    assert js.endswith(("})();", "})()")), f"locale.js must end by invoking the IIFE, got: {js[-10:]!r}"

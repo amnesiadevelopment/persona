@@ -5,6 +5,18 @@ not a git log. When cutting a release, add the new version's highlights here.
 """
 
 CHANGELOG: dict[str, list[str]] = {
+    "2.7.0": [
+        "Google Sheets works fully through a proxy in Chrome profiles again — the "
+        "date-cell calendar picker and custom-currency dialog open, and the sheet "
+        "no longer sticks on \"Working\". A persona extension was clashing with "
+        "Google's own scripts and stopping the sheet's calculator from loading.",
+        "On Linux, persona reliably reopens after an auto-update instead of "
+        "closing and never coming back.",
+        "Firefox profiles open faster on the first launch — no more waiting out "
+        "two dead retries.",
+        "Windows code-only updates are quick again (seconds, not a full "
+        "reinstall).",
+    ],
     "2.6.5": [
         "Google Sheets overlays work in Chrome profiles: the date-cell calendar "
         "picker and the custom-currency dialog open again, even when persona's "

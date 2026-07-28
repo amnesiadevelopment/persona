@@ -1,7 +1,13 @@
 import json
 import pathlib
 
+# The script is wrapped in an IIFE so LOCALE/_resolved don't become page globals.
+# In the MAIN world a bare top-level const is a real page global, and a page whose
+# own bundle declares the same name later throws "Identifier '…' has already been
+# declared" and dies (Google Sheets' calc worker did — see geo_ext for the full
+# story of #233). Keep every injected name function-local.
 CONTENT_SCRIPT = """\
+(function () {{
 const LOCALE = {locale};
 const _resolved = (orig) => function (...args) {{
   const r = orig.apply(this, args);
@@ -44,6 +50,7 @@ try {{
     return origToLT.call(this, l || LOCALE, o);
   }};
 }} catch (e) {{}}
+}})();
 """
 
 MANIFEST = {

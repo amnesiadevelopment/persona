@@ -77,8 +77,26 @@ def _ensure_utf8_fs() -> None:
     os.environ[_REEXEC_UTF8_FLAG] = "1"
     os.environ["PYTHONUTF8"] = "1"
     os.environ["PYTHONIOENCODING"] = "utf-8"
+    # Also give the C library a UTF-8 locale. PYTHONUTF8 alone fixes the fs
+    # encoding, but GTK/Flet read the C locale directly; a bare 'C'/POSIX locale
+    # (what an AppImage relaunched after a self-update inherits — the update's
+    # execv doesn't carry the desktop LANG) leaves them on the fallback 'C'
+    # locale. C.UTF-8 is always present on glibc and needs no locale-gen.
+    os.environ["LC_ALL"] = "C.UTF-8"
+    os.environ.setdefault("LANG", "C.UTF-8")
+    # Re-exec THROUGH the AppImage entrypoint when we are one ($APPIMAGE is set by
+    # the type-2 runtime). A bare os.execv(sys.executable) re-runs the interpreter
+    # WITHOUT the AppRun that sets PYTHONHOME to this build's extracted stdlib, so
+    # the second interpreter resolves encodings/ from a stale or system Python and
+    # dies with "bad magic number in 'encodings'" — the app relaunches after an
+    # update and never opens a window (#240). Going through $APPIMAGE re-enters
+    # AppRun, which rebuilds the correct Python environment for this build.
+    appimage = os.environ.get("APPIMAGE")
     try:
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+        if appimage and os.path.isfile(appimage):
+            os.execv(appimage, [appimage] + sys.argv[1:])
+        else:
+            os.execv(sys.executable, [sys.executable] + sys.argv)
     except OSError:
         # Can't re-exec (frozen build with no discrete interpreter, or execv
         # denied) — carry on; a UTF-8 profile name may still fail, but the app

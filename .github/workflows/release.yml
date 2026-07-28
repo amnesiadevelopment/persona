@@ -492,20 +492,20 @@ jobs:
             -replace '-','').ToLower()
           Write-Host "fingerprint input: $fpInput"
 
-          # Compare against the PREVIOUS release's manifest to decide fast-vs-full.
-          # No previous manifest (first release with this feature) or a changed
-          # fingerprint => requires_full_install (the installer carries the new
-          # runtime). Same fingerprint => a code-only fast update is safe.
+          # Decide fast-vs-full by comparing against the runtime fingerprint
+          # COMMITTED in the repo (runtime-fingerprint.txt), NOT the previous
+          # release's manifest fetched over the API. Reading releases/latest raced
+          # the publish and GitHub's cache: a 2.6.5 build read an empty/stale prev
+          # fingerprint even though its runtime was identical to 2.6.4, so
+          # requires_full_install pinned true and the update ran the full 30s
+          # installer instead of the seconds-fast app.zip swap (#238). A committed
+          # baseline is deterministic — same runtime => same file => fast update.
+          # Bump runtime-fingerprint.txt only when the runtime actually changes.
           $prevFp = ""
-          try {
-            $prev = Invoke-RestMethod -Headers @{ 'User-Agent'='persona-ci' } `
-              -Uri "https://api.github.com/repos/${{ github.repository }}/releases/latest"
-            $murl = ($prev.assets | Where-Object { $_.name -eq 'update-manifest.json' }).browser_download_url
-            if ($murl) {
-              $pm = Invoke-RestMethod -Headers @{ 'User-Agent'='persona-ci' } -Uri $murl
-              $prevFp = "$($pm.runtime_fingerprint)"
-            }
-          } catch { Write-Host "no previous manifest: $_" }
+          if (Test-Path runtime-fingerprint.txt) {
+            $prevFp = (Get-Content runtime-fingerprint.txt -Raw).Trim().ToLower()
+          }
+          Write-Host "committed prevFp: '$prevFp'  build runtimeFp: '$runtimeFp'"
 
           $ver = "${{ github.ref_name }}" -replace '^v',''
           if (-not $ver) { $ver = "0.0.0" }

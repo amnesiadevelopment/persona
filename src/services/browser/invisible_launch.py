@@ -1301,9 +1301,24 @@ def _init_places_db(
 
         t = threading.Thread(target=init, daemon=True)
         t.start()
-        enter_deadline = min(deadline, time.monotonic() + enter_timeout)
+        # `enter_timeout` bounds how long we wait for a FIREFOX PROCESS to appear,
+        # not the whole enter: a cold first start reads the ~230MB engine off disk
+        # and legitimately takes ~19s on Windows (measured), far past the 8s a
+        # truly-wedged driver would ever need to fork Firefox. Killing at 8s
+        # aborted a launch that was merely slow, twice, turning a ~19s cold start
+        # into a ~22s three-attempt ordeal (#239/#219). So once Firefox is up we
+        # keep waiting for the enter up to the overall `timeout`; only when NO
+        # process ever appears within `enter_timeout` is it really wedged.
+        proc_deadline = min(deadline, time.monotonic() + enter_timeout)
         while not entered.wait(0.2):
-            if done.is_set() or stopped() or time.monotonic() > enter_deadline:
+            if done.is_set() or stopped() or time.monotonic() >= deadline:
+                break
+            if time.monotonic() > proc_deadline:
+                # Grace elapsed with no `entered`. If a Firefox process exists for
+                # this profile the enter is progressing (cold disk start) — keep
+                # waiting. If none appeared, the driver genuinely wedged: bail out.
+                if _profile_firefox_pids(profile_dir):
+                    continue
                 break
         if not entered.is_set():
             # Wedged (or failed) before the engine came up: kill this

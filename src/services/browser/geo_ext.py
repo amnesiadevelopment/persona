@@ -1,30 +1,40 @@
 import json
 import pathlib
 
+# The script is wrapped in an IIFE so none of its names land in the page's global
+# scope. It runs in the MAIN world on every frame; a bare top-level const/function
+# becomes a real page global, and when the page's own bundle later declares (or
+# re-evaluates a module declaring) the same identifier the page throws "Identifier
+# '…' has already been declared" and that script dies. Google Sheets hit exactly
+# that — its calc worker / date-picker module aborted, so the sheet stuck on
+# "Working" and the calendar never opened, but ONLY with a proxy, because this
+# geolocation override is loaded only for a proxied profile (#233).
 CONTENT_SCRIPT = """\
-const LAT = {lat};
-const LON = {lon};
-const ACC = 100;
-function pos() {{
-  return {{
-    coords: {{
-      latitude: LAT, longitude: LON, accuracy: ACC,
-      altitude: null, altitudeAccuracy: null, heading: null, speed: null,
-    }},
-    timestamp: Date.now(),
-  }};
-}}
-const geo = navigator.geolocation;
-if (geo) {{
-  geo.getCurrentPosition = function (success) {{
-    if (typeof success === "function") success(pos());
-  }};
-  geo.watchPosition = function (success) {{
-    if (typeof success === "function") success(pos());
-    return 0;
-  }};
-  geo.clearWatch = function () {{}};
-}}
+(function () {{
+  const LAT = {lat};
+  const LON = {lon};
+  const ACC = 100;
+  function pos() {{
+    return {{
+      coords: {{
+        latitude: LAT, longitude: LON, accuracy: ACC,
+        altitude: null, altitudeAccuracy: null, heading: null, speed: null,
+      }},
+      timestamp: Date.now(),
+    }};
+  }}
+  const geo = navigator.geolocation;
+  if (geo) {{
+    geo.getCurrentPosition = function (success) {{
+      if (typeof success === "function") success(pos());
+    }};
+    geo.watchPosition = function (success) {{
+      if (typeof success === "function") success(pos());
+      return 0;
+    }};
+    geo.clearWatch = function () {{}};
+  }}
+}})();
 """
 
 MANIFEST = {

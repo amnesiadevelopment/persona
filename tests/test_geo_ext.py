@@ -32,3 +32,17 @@ def test_overrides_getcurrentposition(tmp_path):
 def test_idempotent_path(tmp_path):
     base = str(tmp_path / "geo")
     assert build_geo_extension(1.0, 2.0, base) == build_geo_extension(1.0, 2.0, base)
+
+
+def test_script_is_iife_no_globals(tmp_path):
+    # #233: this content script runs in the MAIN world. A bare top-level
+    # const/function becomes a page global, and when the page's own bundle later
+    # declares the same identifier the page throws "Identifier '…' has already
+    # been declared" and its script dies — Google Sheets' calc worker did, so the
+    # sheet stuck on "Working" and the calendar never opened (only with a proxy,
+    # since geo is proxy-only). Everything must be wrapped in an IIFE so no name
+    # leaks to the page.
+    ext = build_geo_extension(1.0, 2.0, str(tmp_path / "geo"))
+    js = (pathlib.Path(ext) / "geo.js").read_text().strip()
+    assert js.startswith("(function"), f"geo.js must start with an IIFE, got: {js[:30]!r}"
+    assert js.endswith(("})();", "})()")), f"geo.js must end by invoking the IIFE, got: {js[-10:]!r}"
