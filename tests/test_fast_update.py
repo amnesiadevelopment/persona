@@ -158,3 +158,36 @@ def test_try_windows_fast_update_takes_fast_path(monkeypatch):
     assert au._try_windows_fast_update(lambda *a: None) is True
     assert applied["url"] == "z"
     assert applied["sha"] == "deadbeef"
+
+
+def test_fastswap_bat_waits_a_real_beat_before_confirming_launch(tmp_path):
+    # #229: after `start`, the new persona re-extracts app.zip behind its boot
+    # screen before persona.exe registers in tasklist — several seconds. A
+    # near-instant recheck saw "not up yet" and re-launched, spawning a second
+    # instance that raced the extraction (one won, the other died: "reopened
+    # then closed again quickly"). The confirm must sleep a real ~3s beat first,
+    # use its OWN bounded counter (not the wait loop's `tries`, already near its
+    # cap), and re-launch only a handful of times.
+    exe = tmp_path / "persona.exe"
+    exe.write_bytes(b"MZ")
+    path = fu._write_appzip_swap_bat(
+        str(exe),
+        str(tmp_path / "new.zip"),
+        str(tmp_path / "new.hash"),
+        str(tmp_path / "dst.zip"),
+        str(tmp_path / "dst.hash"),
+        4242,
+    )
+    try:
+        with open(path, encoding="ascii", newline="") as f:
+            bat = f.read()
+    finally:
+        os.remove(path)
+    launch = bat.split(":launch")[1]
+    # a real ~3s wait before the liveness check, not a near-instant ping
+    assert "ping -n 4 " in launch
+    # re-launch is bounded by a SEPARATE counter, tightly, so a genuine failure
+    # can't spawn a fistful of persona processes
+    assert "boots" in bat
+    assert "lss 5" in launch
+    assert "lss 930" not in bat

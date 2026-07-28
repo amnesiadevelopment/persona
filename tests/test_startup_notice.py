@@ -34,13 +34,24 @@ def test_onboarded_but_no_version_recorded_is_an_update_not_onboarding():
     ) == Notice.CHANGELOG
 
 
-def test_not_onboarded_but_version_recorded_still_onboards():
-    # Defensive: onboarding was never completed but a version exists (a skipped
-    # onboarding that didn't persist). Prefer finishing onboarding over a
-    # changelog — the user hasn't seen the intro yet.
+def test_not_onboarded_but_version_recorded_is_an_update_not_onboarding():
+    # A recorded version proves a full prior session ran (the record is written
+    # at the end of startup, after onboarding). If onboarding_done reads False
+    # here it's a transient settings-read failure after an update, NOT a genuine
+    # unfinished onboarding — re-running the welcome on every update was the bug
+    # (#226). Proof-of-prior-run overrides the racy flag: treat as an update.
     assert decide_startup_notice(
         onboarding_done=False, last_version="2.5.1", current_version="2.5.2"
-    ) == Notice.ONBOARDING
+    ) == Notice.CHANGELOG
+
+
+def test_not_onboarded_version_recorded_same_version_shows_nothing():
+    # Same as above but the recorded version equals current (a plain restart, no
+    # update): proof-of-prior-run still overrides the racy flag → nothing, and
+    # definitely not onboarding.
+    assert decide_startup_notice(
+        onboarding_done=False, last_version="2.5.2", current_version="2.5.2"
+    ) == Notice.NONE
 
 
 def test_downgrade_or_equal_recorded_newer_shows_nothing():

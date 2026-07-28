@@ -484,12 +484,14 @@ def test_relaunch_bat_polls_with_one_snapshot_and_short_circuits(tmp_path):
     assert "ping -n 2" not in hold
     assert "geq 900" in wait
     assert bat.index(":settle") < bat.index(":purge") < bat.index(":launch")
-    # #205: the post-start liveness check drops the 1s ping too — `start`
-    # returns only once CreateProcess succeeded, so the image is already
-    # visible to tasklist the instant we look.
+    # #229: the post-start liveness check waits a real ~3s beat before looking.
+    # `start` returns once CreateProcess succeeded, but the new persona then
+    # re-extracts app.zip behind its boot screen before persona.exe registers in
+    # tasklist — a near-instant recheck sees "not up yet" and re-launches,
+    # spawning a duplicate that races the extraction (one wins, the other dies:
+    # "reopened then closed again quickly"). So the confirm sleeps ~3s first.
     launch = bat.split(":launch")[1]
-    assert "ping -n 1 " in launch
-    assert "ping -n 2" not in launch
+    assert "ping -n 4 " in launch
 
 
 def test_relaunch_bat_is_silent_and_ascii(tmp_path):
@@ -771,9 +773,10 @@ def test_relaunch_bat_verifies_the_app_came_up_and_retries(tmp_path):
     assert f'start "" /D "{tmp_path}" "{exe}"' in launch
     # after the start: is a persona.exe actually running?
     assert 'tasklist /FI "IMAGENAME eq persona.exe"' in launch
-    # if not, loop back and start again — but bounded
+    # if not, loop back and start again — but tightly bounded so a genuine
+    # failure can't spam a fistful of persona processes (#229).
     assert "goto launch" in launch
-    assert "lss 30" in launch
+    assert "lss 5" in launch
     # the self-delete still happens last, whether the launch stuck or not
     assert 'del "%~f0"' in launch.split(":done")[1]
 

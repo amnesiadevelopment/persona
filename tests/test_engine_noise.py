@@ -118,6 +118,19 @@ def test_benign_newtab_profile_type_lines_are_filtered():
         assert is_engine_noise(m), f"should be filtered: {m!r}"
 
 
+def test_benign_vmware_no_3d_line_is_filtered():
+    # Mesa's VMware SVGA driver reports the guest has no host 3D acceleration
+    # ("(0, Success)" — a status line, not an error). The engine falls back to
+    # software GL and renders fine; it spams this on every launch inside a VM.
+    # File-log only, never a red Activity Log line (#236).
+    benign = [
+        "VMware: No 3D enabled (0, Success).",
+        "[IE Main] VMware: No 3D enabled (0, Success).",
+    ]
+    for m in benign:
+        assert is_engine_noise(m), f"should be filtered: {m!r}"
+
+
 def test_real_error_lines_still_surface():
     real = [
         # any handshake net_error other than -100 is a real TLS problem

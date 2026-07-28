@@ -469,7 +469,25 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
         "--restore-last-session",
         "--hide-crash-restore-bubble",
         "--force-dark-mode",
+        # Keep the page's Page-Visibility state "visible" and its rAF running
+        # even when the window isn't the foreground/focused window. Chromium
+        # otherwise marks a non-foreground or occluded window hidden and throttles
+        # requestAnimationFrame to ~0fps. Google Sheets mounts its overlays — the
+        # date-cell calendar picker and the custom-currency dialog — via
+        # rAF-driven animations, so a throttled window never paints them: they
+        # read as "dead"/never-open on every OS, while the grid (already drawn)
+        # looks fine. Firefox drives those overlays off a path that isn't
+        # visibility-throttled, which is why it was never affected. Measured on a
+        # real-GPU host: a persona window reported visibilityState=hidden and rAF
+        # fired 0 frames in 5s; with visibility forced, rAF ran full speed and the
+        # overlays opened.
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--disable-background-timer-throttling",
     ]
+    # Windows computes native window occlusion and marks a covered window hidden;
+    # that alone throttled rAF to zero even with the backgrounding flags above.
+    disabled_features.append("CalculateNativeWinOcclusion")
 
     if _platform.IS_LINUX:
         # Software GL (SwiftShader) keeps the GPU process alive so the

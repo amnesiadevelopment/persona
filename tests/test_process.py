@@ -97,6 +97,33 @@ def test_chromium_unchecked_proxy_ships_host_zone_not_utc(monkeypatch, tmp_path)
     assert "--timezone=UTC" not in captured["args"]
 
 
+def test_chromium_keeps_window_visible_so_overlays_render(monkeypatch, tmp_path):
+    # #233: a non-foreground/occluded persona window reported
+    # visibilityState=hidden, so chromium throttled requestAnimationFrame to 0fps
+    # and Google Sheets' rAF-driven overlays (the date-cell calendar, the
+    # custom-currency dialog) never painted — on every OS. These flags keep the
+    # page visible and rAF running regardless of foreground/occlusion.
+    captured = {}
+
+    class _FakePopen:
+        def __init__(self, args, **kwargs):
+            captured["args"] = args
+
+    monkeypatch.setattr(process, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(process, "ProxyStore", _Store)
+    monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
+    monkeypatch.setattr(process.subprocess, "Popen", _FakePopen)
+    process.spawn_browser(Profile(name="vis-chromium"))
+    args = captured["args"]
+    assert "--disable-backgrounding-occluded-windows" in args
+    assert "--disable-renderer-backgrounding" in args
+    assert "--disable-background-timer-throttling" in args
+    disabled = next(
+        (a for a in args if a.startswith("--disable-features=")), ""
+    )
+    assert "CalculateNativeWinOcclusion" in disabled
+
+
 def test_linux_chromium_env_keeps_system_fontconfig(monkeypatch, tmp_path):
     # A per-profile FONTCONFIG_FILE flooded live sessions with "Cannot load
     # default config file" errors from chromium child processes and rendered

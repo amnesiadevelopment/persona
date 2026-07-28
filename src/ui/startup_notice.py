@@ -19,16 +19,20 @@ def decide_startup_notice(
 ) -> Notice:
     """What the just-started app should surface once.
 
-    - Not onboarded yet → ONBOARDING (a real first run, or an intro the user
-      never finished). Takes priority over any changelog.
-    - Onboarded, and this build is newer than the last one we recorded (or we
-      never recorded one — an install from before version tracking) → CHANGELOG:
-      the user just updated, show what changed, NOT the full welcome again (#215;
-      the after-update re-onboarding was #214).
-    - Otherwise (same version, or a downgrade) → NONE.
+    - A version was recorded before → the app already completed a full prior
+      session (that record is written at the end of startup, after onboarding),
+      so this is NEVER a first run — show the CHANGELOG if the build moved
+      forward, else NONE. A recorded version overrides a False onboarding flag:
+      the flag can read False from a transient settings-read failure right after
+      a Windows update, and re-running the whole welcome on every update was the
+      bug (#214/#226). Proof-of-prior-run beats a flag that can race.
+    - No version recorded AND not onboarded → a genuine first install →
+      ONBOARDING.
+    - No version recorded but onboarded (an install from before version
+      tracking) → CHANGELOG once.
     """
+    if last_version:
+        return Notice.CHANGELOG if is_newer(current_version, last_version) else Notice.NONE
     if not onboarding_done:
         return Notice.ONBOARDING
-    if not last_version or is_newer(current_version, last_version):
-        return Notice.CHANGELOG
-    return Notice.NONE
+    return Notice.CHANGELOG

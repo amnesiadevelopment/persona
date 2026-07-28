@@ -5,6 +5,21 @@ not a git log. When cutting a release, add the new version's highlights here.
 """
 
 CHANGELOG: dict[str, list[str]] = {
+    "2.6.5": [
+        "Google Sheets overlays work in Chrome profiles: the date-cell calendar "
+        "picker and the custom-currency dialog open again, even when persona's "
+        "window isn't in front. They were frozen whenever another window covered "
+        "the browser.",
+        "The Firefox engine installs and launches on Windows again — a version "
+        "mismatch in the last build left it stuck on \"not ready\" and "
+        "re-downloading forever.",
+        "After an update you reliably see the what's-new notes, never the "
+        "first-run welcome screen again.",
+        "After an update persona reopens once and stays open — no more "
+        "close-reopen-close flicker.",
+        "Fewer false-red lines in the Activity Log (a benign VM graphics "
+        "message no longer shows up).",
+    ],
     "2.6.4": [
         "The Firefox engine is recognised once it's downloaded — no more stuck "
         "on \"not ready\" or re-downloading the same build over and over.",

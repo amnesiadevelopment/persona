@@ -1,12 +1,18 @@
-"""Both invisible engine packages MUST be pinned to the SAME git source in
-pyproject. flet build bundles deps from pyproject; when invisible_core was only
-a transitive dep, flet could resolve it to an OLD PyPI build lacking the
-release-pin check (invisible_core._pin) that the newer invisible_playwright
-imports at startup. That mismatch made the bundled Firefox engine raise
-ImportError / read as "not ready yet" and re-download forever on the boevaya
-2.6.3 build (#234). Guard both are declared, from git, so they stay in lockstep.
+"""Both invisible engine packages MUST be declared in pyproject, and
+invisible_core MUST carry an exact `==` version pin.
+
+flet build bundles deps from pyproject and does NOT resolve a git package's
+transitive deps — so invisible_core (invisible_playwright's own dependency)
+has to be declared here explicitly or the bundle ships without it and the
+engine raises ImportError ("invisible-core is missing") / reads as "not ready"
+forever (#234). It must be pinned to the EXACT version invisible_playwright
+requires (its dependency list carries invisible_core==NN), so the version that
+carries the release-pin check (invisible_core._pin) lands in the build. A git
+pin drifted out of lockstep with playwright's `==` pin; the exact `==` pin
+keeps them matched and lets `pip check` catch a drift before release.
 """
 import pathlib
+import re
 import tomllib
 
 
@@ -16,18 +22,25 @@ def _deps():
     return data["project"]["dependencies"]
 
 
-def test_both_invisible_packages_pinned_from_git():
-    deps = _deps()
-    joined = "\n".join(deps)
+def _line_for(pkg):
+    return next((d for d in _deps() if re.match(rf"{pkg}\b", d)), None)
+
+
+def test_both_invisible_packages_declared():
     for pkg in ("invisible_playwright", "invisible_core"):
-        line = next((d for d in deps if d.startswith(pkg)), None)
-        assert line is not None, (
+        assert _line_for(pkg) is not None, (
             f"{pkg} must be declared in pyproject dependencies so flet bundles "
-            f"it; a transitive-only {pkg} can resolve to an incompatible version"
+            f"it; a transitive-only {pkg} is not resolved into a git package's "
+            "build and goes missing from the bundled app (#234)"
         )
-        assert "git+" in line and "github.com/feder-cr" in line, (
-            f"{pkg} must be pinned to the feder-cr git source (found: {line!r}); "
-            "a PyPI/transitive resolution can drift out of lockstep with the "
-            "other package and break the bundled engine (#234)"
-        )
-    assert "invisible_playwright" in joined and "invisible_core" in joined
+
+
+def test_invisible_core_pinned_to_exact_version():
+    line = _line_for("invisible_core")
+    assert "==" in line and "git+" not in line, (
+        f"invisible_core must be pinned to an exact PyPI version (found: {line!r}); "
+        "it has to match the version invisible_playwright requires so the core "
+        "carrying invisible_core._pin lands in the build (#234)"
+    )
+    m = re.search(r"invisible_core==([\d.]+)", line)
+    assert m, f"could not parse invisible_core version from {line!r}"

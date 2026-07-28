@@ -141,6 +141,7 @@ def _write_appzip_swap_bat(exe: str, new_zip: str, new_hash: str,
         "@echo off\r\n"
         'cd /d "%~dp0" >nul 2>&1\r\n'
         "set tries=0\r\n"
+        "set boots=0\r\n"
         ":wait\r\n"
         + checks +
         "goto swap\r\n"
@@ -155,12 +156,20 @@ def _write_appzip_swap_bat(exe: str, new_zip: str, new_hash: str,
         f'copy /Y "{new_hash}" "{dst_hash}" >nul 2>&1\r\n'
         ":launch\r\n"
         f'start "" /D "{os.path.dirname(exe)}" "{exe}"\r\n'
-        "ping -n 1 127.0.0.1 >nul\r\n"
+        # After start, the new persona re-extracts app.zip behind its boot
+        # screen before persona.exe registers in tasklist — several seconds. A
+        # near-instant recheck sees "not running yet" and re-launches, spawning a
+        # SECOND instance that races the extraction; one wins, the other dies →
+        # "reopened then closed again quickly" (#229). Wait a real ~3s beat
+        # BEFORE the confirm, use a SEPARATE bounded counter (not the wait loop's
+        # `tries`, which is already near its cap), and only re-launch a handful
+        # of times — a genuine failure shouldn't spam processes.
+        "ping -n 4 127.0.0.1 >nul\r\n"
         f'tasklist /FI "IMAGENAME eq {image}" /FO CSV /NH 2>nul'
         f' | find /I "{image}" >nul\r\n'
         "if not errorlevel 1 goto done\r\n"
-        "set /a tries+=1\r\n"
-        "if %tries% lss 930 goto launch\r\n"
+        "set /a boots+=1\r\n"
+        "if %boots% lss 5 goto launch\r\n"
         ":done\r\n"
         '(goto) 2>nul & del "%~f0"\r\n'
     )

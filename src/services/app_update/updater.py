@@ -20,7 +20,7 @@ import time
 from ..engine.updater import is_newer
 from ...core import platform as _platform
 
-APP_VERSION = "2.6.4"
+APP_VERSION = "2.6.5"
 APP_REPO = "amnesiadevelopment/persona"
 
 
@@ -702,17 +702,21 @@ def _write_relaunch_bat(exe: str, installer: str, installer_pid, old_pid: int) -
         # empty title + quoted path: `start` treats the first quoted token as a
         # window title, so a bare path with spaces would launch nothing
         f'start "" /D "{os.path.dirname(exe)}" "{exe}"\r\n'
-        # `start` fails SILENTLY when the exe is still locked (an installer
-        # that outlived the pid we watched, an AV scan): confirm the app is
-        # really up and retry the start until it is, bounded. `start` returns
-        # only once CreateProcess succeeded, so the image is already visible
-        # to tasklist the instant we look — a near-instant ping is enough.
-        "ping -n 1 127.0.0.1 >nul\r\n"
+        # `start` returns once CreateProcess succeeded, but the new persona then
+        # re-extracts app.zip behind its boot screen before persona.exe registers
+        # in tasklist — several seconds. A near-instant recheck sees "not running
+        # yet" and re-launches, spawning a SECOND instance that races the
+        # extraction; one wins, the other dies → "reopened then closed again
+        # quickly" (#229). So wait a real ~3s beat BEFORE confirming, and only
+        # re-launch a handful of times (a `start` that lost a race with the
+        # installer mid-swap fails silently — that's the case worth retrying, not
+        # a slow first boot).
+        "ping -n 4 127.0.0.1 >nul\r\n"
         f'tasklist /FI "IMAGENAME eq {image}" /FO CSV /NH 2>nul'
         f' | find /I "{image}" >nul\r\n'
         "if not errorlevel 1 goto done\r\n"
         "set /a boots+=1\r\n"
-        "if %boots% lss 30 goto launch\r\n"
+        "if %boots% lss 5 goto launch\r\n"
         ":done\r\n"
         '(goto) 2>nul & del "%~f0"\r\n'
     )

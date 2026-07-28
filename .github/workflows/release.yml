@@ -62,6 +62,18 @@ jobs:
           pip install flet==0.85.3
           pip install --prefer-binary -r requirements.txt
 
+      - name: Assert the engine packages resolve in lockstep
+        # invisible_playwright pins its own invisible_core==NN; pyproject declares
+        # the same exact version so flet bundles the core that carries the
+        # release-pin check (invisible_core._pin). If the two ever drift (a git
+        # HEAD playwright bumps the required core past our pin), the bundled
+        # engine raises ImportError and reads as "not ready" forever (#234). Fail
+        # the build here instead of shipping that.
+        run: |
+          pip install "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git"
+          pip check
+          python -c "import invisible_playwright, invisible_core._pin; print('engine import + _pin OK')"
+
       - name: Guard against an engine downgrade
         # invisible_playwright is pinned to git HEAD (no commit) so builds always
         # take the latest patched Firefox engine — but a stale HEAD once shipped

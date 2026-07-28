@@ -88,6 +88,11 @@ _BENIGN_ENGINE_ERRORS = (
     # A spoofed/guest-type profile can't host the WebUI new-tab page, so chromium
     # logs an ERROR and opens a plain new tab instead. Expected, not a failure.
     "new_tab_ui.cc",
+    # Mesa's VMware/virgl SVGA driver reports the guest has no host 3D
+    # acceleration ("(0, Success)" — it's a status line, not an error). The
+    # engine falls back to software GL and renders fine; it just spams this on
+    # every launch inside a VM.
+    "VMware: No 3D enabled",
 )
 
 # net_error -100 = ERR_CONNECTION_CLOSED: the connection was dropped
