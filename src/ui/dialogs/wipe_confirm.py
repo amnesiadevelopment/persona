@@ -35,8 +35,20 @@ def open_wipe_confirm_dialog(
     )
 
     def _on_change(_: ft.ControlEvent) -> None:
-        confirm_btn.disabled = (field.value or "").strip() != _CONFIRM_WORD
-        page.update()
+        # Update ONLY the button, not the whole page: a page.update() on every
+        # keystroke rebuilt the focused TextField and reset the input method
+        # mid-word, flipping a Cyrillic keyboard back after each Latin letter so
+        # "DELETE" was nearly untypable (Mac live-found). Toggling just the
+        # button's disabled state leaves the field's focus/IME untouched.
+        want_disabled = (field.value or "").strip() != _CONFIRM_WORD
+        if confirm_btn.disabled != want_disabled:
+            confirm_btn.disabled = want_disabled
+            try:
+                confirm_btn.update()
+            except (RuntimeError, AssertionError):
+                # Not attached yet (or no page) — the initial disabled state is
+                # already correct, so a missed repaint here is harmless.
+                pass
 
     def _on_confirm(_: ft.ControlEvent) -> None:
         if (field.value or "").strip() != _CONFIRM_WORD:

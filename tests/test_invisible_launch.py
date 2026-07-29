@@ -276,6 +276,92 @@ def test_activate_dark_theme_noop_without_extensions_json(tmp_path):
     assert not (tmp_path / "extensions.json").exists()
 
 
+def _write_extensions_json(tmp_path, dark_active):
+    import json
+
+    (tmp_path / "extensions.json").write_text(json.dumps({"addons": [
+        {"id": "default-theme@mozilla.org", "type": "theme",
+         "active": not dark_active, "userDisabled": dark_active},
+        {"id": "firefox-compact-dark@mozilla.org", "type": "theme",
+         "active": dark_active, "userDisabled": not dark_active},
+    ]}), encoding="utf-8")
+
+
+def test_activate_dark_theme_drops_stale_addon_startup_cache(tmp_path):
+    # #242: the headless places init wrote addonStartup.json.lz4 with the theme
+    # that was active THEN (light); Firefox applies the theme from that startup
+    # cache on the first visible launch, so a fresh dark flip in extensions.json
+    # only shows from the SECOND launch. Activating dark must drop the stale
+    # cache so Firefox rebuilds it and the first launch already opens dark.
+    _write_extensions_json(tmp_path, dark_active=False)
+    cache = tmp_path / "addonStartup.json.lz4"
+    cache.write_bytes(b"stale-light-cache")
+
+    invisible_launch._activate_dark_theme(str(tmp_path))
+
+    assert not cache.exists()
+
+
+def test_activate_dark_theme_drops_cache_even_when_already_dark(tmp_path):
+    # The cache can be stale (built light) even when extensions.json already
+    # reads dark — a prior launch flipped the json after the cache was written.
+    # So the cache drop must not be gated on the json actually changing.
+    _write_extensions_json(tmp_path, dark_active=True)
+    cache = tmp_path / "addonStartup.json.lz4"
+    cache.write_bytes(b"stale-light-cache")
+
+    invisible_launch._activate_dark_theme(str(tmp_path))
+
+    assert not cache.exists()
+
+
+def test_invalidate_addon_startup_cache_missing_is_noop(tmp_path):
+    # No cache file yet (first ever launch): must not raise.
+    invisible_launch._invalidate_addon_startup_cache(str(tmp_path))
+
+
+def test_show_bookmarks_toolbar_writes_userchrome_css(tmp_path):
+    # #242: browser.toolbars.bookmarks.visibility="always" doesn't reveal the
+    # toolbar on a fresh profile's first paint (the setToolbarVisibility guard
+    # early-returns against an absent collapsed attribute). A userChrome.css rule
+    # bypasses that guard, so it must be written to chrome/userChrome.css.
+    invisible_launch._show_bookmarks_toolbar(str(tmp_path))
+
+    css = (tmp_path / "chrome" / "userChrome.css").read_text(encoding="utf-8")
+    assert "#PersonalToolbar" in css
+    assert "visible" in css
+
+
+def test_show_bookmarks_toolbar_appends_to_existing_css(tmp_path):
+    # A user's own userChrome.css must be preserved, our rule appended once.
+    chrome = tmp_path / "chrome"
+    chrome.mkdir()
+    (chrome / "userChrome.css").write_text(
+        "#nav-bar { background: red; }\n", encoding="utf-8"
+    )
+
+    invisible_launch._show_bookmarks_toolbar(str(tmp_path))
+
+    css = (chrome / "userChrome.css").read_text(encoding="utf-8")
+    assert "#nav-bar { background: red; }" in css
+    assert "#PersonalToolbar" in css
+
+
+def test_show_bookmarks_toolbar_idempotent(tmp_path):
+    # Re-running must not duplicate the rule (launches repeat every open).
+    invisible_launch._show_bookmarks_toolbar(str(tmp_path))
+    invisible_launch._show_bookmarks_toolbar(str(tmp_path))
+
+    css = (tmp_path / "chrome" / "userChrome.css").read_text(encoding="utf-8")
+    assert css.count("#PersonalToolbar") == 1
+
+
+def test_profile_prefs_enable_legacy_stylesheets():
+    # The userChrome.css rule only loads when this pref is on (off since FF69).
+    prefs = invisible_launch._profile_prefs({})
+    assert prefs["toolkit.legacyUserProfileCustomizations.stylesheets"] is True
+
+
 def test_profile_prefs_close_without_confirmation():
     # Closing the window with the X must not pop a "close N tabs?" dialog, which
     # would leave the profile shown as running until dismissed.
@@ -1703,13 +1789,12 @@ def test_child_hidpi_uses_no_zoom_or_uidensity_hack(monkeypatch, tmp_path):
     assert "browser.uidensity" not in captured["extra_prefs"]
     prefs_js = (tmp_path / "prefs.js").read_text(encoding="utf-8")
     assert "browser.uidensity" not in prefs_js
-    # No content zoom and no chrome customization sheet reach the profile.
+    # No content zoom and no chrome customization sheet reach the profile. The
+    # legacy-stylesheets pref IS present (it's how the bookmarks-toolbar
+    # userChrome.css loads for profiles that have bookmarks) but no chrome/ dir
+    # is written for a bookmark-less profile — the pref alone is a no-op.
     assert not (tmp_path / "content-prefs.sqlite").exists()
     assert not (tmp_path / "chrome").exists()
-    assert (
-        "toolkit.legacyUserProfileCustomizations.stylesheets"
-        not in captured["extra_prefs"]
-    )
 
 
 def test_child_scrubs_stale_chrome_zoom_sheet(monkeypatch, tmp_path):
@@ -1843,10 +1928,8 @@ def test_child_no_chrome_scale_on_unity_dpr_host(monkeypatch, tmp_path):
     assert "browser.uidensity" not in captured["extra_prefs"]
     prefs_js = (tmp_path / "prefs.js").read_text(encoding="utf-8")
     assert "browser.uidensity" not in prefs_js
-    assert (
-        "toolkit.legacyUserProfileCustomizations.stylesheets"
-        not in captured["extra_prefs"]
-    )
+    # No chrome/ dir for a bookmark-less profile (the legacy-stylesheets pref is
+    # present but a no-op without a userChrome.css to load).
 
 
 def test_devpixelsperpx_matches_host_dpr_in_engine_prefs():

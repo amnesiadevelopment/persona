@@ -282,13 +282,54 @@ def test_configure_page_stretches_children_to_fill_window():
     from src.ui.theme.page import configure_page
 
     page = SimpleNamespace(
-        window=SimpleNamespace(),
+        window=SimpleNamespace(center=lambda: None),
         title=None, padding=None, spacing=None,
         theme_mode=None, bgcolor=None, theme=None,
         horizontal_alignment=None, vertical_alignment=None,
     )
     configure_page(page)
     assert page.horizontal_alignment == ft.CrossAxisAlignment.STRETCH
+
+
+def test_configure_page_centers_via_explicit_left_top(monkeypatch):
+    # The window opened wherever the OS placed it (often off-centre, top-left).
+    # configure_page must set explicit left/top from the real screen size —
+    # NOT page.window.center(), which centres the pre-resize default window.
+    from types import SimpleNamespace
+
+    import src.ui.theme.page as page_mod
+
+    monkeypatch.setattr(page_mod, "_screen_size", lambda: (2560, 1440))
+    centered = []
+    page = SimpleNamespace(
+        window=SimpleNamespace(center=lambda: centered.append(1)),
+        title=None, padding=None, spacing=None,
+        theme_mode=None, bgcolor=None, theme=None,
+        horizontal_alignment=None, vertical_alignment=None,
+    )
+    page_mod.configure_page(page)
+    # 1280x820 window centred on 2560x1440
+    assert page.window.left == (2560 - 1280) // 2
+    assert page.window.top == (1440 - 820) // 2
+    assert centered == []  # center() not used when the screen size is known
+
+
+def test_configure_page_falls_back_to_center_without_screen(monkeypatch):
+    # When the screen size can't be read, fall back to center().
+    from types import SimpleNamespace
+
+    import src.ui.theme.page as page_mod
+
+    monkeypatch.setattr(page_mod, "_screen_size", lambda: (0, 0))
+    centered = []
+    page = SimpleNamespace(
+        window=SimpleNamespace(center=lambda: centered.append(1)),
+        title=None, padding=None, spacing=None,
+        theme_mode=None, bgcolor=None, theme=None,
+        horizontal_alignment=None, vertical_alignment=None,
+    )
+    page_mod.configure_page(page)
+    assert centered == [1]
 
 
 def test_main_never_touches_window_visibility(monkeypatch):

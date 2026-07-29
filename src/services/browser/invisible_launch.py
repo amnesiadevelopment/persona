@@ -1005,6 +1005,13 @@ def _seed_window_size(
             w = min(w, max(320, int(sw * scale) - 16))
         if sh:
             h = min(h, max(240, int(sh * scale) - 96))
+    # Centre the window on the work area. Firefox otherwise opens each new window
+    # at its default top-left origin and cascades it ~16px down-right on every
+    # launch, so it drifts across the desktop instead of opening centred (Mac
+    # live-found: FF at the corner, "дурацкого размера"). Seeding screenX/screenY
+    # pins it centred from the first launch.
+    x = max(0, (aw - w) // 2)
+    y = max(0, (ah - h) // 2)
     try:
         os.makedirs(profile_dir, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
@@ -1014,12 +1021,61 @@ def _seed_window_size(
                         "main-window": {
                             "width": str(w),
                             "height": str(h),
+                            "screenX": str(x),
+                            "screenY": str(y),
                             "sizemode": "normal",
                         }
                     }
                 },
                 f,
             )
+    except OSError:
+        pass
+
+
+# Firefox's xul.css hides a collapsed toolbar with `[collapsed]{visibility:
+# collapse}` (no !important). visibility:visible alone doesn't reverse it under
+# -moz-box-collapse:legacy — the box stays zero-sized — so display:flex is needed
+# to re-establish the layout box (modern chrome is flex-based post XUL-layout).
+_BOOKMARKS_TOOLBAR_CSS = (
+    "#PersonalToolbar { visibility: visible !important; display: flex !important; }\n"
+)
+
+
+def _show_bookmarks_toolbar(profile_dir: str) -> None:
+    """Make the bookmarks toolbar visible on the profile's FIRST window.
+
+    browser.toolbars.bookmarks.visibility="always" alone does NOT show the
+    toolbar on a fresh profile's first paint. Firefox's setToolbarVisibility
+    (browser.js) early-returns when `toolbar.hasAttribute("collapsed") !=
+    isVisible`: a virgin profile's PersonalToolbar has NO collapsed attribute, so
+    with "always" (isVisible=true) the guard reads `false != true` → returns
+    before showing the bar. It only appears from the SECOND launch, once Firefox
+    persisted a collapsed attribute for the guard to act on. Seeding the
+    attribute either way in xulstore.json doesn't fix it reliably on the first
+    paint (live-proven both false and true fail there).
+
+    A userChrome.css rule bypasses that JS guard entirely — it's applied at paint
+    from the profile's own stylesheet, so the toolbar is visible on the very
+    first window. It needs toolkit.legacyUserProfileCustomizations.stylesheets
+    enabled (set in _profile_prefs). Written into chrome/userChrome.css; a zoom
+    sheet a user added is scrubbed separately (_scrub_chrome_zoom_css) and runs
+    before this, so it can't clobber the rule. (#242, root = the
+    setToolbarVisibility guard against an absent collapsed attribute.)"""
+    if not profile_dir:
+        return
+    chrome_dir = os.path.join(profile_dir, "chrome")
+    path = os.path.join(chrome_dir, "userChrome.css")
+    try:
+        existing = ""
+        if os.path.exists(path):
+            with open(path, encoding="utf-8", errors="replace") as f:
+                existing = f.read()
+        if "#PersonalToolbar" in existing:
+            return
+        os.makedirs(chrome_dir, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(existing + _BOOKMARKS_TOOLBAR_CSS)
     except OSError:
         pass
 
@@ -1170,6 +1226,49 @@ def _roots_ready(places_db: str) -> bool:
     return places_ready(places_db) or _wal_settled(places_db)
 
 
+# Prefs that make Firefox bake the dark theme and load userChrome.css during the
+# Linux visible-offscreen warmup, so the first visible launch is already correct.
+_WARMUP_CHROME_PREFS = {
+    "toolkit.legacyUserProfileCustomizations.stylesheets": True,
+    "browser.toolbars.bookmarks.visibility": "always",
+    "ui.systemUsesDarkTheme": 1,
+    "extensions.activeThemeID": "firefox-compact-dark@mozilla.org",
+    "browser.theme.content-theme": 0,
+    "browser.theme.toolbar-theme": 0,
+}
+
+# Far enough offscreen that the warmup window is invisible on any real display.
+_OFFSCREEN_XY = -32000
+
+
+def _seed_offscreen_window(profile_dir: str) -> None:
+    """Seed xulstore.json so the warmup window opens far offscreen (invisible).
+
+    The init's window state — this geometry included — is wiped before the
+    visible launch, so the real window still opens at a normal position."""
+    if not profile_dir:
+        return
+    path = os.path.join(profile_dir, "xulstore.json")
+    key = "chrome://browser/content/browser.xhtml"
+    try:
+        data = {}
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        if not isinstance(data, dict):
+            data = {}
+        win = data.setdefault(key, {})
+        mw = win.setdefault("main-window", {})
+        mw["screenX"] = str(_OFFSCREEN_XY)
+        mw["screenY"] = str(_OFFSCREEN_XY)
+        mw["sizemode"] = "normal"
+        os.makedirs(profile_dir, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except (OSError, ValueError):
+        pass
+
+
 def _init_places_db(
     profile_dir: str,
     seed: int,
@@ -1224,6 +1323,27 @@ def _init_places_db(
             "widget.windows.window_occlusion_tracking.enabled": False,
         })
 
+    # On Windows/macOS the init runs headless — the patched binary DWM-cloaks its
+    # window, and a cloaked chrome window still writes the profile's chrome state
+    # (the active-theme startup cache, the toolbar's persisted layout), so the
+    # first VISIBLE launch already shows the dark theme and the bookmarks toolbar.
+    # Linux has no cloak; a headless run has NO chrome window, so it never writes
+    # that state and the first visible launch opens light with a collapsed
+    # toolbar, only correcting itself on the second launch (#242). Run the Linux
+    # init as a VISIBLE window placed far offscreen instead: it writes the chrome
+    # state like the cloaked Windows run, but the user never sees it. The
+    # throwaway offscreen geometry is wiped with the rest of the init's window
+    # state below, so the real launch still opens centered/normal.
+    warmup_visible = _platform.IS_LINUX
+    if warmup_visible:
+        # Place the warmup window far offscreen so it's invisible, and write the
+        # chrome customizations it must bake in: the bookmarks-toolbar rule
+        # (userChrome.css) and the dark-theme prefs. Firefox writes its
+        # active-theme startup cache and toolbar layout from THIS run, so the
+        # first visible launch already reflects them.
+        _seed_offscreen_window(profile_dir)
+        _show_bookmarks_toolbar(profile_dir)
+
     places = os.path.join(profile_dir, "places.sqlite")
     deadline = time.monotonic() + timeout
 
@@ -1269,7 +1389,7 @@ def _init_places_db(
             try:
                 with InvisiblePlaywright(
                     seed=seed,
-                    headless=True,
+                    headless=not warmup_visible,
                     profile_dir=profile_dir,
                     # The SAME binary the visible launch uses — the profile
                     # this init creates must match the build that opens it.
@@ -1307,6 +1427,11 @@ def _init_places_db(
                     extra_prefs={
                         **_NO_STARTUP_FETCH,
                         "toolkit.shutdown.fastShutdownStage": 3,
+                        # On the Linux visible-offscreen warmup, bake the dark
+                        # theme and the userChrome.css load into the chrome state
+                        # this run persists, so the first visible launch is dark
+                        # with the bookmarks toolbar shown (#242).
+                        **(_WARMUP_CHROME_PREFS if warmup_visible else {}),
                     },
                 ):
                     entered.set()
@@ -1536,11 +1661,33 @@ def _activate_dark_theme(profile_dir: str) -> None:
             a["active"] = want_active
             a["userDisabled"] = not want_active
             changed = True
-    if not changed:
+    if changed:
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+        except OSError:
+            pass
+    # The headless places init wrote addonStartup.json.lz4 with the theme that
+    # was active THEN (default/light), and Firefox applies the theme from that
+    # startup cache — not from a freshly-written extensions.json — on the first
+    # visible launch. So the dark flip above lands in extensions.json but the
+    # window still opens light, and dark only shows from the SECOND launch once
+    # Firefox has rebuilt the cache (#242, live-proven: deleting this file made
+    # dark + the bookmarks toolbar appear on the first launch). Drop the stale
+    # cache so Firefox rebuilds it from the current extensions.json on the next
+    # start. Unconditional (not gated on `changed`): the cache can be stale even
+    # when extensions.json already reads dark (a prior launch flipped it after
+    # the cache was written).
+    _invalidate_addon_startup_cache(profile_dir)
+
+
+def _invalidate_addon_startup_cache(profile_dir: str) -> None:
+    """Delete Firefox's AddonManager startup cache so the next start rebuilds it
+    from the profile's current extensions.json (see _activate_dark_theme)."""
+    if not profile_dir:
         return
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f)
+        os.remove(os.path.join(profile_dir, "addonStartup.json.lz4"))
     except OSError:
         pass
 
@@ -1743,8 +1890,15 @@ def _profile_prefs(cfg: dict) -> dict:
             "browser.sessionstore.resume_from_crash": True,
             "browser.sessionstore.interval": 1500,
             # Always show the bookmarks toolbar so the shipped test bookmarks
-            # are visible (default only shows it on the new-tab page).
+            # are visible (default only shows it on the new-tab page). This pref
+            # alone doesn't reveal it on a FRESH profile's first paint (the
+            # setToolbarVisibility guard early-returns against an absent collapsed
+            # attribute, #242) — _show_bookmarks_toolbar writes a userChrome.css
+            # rule for the first launch, which needs the next pref to load.
             "browser.toolbars.bookmarks.visibility": "always",
+            # Load the profile's chrome/userChrome.css (off by default since
+            # FF69). Required for the bookmarks-toolbar first-paint rule above.
+            "toolkit.legacyUserProfileCustomizations.stylesheets": True,
             # Close the window immediately when the user hits the X — no
             # "close N tabs?" confirmation. The confirmation would leave the
             # window (and the profile's "running" state) up until dismissed.
@@ -2264,6 +2418,13 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
         kwargs["extra_args"] = extra_args
     if profile_dir:
         kwargs["profile_dir"] = profile_dir
+
+    # Show the bookmarks toolbar on the FIRST window when the profile has
+    # bookmarks to show. After _seed_window_size (so a seeded main-window size is
+    # preserved) and before the engine starts, since Firefox reads the toolbar's
+    # collapsed state from xulstore.json as it builds the window (#242).
+    if cfg.get("bookmarks"):
+        _show_bookmarks_toolbar(profile_dir)
 
     # Decouple window size from the spoofed screen. The engine builds both the
     # context `viewport` (window) and `screen` (fingerprint) from one p.screen

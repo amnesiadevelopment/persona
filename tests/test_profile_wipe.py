@@ -46,3 +46,52 @@ def test_wipe_persists_empty_profiles_file(mgr):
 
 def test_wipe_on_empty_is_a_noop_returning_zero(mgr):
     assert mgr.wipe_all_profiles() == 0
+
+
+def _capture_wipe_dialog():
+    """Open the wipe dialog against fake page/controls, returning the field, the
+    confirm button, and a list recording every page-level update() call."""
+    from types import SimpleNamespace
+
+    from src.ui.dialogs import wipe_confirm
+
+    page_updates = []
+    shown = {}
+
+    page = SimpleNamespace(
+        update=lambda: page_updates.append(1),
+        show_dialog=lambda d: shown.setdefault("dlg", d),
+        pop_dialog=lambda: shown.__setitem__("popped", True),
+    )
+    wipe_confirm.open_wipe_confirm_dialog(page, 3, on_confirm=lambda: None)
+    dlg = shown["dlg"]
+    field = dlg.content.controls[-1]
+    confirm_btn = dlg.actions[-1]
+    return field, confirm_btn, page_updates
+
+
+def test_wipe_confirm_typing_delete_enables_button():
+    field, confirm_btn, _ = _capture_wipe_dialog()
+    assert confirm_btn.disabled is True
+    field.value = "DELETE"
+    field.on_change(None)
+    assert confirm_btn.disabled is False
+
+
+def test_wipe_confirm_partial_input_keeps_button_disabled():
+    field, confirm_btn, _ = _capture_wipe_dialog()
+    field.value = "DEL"
+    field.on_change(None)
+    assert confirm_btn.disabled is True
+
+
+def test_wipe_confirm_on_change_does_not_update_whole_page():
+    # #(2.7.1 Mac): a page.update() per keystroke reset the IME mid-word, flipping
+    # a Cyrillic keyboard back after each Latin letter so DELETE was untypable.
+    # on_change must touch only the button, never the page.
+    field, confirm_btn, page_updates = _capture_wipe_dialog()
+    field.value = "D"
+    field.on_change(None)
+    field.value = "DE"
+    field.on_change(None)
+    assert page_updates == []

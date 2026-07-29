@@ -5,6 +5,17 @@ not a git log. When cutting a release, add the new version's highlights here.
 """
 
 CHANGELOG: dict[str, list[str]] = {
+    "2.7.2": [
+        "New Firefox profiles now open with their dark theme AND their bookmarks "
+        "toolbar on the very first launch, every time — no more waiting for a "
+        "second launch to see them.",
+        "The persona window now opens centred on your screen instead of tucked "
+        "into a corner.",
+        "Firefox profile windows open centred too, instead of drifting toward the "
+        "corner on each launch.",
+        "Typing DELETE to confirm a wipe-all no longer fights your keyboard "
+        "layout after each letter.",
+    ],
     "2.7.1": [
         "Firefox profiles now open with their dark theme and bookmarks on the "
         "very first launch, not only the second.",

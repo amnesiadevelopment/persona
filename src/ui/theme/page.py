@@ -1,8 +1,39 @@
 import os
+import sys
 
 import flet as ft
 
 from .colors import COLORS
+
+
+def _screen_size() -> "tuple[int, int]":
+    """The primary display's pixel size, or (0, 0) if it can't be read.
+
+    Used to open the window centred: page.window.center() is unreliable — it runs
+    before the native resize to the real window size applies, so it centres the
+    Flet-default window and the later resize pushes it off-centre (measured on
+    macOS). Explicit left/top from the real screen size avoids that race."""
+    try:
+        if sys.platform == "win32":
+            import ctypes
+
+            u = ctypes.windll.user32
+            return int(u.GetSystemMetrics(0)), int(u.GetSystemMetrics(1))
+        if sys.platform == "darwin":
+            import ctypes
+            import ctypes.util
+
+            cg = ctypes.cdll.LoadLibrary(ctypes.util.find_library("CoreGraphics"))
+            cg.CGMainDisplayID.restype = ctypes.c_uint32
+            cg.CGDisplayPixelsWide.restype = ctypes.c_size_t
+            cg.CGDisplayPixelsWide.argtypes = [ctypes.c_uint32]
+            cg.CGDisplayPixelsHigh.restype = ctypes.c_size_t
+            cg.CGDisplayPixelsHigh.argtypes = [ctypes.c_uint32]
+            did = cg.CGMainDisplayID()
+            return int(cg.CGDisplayPixelsWide(did)), int(cg.CGDisplayPixelsHigh(did))
+    except Exception:
+        pass
+    return (0, 0)
 
 
 def _engine_option(key: str, label: str) -> ft.dropdown.Option:
@@ -66,8 +97,20 @@ def build_engine_dropdown(value: str = "chromium") -> ft.Dropdown:
 
 def configure_page(page: ft.Page) -> None:
     page.title = "persona"
-    page.window.width, page.window.height = 1280, 820
+    win_w, win_h = 1280, 820
+    page.window.width, page.window.height = win_w, win_h
     page.window.min_width, page.window.min_height = 1024, 680
+    # Open centred. page.window.center() is unreliable — it runs before the
+    # native resize to win_w x win_h applies, so it centres the Flet-default
+    # window and the resize pushes it off-centre (measured on macOS). Set
+    # explicit left/top from the real screen size; fall back to center() only
+    # when the screen size can't be read.
+    screen_w, screen_h = _screen_size()
+    if screen_w and screen_h:
+        page.window.left = max(0, (screen_w - win_w) // 2)
+        page.window.top = max(0, (screen_h - win_h) // 2)
+    else:
+        page.window.center()
 
     from ...core.assets import asset_path
 
