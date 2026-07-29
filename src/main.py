@@ -194,6 +194,27 @@ def main() -> None:
         # full timeout. Hard-exit so the probe finishes in ~1-2s.
         os._exit(0)
 
+    # Single-instance guard: two persona windows share one ~/.persona (profiles,
+    # settings, engine caches, the MCP port) and race each other into corrupt
+    # state, so only one GUI may run. Runs AFTER the selftest gate — the update
+    # probe is a short-lived separate process that must never be blocked. A brief
+    # retry covers the self-update handoff, where the exiting instance may still
+    # hold the lock for a moment as the new one starts.
+    import time as _time
+
+    from src.core import single_instance as _si
+
+    _lock = None
+    for _try in range(6):
+        _lock = _si.acquire()
+        if _lock is not None:
+            break
+        _time.sleep(0.5)
+    if _lock is None:
+        # Another persona is already running. Don't open a second window.
+        print("persona is already running.", flush=True)
+        os._exit(0)
+
     # After the selftest gate: the updater's probe runs the STAGED AppImage,
     # whose $APPIMAGE must not become the launcher's Exec.
     from src.core.desktop_entry import install_desktop_entry

@@ -259,10 +259,16 @@ def _spawn_invisible(profile: Profile, profile_dir: str):
     # Locale + timezone follow the proxy's geo so they match the exit IP. Always
     # resolve to a CONCRETE zone — never leave it empty: invisible treats an
     # empty timezone as "auto" and blocks the launch ~40s on an egress-IP lookup
-    # (direct, over Tor). A direct profile uses the host zone; that lookup is the
-    # single biggest hit to open time.
+    # (direct, over Tor).
+    #
+    # With NO proxy the language is forced to en-US (persona never leaks the host
+    # locale, e.g. uk-UA — #218), so the timezone must AGREE with en-US, not the
+    # host zone: a fresh CreepJS run on a Kyiv host showed language=en-US paired
+    # with timezone=Europe/Kyiv, and language⊥timezone is a classic inconsistency
+    # a detector flags. Pin a US zone so the direct identity reads as one coherent
+    # US-English user AND the host location stays hidden.
     lang = _locale_for(proxy.country_code) if proxy else "en-US"
-    tz = _proxy_timezone(proxy) if proxy else _host_timezone()
+    tz = _proxy_timezone(proxy) if proxy else _timezone_for("US")
 
     if _platform.supports_linux_desktop_integration():
         write_window_entry(profile.name, icon="firefox")
@@ -563,8 +569,12 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
     if scale != 1.0:
         args.append(f"--force-device-scale-factor={scale:g}")
 
-    if proxy:
-        args.append(f"--timezone={_proxy_timezone(proxy)}")
+    # Always pin a concrete timezone. With a proxy it follows the exit geo; with
+    # NO proxy it must AGREE with the forced en-US language (lang above), not leak
+    # the host zone — CreepJS on a Kyiv host showed en-US paired with Europe/Kyiv,
+    # a language⊥timezone tell. A US zone keeps the direct identity coherent and
+    # hides the host location (matches the Firefox path).
+    args.append(f"--timezone={_proxy_timezone(proxy) if proxy else _timezone_for('US')}")
 
     if getattr(profile, "ai_control", False):
         args.append(f"--remote-debugging-port={cdp_port_for(profile.name)}")

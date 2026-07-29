@@ -1244,6 +1244,10 @@ def _init_places_db(
         if log:
             log(f"PLACES_INIT {msg} t={time.monotonic() - _t0:.1f}s")
 
+    # Bound before the loop so the post-loop return can read it even if every
+    # attempt wedged before creating its own (the loop var would be unbound).
+    roots_confirmed = threading.Event()
+
     for _attempt in range(3):
         if stopped() or time.monotonic() >= deadline:
             break
@@ -1251,8 +1255,17 @@ def _init_places_db(
         entered = threading.Event()
         ready = threading.Event()
         done = threading.Event()
+        # roots_confirmed (bound above the loop) is set ONLY when roots_ready
+        # actually returned True while Firefox was live — distinct from `ready`,
+        # which also fires in the finally on any exit. The post-teardown
+        # places_ready() re-check can read False when the roots live in an
+        # un-checkpointed -wal the teardown left behind (the db IS seedable —
+        # sync_places_bookmarks succeeds — but a fresh connection sees no toolbar
+        # root), so trusting the live confirmation avoids a false
+        # BOOKMARK_SEED_FAILED (#242).
 
-        def init(entered=entered, ready=ready, done=done) -> None:
+        def init(entered=entered, ready=ready, done=done,
+                 roots_confirmed=roots_confirmed) -> None:
             try:
                 with InvisiblePlaywright(
                     seed=seed,
@@ -1272,6 +1285,17 @@ def _init_places_db(
                     # (its session state is wiped below), so the zone itself
                     # doesn't matter.
                     timezone="UTC",
+                    # The newer engine ALSO discovers the LOCALE from the egress
+                    # IP at __enter__ (a separate geo lookup: "could not resolve
+                    # the session locale with no proxy"). With no direct DNS
+                    # (Whonix routes only Tor) that resolve of api.ipify.org hangs
+                    # its 15-20s budget and BLOCKS the enter — every headless
+                    # places-init attempt then enter-wedges, the seed never lands,
+                    # and a fresh Firefox profile opens with no dark theme and no
+                    # bookmarks until the 2nd launch (#242). A concrete locale
+                    # short-circuits that lookup too; this run is throwaway and
+                    # the visible launch sets the real locale.
+                    locale="en-US",
                     # Skip Firefox's startup remote-settings sync — over Tor
                     # that fetch stalls this throwaway run for minutes. The
                     # fast-shutdown stage spares the polite close below from
@@ -1292,6 +1316,8 @@ def _init_places_db(
                         and not roots_ready(places)
                     ):
                         time.sleep(0.5)
+                    if roots_ready(places):
+                        roots_confirmed.set()
                     ready.set()
             except Exception:
                 pass
@@ -1393,7 +1419,10 @@ def _init_places_db(
                 os.remove(path)
         except OSError:
             pass
-    return places_ready(places)
+    # Trust the LIVE confirmation over a post-teardown re-check: the roots were
+    # verified present while Firefox ran; a False from places_ready() now only
+    # means the -wal isn't checkpointed yet, not that seeding will fail (#242).
+    return roots_confirmed.is_set() or places_ready(places)
 
 
 def _upsert_prefs_js(profile_dir: str, prefs: dict) -> None:

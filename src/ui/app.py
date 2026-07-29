@@ -612,6 +612,7 @@ class App:
             on_new=lambda _: self.h.open_add_dialog(),
             on_import=self.h.on_import,
             on_export=lambda _: self.h.on_export_open(),
+            on_wipe=lambda _: self._on_wipe_all(),
         )
         content = build_content_area(
             r.content_subtitle,
@@ -2139,6 +2140,21 @@ class App:
     def _change_page(self, delta: int) -> None:
         self.state.current_page += delta
         self._refresh_profiles()
+
+    def _on_wipe_all(self) -> None:
+        from .dialogs.wipe_confirm import open_wipe_confirm_dialog
+
+        count = len(self.pm.profiles)
+        if not count:
+            return
+
+        def _do_wipe() -> None:
+            self.pm.wipe_all_profiles()
+            self.state.current_page = 1
+            self._refresh_profiles()
+            self._update_stats()
+
+        open_wipe_confirm_dialog(self.page, count, _do_wipe)
 
     def _profiles_subtitle(self) -> str:
         r = self.bl.running_count()

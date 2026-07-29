@@ -259,6 +259,20 @@ class ProfileManager:
             return True
         return False
 
+    def wipe_all_profiles(self) -> int:
+        """Delete EVERY profile and its data in one pass — a panic wipe for an
+        instant clean-out. Irreversible, like delete_profile: each profile's data
+        dir is rmtree'd and profiles.json is emptied. Returns how many profiles
+        were removed. The UI gates this behind a typed confirmation."""
+        names = list(self.profiles.keys())
+        for name in names:
+            shutil.rmtree(self._data_path(name), ignore_errors=True)
+        self.profiles.clear()
+        self.save_profiles()
+        if names:
+            logger.info("Wiped all %d profiles", len(names))
+        return len(names)
+
     def list_profiles(self) -> list[Profile]:
         return list(self.profiles.values())
 

@@ -12,6 +12,7 @@ def build_top_bar(
     on_new: Callable,
     on_import: Callable,
     on_export: Callable,
+    on_wipe: Callable,
 ) -> ft.Container:
     return ft.Container(
         padding=ft.Padding.only(bottom=20),
@@ -31,6 +32,18 @@ def build_top_bar(
                             font_family=MONO,
                         ),
                         count_text,
+                        # Panic wipe: delete every profile at once for an instant
+                        # clean-out. Irreversible, so the handler gates it behind a
+                        # typed confirmation. Styled danger (red) and set apart from
+                        # the count so it can't be hit by reflex.
+                        ft.TextButton(
+                            "[ wipe all ]",
+                            on_click=on_wipe,
+                            style=ft.ButtonStyle(
+                                color=COLORS["error"],
+                                text_style=ft.TextStyle(font_family=MONO, size=12),
+                            ),
+                        ),
                     ],
                 ),
                 ft.Row(

@@ -597,9 +597,12 @@ def open_profile_dialog(
                         controls=proxy_row_controls,
                     ),
                     proxy_hint,
-                    ft.Row(controls=[os_dropdown]),
+                    # Engine BEFORE OS: the engine decides whether OS even matters
+                    # (Firefox is Windows-only, so its OS spoof is a no-op), so the
+                    # operator picks the engine first and the OS field follows.
                     ft.Row(controls=[engine_dropdown]),
                     engine_hint,
+                    ft.Row(controls=[os_dropdown]),
                     resolution_section,
                     search_section,
                     ft.Divider(height=10, color=COLORS["border"]),

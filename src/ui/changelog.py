@@ -5,6 +5,18 @@ not a git log. When cutting a release, add the new version's highlights here.
 """
 
 CHANGELOG: dict[str, list[str]] = {
+    "2.7.1": [
+        "Firefox profiles now open with their dark theme and bookmarks on the "
+        "very first launch, not only the second.",
+        "A direct (no-proxy) profile no longer pairs a US language with your "
+        "home timezone — the timezone matches the language, so nothing looks "
+        "inconsistent to a scanner.",
+        "Only one persona window can run at a time — a second launch just brings "
+        "focus to the running one instead of fighting over your data.",
+        "New “wipe all” button by the profile count instantly clears every "
+        "profile (with a typed confirmation, since it can't be undone).",
+        "The profile dialog now asks for the engine before the OS.",
+    ],
     "2.7.0": [
         "Google Sheets works fully through a proxy in Chrome profiles again — the "
         "date-cell calendar picker and custom-currency dialog open, and the sheet "

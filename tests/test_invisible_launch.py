@@ -4333,3 +4333,97 @@ def test_proc_cmdline_ps_failure_is_no_verdict(monkeypatch):
 
     monkeypatch.setattr(invisible_launch.subprocess, "check_output", boom)
     assert invisible_launch._proc_cmdline(999999) is None
+
+
+def test_init_places_db_passes_locale_to_skip_geo_lookup(monkeypatch, tmp_path):
+    # #242: the newer engine resolves the session LOCALE from the egress IP at
+    # __enter__; with no direct DNS (Whonix) that lookup hangs and wedges every
+    # headless places-init, so the seed never lands and a fresh Firefox profile
+    # opens with no dark theme / no bookmarks. Passing a concrete locale short-
+    # circuits it. Assert the init hands the engine an explicit locale.
+    import sys
+    import types
+
+    captured = {}
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def __enter__(self):
+            # pretend roots landed the instant Firefox came up
+            import sqlite3
+            db = str(tmp_path / "places.sqlite")
+            conn = sqlite3.connect(db)
+            conn.execute("CREATE TABLE moz_bookmarks (guid TEXT)")
+            conn.execute("INSERT INTO moz_bookmarks VALUES ('toolbar_____')")
+            conn.commit()
+            conn.close()
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(invisible_launch, "_binary_path_override", lambda: None)
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox",
+        lambda d, known_pids=None, rescan=True: None,
+    )
+    monkeypatch.setattr(invisible_launch, "_wait_profile_released", lambda d, **k: True)
+    monkeypatch.setattr(invisible_launch, "_profile_firefox_pids", lambda d: {1})
+
+    ok = invisible_launch._init_places_db(str(tmp_path), seed=1, log=None)
+    assert ok is True
+    assert captured.get("locale") == "en-US", (
+        f"init must pass an explicit locale to skip the geo lookup; got {captured!r}"
+    )
+
+
+def test_init_places_db_trusts_live_roots_over_stale_wal_recheck(monkeypatch, tmp_path):
+    # #242: roots are confirmed present WHILE Firefox runs, but the post-teardown
+    # places_ready() re-check can read False when the -wal isn't checkpointed yet
+    # (the db is still seedable). _init_places_db must return True on the live
+    # confirmation rather than emit a false BOOKMARK_SEED_FAILED.
+    import sys
+    import types
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(invisible_launch, "_binary_path_override", lambda: None)
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox",
+        lambda d, known_pids=None, rescan=True: None,
+    )
+    monkeypatch.setattr(invisible_launch, "_wait_profile_released", lambda d, **k: True)
+    monkeypatch.setattr(invisible_launch, "_profile_firefox_pids", lambda d: {1})
+    # roots_ready reports True DURING the run (live confirmation) but the final
+    # post-teardown check would be False — simulate by flipping after first call.
+    calls = {"n": 0}
+
+    def flaky_roots_ready(db):
+        calls["n"] += 1
+        return calls["n"] <= 2  # True while live, False on the post-teardown recheck
+
+    monkeypatch.setattr(invisible_launch, "_roots_ready", flaky_roots_ready)
+    monkeypatch.setattr(
+        invisible_launch, "places_ready", lambda db: False, raising=False
+    )
+    import src.services.browser.firefox_bookmarks as fb
+    monkeypatch.setattr(fb, "places_ready", lambda db: False)
+
+    ok = invisible_launch._init_places_db(str(tmp_path), seed=1, log=None)
+    assert ok is True, "must trust the live roots confirmation over a stale WAL recheck"

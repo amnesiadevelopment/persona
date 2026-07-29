@@ -368,3 +368,30 @@ def test_effective_engine_camoufox_maps_to_firefox():
 def test_effective_engine_default_is_chromium():
     p = Profile(name="x")
     assert process.effective_engine(p) == "chromium"
+
+
+def test_chromium_no_proxy_timezone_matches_en_us_language(monkeypatch, tmp_path):
+    # Anti-detect consistency: with no proxy the language is forced en-US (never
+    # leak the host locale), so the timezone must AGREE with en-US — a US zone,
+    # NOT the host zone. CreepJS on a Kyiv host flagged en-US paired with
+    # Europe/Kyiv (language⊥timezone). Assert a direct chromium profile pins a US
+    # timezone so the identity is a coherent US-English user.
+    captured = {}
+
+    class _FakePopen:
+        def __init__(self, args, **kwargs):
+            captured["args"] = args
+
+    monkeypatch.setattr(process, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(process, "ProxyStore", _Store)
+    monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
+    monkeypatch.setattr(process, "_host_timezone", lambda: "Europe/Kyiv")
+    monkeypatch.setattr(process.subprocess, "Popen", _FakePopen)
+    process.spawn_browser(Profile(name="direct-chromium"))
+    tz = next(
+        (a for a in captured["args"] if a.startswith("--timezone=")), ""
+    )
+    assert tz == "--timezone=America/New_York", (
+        f"no-proxy chromium must pin a US tz to match en-US, got {tz!r}"
+    )
+    assert "Europe/Kyiv" not in tz, "host timezone must not leak on a direct profile"
