@@ -30,7 +30,7 @@ dependencies = [
     # so the version carrying the release-pin check (invisible_core._pin) lands in
     # the build. A git pin here mismatched playwright's == pin; the PyPI == pin keeps
     # them in lockstep and lets `pip check` catch a drift before release.
-    "invisible_core==18.8.0",
+    "invisible_core==18.9.0",
 ]
 
 [tool.pytest.ini_options]
