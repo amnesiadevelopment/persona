@@ -79,7 +79,14 @@ exclude = [
 show = true
 message = "Preparing persona…"
 
-# Spinner + message while the Python session boots and connects.
+# The Python-session spinner is intentionally OFF. The client shows its
+# startup_screen in a DEFAULT-sized window at the OS's default (corner) position,
+# BEFORE Python runs configure_page — so the spinner sat off-centre in a 1920x1080
+# window jammed in the top-left, then the window jumped to its centred 1280x820
+# once Python took over (visible, jarring). With it off, the client holds the
+# boot_screen until Python's first frame — persona's own centred fingerprint
+# splash — with no off-centre spinner and no window jump. (hide_window_on_start
+# would also fix it but is banned here: a hidden window can become an invisible
+# zombie on any startup failure.)
 [tool.flet.app.startup_screen]
-show = true
-message = "Starting persona…"
+show = false

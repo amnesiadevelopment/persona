@@ -5,6 +5,11 @@ not a git log. When cutting a release, add the new version's highlights here.
 """
 
 CHANGELOG: dict[str, list[str]] = {
+    "2.7.4": [
+        "The loading spinner at startup no longer flashes off in a corner before "
+        "the window jumps to the centre — persona now settles centred from the "
+        "first frame you see.",
+    ],
     "2.7.3": [
         "Update checks work again behind a shared or mobile network — persona no "
         "longer silently reports \"up to date\" when a new version is actually "
