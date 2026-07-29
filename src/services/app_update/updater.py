@@ -20,7 +20,7 @@ import time
 from ..engine.updater import is_newer
 from ...core import platform as _platform
 
-APP_VERSION = "2.7.2"
+APP_VERSION = "2.7.3"
 APP_REPO = "amnesiadevelopment/persona"
 
 
@@ -185,6 +185,63 @@ def releases_api() -> str:
     return f"https://api.github.com/repos/{APP_REPO}/releases/latest"
 
 
+def releases_latest_url() -> str:
+    """The PUBLIC releases/latest page (not the API). It 302-redirects to
+    releases/tag/<tag>, so the tag is readable from the redirect Location with no
+    authentication and — crucially — NO rate limit. The API endpoint is limited
+    to 60 unauthenticated requests/hour per IP, so behind a shared NAT (mobile
+    carrier, office) that budget is quickly exhausted and every check then failed
+    the `curl -f` and was silently reported as 'up to date' — the update was
+    invisible and unreachable. The redirect has no such cap."""
+    if not APP_REPO:
+        return ""
+    return f"https://github.com/{APP_REPO}/releases/latest"
+
+
+def _tag_from_location(headers: str) -> str:
+    """Parse the release tag out of a releases/latest redirect's headers: the
+    Location points at .../releases/tag/<tag>."""
+    for line in (headers or "").splitlines():
+        if line.lower().startswith("location:"):
+            loc = line.split(":", 1)[1].strip()
+            marker = "/releases/tag/"
+            i = loc.find(marker)
+            if i != -1:
+                return loc[i + len(marker):].strip().strip("/")
+    return ""
+
+
+def latest_tag(timeout: int = 30) -> str:
+    """The newest release tag, via the rate-limit-free releases/latest redirect.
+    '' on any failure (dead network / unexpected response)."""
+    url = releases_latest_url()
+    if not url:
+        return ""
+    try:
+        # -I: HEAD; no -L so we READ the redirect instead of following it. -f is
+        # deliberately omitted — a 302 is the SUCCESS case here, and -f would
+        # treat some redirects as errors.
+        out = subprocess.run(
+            ["curl", "-sI", "--connect-timeout", "15", "--max-time", str(timeout), url],
+            capture_output=True, timeout=timeout + 5,
+            **_platform.no_window_kwargs(),
+        )
+        if out.returncode != 0:
+            return ""
+        return _tag_from_location(out.stdout.decode("utf-8", "replace"))
+    except Exception:
+        return ""
+
+
+def asset_download_url(tag: str) -> str:
+    """The deterministic download URL for this OS's asset in a release. The asset
+    filename is fixed per platform (asset_name), so we don't need the API's asset
+    list to build it."""
+    if not tag or not APP_REPO:
+        return ""
+    return f"https://github.com/{APP_REPO}/releases/download/{tag}/{asset_name()}"
+
+
 def update_available(latest: str, current: str = APP_VERSION) -> bool:
     return is_newer(latest, current)
 
@@ -245,28 +302,25 @@ def can_self_update() -> bool:
 
 def check_for_update(timeout: int = 30) -> tuple[str, str, int]:
     """Return (tag, download_url, size) when a newer release exists, else
-    ('', '', 0). Uses curl with a short connect timeout so the check fails fast
-    on a dead Tor circuit instead of hanging (and then silently missing the
-    update)."""
-    api = releases_api()
-    if not api:
+    ('', '', 0). Resolves the latest tag via the releases/latest REDIRECT, not the
+    GitHub API — the API's 60/hour unauthenticated cap made checks 403 behind a
+    shared NAT, and the resulting empty body read as 'up to date' so the update
+    was silently unreachable (live-reproduced: the host at 0/60 got a 403 while a
+    new release was published). The redirect has no rate limit. The asset URL is
+    deterministic per platform, so no asset-list API call is needed; size comes
+    from a HEAD on that URL (0 when unknown — download_update falls back to
+    remote_size). curl uses a short connect timeout so a dead circuit fails fast
+    instead of hanging and silently missing the update."""
+    tag = latest_tag(timeout=timeout)
+    if not tag:
         return "", "", 0
-    body = _curl_get(
-        api, headers={"Accept": "application/vnd.github+json"}, max_time=timeout
-    )
-    if not body:
+    if not update_available(tag):
         return "", "", 0
-    try:
-        import json
-
-        data = json.loads(body)
-        tag = data.get("tag_name", "")
-        if not update_available(tag):
-            return "", "", 0
-        url, size = pick_asset(data.get("assets", []))
-        return tag, url, size
-    except Exception:
+    url = asset_download_url(tag)
+    if not url:
         return "", "", 0
+    size = remote_size(url, timeout=timeout)
+    return tag, url, size
 
 
 def download_update(
@@ -964,22 +1018,16 @@ def _try_windows_fast_update(say) -> bool:
         return False
     if not fu.can_fast_update():
         return False
-    api = releases_api()
-    if not api:
+    # Resolve the tag via the rate-limit-free redirect (not the API — same 403
+    # trap that silently broke the version check behind a shared NAT). The
+    # manifest/app.zip asset names are fixed, so their URLs are deterministic —
+    # no asset-list API call needed.
+    tag = latest_tag()
+    if not tag or not update_available(tag):
         return False
-    body = _curl_get(api, headers={"Accept": "application/vnd.github+json"})
-    if not body:
-        return False
-    try:
-        import json
-
-        data = json.loads(body)
-    except Exception:
-        return False
-    assets = data.get("assets", []) or []
-    manifest_url, app_zip_url = fu.manifest_and_appzip_urls(assets)
-    if not manifest_url or not app_zip_url:
-        return False
+    base = f"https://github.com/{APP_REPO}/releases/download/{tag}"
+    manifest_url = f"{base}/{fu.MANIFEST_ASSET}"
+    app_zip_url = f"{base}/{fu.APP_ZIP_ASSET}"
     manifest = fu.parse_manifest(_curl_get(manifest_url))
     if not fu.should_fast_update(manifest, APP_VERSION):
         return False

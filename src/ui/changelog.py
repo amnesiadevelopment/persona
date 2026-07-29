@@ -5,6 +5,13 @@ not a git log. When cutting a release, add the new version's highlights here.
 """
 
 CHANGELOG: dict[str, list[str]] = {
+    "2.7.3": [
+        "Update checks work again behind a shared or mobile network — persona no "
+        "longer silently reports \"up to date\" when a new version is actually "
+        "available (it was hitting GitHub's anonymous request limit).",
+        "The window now opens truly centred on any screen, including 4K and "
+        "high-DPI monitors and multi-monitor setups.",
+    ],
     "2.7.2": [
         "New Firefox profiles now open with their dark theme AND their bookmarks "
         "toolbar on the very first launch, every time — no more waiting for a "

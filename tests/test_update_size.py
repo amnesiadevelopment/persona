@@ -21,14 +21,31 @@ def test_pick_asset_returns_url_and_size(monkeypatch):
 
 def test_check_for_update_propagates_size(monkeypatch):
     _force_linux(monkeypatch)
-    body = (
-        '{"tag_name": "v9.9.9", "assets": '
-        '[{"name": "persona-x86_64.AppImage", "browser_download_url": "u", '
-        '"size": 12345}]}'
-    )
-    monkeypatch.setattr(au, "_curl_get", lambda *a, **k: body)
+    # The tag comes from the rate-limit-free releases/latest redirect, the asset
+    # URL is deterministic, and the size from a HEAD on it.
+    monkeypatch.setattr(au, "APP_REPO", "amnesiadevelopment/persona")
+    monkeypatch.setattr(au, "latest_tag", lambda timeout=30: "v9.9.9")
     monkeypatch.setattr(au, "update_available", lambda tag: True)
-    assert au.check_for_update() == ("v9.9.9", "u", 12345)
+    monkeypatch.setattr(au, "remote_size", lambda url, timeout=30: 12345)
+    tag, url, size = au.check_for_update()
+    assert tag == "v9.9.9"
+    assert url.endswith("/releases/download/v9.9.9/persona-x86_64.AppImage")
+    assert size == 12345
+
+
+def test_latest_tag_parses_redirect_location():
+    # The releases/latest page 302s to /releases/tag/<tag>; the tag is read from
+    # the Location header (no API, no rate limit).
+    headers = (
+        "HTTP/2 302\r\n"
+        "location: https://github.com/amnesiadevelopment/persona/releases/tag/v2.7.2\r\n"
+        "content-length: 0\r\n"
+    )
+    assert au._tag_from_location(headers) == "v2.7.2"
+
+
+def test_latest_tag_empty_when_no_location():
+    assert au._tag_from_location("HTTP/2 200\r\ncontent-type: text/html\r\n") == ""
 
 
 def test_download_uses_api_size_not_head(monkeypatch, tmp_path):

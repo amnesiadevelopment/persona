@@ -114,23 +114,17 @@ def test_try_windows_fast_update_declines_when_requires_full(monkeypatch):
     # updater's decision gate: manifest requires_full_install → fall back to the
     # full installer (return False), never touch the code-only path.
     from src.services.app_update import updater as au
-
-    monkeypatch.setattr(au, "_curl_get", lambda *a, **k: '{"assets":['
-        '{"name":"update-manifest.json","browser_download_url":"m"},'
-        '{"name":"app.zip","browser_download_url":"z"}]}')
     import src.services.app_update.fast_update as fu2
+
     monkeypatch.setattr(fu2, "can_fast_update", lambda: True)
-    # the manifest fetch (2nd _curl_get) returns requires_full_install
-    calls = {"n": 0}
-    def curl(url, **k):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return ('{"assets":['
-                    '{"name":"update-manifest.json","browser_download_url":"m"},'
-                    '{"name":"app.zip","browser_download_url":"z"}]}')
-        return '{"version":"9.9.9","requires_full_install":true,"app_zip_sha256":"x"}'
-    monkeypatch.setattr(au, "_curl_get", curl)
-    monkeypatch.setattr(au, "releases_api", lambda: "https://api")
+    monkeypatch.setattr(au, "APP_REPO", "amnesiadevelopment/persona")
+    monkeypatch.setattr(au, "latest_tag", lambda timeout=30: "v9.9.9")
+    monkeypatch.setattr(au, "update_available", lambda tag: True)
+    # the manifest (fetched via _curl_get) says requires_full_install
+    monkeypatch.setattr(
+        au, "_curl_get",
+        lambda *a, **k: '{"version":"9.9.9","requires_full_install":true,"app_zip_sha256":"x"}',
+    )
     assert au._try_windows_fast_update(lambda *a: None) is False
 
 
@@ -139,16 +133,13 @@ def test_try_windows_fast_update_takes_fast_path(monkeypatch):
     import src.services.app_update.fast_update as fu2
 
     monkeypatch.setattr(fu2, "can_fast_update", lambda: True)
-    monkeypatch.setattr(au, "releases_api", lambda: "https://api")
-    calls = {"n": 0}
-    def curl(url, **k):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return ('{"assets":['
-                    '{"name":"update-manifest.json","browser_download_url":"m"},'
-                    '{"name":"app.zip","browser_download_url":"z"}]}')
-        return '{"version":"9.9.9","requires_full_install":false,"app_zip_sha256":"deadbeef"}'
-    monkeypatch.setattr(au, "_curl_get", curl)
+    monkeypatch.setattr(au, "APP_REPO", "amnesiadevelopment/persona")
+    monkeypatch.setattr(au, "latest_tag", lambda timeout=30: "v9.9.9")
+    monkeypatch.setattr(au, "update_available", lambda tag: True)
+    monkeypatch.setattr(
+        au, "_curl_get",
+        lambda *a, **k: '{"version":"9.9.9","requires_full_install":false,"app_zip_sha256":"deadbeef"}',
+    )
     applied = {}
     def fake_apply(url, sha, log=None):
         applied["url"] = url
@@ -156,7 +147,8 @@ def test_try_windows_fast_update_takes_fast_path(monkeypatch):
         return True  # pretend it swapped + exited
     monkeypatch.setattr(fu2, "apply_code_only_and_restart", fake_apply)
     assert au._try_windows_fast_update(lambda *a: None) is True
-    assert applied["url"] == "z"
+    # deterministic app.zip URL for the resolved tag
+    assert applied["url"].endswith("/releases/download/v9.9.9/app.zip")
     assert applied["sha"] == "deadbeef"
 
 

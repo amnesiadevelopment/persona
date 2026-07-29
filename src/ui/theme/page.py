@@ -6,19 +6,40 @@ import flet as ft
 from .colors import COLORS
 
 
-def _screen_size() -> "tuple[int, int]":
-    """The primary display's pixel size, or (0, 0) if it can't be read.
+def _primary_work_rect() -> "tuple[int, int, int, int]":
+    """The PRIMARY display's work-area rectangle (x, y, width, height) in the
+    LOGICAL (virtual/device-independent) pixel space Flet positions windows in,
+    or (0, 0, 0, 0) if it can't be read.
 
-    Used to open the window centred: page.window.center() is unreliable — it runs
-    before the native resize to the real window size applies, so it centres the
-    Flet-default window and the later resize pushes it off-centre (measured on
-    macOS). Explicit left/top from the real screen size avoids that race."""
+    Flet's page.window.left/top/width/height are LOGICAL pixels — window_manager
+    multiplies by the display's devicePixelRatio internally before talking to the
+    OS. So the centre must be computed in logical space too. On Windows the Flet
+    process is per-monitor DPI-aware, so a raw SPI_GETWORKAREA returns PHYSICAL
+    pixels (3840x2160 for a 4K panel at 150%); feeding those to left/top
+    double-scales and throws the window off-centre (Mars's live 4K@150% report).
+    Divide the physical rect by the monitor's scale to get the logical rect Flet
+    expects. Using the work-area rect (not bare size) keeps its origin + excludes
+    the taskbar, so the window centres on the PRIMARY display even with a second
+    monitor at a non-zero origin."""
     try:
         if sys.platform == "win32":
             import ctypes
+            from ctypes import wintypes
 
-            u = ctypes.windll.user32
-            return int(u.GetSystemMetrics(0)), int(u.GetSystemMetrics(1))
+            class RECT(ctypes.Structure):
+                _fields_ = [("left", wintypes.LONG), ("top", wintypes.LONG),
+                            ("right", wintypes.LONG), ("bottom", wintypes.LONG)]
+
+            r = RECT()
+            SPI_GETWORKAREA = 0x0030
+            if not ctypes.windll.user32.SystemParametersInfoW(
+                SPI_GETWORKAREA, 0, ctypes.byref(r), 0
+            ):
+                return (0, 0, 0, 0)
+            scale = _windows_scale()
+            return (int(r.left / scale), int(r.top / scale),
+                    int((r.right - r.left) / scale),
+                    int((r.bottom - r.top) / scale))
         if sys.platform == "darwin":
             import ctypes
             import ctypes.util
@@ -30,10 +51,30 @@ def _screen_size() -> "tuple[int, int]":
             cg.CGDisplayPixelsHigh.restype = ctypes.c_size_t
             cg.CGDisplayPixelsHigh.argtypes = [ctypes.c_uint32]
             did = cg.CGMainDisplayID()
-            return int(cg.CGDisplayPixelsWide(did)), int(cg.CGDisplayPixelsHigh(did))
+            # macOS CGDisplayPixelsWide/High already report POINTS (logical),
+            # and the main display is the origin of the global space.
+            return (0, 0,
+                    int(cg.CGDisplayPixelsWide(did)),
+                    int(cg.CGDisplayPixelsHigh(did)))
     except Exception:
         pass
-    return (0, 0)
+    return (0, 0, 0, 0)
+
+
+def _windows_scale() -> float:
+    """The primary monitor's display scale (1.0 at 100%, 1.5 at 150%, 2.0 at
+    200%). 1.0 on any failure so the caller falls back to unscaled coordinates."""
+    try:
+        import ctypes
+
+        # GetDpiForSystem needs a DPI-aware process to report the real value; the
+        # Flet host already is. 96 DPI == 100%.
+        dpi = ctypes.windll.user32.GetDpiForSystem()
+        if dpi:
+            return dpi / 96.0
+    except Exception:
+        pass
+    return 1.0
 
 
 def _engine_option(key: str, label: str) -> ft.dropdown.Option:
@@ -100,15 +141,15 @@ def configure_page(page: ft.Page) -> None:
     win_w, win_h = 1280, 820
     page.window.width, page.window.height = win_w, win_h
     page.window.min_width, page.window.min_height = 1024, 680
-    # Open centred. page.window.center() is unreliable — it runs before the
-    # native resize to win_w x win_h applies, so it centres the Flet-default
-    # window and the resize pushes it off-centre (measured on macOS). Set
-    # explicit left/top from the real screen size; fall back to center() only
-    # when the screen size can't be read.
-    screen_w, screen_h = _screen_size()
-    if screen_w and screen_h:
-        page.window.left = max(0, (screen_w - win_w) // 2)
-        page.window.top = max(0, (screen_h - win_h) // 2)
+    # Open centred on the PRIMARY monitor. page.window.center() is unreliable (it
+    # centres the pre-resize default window — measured on macOS), and centring by
+    # bare screen SIZE drifts the window onto other monitors on a multi-display
+    # desktop (live: a 2nd monitor at x=3840 made persona open far off-centre).
+    # Centre inside the primary display's work-area rect, which carries its origin.
+    wx, wy, ww, wh = _primary_work_rect()
+    if ww and wh:
+        page.window.left = wx + max(0, (ww - win_w) // 2)
+        page.window.top = wy + max(0, (wh - win_h) // 2)
     else:
         page.window.center()
 
