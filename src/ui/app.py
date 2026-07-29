@@ -44,6 +44,17 @@ logger = get_logger("app")
 from ..services.profile.filter import all_tags, filter_by_tag, filter_profiles
 
 
+def _show_window(page: ft.Page) -> None:
+    """Reveal the window (it starts hidden via hide_window_on_start). Idempotent
+    and best-effort: called once the centred splash is the current frame, and
+    again from the startup-error path so a crash can never leave a hidden window
+    with the process alive. A failure to set visibility must not itself crash
+    startup, so it's swallowed."""
+    try:
+        page.window.visible = True
+        page.update()
+    except Exception:
+        logger.exception("Could not reveal the window")
 
 
 class App:
@@ -183,18 +194,21 @@ class App:
         # the splash, then build the real UI in the first serviced task while
         # the scan animation runs.
         self.page = page
-        configure_page(page)
-        # The window is visible from the client's first frame — pyproject bans
-        # hide_window_on_start, because a hidden window can only be shown again
-        # by a healthy Python session: any startup failure (torn app.zip
-        # re-extraction after a self-update, poisoned relaunch env, dead
-        # interpreter) turned into an invisible zombie process. Python-side
-        # code must therefore never touch page.window.visible either: a False
-        # here would hide a live window with nothing guaranteed to bring it
-        # back.
-        self._splash = splash_mod.Splash()
-        page.add(self._splash.control)
-        self._splash.start(page)
+        try:
+            configure_page(page)
+            self._splash = splash_mod.Splash()
+            page.add(self._splash.control)
+            self._splash.start(page)
+        finally:
+            # The window starts HIDDEN (pyproject hide_window_on_start) so the
+            # user never sees the client's off-centre corner spinner or the jump
+            # to centre — the splash is the first frame. Reveal the window in a
+            # `finally` so it shows even if building the splash above raised:
+            # with the window hidden, an unrevealed window + a live process is
+            # exactly the invisible zombie the old ban feared. Revealed, any
+            # failure is SEEN (blank/partial window > invisible process). The
+            # _finish_startup except also re-reveals before painting its error.
+            _show_window(page)
         page.run_task(self._finish_startup)
 
     async def _finish_startup(self) -> None:
@@ -230,6 +244,11 @@ class App:
             self.state._last_running_snapshot = self.bl.running_profile_names()
         except Exception as e:
             logger.exception("Startup failed while building the first screen")
+            # Force the window visible before painting the error — with
+            # hide_window_on_start the window may still be hidden if _main's
+            # reveal didn't land, and a hidden error screen would be an invisible
+            # zombie. This guarantees the failure is SEEN.
+            _show_window(page)
             self._splash.stop()
             page.controls.clear()
             page.add(

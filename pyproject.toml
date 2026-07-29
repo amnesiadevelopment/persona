@@ -49,15 +49,20 @@ build_number = 1
 [tool.flet.app]
 path = "."
 module = "main"
-# hide_window_on_start must NEVER be set here (or in any per-platform app
-# section): the build template renders its boot/startup/ERROR screens into
-# the app window, and a hidden window can only be shown again by a healthy
-# Python session — so any startup failure (a torn app.zip re-extraction
-# after a self-update, a poisoned relaunch environment, a dead interpreter)
-# becomes an invisible zombie process the user can neither see nor close.
-# The window is visible from the client's first frame; the screens below
-# give it honest content until the in-app splash takes over as the first
-# Python-rendered frame.
+# Start the window HIDDEN so the user never sees the client's default-sized,
+# off-centre, corner-positioned boot/startup spinner nor the jump to centre once
+# Python takes over — the window appears already-centred with persona's own
+# fingerprint-scan splash as the very first frame the user sees.
+#
+# This was historically banned (a hidden window that a crashed Python session
+# never shows = an invisible zombie the user can't see or close). Two guards make
+# it safe now: (1) Flet 0.85.3 renders its ERROR screen even on a hidden window
+# and forces it visible, so a startup crash is SEEN, not silently zombied
+# (verified on the built app: a forced boot failure showed the error screen);
+# (2) main.py shows the window explicitly as soon as the splash is on-screen and,
+# on any startup exception, force-shows the window before painting the error — so
+# there is no path where the window stays hidden with the process alive.
+hide_window_on_start = true
 exclude = [
     "build",
     "dist",
@@ -73,20 +78,14 @@ exclude = [
     "ci",
 ]
 
-# Spinner + message while the client extracts app.zip (first launch and the
-# first launch after every self-update — the window is up before Python is).
+# The window is hidden until Python paints its first frame (see
+# hide_window_on_start above), so the client's pre-Python boot/startup spinners
+# would never be seen anyway — turn them off. The in-app fingerprint-scan splash
+# is the first thing the user sees, already centred. The boot screen (app.zip
+# extract after an update) is also hidden; that extract is brief and the window
+# simply appears once persona's own splash is ready.
 [tool.flet.app.boot_screen]
-show = true
-message = "Preparing persona…"
+show = false
 
-# The Python-session spinner is intentionally OFF. The client shows its
-# startup_screen in a DEFAULT-sized window at the OS's default (corner) position,
-# BEFORE Python runs configure_page — so the spinner sat off-centre in a 1920x1080
-# window jammed in the top-left, then the window jumped to its centred 1280x820
-# once Python took over (visible, jarring). With it off, the client holds the
-# boot_screen until Python's first frame — persona's own centred fingerprint
-# splash — with no off-centre spinner and no window jump. (hide_window_on_start
-# would also fix it but is banned here: a hidden window can become an invisible
-# zombie on any startup failure.)
 [tool.flet.app.startup_screen]
 show = false

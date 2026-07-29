@@ -5,6 +5,11 @@ not a git log. When cutting a release, add the new version's highlights here.
 """
 
 CHANGELOG: dict[str, list[str]] = {
+    "2.7.5": [
+        "persona now opens straight to its own centred fingerprint-scan screen — "
+        "no more grey \"Starting…\" spinner flashing in a corner, and no window "
+        "jump before the main view appears.",
+    ],
     "2.7.4": [
         "The loading spinner at startup no longer flashes off in a corner before "
         "the window jumps to the centre — persona now settles centred from the "

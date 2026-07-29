@@ -257,8 +257,9 @@ def test_main_shows_splash_before_anything_else(monkeypatch):
     page = SimpleNamespace(
         add=lambda c: added.append(c),
         run_task=lambda h, *a, **k: tasks.append(h),
+        update=lambda: None,
         services=[],
-        window=SimpleNamespace(visible=None),
+        window=SimpleNamespace(visible=False),
     )
     app._main(page)
     assert added, "nothing was added to the page"
@@ -355,13 +356,50 @@ def test_configure_page_falls_back_to_center_without_rect(monkeypatch):
     assert centered == [1]
 
 
-def test_main_never_touches_window_visibility(monkeypatch):
-    # the window is visible from the client's first frame (pyproject bans
-    # hide_window_on_start); a Python-side `visible = False` would hide a
-    # live window that only a healthy Python session could bring back — any
-    # startup failure after it would leave an invisible zombie process. The
-    # first patch must leave window visibility completely untouched, on
-    # every OS.
+def test_pyproject_hides_window_and_disables_native_screens():
+    # The whole point: the window starts hidden and the client's native
+    # boot/startup spinners are off, so the user's first frame is persona's own
+    # centred splash — no off-centre corner spinner, no jump to centre.
+    import tomllib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    cfg = tomllib.load(open(root / "pyproject.toml", "rb"))
+    app = cfg["tool"]["flet"]["app"]
+    assert app["hide_window_on_start"] is True
+    assert app["boot_screen"]["show"] is False
+    assert app["startup_screen"]["show"] is False
+
+
+def test_show_window_reveals_and_survives_errors():
+    from types import SimpleNamespace
+
+    from src.ui import app as ui_app
+
+    # reveals + updates
+    seen = []
+    page = SimpleNamespace(
+        window=SimpleNamespace(visible=False),
+        update=lambda: seen.append("update"),
+    )
+    ui_app._show_window(page)
+    assert page.window.visible is True
+    assert seen == ["update"]
+
+    # a broken page.update must not raise out of _show_window
+    def boom():
+        raise RuntimeError("no client")
+
+    bad = SimpleNamespace(window=SimpleNamespace(visible=False), update=boom)
+    ui_app._show_window(bad)  # must not raise
+
+
+def test_main_reveals_the_hidden_window(monkeypatch):
+    # The window starts hidden (pyproject hide_window_on_start) so the user never
+    # sees the off-centre corner spinner or the jump to centre — the splash is
+    # the first frame. _main must REVEAL the window once the centred splash is up,
+    # on every OS. (A hidden window left with a live process is the invisible
+    # zombie the old ban feared, so revealing it is mandatory, not optional.)
     from types import SimpleNamespace
 
     from src.ui import app as ui_app
@@ -373,8 +411,38 @@ def test_main_never_touches_window_visibility(monkeypatch):
         page = SimpleNamespace(
             add=lambda c: None,
             run_task=lambda h, *a, **k: None,
+            update=lambda: None,
             services=[],
-            window=SimpleNamespace(visible=None),
+            window=SimpleNamespace(visible=False),
         )
         app._main(page)
-        assert page.window.visible is None
+        assert page.window.visible is True
+
+
+def test_main_reveals_window_even_if_splash_build_raises(monkeypatch):
+    # The reveal is in a `finally`, so a crash while building the splash must
+    # STILL show the window (a hidden window + live process = invisible zombie).
+    from types import SimpleNamespace
+
+    from src.ui import app as ui_app
+
+    monkeypatch.setattr(ui_app, "configure_page", lambda p: None)
+
+    class Boom:
+        def __init__(self):
+            raise RuntimeError("splash build failed")
+
+    monkeypatch.setattr(ui_app.splash_mod, "Splash", Boom)
+    app = ui_app.App.__new__(ui_app.App)
+    page = SimpleNamespace(
+        add=lambda c: None,
+        run_task=lambda h, *a, **k: None,
+        update=lambda: None,
+        services=[],
+        window=SimpleNamespace(visible=False),
+    )
+    try:
+        app._main(page)
+    except RuntimeError:
+        pass  # the build error may propagate; the window must still be revealed
+    assert page.window.visible is True

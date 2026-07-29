@@ -266,8 +266,9 @@ def test_finish_startup_loads_behind_the_splash(monkeypatch):
 
     asyncio.run(app._finish_startup())
 
-    # window visibility is never touched — the window is visible from the
-    # client's first frame and must stay that way
+    # _finish_startup's SUCCESS path doesn't touch visibility — _main already
+    # revealed the window once the splash was up (the fixture leaves it at the
+    # False sentinel here because this test drives _finish_startup directly).
     assert page.window.visible is False  # untouched sentinel from the fixture
     # the data the first screen shows loads BEFORE the root swap…
     swap = events.index(("add", "root"))
@@ -280,10 +281,12 @@ def test_finish_startup_loads_behind_the_splash(monkeypatch):
 
 
 def test_finish_startup_failure_paints_a_readable_error(monkeypatch):
-    # The window is always visible, so a startup failure must not leave the
-    # splash sweeping forever over a broken app: any exception while building
-    # the first screen swaps in a readable error instead of raising out of
-    # the task (where only flet's logger would see it).
+    # A startup failure must not leave the splash sweeping forever over a broken
+    # app: any exception while building the first screen swaps in a readable
+    # error instead of raising out of the task. And because the window starts
+    # HIDDEN (hide_window_on_start), the error path must FORCE the window visible
+    # first — a hidden error screen with a live process would be the invisible
+    # zombie the old ban feared.
     from src.ui import app as app_mod
 
     events = []
@@ -318,6 +321,8 @@ def test_finish_startup_failure_paints_a_readable_error(monkeypatch):
     asyncio.run(app._finish_startup())  # must not raise
 
     assert "splash_stop" in events
+    # the window was forced visible before the error was painted
+    assert page.window.visible is True
     added = [ev[1] for ev in events if isinstance(ev, tuple) and ev[0] == "add"]
     assert added and "torn extraction" in added[0].value
 

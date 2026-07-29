@@ -1,14 +1,15 @@
 """The flet build configuration in pyproject.toml.
 
-The Flutter window must be visible on every launch, in every context. The
-build template renders its boot/startup/ERROR screens into the app window,
-and a window hidden by hide_window_on_start can only be shown again by a
-healthy Python session — so any startup failure (a torn app.zip
-re-extraction after a self-update, a poisoned relaunch environment, a dead
-interpreter) becomes an invisible zombie process the user can neither see
-nor close. These tests pin the visible-start design: no hidden start
-anywhere, honest boot/startup screens instead, no Python-side visibility
-writes, and a relaunch environment that can't re-hide the window.
+The window starts HIDDEN (hide_window_on_start) so the user's first frame is
+persona's own centred fingerprint splash — never the client's off-centre corner
+spinner nor the jump to centre. The old ban (visible-start) feared a hidden
+window that a crashed Python session never shows becoming an invisible zombie;
+that's now prevented by revealing the window from Python's first frame AND
+force-revealing it on any startup error (see App._main / _finish_startup), plus
+scrubbing FLET_HIDE_WINDOW_ON_START out of any relaunch env so it can't leak.
+These tests pin that design: hidden start, native screens off (they'd never be
+seen behind the hidden window), and NO `window.visible = False` anywhere (only
+the reveal to True is allowed).
 """
 
 import pathlib
@@ -21,33 +22,29 @@ def _pyproject() -> dict:
     return tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
 
-def test_built_app_never_starts_hidden():
-    tool_flet = _pyproject()["tool"]["flet"]
-    # the template honors the key from tool.flet.app AND any per-platform
-    # tool.flet.<platform>.app section — none of them may hide the window
-    app_sections = [tool_flet.get("app", {})]
-    for value in tool_flet.values():
-        if isinstance(value, dict) and isinstance(value.get("app"), dict):
-            app_sections.append(value["app"])
-    for section in app_sections:
-        assert not section.get("hide_window_on_start", False)
-
-
-def test_boot_and_startup_screens_cover_the_pre_python_window():
-    # the window is up before Python is; without these the user stares at a
-    # bare blank rectangle during app.zip extraction and interpreter boot
+def test_built_app_starts_hidden():
+    # The window starts hidden so the pre-Python corner spinner + centre-jump are
+    # never seen; Python reveals it once the centred splash is up.
     app = _pyproject()["tool"]["flet"]["app"]
-    assert app["boot_screen"]["show"] is True
-    assert app["startup_screen"]["show"] is True
+    assert app["hide_window_on_start"] is True
 
 
-def test_app_code_never_writes_window_visibility():
-    # a `window.visible = False` anywhere in the UI would hide a live window
-    # that only a healthy Python session could bring back — recreating the
-    # invisible-zombie failure the visible-start design removes
+def test_native_boot_and_startup_screens_are_off():
+    # With the window hidden until Python's first frame, the client's boot/startup
+    # spinners would never be visible anyway — keep them off so nothing but
+    # persona's own centred splash ever paints.
+    app = _pyproject()["tool"]["flet"]["app"]
+    assert app["boot_screen"]["show"] is False
+    assert app["startup_screen"]["show"] is False
+
+
+def test_app_code_never_hides_the_window():
+    # Revealing the window (`window.visible = True`) is required; HIDING it
+    # (`= False`) anywhere would recreate the invisible-zombie failure — a live
+    # window nothing is guaranteed to bring back. Only the True reveal is allowed.
     for py in (ROOT / "src").rglob("*.py"):
         src = py.read_text(encoding="utf-8")
-        assert "window.visible = " not in src, f"visibility write in {py}"
+        assert "window.visible = False" not in src, f"window hidden in {py}"
 
 
 def test_relaunch_env_scrubs_every_client_env_gate(monkeypatch):
