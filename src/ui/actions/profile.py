@@ -34,6 +34,7 @@ def edit_profile(
     proxy_names: list[str] | None = None,
     pool_names: list[str] | None = None,
     all_bookmarks: list[Bookmark] | None = None,
+    cert_names: list[str] | None = None,
     import_cookies_file=None,
     export_cookies_file=None,
     on_add_proxy: Callable[[], None] | None = None,
@@ -54,6 +55,7 @@ def edit_profile(
         new_notes: str = "",
         new_engine: str = "chromium",
         new_resolution: str = "auto",
+        new_certificate: str = "",
     ) -> str | None:
         if new_name != original and bl.is_running(original):
             return "Stop the browser before renaming"
@@ -61,7 +63,7 @@ def edit_profile(
             original, new_name, new_proxy, new_os, new_search, new_pool,
             new_bookmarks, new_tags,
             new_notes=new_notes, new_engine=new_engine,
-            new_resolution=new_resolution,
+            new_resolution=new_resolution, new_certificate=new_certificate,
         ):
             return get_string("update_failed")
         log(get_string("updated_profile", old=original, new=new_name))
@@ -76,6 +78,7 @@ def edit_profile(
         proxy_names=proxy_names,
         pool_names=pool_names,
         all_bookmarks=all_bookmarks,
+        cert_names=cert_names,
         on_import_cookies_file=(
             (lambda: import_cookies_file(original))
             if import_cookies_file is not None
@@ -99,6 +102,7 @@ def add_profile(
     proxy_names: list[str] | None = None,
     pool_names: list[str] | None = None,
     all_bookmarks: list[Bookmark] | None = None,
+    cert_names: list[str] | None = None,
     on_bulk: Callable[[], None] | None = None,
     on_add_proxy: Callable[[], None] | None = None,
 ) -> None:
@@ -113,10 +117,12 @@ def add_profile(
         notes: str = "",
         engine: str = "chromium",
         resolution: str = "auto",
+        certificate: str = "",
     ) -> str | None:
         if not pm.add_profile(
             name, proxy, os_type, search, pool, bookmarks, tags,
             notes=notes, engine=engine, resolution=resolution,
+            certificate=certificate,
         ):
             return get_string("profile_exists")
         log(get_string("created_profile", name=name))
@@ -130,6 +136,7 @@ def add_profile(
         proxy_names=proxy_names,
         pool_names=pool_names,
         all_bookmarks=all_bookmarks,
+        cert_names=cert_names,
         on_bulk=on_bulk,
         on_add_proxy=on_add_proxy,
     )

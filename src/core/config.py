@@ -29,6 +29,8 @@ def _under_home(name: str, env: str) -> str:
 
 PROFILES_FILE = _under_home("profiles.json", "PERSONA_PROFILES_FILE")
 PROXIES_FILE = _under_home("proxies.json", "PERSONA_PROXIES_FILE")
+CERTS_FILE = _under_home("certificates.json", "PERSONA_CERTS_FILE")
+CERTS_DIR = _under_home("certificates", "PERSONA_CERTS_DIR")
 BOOKMARKS_FILE = _under_home("bookmarks.json", "PERSONA_BOOKMARKS_FILE")
 DATA_DIR = _under_home("persona_data", "PERSONA_DATA_DIR")
 LOG_DIR = _under_home("logs", "PERSONA_LOG_DIR")

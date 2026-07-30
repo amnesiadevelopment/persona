@@ -5,6 +5,24 @@ not a git log. When cutting a release, add the new version's highlights here.
 """
 
 CHANGELOG: dict[str, list[str]] = {
+    "2.8.0": [
+        "New Certificates tab: add an mTLS client certificate (.p12/.pfx) and "
+        "assign it to a profile to log into an admin site. The certificate is "
+        "presented only to that site's address and never to any other — so it "
+        "can't be used to recognise you elsewhere — and it stays inside persona, "
+        "never imported into the operating system. Works on every OS with the "
+        "Chromium engine; Firefox certificates are Linux-only for now.",
+        "Restoring a profile from a backup now keeps every setting (engine, "
+        "resolution, bookmarks, tags, assigned certificate and more) instead of "
+        "quietly resetting most of them to defaults.",
+        "iPhone profiles now report the correct 32-bit colour depth, closing a "
+        "small tell that grouped them together.",
+        "Saved proxies, SSH hosts and certificates are written more safely: their "
+        "files can no longer be corrupted by a crash mid-save and are no longer "
+        "world-readable, and the activity log no longer prints proxy exit IPs.",
+        "The header now shows persona@windows / persona@mac / persona@linux so a "
+        "shared screenshot instantly says which machine it came from.",
+    ],
     "2.7.6": [
         "Firefox profiles now open almost instantly — a fresh profile that used "
         "to take up to a minute and a half now launches in about a second, with "

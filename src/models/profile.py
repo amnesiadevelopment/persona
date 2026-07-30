@@ -22,6 +22,9 @@ class Profile:
     # selection. Distinguishing None from [] is what lets a user remove every
     # bookmark and have it stay removed instead of resurrecting the defaults.
     bookmarks: list[str] | None = None
+    # name of an mTLS client certificate (from CertStore) presented to admin
+    # sites this profile visits. None = no certificate assigned.
+    certificate: str | None = None
     cookie_import_status: str | None = None
     tags: list[str] = field(default_factory=list)
     notes: str = ""

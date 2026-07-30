@@ -15,6 +15,7 @@ from dataclasses import asdict, dataclass
 
 from ...core.config import PERSONA_HOME
 from ...core.logging import get_logger
+from ...utils.atomic import atomic_write_json
 
 logger = get_logger("ssh.store")
 
@@ -70,9 +71,11 @@ class SSHHostStore:
 
     def _save(self) -> None:
         try:
-            pathlib.Path(_hosts_file()).write_text(
-                json.dumps({n: h.to_dict() for n, h in self.hosts.items()}, indent=2),
-                encoding="utf-8",
+            # Holds SSH passwords + key passphrases, so 0600 + atomic.
+            atomic_write_json(
+                _hosts_file(),
+                {n: h.to_dict() for n, h in self.hosts.items()},
+                private=True,
             )
         except Exception as e:
             logger.exception("Error saving ssh hosts: %s", e)

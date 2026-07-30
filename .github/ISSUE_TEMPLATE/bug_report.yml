@@ -1,0 +1,59 @@
+name: Bug report
+description: Report a problem with persona (NOT a security vulnerability)
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        **Do not report security vulnerabilities here.** Use private
+        vulnerability reporting (see SECURITY.md). **Never paste real proxy
+        credentials, SSH keys, certificate passwords, or exit IPs** into an
+        issue — redact them or use throwaway test data.
+  - type: input
+    id: version
+    attributes:
+      label: persona version
+      placeholder: e.g. v2.7.6
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - Windows
+        - macOS
+    validations:
+      required: true
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Engine
+      options:
+        - chromium
+        - firefox
+        - not sure / both
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you got.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. …
+        2. …
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: >
+        From ~/.persona/logs/. Redact any IPs, credentials, or hostnames first.
+      render: text

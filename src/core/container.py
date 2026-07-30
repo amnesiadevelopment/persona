@@ -64,3 +64,11 @@ class Container:
 
             self._instances["bstore"] = BookmarkStore()
         return self._instances["bstore"]
+
+    @property
+    def cert_store(self):
+        if "cstore" not in self._instances:
+            from ..services.cert.store import CertStore
+
+            self._instances["cstore"] = CertStore()
+        return self._instances["cstore"]

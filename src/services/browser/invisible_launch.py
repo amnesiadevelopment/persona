@@ -16,7 +16,10 @@ import threading
 import time
 
 from ...core import platform as _platform
+from ...core.logging import get_logger
 from .firefox_bookmarks import places_ready
+
+logger = get_logger("browser.invisible")
 
 
 # Written into a build's cache dir after a successful extraction. A build
@@ -1652,6 +1655,68 @@ def _upsert_prefs_js(profile_dir: str, prefs: dict) -> None:
         pass
 
 
+def _engine_lib_dir():
+    """Directory of the active engine's NSS shared libraries (the Firefox
+    executable's parent). certutil links against them, so the loader is pointed
+    here instead of requiring a system NSS install. None when unresolved."""
+    p = _invisible_binary_path()
+    if not p:
+        return None
+    return os.path.dirname(str(p))
+
+
+def _certutil_path():
+    """Bundled certutil for this OS (src/assets/nss/<os>/), else one on PATH."""
+    from ...core.assets import asset_path
+
+    exe = "certutil.exe" if _platform.IS_WINDOWS else "certutil"
+    osdir = "win" if _platform.IS_WINDOWS else ("mac" if _platform.IS_MACOS else "linux")
+    bundled = asset_path("nss", osdir, exe)
+    if os.path.isfile(bundled):
+        return bundled
+    from shutil import which
+
+    return which(exe)
+
+
+def _import_mtls_ca(profile_dir: str, ca_path) -> bool:
+    """Import the mTLS terminator's CA into the profile's cert9.db as a trusted
+    TLS CA, so Firefox accepts the terminator's leaf. Only the terminator's own
+    CA is trusted, and only in this profile — no OS trust store is touched.
+    Soft-fails (returns False, launch proceeds) if certutil isn't available."""
+    if not ca_path or not os.path.isfile(str(ca_path)):
+        return False
+    tool = _certutil_path()
+    if not tool:
+        logger.error("certutil unavailable; launching without mTLS CA trust")
+        return False
+    env = dict(os.environ)
+    lib = _engine_lib_dir()
+    if lib:
+        env["LD_LIBRARY_PATH"] = lib
+        env["DYLD_LIBRARY_PATH"] = lib
+        if _platform.IS_WINDOWS:
+            env["PATH"] = lib + os.pathsep + env.get("PATH", "")
+    argv = [
+        tool, "-A",
+        "-n", "persona-mtls-terminator",
+        "-t", "CT,C,C",
+        "-i", str(ca_path),
+        "-d", f"sql:{profile_dir}",
+    ]
+    try:
+        r = subprocess.run(
+            argv, env=env, capture_output=True, text=True, timeout=30
+        )
+    except Exception as e:
+        logger.exception("certutil failed to run: %s", e)
+        return False
+    if r.returncode != 0:
+        logger.error("certutil import failed rc=%s: %s", r.returncode, r.stderr.strip())
+        return False
+    return True
+
+
 def _scrub_headless_cloak_prefs(profile_dir: str) -> None:
     """Drop the engine's headless window-hiding prefs from the profile's
     prefs.js before a visible launch.
@@ -2376,6 +2441,25 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     restoring = _has_saved_session(profile_dir)
     # Pin DuckDuckGo as the default search engine for every Firefox profile.
     _ensure_firefox_policies()
+
+    # When an mTLS certificate is assigned, trust the terminator's CA in this
+    # profile's cert9.db so Firefox accepts the terminator's leaf for the admin
+    # host. Only this profile, only the terminator's own CA.
+    _ca = cfg.get("mtls_ca_path")
+    if _ca:
+        if _import_mtls_ca(profile_dir, _ca):
+            emit("MTLS_CA_TRUSTED")
+        elif _certutil_path() is None and not _platform.IS_LINUX:
+            # Firefox certificate trust needs certutil, bundled only for Linux so
+            # far. Chromium certificates work on every OS; Firefox certificates on
+            # Windows/macOS are coming in a follow-up. Say so plainly instead of
+            # letting the admin site fail with a cryptic TLS error.
+            emit(
+                "MTLS_UNSUPPORTED: Firefox certificates are Linux-only for now "
+                "(use the Chromium engine for this profile on this OS)"
+            )
+        else:
+            emit("MTLS_CA_IMPORT_FAILED: opening without certificate trust")
 
     # A DBus-valid, per-profile-unique remoting name so multiple profiles open
     # at once (see _remoting_name). It doubles as the Wayland app_id for the

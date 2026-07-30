@@ -10,6 +10,7 @@ from ...core.logging import get_logger
 from ...models.profile import Profile
 from ...utils.proxy_parser import parse_proxy_server
 from ..bookmark.store import BookmarkStore
+from ..cert.store import CertStore
 from ..proxy.bridge import ProxyBridge
 from ..proxy.store import ProxyStore
 from .bookmarks_seed import seed_bookmarks
@@ -39,6 +40,23 @@ from ...core import platform as _platform
 FINGERPRINT_CHROMIUM = os.path.join(
     ENGINE_DIR, _platform.fingerprint_chromium_filename()
 )
+
+
+def _cert_session_for(profile: Profile, profile_dir: str, upstream: str | None):
+    """Start an mTLS terminator for the profile's assigned certificate, or None.
+    The terminator's own upstream is the profile's real proxy so the exit IP is
+    unchanged. Its work dir is under the profile so leaf/PEM material is cleaned
+    with the profile."""
+    cert_name = getattr(profile, "certificate", None)
+    if not cert_name:
+        return None
+    from ..cert.manager import start_cert_session
+
+    cert = CertStore().get(cert_name)
+    if cert is None:
+        return None
+    work = os.path.join(profile_dir, ".persona-mtls")
+    return start_cert_session(cert, upstream or None, work)
 
 
 def _proxy_arg(proxy_url: str | None) -> tuple[str | None, ProxyBridge | None]:
@@ -277,6 +295,14 @@ def _spawn_invisible(profile: Profile, profile_dir: str):
         profile.bookmark_pool, profile.bookmarks
     )
 
+    # An assigned mTLS certificate starts a terminator (in this parent) that the
+    # engine talks to as its proxy; the engine trusts the terminator's leaf by
+    # importing its CA into the profile's cert9.db. The certificate is presented
+    # to the admin host only and never enters the browser.
+    cert_session = _cert_session_for(profile, profile_dir, proxy_url)
+    if cert_session is not None:
+        proxy_url = cert_session.proxy_url
+
     width, height = resolve_resolution(
         getattr(profile, "resolution", "auto"), profile.fingerprint_seed
     )
@@ -284,6 +310,7 @@ def _spawn_invisible(profile: Profile, profile_dir: str):
     cfg = {
         "os_type": profile.os_type,
         "proxy_url": proxy_url,
+        "mtls_ca_path": cert_session.ca_path if cert_session else None,
         "profile_name": profile.name,
         # The stable crc32 fingerprint seed — the child must NOT derive it via
         # hash(), which is salted per-process and changes every app restart.
@@ -298,7 +325,11 @@ def _spawn_invisible(profile: Profile, profile_dir: str):
         # ~118MB engine here and block the launch for minutes over Tor.
         "_needs_fetch": not is_invisible_installed(),
     }
-    return spawn(cfg)
+    proc = spawn(cfg)
+    # Stop the terminator when the FF session ends (same hook the chromium path
+    # uses; None when no certificate is assigned).
+    proc._cert_session = cert_session  # type: ignore[attr-defined]
+    return proc
 
 
 def effective_engine(profile: Profile) -> str:
@@ -343,6 +374,14 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
     store = ProxyStore()
     proxy = store.get(profile.proxy) if profile.proxy else None
     proxy_url = store.resolve(profile.proxy)
+
+    # An assigned mTLS certificate routes the browser through a local terminator
+    # that presents the certificate to the admin host only; the terminator's own
+    # upstream is the profile's real proxy, so the exit IP is unchanged. When a
+    # certificate is active the browser's proxy becomes the terminator.
+    cert_session = _cert_session_for(profile, profile_dir, proxy_url)
+    if cert_session is not None:
+        proxy_url = cert_session.proxy_url
 
     # Locale + timezone follow the proxy's geo so they match the exit IP.
     lang = _locale_for(proxy.country_code) if proxy else "en-US"
@@ -395,6 +434,14 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
         )
     )
     if is_mobile and preset is not None:
+        # iOS always reports 5 touch points; Android varies by device (commonly 5
+        # or 10). A constant 5 on every Android profile is a weak cluster tell, so
+        # pick it deterministically from the profile seed — stable per profile,
+        # spread across profiles.
+        if preset.os_type == "ios":
+            touch_points = 5
+        else:
+            touch_points = (5, 10)[profile.fingerprint_seed % 2]
         extensions.append(
             build_mobile_extension(
                 os.path.join(profile_dir, ".persona-mobile-ext"),
@@ -407,7 +454,7 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
                 dpr=preset.dpr,
                 device_memory=preset.device_memory,
                 hardware_concurrency=preset.hardware_concurrency,
-                touch_points=5,
+                touch_points=touch_points,
             )
         )
     else:
@@ -611,6 +658,13 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
         args.append("--disable-quic")
         disabled_features.append("EnableQuic")
 
+    if cert_session is not None:
+        # Trust the terminator's leaf without touching any OS store — keyed to the
+        # leaf's public-key hash, so only the terminator's MITM is trusted.
+        args.append(
+            f"--ignore-certificate-errors-spki-list={cert_session.spki_b64}"
+        )
+
     if disabled_features:
         args.append("--disable-features=" + ",".join(disabled_features))
 
@@ -628,19 +682,32 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
     if _platform.IS_LINUX:
         env.setdefault("DISPLAY", ":0")
 
-    proc = subprocess.Popen(
-        args,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        cwd=os.path.expanduser("~"),
-        env=env,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        bufsize=1,
-        **_platform.no_window_kwargs(),
-    )
+    try:
+        proc = subprocess.Popen(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            cwd=os.path.expanduser("~"),
+            env=env,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            **_platform.no_window_kwargs(),
+        )
+    except BaseException:
+        # The bridge/terminator started before the browser; if the launch never
+        # produces a proc to attach them to, stop them here so a failed launch
+        # can't orphan a listener on 127.0.0.1 (repeated failures exhaust ports).
+        if bridge is not None:
+            with _suppress():
+                bridge.stop()
+        if cert_session is not None:
+            with _suppress():
+                cert_session.stop()
+        raise
     proc._proxy_bridge = bridge  # type: ignore[attr-defined]
+    proc._cert_session = cert_session  # type: ignore[attr-defined]
     return proc
 
 
@@ -650,6 +717,11 @@ def _stop_bridge(proc: subprocess.Popen) -> None:
         with _suppress():
             bridge.stop()
         proc._proxy_bridge = None  # type: ignore[attr-defined]
+    session = getattr(proc, "_cert_session", None)
+    if session is not None:
+        with _suppress():
+            session.stop()
+        proc._cert_session = None  # type: ignore[attr-defined]
 
 
 def terminate(proc: subprocess.Popen, name: str, timeout: int = 5) -> None:

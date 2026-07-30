@@ -45,8 +45,11 @@ _CONTENT_SCRIPT = r"""
     def(screen, 'height', CSS_H);
     def(screen, 'availWidth', CSS_W);
     def(screen, 'availHeight', CSS_H);
-    def(screen, 'colorDepth', 24);
-    def(screen, 'pixelDepth', 24);
+    // A real iPhone reports 32-bit colour; Android reports 24. A blanket 24 on
+    // iOS is a device-mismatch tell (CreepJS-class scanners check screen-property
+    // consistency), so key the depth off the device.
+    def(screen, 'colorDepth', IS_IOS ? 32 : 24);
+    def(screen, 'pixelDepth', IS_IOS ? 32 : 24);
     if (screen.orientation) {
       def(screen.orientation, 'type', 'portrait-primary');
       def(screen.orientation, 'angle', 0);

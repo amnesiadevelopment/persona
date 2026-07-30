@@ -1,6 +1,6 @@
 STRINGS = {
     "app_name": "persona",
-    "app_subtitle": "persona@whonix:~$",
+    "app_subtitle": "persona@host:~$",
     "your_profiles": "Your Profiles",
     "no_profiles_yet": "No profiles yet",
     "create_profile_hint": "Create a new profile to get started",
@@ -55,7 +55,7 @@ STRINGS = {
     "validation_invalid_proxy": "Invalid proxy format. Use: [scheme://][user:pass@]host:port",
     "validation_invalid_port": "Port must be between 1 and 65535",
     "proxy_checking": "Checking proxy...",
-    "proxy_check_success": "Proxy working. IP: {ip}",
+    "proxy_check_success": "Proxy working.",
     "proxy_check_failed": "Proxy check failed: {reason}",
     "proxy_check_skipped": "Proxy check skipped (aiohttp not installed)",
 }
@@ -69,3 +69,20 @@ def get_string(key: str, **kwargs: object) -> str:
         except KeyError:
             return text
     return text
+
+
+def app_subtitle() -> str:
+    """The terminal-style subtitle under the logo, tagged with the current OS so
+    a shared screenshot instantly shows which persona (Windows/mac/Linux) it is:
+    persona@windows / persona@mac / persona@linux."""
+    from . import platform as _platform
+
+    if _platform.IS_WINDOWS:
+        host = "windows"
+    elif _platform.IS_MACOS:
+        host = "mac"
+    elif _platform.IS_LINUX:
+        host = "linux"
+    else:
+        host = "host"
+    return f"persona@{host}:~$"

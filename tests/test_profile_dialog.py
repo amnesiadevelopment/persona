@@ -28,18 +28,19 @@ class _FakePage:
         pass
 
 
-def _open(profile):
+def _open(profile, on_save=lambda *a: None, cert_names=None):
     # proxy_service is only used to type the parameter; the dialog builds
     # entirely from the passed lists, so a bare object stands in for it.
     page = _FakePage()
     open_profile_dialog(
         page,
         object(),
-        on_save=lambda *a: None,
+        on_save=on_save,
         profile=profile,
         proxy_names=["p1"],
         pool_names=["pool1"],
         all_bookmarks=[Bookmark("browserleaks", "https://browserleaks.com/")],
+        cert_names=cert_names if cert_names is not None else ["admin", "staging"],
     )
     return page
 
@@ -100,6 +101,58 @@ def _find_row_containing(page, child):
         if child in (getattr(c, "controls", None) or []):
             return c
     return None
+
+
+_NONE_CERT = "(none)"
+
+
+def test_certificate_dropdown_lists_available_certs():
+    page = _open(None)
+    dd = _find_dropdown(page, "Certificate (mTLS)")
+    assert dd is not None
+    opts = [o.key for o in dd.options]
+    assert opts == [_NONE_CERT, "admin", "staging"]
+    assert dd.value == _NONE_CERT  # a fresh profile has none
+
+
+def test_edit_dialog_prefills_assigned_certificate():
+    prof = Profile(name="P", engine="chromium", certificate="admin")
+    page = _open(prof)
+    dd = _find_dropdown(page, "Certificate (mTLS)")
+    assert dd.value == "admin"
+
+
+def _set_name(page, value):
+    for c in _walk(page.shown):
+        if getattr(c, "label", None) == "Profile Name":
+            c.value = value
+
+
+def _click_create(page):
+    btn = next(
+        c for c in _walk(page.shown)
+        if isinstance(c, ft.Button)
+        and getattr(c, "content", None) in ("[ create ]", "[ save ]")
+    )
+    btn.on_click(None)
+
+
+def test_save_passes_selected_certificate():
+    captured = {}
+    page = _open(None, on_save=lambda *a: captured.setdefault("args", a) or None)
+    _set_name(page, "newp")
+    _find_dropdown(page, "Certificate (mTLS)").value = "staging"
+    _click_create(page)
+    # certificate is the 11th positional arg
+    assert captured["args"][10] == "staging"
+
+
+def test_save_none_certificate_passes_empty():
+    captured = {}
+    page = _open(None, on_save=lambda *a: captured.setdefault("args", a) or None)
+    _set_name(page, "newp")
+    _click_create(page)
+    assert captured["args"][10] == ""
 
 
 def test_dropdown_dispatches_on_select():
@@ -269,7 +322,7 @@ def test_create_with_nothing_checked_saves_empty_selection():
     saved = {}
 
     def on_save(name, proxy, os_type, search, pool, bookmarks, tags, notes,
-                engine, resolution):
+                engine, resolution, certificate=""):
         saved["bookmarks"] = bookmarks
         return None
 

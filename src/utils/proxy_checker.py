@@ -10,6 +10,17 @@ except ImportError:
 from .proxy_parser import parse_proxy
 
 
+def proxy_ok_message(code: str, country: str) -> str:
+    """The activity-log message for a working proxy. Shows the exit COUNTRY (and
+    flag) but never the exact exit IP: this tool's own logs are disk-backed and
+    UI-visible, and a timestamped IP history would de-anonymize the operator and
+    link separate personas. The IP is returned separately for the store and the
+    file-only debug log, never for the activity log."""
+    flag = flag_from_country_code(code)
+    where = f"{flag} [{code}] {country}".strip() if country else ""
+    return f"Proxy working. {where}".strip() if where else "Proxy working."
+
+
 def flag_from_country_code(code: str) -> str:
     """Turn a two-letter ISO country code into a flag emoji.
 
@@ -54,10 +65,9 @@ async def check_proxy(
                     tz = data.get("timezone", "")
                     lat = data.get("lat")
                     lon = data.get("lon")
-                    where = f"[{code}] {country} · " if country else ""
                     return (
                         True,
-                        f"Proxy working. {where}IP: {ip}",
+                        proxy_ok_message(code, country),
                         code, country, ip, tz, lat, lon,
                     )
                 return False, f"Proxy returned status {response.status}", "", "", "", "", None, None

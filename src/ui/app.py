@@ -12,6 +12,7 @@ from .components import (
     build_bookmarks_page,
     build_tags_page,
     build_connect_page,
+    build_certificates_page,
     build_content_area,
     build_empty_state,
     build_network_page,
@@ -76,6 +77,7 @@ class App:
         self.pstore = c.proxy_store
         self.ssh_store = c.ssh_host_store
         self.bstore = c.bookmark_store
+        self.cert_store = c.cert_store
         self.state = AppState()
         self.page: ft.Page | None = None
         self._reconcile_started = False
@@ -179,6 +181,7 @@ class App:
             get_proxy_names=lambda: self.pstore.names(),
             get_pool_names=lambda: self.bstore.pool_names(),
             get_bookmarks=lambda: self.bstore.list_bookmarks(),
+            get_cert_names=lambda: self.cert_store.names(),
             import_cookies_file=self._import_cookies_file,
             export_cookies_file=self._export_cookies_file,
             open_add_proxy=self._goto_add_proxy,
@@ -567,6 +570,13 @@ class App:
                 on_assign=self._assign_tag,
                 on_remove_tag=self._remove_tag,
             )
+        elif self._active_page == "certificates":
+            self._page_host.content = build_certificates_page(
+                self.cert_store.list(),
+                on_add=lambda _: self._open_certificate_dialog(),
+                on_edit=self._edit_certificate,
+                on_delete=self._delete_certificate,
+            )
         else:
             self._page_host.content = self._build_profiles_page()
 
@@ -604,6 +614,52 @@ class App:
 
     def _delete_ssh_host(self, name: str) -> None:
         self.ssh_store.remove(name)
+        self._render_active_page()
+        self._safe_update()
+
+    def _open_certificate_dialog(self, name: str | None = None) -> None:
+        from ..services.cert.store import Certificate
+        from .dialogs.certificate import open_certificate_dialog
+
+        existing = self.cert_store.get(name) if name else None
+
+        def on_save(c: Certificate) -> str | None:
+            # A newly picked file lives outside persona; copy it into the store
+            # so the certificate lives with the rest of persona's data. An edit
+            # that kept the existing file already points inside the store.
+            stored_path = c.p12_path
+            if not stored_path.startswith(self._certs_dir()):
+                try:
+                    stored_path = self.cert_store.import_p12(c.name, c.p12_path)
+                except OSError as e:
+                    return f"could not store certificate file: {e}"
+            saved = Certificate(
+                name=c.name, p12_path=stored_path, password=c.password
+            )
+            if name:
+                if not self.cert_store.update(name, saved):
+                    return "Update failed (name conflict?)"
+            else:
+                if not self.cert_store.add(saved):
+                    return "Certificate name already exists"
+            self._render_active_page()
+            self._safe_update()
+            return None
+
+        open_certificate_dialog(
+            self.page, existing, self.refs.file_picker, on_save
+        )
+
+    def _certs_dir(self) -> str:
+        from ..services.cert.store import _certs_dir
+
+        return _certs_dir()
+
+    def _edit_certificate(self, name: str) -> None:
+        self._open_certificate_dialog(name)
+
+    def _delete_certificate(self, name: str) -> None:
+        self.cert_store.remove(name)
         self._render_active_page()
         self._safe_update()
 
@@ -906,15 +962,16 @@ class App:
                 )
                 if ok:
                     self.pstore.mark_checked(name, code, country, ip, tz, lat, lon)
+                    # Never print the exit IP to the disk-backed activity log —
+                    # a timestamped IP history de-anonymizes the operator. Report
+                    # only whether the exit changed.
                     if old_ip and ip == old_ip:
                         self._log(
-                            f"Proxy {name}: IP unchanged ({ip}) — "
+                            f"Proxy {name}: exit unchanged — "
                             "this proxy may be static or sticky"
                         )
                     else:
-                        self._log(
-                            f"Proxy {name}: rotated IP {old_ip or 'unknown'} → {ip}"
-                        )
+                        self._log(f"Proxy {name}: rotated to a new exit")
                 else:
                     self.pstore.mark_check_failed(name)
                     self._log(f"[{name}] {message}")

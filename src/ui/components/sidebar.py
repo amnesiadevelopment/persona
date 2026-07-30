@@ -3,7 +3,7 @@ from collections.abc import Callable
 
 import flet as ft
 
-from ...core.strings import get_string
+from ...core.strings import app_subtitle, get_string
 from ..theme.colors import COLORS
 from ..theme.styles import MONO
 
@@ -16,6 +16,7 @@ _NAV_ITEMS = [
     ("network", ft.Icons.LAN_OUTLINED, "network"),
     ("bookmarks", ft.Icons.BOOKMARK_BORDER, "bookmarks"),
     ("tags", ft.Icons.LABEL_OUTLINE, "tags"),
+    ("certificates", ft.Icons.VERIFIED_USER_OUTLINED, "certificates"),
     ("connect", ft.Icons.SMART_TOY_OUTLINED, "connect"),
 ]
 
@@ -107,7 +108,7 @@ def build_sidebar(
             controls=[
                 header,
                 ft.Text(
-                    get_string("app_subtitle"),
+                    app_subtitle(),
                     size=10,
                     color=COLORS["text_sub"],
                     font_family=MONO,

@@ -66,7 +66,16 @@ def import_from_zip(
                 name=name,
                 proxy=profile_data.get("proxy"),
                 os_type=profile_data.get("os_type", "windows"),
+                device_type=profile_data.get("device_type", "desktop"),
+                engine=profile_data.get("engine", "chromium"),
+                resolution=profile_data.get("resolution", "auto"),
+                search_engine=profile_data.get("search_engine", "duckduckgo"),
+                bookmark_pool=profile_data.get("bookmark_pool"),
+                bookmarks=profile_data.get("bookmarks"),
+                certificate=profile_data.get("certificate"),
+                tags=profile_data.get("tags", []),
                 notes=profile_data.get("notes", ""),
+                ai_control=profile_data.get("ai_control", False),
             )
 
             data_files = [f for f in zipf.namelist() if f.startswith("data/")]

@@ -59,6 +59,32 @@ def test_logo_click_does_not_hit_navigation():
     assert navigated == []
 
 
+def test_app_subtitle_tags_the_current_os(monkeypatch):
+    # The subtitle under the logo carries the OS so a shared screenshot instantly
+    # shows which persona it is: persona@windows / persona@mac / persona@linux.
+    from src.core import platform as _platform
+    from src.core.strings import app_subtitle
+
+    def _set(win, mac, lin):
+        monkeypatch.setattr(_platform, "IS_WINDOWS", win)
+        monkeypatch.setattr(_platform, "IS_MACOS", mac)
+        monkeypatch.setattr(_platform, "IS_LINUX", lin)
+
+    _set(True, False, False)
+    assert app_subtitle() == "persona@windows:~$"
+    _set(False, True, False)
+    assert app_subtitle() == "persona@mac:~$"
+    _set(False, False, True)
+    assert app_subtitle() == "persona@linux:~$"
+
+
+def test_sidebar_shows_os_tagged_subtitle():
+    from src.core.strings import app_subtitle
+
+    texts = [c.value for c in _walk(_sidebar()) if isinstance(c, ft.Text)]
+    assert app_subtitle() in texts
+
+
 def test_nav_buttons_still_navigate_with_logo_click_wired():
     navigated = []
     sidebar = _sidebar(
@@ -73,7 +99,9 @@ def test_nav_buttons_still_navigate_with_logo_click_wired():
         and c.on_click is not None
         and c is not header.content
     ]
-    assert len(nav_containers) == 5
+    assert len(nav_containers) == 6
     for c in nav_containers:
         c.on_click(None)
-    assert navigated == ["profiles", "network", "bookmarks", "tags", "connect"]
+    assert navigated == [
+        "profiles", "network", "bookmarks", "tags", "certificates", "connect"
+    ]

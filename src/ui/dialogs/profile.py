@@ -22,6 +22,7 @@ from ..theme.styles import ACCENT_STYLE, DLG_FIELD_KWARGS, MONO, OUTLINE_STYLE
 
 _DIRECT = "(direct)"
 _NO_POOL = "(none)"
+_NO_CERT = "(none)"
 
 
 def open_profile_dialog(
@@ -34,6 +35,7 @@ def open_profile_dialog(
     proxy_names: list[str] | None = None,
     pool_names: list[str] | None = None,
     all_bookmarks: list[Bookmark] | None = None,
+    cert_names: list[str] | None = None,
     on_import_cookies_file: Callable[[], object] | None = None,
     on_export_cookies_file: Callable[[], object] | None = None,
     on_bulk: Callable[[], None] | None = None,
@@ -42,6 +44,7 @@ def open_profile_dialog(
     proxy_names = proxy_names or []
     pool_names = pool_names or []
     all_bookmarks = all_bookmarks or []
+    cert_names = cert_names or []
     is_edit = profile is not None
     title = "Edit Profile" if is_edit else get_string("create_new_profile")
     subtitle = (
@@ -66,6 +69,23 @@ def open_profile_dialog(
         expand=True,
         options=[ft.dropdown.Option(_DIRECT)]
         + [ft.dropdown.Option(n) for n in proxy_names],
+        bgcolor=COLORS["input_bg"],
+        color=COLORS["text_main"],
+        border_color=COLORS["card_border"],
+        focused_border_color=COLORS["accent"],
+        border_radius=3,
+        label_style=ft.TextStyle(color=COLORS["text_sub"], font_family=MONO),
+        text_style=ft.TextStyle(font_family=MONO),
+    )
+
+    current_cert = (profile.certificate or "") if profile is not None else ""
+    cert_value = current_cert if current_cert in cert_names else _NO_CERT
+    cert_dropdown = ft.Dropdown(
+        label="Certificate (mTLS)",
+        value=cert_value,
+        expand=True,
+        options=[ft.dropdown.Option(_NO_CERT)]
+        + [ft.dropdown.Option(n) for n in cert_names],
         bgcolor=COLORS["input_bg"],
         color=COLORS["text_main"],
         border_color=COLORS["card_border"],
@@ -527,6 +547,8 @@ def open_profile_dialog(
         )
         pool = pool_dropdown.value or _NO_POOL
         pool = "" if pool == _NO_POOL else pool
+        certificate = cert_dropdown.value or _NO_CERT
+        certificate = "" if certificate == _NO_CERT else certificate
         bookmarks = [n for n, cb in bookmark_checks.items() if cb.value]
         tags = [s.strip() for s in (tags_field.value or "").split(",") if s.strip()]
         notes = (notes_field.value or "").strip()
@@ -554,7 +576,7 @@ def open_profile_dialog(
 
         error = on_save(
             name, proxy, os_type, search, pool, bookmarks, tags, notes, engine,
-            resolution,
+            resolution, certificate,
         )
         if error:
             name_error.value = error
@@ -597,6 +619,7 @@ def open_profile_dialog(
                         controls=proxy_row_controls,
                     ),
                     proxy_hint,
+                    ft.Row(controls=[cert_dropdown]),
                     # Engine BEFORE OS: the engine decides whether OS even matters
                     # (Firefox is Windows-only, so its OS spoof is a no-op), so the
                     # operator picks the engine first and the OS field follows.

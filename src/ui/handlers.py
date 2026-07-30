@@ -31,6 +31,7 @@ class AppHandlers:
         get_proxy_names: Callable[[], list[str]] = lambda: [],
         get_pool_names: Callable[[], list[str]] = lambda: [],
         get_bookmarks: Callable[[], list] = lambda: [],
+        get_cert_names: Callable[[], list[str]] = lambda: [],
         import_cookies_file=None,
         export_cookies_file=None,
         open_add_proxy: Callable[[], None] | None = None,
@@ -47,6 +48,7 @@ class AppHandlers:
         self._get_proxy_names = get_proxy_names
         self._get_pool_names = get_pool_names
         self._get_bookmarks = get_bookmarks
+        self._get_cert_names = get_cert_names
         self._import_cookies_file = import_cookies_file
         self._export_cookies_file = export_cookies_file
         self._open_add_proxy = open_add_proxy
@@ -73,6 +75,7 @@ class AppHandlers:
             proxy_names=self._get_proxy_names(),
             pool_names=self._get_pool_names(),
             all_bookmarks=self._get_bookmarks(),
+            cert_names=self._get_cert_names(),
             import_cookies_file=self._import_cookies_file,
             export_cookies_file=self._export_cookies_file,
             on_add_proxy=self._open_add_proxy,
@@ -90,6 +93,7 @@ class AppHandlers:
             proxy_names=self._get_proxy_names(),
             pool_names=self._get_pool_names(),
             all_bookmarks=self._get_bookmarks(),
+            cert_names=self._get_cert_names(),
             on_bulk=self.open_bulk_dialog,
             on_add_proxy=self._open_add_proxy,
         )

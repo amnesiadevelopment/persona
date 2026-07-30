@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 
 import pytest
 
@@ -44,6 +45,13 @@ def test_survives_reload(store, tmp_path):
     store.add(SSHHost(name="box", host="h", key_path="/k"))
     store2 = SSHHostStore()
     assert store2.get("box").key_path == "/k"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+def test_ssh_hosts_file_is_private(store):
+    store.add(SSHHost(name="box", host="h", password="secret"))
+    mode = os.stat(os.environ["PERSONA_SSH_HOSTS_FILE"]).st_mode & 0o777
+    assert mode == 0o600
 
 
 def test_resolver_uses_profile_proxy(monkeypatch):

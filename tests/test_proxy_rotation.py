@@ -161,8 +161,11 @@ def test_rotate_proxy_updates_last_ip_and_logs_change(tmp_path):
     app.pstore.mark_checked("mob", "US", "United States", "1.1.1.1")
     app._rotate_proxy("mob")
     _wait_done(app, "mob")
+    # the store still tracks the exit IP internally (for geo/country display)
     assert app.pstore.get("mob").last_ip == "9.9.9.9"
-    assert any("rotated IP 1.1.1.1 → 9.9.9.9" in ln for ln in app.logs)
+    # ...but the activity log reports the change WITHOUT leaking the IP
+    assert any("rotated to a new exit" in ln for ln in app.logs)
+    assert not any("9.9.9.9" in ln or "1.1.1.1" in ln for ln in app.logs)
 
 
 def test_rotate_proxy_persists_regenerated_url(tmp_path):
@@ -193,7 +196,8 @@ def test_rotate_proxy_reports_unchanged_ip(tmp_path):
     app.pstore.mark_checked("static", "US", "United States", "1.1.1.1")
     app._rotate_proxy("static")
     _wait_done(app, "static")
-    assert any("IP unchanged (1.1.1.1)" in ln for ln in app.logs)
+    assert any("exit unchanged" in ln for ln in app.logs)
+    assert not any("1.1.1.1" in ln for ln in app.logs)
 
 
 def test_rotate_proxy_failed_check_marks_failure(tmp_path):

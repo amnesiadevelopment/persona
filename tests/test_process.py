@@ -3,6 +3,11 @@ import src.services.browser.process as process
 from src.models.profile import Profile
 
 
+class _Spawned:
+    """A stand-in for the spawned handle that accepts attribute assignment
+    (the real Popen does; a bare object() doesn't)."""
+
+
 class _Store:
     def resolve(self, name):
         return ""
@@ -28,7 +33,7 @@ def _launch_cfg(monkeypatch, tmp_path, calls):
     captured = []
     monkeypatch.setattr(il, "ensure_invisible_installed", _ensure)
     monkeypatch.setattr(il, "is_invisible_installed", _is_installed)
-    monkeypatch.setattr(il, "spawn", lambda cfg: captured.append(cfg) or object())
+    monkeypatch.setattr(il, "spawn", lambda cfg: captured.append(cfg) or _Spawned())
     monkeypatch.setattr(process, "ProxyStore", _Store)
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
     profile = Profile(name="seed-check", engine="firefox")
@@ -42,6 +47,56 @@ def test_cfg_carries_stable_fingerprint_seed(monkeypatch, tmp_path):
     assert cfg["seed"] == profile.fingerprint_seed
     _, cfg2 = _launch_cfg(monkeypatch, tmp_path, calls)
     assert cfg2["seed"] == cfg["seed"]
+
+
+def test_cfg_no_mtls_ca_when_unassigned(monkeypatch, tmp_path):
+    calls = {"ensure": 0, "is": 0}
+    _, cfg = _launch_cfg(monkeypatch, tmp_path, calls)
+    assert cfg["mtls_ca_path"] is None
+
+
+def test_ff_cert_starts_terminator_sets_proxy_and_ca(monkeypatch, tmp_path):
+    # A firefox profile with a cert: the launch starts a terminator, points the
+    # engine's proxy at it, and passes the terminator CA for cert9.db trust.
+    from src.services.cert.store import Certificate
+
+    class _CertStore:
+        def get(self, name):
+            return Certificate(
+                name="admin", p12_path="/vault/admin.p12", password="pw",
+                url="https://admin.example.com/",
+            ) if name == "admin" else None
+
+    class _Session:
+        proxy_url = "http://127.0.0.1:44444"
+        ca_path = "/work/term_ca.crt"
+        spki_b64 = "SPKI=="
+
+        def stop(self):
+            pass
+
+    seen = {}
+
+    def fake_start(cert, upstream, work, verify_upstream=True):
+        seen["cert"] = cert
+        seen["upstream"] = upstream
+        return _Session()
+
+    captured = []
+    monkeypatch.setattr(il, "is_invisible_installed", lambda: True)
+    monkeypatch.setattr(il, "spawn", lambda cfg: captured.append(cfg) or _Spawned())
+    monkeypatch.setattr(process, "ProxyStore", _Store)
+    monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
+    monkeypatch.setattr(process, "CertStore", _CertStore)
+    import src.services.cert.manager as cm
+    monkeypatch.setattr(cm, "start_cert_session", fake_start)
+
+    profile = Profile(name="p", engine="firefox", certificate="admin")
+    process._spawn_invisible(profile, str(tmp_path))
+    cfg = captured[0]
+    assert cfg["proxy_url"] == "http://127.0.0.1:44444"
+    assert cfg["mtls_ca_path"] == "/work/term_ca.crt"
+    assert seen["cert"].name == "admin"
 
 
 def test_needs_fetch_never_triggers_download(monkeypatch, tmp_path):
@@ -70,7 +125,7 @@ class _StoreWithGeolessProxy:
 def test_firefox_unchecked_proxy_ships_host_zone_not_utc(monkeypatch, tmp_path):
     captured = []
     monkeypatch.setattr(il, "is_invisible_installed", lambda: True)
-    monkeypatch.setattr(il, "spawn", lambda cfg: captured.append(cfg) or object())
+    monkeypatch.setattr(il, "spawn", lambda cfg: captured.append(cfg) or _Spawned())
     monkeypatch.setattr(process, "ProxyStore", _StoreWithGeolessProxy)
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
     monkeypatch.setattr(process, "_host_timezone", lambda: "Europe/Kyiv")
@@ -322,6 +377,47 @@ def test_proxied_chromium_bridge_uses_socks5(monkeypatch, tmp_path):
         store=_StoreWithAuthProxy,
     )
     assert _proxy_server_value(captured["args"]) == "socks5://127.0.0.1:40555"
+
+
+def test_failed_launch_stops_bridge_no_orphan(monkeypatch, tmp_path):
+    # If the browser Popen raises AFTER the bridge started, the bridge must be
+    # stopped — otherwise a SOCKS listener orphans on 127.0.0.1 and repeated
+    # failures exhaust ports.
+    stopped = []
+
+    class _StoreWithAuthProxy:
+        def resolve(self, name):
+            return "socks5://user:pass@1.2.3.4:1080"
+
+        def get(self, name):
+            return _GeolessProxy()
+
+    class _FakeBridge:
+        def __init__(self, url):
+            pass
+
+        def start(self):
+            return 40555
+
+        def stop(self):
+            stopped.append(True)
+
+    def _boom(*a, **k):
+        raise OSError("launch failed")
+
+    monkeypatch.setattr(process, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(process, "ProxyStore", _StoreWithAuthProxy)
+    monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
+    monkeypatch.setattr(process, "write_window_entry", lambda name: None)
+    monkeypatch.setattr(process, "ProxyBridge", _FakeBridge)
+    monkeypatch.setattr(process.subprocess, "Popen", _boom)
+    monkeypatch.setattr(process._platform, "IS_LINUX", False)
+
+    import pytest
+
+    with pytest.raises(OSError):
+        process.spawn_browser(Profile(name="fail-launch", proxy="p1"))
+    assert stopped == [True]
 
 
 def test_hidpi_host_gets_render_scale_flag(monkeypatch, tmp_path):

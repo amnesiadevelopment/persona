@@ -6,6 +6,7 @@ from collections.abc import Callable
 from ...core.config import PROXIES_FILE
 from ...core.logging import get_logger
 from ...models.proxy import Proxy
+from ...utils.atomic import atomic_write_json
 from ...utils.proxy_parser import parse_proxy_server
 
 logger = get_logger("proxy.store")
@@ -48,12 +49,13 @@ class ProxyStore:
 
     def _save(self) -> None:
         try:
-            with pathlib.Path(self._path).open("w", encoding="utf-8") as f:
-                json.dump(
-                    {name: p.to_dict() for name, p in self.proxies.items()},
-                    f,
-                    indent=4,
-                )
+            # Proxy URLs carry SOCKS5 user:pass, so the file is written 0600 and
+            # atomically (a crash mid-save must not corrupt every saved proxy).
+            atomic_write_json(
+                self._path,
+                {name: p.to_dict() for name, p in self.proxies.items()},
+                private=True,
+            )
         except Exception as e:
             logger.exception("Error saving proxies: %s", e)
 

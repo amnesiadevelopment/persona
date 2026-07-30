@@ -1,0 +1,7 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability (private)
+    url: https://github.com/amnesiadevelopment/persona/security/advisories/new
+    about: >
+      Never file a security issue publicly. Use private vulnerability reporting
+      so it stays confidential until a fix ships. See SECURITY.md.

@@ -67,3 +67,24 @@ def test_mobile_ext_ios_drops_uadata(tmp_path):
     # iOS Safari exposes no userAgentData
     assert "IS_IOS" in js
     assert "undefined" in js
+
+
+def test_ios_color_depth_is_32_android_is_24(tmp_path):
+    # A real iPhone reports screen.colorDepth/pixelDepth = 32; Android = 24.
+    # A hardcoded 24 on iOS is a device-mismatch tell that CreepJS-class scanners
+    # use to flag the profile as fake and cluster all persona iOS profiles.
+    ios = pathlib.Path(build_mobile_extension(
+        str(tmp_path / "ios"), is_ios=True, platform="iPhone", model="iPhone",
+        ua_full_version="", css_width=393, css_height=852, dpr=3.0,
+        device_memory=4, hardware_concurrency=6, touch_points=5,
+    ) + "/mobile.js").read_text()
+    android = pathlib.Path(build_mobile_extension(
+        str(tmp_path / "and"), is_ios=False, platform="Android", model="Pixel 7",
+        ua_full_version="148.0.0.0", css_width=412, css_height=915, dpr=2.625,
+        device_memory=8, hardware_concurrency=8, touch_points=5,
+    ) + "/mobile.js").read_text()
+    # the depth is chosen from IS_IOS at runtime, so both 32 and 24 appear in the
+    # built script and the choice keys on IS_IOS
+    assert "colorDepth" in ios
+    assert "IS_IOS ? 32 : 24" in ios
+    assert "IS_IOS ? 32 : 24" in android

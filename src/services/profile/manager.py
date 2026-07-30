@@ -2,11 +2,13 @@ import json
 import os
 import pathlib
 import shutil
+import threading
 import time
 
 from ...core.config import DATA_DIR, PROFILES_FILE
 from ...core.logging import get_logger
 from ...models.profile import Profile
+from ...utils.atomic import atomic_write_json
 from .transfer import export_to_zip, import_from_zip
 
 logger = get_logger("profile.manager")
@@ -16,6 +18,9 @@ class ProfileManager:
     def __init__(self) -> None:
         self.profiles: dict[str, Profile] = {}
         self._save_blocked = False
+        # Serializes load+save so a concurrent read during a bulk import/tagging
+        # flow can't see a half-written file and a concurrent add can't be lost.
+        self._lock = threading.RLock()
         self._load_profiles()
         pathlib.Path(DATA_DIR).mkdir(exist_ok=True, parents=True)
 
@@ -23,6 +28,10 @@ class ProfileManager:
         return os.path.join(DATA_DIR, name)
 
     def _load_profiles(self) -> None:
+        with self._lock:
+            self._load_profiles_locked()
+
+    def _load_profiles_locked(self) -> None:
         if pathlib.Path(PROFILES_FILE).exists():
             try:
                 with pathlib.Path(PROFILES_FILE).open(encoding="utf-8") as f:
@@ -63,6 +72,7 @@ class ProfileManager:
                             # keeps getting the default bookmarks. A saved [] is
                             # an intentional empty selection and is preserved.
                             "bookmarks": p_data.get("bookmarks"),
+                            "certificate": p_data.get("certificate"),
                             "cookie_import_status": p_data.get(
                                 "cookie_import_status"
                             ),
@@ -107,11 +117,10 @@ class ProfileManager:
             )
             return
         try:
-            with pathlib.Path(PROFILES_FILE).open("w", encoding="utf-8") as f:
-                json.dump(
+            with self._lock:
+                atomic_write_json(
+                    PROFILES_FILE,
                     {name: p.to_dict() for name, p in self.profiles.items()},
-                    f,
-                    indent=4,
                 )
             logger.debug("Profiles saved")
         except Exception as e:
@@ -130,6 +139,7 @@ class ProfileManager:
         notes: str = "",
         engine: str = "chromium",
         resolution: str = "auto",
+        certificate: str | None = None,
     ) -> bool:
         if name in self.profiles:
             return False
@@ -143,6 +153,7 @@ class ProfileManager:
             search_engine=search_engine,
             bookmark_pool=bookmark_pool or None,
             bookmarks=bookmarks,
+            certificate=certificate or None,
             tags=tags or [],
             notes=notes,
         )
@@ -166,6 +177,7 @@ class ProfileManager:
         new_notes: str | None = None,
         new_engine: str | None = None,
         new_resolution: str | None = None,
+        new_certificate: str | None = None,
     ) -> bool:
         if original_name not in self.profiles:
             return False
@@ -192,6 +204,8 @@ class ProfileManager:
             profile.tags = new_tags
         if new_notes is not None:
             profile.notes = new_notes
+        if new_certificate is not None:
+            profile.certificate = new_certificate or None
         if new_ai_control is not None:
             profile.ai_control = new_ai_control
 
