@@ -2951,6 +2951,11 @@ def test_seed_bookmarks_failed_init_is_not_rerun(monkeypatch, tmp_path):
     # the card log, #202) and heals on the next launch, which finds the db
     # still rootless and inits again.
     inits = []
+    # force the headless-init path (template fast-path off) to exercise the
+    # init-runs-at-most-once guard
+    monkeypatch.setattr(
+        invisible_launch, "_seed_places_from_template", lambda d: False
+    )
     monkeypatch.setattr(
         invisible_launch,
         "_init_places_db",
@@ -2978,6 +2983,10 @@ def test_seed_bookmarks_successful_init_seeds_first_launch(
         _make_places(db)
         return True
 
+    # force the headless-init path so this test still covers it
+    monkeypatch.setattr(
+        invisible_launch, "_seed_places_from_template", lambda d: False
+    )
     monkeypatch.setattr(invisible_launch, "_init_places_db", init)
     ok = invisible_launch._seed_firefox_bookmarks(
         str(tmp_path), [{"name": "a", "url": "https://a.example/"}], 7
@@ -2985,6 +2994,65 @@ def test_seed_bookmarks_successful_init_seeds_first_launch(
     assert ok is True
     assert inits == [(str(tmp_path), 7)]
     assert _toolbar_bookmarks(db) == [("a", "https://a.example/")]
+
+
+def test_seed_bookmarks_uses_template_and_skips_headless_init(monkeypatch, tmp_path):
+    # The template fast-path: a fresh bookmarked profile seeds into the copied
+    # template WITHOUT the slow headless Firefox pre-launch (that double-launch
+    # was the 30-90s cost). _init_places_db must NOT be called when the template
+    # satisfies places_ready.
+    from tests.test_firefox_bookmarks import _make_places, _toolbar_bookmarks
+
+    db = str(tmp_path / "places.sqlite")
+    inits = []
+    monkeypatch.setattr(
+        invisible_launch,
+        "_init_places_db",
+        lambda d, s, stop_event=None, **k: inits.append(d) or False,
+    )
+    # the template copy stands in for the bundled asset: produce a real,
+    # roots-bearing places.sqlite the seed can reconcile into
+    def fake_template(profile_dir):
+        _make_places(db)
+        return True
+
+    monkeypatch.setattr(
+        invisible_launch, "_seed_places_from_template", fake_template
+    )
+    ok = invisible_launch._seed_firefox_bookmarks(
+        str(tmp_path), [{"name": "a", "url": "https://a.example/"}], 7
+    )
+    assert ok is True
+    assert inits == [], "headless init must be skipped when the template took"
+    assert _toolbar_bookmarks(db) == [("a", "https://a.example/")]
+
+
+def test_seed_places_from_template_copies_bundled_db(tmp_path):
+    # The helper copies the committed template into a fresh profile with a valid
+    # schema + roots, and leaves no stale -wal/-shm sidecar.
+    import sqlite3
+
+    ok = invisible_launch._seed_places_from_template(str(tmp_path))
+    dst = tmp_path / "places.sqlite"
+    assert ok is True
+    assert dst.exists()
+    assert not (tmp_path / "places.sqlite-wal").exists()
+    c = sqlite3.connect(f"file:{dst}?mode=ro", uri=True)
+    try:
+        roots = c.execute(
+            "SELECT count(*) FROM moz_bookmarks WHERE id<=6"
+        ).fetchone()[0]
+    finally:
+        c.close()
+    assert roots == 6  # root/menu/toolbar/tags/unfiled/mobile
+
+
+def test_seed_places_from_template_wont_overwrite_existing(tmp_path):
+    # Never clobber a profile that already has places.sqlite.
+    dst = tmp_path / "places.sqlite"
+    dst.write_bytes(b"existing")
+    assert invisible_launch._seed_places_from_template(str(tmp_path)) is False
+    assert dst.read_bytes() == b"existing"
 
 
 def test_seed_bookmarks_locked_db_seeds_on_retry(monkeypatch, tmp_path):

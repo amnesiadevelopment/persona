@@ -1058,12 +1058,24 @@ def _show_bookmarks_toolbar(profile_dir: str) -> None:
     A userChrome.css rule bypasses that JS guard entirely — it's applied at paint
     from the profile's own stylesheet, so the toolbar is visible on the very
     first window. It needs toolkit.legacyUserProfileCustomizations.stylesheets
-    enabled (set in _profile_prefs). Written into chrome/userChrome.css; a zoom
-    sheet a user added is scrubbed separately (_scrub_chrome_zoom_css) and runs
-    before this, so it can't clobber the rule. (#242, root = the
-    setToolbarVisibility guard against an absent collapsed attribute.)"""
+    enabled — and that pref must already be in the profile's prefs.js when Firefox
+    builds its chrome, not injected late through the engine's extra_prefs (which
+    lands after the first paint, so the sheet loaded only from the SECOND launch).
+    We used to rely on the headless places-init to warm that up; now that the
+    fast places-template path skips the headless run, write the pref straight into
+    prefs.js here so the sheet loads on the FIRST paint. Written into
+    chrome/userChrome.css; a zoom sheet a user added is scrubbed separately
+    (_scrub_chrome_zoom_css) and runs before this, so it can't clobber the rule.
+    (#242, root = the setToolbarVisibility guard against an absent collapsed
+    attribute.)"""
     if not profile_dir:
         return
+    # Enable custom stylesheet loading in prefs.js up front (not via the engine's
+    # late extra_prefs) so userChrome.css is read on the very first paint.
+    _upsert_prefs_js(profile_dir, {
+        "toolkit.legacyUserProfileCustomizations.stylesheets": True,
+        "browser.toolbars.bookmarks.visibility": "always",
+    })
     chrome_dir = os.path.join(profile_dir, "chrome")
     path = os.path.join(chrome_dir, "userChrome.css")
     try:
@@ -1269,6 +1281,50 @@ def _seed_offscreen_window(profile_dir: str) -> None:
         pass
 
 
+def _seed_places_from_template(profile_dir: str) -> bool:
+    """Copy the bundled places.sqlite template into a fresh profile so its
+    bookmark roots exist WITHOUT launching Firefox headless first.
+
+    Firefox rejects a hand-authored places.sqlite, but it ACCEPTS one that a
+    matching-build Firefox created (right schema user_version, the fixed roots
+    root/menu/toolbar/unfiled/mobile/tags) — live-proven: the patched FF150 kept
+    the template and didn't rebuild it. The template is committed under
+    src/assets and is checkpointed to journal_mode=DELETE, so it carries NO
+    -wal/-shm sidecars (a stale sidecar is exactly what makes Firefox treat the
+    db as dirty and rebuild it). Copy it in only when the profile has no
+    places.sqlite yet, and clear any sidecars first. Returns True if the file is
+    in place after the copy (the caller re-checks places_ready and falls back to
+    the headless init if the template didn't take — e.g. after an engine update
+    bumps the schema)."""
+    if not profile_dir:
+        return False
+    try:
+        from ...core.assets import asset_path
+    except Exception:
+        return False
+    tmpl = asset_path("places_template.sqlite")
+    dst = os.path.join(profile_dir, "places.sqlite")
+    try:
+        if not os.path.isfile(tmpl):
+            return False
+        if os.path.exists(dst):
+            return False
+        os.makedirs(profile_dir, exist_ok=True)
+        # Remove any leftover sidecars so Firefox doesn't read a stale WAL over
+        # the fresh template and rebuild.
+        for sc in (dst + "-wal", dst + "-shm"):
+            try:
+                os.remove(sc)
+            except OSError:
+                pass
+        import shutil
+
+        shutil.copyfile(tmpl, dst)
+        return os.path.isfile(dst)
+    except OSError:
+        return False
+
+
 def _init_places_db(
     profile_dir: str,
     seed: int,
@@ -1452,22 +1508,31 @@ def _init_places_db(
 
         t = threading.Thread(target=init, daemon=True)
         t.start()
-        # `enter_timeout` bounds how long we wait for a FIREFOX PROCESS to appear,
-        # not the whole enter: a cold first start reads the ~230MB engine off disk
-        # and legitimately takes ~19s on Windows (measured), far past the 8s a
-        # truly-wedged driver would ever need to fork Firefox. Killing at 8s
-        # aborted a launch that was merely slow, twice, turning a ~19s cold start
-        # into a ~22s three-attempt ordeal (#239/#219). So once Firefox is up we
-        # keep waiting for the enter up to the overall `timeout`; only when NO
-        # process ever appears within `enter_timeout` is it really wedged.
+        # Two bounds on the enter, so a wedge costs seconds — not the whole
+        # `timeout`. `enter_timeout` is how long we wait for a FIREFOX PROCESS to
+        # appear (a cold start reads the ~230MB engine off disk, legitimately
+        # ~19s on Windows, past the 8s a truly-wedged driver needs to fork). Once
+        # the process is up we keep waiting for __enter__ to COMPLETE — but only
+        # up to `enter_complete_cap`, not the full `timeout`: a headless enter
+        # that forks Firefox and then never returns (juggler never attaches — the
+        # 90s wedge Mars hit) would otherwise burn the entire timeout on ONE
+        # attempt with no retry. Capping it lets the fast kill+retry (~2.5s)
+        # actually run, so worst case is cap + a retry instead of 90s.
+        enter_complete_cap = 22.0
         proc_deadline = min(deadline, time.monotonic() + enter_timeout)
+        complete_deadline = min(deadline, time.monotonic() + enter_complete_cap)
         while not entered.wait(0.2):
             if done.is_set() or stopped() or time.monotonic() >= deadline:
+                break
+            if time.monotonic() > complete_deadline:
+                # Firefox came up but __enter__ never completed within the cap —
+                # a wedged juggler attach. Treat as wedged: kill + retry below.
                 break
             if time.monotonic() > proc_deadline:
                 # Grace elapsed with no `entered`. If a Firefox process exists for
                 # this profile the enter is progressing (cold disk start) — keep
-                # waiting. If none appeared, the driver genuinely wedged: bail out.
+                # waiting (up to complete_deadline above). If none appeared, the
+                # driver genuinely wedged: bail out.
                 if _profile_firefox_pids(profile_dir):
                     continue
                 break
@@ -1807,10 +1872,29 @@ def _seed_firefox_bookmarks(
                 if init_ran:
                     continue
                 init_ran = True
-                if not _init_places_db(
-                    profile_dir, seed, stop_event=stop_event, log=log
-                ):
-                    continue
+                # FAST PATH: drop in a pre-built places.sqlite template (the
+                # bookmark roots already written) so the seed reconciles into it
+                # WITHOUT a headless Firefox pre-launch. That pre-launch was the
+                # whole reason a fresh bookmarked profile took 30-90s to open —
+                # Firefox run twice, and on Windows its second launch on the same
+                # profile dir wedges the juggler attach for the full timeout
+                # (Mars measured 90s). The template is generated from THIS engine
+                # build (matching schema user_version), so Firefox accepts it and
+                # doesn't rebuild it (live-proven). If it doesn't take (an engine
+                # update changed the schema), fall back to the headless init.
+                if _seed_places_from_template(profile_dir):
+                    if not places_ready(places):
+                        # Template didn't satisfy the readiness check — remove it
+                        # and fall back so a schema drift can't leave a bad db.
+                        try:
+                            os.remove(places)
+                        except OSError:
+                            pass
+                if not places_ready(places):
+                    if not _init_places_db(
+                        profile_dir, seed, stop_event=stop_event, log=log
+                    ):
+                        continue
 
             marks = [
                 Bookmark(b.get("name", ""), b.get("url", "")) for b in bookmarks

@@ -5,6 +5,11 @@ not a git log. When cutting a release, add the new version's highlights here.
 """
 
 CHANGELOG: dict[str, list[str]] = {
+    "2.7.6": [
+        "Firefox profiles now open almost instantly — a fresh profile that used "
+        "to take up to a minute and a half now launches in about a second, with "
+        "its dark theme and bookmarks toolbar already there on the first window.",
+    ],
     "2.7.5": [
         "persona now opens straight to its own centred fingerprint-scan screen — "
         "no more grey \"Starting…\" spinner flashing in a corner, and no window "
