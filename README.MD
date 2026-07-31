@@ -20,6 +20,10 @@
   <a href="https://github.com/amnesiadevelopment/persona/releases/latest"><b>⬇ Download for Windows · macOS · Linux</b></a>
 </p>
 
+<p align="center">
+  <img src="docs/screenshot.png" width="820" alt="persona main window" />
+</p>
+
 ---
 
 persona gives you a desktop UI for creating browser personas — each with a

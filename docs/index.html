@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>persona — anti-detect browser manager</title>
+<meta name="description" content="A local, single-operator anti-detect browser manager. Run many accounts by hand, each with its own fingerprint — without linking them.">
+<link rel="icon" href="icon.png">
+<style>
+  :root {
+    --bg: #0a0a0a; --panel: #121212; --border: #232323;
+    --text: #e6e6e6; --sub: #9a9a9a; --accent: #97ca00; --accent-dim: #5f7d00;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.6; -webkit-font-smoothing: antialiased;
+  }
+  code, .mono { font-family: "SF Mono", "JetBrains Mono", Consolas, monospace; }
+  a { color: var(--accent); text-decoration: none; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 24px; }
+
+  header { text-align: center; padding: 90px 0 40px; }
+  header img.logo { width: 96px; height: 96px; }
+  h1 { font-size: 56px; letter-spacing: -1px; margin: 18px 0 8px; }
+  .tagline { color: var(--sub); font-size: 19px; max-width: 620px; margin: 0 auto 26px; }
+  .badges { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-bottom: 28px; }
+  .badge { background: var(--panel); border: 1px solid var(--border); color: var(--sub);
+    padding: 4px 12px; border-radius: 20px; font-size: 13px; }
+  .badge b { color: var(--accent); }
+  .cta { display: inline-block; background: var(--accent); color: #0a0a0a; font-weight: 700;
+    padding: 13px 30px; border-radius: 6px; font-size: 16px; transition: transform .1s; }
+  .cta:hover { transform: translateY(-2px); }
+
+  .shot { margin: 50px auto 0; max-width: 900px; }
+  .shot img { width: 100%; border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 20px 60px rgba(0,0,0,.6); display: block; }
+
+  section { padding: 70px 0; border-top: 1px solid var(--border); }
+  h2 { font-size: 30px; margin-bottom: 8px; letter-spacing: -.5px; }
+  .lead { color: var(--sub); margin-bottom: 34px; max-width: 640px; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 18px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 22px; }
+  .card h3 { font-size: 17px; margin-bottom: 7px; }
+  .card h3 .dot { color: var(--accent); }
+  .card p { color: var(--sub); font-size: 14.5px; }
+
+  .engines { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 640px) { .engines { grid-template-columns: 1fr; } h1 { font-size: 40px; } }
+  .engine { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 24px; }
+  .engine h3 { font-size: 20px; margin-bottom: 8px; }
+  .engine p { color: var(--sub); font-size: 15px; }
+
+  .dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap: 16px; margin-top: 10px; }
+  .dl a { display: block; background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 22px; text-align: center; color: var(--text); transition: border-color .15s; }
+  .dl a:hover { border-color: var(--accent); }
+  .dl a .os { font-size: 18px; font-weight: 600; }
+  .dl a .file { color: var(--sub); font-size: 13px; margin-top: 4px; }
+
+  .note { background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--accent-dim);
+    border-radius: 6px; padding: 16px 20px; color: var(--sub); font-size: 14.5px; margin-top: 24px; }
+
+  footer { text-align: center; padding: 50px 0 70px; color: var(--sub); font-size: 14px; border-top: 1px solid var(--border); }
+  footer a { margin: 0 8px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <img class="logo" src="icon.png" alt="persona">
+    <h1>persona</h1>
+    <p class="tagline">A local, single-operator anti-detect browser manager. Run many accounts by hand, each with its own fingerprint — without linking them.</p>
+    <div class="badges">
+      <span class="badge">Windows · macOS · Linux</span>
+      <span class="badge">Chromium <b>·</b> Firefox</span>
+      <span class="badge">MIT licensed</span>
+      <span class="badge">Open source</span>
+    </div>
+    <a class="cta" href="https://github.com/amnesiadevelopment/persona/releases/latest">⬇ Download persona</a>
+    <div class="shot"><img src="screenshot.png" alt="persona main window"></div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <h2>Two engines, one manager</h2>
+    <p class="lead">Pick the browser engine per profile. Each persona's fingerprint is seeded deterministically from its name — identical across restarts, unrelated between personas.</p>
+    <div class="engines">
+      <div class="engine">
+        <h3>Chromium</h3>
+        <p>An ungoogled fingerprint-chromium build. Canvas, WebGL, audio, fonts, hardware and platform are spoofed deterministically; extensions add locale and per-profile entropy. Available on every OS.</p>
+      </div>
+      <div class="engine">
+        <h3>Firefox</h3>
+        <p>A patched Firefox 150+ that spoofs at the C++ level — no CDP or webdriver tells. The most invisible profile when that matters.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Features</h2>
+    <p class="lead">Everything you need to keep accounts separate and human-like.</p>
+    <div class="grid">
+      <div class="card"><h3><span class="dot">▸</span> Per-persona fingerprint</h3><p>Canvas, WebGL, audio, fonts, hardware and platform spoofed deterministically — stable across restarts, unlinkable between personas.</p></div>
+      <div class="card"><h3><span class="dot">▸</span> Geo follows the proxy</h3><p>Locale, timezone and geolocation track the proxy's country so they match the exit IP. DNS and WebRTC stay inside the tunnel.</p></div>
+      <div class="card"><h3><span class="dot">▸</span> Named proxy store</h3><p>Reusable SOCKS5/HTTP proxies with a geo/IP check and one-click rotation, assigned to profiles by name.</p></div>
+      <div class="card"><h3><span class="dot">▸</span> mTLS certificates</h3><p>Add a client certificate and assign it to a profile. It's presented only to its admin site — never anywhere else — and stays inside persona, never in the OS store.</p></div>
+      <div class="card"><h3><span class="dot">▸</span> Mobile personas</h3><p>Android/iOS profiles from real device presets: user-agent, screen, touch and Client-Hints.</p></div>
+      <div class="card"><h3><span class="dot">▸</span> Cookies, bookmarks, import/export</h3><p>File-based cookie import/export, reusable bookmark pools, and full profile import/export.</p></div>
+      <div class="card"><h3><span class="dot">▸</span> Local automation API</h3><p>An opt-in local server exposes profile management and a CDP port, so an MCP client like Claude can drive personas. Off by default.</p></div>
+      <div class="card"><h3><span class="dot">▸</span> Resolution &amp; HiDPI</h3><p>Report any screen resolution while the real window stays native and readable — no window-size tell.</p></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Download</h2>
+    <p class="lead">The UI runtime is bundled; each browser engine downloads itself on first use. persona updates itself in place — most updates take seconds.</p>
+    <div class="dl">
+      <a href="https://github.com/amnesiadevelopment/persona/releases/latest"><div class="os">Windows</div><div class="file">persona-windows-setup.exe</div></a>
+      <a href="https://github.com/amnesiadevelopment/persona/releases/latest"><div class="os">macOS</div><div class="file">persona-macos.dmg</div></a>
+      <a href="https://github.com/amnesiadevelopment/persona/releases/latest"><div class="os">Linux</div><div class="file">persona-x86_64.AppImage</div></a>
+    </div>
+    <div class="note"><b>Honest about limits:</b> persona aims for a clean, consistent, human-like profile — not magic invisibility. Passing one fingerprint checker isn't the same as passing systems that score TLS + IP + headers + behaviour together. Proxy quality and human behaviour matter as much as the fingerprint.</div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <a href="https://github.com/amnesiadevelopment/persona">GitHub</a> ·
+    <a href="https://github.com/amnesiadevelopment/persona/releases">Releases</a> ·
+    <a href="https://github.com/amnesiadevelopment/persona/blob/main/.github/SECURITY.md">Security</a>
+    <p style="margin-top:14px">MIT licensed · built by the persona contributors</p>
+  </div>
+</footer>
+
+</body>
+</html>
