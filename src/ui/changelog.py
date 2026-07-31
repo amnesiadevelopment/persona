@@ -5,6 +5,14 @@ not a git log. When cutting a release, add the new version's highlights here.
 """
 
 CHANGELOG: dict[str, list[str]] = {
+    "2.8.1": [
+        "Firefox certificates now work on Windows too (previously Linux-only). "
+        "mTLS client certificates work on Windows and Linux with either engine; "
+        "macOS Firefox support is coming.",
+        "Fixed the welcome screen appearing after an update on an existing setup: "
+        "if you already have profiles, persona never treats a start as a first "
+        "run, even if a settings read briefly failed during a self-update restart.",
+    ],
     "2.8.0": [
         "New Certificates tab: add an mTLS client certificate (.p12/.pfx) and "
         "assign it to a profile to log into an admin site. The certificate is "

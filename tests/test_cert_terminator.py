@@ -242,3 +242,94 @@ def test_terminator_does_not_present_cert_to_other_host(tmp_path):
             t.stop()
     finally:
         stop()
+
+
+def _local_socks5(seen):
+    """A no-auth SOCKS5 server that records each CONNECT target and forwards it.
+    Returns (port, stop_fn)."""
+    import struct
+
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(5)
+    port = srv.getsockname()[1]
+    stop = threading.Event()
+
+    def pipe(a, b):
+        try:
+            while True:
+                d = a.recv(65536)
+                if not d:
+                    break
+                b.sendall(d)
+        except Exception:
+            pass
+        finally:
+            for s in (a, b):
+                try:
+                    s.close()
+                except OSError:
+                    pass
+
+    def handle(c):
+        try:
+            c.recv(262)
+            c.sendall(b"\x05\x00")
+            req = c.recv(4)
+            atyp = req[3]
+            if atyp == 1:
+                host = socket.inet_ntoa(c.recv(4))
+            elif atyp == 3:
+                ln = c.recv(1)[0]
+                host = c.recv(ln).decode()
+            else:
+                host = socket.inet_ntoa(c.recv(16))
+            dport = struct.unpack(">H", c.recv(2))[0]
+            seen.append(f"{host}:{dport}")
+            up = socket.create_connection((host, dport))
+            c.sendall(b"\x05\x00\x00\x01" + b"\x00" * 4 + b"\x00" * 2)
+            threading.Thread(target=pipe, args=(c, up), daemon=True).start()
+            pipe(up, c)
+        except Exception:
+            pass
+
+    def serve():
+        srv.settimeout(0.5)
+        while not stop.is_set():
+            try:
+                c, _ = srv.accept()
+            except OSError:
+                continue
+            threading.Thread(target=handle, args=(c,), daemon=True).start()
+
+    threading.Thread(target=serve, daemon=True).start()
+    return port, (lambda: (stop.set(), srv.close()))
+
+
+def test_terminator_routes_upstream_through_socks(tmp_path):
+    # When a profile has a proxy, the terminator's mTLS connection to the admin
+    # host must go THROUGH that SOCKS proxy so the exit IP matches the rest of the
+    # profile — never a direct connection that would leak the real IP.
+    port, ca_pem, p12, pw, admits, stop = _mtls_origin(tmp_path)
+    seen: list = []
+    socks_port, socks_stop = _local_socks5(seen)
+    try:
+        leaf = term.make_leaf("localhost", tmp_path)
+        pem = term.client_pem_from_p12(p12, pw, tmp_path)
+        t = term.Terminator(
+            "localhost", leaf, pem,
+            upstream_socks=f"socks5://127.0.0.1:{socks_port}",
+            verify_upstream=False,
+        )
+        pport = t.start()
+        try:
+            resp = _connect_via_proxy(pport, "localhost", port, leaf.ca_path)
+            assert b"200 OK" in resp and b"HI!" in resp
+            # the admin origin was reached VIA the SOCKS proxy
+            assert any(str(port) in s for s in seen), seen
+        finally:
+            t.stop()
+    finally:
+        socks_stop()
+        stop()

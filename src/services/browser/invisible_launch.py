@@ -1691,26 +1691,47 @@ def _import_mtls_ca(profile_dir: str, ca_path) -> bool:
         logger.error("certutil unavailable; launching without mTLS CA trust")
         return False
     env = dict(os.environ)
-    lib = _engine_lib_dir()
-    if lib:
-        env["LD_LIBRARY_PATH"] = lib
-        env["DYLD_LIBRARY_PATH"] = lib
-        if _platform.IS_WINDOWS:
-            env["PATH"] = lib + os.pathsep + env.get("PATH", "")
-    argv = [
-        tool, "-A",
-        "-n", "persona-mtls-terminator",
-        "-t", "CT,C,C",
-        "-i", str(ca_path),
-        "-d", f"sql:{profile_dir}",
-    ]
+    if _platform.IS_WINDOWS:
+        # The bundled Windows certutil ships its own NSS DLLs alongside it — put
+        # that directory on PATH so it loads them (not the engine's, which may be
+        # a different NSS version).
+        env["PATH"] = os.path.dirname(tool) + os.pathsep + env.get("PATH", "")
+    else:
+        # The Linux/macOS certutil is tiny and links against the engine's NSS
+        # shared libraries, so point the loader at the engine directory.
+        lib = _engine_lib_dir()
+        if lib:
+            env["LD_LIBRARY_PATH"] = lib
+            env["DYLD_LIBRARY_PATH"] = lib
+    db = f"sql:{profile_dir}"
+    # Writing trust needs the token authenticated. The engine creates the
+    # profile's cert9.db with an EMPTY password, and a from-scratch profile has
+    # no db at all — both cases fail -A with SEC_ERROR_IO unless we (a) create an
+    # empty-password db when none exists and (b) authenticate -A with an empty
+    # password file. An empty password file covers the engine-created db too.
+    import tempfile
+
+    pwfd, pwfile = tempfile.mkstemp(prefix="persona-nsspw-")
+    os.close(pwfd)  # empty file = empty password
     try:
+        if not os.path.isfile(os.path.join(profile_dir, "cert9.db")):
+            subprocess.run(
+                [tool, "-N", "-d", db, "-f", pwfile],
+                env=env, capture_output=True, text=True, timeout=30,
+            )
         r = subprocess.run(
-            argv, env=env, capture_output=True, text=True, timeout=30
+            [tool, "-A", "-n", "persona-mtls-terminator", "-t", "CT,C,C",
+             "-i", str(ca_path), "-d", db, "-f", pwfile],
+            env=env, capture_output=True, text=True, timeout=30,
         )
     except Exception as e:
         logger.exception("certutil failed to run: %s", e)
         return False
+    finally:
+        try:
+            os.remove(pwfile)
+        except OSError:
+            pass
     if r.returncode != 0:
         logger.error("certutil import failed rc=%s: %s", r.returncode, r.stderr.strip())
         return False
@@ -2449,14 +2470,14 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     if _ca:
         if _import_mtls_ca(profile_dir, _ca):
             emit("MTLS_CA_TRUSTED")
-        elif _certutil_path() is None and not _platform.IS_LINUX:
-            # Firefox certificate trust needs certutil, bundled only for Linux so
-            # far. Chromium certificates work on every OS; Firefox certificates on
-            # Windows/macOS are coming in a follow-up. Say so plainly instead of
-            # letting the admin site fail with a cryptic TLS error.
+        elif _certutil_path() is None:
+            # Firefox certificate trust needs certutil, bundled for Linux and
+            # Windows. macOS is coming in a follow-up. Chromium certificates work
+            # on every OS, so say so plainly instead of failing with a cryptic
+            # TLS error on the admin site.
             emit(
-                "MTLS_UNSUPPORTED: Firefox certificates are Linux-only for now "
-                "(use the Chromium engine for this profile on this OS)"
+                "MTLS_UNSUPPORTED: Firefox certificates aren't available on this "
+                "OS yet (use the Chromium engine for this profile)"
             )
         else:
             emit("MTLS_CA_IMPORT_FAILED: opening without certificate trust")

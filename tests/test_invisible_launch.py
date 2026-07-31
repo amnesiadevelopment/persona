@@ -28,10 +28,13 @@ def test_installed_version_shows_patched_build_and_upstream():
     # The sidebar must show the patched engine build (firefox-NN) — it decides
     # behaviour (emoji, spoofs) — alongside the upstream Firefox version, e.g.
     # "firefox-15 · FF 150.0.1". Showing the bare upstream number hid which
-    # patched build was running.
+    # patched build was running. The exact upstream number moves with the engine
+    # (150, 151, …), so assert the SHAPE, not a pinned version.
+    import re
+
     v = installed_version()
     assert v.startswith("firefox-")
-    assert "FF 150" in v
+    assert re.search(r"FF \d{3}", v)
 
 
 def test_ps_single_quote_keeps_backslashes():
@@ -2204,6 +2207,12 @@ def test_init_places_db_uses_profile_seed(monkeypatch, tmp_path):
     # the real launch uses (cfg["seed"]), not a locally derived one.
     import sys
     import types
+
+    # Pin a non-Linux platform so the init runs HEADLESS (on Linux it runs as a
+    # far-offscreen VISIBLE warmup for #242, headless=False) — the assertion
+    # below is about the headless path, so keep the platform deterministic
+    # regardless of the host running the suite.
+    monkeypatch.setattr(invisible_launch._platform, "IS_LINUX", False)
 
     from tests.test_firefox_bookmarks import _make_places
 

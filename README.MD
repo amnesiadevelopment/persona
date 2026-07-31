@@ -1,101 +1,120 @@
 <p align="center">
-  <img src="src/assets/icon.png" width="128" alt="persona logo" />
+  <img src="src/assets/icon.png" width="120" alt="persona logo" />
 </p>
 
-# persona
+<h1 align="center">persona</h1>
 
-persona is a local, single-operator anti-detect browser manager. It gives you a
-desktop UI for creating browser personas — each with a deterministic
-fingerprint, its own proxy, cookies, bookmarks, and OS spoofing — so you can
-work multiple accounts by hand without them being linked.
+<p align="center">
+  A local, single-operator anti-detect browser manager.<br/>
+  Run many accounts by hand, each with its own fingerprint — without linking them.
+</p>
 
-It launches [fingerprint-chromium](https://github.com/adryfish/fingerprint-chromium)
-(an ungoogled-chromium build) and seeds a per-persona fingerprint from the
-profile name, so the same persona looks identical across restarts while distinct
-personas look unrelated.
+<p align="center">
+  <a href="https://github.com/amnesiadevelopment/persona/releases/latest"><img alt="latest release" src="https://img.shields.io/github/v/release/amnesiadevelopment/persona?color=97ca00&label=release"></a>
+  <img alt="platforms" src="https://img.shields.io/badge/platforms-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-333">
+  <img alt="engines" src="https://img.shields.io/badge/engines-Chromium%20%C2%B7%20Firefox-333">
+  <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-blue"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/amnesiadevelopment/persona/releases/latest"><b>⬇ Download for Windows · macOS · Linux</b></a>
+</p>
+
+---
+
+persona gives you a desktop UI for creating browser personas — each with a
+deterministic fingerprint, its own proxy, cookies, bookmarks, OS spoofing, and
+optional mTLS client certificate — so you can work multiple accounts by hand
+without them being linked.
+
+Each persona seeds its fingerprint from the profile name, so the same persona
+looks identical across restarts while distinct personas look unrelated.
+
+## Two engines
+
+persona launches one of two browser engines per profile:
+
+- **Chromium** — [fingerprint-chromium](https://github.com/adryfish/fingerprint-chromium),
+  an ungoogled-chromium build whose fingerprint (canvas, WebGL, audio, fonts,
+  hardware, platform) is seeded deterministically. Extensions add the last-mile
+  spoofs (locale, audio/WebGL entropy, mobile device signals).
+- **Firefox** — a patched Firefox 150+ where the spoofing is done at the C++
+  level (no CDP/webdriver tells). Best when you want the most invisible profile.
 
 ## Download
 
-**Linux (x86_64)** — one command:
+Grab the latest build for your OS from the
+[latest release](https://github.com/amnesiadevelopment/persona/releases/latest):
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/amnesiadevelopment/persona/main/install.sh | sh
-```
+- **Linux** — `persona-x86_64.AppImage`
+  ```sh
+  chmod +x persona-x86_64.AppImage
+  ./persona-x86_64.AppImage
+  ```
+  Or one command: `curl -fsSL https://raw.githubusercontent.com/amnesiadevelopment/persona/main/install.sh | sh`
+- **Windows** — `persona-windows-setup.exe` (per-user install, no admin prompt).
+- **macOS** — `persona-macos.dmg`.
 
-This downloads the latest AppImage, installs it to `~/.local/bin/persona`, adds
-a menu entry with an icon, and you launch it with `persona` (or from your app
-menu). Nothing else to install — the UI runtime and fonts are bundled inside the
-AppImage, and the browser engine downloads itself on first run.
-
-Prefer a direct download? Grab `persona-x86_64.AppImage` from the
-[latest release](https://github.com/amnesiadevelopment/persona/releases/latest), then:
-
-```sh
-chmod +x persona-x86_64.AppImage
-./persona-x86_64.AppImage
-```
-
-> Windows and macOS builds are planned. For now persona targets Linux x86_64.
+The UI runtime is bundled; each browser engine downloads itself on first use.
+persona updates itself in place — most updates swap only the app code and take
+seconds.
 
 ## Features
 
 - **Per-persona fingerprint** — canvas, WebGL, audio, fonts, hardware, and
   platform are spoofed deterministically from the profile name: stable across
-  restarts, distinct (and mutually unlinkable) between personas. Audio and
-  WebGL pixel readback get per-profile entropy from MAIN-world extensions so two
-  same-OS personas don't share a hash.
-- **Geo follows the proxy** — locale, timezone, and `navigator.geolocation`
-  track the proxy's country/coordinates so they match the exit IP.
-- **Named proxy store** — SOCKS5/HTTP proxies as reusable entities with a
-  geo/IP check; assigned to profiles by name; a local relay bridges
-  username/password SOCKS5 that Chromium can't pass directly. DNS and WebRTC are
-  kept inside the tunnel.
-- **Per-OS bundled fonts** — an isolated font set per spoofed OS (Windows/macOS/
-  Linux) so the font fingerprint is identical on any host and CJK text renders
-  without tofu.
-- **Cookie import/export** — file-based (Cookie-Editor JSON), with a persistent
-  per-profile import status.
-- **Bookmarks & pools** — reusable bookmarks grouped into pools, attachable to
-  profiles and written to the bookmarks bar on launch.
-- **First-run onboarding** — a short walkthrough plus an engine download with a
-  live progress bar.
+  restarts, distinct (and mutually unlinkable) between personas.
+- **Two engines per profile** — pick Chromium or the patched Firefox per persona
+  (see above).
+- **Geo follows the proxy** — locale, timezone, and geolocation track the
+  proxy's country/coordinates so they match the exit IP. With no proxy the
+  identity is pinned to a coherent US-English one (the host locale never leaks).
+- **Named proxy store** — SOCKS5/HTTP proxies as reusable entities with a geo/IP
+  check and one-click rotation; assigned to profiles by name. DNS and WebRTC are
+  kept inside the tunnel, and QUIC is disabled behind a proxy so realtime apps
+  (Google Sheets/Docs) don't hang.
+- **mTLS client certificates** — add a `.p12`/`.pfx` in the Certificates tab and
+  assign it to a profile to log into an admin site. The certificate is presented
+  **only** to that site's address — never to any other site, so it can't become
+  a fingerprint that identifies you elsewhere — and it stays inside persona, never
+  imported into the OS certificate store. Available on every OS with the Chromium
+  engine; Firefox certificates are Linux-only for now.
+- **Resolution decoupling & HiDPI** — a profile can report any screen resolution
+  while the real window stays native and readable, with no window-size tell.
+- **Mobile personas** — Android/iOS profiles built from real device presets
+  (UA, screen, touch, Client-Hints).
+- **Per-OS bundled fonts** — an isolated font set per spoofed OS so the font
+  fingerprint is identical on any host and CJK text renders without tofu.
+- **Cookie import/export**, **bookmarks & pools**, **profile import/export**,
+  **search-engine choice**, and **SSH-through-a-profile's-proxy**.
 - **Local automation API (opt-in)** — a local server, off by default, exposes
-  profile management and (when enabled per profile) a CDP port, so an MCP client
-  such as Claude can create, edit, and drive personas. No browser is reachable
-  until you turn the server on.
-- **Quality-of-life** — dark theme, default search engine, profile search by
-  name/proxy/OS, and taskbar labelling (each window shows its persona name).
+  profile management and (per profile) a CDP port, so an MCP client such as
+  Claude can create, edit, and drive personas. No browser is reachable until you
+  turn the server on.
+- **Quality-of-life** — dark theme, profile search, taskbar labelling, and a
+  header tag (persona@windows / persona@mac / persona@linux) so a shared
+  screenshot says which machine it came from.
 
 ## Limitations (honest)
 
 persona aims for a clean, consistent, human-like profile — not magic invisibility.
 
-- **The browser runs software rendering.** With no GPU (e.g. inside a VM) WebGL
-  pixels come from a software renderer. The vendor/renderer strings are spoofed
-  plausibly and personas are mutually unlinkable, but the output does not match a
-  specific real GPU. Looking like specific hardware needs a real GPU or an
-  engine-level (C++) patch.
-- **Spoofing is JS-layer where the engine doesn't cover it.** Geo/locale/title
-  and the audio/WebGL entropy are MAIN-world overrides, which a thorough checker
-  (e.g. pixelscan) can flag as "masking detected". Engine-level (C++) spoofing is
-  invisible; that is a deliberate non-goal here.
+- **The Chromium engine's spoofing is partly JS-layer.** Geo/locale and the
+  audio/WebGL entropy are MAIN-world overrides, which a thorough checker (e.g.
+  pixelscan) can flag as "masking detected". The Firefox engine spoofs at the
+  C++ level, which is invisible — prefer it when that matters.
+- **Software rendering in a VM.** With no GPU, WebGL comes from a software
+  renderer: the vendor/renderer strings are spoofed plausibly and personas are
+  mutually unlinkable, but the output doesn't match a specific real GPU.
 - **Real anti-fraud is layered.** Passing a single fingerprint checker is not the
   same as passing systems that score TLS + IP + headers + behaviour together.
   Proxy quality and human-like behaviour matter as much as the fingerprint.
 
-## Installation
+## Development
 
 ```bash
 python -m venv .venv
 .venv/bin/pip install --prefer-binary -r requirements.txt
-```
-
-fingerprint-chromium is expected at `~/fpchrome/fpchrome.AppImage` (persona can
-download it for you on first run).
-
-## Running
-
-```bash
 .venv/bin/python -m src.main
 ```
 
@@ -108,6 +127,7 @@ Configuration is via environment variables (or a `.env` file).
 | `PERSONA_PROFILES_FILE` | `profiles.json` | Profile metadata store. |
 | `PERSONA_PROXIES_FILE` | `proxies.json` | Proxy store. |
 | `PERSONA_BOOKMARKS_FILE` | `bookmarks.json` | Bookmark/pool store. |
+| `PERSONA_CERTS_FILE` | `certificates.json` | Certificate store. |
 | `PERSONA_DATA_DIR` | `persona_data` | Per-profile browser data. |
 | `PERSONA_LOG_DIR` | `logs` | Daily log files. |
 | `PERSONA_LOG_LEVEL` | `INFO` | Python log level. |
@@ -115,10 +135,12 @@ Configuration is via environment variables (or a `.env` file).
 | `PERSONA_API_HOST` | `127.0.0.1` | Local API host. |
 | `PERSONA_API_PORT` | `8000` | Local API port. |
 
-## Layout
+All runtime data lives under `~/.persona/` and is never touched by (un)install.
 
-- `persona_data/<profile-name>/` — browser data per profile (never committed)
-- `logs/persona_YYYYMMDD.log` — daily log file
+## Security
+
+See [`SECURITY.md`](.github/SECURITY.md) for how to report a vulnerability
+privately.
 
 ## License
 

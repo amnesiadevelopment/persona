@@ -252,9 +252,13 @@ class Terminator:
                 pass
 
     def _open_upstream(self, host: str, port: int) -> socket.socket:
+        # Bound the connect so a dead admin host or wedged proxy fails fast (the
+        # browser sees a closed tunnel) instead of hanging the request forever.
         if self._socks:
-            return _socks5_connect(self._socks, host, port)
-        return socket.create_connection((host, port))
+            return _socks5_connect(self._socks, host, port, timeout=30)
+        raw = socket.create_connection((host, port), timeout=30)
+        raw.settimeout(None)  # long-lived tunnel; don't time out a quiet link
+        return raw
 
     def _mitm(self, conn: socket.socket, host: str, port: int) -> None:
         tls = self._leaf_ctx.wrap_socket(conn, server_side=True)
@@ -303,13 +307,17 @@ def _pipe(src: socket.socket, dst: socket.socket) -> None:
                 pass
 
 
-def _socks5_connect(socks_url: str, dest_host: str, dest_port: int) -> socket.socket:
+def _socks5_connect(
+    socks_url: str, dest_host: str, dest_port: int, timeout: float | None = None
+) -> socket.socket:
     """Blocking SOCKS5 CONNECT; returns the connected socket. Destination is sent
-    as a domain name so DNS resolves at the proxy's exit."""
+    as a domain name so DNS resolves at the proxy's exit. ``timeout`` bounds the
+    connect + handshake; it's cleared before the socket is handed back so the
+    long-lived tunnel isn't subject to it."""
     import struct
 
     p = urlparse(socks_url if "://" in socks_url else "socks5://" + socks_url)
-    s = socket.create_connection((p.hostname, p.port or 1080))
+    s = socket.create_connection((p.hostname, p.port or 1080), timeout=timeout)
     user, pw = (p.username or ""), (p.password or "")
     if user or pw:
         s.sendall(b"\x05\x01\x02")
@@ -341,4 +349,7 @@ def _socks5_connect(socks_url: str, dest_host: str, dest_port: int) -> socket.so
         s.recv(ln + 2)
     elif atyp == 0x04:
         s.recv(16 + 2)
+    # the tunnel is long-lived; drop the handshake timeout so a quiet connection
+    # isn't torn down by it.
+    s.settimeout(None)
     return s

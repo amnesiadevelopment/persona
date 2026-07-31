@@ -475,10 +475,17 @@ def test_engine2_click_claims_busy_before_worker_and_second_click_is_noop(monkey
 
 # --- _show_startup_notice (#214/#215) ---
 
-def _make_notice_app(monkeypatch, *, onboarded, last_version, current="2.5.2"):
+def _make_notice_app(monkeypatch, *, onboarded, last_version, current="2.5.2",
+                     has_profiles=False):
     from src.ui import app as app_mod
+    from types import SimpleNamespace
 
     app = make_app(FakePage())
+    # The onboarding decision now also consults whether the user already has
+    # profiles (existing data = not a first run). Control it explicitly.
+    app.pm = SimpleNamespace(
+        list_profiles=lambda: ([object()] if has_profiles else [])
+    )
     calls = {"onboarding": 0, "changelog": None, "recorded": None}
     app._show_onboarding = lambda: calls.__setitem__("onboarding", calls["onboarding"] + 1)
     monkeypatch.setattr(app_mod.app_settings, "is_onboarding_done", lambda: onboarded)

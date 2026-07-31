@@ -60,3 +60,30 @@ def test_downgrade_or_equal_recorded_newer_shows_nothing():
     assert decide_startup_notice(
         onboarding_done=True, last_version="2.6.0", current_version="2.5.2"
     ) == Notice.NONE
+
+
+def test_existing_profiles_never_re_onboard_despite_lost_settings():
+    # The strongest proof of a prior run is the user's own data. If settings.json
+    # reads empty (both flags racy after a self-update relaunch) but the user
+    # already has profiles, this is NOT a first install — it's an update. Never
+    # pop the full welcome over an existing setup (the self-update-relaunch bug
+    # Mars hit: onboarding shown on top of 3 loaded profiles).
+    assert decide_startup_notice(
+        onboarding_done=False, last_version="", current_version="2.8.1",
+        has_profiles=True,
+    ) == Notice.CHANGELOG
+
+
+def test_no_profiles_and_never_onboarded_is_still_first_run():
+    # A genuine first install: no data, no flag, no version → the real onboarding.
+    assert decide_startup_notice(
+        onboarding_done=False, last_version="", current_version="2.8.1",
+        has_profiles=False,
+    ) == Notice.ONBOARDING
+
+
+def test_has_profiles_defaults_false_keeps_old_behaviour():
+    # The parameter is optional so existing callers/tests are unaffected.
+    assert decide_startup_notice(
+        onboarding_done=False, last_version="", current_version="2.8.1"
+    ) == Notice.ONBOARDING

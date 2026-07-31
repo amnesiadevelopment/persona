@@ -1798,6 +1798,9 @@ class App:
             onboarding_done=app_settings.is_onboarding_done(),
             last_version=app_settings.last_seen_version(),
             current_version=current,
+            # Existing profiles prove a prior run even if settings.json read
+            # empty on a self-update relaunch — never re-onboard over real data.
+            has_profiles=bool(self.pm.list_profiles()),
         )
         if notice is Notice.ONBOARDING:
             self._show_onboarding()
