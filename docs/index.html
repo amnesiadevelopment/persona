@@ -169,27 +169,17 @@
     display: inline-flex; align-items: center; gap: 7px; }
   .mockup .bar .title img { width: 15px; height: 15px; }
   .mockup img.shot { width: 100%; display: block; }
-  .float {
-    position: absolute; z-index: 2; display: flex; align-items: center; gap: 9px;
-    background: rgba(16,16,16,.9); border: 1px solid var(--border2); backdrop-filter: blur(8px);
-    padding: 10px 14px; border-radius: 12px; box-shadow: 0 12px 30px rgba(0,0,0,.5);
-    font-size: 13.5px;
-  }
-  .float svg { width: 18px; height: 18px; stroke: var(--accent); fill: none; stroke-width: 1.8;
-    stroke-linecap: round; stroke-linejoin: round; }
-  .float b { color: var(--text); } .float span { color: var(--sub); }
-  .float.f1 { top: 8%; left: -4%; animation: bobY 6s ease-in-out infinite; }
-  .float.f2 { top: 44%; right: -5%; animation: bobY 7s ease-in-out infinite .5s; }
-  .float.f3 { bottom: 20%; left: 1%; animation: bobY 6.5s ease-in-out infinite 1s; }
-  @keyframes bobY { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-10px)} }
-  @media (max-width: 820px) { .float { display: none; } }
 
   /* ---------- trust strip / marquee ---------- */
-  .strip { border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+  .strip { position: relative; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
     background: var(--bg2); overflow: hidden; padding: 20px 0; }
-  .marquee { display: flex; gap: 48px; width: max-content; animation: scrollx 26s linear infinite; }
+  .strip::before, .strip::after { content: ""; position: absolute; top: 0; bottom: 0; width: 120px; z-index: 2; pointer-events: none; }
+  .strip::before { left: 0; background: linear-gradient(90deg, var(--bg2), transparent); }
+  .strip::after { right: 0; background: linear-gradient(270deg, var(--bg2), transparent); }
+  .marquee { display: flex; width: max-content; animation: scrollx 30s linear infinite; }
   .strip:hover .marquee { animation-play-state: paused; }
   @keyframes scrollx { to { transform: translateX(-50%); } }
+  .mgroup { display: flex; gap: 48px; padding-right: 48px; flex: none; }
   .marquee .item { display: inline-flex; align-items: center; gap: 10px; color: var(--dim);
     font-size: 14px; white-space: nowrap; }
   .marquee .item svg { width: 18px; height: 18px; stroke: var(--accent-dim); fill: none;
@@ -356,9 +346,6 @@
     <p class="os-line reveal in d3">Free forever · MIT licensed · no telemetry</p>
 
     <div class="shot-wrap reveal in d2">
-      <div class="float f1"><svg viewBox="0 0 24 24"><path d="M12 2a5 5 0 00-5 5v3a7 7 0 0014 0V7a5 5 0 00-5-5z"/><path d="M9 21c.6-2.5 1-4.5 1-7"/></svg><span>fingerprint</span><b>per profile</b></div>
-      <div class="float f2"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 010 18"/></svg><span>geo</span><b>follows proxy</b></div>
-      <div class="float f3"><svg viewBox="0 0 24 24"><path d="M12 2l7 3v6c0 5-3 8-7 9-4-1-7-4-7-9V5z"/><path d="M9.5 12l1.8 1.8L15 10"/></svg><b>mTLS</b><span>ready</span></div>
       <div class="mockup">
         <div class="bar"><span class="r"></span><span class="y"></span><span class="g"></span><span class="title"><img src="icon.png" alt="">persona</span></div>
         <img class="shot" src="screenshot.png" alt="persona main window with three profiles">
@@ -369,14 +356,16 @@
 
 <div class="strip">
   <div class="marquee" id="marquee">
-    <!-- duplicated in JS for seamless loop -->
-    <span class="item"><svg viewBox="0 0 24 24"><path d="M12 2a5 5 0 00-5 5v3a7 7 0 0014 0V7a5 5 0 00-5-5z"/></svg>Deterministic fingerprints</span>
-    <span class="item"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/></svg>Proxy-matched geo</span>
-    <span class="item"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10"/></svg>Named proxy store</span>
-    <span class="item"><svg viewBox="0 0 24 24"><path d="M12 2l7 3v6c0 5-3 8-7 9-4-1-7-4-7-9V5z"/></svg>mTLS certificates</span>
-    <span class="item"><svg viewBox="0 0 24 24"><rect x="7" y="2" width="10" height="20" rx="2.5"/></svg>Mobile personas</span>
-    <span class="item"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>Automation API</span>
-    <span class="item"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H4z"/><path d="M2 20h20"/></svg>Resolution &amp; HiDPI</span>
+    <div class="mgroup" id="mgroup">
+      <span class="item"><svg viewBox="0 0 24 24"><path d="M12 2a5 5 0 00-5 5v3a7 7 0 0014 0V7a5 5 0 00-5-5z"/></svg>Deterministic fingerprints</span>
+      <span class="item"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/></svg>Proxy-matched geo</span>
+      <span class="item"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10"/></svg>Named proxy store</span>
+      <span class="item"><svg viewBox="0 0 24 24"><path d="M12 2l7 3v6c0 5-3 8-7 9-4-1-7-4-7-9V5z"/></svg>mTLS certificates</span>
+      <span class="item"><svg viewBox="0 0 24 24"><rect x="7" y="2" width="10" height="20" rx="2.5"/></svg>Mobile personas</span>
+      <span class="item"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>Automation API</span>
+      <span class="item"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H4z"/><path d="M2 20h20"/></svg>Resolution &amp; HiDPI</span>
+      <span class="item"><svg viewBox="0 0 24 24"><path d="M12 2l7 3v6c0 5-3 8-7 9-4-1-7-4-7-9V5z"/><path d="M9.5 12l1.8 1.8L15 10"/></svg>No telemetry</span>
+    </div>
   </div>
 </div>
 
@@ -542,9 +531,18 @@
   var onScroll = function(){ nav.classList.toggle('scrolled', window.scrollY > 8); };
   onScroll(); window.addEventListener('scroll', onScroll, { passive: true });
 
-  // seamless marquee (duplicate content once)
-  var m = document.getElementById('marquee');
-  if (m) { m.innerHTML += m.innerHTML; }
+  // seamless marquee: clone the group until it fills >= 2x viewport, then -50% loops perfectly
+  (function(){
+    var m = document.getElementById('marquee');
+    var g = document.getElementById('mgroup');
+    if (!m || !g) return;
+    var need = window.innerWidth * 2;
+    // keep cloning the ORIGINAL group so total width comfortably exceeds 2x viewport
+    var guard = 0;
+    while (m.scrollWidth < need && guard < 12) { m.appendChild(g.cloneNode(true)); guard++; }
+    // duplicate the whole rail once more so the -50% wrap point has identical content
+    var half = m.innerHTML; m.innerHTML = half + half;
+  })();
 
   // cursor-follow glow on feature cards
   document.querySelectorAll('.card').forEach(function(c){
