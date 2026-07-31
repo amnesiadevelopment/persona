@@ -38,15 +38,29 @@
     mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 30%, transparent 75%);
     -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 30%, transparent 75%);
   }
+  /* soft aurora beam sitting behind the hero headline */
+  .bg-aurora {
+    position: fixed; top: -280px; left: 50%; transform: translateX(-50%);
+    width: 1200px; height: 760px; z-index: -1; pointer-events: none;
+    background:
+      radial-gradient(closest-side at 50% 40%, rgba(151,202,0,.22), transparent 70%),
+      radial-gradient(closest-side at 32% 30%, rgba(151,202,0,.14), transparent 66%),
+      radial-gradient(closest-side at 70% 34%, rgba(120,200,80,.12), transparent 66%);
+    filter: blur(30px); animation: auroraDrift 16s ease-in-out infinite;
+  }
+  @keyframes auroraDrift {
+    0%,100% { transform: translateX(-50%) scale(1); opacity: .9; }
+    50%     { transform: translateX(-46%) scale(1.06); opacity: 1; }
+  }
   .bg-orb {
     position: fixed; z-index: -1; border-radius: 50%; pointer-events: none;
-    filter: blur(90px); opacity: .5;
+    filter: blur(100px); opacity: .55;
   }
-  .bg-orb.a { top: -160px; left: 8%; width: 380px; height: 380px;
-    background: rgba(151,202,0,.20); animation: float1 14s ease-in-out infinite; }
-  .bg-orb.b { top: 380px; right: 4%; width: 320px; height: 320px;
-    background: rgba(80,140,255,.10); animation: float2 18s ease-in-out infinite; }
-  @keyframes float1 { 0%,100%{transform:translate(0,0)} 50%{transform:translate(40px,50px)} }
+  .bg-orb.a { top: 60px; left: 4%; width: 420px; height: 420px;
+    background: rgba(151,202,0,.16); animation: float1 15s ease-in-out infinite; }
+  .bg-orb.b { top: 520px; right: 2%; width: 360px; height: 360px;
+    background: rgba(70,130,255,.10); animation: float2 19s ease-in-out infinite; }
+  @keyframes float1 { 0%,100%{transform:translate(0,0)} 50%{transform:translate(50px,40px)} }
   @keyframes float2 { 0%,100%{transform:translate(0,0)} 50%{transform:translate(-50px,30px)} }
 
   /* ---------- reveal on scroll ---------- */
@@ -56,7 +70,7 @@
   .reveal.d3 { transition-delay: .18s } .reveal.d4 { transition-delay: .24s }
   @media (prefers-reduced-motion: reduce) {
     .reveal { opacity: 1 !important; transform: none !important; }
-    .bg-orb, .hero-glow, .brand-mark::after { animation: none !important; }
+    .bg-orb, .bg-aurora, .hero-glow, .brand-mark::after { animation: none !important; }
   }
 
   /* ---------- sticky nav ---------- */
@@ -94,12 +108,12 @@
   /* ---------- hero ---------- */
   .hero { position: relative; text-align: center; padding: 92px 0 0; }
   .hero-glow {
-    position: absolute; top: -300px; left: 50%; transform: translateX(-50%);
-    width: 900px; height: 700px; pointer-events: none; z-index: 0;
-    background: radial-gradient(circle, rgba(151,202,0,.18) 0%, rgba(151,202,0,.05) 34%, transparent 62%);
-    animation: breathe 8s ease-in-out infinite;
+    position: absolute; top: -120px; left: 50%; transform: translateX(-50%);
+    width: 680px; height: 420px; pointer-events: none; z-index: 0;
+    background: radial-gradient(ellipse at center, rgba(151,202,0,.16) 0%, transparent 68%);
+    filter: blur(10px); animation: breathe 8s ease-in-out infinite;
   }
-  @keyframes breathe { 0%,100%{opacity:.7;transform:translateX(-50%) scale(1)} 50%{opacity:1;transform:translateX(-50%) scale(1.08)} }
+  @keyframes breathe { 0%,100%{opacity:.65} 50%{opacity:1} }
   .hero .wrap { position: relative; z-index: 1; }
   .pill {
     display: inline-flex; align-items: center; gap: 8px;
@@ -260,17 +274,24 @@
   .dl { display: grid; grid-template-columns: repeat(3,1fr); gap: 16px; margin-top: 8px; }
   @media (max-width: 640px) { .dl { grid-template-columns: 1fr; } }
   .dl a {
-    display: flex; flex-direction: column; align-items: center; gap: 10px;
+    position: relative; overflow: hidden;
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
     background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
-    padding: 30px 22px; text-align: center; color: var(--text);
+    padding: 32px 22px 26px; text-align: center; color: var(--text);
     transition: border-color .2s, transform .2s, background .2s;
   }
   .dl a:hover { border-color: var(--accent); transform: translateY(-4px); background: var(--panel2); }
-  .dl a svg.os-ic { width: 36px; height: 36px; stroke: var(--sub); fill: none; stroke-width: 1.4;
-    stroke-linecap: round; stroke-linejoin: round; transition: stroke .2s, transform .2s; }
-  .dl a:hover svg.os-ic { stroke: var(--accent); transform: translateY(-2px); }
+  .dl a svg.os-ic { width: 40px; height: 40px; color: var(--sub); margin-bottom: 4px;
+    transition: color .2s, transform .2s; }
+  .dl a:hover svg.os-ic { color: var(--accent); transform: translateY(-2px) scale(1.06); }
   .dl a .os { font-size: 17px; font-weight: 700; }
   .dl a .file { color: var(--dim); font-size: 12.5px; }
+  .dl a .dlhint {
+    margin-top: 8px; font-size: 11.5px; font-weight: 600; letter-spacing: .3px;
+    color: var(--accent-dim); border: 1px solid rgba(151,202,0,.18); border-radius: 20px;
+    padding: 4px 11px; transition: color .2s, border-color .2s, background .2s;
+  }
+  .dl a:hover .dlhint { color: #070707; background: var(--accent); border-color: var(--accent); }
   .note {
     background: linear-gradient(180deg, var(--panel), var(--bg2));
     border: 1px solid var(--border); border-left: 3px solid var(--accent-dim);
@@ -310,6 +331,7 @@
 <body>
 
 <div class="bg-grid"></div>
+<div class="bg-aurora"></div>
 <div class="bg-orb a"></div>
 <div class="bg-orb b"></div>
 
@@ -334,7 +356,7 @@
     <h1 class="reveal in">Run every account<br><span class="grad">as its own person.</span></h1>
     <p class="tagline reveal in d1">A local, single-operator anti-detect browser manager. Each persona gets its own fingerprint, proxy and identity — worked by hand, never linked.</p>
     <div class="hero-cta reveal in d2">
-      <a class="btn-primary" href="https://github.com/amnesiadevelopment/persona/releases/latest">
+      <a class="btn-primary" href="#download">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#070707" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><g class="arr"><path d="M12 3v12m0 0l-4-4m4 4l4-4"/></g><path d="M5 21h14"/></svg>
         Download persona
       </a>
@@ -467,17 +489,20 @@
     <h2 class="reveal d1">Download for your OS</h2>
     <p class="lead reveal d2">Grab the latest build. The browser engine downloads itself on first launch.</p>
     <div class="dl">
-      <a class="reveal" href="https://github.com/amnesiadevelopment/persona/releases/latest">
-        <svg class="os-ic" viewBox="0 0 24 24"><path d="M3 5.5l8-1.2v7.2H3zM11 4.1L21 2.7v9H11zM3 12.5h8v7.2l-8-1.2zM11 12.5h10v9l-10-1.4z"/></svg>
+      <a class="reveal" href="https://github.com/amnesiadevelopment/persona/releases/latest/download/persona-windows-setup.exe">
+        <svg class="os-ic" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/></svg>
         <div class="os">Windows</div><div class="file">persona-windows-setup.exe</div>
+        <span class="dlhint">Direct download · .exe</span>
       </a>
-      <a class="reveal d1" href="https://github.com/amnesiadevelopment/persona/releases/latest">
-        <svg class="os-ic" viewBox="0 0 24 24"><path d="M16 3c-1 .1-2.2.8-2.9 1.6-.6.8-1.2 2-1 3.2 1.2 0 2.4-.7 3.1-1.5.7-.9 1.1-2 .8-3.3z"/><path d="M18.5 17c-.5 1.2-1.1 2.3-2 3.3-.8.8-1.6 1.7-2.8 1.7-1.1 0-1.5-.7-2.9-.7s-1.8.7-2.9.7c-1.2 0-2.1-.9-2.9-1.8C1.5 17.8.9 13.5 2.7 11c.9-1.3 2.4-2.1 3.8-2.1 1.2 0 2 .8 3 .8s1.7-.8 3.1-.8c1.2 0 2.5.7 3.4 1.8-3 1.6-2.5 5.9.5 6.5z"/></svg>
+      <a class="reveal d1" href="https://github.com/amnesiadevelopment/persona/releases/latest/download/persona-macos.dmg">
+        <svg class="os-ic" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></svg>
         <div class="os">macOS</div><div class="file">persona-macos.dmg</div>
+        <span class="dlhint">Direct download · .dmg</span>
       </a>
-      <a class="reveal d2" href="https://github.com/amnesiadevelopment/persona/releases/latest">
-        <svg class="os-ic" viewBox="0 0 24 24"><path d="M9 3c-1 1-1 3-.5 4.5C7 9 6 11 6.5 13.5c.3 1.4-.5 2.5-1 3.5-.5 1.2 0 2.5 1.5 2.8 1 .2 1.5 1.2 2.5 1.2h4c1 0 1.5-1 2.5-1.2 1.5-.3 2-1.6 1.5-2.8-.5-1-1.3-2.1-1-3.5C18.5 11 17.5 9 16 7.5 16.5 6 16.5 4 15.5 3c-1 1-2 1.5-3.2 1.5S10 4 9 3z"/></svg>
+      <a class="reveal d2" href="https://github.com/amnesiadevelopment/persona/releases/latest/download/persona-x86_64.AppImage">
+        <svg class="os-ic" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.832-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.394-.132.602 0 .199.027.4.055.536.058.399.116.728.04.97-.249.68-.28 1.145-.106 1.484.174.334.535.47.94.601.81.2 1.91.135 2.774.6.926.466 1.866.67 2.616.47.526-.116.97-.464 1.208-.946.587-.003 1.23-.269 2.26-.334.699-.058 1.574.267 2.577.2.025.134.063.198.114.333l.003.003c.391.778 1.113 1.132 1.884 1.071.771-.06 1.592-.536 2.257-1.306.631-.765 1.683-1.084 2.378-1.503.348-.199.629-.469.649-.853.023-.4-.2-.811-.714-1.376v-.097l-.003-.003c-.17-.2-.25-.535-.338-.926-.085-.401-.182-.786-.492-1.046h-.003c-.059-.054-.123-.067-.188-.135a.357.357 0 00-.19-.064c.431-1.278.264-2.55-.173-3.694-.533-1.41-1.465-2.638-2.175-3.483-.796-1.005-1.576-1.957-1.56-3.368.026-2.152.236-6.133-3.544-6.139zm.529 3.405h.013c.213 0 .396.062.584.198.19.135.33.332.438.533.105.259.158.459.166.724 0-.02.006-.04.006-.06v.105a.086.086 0 01-.004-.021l-.004-.024a1.807 1.807 0 01-.15.706.953.953 0 01-.213.335.71.71 0 00-.088-.042c-.104-.045-.198-.064-.284-.133a1.312 1.312 0 00-.22-.066c.05-.06.146-.133.183-.198.053-.128.082-.264.088-.402v-.02a1.21 1.21 0 00-.061-.4c-.045-.134-.101-.2-.183-.333-.084-.066-.167-.132-.267-.132h-.008c-.093 0-.176.03-.257.132a.834.834 0 00-.183.333c-.039.134-.048.271-.052.402v.019c.006.157.031.293.088.4-.101.086-.222.135-.34.135-.203 0-.397-.156-.585-.4a1.303 1.303 0 01-.213-.735c0-.19.052-.4.15-.535.096-.196.246-.331.436-.397.115-.043.234-.066.352-.066v.033zm-2.365.001c.126 0 .253.043.373.132.144.098.253.263.316.463.062.201.084.4.084.6v.026c-.006.198-.043.4-.15.6a1.116 1.116 0 01-.373.397c-.144.098-.31.132-.472.132-.161 0-.328-.034-.472-.132a1.116 1.116 0 01-.373-.397c-.107-.2-.144-.402-.15-.6v-.026c0-.2.022-.399.084-.6.063-.2.172-.365.316-.463.12-.089.247-.132.373-.132h.037zm7.792 15.9c-.017.398-.283.7-.63.898-.694.42-1.746.738-2.377 1.503-.664.77-1.485 1.247-2.256 1.307-.771.06-1.493-.294-1.885-1.072l-.002-.003c-.05-.135-.09-.199-.114-.333-1.003.067-1.878-.258-2.577-.2-1.03.065-1.674.331-2.26.334-.239.482-.683.83-1.209.946-.75.2-1.69-.004-2.616-.47-.864-.465-1.964-.4-2.774-.6-.405-.132-.766-.267-.94-.601-.174-.34-.143-.804.106-1.484.076-.242.018-.571-.04-.97a3.63 3.63 0 01-.055-.536 1.44 1.44 0 01.132-.602c.206-.411.55-.544.864-.68.312-.133.598-.201.797-.4.213-.239.403-.571.663-.839a.424.424 0 01.11-.135c-.123-.805.009-1.657.287-2.489.589-1.771 1.831-3.47 2.716-4.521.75-1.067.974-1.928 1.05-3.02.065-1.491-1.056-5.965 3.17-6.298.165-.013.325-.021.48-.021 3.78.006 3.57 3.987 3.544 6.14-.016 1.41.764 2.362 1.56 3.367.71.845 1.642 2.073 2.175 3.483.437 1.144.604 2.416.173 3.694a.357.357 0 01.19.064c.065.068.129.081.188.135h.003c.31.26.407.645.492 1.046.088.391.168.726.338.926l.003.003v.097c.514.565.737.976.714 1.376z"/></svg>
         <div class="os">Linux</div><div class="file">persona-x86_64.AppImage</div>
+        <span class="dlhint">Direct download · .AppImage</span>
       </a>
     </div>
     <div class="note reveal">
