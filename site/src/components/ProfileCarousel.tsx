@@ -3,8 +3,8 @@ import { motion } from 'framer-motion'
 
 // Fan carousel of real persona screens. Each card is an actual app screenshot
 // with a badge label; the deck auto-advances and any side card can be clicked
-// to bring it to the front. Card size and fan spread scale with the container
-// so it never overflows on narrow screens.
+// to bring it to the front. Desktop keeps the original spacious fan; below
+// 600px it shrinks to a single card so it fits a phone.
 const SCREENS = [
   { badge: 'PROFILES', src: 'screens/profiles.png' },
   { badge: 'NETWORK', src: 'screens/network.png' },
@@ -13,7 +13,6 @@ const SCREENS = [
   { badge: 'AUTOMATION', src: 'screens/connect.png' },
 ]
 
-// screenshots are 1300x832 → aspect ~0.64
 const ASPECT = 832 / 1300
 
 export default function ProfileCarousel() {
@@ -36,14 +35,10 @@ export default function ProfileCarousel() {
     return () => clearInterval(t)
   }, [n])
 
-  // On desktop keep the original spacious deck (fixed-ish 560 card, wide fan).
-  // Only below ~600px do we shrink the card and pull the fan in so nothing
-  // overflows the phone screen.
   const mobile = cw < 600
-  const cardW = mobile ? Math.max(240, cw * 0.82) : 560
-  const offset = mobile ? cardW * 0.34 : 210
-  const cardH = cardW * ASPECT + 32 // +chrome bar
-  const deckH = cardH + 60
+  const cardW = mobile ? Math.max(240, cw * 0.86) : 560
+  const offset = mobile ? 0 : 210
+  const deckH = mobile ? cardW * ASPECT + 70 : 440
 
   return (
     <div
@@ -57,7 +52,7 @@ export default function ProfileCarousel() {
         if (off < -n / 2) off += n
         const isActive = off === 0
         const abs = Math.abs(off)
-        // on phones show only the active card (side ones would overflow)
+        // phones show only the active card
         const hidden = mobile && abs > 0
         return (
           <motion.button
@@ -67,20 +62,23 @@ export default function ProfileCarousel() {
             style={{ width: cardW, transformOrigin: 'bottom center' }}
             animate={{
               x: off * offset,
-              rotate: off * 7,
-              y: abs * 16,
+              rotate: mobile ? 0 : off * 7,
+              y: mobile ? 0 : abs * 18,
               scale: isActive ? 1 : 0.82,
-              // fade side cards with opacity (not just brightness) so their
-              // edges melt into the background instead of showing a hard seam
-              opacity: hidden ? 0 : isActive ? 1 : 0.5 - abs * 0.12,
-              filter: isActive ? 'brightness(1)' : 'brightness(0.7)',
+              opacity: hidden ? 0 : 1,
+              filter: isActive ? 'brightness(1)' : 'brightness(0.5)',
               zIndex: 10 - abs,
             }}
             transition={{ type: 'spring', stiffness: 240, damping: 30 }}
           >
+            {/* Desktop keeps the original shadow. On mobile the single card
+                sits on the lime hero, where a hard drop shadow reads as a ring
+                around the card — so no shadow there. */}
             <div
-              className="relative overflow-hidden rounded-2xl border border-white/5 bg-panel"
-              style={{ boxShadow: isActive ? '0 40px 90px rgba(0,0,0,0.5)' : 'none' }}
+              className={
+                'relative overflow-hidden rounded-2xl border border-edge2 bg-panel ' +
+                (mobile ? '' : 'shadow-[0_30px_80px_rgba(0,0,0,0.65)]')
+              }
             >
               {/* window chrome */}
               <div className="flex h-8 items-center gap-1.5 border-b border-edge bg-[#161616] px-3">
@@ -97,7 +95,7 @@ export default function ProfileCarousel() {
         )
       })}
 
-      <div className="absolute bottom-1 left-1/2 z-20 flex -translate-x-1/2 gap-2">
+      <div className="absolute bottom-1 left-1/2 z-20 flex -translate-x-1/2 gap-2 md:-bottom-2">
         {SCREENS.map((_, i) => (
           <button
             key={i}
