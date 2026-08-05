@@ -9,9 +9,12 @@ export default function Hero() {
   return (
     <header className="relative">
       {/* WebGL lime aurora background, fading to black at the bottom */}
-      <div className="absolute inset-0 -z-10">
+      <div className="absolute inset-0 -z-10 overflow-hidden">
         <Velaris height="100%" className="h-full" />
-        <div className="absolute inset-0 bg-gradient-to-b from-bg/30 via-bg/40 to-bg" />
+        <div className="absolute inset-0 bg-gradient-to-b from-bg/20 via-bg/50 to-bg" />
+        {/* solid fade over the bottom edge so the canvas melts into the page
+            with no hard seam at the header boundary */}
+        <div className="absolute inset-x-0 bottom-0 h-40 bg-gradient-to-b from-transparent to-bg" />
       </div>
 
       <div className="wrap pt-24 text-center">

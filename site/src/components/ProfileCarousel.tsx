@@ -36,18 +36,20 @@ export default function ProfileCarousel() {
     return () => clearInterval(t)
   }, [n])
 
-  // card width caps at 560 but shrinks to fit small containers, leaving room
-  // for the two side cards to peek in.
-  const cardW = Math.min(560, Math.max(240, cw * 0.72))
-  const offset = cardW * 0.42 // fan spread proportional to card size
+  // On desktop keep the original spacious deck (fixed-ish 560 card, wide fan).
+  // Only below ~600px do we shrink the card and pull the fan in so nothing
+  // overflows the phone screen.
+  const mobile = cw < 600
+  const cardW = mobile ? Math.max(240, cw * 0.82) : 560
+  const offset = mobile ? cardW * 0.34 : 210
   const cardH = cardW * ASPECT + 32 // +chrome bar
   const deckH = cardH + 60
 
   return (
     <div
       ref={wrapRef}
-      className="relative mx-auto flex w-full max-w-4xl items-center justify-center overflow-hidden [perspective:1600px]"
-      style={{ height: deckH }}
+      className="relative mx-auto flex w-full max-w-4xl items-center justify-center [perspective:1600px]"
+      style={{ height: deckH, overflow: mobile ? 'hidden' : 'visible' }}
     >
       {SCREENS.map((screen, i) => {
         let off = i - active
@@ -55,8 +57,8 @@ export default function ProfileCarousel() {
         if (off < -n / 2) off += n
         const isActive = off === 0
         const abs = Math.abs(off)
-        // hide far cards on tiny screens so they don't cram
-        const hidden = cw < 520 && abs > 1
+        // on phones show only the active card (side ones would overflow)
+        const hidden = mobile && abs > 0
         return (
           <motion.button
             key={screen.src}
