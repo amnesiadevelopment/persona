@@ -30,13 +30,43 @@ const ENGINES: EngineCopy[] = [
   },
 ]
 
+// One engine block used for the mobile stacked layout.
+function EngineBlock({ e }: { e: EngineCopy }) {
+  return (
+    <div className="relative overflow-hidden rounded-3xl border border-edge bg-panel p-6">
+      <div
+        className="pointer-events-none absolute -right-16 -top-16 h-48 w-48 rounded-full blur-[70px]"
+        style={{ background: e.glow }}
+      />
+      <div className="relative text-xs font-bold tracking-wide" style={{ color: e.tagColor }}>
+        {e.tag}
+      </div>
+      <h3 className="relative mt-2 text-2xl font-extrabold tracking-[-0.03em]">{e.title}</h3>
+      <p className="relative mt-3 text-[15px] leading-6 text-sub">{e.body}</p>
+      <div className="relative mt-5 h-[300px] overflow-hidden rounded-2xl border border-edge2 bg-white/[0.04]">
+        <e.Mockup />
+      </div>
+    </div>
+  )
+}
+
 export default function EngineSwap() {
   const ref = useRef<HTMLDivElement>(null)
   const [active, setActive] = useState(0)
+  const [isMobile, setIsMobile] = useState(false)
+
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 767px)')
+    const apply = () => setIsMobile(mq.matches)
+    apply()
+    mq.addEventListener('change', apply)
+    return () => mq.removeEventListener('change', apply)
+  }, [])
 
   // Drive the active engine from how far the tall container has scrolled
   // through the viewport. Robust and simple — no useScroll quirks.
   useEffect(() => {
+    if (isMobile) return
     const el = ref.current
     if (!el) return
     const onScroll = () => {
@@ -53,9 +83,21 @@ export default function EngineSwap() {
       window.removeEventListener('scroll', onScroll)
       window.removeEventListener('resize', onScroll)
     }
-  }, [])
+  }, [isMobile])
 
   const e = ENGINES[active]
+
+  // Mobile: no sticky-swap (it becomes a giant empty scroll zone). Just stack
+  // both engine cards in normal flow.
+  if (isMobile) {
+    return (
+      <div className="wrap flex flex-col gap-5 pt-4">
+        {ENGINES.map((eng) => (
+          <EngineBlock key={eng.tag} e={eng} />
+        ))}
+      </div>
+    )
+  }
 
   return (
     <div ref={ref} className="relative h-[200vh]">

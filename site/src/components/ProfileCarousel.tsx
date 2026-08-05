@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 
 // Fan carousel of real persona screens. Each card is an actual app screenshot
 // with a badge label; the deck auto-advances and any side card can be clicked
-// to bring it to the front.
+// to bring it to the front. Card size and fan spread scale with the container
+// so it never overflows on narrow screens.
 const SCREENS = [
   { badge: 'PROFILES', src: 'screens/profiles.png' },
   { badge: 'NETWORK', src: 'screens/network.png' },
@@ -12,34 +13,62 @@ const SCREENS = [
   { badge: 'AUTOMATION', src: 'screens/connect.png' },
 ]
 
+// screenshots are 1300x832 → aspect ~0.64
+const ASPECT = 832 / 1300
+
 export default function ProfileCarousel() {
   const [active, setActive] = useState(0)
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const [cw, setCw] = useState(720)
   const n = SCREENS.length
+
+  useLayoutEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setCw(el.clientWidth))
+    ro.observe(el)
+    setCw(el.clientWidth)
+    return () => ro.disconnect()
+  }, [])
 
   useEffect(() => {
     const t = setInterval(() => setActive((a) => (a + 1) % n), 3800)
     return () => clearInterval(t)
   }, [n])
 
+  // card width caps at 560 but shrinks to fit small containers, leaving room
+  // for the two side cards to peek in.
+  const cardW = Math.min(560, Math.max(240, cw * 0.72))
+  const offset = cardW * 0.42 // fan spread proportional to card size
+  const cardH = cardW * ASPECT + 32 // +chrome bar
+  const deckH = cardH + 60
+
   return (
-    <div className="relative mx-auto flex h-[440px] w-full max-w-4xl items-center justify-center [perspective:1600px]">
+    <div
+      ref={wrapRef}
+      className="relative mx-auto flex w-full max-w-4xl items-center justify-center overflow-hidden [perspective:1600px]"
+      style={{ height: deckH }}
+    >
       {SCREENS.map((screen, i) => {
         let off = i - active
         if (off > n / 2) off -= n
         if (off < -n / 2) off += n
         const isActive = off === 0
         const abs = Math.abs(off)
+        // hide far cards on tiny screens so they don't cram
+        const hidden = cw < 520 && abs > 1
         return (
           <motion.button
             key={screen.src}
             onClick={() => setActive(i)}
             className="absolute cursor-pointer"
-            style={{ width: 560, transformOrigin: 'bottom center' }}
+            style={{ width: cardW, transformOrigin: 'bottom center' }}
             animate={{
-              x: off * 210,
+              x: off * offset,
               rotate: off * 7,
-              y: abs * 18,
+              y: abs * 16,
               scale: isActive ? 1 : 0.82,
+              opacity: hidden ? 0 : 1,
               filter: isActive ? 'brightness(1)' : 'brightness(0.5)',
               zIndex: 10 - abs,
             }}
@@ -61,7 +90,7 @@ export default function ProfileCarousel() {
         )
       })}
 
-      <div className="absolute -bottom-2 left-1/2 z-20 flex -translate-x-1/2 gap-2">
+      <div className="absolute bottom-1 left-1/2 z-20 flex -translate-x-1/2 gap-2">
         {SCREENS.map((_, i) => (
           <button
             key={i}
