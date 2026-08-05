@@ -1,0 +1,34 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+  body {
+    @apply bg-bg text-ink font-sans antialiased;
+    /* clip (not hidden) so horizontal overflow is cut WITHOUT turning body into
+       a scroll container — that would break position:sticky and useScroll. */
+    overflow-x: clip;
+  }
+}
+
+@layer utilities {
+  .wrap {
+    @apply mx-auto max-w-wrap px-6;
+  }
+  .grad-text {
+    background: linear-gradient(100deg, #b6f000 0%, #6fa300 50%, #b6f000 100%);
+    background-size: 200% auto;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .marquee-mask {
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
+    mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
+  }
+}

@@ -140,7 +140,6 @@ venv.bak/
 .ropeproject
 
 # mkdocs documentation
-/site
 
 # mypy
 .mypy_cache/
@@ -191,3 +190,5 @@ logs/
 *.bak
 *.orig
 .venv-host/
+site/node_modules/
+site/dist/
