@@ -70,13 +70,18 @@ export default function ProfileCarousel() {
               rotate: off * 7,
               y: abs * 16,
               scale: isActive ? 1 : 0.82,
-              opacity: hidden ? 0 : 1,
-              filter: isActive ? 'brightness(1)' : 'brightness(0.5)',
+              // fade side cards with opacity (not just brightness) so their
+              // edges melt into the background instead of showing a hard seam
+              opacity: hidden ? 0 : isActive ? 1 : 0.5 - abs * 0.12,
+              filter: isActive ? 'brightness(1)' : 'brightness(0.7)',
               zIndex: 10 - abs,
             }}
             transition={{ type: 'spring', stiffness: 240, damping: 30 }}
           >
-            <div className="relative overflow-hidden rounded-2xl border border-edge2 bg-panel shadow-[0_30px_80px_rgba(0,0,0,0.65)]">
+            <div
+              className="relative overflow-hidden rounded-2xl border border-white/5 bg-panel"
+              style={{ boxShadow: isActive ? '0 40px 90px rgba(0,0,0,0.5)' : 'none' }}
+            >
               {/* window chrome */}
               <div className="flex h-8 items-center gap-1.5 border-b border-edge bg-[#161616] px-3">
                 <span className="h-2.5 w-2.5 rounded-full bg-[#ff5f57]" />
