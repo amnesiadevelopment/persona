@@ -115,8 +115,16 @@ def build_sidebar(
                 ),
                 ft.Divider(height=24, color=COLORS["border"]),
                 nav,
-                ft.Container(expand=True),
-                *([engine_panel] if engine_panel is not None else []),
+                # Push the bottom cluster down, but keep a guaranteed gap + a
+                # hairline above it so the engines panel never sits flush against
+                # the 'connect' nav item when the window is short and the expand
+                # spacer collapses to nothing.
+                ft.Container(expand=True, height=16),
+                *(
+                    [ft.Divider(height=1, color=COLORS["border"]), engine_panel]
+                    if engine_panel is not None
+                    else []
+                ),
                 *([version_panel] if version_panel is not None else []),
                 log_panel,
             ],

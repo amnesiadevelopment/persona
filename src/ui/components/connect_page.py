@@ -386,55 +386,57 @@ def _title(text: str) -> ft.Text:
     )
 
 
+def _ai_profile_row(
+    p: Profile, on_toggle: Callable[[str, bool], None]
+) -> ft.Container:
+    """One profile as a compact card: name on the left, the AI checkbox on the
+    right, framed and highlighted when AI is on so the enabled ones stand out."""
+    on = getattr(p, "ai_control", False)
+    return ft.Container(
+        border_radius=3,
+        border=ft.Border.all(1, COLORS["accent_dim"] if on else COLORS["card_border"]),
+        bgcolor=COLORS["card_bg"],
+        padding=ft.Padding.only(left=14, top=6, bottom=6, right=6),
+        content=ft.Row(
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                ft.Text(
+                    p.name, size=13, color=COLORS["text_main"], font_family=MONO,
+                ),
+                _checkbox_toggle(
+                    on, "AI", lambda want, n=p.name: on_toggle(n, want),
+                ),
+            ],
+        ),
+    )
+
+
 def _ai_section(
     profiles: list[Profile], on_toggle: Callable[[str, bool], None]
 ) -> ft.Column:
-    rows: list[ft.Control] = []
-    for p in profiles:
-        rows.append(
-            ft.Row(
-                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                controls=[
-                    ft.Text(
-                        p.name,
-                        size=13,
-                        color=COLORS["text_main"],
-                        font_family=MONO,
-                    ),
-                    _checkbox_toggle(
-                        getattr(p, "ai_control", False),
-                        "AI control",
-                        lambda want, n=p.name: on_toggle(n, want),
-                    ),
-                ],
-            )
-        )
+    warning = ft.Row(
+        spacing=8,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        controls=[
+            ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, size=15, color=COLORS["error"]),
+            ft.Text(
+                "AI/CDP control leaves automation traces — avoid on profiles "
+                "that must appear human.",
+                size=11,
+                color=COLORS["text_sub"],
+                font_family=MONO,
+                expand=True,
+            ),
+        ],
+    )
+    rows: list[ft.Control] = [_ai_profile_row(p, on_toggle) for p in profiles]
     return ft.Column(
         spacing=10,
         controls=[
-            ft.Text(
-                "AI control per profile",
-                size=16,
-                weight=ft.FontWeight.BOLD,
-                color=COLORS["text_main"],
-                font_family=MONO,
-            ),
-            ft.Container(
-                border_radius=3,
-                border=ft.Border.all(1, COLORS["error"]),
-                bgcolor=COLORS["card_bg"],
-                padding=ft.Padding.symmetric(horizontal=12, vertical=10),
-                content=ft.Text(
-                    "AI/CDP control leaves automation traces that anti-fraud "
-                    "systems can detect — avoid on profiles that must appear "
-                    "human.",
-                    size=11,
-                    color=COLORS["error"],
-                    font_family=MONO,
-                ),
-            ),
-            ft.Container(height=6),
+            _section_header("AI CONTROL PER PROFILE", ft.Icons.SMART_TOY_OUTLINED),
+            warning,
+            ft.Container(height=2),
             *(
                 rows
                 if rows

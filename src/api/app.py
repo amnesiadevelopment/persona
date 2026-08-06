@@ -79,8 +79,25 @@ def create_app(container: Container) -> FastAPI:
     token = get_or_create_token()
 
     @app.middleware("http")
-    async def _mcp_auth(request: Request, call_next):
-        if request.url.path.startswith("/mcp"):
+    async def _auth(request: Request, call_next):
+        path = request.url.path
+        # /health is the only open endpoint. Everything else — /mcp AND the
+        # functionally identical /api/v1 REST twin (profile CRUD, browser launch,
+        # proxy CRUD, import/export) — requires the bearer token. The REST side
+        # used to be wide open, so any local process (or, without a Host check, a
+        # DNS-rebinding web page) could drive the browser and read proxy creds.
+        protected = path.startswith("/mcp") or (
+            path.startswith("/api/v1") and not path.startswith("/api/v1/health")
+        )
+        if protected:
+            # Block DNS-rebinding: the server binds 127.0.0.1, so a legitimate
+            # request's Host is loopback. A rebound attacker domain won't match
+            # and can't read the token file to forge one either.
+            host = (request.headers.get("host") or "").split(":")[0]
+            if host not in ("127.0.0.1", "localhost", "[::1]", "::1"):
+                return JSONResponse(
+                    {"error": "forbidden host"}, status_code=403
+                )
             header = request.headers.get("authorization", "")
             if header != f"Bearer {token}":
                 return JSONResponse({"error": "unauthorized"}, status_code=401)

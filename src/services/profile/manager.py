@@ -9,9 +9,14 @@ from ...core.config import DATA_DIR, PROFILES_FILE
 from ...core.logging import get_logger
 from ...models.profile import Profile
 from ...utils.atomic import atomic_write_json
+from ...utils.validation import validate_profile_name
 from .transfer import export_to_zip, import_from_zip
 
 logger = get_logger("profile.manager")
+
+
+class InvalidProfileName(ValueError):
+    """A profile name that fails validation or would escape the data dir."""
 
 
 class ProfileManager:
@@ -25,6 +30,18 @@ class ProfileManager:
         pathlib.Path(DATA_DIR).mkdir(exist_ok=True, parents=True)
 
     def _data_path(self, name: str) -> str:
+        # The single choke point for every profile filesystem op (mkdir, rmtree,
+        # rename). Validate here so no caller — import, the MCP tool, a future
+        # entry point — can slip a traversal name through and turn these into
+        # arbitrary-path primitives. Belt AND braces: reject names that fail
+        # validation, then confirm the resolved path stays inside DATA_DIR.
+        valid, msg = validate_profile_name(name)
+        if not valid:
+            raise InvalidProfileName(msg)
+        base = os.path.realpath(DATA_DIR)
+        target = os.path.realpath(os.path.join(DATA_DIR, name))
+        if os.path.commonpath([base, target]) != base:
+            raise InvalidProfileName(f"profile name escapes the data dir: {name!r}")
         return os.path.join(DATA_DIR, name)
 
     def _load_profiles(self) -> None:
@@ -141,6 +158,11 @@ class ProfileManager:
         resolution: str = "auto",
         certificate: str | None = None,
     ) -> bool:
+        # Validate up front so an invalid/traversal name is rejected before it's
+        # registered — import and the MCP tool used to reach here unchecked.
+        valid, _ = validate_profile_name(name)
+        if not valid:
+            return False
         if name in self.profiles:
             return False
         self.profiles[name] = Profile(

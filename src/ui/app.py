@@ -815,6 +815,11 @@ class App:
         self.pm.set_ai_control(name, enabled)
         state = "enabled" if enabled else "disabled"
         self._log(f"AI control {state} for '{name}'")
+        # Rebuild the connect page so the checkbox reflects the new state —
+        # _safe_update() alone only repaints the existing tree, it doesn't
+        # re-read ai_control, so the [x]/[ ] never flipped.
+        if self._active_page == "connect":
+            self._render_active_page()
         self._safe_update()
 
     def _save_notes_inline(self, name: str, notes: str) -> None:
@@ -1389,7 +1394,7 @@ class App:
                 self._engine_latest = tag
                 self._engine_checking = False
                 if self._engine_update_available():
-                    self._log(f"Engine update available: {tag}")
+                    self._log(f"Chromium engine update available ({tag})")
                 self._refresh_engine_text()
 
             threading.Thread(target=work, daemon=True).start()
@@ -1430,7 +1435,7 @@ class App:
             self._engine2_checking = False
             if self._engine2_update_available():
                 self._engine2_status = ""
-                self._log(f"Firefox engine update available: {tag}")
+                self._log(f"Firefox engine update available ({tag})")
             elif (
                 tag
                 and not compatible
@@ -1575,7 +1580,7 @@ class App:
                         if tag:
                             self._engine_latest = tag
                             if self._engine_update_available():
-                                self._log(f"Engine update available: {tag}")
+                                self._log(f"Chromium engine update available ({tag})")
                 except Exception:
                     pass
                 self._refresh_sidebar()
@@ -1988,7 +1993,7 @@ class App:
             tag, _url = engine.fetch_latest()
             self._engine_latest = tag
             if self._engine_update_available():
-                self._log(f"Engine update available: {tag}")
+                self._log(f"Chromium engine update available ({tag})")
             self._refresh_engine_text()
 
         threading.Thread(target=work, daemon=True).start()
@@ -2121,10 +2126,14 @@ class App:
                 tag, _url = engine.fetch_latest()
                 self._engine_latest = tag
                 self._engine_checking = False
+                # Match the Firefox line's shape: name the engine and its version
+                # so the log doesn't read as a bare, ambiguous "Engine is up to date".
                 if self._engine_update_available():
-                    self._log(f"Engine update available: {tag}")
+                    self._log(f"Chromium engine update available ({tag})")
                 else:
-                    self._log("Engine is up to date")
+                    self._log(
+                        f"Chromium engine is up to date ({engine.current_version()})"
+                    )
                 self._refresh_engine_text()
 
             threading.Thread(target=work, daemon=True).start()
