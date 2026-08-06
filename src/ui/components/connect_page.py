@@ -41,6 +41,39 @@ def _bracket_toggle(
     )
 
 
+def _checkbox_toggle(on: bool, label: str, on_change: Callable[[bool], None]) -> ft.Container:
+    """A [x]/[ ] checkbox in persona's bracket style — reads unambiguously as a
+    STATE (checked = enabled) rather than a button whose label could be misread
+    as the action. Used for the per-profile AI toggle so 'on'/'off' can't be
+    mistaken for 'press to turn on/off'."""
+    return ft.Container(
+        on_click=lambda _: on_change(not on),
+        ink=True,
+        border_radius=3,
+        padding=ft.Padding.symmetric(horizontal=10, vertical=6),
+        content=ft.Row(
+            spacing=8,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                ft.Text(
+                    "[x]" if on else "[ ]",
+                    size=13,
+                    color=COLORS["accent"] if on else COLORS["text_dim"],
+                    font_family=MONO,
+                    weight=ft.FontWeight.BOLD,
+                ),
+                ft.Text(
+                    label,
+                    size=12,
+                    color=COLORS["accent"] if on else COLORS["text_sub"],
+                    font_family=MONO,
+                    no_wrap=True,
+                ),
+            ],
+        ),
+    )
+
+
 def build_connect_page(
     profiles: list[Profile],
     token: str,
@@ -71,22 +104,29 @@ def build_connect_page(
     ]
 
     if server_running:
+        # One reveal gate for every place the token appears — the TOKEN field AND
+        # the cli/json snippets that embed it. Hiding the token but printing it in
+        # plain sight two lines below defeats the point; the single eye toggle
+        # masks/unmasks all of them together. Copy always carries the real value.
+        reveal = _TokenReveal(token)
         controls += [
             ft.Container(height=18),
             _section_header("CONNECT YOUR CLIENT", ft.Icons.LINK),
             ft.Container(height=12),
-            _copy_field("TOKEN", _token_field(token), token, ft.Icons.KEY_OUTLINED),
+            _copy_field(
+                "TOKEN", reveal.field(), token, ft.Icons.KEY_OUTLINED
+            ),
             ft.Container(height=12),
             _copy_field(
                 "ONE-LINE ADD (claude cli)",
-                _code(add_command, wrap=False),
+                reveal.code(add_command, wrap=False),
                 add_command,
                 ft.Icons.TERMINAL,
             ),
             ft.Container(height=12),
             _copy_field(
                 "CLIENT CONFIG (json)",
-                _code(config_json, wrap=True),
+                reveal.code(config_json, wrap=True),
                 config_json,
                 ft.Icons.DATA_OBJECT,
             ),
@@ -272,57 +312,68 @@ def _copy_field(label: str, body: ft.Control, copy_value: str, icon: str) -> ft.
     )
 
 
-def _token_field(token: str) -> ft.Control:
-    shown = ft.Text(
-        "•" * len(token),
-        size=12,
-        color=COLORS["accent"],
-        font_family=MONO,
-        selectable=True,
-        expand=True,
-    )
-    revealed = {"on": False}
+class _TokenReveal:
+    """A single hide/show gate for every place the MCP token appears: the TOKEN
+    field, the cli command, and the JSON config. One eye toggles them all so the
+    token is never left in plain sight in one snippet while masked in another.
+    Masked text swaps the token for a run of dots; the [ copy ] buttons keep the
+    real value regardless."""
 
-    def toggle(_: ft.ControlEvent) -> None:
-        revealed["on"] = not revealed["on"]
-        shown.value = token if revealed["on"] else "•" * len(token)
-        eye.icon = (
-            ft.Icons.VISIBILITY_OFF if revealed["on"] else ft.Icons.VISIBILITY
+    def __init__(self, token: str) -> None:
+        self._token = token
+        self._dots = "•" * len(token)
+        self._on = False
+        # (control, full_text, masked_text) for every text that embeds the token
+        self._items: list[tuple[ft.Text, str, str]] = []
+
+    def _register(self, ctl: ft.Text, full: str) -> None:
+        self._items.append((ctl, full, full.replace(self._token, self._dots)))
+
+    def _toggle(self, _: ft.ControlEvent) -> None:
+        self._on = not self._on
+        for ctl, full, masked in self._items:
+            ctl.value = full if self._on else masked
+            ctl.update()
+        self._eye.icon = (
+            ft.Icons.VISIBILITY_OFF if self._on else ft.Icons.VISIBILITY
         )
-        shown.update()
-        eye.update()
+        self._eye.update()
 
-    eye = ft.IconButton(
-        icon=ft.Icons.VISIBILITY,
-        icon_size=16,
-        icon_color=COLORS["text_sub"],
-        tooltip="Show / hide",
-        on_click=toggle,
-    )
-    return ft.Row(
-        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        controls=[shown, eye],
-    )
+    def field(self) -> ft.Control:
+        shown = ft.Text(
+            self._dots, size=12, color=COLORS["accent"],
+            font_family=MONO, selectable=True, expand=True,
+        )
+        self._register(shown, self._token)
+        self._eye = ft.IconButton(
+            icon=ft.Icons.VISIBILITY,
+            icon_size=16,
+            icon_color=COLORS["text_sub"],
+            tooltip="Show / hide token",
+            on_click=self._toggle,
+        )
+        return ft.Row(
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[shown, self._eye],
+        )
 
-
-def _code(value: str, wrap: bool = True) -> ft.Control:
-    # A one-line command stays on one line (ellipsis) so it doesn't run off the
-    # card; the JSON config wraps so the whole block is readable. Either way the
-    # [ copy ] button carries the full value.
-    return ft.Container(
-        border_radius=3,
-        bgcolor=COLORS["input_bg"],
-        padding=ft.Padding.symmetric(horizontal=12, vertical=10),
-        content=ft.Text(
-            value,
+    def code(self, value: str, wrap: bool = True) -> ft.Control:
+        text = ft.Text(
+            value.replace(self._token, self._dots),
             size=11,
             color=COLORS["text_main"],
             font_family=MONO,
             selectable=True,
             no_wrap=not wrap,
             overflow=ft.TextOverflow.ELLIPSIS if not wrap else None,
-        ),
-    )
+        )
+        self._register(text, value)
+        return ft.Container(
+            border_radius=3,
+            bgcolor=COLORS["input_bg"],
+            padding=ft.Padding.symmetric(horizontal=12, vertical=10),
+            content=text,
+        )
 
 
 def _title(text: str) -> ft.Text:
@@ -351,11 +402,10 @@ def _ai_section(
                         color=COLORS["text_main"],
                         font_family=MONO,
                     ),
-                    _bracket_toggle(
+                    _checkbox_toggle(
                         getattr(p, "ai_control", False),
+                        "AI control",
                         lambda want, n=p.name: on_toggle(n, want),
-                        on_label="on",
-                        off_label="off",
                     ),
                 ],
             )

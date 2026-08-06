@@ -13,12 +13,12 @@ def build_ui_refs(
     on_change_page: Callable[[int], None],
     file_picker: ft.FilePicker,
 ) -> UIRefs:
-    # No auto_scroll: the sidebar shows exactly the last 6 lines, one row each
-    # (wrap=False), so the list never overflows and must not jitter to the
-    # bottom on every refresh. The fullscreen dialog handles its own scrolling.
+    # No auto_scroll: the sidebar shows the last handful of lines and must not
+    # jitter to the bottom on every refresh. Roomier row spacing so wrapped lines
+    # stay legible instead of crowding together. The fullscreen dialog scrolls.
     log_list = ft.ListView(
         controls=[],
-        spacing=2,
+        spacing=7,
         padding=0,
     )
     log_toggle_btn = ft.TextButton(

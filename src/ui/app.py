@@ -585,7 +585,11 @@ class App:
                 add_command=claude_add_command(tok),
                 config_json=client_config_json(tok),
                 on_toggle_ai=self._toggle_ai,
-                server_running=self._server_running(),
+                # Reflect the user's INTENT (the saved setting), not the raw thread
+                # liveness. uvicorn stops asynchronously (stop() only sets
+                # should_exit), so is_running lagged a click behind and the toggle
+                # needed pressing twice to show "disabled".
+                server_running=app_settings.is_server_enabled(),
                 on_toggle_server=self._set_server,
                 endpoint=mcp_url(),
                 ssh_hosts=self.ssh_store.list(),
