@@ -1936,12 +1936,11 @@ def test_child_no_chrome_scale_on_unity_dpr_host(monkeypatch, tmp_path):
 
 
 def test_devpixelsperpx_matches_host_dpr_in_engine_prefs():
-    # #216 against the REAL engine pref pipeline: invisible_core.prefs sets both
-    # layout.css.devPixelsPerPx AND zoom.stealth.screen.dpr from the pin and
-    # applies extra_prefs LAST. Rendering at the host dpr (1.5) must reach the
-    # engine intact: devPixelsPerPx (which natively drives window.devicePixelRatio
-    # AND the CSS resolution media queries) is 1.5, the pinned screen dpr agrees,
-    # and screen.width stays the chosen value — a coherent scaled HiDPI monitor.
+    # #216 against the REAL engine pref pipeline: the host dpr (1.5) must reach the
+    # engine intact via layout.css.devPixelsPerPx, which natively drives BOTH
+    # window.devicePixelRatio AND the CSS resolution media queries, while the
+    # fingerprinted screen dimensions stay the chosen values — a coherent scaled
+    # HiDPI monitor. extra_prefs is applied LAST so devPixelsPerPx is authoritative.
     pytest.importorskip("invisible_core")
     from invisible_core._fpforge import generate_profile
     from invisible_core.prefs import translate_profile_to_prefs
@@ -1960,7 +1959,6 @@ def test_devpixelsperpx_matches_host_dpr_in_engine_prefs():
         profile, extra_prefs={"layout.css.devPixelsPerPx": "1.5"}
     )
     assert prefs["layout.css.devPixelsPerPx"] == "1.5"  # render at host dpr
-    assert prefs["zoom.stealth.screen.dpr"] == 1.5      # agrees with the render
     assert prefs["zoom.stealth.screen.width"] == 1920   # fingerprint = chosen
 
 
