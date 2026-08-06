@@ -155,3 +155,20 @@ def test_checking_shows_spinner_not_clickable():
                 walk(v)
     walk(card)
     assert rings
+
+
+def test_notes_do_not_overlay_the_action_buttons():
+    # Regression: notes lived in a Stack overlay whose (unbounded) container
+    # blanketed the whole card and swallowed clicks meant for launch/edit/delete
+    # — after creating a profile the buttons stopped responding. Notes must be a
+    # sibling of the buttons inside a Row, never a full-card overlay on top.
+    p = Profile(name="a", proxy=None, os_type="windows")
+    card = build_profile_card(p, False, False, _noop, _noop, _noop)
+    assert not isinstance(card.content, ft.Stack), (
+        "card content is a Stack — notes overlay can cover the buttons"
+    )
+    assert isinstance(card.content, ft.Row)
+    # the notes field and the action buttons share one Row, so nothing is layered
+    # on top of the clickable controls
+    kinds = [type(c).__name__ for c in card.content.controls]
+    assert "Stack" not in kinds

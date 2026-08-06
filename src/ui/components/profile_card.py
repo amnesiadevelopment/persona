@@ -208,18 +208,19 @@ def build_profile_card(
     )
 
     # The name block hugs the left, the action buttons hug the right, and the
-    # expand=True spacer between them absorbs the slack — so the row always fits
-    # the card width and the buttons never run off the right edge on a narrow
-    # window. Notes are layered ON TOP, centred, in a container that fills (not
-    # dictates) the card width so it can't push the card wider than the viewport
-    # (the old fixed-width notes Row in the Stack was doing exactly that).
-    row = ft.Row(
-        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        controls=[left_block, ft.Container(expand=True), right_block],
-    )
-    notes_overlay = ft.Container(
+    # notes sit centred in the expanding middle. Notes live IN the row (not a
+    # Stack overlay) so their container can't blanket the card and swallow clicks
+    # meant for the launch/edit/delete buttons. The middle container expands to
+    # absorb the slack and centres the fixed-width notes field within it, so the
+    # row always fits the card width and the buttons never run off the edge.
+    notes_middle = ft.Container(
+        expand=True,
         alignment=ft.Alignment.CENTER,
         content=_notes_field(profile, on_notes_change),
+    )
+    row = ft.Row(
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        controls=[left_block, notes_middle, right_block],
     )
 
     return ft.Container(
@@ -227,10 +228,7 @@ def build_profile_card(
         border=ft.Border.all(1, border_color),
         bgcolor=COLORS["card_bg"],
         padding=ft.Padding.symmetric(horizontal=18, vertical=14),
-        content=ft.Stack(
-            fit=ft.StackFit.PASS_THROUGH,
-            controls=[row, notes_overlay],
-        ),
+        content=row,
     )
 
 

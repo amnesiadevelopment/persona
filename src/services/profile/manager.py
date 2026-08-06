@@ -256,6 +256,19 @@ class ProfileManager:
             self.save_profiles()
         return changed
 
+    def clear_proxy(self, proxy_name: str) -> int:
+        """Drop a proxy reference from every profile that uses it, so a deleted
+        proxy leaves no dangling name behind (which stranded the profile page).
+        Returns count changed."""
+        changed = 0
+        for p in self.profiles.values():
+            if p.proxy == proxy_name:
+                p.proxy = None
+                changed += 1
+        if changed:
+            self.save_profiles()
+        return changed
+
     def set_ai_control(self, name: str, enabled: bool) -> bool:
         p = self.profiles.get(name)
         if p is None:

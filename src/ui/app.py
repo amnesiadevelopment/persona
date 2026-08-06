@@ -926,6 +926,10 @@ class App:
         ]
 
         def do_delete() -> None:
+            # Drop the proxy from every profile that used it FIRST — a deleted
+            # proxy that still lingers as a name on a profile stranded the
+            # profile page — then remove it from the store.
+            self.pm.clear_proxy(name)
             self.pstore.delete(name)
             self._render_active_page()
             self._safe_update()
