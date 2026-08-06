@@ -579,7 +579,7 @@ jobs:
           pip install --prefer-binary -r requirements.txt
 
       - name: Build the macOS bundle
-        run: flet build macos -v --no-rich-output
+        run: flet build macos --arch arm64 -v --no-rich-output
 
       - name: Package the .app into a dmg
         run: |

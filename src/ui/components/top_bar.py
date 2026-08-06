@@ -14,14 +14,19 @@ def build_top_bar(
     on_export: Callable,
     on_wipe: Callable,
 ) -> ft.Container:
+    # A single row with an elastic spacer in the middle: the left cluster and
+    # the right cluster each hug their content (tight), and the expand=True
+    # spacer absorbs the slack — so the row always fits the page width instead
+    # of overflowing off the right edge on a narrow window (flet Rows don't
+    # shrink their children; without an expanding child they run off the edge).
     return ft.Container(
         padding=ft.Padding.only(bottom=20),
         content=ft.Row(
-            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
             controls=[
                 ft.Row(
                     spacing=10,
+                    tight=True,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     controls=[
                         ft.Text(
@@ -46,28 +51,27 @@ def build_top_bar(
                         ),
                     ],
                 ),
+                ft.Container(expand=True),
                 ft.Row(
                     spacing=10,
+                    tight=True,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     controls=[
                         search_field,
                         ft.OutlinedButton(
                             "[ import ]",
-                            width=110,
                             height=40,
                             style=OUTLINE_STYLE,
                             on_click=on_import,
                         ),
                         ft.OutlinedButton(
                             "[ export ]",
-                            width=110,
                             height=40,
                             style=OUTLINE_STYLE,
                             on_click=on_export,
                         ),
                         ft.Button(
                             "[ + new ]",
-                            width=110,
                             height=40,
                             style=ACCENT_STYLE,
                             on_click=on_new,

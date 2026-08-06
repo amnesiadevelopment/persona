@@ -11,7 +11,14 @@ from ...utils.proxy_parser import build_proxy_url, split_proxy_url
 from ...utils.validation import validate_proxy_format
 from ..flags import flag_path
 from ..theme.colors import COLORS
-from ..theme.styles import ACCENT_STYLE, DLG_FIELD_KWARGS, MONO, OUTLINE_STYLE
+from ..theme.styles import (
+    ACCENT_STYLE,
+    DLG_INPUT_KWARGS,
+    MONO,
+    OUTLINE_STYLE,
+    labeled,
+    section_header,
+)
 
 _SCHEMES = ["socks5", "http", "https"]
 
@@ -49,51 +56,46 @@ def open_proxy_dialog(
     is_edit = proxy is not None
     fields = split_proxy_url(proxy.url) if proxy is not None else split_proxy_url("")
 
+    _hint = ft.TextStyle(color=COLORS["text_dim"], font_family=MONO)
     paste_field = ft.TextField(
-        label="Paste proxy string",
-        hint_text="any provider line: scheme://user:pass@host:port…",
-        **DLG_FIELD_KWARGS,
+        hint_text="scheme://user:pass@host:port  — paste any provider line",
+        hint_style=_hint, **DLG_INPUT_KWARGS,
     )
     name_field = ft.TextField(
-        label="Name",
         value=proxy.name if proxy is not None else "",
-        hint_text="e.g. home-socks",
-        **DLG_FIELD_KWARGS,
+        hint_text="e.g. home-socks", hint_style=_hint, **DLG_INPUT_KWARGS,
     )
     type_dd = ft.Dropdown(
-        label="Type",
         value=fields["scheme"] if fields["scheme"] in _SCHEMES else "socks5",
         options=[ft.dropdown.Option(s) for s in _SCHEMES],
-        width=130,
         bgcolor=COLORS["input_bg"],
         color=COLORS["text_main"],
         border_color=COLORS["card_border"],
         focused_border_color=COLORS["accent"],
         border_radius=3,
-        label_style=ft.TextStyle(color=COLORS["text_sub"], font_family=MONO),
         text_style=ft.TextStyle(font_family=MONO),
     )
     host_field = ft.TextField(
-        label="Host", value=fields["host"], hint_text="proxy.example.com",
-        expand=True, **DLG_FIELD_KWARGS,
+        value=fields["host"], hint_text="proxy.example.com",
+        hint_style=_hint, **DLG_INPUT_KWARGS,
     )
     port_field = ft.TextField(
-        label="Port", value=fields["port"], hint_text="1080",
-        width=110, **DLG_FIELD_KWARGS,
+        value=fields["port"], hint_text="1080",
+        hint_style=_hint, **DLG_INPUT_KWARGS,
     )
     user_field = ft.TextField(
-        label="Username (optional)", value=fields["username"], hint_text="optional",
-        expand=True, **DLG_FIELD_KWARGS,
+        value=fields["username"], hint_text="optional",
+        hint_style=_hint, **DLG_INPUT_KWARGS,
     )
     pass_field = ft.TextField(
-        label="Password (optional)", value=fields["password"], hint_text="optional",
-        password=True, can_reveal_password=True, expand=True, **DLG_FIELD_KWARGS,
+        value=fields["password"], hint_text="optional",
+        hint_style=_hint, password=True, can_reveal_password=True,
+        expand=True, **DLG_INPUT_KWARGS,
     )
     rotate_field = ft.TextField(
-        label="Rotate URL (optional)",
         value=proxy.rotate_url if proxy is not None else "",
         hint_text="provider endpoint that forces a new exit IP",
-        **DLG_FIELD_KWARGS,
+        hint_style=_hint, **DLG_INPUT_KWARGS,
     )
     name_error = ft.Text("", size=12, color=COLORS["error"], visible=False)
     addr_error = ft.Text("", size=12, color=COLORS["error"], visible=False)
@@ -137,6 +139,29 @@ def open_proxy_dialog(
         )
 
     check_btn = ft.OutlinedButton("[ check ]", height=38, style=OUTLINE_STYLE)
+
+    async def on_copy(_: ft.ControlEvent) -> None:
+        # Copy the whole proxy line to the clipboard so it can be pasted into
+        # another tool or profile. Uses the assembled URL, matching what persona
+        # stores.
+        url = current_url()
+        if not url or url.endswith("://") or "://:" in url:
+            addr_error.value = "Enter host and port before copying"
+            addr_error.color = COLORS["warning"]
+            addr_error.visible = True
+            page.update()
+            return
+        await ft.Clipboard().set(url)
+        copy_btn.content = ft.Text("[ copied ]", font_family=MONO, color=COLORS["success"])
+        page.update()
+
+    copy_btn = ft.OutlinedButton(
+        "[ copy proxy ]",
+        height=38,
+        style=OUTLINE_STYLE,
+        tooltip="Copy the full proxy string to the clipboard",
+        on_click=on_copy,
+    )
 
     def on_check_result(
         success: bool,
@@ -220,36 +245,90 @@ def open_proxy_dialog(
             ],
         ),
         content=ft.Container(
-            width=480,
-            padding=ft.Padding.symmetric(horizontal=4, vertical=4),
+            width=460,
+            padding=ft.Padding.only(left=4, top=4, bottom=4, right=14),
             content=ft.Column(
                 tight=True,
                 spacing=16,
+                horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
                 controls=[
-                    ft.Container(height=2),
-                    paste_field,
-                    ft.Divider(height=10, color=COLORS["border"]),
-                    name_field,
+                    # ---- QUICK PASTE ----
+                    section_header("QUICK PASTE", icon=ft.Icons.CONTENT_PASTE),
+                    labeled(
+                        "Paste proxy string",
+                        paste_field,
+                        icon=ft.Icons.BOLT,
+                    ),
+                    # ---- DETAILS ----
+                    section_header("DETAILS", icon=ft.Icons.LAN_OUTLINED),
+                    labeled("Name", name_field, icon=ft.Icons.LABEL_OUTLINE),
                     name_error,
-                    type_dd,
-                    ft.Row(spacing=12, controls=[host_field, port_field]),
-                    ft.Row(spacing=12, controls=[user_field, pass_field]),
-                    rotate_field,
+                    ft.Row(
+                        spacing=12,
+                        vertical_alignment=ft.CrossAxisAlignment.START,
+                        controls=[
+                            ft.Container(
+                                width=140,
+                                content=labeled("Type", type_dd, icon=ft.Icons.TUNE),
+                            ),
+                            ft.Container(
+                                expand=True,
+                                content=labeled(
+                                    "Host", host_field, icon=ft.Icons.DNS
+                                ),
+                            ),
+                            ft.Container(
+                                width=110,
+                                content=labeled(
+                                    "Port", port_field, icon=ft.Icons.TAG
+                                ),
+                            ),
+                        ],
+                    ),
+                    ft.Row(
+                        spacing=12,
+                        vertical_alignment=ft.CrossAxisAlignment.START,
+                        controls=[
+                            ft.Container(
+                                expand=True,
+                                content=labeled(
+                                    "Username (optional)",
+                                    user_field,
+                                    icon=ft.Icons.PERSON_OUTLINE,
+                                ),
+                            ),
+                            ft.Container(
+                                expand=True,
+                                content=labeled(
+                                    "Password (optional)",
+                                    pass_field,
+                                    icon=ft.Icons.LOCK_OUTLINE,
+                                ),
+                            ),
+                        ],
+                    ),
+                    labeled(
+                        "Rotate URL (optional)",
+                        rotate_field,
+                        icon=ft.Icons.AUTORENEW,
+                    ),
                     addr_error,
-                    check_btn,
-                    ft.Container(height=10),
+                    ft.Row(spacing=10, controls=[check_btn, copy_btn]),
                 ],
             ),
         ),
+        actions_alignment=ft.MainAxisAlignment.END,
         actions=[
-            ft.TextButton(
-                "Cancel",
-                style=ft.ButtonStyle(color=COLORS["text_sub"]),
+            ft.OutlinedButton(
+                "[ cancel ]",
+                style=OUTLINE_STYLE,
+                height=40,
                 on_click=lambda _: page.pop_dialog(),
             ),
             ft.Button(
                 "[ save ]" if is_edit else "[ add ]",
                 style=ACCENT_STYLE,
+                height=40,
                 on_click=on_submit,
             ),
         ],

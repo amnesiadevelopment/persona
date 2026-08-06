@@ -1686,6 +1686,17 @@ def _import_mtls_ca(profile_dir: str, ca_path) -> bool:
     Soft-fails (returns False, launch proceeds) if certutil isn't available."""
     if not ca_path or not os.path.isfile(str(ca_path)):
         return False
+    # macOS ships no bundled certutil and none is on PATH; Firefox on macOS also
+    # consolidates NSS into libnss3.dylib. Use the in-process ctypes NSS path
+    # (services.cert.nssdb) against the engine's own libnss3 instead of a binary.
+    if _platform.IS_MACOS:
+        from ..cert import nssdb
+
+        engine_dir = _engine_lib_dir()
+        if not engine_dir:
+            logger.error("engine lib dir unresolved; launching without mTLS CA trust")
+            return False
+        return nssdb.trust_ca(str(profile_dir), str(ca_path), engine_dir)
     tool = _certutil_path()
     if not tool:
         logger.error("certutil unavailable; launching without mTLS CA trust")
@@ -2470,7 +2481,7 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     if _ca:
         if _import_mtls_ca(profile_dir, _ca):
             emit("MTLS_CA_TRUSTED")
-        elif _certutil_path() is None:
+        elif _certutil_path() is None and not _platform.IS_MACOS:
             # Firefox certificate trust needs certutil, bundled for Linux and
             # Windows. macOS is coming in a follow-up. Chromium certificates work
             # on every OS, so say so plainly instead of failing with a cryptic

@@ -4,7 +4,24 @@ import flet as ft
 
 from ...models.bookmark import Bookmark, Pool
 from ..theme.colors import COLORS
-from ..theme.styles import ACCENT_STYLE, MONO
+from ..theme.styles import ACCENT_STYLE, MONO, row_button
+
+
+def _col_header(icon: str, title: str) -> ft.Row:
+    return ft.Row(
+        spacing=8,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        controls=[
+            ft.Icon(icon, size=15, color=COLORS["accent"]),
+            ft.Text(
+                title,
+                size=11,
+                color=COLORS["accent"],
+                font_family=MONO,
+                weight=ft.FontWeight.BOLD,
+            ),
+        ],
+    )
 
 
 def build_bookmarks_page(
@@ -25,25 +42,113 @@ def build_bookmarks_page(
         disabled=True,
     )
 
+    # Each bookmark's checkbox, so "select all" can flip them together.
+    bm_checks: dict[str, ft.Checkbox] = {}
+
+    # Muted style until a pool is actually buildable (2+ selected); a single
+    # bookmark isn't a pool, so the button stays grey for 0 or 1 selected.
+    _grey_style = ft.ButtonStyle(
+        shape=ft.RoundedRectangleBorder(radius=3),
+        bgcolor=COLORS["card_hover"],
+        color=COLORS["text_dim"],
+        side=ft.BorderSide(1, COLORS["card_border"]),
+        padding=ft.Padding.symmetric(horizontal=14, vertical=0),
+        text_style=ft.TextStyle(font_family=MONO, weight=ft.FontWeight.BOLD, size=13),
+    )
+
+    def _refresh_make_pool() -> None:
+        n = len(checked)
+        ready = n >= 2
+        make_pool_btn.text = (
+            f"[ make pool from {n} selected ]" if n else "[ make pool from selected ]"
+        )
+        make_pool_btn.style = ACCENT_STYLE if ready else _grey_style
+        make_pool_btn.disabled = not ready
+        make_pool_btn.update()
+
     def on_toggle(name: str, value: bool) -> None:
         if value:
             checked.add(name)
         else:
             checked.discard(name)
-        make_pool_btn.disabled = not checked
-        make_pool_btn.update()
+        _refresh_make_pool()
 
+    make_pool_btn.style = _grey_style
+    make_pool_btn.text = "[ make pool from selected ]"
     make_pool_btn.on_click = lambda _: on_make_pool(sorted(checked))
 
+    def on_select_all(e: ft.ControlEvent) -> None:
+        want = bool(e.control.value)
+        for name, cb in bm_checks.items():
+            if cb.value != want:
+                cb.value = want
+                cb.update()
+            if want:
+                checked.add(name)
+            else:
+                checked.discard(name)
+        _refresh_make_pool()
+
+    select_all_cb = ft.Checkbox(
+        fill_color={
+            ft.ControlState.SELECTED: COLORS["accent"],
+            ft.ControlState.DEFAULT: "transparent",
+        },
+        check_color=COLORS["bg"],
+        border_side=ft.BorderSide(1.5, COLORS["text_dim"]),
+        on_change=on_select_all,
+        tooltip="Select all bookmarks",
+    )
+
     bm_rows: list[ft.Control] = (
-        [_bookmark_row(b, on_toggle, on_edit_bookmark, on_delete_bookmark) for b in bookmarks]
+        [_bookmark_row(b, on_toggle, on_edit_bookmark, on_delete_bookmark, bm_checks) for b in bookmarks]
         if bookmarks
         else [_empty("no bookmarks yet — add one to attach it to a profile")]
     )
     pool_rows: list[ft.Control] = (
         [_pool_row(p, on_edit_pool, on_delete_pool) for p in pools]
         if pools
-        else [_empty("no pools yet — check bookmarks above and make one")]
+        else [_empty("no pools yet — check bookmarks and make one")]
+    )
+
+    # Left column: header + make-pool button on top (so it's reachable without
+    # scrolling the whole list), then every bookmark (checkable).
+    left = ft.Column(
+        spacing=10,
+        expand=True,
+        controls=[
+            ft.Row(
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Row(
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            select_all_cb,
+                            ft.Text(
+                                "ALL BOOKMARKS · select to build a pool",
+                                size=11,
+                                color=COLORS["accent"],
+                                font_family=MONO,
+                                weight=ft.FontWeight.BOLD,
+                            ),
+                        ],
+                    ),
+                    make_pool_btn,
+                ],
+            ),
+            *bm_rows,
+        ],
+    )
+    # Right column: the pools built from those bookmarks.
+    right = ft.Column(
+        spacing=10,
+        expand=True,
+        controls=[
+            _col_header(ft.Icons.FOLDER_OUTLINED, "POOLS"),
+            *pool_rows,
+        ],
     )
 
     return ft.Container(
@@ -56,20 +161,15 @@ def build_bookmarks_page(
             scroll=ft.ScrollMode.AUTO,
             controls=[
                 _section_header("bookmarks", len(bookmarks), "[ + add bookmark ]", on_add_bookmark),
-                ft.Container(height=14),
-                ft.Column(spacing=10, controls=bm_rows),
-                ft.Container(height=12),
-                ft.Row(controls=[make_pool_btn]),
-                ft.Divider(height=40, color=COLORS["border"]),
-                ft.Text(
-                    "pools",
-                    size=16,
-                    weight=ft.FontWeight.BOLD,
-                    color=COLORS["text_main"],
-                    font_family=MONO,
+                ft.Container(height=18),
+                ft.Row(
+                    spacing=24,
+                    vertical_alignment=ft.CrossAxisAlignment.START,
+                    controls=[
+                        ft.Container(expand=3, content=left),
+                        ft.Container(expand=2, content=right),
+                    ],
                 ),
-                ft.Container(height=14),
-                ft.Column(spacing=10, controls=pool_rows),
                 ft.Container(height=20),
             ],
         ),
@@ -112,7 +212,18 @@ def _bookmark_row(
     on_toggle: Callable[[str, bool], None],
     on_edit: Callable[[str], None],
     on_delete: Callable[[str], None],
+    bm_checks: dict[str, ft.Checkbox],
 ) -> ft.Container:
+    cb = ft.Checkbox(
+        fill_color={
+            ft.ControlState.SELECTED: COLORS["accent"],
+            ft.ControlState.DEFAULT: "transparent",
+        },
+        check_color=COLORS["bg"],
+        border_side=ft.BorderSide(1.5, COLORS["text_dim"]),
+        on_change=lambda e, n=bookmark.name: on_toggle(n, e.control.value),
+    )
+    bm_checks[bookmark.name] = cb
     return ft.Container(
         border_radius=3,
         border=ft.Border.all(1, COLORS["card_border"]),
@@ -127,11 +238,7 @@ def _bookmark_row(
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     expand=True,
                     controls=[
-                        ft.Checkbox(
-                            fill_color=COLORS["accent"],
-                            check_color=COLORS["bg"],
-                            on_change=lambda e, n=bookmark.name: on_toggle(n, e.control.value),
-                        ),
+                        cb,
                         ft.Column(
                             spacing=2,
                             expand=True,
@@ -158,8 +265,8 @@ def _bookmark_row(
                 ft.Row(
                     spacing=6,
                     controls=[
-                        _btn("[ edit ]", COLORS["text_sub"], lambda _, n=bookmark.name: on_edit(n)),
-                        _btn("[ x ]", COLORS["error"], lambda _, n=bookmark.name: on_delete(n)),
+                        row_button("[ edit ]", lambda _, n=bookmark.name: on_edit(n), kind="edit"),
+                        row_button("[ x ]", lambda _, n=bookmark.name: on_delete(n), kind="delete"),
                     ],
                 ),
             ],
@@ -214,8 +321,8 @@ def _pool_row(
                 ft.Row(
                     spacing=6,
                     controls=[
-                        _btn("[ edit ]", COLORS["text_sub"], lambda _, n=pool.name: on_edit(n)),
-                        _btn("[ x ]", COLORS["error"], lambda _, n=pool.name: on_delete(n)),
+                        row_button("[ edit ]", lambda _, n=pool.name: on_edit(n), kind="edit"),
+                        row_button("[ x ]", lambda _, n=pool.name: on_delete(n), kind="delete"),
                     ],
                 ),
             ],

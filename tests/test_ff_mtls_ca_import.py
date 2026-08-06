@@ -44,6 +44,7 @@ def test_import_mtls_ca_builds_argv_and_env_linux(monkeypatch, tmp_path):
 
 def test_import_mtls_ca_windows_uses_bundled_dll_dir(monkeypatch, tmp_path):
     monkeypatch.setattr(il._platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(il._platform, "IS_MACOS", False)
     calls = []
 
     class R:

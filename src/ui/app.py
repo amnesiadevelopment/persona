@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sys
 import threading
 
 import flet as ft
@@ -53,6 +54,24 @@ def _show_window(page: ft.Page) -> None:
     startup, so it's swallowed."""
     try:
         page.window.visible = True
+        # Centre on macOS now that the native window is realised. Setting
+        # left/top in configure_page (before reveal) crashed the built
+        # flet-desktop app on launch; here the window exists, so it's safe.
+        # A centring failure must NOT skip the page.update() below — otherwise a
+        # hiccup while positioning would leave the window unrevealed (the exact
+        # invisible-zombie we're fixing), so positioning gets its own guard.
+        if sys.platform == "darwin":
+            try:
+                from .theme.page import _primary_work_rect
+
+                wx, wy, ww, wh = _primary_work_rect()
+                win_w = int(getattr(page.window, "width", None) or 1280)
+                win_h = int(getattr(page.window, "height", None) or 820)
+                if ww and wh:
+                    page.window.left = wx + max(0, (ww - win_w) // 2)
+                    page.window.top = wy + max(0, (wh - win_h) // 2)
+            except Exception:
+                logger.exception("Could not centre the window on macOS")
         page.update()
     except Exception:
         logger.exception("Could not reveal the window")
@@ -362,10 +381,9 @@ class App:
 
         rows: list[ft.Control] = []
 
-        # version line (+ badge when an update is available). Clicking it acts
-        # now instead of waiting on the 60s poll: install a staged update,
-        # resume a stalled download, or check for a newer release (#228).
-        version_row = ft.Container(
+        # version (clickable = check/act now, #228) + a small accent dot when an
+        # update is available.
+        version_label = ft.Container(
             on_click=lambda _: self._on_version_click(),
             ink=True,
             tooltip="check for updates",
@@ -373,6 +391,7 @@ class App:
             padding=ft.Padding.symmetric(horizontal=2, vertical=1),
             content=ft.Row(
                 spacing=8,
+                tight=True,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 controls=[
                     ft.Text(
@@ -394,14 +413,18 @@ class App:
                 ],
             ),
         )
-        rows.append(version_row)
 
-        # auto-update toggle on its own line so the label fits
+        # auto-update toggle, in persona's bracket style — sits on the same line
+        # as the version so the version block stays compact.
         toggle = ft.Container(
             on_click=lambda _: self._set_auto_update(not auto_on),
             ink=True,
             border_radius=3,
-            padding=ft.Padding.symmetric(horizontal=4, vertical=2),
+            border=ft.Border.all(
+                1,
+                COLORS["accent_dim"] if auto_on else COLORS["card_border"],
+            ),
+            padding=ft.Padding.symmetric(horizontal=8, vertical=3),
             tooltip=(
                 "Auto-update is ON: new versions download and install\n"
                 "automatically when no profiles are running. Click to turn off."
@@ -414,8 +437,15 @@ class App:
                 size=10,
                 color=COLORS["accent"] if auto_on else COLORS["text_dim"],
                 font_family="monospace",
+                no_wrap=True,
             ),
         )
+
+        # The sidebar is only ~200px, so the version + the full "[ auto-update:
+        # on ]" bracket don't fit on one line (the toggle clipped). Keep the
+        # version on its own line and the toggle stretched full-width below it.
+        rows.append(version_label)
+        toggle.alignment = ft.Alignment.CENTER
         rows.append(toggle)
 
         # status line / action
@@ -659,9 +689,22 @@ class App:
         self._open_certificate_dialog(name)
 
     def _delete_certificate(self, name: str) -> None:
-        self.cert_store.remove(name)
-        self._render_active_page()
-        self._safe_update()
+        page = self.page
+        assert page is not None
+
+        def do_delete() -> None:
+            self.cert_store.remove(name)
+            self._render_active_page()
+            self._safe_update()
+
+        open_confirm_dialog(
+            page,
+            name,
+            do_delete,
+            title=f"Delete certificate '{name}'?",
+            body="Any profile assigned this certificate will launch without a "
+            "client certificate until you reassign one.",
+        )
 
     def _build_profiles_page(self) -> ft.Container:
         r = self.refs
@@ -1147,20 +1190,22 @@ class App:
         from ..core.assets import asset_path
 
         fname = (
-            "engine_firefox.png"
+            "engine_firefox.svg"
             if engine_key in ("firefox", "camoufox")
-            else "engine_chrome.png"
+            else "engine_chrome.svg"
         )
         path = asset_path(fname)
-        # Box the logo in a fixed-size container so a non-square source can't
-        # overflow its slot and clip/overlap the neighbouring row. (ft.ImageFit
-        # isn't available in this Flet, so the fixed width/height on both the
-        # Image and its container is what constrains it.)
+        # The SVGs are square (viewBox 0 0 24 24); fit=CONTAIN scales them to the
+        # box without cropping and the centred container keeps them from drifting.
         if os.path.exists(path):
-            inner: ft.Control = ft.Image(src=path, width=size, height=size)
+            inner: ft.Control = ft.Image(
+                src=path, width=size, height=size, fit=ft.BoxFit.CONTAIN
+            )
         else:
             inner = ft.Icon(ft.Icons.PUBLIC, size=size, color=COLORS["text_sub"])
-        return ft.Container(width=size, height=size, content=inner)
+        return ft.Container(
+            width=size, height=size, alignment=ft.Alignment.CENTER, content=inner
+        )
 
     def _engine_row(
         self, badge: ft.Control, name: str, status: ft.Control, checking: bool,
@@ -1180,25 +1225,27 @@ class App:
             trailing.append(
                 ft.Container(width=7, height=7, border_radius=4, bgcolor=COLORS["accent"])
             )
-        return ft.Column(
-            spacing=1,
+        # Icon sits to the LEFT of the whole name+version block and is centred
+        # against it (not just the name line) so a two-line row reads as one
+        # tidy unit. `status` stays the same live control the progress writer
+        # updates.
+        return ft.Row(
+            spacing=10,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
             controls=[
-                ft.Row(
-                    spacing=8,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                badge,
+                ft.Column(
+                    spacing=1,
+                    expand=True,
                     controls=[
-                        badge,
                         ft.Text(
                             name, size=11, color=COLORS["text_sub"],
                             font_family="monospace",
                         ),
-                        *trailing,
+                        status,
                     ],
                 ),
-                ft.Container(
-                    padding=ft.Padding.only(left=26),
-                    content=status,
-                ),
+                *trailing,
             ],
         )
 
@@ -2263,10 +2310,13 @@ class App:
         if text is not None and self.refs:
             lines = [ln for ln in text.split("\n") if ln]
             sidebar_lines = lines[-6:]
+            # Wrap long lines (Mars: they were clipping) — the ListView scrolls,
+            # so the panel keeps a comfortable fixed height instead of growing
+            # per line and the wrapped continuation stays readable.
             self.refs.log_list.controls = [
-                log_line_control(ln, wrap=False) for ln in sidebar_lines
+                log_line_control(ln, wrap=True) for ln in sidebar_lines
             ]
-            self.refs.log_column.height = max(72, len(sidebar_lines) * 18 + 20)
+            self.refs.log_column.height = 150
             self.refs.log_column.visible = (
                 bool(sidebar_lines) and not self.state.log_collapsed
             )

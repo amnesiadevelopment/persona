@@ -10,18 +10,22 @@ dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
     "cryptography>=42.0.0",
-    "mcp>=1.28.0",
+    "mcp>=1.28.0,<2",
     # mcp pulls pywin32 (for pywintypes) only as a platform-conditional
     # TRANSITIVE dep, and flet build doesn't resolve those — so the built
     # Windows app raised "No module named 'pywintypes'" and the MCP control
     # server silently failed to mount (/mcp 404, whole management layer dead).
     # Declare it directly, Windows-only, so the bundle carries it.
     "pywin32>=311; sys_platform == 'win32'",
+    # SSH/SFTP/tmux "Connect" feature — module-level imports in
+    # services/ssh/client.py; only in requirements.txt would miss the built app.
+    "paramiko>=3.4",
+    "PySocks>=1.7",
     # 2nd browser engine (patched Firefox 150). MUST be here, not just in
     # requirements.txt — flet build bundles deps from pyproject, so a package
     # that's only in requirements.txt is missing from the built app (that's
     # exactly why Camoufox showed ModuleNotFoundError in prod).
-    "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git",
+    "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git@e2deaa50594894b236d39ac763d244aa1327e9c5",
     # invisible_core is invisible_playwright's own dependency, but flet build does
     # NOT resolve a git package's transitive deps — so it must be declared here or
     # the bundle ships without it and the engine raises ImportError ("invisible-core
@@ -30,7 +34,7 @@ dependencies = [
     # so the version carrying the release-pin check (invisible_core._pin) lands in
     # the build. A git pin here mismatched playwright's == pin; the PyPI == pin keeps
     # them in lockstep and lets `pip check` catch a drift before release.
-    "invisible_core==18.9.0",
+    "invisible_core==18.13.0",
 ]
 
 [tool.pytest.ini_options]
@@ -54,15 +58,20 @@ module = "main"
 # Python takes over — the window appears already-centred with persona's own
 # fingerprint-scan splash as the very first frame the user sees.
 #
-# This was historically banned (a hidden window that a crashed Python session
-# never shows = an invisible zombie the user can't see or close). Two guards make
-# it safe now: (1) Flet 0.85.3 renders its ERROR screen even on a hidden window
-# and forces it visible, so a startup crash is SEEN, not silently zombied
-# (verified on the built app: a forced boot failure showed the error screen);
-# (2) main.py shows the window explicitly as soon as the splash is on-screen and,
-# on any startup exception, force-shows the window before painting the error — so
-# there is no path where the window stays hidden with the process alive.
-hide_window_on_start = true
+# MUST be false on macOS. Flet 0.85.3's "merged UI and platform thread" mode
+# (macOS desktop) deadlocks the native launch when the window starts hidden: on a
+# LaunchServices ('open') launch the platform thread waits for the hidden window
+# to become ready before it runs runPython, and that readiness never fires while
+# hidden — so Python's main() NEVER starts and the app is an invisible zombie
+# (0 windows, process alive, no log). VERIFIED on a Mac build: with
+# hide_window_on_start=true the built .app zombied on every 'open'; flipping it to
+# false made the same build launch, run main(), and paint a centred window.
+# (Binary-direct launch masked the bug — it ran Python fine either way.)
+# The window now appears from the first native frame; main.py still centres it and
+# the in-app splash is the first real content, so there is no hidden-zombie path.
+# NOTE for Win/Linux: verify the brief window-before-splash frame looks clean;
+# those platforms did not need hide=true for correctness, only cosmetics.
+hide_window_on_start = false
 exclude = [
     "build",
     "dist",

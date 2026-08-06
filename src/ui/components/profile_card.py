@@ -6,7 +6,7 @@ from ...models.profile import Profile
 from ...models.proxy import Proxy
 from ..flags import flag_path
 from ..theme.colors import COLORS
-from ..theme.styles import MONO
+from ..theme.styles import MONO, row_button
 from .launch_button import build_launch_button
 
 _OS_LABELS = {"windows": "windows", "macos": "macos", "linux": "linux"}
@@ -207,18 +207,19 @@ def build_profile_card(
         controls=[launch_btn, *action_buttons],
     )
 
-    # The left and right blocks pin to the edges; notes are layered on top in
-    # their own centred row so they sit dead-centre of the whole card, not
-    # centred in the gap between the two blocks.
+    # The name block hugs the left, the action buttons hug the right, and the
+    # expand=True spacer between them absorbs the slack — so the row always fits
+    # the card width and the buttons never run off the right edge on a narrow
+    # window. Notes are layered ON TOP, centred, in a container that fills (not
+    # dictates) the card width so it can't push the card wider than the viewport
+    # (the old fixed-width notes Row in the Stack was doing exactly that).
     row = ft.Row(
-        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
         vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        controls=[left_block, right_block],
+        controls=[left_block, ft.Container(expand=True), right_block],
     )
-    notes_overlay = ft.Row(
-        alignment=ft.MainAxisAlignment.CENTER,
-        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        controls=[_notes_field(profile, on_notes_change)],
+    notes_overlay = ft.Container(
+        alignment=ft.Alignment.CENTER,
+        content=_notes_field(profile, on_notes_change),
     )
 
     return ft.Container(
@@ -226,7 +227,10 @@ def build_profile_card(
         border=ft.Border.all(1, border_color),
         bgcolor=COLORS["card_bg"],
         padding=ft.Padding.symmetric(horizontal=18, vertical=14),
-        content=ft.Stack(controls=[row, notes_overlay]),
+        content=ft.Stack(
+            fit=ft.StackFit.PASS_THROUGH,
+            controls=[row, notes_overlay],
+        ),
     )
 
 
@@ -237,37 +241,20 @@ def _build_action_buttons(
     is_running: bool = False,
 ) -> list[ft.Button]:
     return [
-        ft.Button(
+        # Editing a profile while its browser is open can corrupt its data dir /
+        # fingerprint mid-session, so disable edit until it's stopped.
+        row_button(
             "[ edit ]",
-            width=92,
-            height=38,
-            # Editing a profile while its browser is open can corrupt its data
-            # dir / fingerprint mid-session, so disable edit until it's stopped.
+            lambda _, n=name: on_edit(n),
+            kind="edit",
             disabled=is_running,
-            style=ft.ButtonStyle(
-                shape=ft.RoundedRectangleBorder(radius=3),
-                color=COLORS["text_sub"],
-                side=ft.BorderSide(1, COLORS["card_border"]),
-                padding=ft.Padding.symmetric(horizontal=4, vertical=0),
-                text_style=ft.TextStyle(font_family=MONO, size=13),
-            ),
             tooltip="Stop the profile to edit it" if is_running else "Edit profile",
-            on_click=lambda _, n=name: on_edit(n),
         ),
-        ft.Button(
+        row_button(
             "[ x ]",
-            width=64,
-            height=38,
-            style=ft.ButtonStyle(
-                shape=ft.RoundedRectangleBorder(radius=3),
-                color=COLORS["error"],
-                side=ft.BorderSide(1, COLORS["card_border"]),
-                overlay_color=ft.Colors.with_opacity(0.1, COLORS["error"]),
-                padding=ft.Padding.symmetric(horizontal=4, vertical=0),
-                text_style=ft.TextStyle(font_family=MONO, size=13),
-            ),
+            lambda _, n=name: on_delete(n),
+            kind="delete",
             tooltip="Delete profile",
-            on_click=lambda _, n=name: on_delete(n),
         ),
     ]
 

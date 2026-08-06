@@ -18,7 +18,16 @@ from ...services.browser.resolution import parse_resolution
 from ...utils.validation import validate_profile_name
 from ..theme.colors import COLORS
 from ..theme.page import build_engine_dropdown, build_os_dropdown
-from ..theme.styles import ACCENT_STYLE, DLG_FIELD_KWARGS, MONO, OUTLINE_STYLE
+from ..theme.styles import (
+    ACCENT_STYLE,
+    DLG_FIELD_KWARGS,
+    DLG_INPUT_KWARGS,
+    MONO,
+    OUTLINE_STYLE,
+    field_label,
+    labeled,
+    section_header,
+)
 
 _DIRECT = "(direct)"
 _NO_POOL = "(none)"
@@ -45,6 +54,40 @@ def open_profile_dialog(
     pool_names = pool_names or []
     all_bookmarks = all_bookmarks or []
     cert_names = cert_names or []
+
+    from ...core.assets import asset_path
+    import os as _os
+
+    def _engine_icon(size: int):
+        # persona's own V-engine mark, matching the sidebar; falls back to a
+        # Material icon if the asset is missing (e.g. a source run).
+        path = asset_path("v_engine.png")
+        if _os.path.exists(path):
+            return ft.Image(src=path, width=size, height=size)
+        return ft.Icons.BOLT
+
+    def _brand_icon_src(engine_key: str) -> str | None:
+        # Grey brand mark for the selected browser, shown beside the Engine field
+        # label (the section divider already carries the V-engine, so the field
+        # shows WHICH browser instead).
+        fname = (
+            "engine_firefox_grey.svg"
+            if engine_key in ("firefox", "camoufox")
+            else "engine_chrome_grey.svg"
+        )
+        p = asset_path(fname)
+        return p if _os.path.exists(p) else None
+
+    # A mutable icon beside the Engine label that swaps to the picked browser.
+    _brand_holder = ft.Container(width=13, height=13)
+
+    def _refresh_brand_icon() -> None:
+        src = _brand_icon_src(engine_dropdown.value or "chromium")
+        _brand_holder.content = (
+            ft.Image(src=src, width=13, height=13)
+            if src
+            else ft.Icon(ft.Icons.WEB_ASSET, size=13, color=COLORS["text_sub"])
+        )
     is_edit = profile is not None
     title = "Edit Profile" if is_edit else get_string("create_new_profile")
     subtitle = (
@@ -55,16 +98,16 @@ def open_profile_dialog(
     save_label = "[ save ]" if is_edit else "[ create ]"
 
     name_field = ft.TextField(
-        label=get_string("profile_name"),
         value=profile.name if profile is not None else "",
-        hint_text="" if profile is not None else "Enter a profile name",
-        **DLG_FIELD_KWARGS,
+        hint_text="e.g. Amazon US Shopper",
+        hint_style=ft.TextStyle(color=COLORS["text_dim"], font_family=MONO),
+        expand=True,
+        **DLG_INPUT_KWARGS,
     )
 
     current_proxy = (profile.proxy or "") if profile is not None else ""
     proxy_value = current_proxy if current_proxy in proxy_names else _DIRECT
     proxy_dropdown = ft.Dropdown(
-        label="Proxy",
         value=proxy_value,
         expand=True,
         options=[ft.dropdown.Option(_DIRECT)]
@@ -74,14 +117,12 @@ def open_profile_dialog(
         border_color=COLORS["card_border"],
         focused_border_color=COLORS["accent"],
         border_radius=3,
-        label_style=ft.TextStyle(color=COLORS["text_sub"], font_family=MONO),
         text_style=ft.TextStyle(font_family=MONO),
     )
 
     current_cert = (profile.certificate or "") if profile is not None else ""
     cert_value = current_cert if current_cert in cert_names else _NO_CERT
     cert_dropdown = ft.Dropdown(
-        label="Certificate (mTLS)",
         value=cert_value,
         expand=True,
         options=[ft.dropdown.Option(_NO_CERT)]
@@ -91,7 +132,6 @@ def open_profile_dialog(
         border_color=COLORS["card_border"],
         focused_border_color=COLORS["accent"],
         border_radius=3,
-        label_style=ft.TextStyle(color=COLORS["text_sub"], font_family=MONO),
         text_style=ft.TextStyle(font_family=MONO),
     )
 
@@ -187,7 +227,6 @@ def open_profile_dialog(
         page.update()
 
     resolution_dropdown = ft.Dropdown(
-        label="Screen resolution",
         value=res_value,
         expand=True,
         options=(
@@ -205,7 +244,6 @@ def open_profile_dialog(
         border_color=COLORS["card_border"],
         focused_border_color=COLORS["accent"],
         border_radius=3,
-        label_style=ft.TextStyle(color=COLORS["text_sub"], font_family=MONO),
         text_style=ft.TextStyle(font_family=MONO),
     )
     resolution_dropdown.on_select = on_res_change
@@ -234,8 +272,16 @@ def open_profile_dialog(
     # "phone" is an instant tell. Hide the whole resolution picker for mobile OSes
     # so it's never even offered there.
     resolution_section = ft.Column(
-        spacing=6,
-        controls=[ft.Row(controls=[resolution_dropdown]), custom_row, res_hint],
+        spacing=8,
+        controls=[
+            labeled(
+                "Screen resolution",
+                resolution_dropdown,
+                icon=ft.Icons.ASPECT_RATIO,
+            ),
+            custom_row,
+            res_hint,
+        ],
     )
     resolution_section.visible = not is_mobile_os(
         os_dropdown.value or "windows"
@@ -247,7 +293,6 @@ def open_profile_dialog(
     if current_search not in SEARCH_ENGINE_LABELS:
         current_search = DEFAULT_SEARCH_ENGINE
     search_dropdown = ft.Dropdown(
-        label="Default search engine",
         value=current_search,
         expand=True,
         options=[
@@ -259,7 +304,6 @@ def open_profile_dialog(
         border_color=COLORS["card_border"],
         focused_border_color=COLORS["accent"],
         border_radius=3,
-        label_style=ft.TextStyle(color=COLORS["text_sub"], font_family=MONO),
         text_style=ft.TextStyle(font_family=MONO),
     )
     search_hint = ft.Text(
@@ -296,8 +340,16 @@ def open_profile_dialog(
         ),
     )
     search_section = ft.Column(
-        spacing=6,
-        controls=[ft.Row(controls=[search_dropdown]), search_locked, search_hint],
+        spacing=8,
+        controls=[
+            labeled(
+                "Default search engine",
+                search_dropdown,
+                icon=ft.Icons.SEARCH,
+            ),
+            search_locked,
+            search_hint,
+        ],
     )
 
     def _engine() -> str:
@@ -353,10 +405,12 @@ def open_profile_dialog(
         )
         _apply_firefox_os_lock()
         _apply_engine_dependent()
+        _refresh_brand_icon()
         page.update()
         _refresh_search_controls()
 
     engine_dropdown.on_select = on_engine_change
+    _refresh_brand_icon()
 
     # invisible_playwright is desktop Firefox with no mobile mode, so a mobile
     # profile must use chromium (which has real device presets). When the user
@@ -390,7 +444,6 @@ def open_profile_dialog(
     current_pool = (profile.bookmark_pool or "") if profile is not None else ""
     pool_value = current_pool if current_pool in pool_names else _NO_POOL
     pool_dropdown = ft.Dropdown(
-        label="Bookmark pool",
         value=pool_value,
         expand=True,
         options=[ft.dropdown.Option(_NO_POOL)]
@@ -400,7 +453,6 @@ def open_profile_dialog(
         border_color=COLORS["card_border"],
         focused_border_color=COLORS["accent"],
         border_radius=3,
-        label_style=ft.TextStyle(color=COLORS["text_sub"], font_family=MONO),
         text_style=ft.TextStyle(font_family=MONO),
     )
 
@@ -415,44 +467,70 @@ def open_profile_dialog(
         selected_bookmarks = set(profile.bookmarks)
     else:
         selected_bookmarks = {n for n in DEFAULT_BOOKMARKS if n in {b.name for b in all_bookmarks}}
-    bookmark_checks: dict[str, ft.Checkbox] = {}
-    bookmark_rows: list[ft.Control] = []
-    for b in all_bookmarks:
-        cb = ft.Checkbox(
-            value=b.name in selected_bookmarks,
-            fill_color=COLORS["accent"],
-            check_color=COLORS["bg"],
-        )
-        bookmark_checks[b.name] = cb
-        bookmark_rows.append(
-            ft.Row(
-                spacing=10,
+    # Bookmarks are chosen as toggle CHIPS (like the tag filters): a selected
+    # chip is filled accent, an unselected one is a plain outline. The picked
+    # set lives in `bookmark_selected`; on_submit reads it directly.
+    bookmark_selected: set[str] = set(
+        n for n in selected_bookmarks if n in {b.name for b in all_bookmarks}
+    )
+    bookmark_chip_holders: dict[str, ft.Container] = {}
+
+    def _chip_content(name: str, on: bool) -> ft.Control:
+        return ft.Container(
+            border_radius=3,
+            border=ft.Border.all(
+                1, COLORS["accent"] if on else COLORS["card_border"]
+            ),
+            bgcolor=(
+                ft.Colors.with_opacity(0.12, COLORS["accent"])
+                if on
+                else COLORS["card_bg"]
+            ),
+            padding=ft.Padding.symmetric(horizontal=12, vertical=6),
+            content=ft.Row(
+                spacing=7,
+                tight=True,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 controls=[
-                    cb,
-                    ft.Text(b.name, size=13, color=COLORS["text_main"], font_family=MONO),
+                    ft.Container(
+                        width=6,
+                        height=6,
+                        border_radius=3,
+                        bgcolor=COLORS["accent"] if on else COLORS["text_dim"],
+                    ),
+                    ft.Text(
+                        name,
+                        size=13,
+                        color=COLORS["accent"] if on else COLORS["text_sub"],
+                        font_family=MONO,
+                    ),
                 ],
-            )
-        )
-    bookmark_section: list[ft.Control] = [
-        ft.Text(
-            "extra bookmarks (added on top of the pool):",
-            size=11,
-            color=COLORS["text_sub"],
-            font_family=MONO,
-        ),
-        ft.Container(
-            height=170,
-            border_radius=3,
-            border=ft.Border.all(1, COLORS["card_border"]),
-            padding=ft.Padding.symmetric(horizontal=10, vertical=6),
-            content=ft.Column(
-                spacing=2,
-                scroll=ft.ScrollMode.ALWAYS,
-                controls=bookmark_rows,
             ),
-        ),
-    ] if bookmark_rows else []
+        )
+
+    def _toggle_bookmark(name: str) -> None:
+        if name in bookmark_selected:
+            bookmark_selected.discard(name)
+        else:
+            bookmark_selected.add(name)
+        holder = bookmark_chip_holders[name]
+        holder.content = _chip_content(name, name in bookmark_selected)
+        page.update()
+
+    bookmark_chips: list[ft.Control] = []
+    for b in all_bookmarks:
+        holder = ft.Container(
+            content=_chip_content(b.name, b.name in bookmark_selected),
+            on_click=lambda _, n=b.name: _toggle_bookmark(n),
+            ink=True,
+        )
+        bookmark_chip_holders[b.name] = holder
+        bookmark_chips.append(holder)
+
+    bookmark_section: list[ft.Control] = [
+        field_label("extra bookmarks (added on top of the pool)"),
+        ft.Row(spacing=8, wrap=True, controls=bookmark_chips),
+    ] if bookmark_chips else []
 
     _prior_status = (
         profile.cookie_import_status
@@ -485,47 +563,61 @@ def open_profile_dialog(
         if msg:
             _set_status(msg, ok="exported" in msg.lower())
 
-    cookie_controls: list[ft.Control] = (
-        [
-            ft.Divider(height=10, color=COLORS["border"]),
-            ft.Text(
-                "cookies (import/export a JSON file):",
+    # Cookies attach to a profile's data dir, which only exists after the profile
+    # is created — so on CREATE the section is shown (so the feature is
+    # discoverable) but the buttons are disabled with a hint, and on EDIT they
+    # work.
+    cookie_controls: list[ft.Control] = [
+        section_header("COOKIES", icon=ft.Icons.COOKIE_OUTLINED),
+        field_label("import / export a cookies JSON file"),
+        ft.Row(
+            spacing=8,
+            controls=[
+                ft.OutlinedButton(
+                    "[ import file ]",
+                    height=34,
+                    style=OUTLINE_STYLE,
+                    disabled=not is_edit,
+                    on_click=do_import,
+                ),
+                ft.OutlinedButton(
+                    "[ export file ]",
+                    height=34,
+                    style=OUTLINE_STYLE,
+                    disabled=not is_edit,
+                    on_click=do_export,
+                ),
+            ],
+        ),
+        (
+            cookie_status
+            if is_edit
+            else ft.Text(
+                "available after you create the profile",
                 size=11,
-                color=COLORS["text_sub"],
+                color=COLORS["text_dim"],
                 font_family=MONO,
-            ),
-            ft.Row(
-                spacing=8,
-                controls=[
-                    ft.OutlinedButton(
-                        "[ import file ]", height=34, on_click=do_import
-                    ),
-                    ft.OutlinedButton(
-                        "[ export file ]", height=34, on_click=do_export
-                    ),
-                ],
-            ),
-            cookie_status,
-        ]
-        if is_edit
-        else []
-    )
+            )
+        ),
+    ]
 
     current_tags = ", ".join(profile.tags) if profile is not None else ""
     tags_field = ft.TextField(
-        label="Tags (comma-separated)",
         value=current_tags,
-        **DLG_FIELD_KWARGS,
+        hint_text="shopping, us, amazon",
+        hint_style=ft.TextStyle(color=COLORS["text_dim"], font_family=MONO),
+        **DLG_INPUT_KWARGS,
     )
 
     current_notes = profile.notes if profile is not None else ""
     notes_field = ft.TextField(
-        label="Notes",
         value=current_notes,
+        hint_text="optional",
+        hint_style=ft.TextStyle(color=COLORS["text_dim"], font_family=MONO),
         multiline=True,
         min_lines=1,
         max_lines=2,
-        **DLG_FIELD_KWARGS,
+        **DLG_INPUT_KWARGS,
     )
 
     name_error = ft.Text("", size=12, color=COLORS["error"], visible=False)
@@ -549,7 +641,7 @@ def open_profile_dialog(
         pool = "" if pool == _NO_POOL else pool
         certificate = cert_dropdown.value or _NO_CERT
         certificate = "" if certificate == _NO_CERT else certificate
-        bookmarks = [n for n, cb in bookmark_checks.items() if cb.value]
+        bookmarks = [b.name for b in all_bookmarks if b.name in bookmark_selected]
         tags = [s.strip() for s in (tags_field.value or "").split(",") if s.strip()]
         notes = (notes_field.value or "").strip()
         name_error.visible = False
@@ -600,40 +692,134 @@ def open_profile_dialog(
             font_family=MONO,
         ),
         content=ft.Container(
-            width=520,
-            padding=ft.Padding.symmetric(horizontal=4, vertical=4),
-            content=ft.Column(
-                tight=True,
-                spacing=16,
-                scroll=ft.ScrollMode.AUTO,
-                controls=[
+            width=470,
+            height=600,
+            content=ft.Stack(
+              controls=[
+                ft.Container(
+                  padding=ft.Padding.only(left=4, top=4, bottom=4, right=4),
+                  content=ft.Column(
+                    tight=True,
+                    spacing=18,
+                    scroll=ft.ScrollMode.AUTO,
+                    horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+                    controls=[
+                    # right padding on each control's own container keeps the
+                    # scrollbar in a gutter clear of the field borders
+                    ft.Container(padding=ft.Padding.only(right=14), content=ft.Column(
+                      tight=True, spacing=18, horizontal_alignment=ft.CrossAxisAlignment.STRETCH, controls=[
                     ft.Text(subtitle, size=13, color=COLORS["text_sub"]),
-                    ft.Container(height=6),
-                    ft.Row(controls=[name_field]),
-                    name_error,
-                    ft.Row(controls=[tags_field]),
-                    ft.Row(controls=[notes_field]),
-                    ft.Row(
-                        spacing=10,
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                        controls=proxy_row_controls,
+                    # ---- IDENTITY ----
+                    section_header("IDENTITY", icon=ft.Icons.PERSON_OUTLINE),
+                    labeled(
+                        "Profile name",
+                        ft.Row(controls=[name_field]),
+                        icon=ft.Icons.BADGE_OUTLINED,
                     ),
-                    proxy_hint,
-                    ft.Row(controls=[cert_dropdown]),
+                    name_error,
+                    ft.Row(
+                        spacing=16,
+                        vertical_alignment=ft.CrossAxisAlignment.START,
+                        controls=[
+                            ft.Container(
+                                expand=True,
+                                content=labeled(
+                                    "Tags", tags_field, icon=ft.Icons.LABEL_OUTLINE
+                                ),
+                            ),
+                            ft.Container(
+                                expand=True,
+                                content=labeled(
+                                    "Notes", notes_field, icon=ft.Icons.NOTES
+                                ),
+                            ),
+                        ],
+                    ),
+                    # ---- NETWORK ----
+                    # Section dividers carry the SAME icon as the sidebar nav
+                    # entry; the field inside uses a different one so they don't
+                    # duplicate (network=LAN like the sidebar; proxy=globe).
+                    section_header("NETWORK", icon=ft.Icons.LAN_OUTLINED),
+                    labeled(
+                        "Proxy",
+                        ft.Row(
+                            spacing=10,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            controls=proxy_row_controls,
+                        ),
+                        hint=proxy_hint,
+                        icon=ft.Icons.PUBLIC,
+                    ),
+                    labeled(
+                        "Certificate (mTLS)",
+                        cert_dropdown,
+                        icon=ft.Icons.DESCRIPTION_OUTLINED,
+                    ),
+                    # ---- ENGINE ----
+                    # Section divider = the sidebar's V-engine mark; the Engine
+                    # field itself uses a plain Material icon so the two don't
+                    # duplicate (the selected browser's brand logo already shows
+                    # inside the dropdown's option row).
+                    section_header("ENGINE", icon=_engine_icon(15)),
                     # Engine BEFORE OS: the engine decides whether OS even matters
                     # (Firefox is Windows-only, so its OS spoof is a no-op), so the
                     # operator picks the engine first and the OS field follows.
-                    ft.Row(controls=[engine_dropdown]),
-                    engine_hint,
-                    ft.Row(controls=[os_dropdown]),
-                    resolution_section,
+                    labeled(
+                        "Engine",
+                        engine_dropdown,
+                        hint=engine_hint if is_edit else None,
+                        icon=_brand_holder,
+                    ),
+                    ft.Row(
+                        spacing=16,
+                        vertical_alignment=ft.CrossAxisAlignment.START,
+                        controls=[
+                            ft.Container(
+                                expand=True,
+                                content=labeled(
+                                    "Operating system",
+                                    os_dropdown,
+                                    icon=ft.Icons.COMPUTER,
+                                ),
+                            ),
+                            ft.Container(
+                                expand=True,
+                                content=resolution_section,
+                            ),
+                        ],
+                    ),
                     search_section,
-                    ft.Divider(height=10, color=COLORS["border"]),
-                    ft.Row(controls=[pool_dropdown]),
+                    # ---- BOOKMARKS ----
+                    section_header("BOOKMARKS", icon=ft.Icons.BOOKMARK_BORDER),
+                    labeled(
+                        "Bookmark pool",
+                        pool_dropdown,
+                        icon=ft.Icons.FOLDER_OUTLINED,
+                    ),
                     *bookmark_section,
                     *cookie_controls,
-                    ft.Container(height=10),
-                ],
+                      ]),
+                    ),
+                    ],
+                  ),
+                ),
+                # Bottom fade — a soft gradient over the lower edge hints that the
+                # form scrolls (content dissolves into the dialog background
+                # instead of ending on a hard cut). Ignores clicks.
+                ft.Container(
+                  bottom=0, left=0, right=0, height=36,
+                  content=ft.Container(
+                    gradient=ft.LinearGradient(
+                      begin=ft.Alignment.TOP_CENTER,
+                      end=ft.Alignment.BOTTOM_CENTER,
+                      colors=[
+                        ft.Colors.with_opacity(0, COLORS["card_bg"]),
+                        COLORS["card_bg"],
+                      ],
+                    ),
+                  ),
+                ),
+              ],
             ),
         ),
         actions_alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -651,14 +837,16 @@ def open_profile_dialog(
                 spacing=8,
                 tight=True,
                 controls=[
-                    ft.TextButton(
-                        "Cancel",
-                        style=ft.ButtonStyle(color=COLORS["text_sub"]),
+                    ft.OutlinedButton(
+                        "[ cancel ]",
+                        style=OUTLINE_STYLE,
+                        height=40,
                         on_click=lambda _: page.pop_dialog(),
                     ),
                     ft.Button(
                         save_label,
                         style=ACCENT_STYLE,
+                        height=40,
                         on_click=on_submit,
                     ),
                 ],

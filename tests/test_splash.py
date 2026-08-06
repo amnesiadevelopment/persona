@@ -303,6 +303,9 @@ def test_configure_page_centers_via_explicit_left_top(monkeypatch):
 
     # primary work rect at origin (0,0), 2560x1440
     monkeypatch.setattr(page_mod, "_primary_work_rect", lambda: (0, 0, 2560, 1440))
+    # configure_page skips positioning on darwin (moved to _show_window);
+    # force a non-darwin platform so this exercises the Win/Linux centring path.
+    monkeypatch.setattr("sys.platform", "win32")
     centered = []
     page = SimpleNamespace(
         window=SimpleNamespace(center=lambda: centered.append(1)),
@@ -327,6 +330,9 @@ def test_configure_page_centers_on_primary_with_nonzero_origin(monkeypatch):
 
     # primary work rect offset at (0, 48) (taskbar), 2560x1392
     monkeypatch.setattr(page_mod, "_primary_work_rect", lambda: (0, 48, 2560, 1392))
+    # configure_page skips positioning on darwin (moved to _show_window);
+    # force a non-darwin platform so this exercises the Win/Linux centring path.
+    monkeypatch.setattr("sys.platform", "win32")
     page = SimpleNamespace(
         window=SimpleNamespace(center=lambda: None),
         title=None, padding=None, spacing=None,
@@ -345,6 +351,9 @@ def test_configure_page_falls_back_to_center_without_rect(monkeypatch):
     import src.ui.theme.page as page_mod
 
     monkeypatch.setattr(page_mod, "_primary_work_rect", lambda: (0, 0, 0, 0))
+    # configure_page skips positioning on darwin (moved to _show_window);
+    # force a non-darwin platform so this exercises the Win/Linux centring path.
+    monkeypatch.setattr("sys.platform", "win32")
     centered = []
     page = SimpleNamespace(
         window=SimpleNamespace(center=lambda: centered.append(1)),
@@ -356,17 +365,19 @@ def test_configure_page_falls_back_to_center_without_rect(monkeypatch):
     assert centered == [1]
 
 
-def test_pyproject_hides_window_and_disables_native_screens():
-    # The whole point: the window starts hidden and the client's native
-    # boot/startup spinners are off, so the user's first frame is persona's own
-    # centred splash — no off-centre corner spinner, no jump to centre.
+def test_pyproject_shows_window_and_disables_native_screens():
+    # hide_window_on_start MUST be false: Flet 0.85.3's macOS merged UI/platform
+    # thread deadlocks the native launch when the window starts hidden (Python's
+    # main() never runs -> invisible zombie). Verified on a built .app. The native
+    # boot/startup spinners stay off so the first real content is persona's own
+    # centred splash.
     import tomllib
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
     cfg = tomllib.load(open(root / "pyproject.toml", "rb"))
     app = cfg["tool"]["flet"]["app"]
-    assert app["hide_window_on_start"] is True
+    assert app["hide_window_on_start"] is False
     assert app["boot_screen"]["show"] is False
     assert app["startup_screen"]["show"] is False
 

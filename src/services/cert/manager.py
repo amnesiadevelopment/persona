@@ -20,9 +20,11 @@ logger = get_logger("cert.manager")
 @dataclass
 class CertSession:
     port: int
-    proxy_url: str      # http://127.0.0.1:<port> — the browser's proxy
+    proxy_url: str      # http://127.0.0.1:<port> — Firefox's proxy (CONNECT+MITM)
     spki_b64: str       # Chromium: --ignore-certificate-errors-spki-list
     ca_path: str        # Firefox: import into the profile's cert9.db
+    admin_host: str     # Chromium: host-resolver MAP <admin_host> -> 127.0.0.1:port
+    admin_port: int     # the admin URL's port (default 443)
     _term: "term.Terminator"
 
     def stop(self) -> None:
@@ -47,7 +49,7 @@ def start_cert_session(
         logger.error("certificate %r: p12 missing at %s", cert.name, cert.p12_path)
         return None
 
-    host, _port = term.host_port(cert.url)
+    host, port_ = term.host_port(cert.url)
     if not host:
         logger.error("certificate %r: unparseable admin URL %r", cert.name, cert.url)
         return None
@@ -66,13 +68,17 @@ def start_cert_session(
         host, leaf, client_pem,
         upstream_socks=upstream_socks,
         verify_upstream=verify_upstream,
+        admin_port=port_,
     )
     port = t.start()
-    logger.info("mTLS terminator for %r (%s) on 127.0.0.1:%s", cert.name, host, port)
+    logger.info("mTLS terminator for %r (%s:%s) on 127.0.0.1:%s",
+                cert.name, host, port_, port)
     return CertSession(
         port=port,
         proxy_url=f"http://127.0.0.1:{port}",
         spki_b64=leaf.spki_b64,
         ca_path=leaf.ca_path,
+        admin_host=host,
+        admin_port=port_,
         _term=t,
     )

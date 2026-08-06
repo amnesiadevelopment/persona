@@ -5,28 +5,28 @@ import flet as ft
 
 from ...services.cert.store import Certificate
 from ..theme.colors import COLORS
-from ..theme.styles import MONO
+from ..theme.styles import (
+    ACCENT_STYLE,
+    DLG_INPUT_KWARGS,
+    MONO,
+    OUTLINE_STYLE,
+    labeled,
+    section_header,
+)
 
 
 def _field(
-    label: str,
     value: str = "",
+    hint: str = "",
     password: bool = False,
-    prefix_icon: str | None = None,
 ) -> ft.TextField:
     return ft.TextField(
-        label=label,
         value=value,
+        hint_text=hint,
+        hint_style=ft.TextStyle(color=COLORS["text_dim"], font_family=MONO),
         password=password,
         can_reveal_password=password,
-        prefix_icon=prefix_icon,
-        text_style=ft.TextStyle(font_family=MONO),
-        label_style=ft.TextStyle(color=COLORS["text_sub"], font_family=MONO),
-        border_color=COLORS["card_border"],
-        focused_border_color=COLORS["accent"],
-        bgcolor=COLORS["input_bg"],
-        color=COLORS["text_main"],
-        border_radius=3,
+        **DLG_INPUT_KWARGS,
     )
 
 
@@ -40,17 +40,15 @@ def open_certificate_dialog(
     handed to on_save, which copies it into persona's certificate store; the
     file is never imported into the OS. on_save returns None on success or an
     error string to show."""
-    name_f = _field("name", cert.name if cert else "")
+    name_f = _field(cert.name if cert else "", hint="e.g. acme-admin")
     pass_f = _field(
-        "certificate password",
         cert.password if cert else "",
+        hint="the .p12 export password",
         password=True,
-        prefix_icon=ft.Icons.LOCK_OUTLINE,
     )
     url_f = _field(
-        "admin URL",
         cert.url if cert else "",
-        prefix_icon=ft.Icons.LOCK_OUTLINE,
+        hint="https://admin.example.com",
     )
     # The picked source path lives here; editing keeps the existing one unless a
     # new file is chosen.
@@ -60,7 +58,7 @@ def open_certificate_dialog(
         p = state["p12_path"]
         return os.path.basename(p) if p else "no file chosen"
 
-    file_icon = ft.Icon(ft.Icons.VPN_KEY, size=18, color=COLORS["accent"])
+    file_icon = ft.Icon(ft.Icons.DESCRIPTION_OUTLINED, size=18, color=COLORS["accent"])
     file_label = ft.Text(
         _file_label_text(), size=12, color=COLORS["text_sub"], font_family=MONO
     )
@@ -104,7 +102,22 @@ def open_certificate_dialog(
         else:
             page.pop_dialog()
 
-    choose_btn = ft.TextButton("[ choose file ]", on_click=choose)
+    choose_btn = ft.OutlinedButton(
+        "[ choose file ]", height=38, style=OUTLINE_STYLE, on_click=choose
+    )
+    # The file picker, framed like a normal input so it sits in the labelled
+    # stack with everything else.
+    file_box = ft.Container(
+        border=ft.Border.all(1, COLORS["card_border"]),
+        border_radius=3,
+        bgcolor=COLORS["input_bg"],
+        padding=ft.Padding.symmetric(horizontal=12, vertical=10),
+        content=ft.Row(
+            spacing=10,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[file_icon, choose_btn, file_label],
+        ),
+    )
 
     dlg = ft.AlertDialog(
         modal=True,
@@ -112,35 +125,64 @@ def open_certificate_dialog(
             radius=3, side=ft.BorderSide(1, COLORS["accent_dim"])
         ),
         bgcolor=COLORS["card_bg"],
-        title=ft.Text(
-            "Edit certificate" if cert else "Add certificate",
-            size=20,
-            weight=ft.FontWeight.BOLD,
-            color=COLORS["text_main"],
-            font_family=MONO,
+        title=ft.Row(
+            spacing=10,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                ft.Icon(ft.Icons.DESCRIPTION_OUTLINED, size=22, color=COLORS["accent"]),
+                ft.Text(
+                    "Edit certificate" if cert else "Add certificate",
+                    size=20,
+                    weight=ft.FontWeight.BOLD,
+                    color=COLORS["text_main"],
+                    font_family=MONO,
+                ),
+            ],
         ),
         content=ft.Container(
-            width=480,
+            width=460,
+            padding=ft.Padding.only(left=4, top=4, bottom=4, right=14),
             content=ft.Column(
                 tight=True,
-                spacing=12,
-                scroll=ft.ScrollMode.AUTO,
+                spacing=16,
+                horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
                 controls=[
-                    name_f,
-                    ft.Row(
-                        spacing=10,
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                        controls=[file_icon, choose_btn, file_label],
+                    section_header("CERTIFICATE", icon=ft.Icons.DESCRIPTION_OUTLINED),
+                    labeled("Name", name_f, icon=ft.Icons.BADGE_OUTLINED),
+                    labeled(
+                        "Certificate file (.p12 / .pfx)",
+                        file_box,
+                        icon=ft.Icons.UPLOAD_FILE,
                     ),
-                    pass_f,
-                    url_f,
+                    labeled(
+                        "Certificate password",
+                        pass_f,
+                        icon=ft.Icons.LOCK_OUTLINE,
+                    ),
+                    labeled(
+                        "Admin URL",
+                        url_f,
+                        hint=ft.Text(
+                            "the one site this certificate authenticates to",
+                            size=11,
+                            color=COLORS["text_sub"],
+                            font_family=MONO,
+                        ),
+                        icon=ft.Icons.LINK,
+                    ),
                     err,
                 ],
             ),
         ),
+        actions_alignment=ft.MainAxisAlignment.END,
         actions=[
-            ft.TextButton("Cancel", on_click=lambda _: page.pop_dialog()),
-            ft.TextButton("Save", on_click=save),
+            ft.OutlinedButton(
+                "[ cancel ]",
+                style=OUTLINE_STYLE,
+                height=40,
+                on_click=lambda _: page.pop_dialog(),
+            ),
+            ft.Button("[ save ]", style=ACCENT_STYLE, height=40, on_click=save),
         ],
     )
     page.show_dialog(dlg)

@@ -9,6 +9,38 @@ from ..theme.styles import MONO
 from .ssh_page import build_ssh_section
 
 
+def _bracket_toggle(
+    on: bool,
+    on_change: Callable[[bool], None],
+    on_label: str = "enabled",
+    off_label: str = "disabled",
+) -> ft.Container:
+    """A clickable on/off control in persona's bracket style — used instead of
+    an iOS-looking ft.Switch so it matches the rest of the UI."""
+    return ft.Container(
+        on_click=lambda _: on_change(not on),
+        ink=True,
+        border_radius=3,
+        border=ft.Border.all(
+            1, COLORS["accent"] if on else COLORS["card_border"]
+        ),
+        bgcolor=(
+            ft.Colors.with_opacity(0.12, COLORS["accent"])
+            if on
+            else COLORS["card_bg"]
+        ),
+        padding=ft.Padding.symmetric(horizontal=12, vertical=6),
+        content=ft.Text(
+            f"[ {on_label if on else off_label} ]",
+            size=12,
+            color=COLORS["accent"] if on else COLORS["text_dim"],
+            font_family=MONO,
+            weight=ft.FontWeight.BOLD,
+            no_wrap=True,
+        ),
+    )
+
+
 def build_connect_page(
     profiles: list[Profile],
     token: str,
@@ -40,12 +72,24 @@ def build_connect_page(
 
     if server_running:
         controls += [
-            ft.Container(height=14),
-            _detail_card("token", _token_field(token)),
+            ft.Container(height=18),
+            _section_header("CONNECT YOUR CLIENT", ft.Icons.LINK),
             ft.Container(height=12),
-            _detail_card("example request", _code(add_command)),
+            _copy_field("TOKEN", _token_field(token), token, ft.Icons.KEY_OUTLINED),
             ft.Container(height=12),
-            _detail_card("or add to your MCP client config", _code(config_json)),
+            _copy_field(
+                "ONE-LINE ADD (claude cli)",
+                _code(add_command, wrap=False),
+                add_command,
+                ft.Icons.TERMINAL,
+            ),
+            ft.Container(height=12),
+            _copy_field(
+                "CLIENT CONFIG (json)",
+                _code(config_json, wrap=True),
+                config_json,
+                ft.Icons.DATA_OBJECT,
+            ),
             ft.Divider(height=40, color=COLORS["border"]),
             _ai_section(profiles, on_toggle_ai),
         ]
@@ -147,11 +191,7 @@ def _server_card(
                                 ),
                             ],
                         ),
-                        ft.Switch(
-                            value=running,
-                            active_color=COLORS["accent"],
-                            on_change=lambda e: on_toggle(e.control.value),
-                        ),
+                        _bracket_toggle(running, on_toggle),
                     ],
                 ),
                 status,
@@ -160,7 +200,46 @@ def _server_card(
     )
 
 
-def _detail_card(label: str, body: ft.Control) -> ft.Container:
+def _section_header(title: str, icon: str) -> ft.Row:
+    return ft.Row(
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        spacing=8,
+        controls=[
+            ft.Icon(icon, size=14, color=COLORS["accent"]),
+            ft.Text(
+                title, size=11, color=COLORS["accent"],
+                font_family=MONO, weight=ft.FontWeight.BOLD,
+            ),
+            ft.Container(expand=True, height=1, bgcolor=COLORS["border"]),
+        ],
+    )
+
+
+def _copy_button(value: str) -> ft.Control:
+    """A small [ copy ] that puts `value` on the clipboard (flet 0.85 async
+    Clipboard service)."""
+    btn = ft.OutlinedButton(
+        "[ copy ]",
+        height=28,
+        style=ft.ButtonStyle(
+            shape=ft.RoundedRectangleBorder(radius=3),
+            side=ft.BorderSide(1, COLORS["card_border"]),
+            color=COLORS["text_sub"],
+            padding=ft.Padding.symmetric(horizontal=8, vertical=0),
+            text_style=ft.TextStyle(font_family=MONO, size=11),
+        ),
+    )
+
+    async def on_copy(_: ft.ControlEvent) -> None:
+        await ft.Clipboard().set(value)
+        btn.content = ft.Text("[ copied ]", font_family=MONO, size=11, color=COLORS["success"])
+        btn.update()
+
+    btn.on_click = on_copy
+    return btn
+
+
+def _copy_field(label: str, body: ft.Control, copy_value: str, icon: str) -> ft.Container:
     return ft.Container(
         border_radius=4,
         border=ft.Border.all(1, COLORS["card_border"]),
@@ -169,11 +248,23 @@ def _detail_card(label: str, body: ft.Control) -> ft.Container:
         content=ft.Column(
             spacing=8,
             controls=[
-                ft.Text(
-                    label.upper(),
-                    size=10,
-                    color=COLORS["text_sub"],
-                    font_family=MONO,
+                ft.Row(
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        ft.Row(
+                            spacing=6,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            controls=[
+                                ft.Icon(icon, size=13, color=COLORS["text_sub"]),
+                                ft.Text(
+                                    label, size=10, color=COLORS["text_sub"],
+                                    font_family=MONO,
+                                ),
+                            ],
+                        ),
+                        _copy_button(copy_value),
+                    ],
                 ),
                 body,
             ],
@@ -214,7 +305,10 @@ def _token_field(token: str) -> ft.Control:
     )
 
 
-def _code(value: str) -> ft.Control:
+def _code(value: str, wrap: bool = True) -> ft.Control:
+    # A one-line command stays on one line (ellipsis) so it doesn't run off the
+    # card; the JSON config wraps so the whole block is readable. Either way the
+    # [ copy ] button carries the full value.
     return ft.Container(
         border_radius=3,
         bgcolor=COLORS["input_bg"],
@@ -225,6 +319,8 @@ def _code(value: str) -> ft.Control:
             color=COLORS["text_main"],
             font_family=MONO,
             selectable=True,
+            no_wrap=not wrap,
+            overflow=ft.TextOverflow.ELLIPSIS if not wrap else None,
         ),
     )
 
@@ -255,12 +351,11 @@ def _ai_section(
                         color=COLORS["text_main"],
                         font_family=MONO,
                     ),
-                    ft.Switch(
-                        value=getattr(p, "ai_control", False),
-                        active_color=COLORS["accent"],
-                        on_change=lambda e, n=p.name: on_toggle(
-                            n, e.control.value
-                        ),
+                    _bracket_toggle(
+                        getattr(p, "ai_control", False),
+                        lambda want, n=p.name: on_toggle(n, want),
+                        on_label="on",
+                        off_label="off",
                     ),
                 ],
             )

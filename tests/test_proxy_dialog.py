@@ -31,18 +31,46 @@ class _FakeService:
         )
 
 
-def _controls(dlg):
-    return dlg.content.content.controls
+def _walk(control):
+    """Yield every control in the dialog tree (depth-first)."""
+    yield control
+    for attr in ("content", "controls", "actions"):
+        child = getattr(control, attr, None)
+        if child is None:
+            continue
+        items = child if isinstance(child, list) else [child]
+        for c in items:
+            if c is not None and hasattr(c, "__dict__"):
+                yield from _walk(c)
+
+
+def _label_text_of(control):
+    val = getattr(control, "value", None)
+    if isinstance(val, str):
+        return val
+    for k in getattr(control, "controls", None) or []:
+        v = getattr(k, "value", None)
+        if isinstance(v, str):
+            return v
+    return None
+
+
+def _control_under_label(dlg, label, kind):
+    # Labels now sit ABOVE the field (via labeled()): find the column whose first
+    # child's text matches `label`, then return the field of `kind` in it.
+    for col in _walk(dlg):
+        controls = getattr(col, "controls", None)
+        if not controls or len(controls) < 2:
+            continue
+        if _label_text_of(controls[0]) == label:
+            for c in controls:
+                if isinstance(c, kind):
+                    return c
+    raise AssertionError(f"no {kind.__name__} labeled {label!r}")
 
 
 def _field(dlg, label):
-    stack = list(_controls(dlg))
-    while stack:
-        c = stack.pop()
-        if isinstance(c, ft.TextField) and c.label == label:
-            return c
-        stack.extend(getattr(c, "controls", None) or [])
-    raise AssertionError(f"no field labeled {label!r}")
+    return _control_under_label(dlg, label, ft.TextField)
 
 
 def test_add_dialog_builds():
@@ -97,9 +125,7 @@ def test_paste_fills_all_fields_from_provider_string():
     assert _field(dlg, "Rotate URL (optional)").value == (
         "https://api.asocks.com/proxy/4e712f5b-7aab-11f1-ae21-bc24114c89e8/refresh-ip"
     )
-    dd = next(
-        c for c in _controls(dlg) if isinstance(c, ft.Dropdown) and c.label == "Type"
-    )
+    dd = _control_under_label(dlg, "Type", ft.Dropdown)
     assert dd.value == "socks5"
     assert paste.value == ""
 
@@ -158,7 +184,10 @@ def test_check_passes_geo_with_lat_lon_to_on_checked():
         on_checked=lambda *a: checked.append(a),
     )
     dlg = page.shown
-    check_btn = next(c for c in _controls(dlg) if isinstance(c, ft.OutlinedButton))
+    check_btn = next(
+        c for c in _walk(dlg)
+        if isinstance(c, ft.OutlinedButton) and getattr(c, "content", None) == "[ check ]"
+    )
     check_btn.on_click(None)
     deadline = time.time() + 5
     while not checked:

@@ -22,11 +22,12 @@ def _pyproject() -> dict:
     return tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
 
-def test_built_app_starts_hidden():
-    # The window starts hidden so the pre-Python corner spinner + centre-jump are
-    # never seen; Python reveals it once the centred splash is up.
+def test_built_app_starts_visible():
+    # hide_window_on_start MUST be false: Flet 0.85.3's macOS merged UI/platform
+    # thread deadlocks the native launch when the window starts hidden (Python
+    # main() never runs -> invisible zombie). Verified on a built .app.
     app = _pyproject()["tool"]["flet"]["app"]
-    assert app["hide_window_on_start"] is True
+    assert app["hide_window_on_start"] is False
 
 
 def test_native_boot_and_startup_screens_are_off():

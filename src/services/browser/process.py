@@ -237,6 +237,34 @@ def _host_display_scale() -> float:
     """The host display's scale factor (1.0 at 100%, 1.5 at 150%, 2.0 at 200%).
     Windows reads the system DPI; other desktops render at 1.0. Clamped to a
     sane range so a weird reading can't blow the window up."""
+    if _platform.IS_MACOS:
+        # Retina backing scale (2.0), so --force-device-scale-factor stops the
+        # chromium engine painting 1:1 physical px (unreadably tiny). Mirrors the
+        # Firefox engine's macOS dpr fix. CoreGraphics ctypes (no PyObjC needed).
+        try:
+            import ctypes
+            import ctypes.util
+
+            cg = ctypes.cdll.LoadLibrary(ctypes.util.find_library("CoreGraphics"))
+            cg.CGMainDisplayID.restype = ctypes.c_uint32
+            cg.CGDisplayCopyDisplayMode.restype = ctypes.c_void_p
+            cg.CGDisplayCopyDisplayMode.argtypes = [ctypes.c_uint32]
+            cg.CGDisplayModeGetPixelWidth.restype = ctypes.c_size_t
+            cg.CGDisplayModeGetPixelWidth.argtypes = [ctypes.c_void_p]
+            cg.CGDisplayModeGetWidth.restype = ctypes.c_size_t
+            cg.CGDisplayModeGetWidth.argtypes = [ctypes.c_void_p]
+            cg.CGDisplayModeRelease.argtypes = [ctypes.c_void_p]
+            did = cg.CGMainDisplayID()
+            mode = cg.CGDisplayCopyDisplayMode(did)
+            if mode:
+                pw = cg.CGDisplayModeGetPixelWidth(mode)
+                w = cg.CGDisplayModeGetWidth(mode)
+                cg.CGDisplayModeRelease(mode)
+                if w:
+                    return max(1.0, min(3.0, round(pw / w, 2)))
+        except Exception:
+            pass
+        return 1.0
     if not _platform.IS_WINDOWS:
         return 1.0
     try:
@@ -375,13 +403,15 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
     proxy = store.get(profile.proxy) if profile.proxy else None
     proxy_url = store.resolve(profile.proxy)
 
-    # An assigned mTLS certificate routes the browser through a local terminator
-    # that presents the certificate to the admin host only; the terminator's own
-    # upstream is the profile's real proxy, so the exit IP is unchanged. When a
-    # certificate is active the browser's proxy becomes the terminator.
+    # An assigned mTLS certificate starts a local terminator that presents the
+    # client cert to the admin host only; its own upstream is the profile's real
+    # proxy, so the exit IP is unchanged. Unlike Firefox (which points its whole
+    # proxy at the terminator and trusts the leaf via cert9.db), chromium keeps
+    # its REAL proxy and reaches the terminator DIRECTLY for the admin host only
+    # (--proxy-bypass-list + --host-resolver-rules below): its spki-list trust
+    # only covers a leaf seen on a direct connection, not one behind a CONNECT
+    # proxy. So proxy_url stays the real proxy here.
     cert_session = _cert_session_for(profile, profile_dir, proxy_url)
-    if cert_session is not None:
-        proxy_url = cert_session.proxy_url
 
     # Locale + timezone follow the proxy's geo so they match the exit IP.
     lang = _locale_for(proxy.country_code) if proxy else "en-US"
@@ -542,6 +572,12 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
     # that alone throttled rAF to zero even with the backgrounding flags above.
     disabled_features.append("CalculateNativeWinOcclusion")
 
+    if _platform.IS_MACOS:
+        # Keep the cookie-encryption key out of the login Keychain (no Keychain
+        # prompt, no host-identity leak) — the password-store flags Linux also
+        # uses. Separate from the Linux SwiftShader block (must NOT run on mac).
+        args += ["--password-store=basic", "--use-mock-keychain"]
+
     if _platform.IS_LINUX:
         # Software GL (SwiftShader) keeps the GPU process alive so the
         # fingerprint WebGL spoofer populates a believable vendor/renderer;
@@ -660,10 +696,23 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
 
     if cert_session is not None:
         # Trust the terminator's leaf without touching any OS store — keyed to the
-        # leaf's public-key hash, so only the terminator's MITM is trusted.
+        # leaf's public-key hash, so only the terminator's MITM is trusted. This
+        # only takes effect on a DIRECT connection, so route the admin host to the
+        # terminator directly: resolve it to the terminator's loopback port and
+        # bypass the proxy for it (its traffic still exits via the real proxy —
+        # that's the terminator's own upstream). Everything else keeps the proxy.
+        host = cert_session.admin_host
+        term_addr = f"127.0.0.1:{cert_session.port}"
         args.append(
             f"--ignore-certificate-errors-spki-list={cert_session.spki_b64}"
         )
+        args.append(
+            f'--host-resolver-rules=MAP {host} 127.0.0.1:{cert_session.port}'
+        )
+        if proxy_server:
+            args.append(f"--proxy-bypass-list={host}")
+        logger.info("chromium mTLS: %s -> terminator %s (direct, spki-pinned)",
+                    host, term_addr)
 
     if disabled_features:
         args.append("--disable-features=" + ",".join(disabled_features))

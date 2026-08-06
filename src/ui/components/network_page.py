@@ -8,7 +8,7 @@ from ...utils.proxy_parser import split_proxy_url
 from ...utils.timefmt import humanize_since
 from ..flags import flag_path
 from ..theme.colors import COLORS
-from ..theme.styles import ACCENT_STYLE, MONO
+from ..theme.styles import ACCENT_STYLE, MONO, row_button
 
 
 def build_network_page(
@@ -169,10 +169,10 @@ def _proxy_row(
                 ft.Row(
                     spacing=6,
                     controls=[
-                        _btn(check_label, COLORS["accent"], lambda _, n=proxy.name: on_check(n), is_checking),
-                        _btn("[ rotate ]", COLORS["accent"], lambda _, n=proxy.name: on_rotate(n), is_checking),
-                        _btn("[ edit ]", COLORS["text_sub"], lambda _, n=proxy.name: on_edit(n)),
-                        _btn("[ x ]", COLORS["error"], lambda _, n=proxy.name: on_delete(n)),
+                        row_button(check_label, lambda _, n=proxy.name: on_check(n), disabled=is_checking),
+                        row_button("[ rotate ]", lambda _, n=proxy.name: on_rotate(n), kind="rotate", disabled=is_checking),
+                        row_button("[ edit ]", lambda _, n=proxy.name: on_edit(n), kind="edit"),
+                        row_button("[ x ]", lambda _, n=proxy.name: on_delete(n), kind="delete"),
                     ],
                 ),
             ],

@@ -82,7 +82,32 @@ def _walk(control):
                 yield from _walk(c)
 
 
+def _label_text_of(control):
+    """The label string a `labeled()` column shows above its field — either a
+    bare Text or the Text inside a Row(Icon, Text)."""
+    val = getattr(control, "value", None)
+    if isinstance(val, str):
+        return val
+    kids = getattr(control, "controls", None) or []
+    for k in kids:
+        v = getattr(k, "value", None)
+        if isinstance(v, str):
+            return v
+    return None
+
+
 def _find_dropdown(page, label):
+    # The label now sits ABOVE the field (via labeled()), so find the column
+    # whose first child's text matches `label` and return the Dropdown in it.
+    for col in _walk(page.shown):
+        controls = getattr(col, "controls", None)
+        if not controls or len(controls) < 2:
+            continue
+        if _label_text_of(controls[0]) == label:
+            for c in controls:
+                if isinstance(c, ft.Dropdown):
+                    return c
+    # Fallback: legacy floating label (kept for any dialog not yet migrated).
     for c in _walk(page.shown):
         if getattr(c, "label", None) == label:
             return c
@@ -123,9 +148,11 @@ def test_edit_dialog_prefills_assigned_certificate():
 
 
 def _set_name(page, value):
+    # Profile name is the first TextField in the dialog (IDENTITY section).
     for c in _walk(page.shown):
-        if getattr(c, "label", None) == "Profile Name":
+        if isinstance(c, ft.TextField):
             c.value = value
+            return
 
 
 def _click_create(page):
@@ -268,19 +295,76 @@ def _open_with_bookmarks(profile, on_save=lambda *a: None):
     return page
 
 
-def _bookmark_checks(page):
-    """Map bookmark name -> its checkbox, from the [Checkbox, Text(name)] rows."""
+def _bookmark_chips(page):
+    """Map bookmark name -> its toggle chip container. Bookmarks are now chips
+    (a clickable Container whose text matches a bookmark name); a selected chip
+    is drawn in the accent colour."""
     names = {b.name for b in _BOOKMARKS}
-    checks = {}
+    chips = {}
     for c in _walk(page.shown):
-        kids = getattr(c, "controls", None) or []
-        if (
-            len(kids) == 2
-            and isinstance(kids[0], ft.Checkbox)
-            and getattr(kids[1], "value", None) in names
-        ):
-            checks[kids[1].value] = kids[0]
-    return checks
+        if not getattr(c, "on_click", None):
+            continue
+        for inner in _walk(c):
+            v = getattr(inner, "value", None)
+            if isinstance(v, str) and v in names:
+                chips[v] = c
+                break
+    return chips
+
+
+def _chip_selected(chip):
+    """A chip is selected when its inner label Text is drawn in the accent
+    colour (set by _chip_content)."""
+    from src.ui.theme.colors import COLORS
+
+    for inner in _walk(chip):
+        v = getattr(inner, "value", None)
+        if isinstance(v, str):
+            return getattr(inner, "color", None) == COLORS["accent"]
+    return False
+
+
+class _BookmarkChecks:
+    """Adapts the chip UI to the old `checks[name].value` interface the tests
+    were written against: reading `.value` reports selection, setting it toggles
+    the chip via its click handler."""
+
+    def __init__(self, page):
+        self._chips = _bookmark_chips(page)
+
+    def __contains__(self, name):
+        return name in self._chips
+
+    def __iter__(self):
+        return iter(self._chips)
+
+    def keys(self):
+        return self._chips.keys()
+
+    def __getitem__(self, name):
+        chip = self._chips[name]
+        return _ChipView(chip)
+
+    def values(self):
+        return [_ChipView(c) for c in self._chips.values()]
+
+
+class _ChipView:
+    def __init__(self, chip):
+        self._chip = chip
+
+    @property
+    def value(self):
+        return _chip_selected(self._chip)
+
+    @value.setter
+    def value(self, want):
+        if _chip_selected(self._chip) != want:
+            self._chip.on_click(None)
+
+
+def _bookmark_checks(page):
+    return _BookmarkChecks(page)
 
 
 def test_create_dialog_no_bookmarks_prechecked():
@@ -327,9 +411,7 @@ def test_create_with_nothing_checked_saves_empty_selection():
         return None
 
     page = _open_with_bookmarks(None, on_save=on_save)
-    for c in _walk(page.shown):
-        if getattr(c, "label", None) == "Profile Name":
-            c.value = "fresh"
+    _set_name(page, "fresh")
     create_btn = next(
         c for c in _walk(page.shown)
         if isinstance(c, ft.Button) and getattr(c, "content", None) == "[ create ]"
@@ -344,7 +426,7 @@ def test_firefox_engine_restricts_os_to_windows():
     # engine forces the OS to windows and drops every non-windows option, so no
     # inconsistent profile can be created.
     page = _open(None)  # fresh create, defaults to chromium/windows
-    os_dd = _find_dropdown(page, "Operating System")
+    os_dd = _find_dropdown(page, "Operating system")
     engine_dd = _find_dropdown(page, "Engine")
     assert os_dd is not None and engine_dd is not None
     # Pick a non-windows desktop OS first, then switch engine to firefox.
@@ -366,7 +448,7 @@ def test_selecting_nonwindows_os_forces_chromium_off_firefox():
     # non-windows OS and the user picks macOS/Linux, the engine flips to
     # chromium — the only engine that honors a non-windows platform.
     page = _open(None)
-    os_dd = _find_dropdown(page, "Operating System")
+    os_dd = _find_dropdown(page, "Operating system")
     engine_dd = _find_dropdown(page, "Engine")
     engine_dd.value = "firefox"
     engine_dd.on_select(None)
@@ -385,14 +467,14 @@ def test_edit_firefox_profile_keeps_windows_os():
     prof = Profile(name="FFwin", engine="firefox", os_type="windows",
                    resolution="auto")
     page = _open(prof)
-    os_dd = _find_dropdown(page, "Operating System")
+    os_dd = _find_dropdown(page, "Operating system")
     assert os_dd.value == "windows"
     assert {o.key for o in os_dd.options} == {"windows"}
 
 
 def test_selecting_mobile_os_forces_chromium_and_hides_resolution():
     page = _open(None)
-    os_dd = _find_dropdown(page, "Operating System")
+    os_dd = _find_dropdown(page, "Operating system")
     engine_dd = _find_dropdown(page, "Engine")
     width_field = _find_dropdown(page, "width")
     custom_row = _find_row_containing(page, width_field)

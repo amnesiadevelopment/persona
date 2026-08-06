@@ -49,7 +49,7 @@ def _walk(control):
 
 def _save_button(dlg):
     for a in dlg.actions:
-        if getattr(a, "content", None) == "Save":
+        if getattr(a, "content", None) == "[ save ]":
             return a
     raise AssertionError("no Save button")
 
@@ -89,9 +89,11 @@ def test_save_captures_url():
     open_certificate_dialog(
         page, cert, _FakePicker(None), on_save=lambda c: saved.append(c) or None
     )
+    # The admin URL field is the one whose placeholder mentions an https URL
+    # (labels now sit above the field, not on it).
     url_f = [
         f for f in _fields(page.shown)
-        if "url" in (f.label or "").lower() or "admin" in (f.label or "").lower()
+        if "https://" in (f.hint_text or "")
     ][0]
     url_f.value = "https://admin.example.com/login"
     _save_button(page.shown).on_click(None)
@@ -99,22 +101,17 @@ def test_save_captures_url():
 
 
 def test_fields_have_icons():
-    # Mars: file field shows a KEY icon, password + url show LOCK icons — in our
-    # colours. Guards that the icon wiring survives refactors.
+    # Each field carries a leading icon above it (labels moved above the field).
+    # Guards that the icon wiring survives refactors: a document icon for the
+    # certificate, a lock for the password, a link for the admin URL.
     import flet as ft
 
     page = _FakePage()
     open_certificate_dialog(page, None, _FakePicker(), on_save=lambda c: None)
-    icons = {
-        c.prefix_icon
-        for c in _walk(page.shown)
-        if isinstance(c, ft.TextField) and c.prefix_icon is not None
-    }
-    assert ft.Icons.LOCK_OUTLINE in icons  # password + url
-    # the file chooser row carries a KEY icon somewhere
-    all_icons = {getattr(c, "name", None) for c in _walk(page.shown) if isinstance(c, ft.Icon)}
-    all_icons |= {getattr(c, "icon", None) for c in _walk(page.shown)}
-    assert ft.Icons.VPN_KEY in all_icons or ft.Icons.KEY in all_icons
+    icons = {c.icon for c in _walk(page.shown) if isinstance(c, ft.Icon)}
+    assert ft.Icons.DESCRIPTION_OUTLINED in icons  # the certificate document
+    assert ft.Icons.LOCK_OUTLINE in icons          # password
+    assert ft.Icons.LINK in icons                  # admin URL
 
 
 def test_save_requires_name():

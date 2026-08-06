@@ -11,9 +11,9 @@ from ..theme.styles import ACCENT_STYLE, ERROR_STYLE
 
 def _engine_logo(engine: str, size: int = 15) -> ft.Control | None:
     fname = (
-        "engine_firefox.png"
+        "engine_firefox.svg"
         if engine in ("firefox", "camoufox")
-        else "engine_chrome.png"
+        else "engine_chrome.svg"
     )
     path = asset_path(fname)
     if os.path.exists(path):

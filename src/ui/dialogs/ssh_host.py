@@ -4,24 +4,26 @@ import flet as ft
 
 from ...services.ssh.store import SSHHost
 from ..theme.colors import COLORS
-from ..theme.styles import MONO
+from ..theme.styles import (
+    ACCENT_STYLE,
+    DLG_INPUT_KWARGS,
+    MONO,
+    OUTLINE_STYLE,
+    labeled,
+    section_header,
+)
 
 _DIRECT = "(direct)"
 
 
-def _field(label: str, value: str = "", password: bool = False) -> ft.TextField:
+def _field(value: str = "", hint: str = "", password: bool = False) -> ft.TextField:
     return ft.TextField(
-        label=label,
         value=value,
+        hint_text=hint,
+        hint_style=ft.TextStyle(color=COLORS["text_dim"], font_family=MONO),
         password=password,
         can_reveal_password=password,
-        text_style=ft.TextStyle(font_family=MONO),
-        label_style=ft.TextStyle(color=COLORS["text_sub"], font_family=MONO),
-        border_color=COLORS["card_border"],
-        focused_border_color=COLORS["accent"],
-        bgcolor=COLORS["input_bg"],
-        color=COLORS["text_main"],
-        border_radius=3,
+        **DLG_INPUT_KWARGS,
     )
 
 
@@ -31,17 +33,14 @@ def open_ssh_host_dialog(
     profile_names: list[str],
     on_save: Callable[[SSHHost], str | None],
 ) -> None:
-    name_f = _field("name", host.name if host else "")
-    host_f = _field("host", host.host if host else "")
-    host_f.expand = True
-    port_f = _field("port", str(host.port) if host else "22")
-    port_f.width = 110
-    user_f = _field("username", host.username if host else "")
-    key_f = _field("private key path", host.key_path if host else "")
-    keypass_f = _field("key passphrase", host.key_passphrase if host else "", password=True)
-    pass_f = _field("password", host.password if host else "", password=True)
+    name_f = _field(host.name if host else "", hint="e.g. prod-box")
+    host_f = _field(host.host if host else "", hint="host.example.com")
+    port_f = _field(str(host.port) if host else "22", hint="22")
+    user_f = _field(host.username if host else "", hint="root")
+    key_f = _field(host.key_path if host else "", hint="~/.ssh/id_ed25519")
+    keypass_f = _field(host.key_passphrase if host else "", hint="optional", password=True)
+    pass_f = _field(host.password if host else "", hint="optional", password=True)
     profile_dd = ft.Dropdown(
-        label="route via profile (proxy)",
         value=(host.profile if host and host.profile else _DIRECT),
         options=[ft.dropdown.Option(_DIRECT)]
         + [ft.dropdown.Option(n) for n in profile_names],
@@ -49,7 +48,6 @@ def open_ssh_host_dialog(
         color=COLORS["text_main"],
         border_color=COLORS["card_border"],
         focused_border_color=COLORS["accent"],
-        label_style=ft.TextStyle(color=COLORS["text_sub"], font_family=MONO),
         text_style=ft.TextStyle(font_family=MONO),
         border_radius=3,
     )
@@ -93,35 +91,64 @@ def open_ssh_host_dialog(
             radius=3, side=ft.BorderSide(1, COLORS["accent_dim"])
         ),
         bgcolor=COLORS["card_bg"],
-        title=ft.Text(
-            "Edit SSH host" if host else "Add SSH host",
-            size=20, weight=ft.FontWeight.BOLD,
-            color=COLORS["text_main"], font_family=MONO,
+        title=ft.Row(
+            spacing=10,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                ft.Icon(ft.Icons.TERMINAL, size=22, color=COLORS["accent"]),
+                ft.Text(
+                    "Edit SSH host" if host else "Add SSH host",
+                    size=20, weight=ft.FontWeight.BOLD,
+                    color=COLORS["text_main"], font_family=MONO,
+                ),
+            ],
         ),
         content=ft.Container(
-            width=480,
+            width=460,
+            padding=ft.Padding.only(left=4, top=4, bottom=4, right=14),
             content=ft.Column(
-                tight=True, spacing=12, scroll=ft.ScrollMode.AUTO,
+                tight=True, spacing=16, scroll=ft.ScrollMode.AUTO,
+                horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
                 controls=[
-                    name_f,
+                    section_header("CONNECTION", icon=ft.Icons.LAN_OUTLINED),
+                    labeled("Name", name_f, icon=ft.Icons.LABEL_OUTLINE),
                     ft.Row(
-                        spacing=10,
+                        spacing=12,
                         vertical_alignment=ft.CrossAxisAlignment.START,
-                        controls=[host_f, port_f],
+                        controls=[
+                            ft.Container(
+                                expand=True,
+                                content=labeled("Host", host_f, icon=ft.Icons.DNS),
+                            ),
+                            ft.Container(
+                                width=100,
+                                content=labeled("Port", port_f, icon=ft.Icons.TAG),
+                            ),
+                        ],
                     ),
-                    user_f,
-                    profile_dd,
-                    ft.Divider(height=8, color=COLORS["border"]),
-                    ft.Text("auth — key and/or password",
-                            size=12, color=COLORS["text_sub"], font_family=MONO),
-                    key_f, keypass_f, pass_f,
+                    labeled("Username", user_f, icon=ft.Icons.PERSON_OUTLINE),
+                    labeled(
+                        "Route via profile (proxy)",
+                        profile_dd,
+                        icon=ft.Icons.PUBLIC,
+                    ),
+                    section_header("AUTH · key and/or password", icon=ft.Icons.VPN_KEY),
+                    labeled("Private key path", key_f, icon=ft.Icons.KEY_OUTLINED),
+                    labeled("Key passphrase", keypass_f, icon=ft.Icons.LOCK_OUTLINE),
+                    labeled("Password", pass_f, icon=ft.Icons.LOCK_OUTLINE),
                     err,
                 ],
             ),
         ),
+        actions_alignment=ft.MainAxisAlignment.END,
         actions=[
-            ft.TextButton("Cancel", on_click=lambda _: page.pop_dialog()),
-            ft.TextButton("Save", on_click=save),
+            ft.OutlinedButton(
+                "[ cancel ]", height=40, style=OUTLINE_STYLE,
+                on_click=lambda _: page.pop_dialog(),
+            ),
+            ft.Button(
+                "[ save ]", height=40, style=ACCENT_STYLE, on_click=save,
+            ),
         ],
     )
     page.show_dialog(dlg)

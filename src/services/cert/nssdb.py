@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import threading
 
 from ...core import platform as _platform
 from ...core.logging import get_logger
@@ -23,6 +24,10 @@ _CERTDB_TRUSTED_CA = 0x08
 _CERTDB_VALID_CA = 0x10
 
 _SEC_SUCCESS = 0
+
+# NSS init/shutdown is process-global; on macOS trust_ca runs in-process
+# (the launch child is a thread), so serialise it and never overlap two imports.
+_nss_lock = threading.Lock()
 
 
 class _CERTCertTrust(ctypes.Structure):
@@ -44,6 +49,18 @@ def _load_nss(engine_dir: str):
         return ctypes.CDLL(os.path.join(engine_dir, "nss3.dll"))
 
     ext = "dylib" if _platform.IS_MACOS else "so"
+    if _platform.IS_MACOS:
+        # macOS Firefox consolidates NSS into libnss3.dylib (it exports every
+        # symbol we need, incl. CERT_DecodeCertFromPackage — unlike Linux where
+        # smime3 carries it). libnss3 depends on libmozglue via @rpath, which the
+        # loader can't resolve outside the .app, so preload libmozglue (and its
+        # NSS siblings if present) RTLD_GLOBAL first, then return libnss3.
+        lib = None
+        for name in ("libmozglue.dylib", "libnssutil3.dylib", "libnss3.dylib"):
+            path = os.path.join(engine_dir, name)
+            if os.path.isfile(path):
+                lib = ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
+        return lib
     ordered = [
         f"libnspr4.{ext}", f"libplc4.{ext}", f"libplds4.{ext}",
         f"libnssutil3.{ext}", f"libnss3.{ext}", f"libssl3.{ext}",
@@ -78,6 +95,8 @@ def _bind(nss) -> None:
          [ctypes.POINTER(_CERTCertTrust), ctypes.c_char_p]),
         ("CERT_ChangeCertTrust", ctypes.c_int,
          [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(_CERTCertTrust)]),
+        ("CERT_DestroyCertificate", None, [ctypes.c_void_p]),
+        ("PK11_FreeSlot", None, [ctypes.c_void_p]),
     ]
     for name, res, args in sigs:
         fn = getattr(nss, name)
@@ -128,12 +147,14 @@ def trust_ca(
         logger.exception("NSS load/bind failed: %s", e)
         return False
 
-    try:
+    with _nss_lock:
+      try:
         if nss.NSS_Initialize(
             f"sql:{profile_dir}".encode(), b"", b"", b"secmod.db", 0
         ) != _SEC_SUCCESS:
             logger.error("NSS_Initialize failed for %s", profile_dir)
             return False
+        slot = cert = perm = vcert = None
         try:
             slot = nss.PK11_GetInternalKeySlot()
             # A fresh sql db has an uninitialised PIN; certutil sets it empty
@@ -173,7 +194,23 @@ def trust_ca(
                 got.sslFlags & _CERTDB_VALID_CA
             )
         finally:
-            nss.NSS_Shutdown()
-    except Exception as e:
+            # Release every handle BEFORE shutdown, else NSS_Shutdown returns
+            # SEC_ERROR_BUSY and NSS stays initialised bound to THIS profile's
+            # db — the next profile's import then silently launches without CA
+            # trust (macOS runs this in-process across profiles).
+            for _c in (cert, perm, vcert):
+                if _c:
+                    try:
+                        nss.CERT_DestroyCertificate(_c)
+                    except Exception:
+                        pass
+            if slot:
+                try:
+                    nss.PK11_FreeSlot(slot)
+                except Exception:
+                    pass
+            if nss.NSS_Shutdown() != _SEC_SUCCESS:
+                logger.error("NSS_Shutdown failed — NSS may stay initialised")
+      except Exception as e:
         logger.exception("NSS CA import failed: %s", e)
         return False

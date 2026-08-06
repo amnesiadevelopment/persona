@@ -5,7 +5,7 @@ import flet as ft
 
 from ...services.cert.store import Certificate
 from ..theme.colors import COLORS
-from ..theme.styles import ACCENT_STYLE, MONO
+from ..theme.styles import ACCENT_STYLE, MONO, row_button
 
 
 def build_certificates_page(
@@ -75,42 +75,77 @@ def _cert_row(
     on_delete: Callable[[str], None],
 ) -> ft.Control:
     fname = os.path.basename(c.p12_path) if c.p12_path else "(no file)"
+    host = c.url or "(no admin URL)"
     return ft.Container(
         bgcolor=COLORS["card_bg"],
-        border_radius=8,
-        padding=ft.Padding.symmetric(horizontal=14, vertical=10),
+        border_radius=3,
+        border=ft.Border.all(1, COLORS["card_border"]),
+        padding=ft.Padding.symmetric(horizontal=14, vertical=12),
         content=ft.Row(
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
             controls=[
-                ft.Column(
-                    spacing=2,
+                ft.Row(
+                    spacing=12,
+                    expand=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     controls=[
-                        ft.Text(
-                            c.name,
-                            size=14,
-                            weight=ft.FontWeight.BOLD,
-                            color=COLORS["text_main"],
-                            font_family=MONO,
+                        ft.Icon(
+                            ft.Icons.DESCRIPTION_OUTLINED,
+                            size=20,
+                            color=COLORS["accent"],
                         ),
-                        ft.Text(
-                            fname,
-                            size=11,
-                            color=COLORS["text_sub"],
-                            font_family=MONO,
+                        ft.Column(
+                            spacing=3,
+                            expand=True,
+                            controls=[
+                                ft.Text(
+                                    c.name,
+                                    size=14,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=COLORS["text_main"],
+                                    font_family=MONO,
+                                ),
+                                # The admin host is the certificate's purpose —
+                                # the one site it authenticates to — so surface it
+                                # as the primary line, in accent, not the filename.
+                                ft.Row(
+                                    spacing=6,
+                                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                    controls=[
+                                        ft.Icon(
+                                            ft.Icons.LOCK_OUTLINE,
+                                            size=12,
+                                            color=COLORS["accent_hover"],
+                                        ),
+                                        ft.Text(
+                                            host,
+                                            size=12,
+                                            color=COLORS["accent"],
+                                            font_family=MONO,
+                                            no_wrap=True,
+                                            overflow=ft.TextOverflow.ELLIPSIS,
+                                        ),
+                                    ],
+                                ),
+                                ft.Text(
+                                    fname,
+                                    size=11,
+                                    color=COLORS["text_dim"],
+                                    font_family=MONO,
+                                ),
+                            ],
                         ),
                     ],
                 ),
                 ft.Row(
                     spacing=6,
                     controls=[
-                        ft.TextButton(
-                            "[ edit ]",
-                            on_click=lambda _, n=c.name: on_edit(n),
+                        row_button(
+                            "[ edit ]", lambda _, n=c.name: on_edit(n), kind="edit"
                         ),
-                        ft.TextButton(
-                            "[ x ]",
-                            on_click=lambda _, n=c.name: on_delete(n),
+                        row_button(
+                            "[ x ]", lambda _, n=c.name: on_delete(n), kind="delete"
                         ),
                     ],
                 ),

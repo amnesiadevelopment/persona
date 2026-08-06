@@ -4,7 +4,14 @@ import flet as ft
 
 from ...models.bookmark import Bookmark
 from ..theme.colors import COLORS
-from ..theme.styles import ACCENT_STYLE, DLG_FIELD_KWARGS, MONO, OUTLINE_STYLE
+from ..theme.styles import (
+    ACCENT_STYLE,
+    DLG_INPUT_KWARGS,
+    MONO,
+    OUTLINE_STYLE,
+    labeled,
+    section_header,
+)
 
 
 def open_bookmark_dialog(
@@ -13,19 +20,18 @@ def open_bookmark_dialog(
     bookmark: Bookmark | None = None,
 ) -> None:
     is_edit = bookmark is not None
+    _hint = ft.TextStyle(color=COLORS["text_dim"], font_family=MONO)
     name_field = ft.TextField(
-        label="Name",
         value=bookmark.name if bookmark is not None else "",
         hint_text="e.g. browserleaks",
-        expand=True,
-        **DLG_FIELD_KWARGS,
+        hint_style=_hint,
+        **DLG_INPUT_KWARGS,
     )
     url_field = ft.TextField(
-        label="URL",
         value=bookmark.url if bookmark is not None else "",
         hint_text="https://example.com",
-        expand=True,
-        **DLG_FIELD_KWARGS,
+        hint_style=_hint,
+        **DLG_INPUT_KWARGS,
     )
     error = ft.Text("", size=12, color=COLORS["error"], visible=False)
 
@@ -59,27 +65,36 @@ def open_bookmark_dialog(
         shape=ft.RoundedRectangleBorder(
             radius=3, side=ft.BorderSide(1, COLORS["accent_dim"])
         ),
-        title=ft.Text(
-            "Edit Bookmark" if is_edit else "Add Bookmark",
-            size=20,
-            weight=ft.FontWeight.BOLD,
-            color=COLORS["text_main"],
-            font_family=MONO,
+        title=ft.Row(
+            spacing=10,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                ft.Icon(ft.Icons.BOOKMARK_BORDER, size=22, color=COLORS["accent"]),
+                ft.Text(
+                    "Edit Bookmark" if is_edit else "Add Bookmark",
+                    size=20,
+                    weight=ft.FontWeight.BOLD,
+                    color=COLORS["text_main"],
+                    font_family=MONO,
+                ),
+            ],
         ),
         content=ft.Container(
-            width=560,
+            width=460,
+            padding=ft.Padding.only(left=4, top=4, bottom=4, right=14),
             content=ft.Column(
                 tight=True,
                 spacing=16,
+                horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
                 controls=[
-                    ft.Container(height=2),
-                    ft.Row(controls=[name_field]),
-                    ft.Row(controls=[url_field]),
+                    section_header("BOOKMARK", icon=ft.Icons.BOOKMARK_BORDER),
+                    labeled("Name", name_field, icon=ft.Icons.LABEL_OUTLINE),
+                    labeled("URL", url_field, icon=ft.Icons.LINK),
                     error,
-                    ft.Container(height=6),
                 ],
             ),
         ),
+        actions_alignment=ft.MainAxisAlignment.END,
         actions=[
             ft.OutlinedButton(
                 "[ cancel ]", height=38, style=OUTLINE_STYLE,

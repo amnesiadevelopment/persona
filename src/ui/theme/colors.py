@@ -16,6 +16,11 @@ COLORS = {
     "warning": "#E6B43C",
     "input_bg": "#0A0A0A",
     "border": "#1AFFFFFF",
+    # A solid (not translucent) edge for row-action buttons — the translucent
+    # card_border reads as a muddy grey-green ("болотный") on the row buttons.
+    "btn_edge": "#2A2A2A",
+    "edit": "#E6B43C",
+    "rotate": "#5BC8FF",
     "scrollbar_bg": "#000000",
     "scrollbar_grab": "#2EFFFFFF",
     "log_bg": "#000000",

@@ -277,7 +277,11 @@ def _install_macos(asset_path: str) -> bool:
         dest = os.path.join(ENGINE_DIR, "Chromium.app")
         if os.path.exists(dest):
             shutil.rmtree(dest, ignore_errors=True)
-        shutil.copytree(app_src, dest, symlinks=True)
+        # ditto preserves the code signature/resource forks/permissions that a
+        # plain copytree drops — Gatekeeper kills an unsigned-looking .app on
+        # Apple Silicon (same reason the app-updater uses ditto).
+        import subprocess as _sp
+        _sp.run(["ditto", app_src, dest], check=True)
         return os.path.isfile(ENGINE_BINARY)
     except OSError:
         return False

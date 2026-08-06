@@ -78,7 +78,28 @@ def _windows_scale() -> float:
 
 
 def _engine_option(key: str, label: str) -> ft.dropdown.Option:
-    return ft.dropdown.Option(key=key, text=label)
+    from ...core.assets import asset_path
+
+    fname = "engine_firefox.svg" if key in ("firefox", "camoufox") else "engine_chrome.svg"
+    path = asset_path(fname)
+    icon: ft.Control = (
+        ft.Image(src=path, width=16, height=16)
+        if os.path.exists(path)
+        else ft.Icon(ft.Icons.PUBLIC, size=16, color=COLORS["accent"])
+    )
+    return ft.dropdown.Option(
+        key=key,
+        text=label,
+        content=ft.Row(
+            spacing=8,
+            tight=True,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                icon,
+                ft.Text(label, font_family="monospace", color=COLORS["text_main"]),
+            ],
+        ),
+    )
 
 
 def build_page_theme() -> ft.Theme:
@@ -99,13 +120,11 @@ def build_page_theme() -> ft.Theme:
 
 def build_os_dropdown(value: str = "windows") -> ft.Dropdown:
     return ft.Dropdown(
-        label="Operating System",
         value=value,
         bgcolor=COLORS["input_bg"],
         color=COLORS["text_main"],
         border_color=COLORS["card_border"],
         focused_border_color=COLORS["accent"],
-        label_style=ft.TextStyle(color=COLORS["text_sub"], font_family="monospace"),
         text_style=ft.TextStyle(font_family="monospace"),
         border_radius=3,
         options=[
@@ -120,13 +139,11 @@ def build_os_dropdown(value: str = "windows") -> ft.Dropdown:
 
 def build_engine_dropdown(value: str = "chromium") -> ft.Dropdown:
     return ft.Dropdown(
-        label="Engine",
         value=value,
         bgcolor=COLORS["input_bg"],
         color=COLORS["text_main"],
         border_color=COLORS["card_border"],
         focused_border_color=COLORS["accent"],
-        label_style=ft.TextStyle(color=COLORS["text_sub"], font_family="monospace"),
         text_style=ft.TextStyle(font_family="monospace"),
         border_radius=3,
         options=[
@@ -146,12 +163,18 @@ def configure_page(page: ft.Page) -> None:
     # bare screen SIZE drifts the window onto other monitors on a multi-display
     # desktop (live: a 2nd monitor at x=3840 made persona open far off-centre).
     # Centre inside the primary display's work-area rect, which carries its origin.
-    wx, wy, ww, wh = _primary_work_rect()
-    if ww and wh:
-        page.window.left = wx + max(0, (ww - win_w) // 2)
-        page.window.top = wy + max(0, (wh - win_h) // 2)
-    else:
-        page.window.center()
+    # macOS: setting page.window.left/top here crashes the BUILT flet-desktop
+    # app on launch (the native window isn't realised yet; source/flet-run and
+    # Win/Linux are fine — this path was never tested on a macOS BUILD, #216
+    # centring "verified Win+Linux, NOT Mac"). Skip positioning on darwin so the
+    # window opens; Win/Linux keep the work-area centring.
+    if sys.platform != "darwin":
+        wx, wy, ww, wh = _primary_work_rect()
+        if ww and wh:
+            page.window.left = wx + max(0, (ww - win_w) // 2)
+            page.window.top = wy + max(0, (wh - win_h) // 2)
+        else:
+            page.window.center()
 
     from ...core.assets import asset_path
 

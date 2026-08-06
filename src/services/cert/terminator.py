@@ -187,8 +187,10 @@ class Terminator:
         client_pem: str,
         upstream_socks: str | None = None,
         verify_upstream: bool = True,
+        admin_port: int = 443,
     ) -> None:
         self.admin_host = admin_host
+        self.admin_port = admin_port
         self.leaf = leaf
         self._client_pem = client_pem
         self._socks = upstream_socks
@@ -224,6 +226,16 @@ class Terminator:
     def _handle(self, conn: socket.socket) -> None:
         try:
             conn.settimeout(60)
+            # Chromium reaches us as a DIRECT TLS connection (via host-resolver
+            # MAP + proxy-bypass): its --ignore-certificate-errors-spki-list only
+            # trusts our leaf on a direct connection, NOT on one tunnelled through
+            # a CONNECT proxy. Detect the TLS ClientHello (record type 0x16) and
+            # MITM straight to the admin host. Firefox still arrives via CONNECT
+            # (it trusts our CA through cert9.db, so the proxy path is fine).
+            first = conn.recv(1, socket.MSG_PEEK)
+            if first and first[0] == 0x16:
+                self._mitm(conn, self.admin_host, self.admin_port)
+                return
             req = b""
             while b"\r\n\r\n" not in req:
                 chunk = conn.recv(4096)
