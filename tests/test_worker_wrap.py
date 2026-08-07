@@ -1,34 +1,42 @@
 from src.services.browser.worker_wrap import realm_bootstrap_js
 
 
-def test_bootstrap_defines_pnaboot_and_invokes():
+def test_registers_leaf_and_installs_bootstrap():
     js = realm_bootstrap_js("applyGpuPatch")
-    assert "function __pnaBoot(G)" in js
+    # registers this module's leaf into the shared per-realm registry
+    assert "__pnaBoots.push(applyGpuPatch)" in js
+    assert "__pnaBootSrc.push" in js
+    # installs the shared bootstrap once per realm and runs it
+    assert "__pnaBootInstalled" in js
     assert "__pnaBoot(SELF)" in js
-    # leaf patch applied inside the bootstrap
-    assert "applyGpuPatch(G)" in js
 
 
-def test_bootstrap_carries_leaf_and_boot_into_workers():
-    # __BOOT must ship BOTH the leaf applyPatch source AND __pnaBoot — shipping
-    # only __pnaBoot would ReferenceError in the worker (leaf undefined there).
+def test_carries_registry_into_workers():
+    # the worker payload rebuilds __pnaBoots from the stored leaf sources, then
+    # re-runs the bootstrap (shipping only the closure would ReferenceError).
     js = realm_bootstrap_js("applyGpuPatch")
+    assert "self.__pnaBoots=[" in js
     assert "applyGpuPatch.toString()" in js
-    assert "__pnaBoot.toString()" in js
-    # worker constructor wrapping via re-blob (blob/data) + importScripts (http)
     assert "XMLHttpRequest" in js
     assert "importScripts" in js
     assert "G.Worker" in js and "G.SharedWorker" in js
 
 
-def test_bootstrap_recurses_into_iframes():
-    # iframe getters call __pnaBoot(childWindow) — the FULL bootstrap, so the
-    # child re-establishes its own worker-wrap and iframe-carry (a worker or
-    # nested frame under the child is covered too).
+def test_recurses_into_iframes_with_shared_registry():
+    # iframe getter passes the registry by reference to the child and re-runs the
+    # full bootstrap — every module's leaf reaches the child (not just the first).
     js = realm_bootstrap_js("applyGpuPatch")
     assert "contentWindow" in js and "contentDocument" in js
     assert "HTMLIFrameElement" in js
+    assert "w.__pnaBoots = G.__pnaBoots" in js
     assert "__pnaBoot(w)" in js
+
+
+def test_second_module_applies_without_reinstall():
+    # a module loaded after the bootstrap is installed just applies its own leaf
+    # to the current realm (the others already ran).
+    js = realm_bootstrap_js("applyFoo")
+    assert "applyFoo(SELF)" in js
 
 
 def test_bootstrap_balanced():
