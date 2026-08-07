@@ -4,7 +4,7 @@ aiohttp>=3.9.0
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 cryptography>=42.0.0
-mcp>=1.28.0
+mcp>=1.28.0,<2
 paramiko>=3.4
 PySocks>=1.7
 pywin32>=306; sys_platform == "win32"
