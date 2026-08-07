@@ -56,8 +56,8 @@ def test_carries_audio_noise_into_workers(tmp_path):
     # the noise must apply there too, or page/worker audio hashes disagree.
     js = (pathlib.Path(build_audio_extension(1, str(tmp_path / "ext"))) / "audio.js").read_text()
     assert "applyAudioPatch" in js
-    assert "SELF.Worker" in js
-    body = js.split("function applyAudioPatch(G)", 1)[1].split("var SELF", 1)[0]
+    assert "G.Worker" in js
+    body = js.split("function applyAudioPatch(G)", 1)[1].split("__pnaBoot", 1)[0]
     assert "var SEED =" in body
     assert "var REL =" in body
 
@@ -65,4 +65,4 @@ def test_carries_audio_noise_into_workers(tmp_path):
 def test_carries_audio_noise_into_iframes(tmp_path):
     js = (pathlib.Path(build_audio_extension(1, str(tmp_path / "ext"))) / "audio.js").read_text()
     assert "contentWindow" in js and "HTMLIFrameElement" in js
-    assert "applyAudioPatch(w)" in js
+    assert "__pnaBoot(w)" in js

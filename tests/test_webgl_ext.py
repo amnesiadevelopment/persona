@@ -55,8 +55,8 @@ def test_carries_readpixels_noise_into_workers(tmp_path):
     # the readback noise must run there too, or page/worker hashes disagree.
     js = (pathlib.Path(build_webgl_extension(1, str(tmp_path / "ext"))) / "webgl.js").read_text()
     assert "applyWebglPatch" in js
-    assert "SELF.Worker" in js
-    body = js.split("function applyWebglPatch(G)", 1)[1].split("var SELF", 1)[0]
+    assert "G.Worker" in js
+    body = js.split("function applyWebglPatch(G)", 1)[1].split("__pnaBoot", 1)[0]
     assert "var SEED =" in body
     assert "var STRIDE =" in body
 
@@ -71,4 +71,4 @@ def test_only_byte_buffers_touched(tmp_path):
 def test_carries_webgl_noise_into_iframes(tmp_path):
     js = (pathlib.Path(build_webgl_extension(1, str(tmp_path / "ext"))) / "webgl.js").read_text()
     assert "contentWindow" in js and "HTMLIFrameElement" in js
-    assert "applyWebglPatch(w)" in js
+    assert "__pnaBoot(w)" in js

@@ -31,11 +31,11 @@ def test_carries_gpu_spoof_into_workers(tmp_path):
     # the page reports) leaks there. The spoof must be carried into workers.
     js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g")), "gpu.js")
     assert "applyGpuPatch" in js
-    assert "SELF.Worker" in js
+    assert "G.Worker" in js
     assert "SharedWorker" in js
     # SEED/OS must live INSIDE applyGpuPatch so .toString() carries them into the
     # worker; a value referenced from the outer IIFE is undefined in the worker.
-    body = js.split("function applyGpuPatch(G)", 1)[1].split("var SELF", 1)[0]
+    body = js.split("function applyGpuPatch(G)", 1)[1].split("__pnaBoot", 1)[0]
     assert "var SEED =" in body
     assert 'var OS =' in body
 
@@ -122,4 +122,4 @@ def test_carries_gpu_spoof_into_iframes(tmp_path):
     # spoof must be carried into same-realm child frames.
     js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g")), "gpu.js")
     assert "contentWindow" in js and "HTMLIFrameElement" in js
-    assert "applyGpuPatch(w)" in js
+    assert "__pnaBoot(w)" in js

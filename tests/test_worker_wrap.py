@@ -1,35 +1,37 @@
-from src.services.browser.worker_wrap import iframe_carry_js, worker_wrap_js
+from src.services.browser.worker_wrap import realm_bootstrap_js
 
 
-def test_iframe_carry_references_fn_and_frame_getters():
-    js = iframe_carry_js("applyGpuPatch")
-    assert "applyGpuPatch(w)" in js
-    assert "contentWindow" in js
-    assert "contentDocument" in js
-    assert "HTMLIFrameElement" in js
-    assert js.count("{") == js.count("}")
-    assert js.count("(") == js.count(")")
+def test_bootstrap_defines_pnaboot_and_invokes():
+    js = realm_bootstrap_js("applyGpuPatch")
+    assert "function __pnaBoot(G)" in js
+    assert "__pnaBoot(SELF)" in js
+    # leaf patch applied inside the bootstrap
+    assert "applyGpuPatch(G)" in js
 
 
-def test_emits_worker_wrap_for_named_fn():
-    js = worker_wrap_js("applyGpuPatch")
-    # references the patch function, wraps both worker constructors
+def test_bootstrap_carries_leaf_and_boot_into_workers():
+    # __BOOT must ship BOTH the leaf applyPatch source AND __pnaBoot — shipping
+    # only __pnaBoot would ReferenceError in the worker (leaf undefined there).
+    js = realm_bootstrap_js("applyGpuPatch")
     assert "applyGpuPatch.toString()" in js
-    assert "SELF.Worker" in js
-    assert "SELF.SharedWorker" in js
-
-
-def test_carries_patch_via_reblob_and_importscripts():
-    js = worker_wrap_js("applyFoo")
-    # blob/data workers re-blobbed via sync XHR; http workers via importScripts
+    assert "__pnaBoot.toString()" in js
+    # worker constructor wrapping via re-blob (blob/data) + importScripts (http)
     assert "XMLHttpRequest" in js
     assert "importScripts" in js
-    assert "blob:|^data:" in js
-    # module workers left untouched (can't prepend to an ES module)
-    assert 'options.type === "module"' in js
+    assert "G.Worker" in js and "G.SharedWorker" in js
 
 
-def test_balanced_braces_and_parens():
-    js = worker_wrap_js("applyFoo")
+def test_bootstrap_recurses_into_iframes():
+    # iframe getters call __pnaBoot(childWindow) — the FULL bootstrap, so the
+    # child re-establishes its own worker-wrap and iframe-carry (a worker or
+    # nested frame under the child is covered too).
+    js = realm_bootstrap_js("applyGpuPatch")
+    assert "contentWindow" in js and "contentDocument" in js
+    assert "HTMLIFrameElement" in js
+    assert "__pnaBoot(w)" in js
+
+
+def test_bootstrap_balanced():
+    js = realm_bootstrap_js("applyFoo")
     assert js.count("{") == js.count("}")
     assert js.count("(") == js.count(")")

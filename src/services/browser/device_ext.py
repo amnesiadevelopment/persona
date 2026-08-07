@@ -15,7 +15,7 @@ groupId hashes.
 import json
 import pathlib
 
-from .worker_wrap import worker_wrap_js
+from .worker_wrap import realm_bootstrap_js
 
 # Common real desktop resolutions (StatCounter-ish top set). Picking from a
 # real-world distribution keeps each profile plausible while differing between
@@ -251,8 +251,7 @@ _CONTENT_SCRIPT = r"""
     def(G.navigator,'deviceMemory',Math.min(m[1],8));
    } catch (e) {}
   }
-  var SELF = (typeof self !== "undefined") ? self : this;
-__HW_WORKER_WRAP__
+__HW_REALM_BOOTSTRAP__
 })();
 """
 
@@ -287,7 +286,7 @@ def build_device_extension(
     script = _CONTENT_SCRIPT.replace(
         "__SEED__", str(int(seed) & 0xFFFFFFFF)
     ).replace("__FORCED_RES__", forced).replace(
-        "__HW_WORKER_WRAP__", worker_wrap_js("applyHwPatch")
+        "__HW_REALM_BOOTSTRAP__", realm_bootstrap_js("applyHwPatch")  # noqa: E501
     )
     (ext_dir / "device.js").write_text(script, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(

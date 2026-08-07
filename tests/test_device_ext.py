@@ -63,9 +63,9 @@ def test_carries_hardware_into_workers(tmp_path):
         build_device_extension(1, str(tmp_path / "dev")) + "/device.js"
     ).read_text()
     assert "applyHwPatch" in js
-    assert "SELF.Worker" in js
+    assert "G.Worker" in js
     # SEED lives inside applyHwPatch so .toString() re-derives the same pair
-    body = js.split("function applyHwPatch(G)", 1)[1].split("var SELF", 1)[0]
+    body = js.split("function applyHwPatch(G)", 1)[1].split("__pnaBoot", 1)[0]
     assert "var SEED =" in body
 
 

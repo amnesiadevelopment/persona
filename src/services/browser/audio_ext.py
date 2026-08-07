@@ -15,7 +15,7 @@ to read as hardware variance, large enough to survive a coarse sum-and-hash.
 import json
 import pathlib
 
-from .worker_wrap import iframe_carry_js, worker_wrap_js
+from .worker_wrap import realm_bootstrap_js
 
 # Magnitude of the per-sample relative perturbation. Larger than the engine's
 # ~2e-7 sample-rate effect so it dominates the hash, small enough to stay a
@@ -101,10 +101,7 @@ _CONTENT_SCRIPT = r"""
    } catch (e) {}
   }
 
-  var SELF = (typeof self !== "undefined") ? self : this;
-  applyAudioPatch(SELF);
-__IFRAME_CARRY__
-__WORKER_WRAP__
+__REALM_BOOTSTRAP__
 })();
 """
 
@@ -134,8 +131,8 @@ def build_audio_extension(seed: int, base_dir: str) -> str:
     script = _CONTENT_SCRIPT.replace("__SEED__", str(int(seed) & 0xFFFFFFFF)).replace(
         "__REL__", repr(_NOISE_REL)
     ).replace(
-        "__IFRAME_CARRY__", iframe_carry_js("applyAudioPatch")
-    ).replace("__WORKER_WRAP__", worker_wrap_js("applyAudioPatch"))
+        "__REALM_BOOTSTRAP__", realm_bootstrap_js("applyAudioPatch")
+    )
     (ext_dir / "audio.js").write_text(script, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(
         json.dumps(_MANIFEST, indent=2), encoding="utf-8"
