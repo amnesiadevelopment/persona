@@ -106,12 +106,34 @@ _CONTENT_SCRIPT = r"""
     def(window, 'devicePixelRatio', 1);
     var mm = window.matchMedia;
     if (mm) {
+      // device-width/device-height read the PHYSICAL screen. Under
+      // --force-device-scale-factor the engine resolves them to the real panel
+      // divided by the scale (2560 -> 1706 at 1.5x), so they disagree with the
+      // spoofed screen.width/height — an instant tell. Answer them from the same
+      // W/H we pin on screen.* so both report one value.
+      var _mqDim = function (q, feature, target) {
+        var re = new RegExp('(min-|max-)?' + feature + '\\s*:\\s*(\\d+(?:\\.\\d+)?)\\s*px', 'i');
+        var m = q.match(re);
+        if (!m) return null;
+        var kind = (m[1] || '').toLowerCase(), n = parseFloat(m[2]);
+        if (kind === 'min-') return target >= n;
+        if (kind === 'max-') return target <= n;
+        return target === n;
+      };
       window.matchMedia = nativeWrap(mm, function (q) {
         var res = mm.call(window, q);
         if (/resolution|dppx|device-pixel-ratio|-webkit-device-pixel-ratio/i.test(q)) {
           var wantsOne = /(^|[^\d.])1(\.0+)?\s*dppx/i.test(q) ||
                          /device-pixel-ratio\s*:\s*1(\.0+)?\s*\)/i.test(q);
           try { def(res, 'matches', wantsOne); } catch (e) {}
+        }
+        if (/device-width/i.test(q)) {
+          var mw = _mqDim(q, 'device-width', W);
+          if (mw !== null) { try { def(res, 'matches', mw); } catch (e) {} }
+        }
+        if (/device-height/i.test(q)) {
+          var mh = _mqDim(q, 'device-height', H);
+          if (mh !== null) { try { def(res, 'matches', mh); } catch (e) {} }
         }
         return res;
       });

@@ -5,6 +5,7 @@ replaced the running AppImage with one that wouldn't start ("open dir error")
 and left the app unopenable."""
 
 import os
+import sys
 
 import pytest
 
@@ -15,7 +16,9 @@ import src.services.app_update.updater as au
 # refuses ("Bad file descriptor" — the file is locked while open). Windows/macOS
 # get their own update mechanism; these regression tests cover the AppImage path.
 pytestmark = pytest.mark.skipif(
-    os.name != "posix", reason="AppImage in-place self-update is POSIX-only"
+    not sys.platform.startswith("linux"),
+    reason="AppImage in-place self-update is Linux-only (macOS is POSIX too but "
+    "can't apply an AppImage)",
 )
 
 

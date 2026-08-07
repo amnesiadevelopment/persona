@@ -24,8 +24,16 @@ def test_js_embeds_locale(tmp_path):
     d = build_locale_extension("fr-FR", str(tmp_path / "ext"))
     js = (pathlib.Path(d) / "locale.js").read_text()
     assert '"fr-FR"' in js
-    assert "Intl.DateTimeFormat" in js
-    assert "Intl.NumberFormat" in js
+    # every Intl constructor that takes a locale is wrapped to default to the
+    # pinned locale (not just DateTimeFormat/NumberFormat — DisplayNames /
+    # ListFormat / RelativeTimeFormat etc. leaked the host locale otherwise).
+    for ctor in ("DateTimeFormat", "NumberFormat", "RelativeTimeFormat",
+                 "DisplayNames", "ListFormat", "Collator", "PluralRules",
+                 "Segmenter"):
+        assert ctor in js
+    # Date.toString/toTimeString re-render the timezone name in the pinned locale
+    # (the host-locale tz-name leak fix).
+    assert "toTimeString" in js
 
 
 def test_js_is_iife_no_globals(tmp_path):

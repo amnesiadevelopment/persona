@@ -1,56 +1,134 @@
 import json
 import pathlib
 
-# The script is wrapped in an IIFE so LOCALE/_resolved don't become page globals.
-# In the MAIN world a bare top-level const is a real page global, and a page whose
-# own bundle declares the same name later throws "Identifier '…' has already been
-# declared" and dies (Google Sheets' calc worker did — see geo_ext for the full
-# story of #233). Keep every injected name function-local.
-CONTENT_SCRIPT = """\
-(function () {{
-const LOCALE = {locale};
-const _resolved = (orig) => function (...args) {{
-  const r = orig.apply(this, args);
-  r.locale = LOCALE;
-  return r;
-}};
-try {{
-  const DTF = Intl.DateTimeFormat;
-  Intl.DateTimeFormat = function (locales, options) {{
-    return new DTF(locales || LOCALE, options);
-  }};
-  Intl.DateTimeFormat.prototype = DTF.prototype;
-  Intl.DateTimeFormat.supportedLocalesOf = DTF.supportedLocalesOf;
-  const dtfProto = DTF.prototype.resolvedOptions;
-  DTF.prototype.resolvedOptions = _resolved(dtfProto);
+# Injected in the MAIN world at document_start. Wrapped in an IIFE so no injected
+# name leaks as a page global (a page redeclaring the same const would throw and
+# die — Sheets' calc worker did, see geo_ext #233).
+#
+# %LOCALE% is replaced with a JSON string literal at build time.
+#
+# Coverage: the page realm, Web/Shared Workers (content scripts don't inject
+# there), AND same-realm child frames created as about:blank / srcdoc (content
+# scripts don't inject there either — and creepjs/pixelscan read a "pristine"
+# Intl/Date/Number out of exactly such a frame to catch a page-only patch as a
+# lie, which is how the host locale "ru" / "доллар США" kept surfacing).
+CONTENT_SCRIPT = r"""
+(function () {
+const LOCALE = %LOCALE%;
 
-  const NF = Intl.NumberFormat;
-  Intl.NumberFormat = function (locales, options) {{
-    return new NF(locales || LOCALE, options);
-  }};
-  Intl.NumberFormat.prototype = NF.prototype;
-  Intl.NumberFormat.supportedLocalesOf = NF.supportedLocalesOf;
-  NF.prototype.resolvedOptions = _resolved(NF.prototype.resolvedOptions);
+// Patch one realm G (a window or worker global). Idempotent per realm.
+const _applyLocalePatch = function (LOCALE, G) {
+  try {
+    if (!G || G.__personaLocale) return;
+    G.__personaLocale = true;
+    const Intl = G.Intl, Dp = G.Date && G.Date.prototype;
+    if (!Intl) return;
+    const _resolved = function (orig) {
+      return function () { const r = orig.apply(this, arguments); r.locale = LOCALE; return r; };
+    };
+    const DTF = Intl.DateTimeFormat;
+    const _wrap = function (name) {
+      const Ctor = Intl[name];
+      if (!Ctor) return;
+      const W = function (locales, options) {
+        return Reflect.construct(Ctor, [locales || LOCALE, options], W);
+      };
+      W.prototype = Ctor.prototype;
+      if (Ctor.supportedLocalesOf) W.supportedLocalesOf = Ctor.supportedLocalesOf.bind(Ctor);
+      if (Ctor.prototype && Ctor.prototype.resolvedOptions) {
+        Ctor.prototype.resolvedOptions = _resolved(Ctor.prototype.resolvedOptions);
+      }
+      Intl[name] = W;
+    };
+    ["DateTimeFormat", "NumberFormat", "RelativeTimeFormat", "DisplayNames",
+     "ListFormat", "PluralRules", "Collator", "Segmenter"].forEach(_wrap);
 
-  if (Intl.RelativeTimeFormat) {{
-    const RTF = Intl.RelativeTimeFormat;
-    RTF.prototype.resolvedOptions = _resolved(RTF.prototype.resolvedOptions);
-  }}
+    if (Dp) {
+      ["toLocaleString", "toLocaleDateString", "toLocaleTimeString"].forEach(function (n) {
+        const orig = Dp[n];
+        if (orig) Dp[n] = function (l, o) { return orig.call(this, l || LOCALE, o); };
+      });
+      // Date.toString / toTimeString render the tz NAME in the host locale; the
+      // Intl overrides don't touch it. Re-render the suffix in LOCALE.
+      const _tzName = function (d) {
+        try {
+          const parts = new DTF(LOCALE, { timeZoneName: "long" }).formatToParts(d);
+          const p = parts.find(function (x) { return x.type === "timeZoneName"; });
+          return p ? p.value : null;
+        } catch (e) { return null; }
+      };
+      ["toString", "toTimeString"].forEach(function (name) {
+        const orig = Dp[name];
+        if (!orig) return;
+        Dp[name] = function () {
+          let s = orig.call(this);
+          const tz = _tzName(this);
+          if (tz && /\([^)]*\)\s*$/.test(s)) s = s.replace(/\([^)]*\)\s*$/, "(" + tz + ")");
+          return s;
+        };
+      });
+    }
+    // Number/BigInt.toLocaleString use the host locale internally (not the JS
+    // Intl.NumberFormat we wrapped) — a currency NAME leaked "доллар США".
+    [G.Number, G.BigInt].forEach(function (C) {
+      if (!C || !C.prototype || !C.prototype.toLocaleString) return;
+      const orig = C.prototype.toLocaleString;
+      C.prototype.toLocaleString = function (l, o) { return orig.call(this, l || LOCALE, o); };
+    });
+  } catch (e) {}
+};
 
-  const origToLocale = Date.prototype.toLocaleString;
-  Date.prototype.toLocaleString = function (l, o) {{
-    return origToLocale.call(this, l || LOCALE, o);
-  }};
-  const origToLD = Date.prototype.toLocaleDateString;
-  Date.prototype.toLocaleDateString = function (l, o) {{
-    return origToLD.call(this, l || LOCALE, o);
-  }};
-  const origToLT = Date.prototype.toLocaleTimeString;
-  Date.prototype.toLocaleTimeString = function (l, o) {{
-    return origToLT.call(this, l || LOCALE, o);
-  }};
-}} catch (e) {{}}
-}})();
+const SELF = (typeof self !== "undefined") ? self : this;
+_applyLocalePatch(LOCALE, SELF);
+
+// Carry the patch into Web/Shared Workers.
+try {
+  const PATCH = "(" + _applyLocalePatch.toString() + ")(" + JSON.stringify(LOCALE) +
+                ", (typeof self!=='undefined'?self:this));";
+  const wrapWorker = function (Orig) {
+    if (typeof Orig !== "function") return Orig;
+    const W = function (url, options) {
+      try {
+        if (options && options.type === "module") return Reflect.construct(Orig, [url, options], W);
+        const body = PATCH + "\ntry{importScripts(" + JSON.stringify(String(url)) + ");}catch(e){}";
+        const u = URL.createObjectURL(new Blob([body], { type: "application/javascript" }));
+        return Reflect.construct(Orig, [u, options], W);
+      } catch (e) { return Reflect.construct(Orig, [url, options], W); }
+    };
+    W.prototype = Orig.prototype;
+    return W;
+  };
+  if (SELF.Worker) SELF.Worker = wrapWorker(SELF.Worker);
+  if (SELF.SharedWorker) SELF.SharedWorker = wrapWorker(SELF.SharedWorker);
+} catch (e) {}
+
+// Patch same-realm child frames (about:blank / srcdoc) on access — content
+// scripts don't inject there, so a scanner reading a fresh iframe's Intl would
+// otherwise see the host locale. (creepjs additionally reads a pristine realm
+// via a path JS can't intercept before its inline script runs — that residual
+// is an fp-chromium ICU-default-locale gap, out of a content script's reach.)
+try {
+  if (typeof HTMLIFrameElement !== "undefined") {
+    const proto = HTMLIFrameElement.prototype;
+    ["contentWindow", "contentDocument"].forEach(function (prop) {
+      const d = Object.getOwnPropertyDescriptor(proto, prop);
+      if (!d || !d.get) return;
+      Object.defineProperty(proto, prop, {
+        configurable: true,
+        enumerable: d.enumerable,
+        get: function () {
+          const r = d.get.call(this);
+          try {
+            const w = prop === "contentWindow" ? r : (r && r.defaultView);
+            if (w) _applyLocalePatch(LOCALE, w);
+          } catch (e) {}
+          return r;
+        },
+      });
+    });
+  }
+} catch (e) {}
+})();
 """
 
 MANIFEST = {
@@ -70,16 +148,16 @@ MANIFEST = {
 
 
 def build_locale_extension(locale: str, base_dir: str) -> str:
-    """Generate an unpacked extension that pins Intl/Date locale to `locale`,
-    so date/number formatting matches navigator.language and the proxy region.
-    fingerprint-chromium leaves Intl at the host default (en-US) regardless of
-    --lang, which contradicts the spoofed language; this closes that gap.
-    """
+    """Generate an unpacked extension that pins Intl/Date/Number locale to
+    `locale` in the page, Web Workers, and same-realm about:blank/srcdoc child
+    frames — so date/number/display formatting matches navigator.language and the
+    proxy region everywhere a scanner (creepjs/pixelscan) can read it.
+    fingerprint-chromium leaves the Intl default at the host locale regardless of
+    --lang; this closes that gap."""
     ext_dir = pathlib.Path(base_dir)
     ext_dir.mkdir(parents=True, exist_ok=True)
-    (ext_dir / "locale.js").write_text(
-        CONTENT_SCRIPT.format(locale=json.dumps(locale)), encoding="utf-8"
-    )
+    js = CONTENT_SCRIPT.replace("%LOCALE%", json.dumps(locale))
+    (ext_dir / "locale.js").write_text(js, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(
         json.dumps(MANIFEST, indent=2), encoding="utf-8"
     )

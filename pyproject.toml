@@ -10,6 +10,9 @@ dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
     "cryptography>=42.0.0",
+    # Cap below 2.0: mcp 2.x removed the mcp.server.fastmcp path we import
+    # (build_mcp uses FastMCP), so an unpinned >=1.28.0 let the macOS build
+    # resolve 2.x and raise ModuleNotFoundError, silently killing the /mcp server.
     "mcp>=1.28.0,<2",
     # mcp pulls pywin32 (for pywintypes) only as a platform-conditional
     # TRANSITIVE dep, and flet build doesn't resolve those — so the built
@@ -25,7 +28,7 @@ dependencies = [
     # requirements.txt — flet build bundles deps from pyproject, so a package
     # that's only in requirements.txt is missing from the built app (that's
     # exactly why Camoufox showed ModuleNotFoundError in prod).
-    "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git@e2deaa50594894b236d39ac763d244aa1327e9c5",
+    "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git",
     # invisible_core is invisible_playwright's own dependency, but flet build does
     # NOT resolve a git package's transitive deps — so it must be declared here or
     # the bundle ships without it and the engine raises ImportError ("invisible-core
@@ -34,7 +37,7 @@ dependencies = [
     # so the version carrying the release-pin check (invisible_core._pin) lands in
     # the build. A git pin here mismatched playwright's == pin; the PyPI == pin keeps
     # them in lockstep and lets `pip check` catch a drift before release.
-    "invisible_core==18.13.0",
+    "invisible_core==18.9.0",
 ]
 
 [tool.pytest.ini_options]

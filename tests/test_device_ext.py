@@ -56,6 +56,20 @@ def test_script_pins_device_pixel_ratio(tmp_path):
     assert "dppx" in js
 
 
+def test_matchmedia_device_dimensions_agree_with_screen(tmp_path):
+    # CSS media features device-width/device-height read the physical screen,
+    # which under --force-device-scale-factor is the real panel / scale factor
+    # (e.g. screen.width 2560 spoofed but device-width resolves to 1706 at 1.5x)
+    # — a screen.width != device-width mismatch a scanner flags. The matchMedia
+    # wrapper must answer device-width/device-height consistently with the
+    # spoofed W/H so both report the same value.
+    js = pathlib.Path(
+        build_device_extension(1, str(tmp_path / "dev")) + "/device.js"
+    ).read_text()
+    assert "device-width" in js
+    assert "device-height" in js
+
+
 def test_forced_resolution_wins_without_containment_gate(tmp_path):
     # A user-picked resolution must be honored outright. Gating it on the window
     # extent (needW) leaked the render scale (#167): under

@@ -25,6 +25,7 @@ from .mobile_ext import build_mobile_extension
 from .webgl_ext import build_webgl_extension
 from .geo_ext import build_geo_extension
 from .locale_ext import build_locale_extension
+from .voice_ext import build_voice_extension
 from .stealth_ext import build_stealth_extension
 from .profile_seed import seed_profile_prefs
 from .search_ext import build_search_extension
@@ -432,6 +433,14 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
     extensions.append(
         build_locale_extension(
             lang, os.path.join(profile_dir, ".persona-locale-ext")
+        )
+    )
+    # fingerprint-chromium leaks the host OS speech-voice list (~180 macOS voices
+    # led by the host locale); replace it with a Windows-plausible set matching
+    # `lang`, at parity with the Firefox engine.
+    extensions.append(
+        build_voice_extension(
+            lang, os.path.join(profile_dir, ".persona-voice-ext")
         )
     )
     extensions.append(

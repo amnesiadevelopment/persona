@@ -1,7 +1,19 @@
 import os
+import sys
 import tempfile
 
+import pytest
+
 from src.services.app_update import updater as au
+
+# The staged-update path is the Linux AppImage self-updater. Its tests force the
+# Linux branch (IS_WINDOWS=False), which on a macOS host — POSIX too, so the mock
+# reads as Linux — drives the AppImage apply path macOS can't run. Restrict to a
+# Linux host; the Windows branch is covered on the Windows/Linux CI legs.
+pytestmark = pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="AppImage staged self-update is Linux-only",
+)
 
 
 def _force_linux(monkeypatch):
