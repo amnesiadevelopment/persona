@@ -34,14 +34,20 @@ _CONTENT_SCRIPT = r"""
   function nativeWrap(orig, replacement) {
     try {
       Object.defineProperty(replacement, 'name', { value: orig.name });
-      replacement.toString = function () { return orig.toString(); };
+      // Mark for the native_ext Function.prototype.toString patch so a detector
+      // calling Function.prototype.toString.call(replacement) reads native. A
+      // plain replacement.toString override is bypassed by that .call form.
+      Object.defineProperty(replacement, '__pnaName', { value: orig.name });
     } catch (e) {}
     return replacement;
   }
   function def(obj, prop, val) {
     try {
+      var getter = function () { return val; };
+      // Native-looking getters (a masking detector may stringify the accessor).
+      try { Object.defineProperty(getter, '__pnaName', { value: 'get ' + prop }); } catch (e) {}
       Object.defineProperty(obj, prop, {
-        get: function () { return val; }, configurable: true, enumerable: true,
+        get: getter, configurable: true, enumerable: true,
       });
     } catch (e) {}
   }

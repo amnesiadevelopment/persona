@@ -26,6 +26,7 @@ from .webgl_ext import build_webgl_extension
 from .geo_ext import build_geo_extension
 from .locale_ext import build_locale_extension
 from .voice_ext import build_voice_extension
+from .native_ext import build_native_extension
 from .stealth_ext import build_stealth_extension
 from .profile_seed import seed_profile_prefs
 from .search_ext import build_search_extension
@@ -430,6 +431,14 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
     )
 
     extensions = [title_ext]
+    # native_ext patches Function.prototype.toString so persona's wrapped
+    # built-ins (Intl/matchMedia/getVoices/Worker/…) stringify as native code,
+    # hiding the JS-override tell a masking detector reports.
+    extensions.append(
+        build_native_extension(
+            os.path.join(profile_dir, ".persona-native-ext")
+        )
+    )
     extensions.append(
         build_locale_extension(
             lang, os.path.join(profile_dir, ".persona-locale-ext")

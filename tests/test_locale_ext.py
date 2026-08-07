@@ -36,6 +36,20 @@ def test_js_embeds_locale(tmp_path):
     assert "toTimeString" in js
 
 
+def test_worker_wrapper_skips_blob_and_data_urls(tmp_path):
+    # A site that builds its own Worker from a blob:/data: URL runs it under its
+    # own CSP (script-src). Re-wrapping it into OUR fresh blob: URL trips the
+    # site's CSP and the worker never starts — pixelscan's scan hung forever on
+    # exactly this. The wrapper must pass blob:/data: worker URLs through
+    # untouched and only inject into plain http(s) worker scripts.
+    d = build_locale_extension("pl-PL", str(tmp_path / "ext"))
+    js = (pathlib.Path(d) / "locale.js").read_text()
+    # the wrapper only re-blobs plain http(s) worker scripts; anything else
+    # (blob:/data:) constructs the original worker untouched
+    assert "isPlain" in js
+    assert "https?:" in js
+
+
 def test_js_is_iife_no_globals(tmp_path):
     # #233: in the MAIN world a bare top-level const (LOCALE, _resolved) becomes a
     # page global and collides with the page's own bundle ("Identifier '…' has

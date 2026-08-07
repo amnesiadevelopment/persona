@@ -49,7 +49,11 @@ try {
   });
   if (window.speechSynthesis) {
     const ss = window.speechSynthesis;
-    Object.defineProperty(ss, 'getVoices', {value: function () { return voices.slice(); }, configurable: true});
+    const gv = function () { return voices.slice(); };
+    // Read as native under the native_ext Function.prototype.toString patch.
+    try { Object.defineProperty(gv, '__pnaName', {value: 'getVoices'}); } catch (e) {}
+    try { Object.defineProperty(gv, 'name', {value: 'getVoices'}); } catch (e) {}
+    Object.defineProperty(ss, 'getVoices', {value: gv, configurable: true});
     // fire voiceschanged so late listeners re-read the spoofed list
     try { ss.dispatchEvent(new Event('voiceschanged')); } catch (e) {}
     setTimeout(function () { try { ss.dispatchEvent(new Event('voiceschanged')); } catch (e) {} }, 0);

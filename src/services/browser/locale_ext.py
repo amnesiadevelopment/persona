@@ -34,6 +34,10 @@ const _applyLocalePatch = function (LOCALE, G) {
         return Reflect.construct(Ctor, [locales || LOCALE, options], W);
       };
       W.prototype = Ctor.prototype;
+      // Read as native under Function.prototype.toString (native_ext patch), so
+      // a masking detector doesn't see the wrapper source.
+      try { Object.defineProperty(W, "__pnaName", { value: name }); } catch (e) {}
+      try { Object.defineProperty(W, "name", { value: name }); } catch (e) {}
       if (Ctor.supportedLocalesOf) W.supportedLocalesOf = Ctor.supportedLocalesOf.bind(Ctor);
       if (Ctor.prototype && Ctor.prototype.resolvedOptions) {
         Ctor.prototype.resolvedOptions = _resolved(Ctor.prototype.resolvedOptions);
@@ -43,10 +47,15 @@ const _applyLocalePatch = function (LOCALE, G) {
     ["DateTimeFormat", "NumberFormat", "RelativeTimeFormat", "DisplayNames",
      "ListFormat", "PluralRules", "Collator", "Segmenter"].forEach(_wrap);
 
+    const _mark = function (fn, name) {
+      try { Object.defineProperty(fn, "__pnaName", { value: name }); } catch (e) {}
+      try { Object.defineProperty(fn, "name", { value: name }); } catch (e) {}
+      return fn;
+    };
     if (Dp) {
       ["toLocaleString", "toLocaleDateString", "toLocaleTimeString"].forEach(function (n) {
         const orig = Dp[n];
-        if (orig) Dp[n] = function (l, o) { return orig.call(this, l || LOCALE, o); };
+        if (orig) Dp[n] = _mark(function (l, o) { return orig.call(this, l || LOCALE, o); }, n);
       });
       // Date.toString / toTimeString render the tz NAME in the host locale; the
       // Intl overrides don't touch it. Re-render the suffix in LOCALE.
@@ -60,12 +69,12 @@ const _applyLocalePatch = function (LOCALE, G) {
       ["toString", "toTimeString"].forEach(function (name) {
         const orig = Dp[name];
         if (!orig) return;
-        Dp[name] = function () {
+        Dp[name] = _mark(function () {
           let s = orig.call(this);
           const tz = _tzName(this);
           if (tz && /\([^)]*\)\s*$/.test(s)) s = s.replace(/\([^)]*\)\s*$/, "(" + tz + ")");
           return s;
-        };
+        }, name);
       });
     }
     // Number/BigInt.toLocaleString use the host locale internally (not the JS
@@ -73,7 +82,7 @@ const _applyLocalePatch = function (LOCALE, G) {
     [G.Number, G.BigInt].forEach(function (C) {
       if (!C || !C.prototype || !C.prototype.toLocaleString) return;
       const orig = C.prototype.toLocaleString;
-      C.prototype.toLocaleString = function (l, o) { return orig.call(this, l || LOCALE, o); };
+      C.prototype.toLocaleString = _mark(function (l, o) { return orig.call(this, l || LOCALE, o); }, "toLocaleString");
     });
   } catch (e) {}
 };
@@ -89,13 +98,24 @@ try {
     if (typeof Orig !== "function") return Orig;
     const W = function (url, options) {
       try {
-        if (options && options.type === "module") return Reflect.construct(Orig, [url, options], W);
-        const body = PATCH + "\ntry{importScripts(" + JSON.stringify(String(url)) + ");}catch(e){}";
+        // A worker the site built from its own blob:/data: URL runs under that
+        // site's CSP (script-src). Re-wrapping it into OUR fresh blob: URL trips
+        // a strict CSP and the worker silently never starts (pixelscan's scan
+        // hung on exactly this). Only inject into plain http(s) worker scripts,
+        // where an importScripts shim is CSP-safe; pass everything else through.
+        const s = String(url);
+        const isPlain = /^https?:/i.test(s);
+        if (!isPlain || (options && options.type === "module")) {
+          return Reflect.construct(Orig, [url, options], W);
+        }
+        const body = PATCH + "\ntry{importScripts(" + JSON.stringify(s) + ");}catch(e){}";
         const u = URL.createObjectURL(new Blob([body], { type: "application/javascript" }));
         return Reflect.construct(Orig, [u, options], W);
       } catch (e) { return Reflect.construct(Orig, [url, options], W); }
     };
     W.prototype = Orig.prototype;
+    try { Object.defineProperty(W, "__pnaName", { value: Orig.name }); } catch (e) {}
+    try { Object.defineProperty(W, "name", { value: Orig.name }); } catch (e) {}
     return W;
   };
   if (SELF.Worker) SELF.Worker = wrapWorker(SELF.Worker);
