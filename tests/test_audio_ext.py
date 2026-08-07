@@ -60,3 +60,9 @@ def test_carries_audio_noise_into_workers(tmp_path):
     body = js.split("function applyAudioPatch(G)", 1)[1].split("var SELF", 1)[0]
     assert "var SEED =" in body
     assert "var REL =" in body
+
+
+def test_carries_audio_noise_into_iframes(tmp_path):
+    js = (pathlib.Path(build_audio_extension(1, str(tmp_path / "ext"))) / "audio.js").read_text()
+    assert "contentWindow" in js and "HTMLIFrameElement" in js
+    assert "applyAudioPatch(w)" in js

@@ -114,3 +114,12 @@ def test_seed_varies_gpu_choice():
     idxs = {h32(s & 0xFFFFFFFF, 0x67900) % 5 for s in
             (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 99, 1000, 0xDEADBEEF, 0xCAFE)}
     assert len(idxs) > 1
+
+
+def test_carries_gpu_spoof_into_iframes(tmp_path):
+    # creepjs reads WebGL from a fresh about:blank/srcdoc iframe; on real hardware
+    # the pristine iframe leaks the real GPU (a VM's SwiftShader hides it). The
+    # spoof must be carried into same-realm child frames.
+    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g")), "gpu.js")
+    assert "contentWindow" in js and "HTMLIFrameElement" in js
+    assert "applyGpuPatch(w)" in js

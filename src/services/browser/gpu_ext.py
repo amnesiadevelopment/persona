@@ -25,7 +25,7 @@ CloakBrowser issue reports): Windows = ANGLE-over-D3D11 with the literal
 import json
 import pathlib
 
-from .worker_wrap import worker_wrap_js
+from .worker_wrap import iframe_carry_js, worker_wrap_js
 
 _CONTENT_SCRIPT = r"""
 (function () {
@@ -161,6 +161,7 @@ _CONTENT_SCRIPT = r"""
 
   var SELF = (typeof self !== "undefined") ? self : this;
   applyGpuPatch(SELF);
+__IFRAME_CARRY__
 __WORKER_WRAP__
 })();
 """
@@ -198,6 +199,7 @@ def build_gpu_extension(seed: int, os_type: str, base_dir: str) -> str:
         _CONTENT_SCRIPT
         .replace("__SEED__", str(int(seed) & 0xFFFFFFFF))
         .replace("__OS__", os_norm)
+        .replace("__IFRAME_CARRY__", iframe_carry_js("applyGpuPatch"))
         .replace("__WORKER_WRAP__", worker_wrap_js("applyGpuPatch"))
     )
     (ext_dir / "gpu.js").write_text(script, encoding="utf-8")

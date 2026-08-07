@@ -1,4 +1,14 @@
-from src.services.browser.worker_wrap import worker_wrap_js
+from src.services.browser.worker_wrap import iframe_carry_js, worker_wrap_js
+
+
+def test_iframe_carry_references_fn_and_frame_getters():
+    js = iframe_carry_js("applyGpuPatch")
+    assert "applyGpuPatch(w)" in js
+    assert "contentWindow" in js
+    assert "contentDocument" in js
+    assert "HTMLIFrameElement" in js
+    assert js.count("{") == js.count("}")
+    assert js.count("(") == js.count(")")
 
 
 def test_emits_worker_wrap_for_named_fn():

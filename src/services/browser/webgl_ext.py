@@ -16,7 +16,7 @@ pixel reads are left untouched so WebGL maths is unaffected.
 import json
 import pathlib
 
-from .worker_wrap import worker_wrap_js
+from .worker_wrap import iframe_carry_js, worker_wrap_js
 
 # One byte is nudged per this many bytes, by +/-1. Sparse enough to be invisible
 # and to keep the image plausible, dense enough that the readback hash differs
@@ -88,6 +88,7 @@ _CONTENT_SCRIPT = r"""
 
   var SELF = (typeof self !== "undefined") ? self : this;
   applyWebglPatch(SELF);
+__IFRAME_CARRY__
 __WORKER_WRAP__
 })();
 """
@@ -118,6 +119,8 @@ def build_webgl_extension(seed: int, base_dir: str) -> str:
     script = _CONTENT_SCRIPT.replace(
         "__SEED__", str(int(seed) & 0xFFFFFFFF)
     ).replace("__STRIDE__", str(_STRIDE)).replace(
+        "__IFRAME_CARRY__", iframe_carry_js("applyWebglPatch")
+    ).replace(
         "__WORKER_WRAP__", worker_wrap_js("applyWebglPatch")
     )
     (ext_dir / "webgl.js").write_text(script, encoding="utf-8")

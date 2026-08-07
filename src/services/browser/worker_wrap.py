@@ -64,3 +64,40 @@ def worker_wrap_js(apply_fn_name: str) -> str:
 """
         % {"fn": apply_fn_name}
     )
+
+
+def iframe_carry_js(apply_fn_name: str) -> str:
+    """Return JS that carries ``apply_fn_name`` (an applyPatch(G) taking a realm
+    global) into same-realm about:blank / srcdoc child frames on access.
+
+    A content script doesn't inject into a freshly-created about:blank/srcdoc
+    frame, so a detector reading a fingerprint from a pristine iframe realm gets
+    the real, unspoofed values — a page/iframe mismatch is a hard tell. On a VM
+    (SwiftShader) the real and spoofed values coincide so it hides; on real
+    hardware the gap surfaces (creepjs read the real GPU from an iframe).
+    """
+    return (
+        r"""
+  try {
+    if (typeof HTMLIFrameElement !== "undefined") {
+      var __ifp = HTMLIFrameElement.prototype;
+      ["contentWindow", "contentDocument"].forEach(function (prop) {
+        var d0 = Object.getOwnPropertyDescriptor(__ifp, prop);
+        if (!d0 || !d0.get) return;
+        Object.defineProperty(__ifp, prop, {
+          configurable: true, enumerable: d0.enumerable,
+          get: function () {
+            var r = d0.get.call(this);
+            try {
+              var w = prop === "contentWindow" ? r : (r && r.defaultView);
+              if (w) %(fn)s(w);
+            } catch (e) {}
+            return r;
+          },
+        });
+      });
+    }
+  } catch (e) {}
+"""
+        % {"fn": apply_fn_name}
+    )

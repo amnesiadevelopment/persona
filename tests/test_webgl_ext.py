@@ -66,3 +66,9 @@ def test_only_byte_buffers_touched(tmp_path):
     js = (pathlib.Path(d) / "webgl.js").read_text()
     # float/int pixel reads must be left alone (WebGL maths unaffected)
     assert "Uint8Array" in js
+
+
+def test_carries_webgl_noise_into_iframes(tmp_path):
+    js = (pathlib.Path(build_webgl_extension(1, str(tmp_path / "ext"))) / "webgl.js").read_text()
+    assert "contentWindow" in js and "HTMLIFrameElement" in js
+    assert "applyWebglPatch(w)" in js
