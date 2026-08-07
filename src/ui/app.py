@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import os
 import sys
 import threading
@@ -93,6 +94,8 @@ class App:
         self.pm: IProfileManager = c.profile_manager
         self.bl: IBrowserLauncher = c.browser_launcher
         self.ps: IProxyService = c.proxy_service
+        # Delete/wipe must stop a running browser before rmtree'ing its data dir.
+        self.pm.set_stop_hook(self.bl.stop_profile)
         self.pstore = c.proxy_store
         self.ssh_store = c.ssh_host_store
         self.bstore = c.bookmark_store
@@ -812,15 +815,12 @@ class App:
         self._safe_update()
 
     def _toggle_ai(self, name: str, enabled: bool) -> None:
+        # The checkbox flips itself in place (see connect_page._checkbox_toggle),
+        # so DON'T rebuild the connect page here — a full rebuild reset the
+        # scroll position to the top on every toggle. Just persist + log.
         self.pm.set_ai_control(name, enabled)
         state = "enabled" if enabled else "disabled"
         self._log(f"AI control {state} for '{name}'")
-        # Rebuild the connect page so the checkbox reflects the new state —
-        # _safe_update() alone only repaints the existing tree, it doesn't
-        # re-read ai_control, so the [x]/[ ] never flipped.
-        if self._active_page == "connect":
-            self._render_active_page()
-        self._safe_update()
 
     def _save_notes_inline(self, name: str, notes: str) -> None:
         """Save a profile's notes edited inline on the card (no dialog)."""
@@ -1751,6 +1751,20 @@ class App:
         cycle (otherwise the update is wedged: the check is gated on
         `not self._update_staged`). If the file is still there (relaunch failed),
         keep the 'ready' state so the restart button still works."""
+        # Restarting via execv/os._exit skips atexit, so shut the engines down
+        # explicitly first — otherwise the running browser processes and proxy
+        # bridges are orphaned across the update. And don't restart on top of an
+        # in-flight engine download: execv would kill the writer mid-extract and
+        # leave a corrupt engine cache.
+        if getattr(self, "_engine_busy", False) or getattr(
+            self, "_engine2_busy", False
+        ):
+            self._log("Engine download in progress — restart deferred.")
+            self._app_update_status = "ready"
+            self._refresh_sidebar()
+            return
+        with contextlib.suppress(Exception):
+            self.bl.shutdown_all()
         app_update.apply_and_restart(staged, log=self._log)
         if not staged or not os.path.isfile(staged):
             self._update_staged = ""

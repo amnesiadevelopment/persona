@@ -124,6 +124,11 @@ class BrowserLauncher:
         self._lock = threading.Lock()
         self._active_sessions: dict[str, subprocess.Popen] = {}
         self._stop_notifiers: dict[str, threading.Event] = {}
+        # Profiles whose spawn is in flight but not yet in _active_sessions.
+        # start_thread reserves the slot here synchronously so a second launch of
+        # the same profile — fired while the slow spawn_browser() runs — is
+        # rejected instead of starting a second browser on the same profile dir.
+        self._starting: set[str] = set()
         atexit.register(self.shutdown_all)
 
     def shutdown_all(self) -> None:
@@ -145,8 +150,11 @@ class BrowserLauncher:
         on_stop: Callable[[], None] | None = None,
     ) -> None:
         with self._lock:
-            if profile.name in self._active_sessions:
+            if profile.name in self._active_sessions or profile.name in self._starting:
                 return
+            # Reserve the slot BEFORE releasing the lock so a concurrent launch
+            # of this profile can't slip past while spawn_browser() runs.
+            self._starting.add(profile.name)
 
         log_callback(f"Starting {profile.name} ({profile.os_type})...")
         logger.info(f"Starting browser for profile: {profile.name}")
@@ -195,6 +203,7 @@ class BrowserLauncher:
             with self._lock:
                 self._active_sessions[profile.name] = proc
                 self._stop_notifiers[profile.name] = stop_event
+                self._starting.discard(profile.name)
 
             threading.Thread(
                 target=self._monitor_process,
@@ -208,6 +217,8 @@ class BrowserLauncher:
                 daemon=True,
             ).start()
         except Exception as e:
+            with self._lock:
+                self._starting.discard(profile.name)
             logger.exception(f"Error starting browser for {profile.name}: {e}")
             log_callback(f"Error starting process: {e}")
             if on_stop:
@@ -233,13 +244,17 @@ class BrowserLauncher:
             for n in stale:
                 self._active_sessions.pop(n, None)
                 self._stop_notifiers.pop(n, None)
-            return set(self._active_sessions.keys())
+            # A profile whose spawn is still in flight counts as running so the
+            # UI shows it busy and a second launch is refused.
+            return set(self._active_sessions.keys()) | set(self._starting)
 
     def running_count(self) -> int:
         return len(self.running_profile_names())
 
     def is_running(self, profile_name: str) -> bool:
         with self._lock:
+            if profile_name in self._starting:
+                return True
             if profile_name not in self._active_sessions:
                 return False
             if self._active_sessions[profile_name].poll() is None:

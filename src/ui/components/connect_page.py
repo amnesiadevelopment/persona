@@ -41,35 +41,57 @@ def _bracket_toggle(
     )
 
 
-def _checkbox_toggle(on: bool, label: str, on_change: Callable[[bool], None]) -> ft.Container:
+def _checkbox_toggle(
+    on: bool,
+    label: str,
+    on_change: Callable[[bool], None],
+    card: ft.Container | None = None,
+) -> ft.Container:
     """A [x]/[ ] checkbox in persona's bracket style — reads unambiguously as a
     STATE (checked = enabled) rather than a button whose label could be misread
-    as the action. Used for the per-profile AI toggle so 'on'/'off' can't be
-    mistaken for 'press to turn on/off'."""
+    as the action. It flips ITSELF in place on click (and recolours its card's
+    border), so the caller doesn't have to rebuild the whole page — a full
+    rebuild reset the connect page's scroll to the top on every toggle."""
+    box = ft.Text(
+        "[x]" if on else "[ ]",
+        size=13,
+        color=COLORS["accent"] if on else COLORS["text_dim"],
+        font_family=MONO,
+        weight=ft.FontWeight.BOLD,
+    )
+    lbl = ft.Text(
+        label,
+        size=12,
+        color=COLORS["accent"] if on else COLORS["text_sub"],
+        font_family=MONO,
+        no_wrap=True,
+    )
+    state = {"on": on}
+
+    def click(_: ft.ControlEvent) -> None:
+        state["on"] = not state["on"]
+        now = state["on"]
+        box.value = "[x]" if now else "[ ]"
+        box.color = COLORS["accent"] if now else COLORS["text_dim"]
+        lbl.color = COLORS["accent"] if now else COLORS["text_sub"]
+        box.update()
+        lbl.update()
+        if card is not None:
+            card.border = ft.Border.all(
+                1, COLORS["accent_dim"] if now else COLORS["card_border"]
+            )
+            card.update()
+        on_change(now)
+
     return ft.Container(
-        on_click=lambda _: on_change(not on),
+        on_click=click,
         ink=True,
         border_radius=3,
         padding=ft.Padding.symmetric(horizontal=10, vertical=6),
         content=ft.Row(
             spacing=8,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            controls=[
-                ft.Text(
-                    "[x]" if on else "[ ]",
-                    size=13,
-                    color=COLORS["accent"] if on else COLORS["text_dim"],
-                    font_family=MONO,
-                    weight=ft.FontWeight.BOLD,
-                ),
-                ft.Text(
-                    label,
-                    size=12,
-                    color=COLORS["accent"] if on else COLORS["text_sub"],
-                    font_family=MONO,
-                    no_wrap=True,
-                ),
-            ],
+            controls=[box, lbl],
         ),
     )
 
@@ -392,24 +414,25 @@ def _ai_profile_row(
     """One profile as a compact card: name on the left, the AI checkbox on the
     right, framed and highlighted when AI is on so the enabled ones stand out."""
     on = getattr(p, "ai_control", False)
-    return ft.Container(
+    card = ft.Container(
         border_radius=3,
         border=ft.Border.all(1, COLORS["accent_dim"] if on else COLORS["card_border"]),
         bgcolor=COLORS["card_bg"],
         padding=ft.Padding.only(left=14, top=6, bottom=6, right=6),
-        content=ft.Row(
-            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            controls=[
-                ft.Text(
-                    p.name, size=13, color=COLORS["text_main"], font_family=MONO,
-                ),
-                _checkbox_toggle(
-                    on, "AI", lambda want, n=p.name: on_toggle(n, want),
-                ),
-            ],
-        ),
     )
+    card.content = ft.Row(
+        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        controls=[
+            ft.Text(
+                p.name, size=13, color=COLORS["text_main"], font_family=MONO,
+            ),
+            _checkbox_toggle(
+                on, "AI", lambda want, n=p.name: on_toggle(n, want), card=card,
+            ),
+        ],
+    )
+    return card
 
 
 def _ai_section(

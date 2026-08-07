@@ -305,22 +305,41 @@ def test_current_version_empty_when_not_installed(monkeypatch, tmp_path):
     assert ff.current_version() == ""
 
 
+def _wire_checksummed_dl(monkeypatch, archive_bytes=b"data"):
+    """A fake _resumable_download that serves a checksums.txt matching the
+    archive it later writes, so the sha256 verify passes. Returns the asset
+    name it checksums."""
+    import hashlib
+    import platform as _pyplatform
+
+    from invisible_playwright.constants import ARCHIVE_NAME
+
+    asset = ARCHIVE_NAME(sys.platform, _pyplatform.machine())
+    digest = hashlib.sha256(archive_bytes).hexdigest()
+
+    def fake_dl(url, path, progress=None, **kw):
+        if url.endswith("checksums.txt"):
+            Path(path).write_text(f"{digest}  {asset}\n", encoding="utf-8")
+        else:
+            Path(path).write_bytes(archive_bytes)
+        return True
+
+    monkeypatch.setattr(inv, "_resumable_download", fake_dl)
+    return asset
+
+
 def test_install_engine_build_marks_completion(monkeypatch, tmp_path):
     from invisible_playwright.constants import BINARY_ENTRY_REL
 
     _fake_cache(monkeypatch, tmp_path, [])
     entry_rel = BINARY_ENTRY_REL[sys.platform]
-
-    def fake_dl(url, path, progress=None, **kw):
-        Path(path).write_bytes(b"data")
-        return True
+    _wire_checksummed_dl(monkeypatch)
 
     def fake_extract(archive, dst, asset):
         p = Path(dst) / Path(entry_rel)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.touch()
 
-    monkeypatch.setattr(inv, "_resumable_download", fake_dl)
     monkeypatch.setattr(inv, "_extract_as", fake_extract)
 
     assert inv.install_engine_build("firefox-16") is True
@@ -332,15 +351,78 @@ def test_install_engine_build_no_marker_when_extract_incomplete(
     monkeypatch, tmp_path
 ):
     _fake_cache(monkeypatch, tmp_path, [("firefox-15", True, False)])
-
-    def fake_dl(url, path, progress=None, **kw):
-        Path(path).write_bytes(b"data")
-        return True
-
-    monkeypatch.setattr(inv, "_resumable_download", fake_dl)
+    _wire_checksummed_dl(monkeypatch)
     # extraction produced no binary (bad archive) → not installed, no marker,
     # the previous build stays active
     monkeypatch.setattr(inv, "_extract_as", lambda a, d, n: None)
+
+    assert inv.install_engine_build("firefox-16") is False
+    assert not (tmp_path / "firefox-16" / inv._INSTALL_MARKER).exists()
+    assert inv.active_build() == "firefox-15"
+
+
+def test_install_engine_build_refuses_when_checksum_missing(monkeypatch, tmp_path):
+    # The checksums.txt downloads fine but carries no line for our asset — an
+    # unverifiable archive must NOT be installed (fail-closed, supply-chain).
+    from invisible_playwright.constants import BINARY_ENTRY_REL
+
+    _fake_cache(monkeypatch, tmp_path, [("firefox-15", True, False)])
+    entry_rel = BINARY_ENTRY_REL[sys.platform]
+
+    def fake_dl(url, path, progress=None, **kw):
+        if url.endswith("checksums.txt"):
+            # checksums for OTHER assets only — nothing for ours
+            Path(path).write_text("deadbeef  some-other-asset.zip\n", encoding="utf-8")
+        else:
+            Path(path).write_bytes(b"data")
+        return True
+
+    def fake_extract(archive, dst, asset):
+        p = Path(dst) / Path(entry_rel)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.touch()
+
+    monkeypatch.setattr(inv, "_resumable_download", fake_dl)
+    monkeypatch.setattr(inv, "_extract_as", fake_extract)
+
+    assert inv.install_engine_build("firefox-16") is False
+    assert not (tmp_path / "firefox-16" / inv._INSTALL_MARKER).exists()
+    assert inv.active_build() == "firefox-15"
+
+
+def test_install_engine_build_refuses_on_checksum_mismatch(monkeypatch, tmp_path):
+    # checksums.txt HAS our asset but the archive bytes don't match it (a MITM
+    # swap or corrupt transfer that survived resume) — refuse the install.
+    from invisible_playwright.constants import BINARY_ENTRY_REL
+
+    _fake_cache(monkeypatch, tmp_path, [("firefox-15", True, False)])
+    entry_rel = BINARY_ENTRY_REL[sys.platform]
+    # checksum says the archive should hash to sha256(b"good"), but we serve
+    # b"tampered" instead
+    _wire_checksummed_dl(monkeypatch, archive_bytes=b"good")
+
+    def fake_dl_tampered(url, path, progress=None, **kw):
+        import hashlib
+        import platform as _pyplatform
+
+        from invisible_playwright.constants import ARCHIVE_NAME
+
+        asset = ARCHIVE_NAME(sys.platform, _pyplatform.machine())
+        if url.endswith("checksums.txt"):
+            good = hashlib.sha256(b"good").hexdigest()
+            Path(path).write_text(f"{good}  {asset}\n", encoding="utf-8")
+        else:
+            Path(path).write_bytes(b"tampered")
+        return True
+
+    monkeypatch.setattr(inv, "_resumable_download", fake_dl_tampered)
+
+    def fake_extract(archive, dst, asset):
+        p = Path(dst) / Path(entry_rel)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.touch()
+
+    monkeypatch.setattr(inv, "_extract_as", fake_extract)
 
     assert inv.install_engine_build("firefox-16") is False
     assert not (tmp_path / "firefox-16" / inv._INSTALL_MARKER).exists()

@@ -32,6 +32,12 @@ def get_proxy_service(
     return container.proxy_service
 
 
+def get_proxy_store(
+    container: Container = Depends(_container),
+):
+    return container.proxy_store
+
+
 def get_event_bus(
     container: Container = Depends(_container),
 ) -> EventBus:

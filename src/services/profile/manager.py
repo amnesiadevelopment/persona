@@ -4,13 +4,14 @@ import pathlib
 import shutil
 import threading
 import time
+from collections.abc import Callable
 
 from ...core.config import DATA_DIR, PROFILES_FILE
 from ...core.logging import get_logger
 from ...models.profile import Profile
 from ...utils.atomic import atomic_write_json
 from ...utils.validation import validate_profile_name
-from .transfer import export_to_zip, import_from_zip
+from .transfer import export_to_zip, import_from_zip, peek_profile_name
 
 logger = get_logger("profile.manager")
 
@@ -23,6 +24,11 @@ class ProfileManager:
     def __init__(self) -> None:
         self.profiles: dict[str, Profile] = {}
         self._save_blocked = False
+        # Set by the app once the launcher exists: called with a profile name
+        # right before its data dir is rmtree'd, so delete/wipe never rmtree a
+        # profile dir out from under a live browser (corrupt cache / Windows
+        # rmtree failure). No-op by default (headless/tests).
+        self._stop_hook: "Callable[[str], None] | None" = None
         # Serializes load+save so a concurrent read during a bulk import/tagging
         # flow can't see a half-written file and a concurrent add can't be lost.
         self._lock = threading.RLock()
@@ -163,24 +169,28 @@ class ProfileManager:
         valid, _ = validate_profile_name(name)
         if not valid:
             return False
-        if name in self.profiles:
-            return False
-        self.profiles[name] = Profile(
-            name=name,
-            proxy=proxy or None,
-            os_type=os_type,
-            device_type=device_type,
-            engine=engine,
-            resolution=resolution,
-            search_engine=search_engine,
-            bookmark_pool=bookmark_pool or None,
-            bookmarks=bookmarks,
-            certificate=certificate or None,
-            tags=tags or [],
-            notes=notes,
-        )
-        self.save_profiles()
-        pathlib.Path(self._data_path(name)).mkdir(exist_ok=True, parents=True)
+        # Hold the lock across the check-then-insert so two concurrent adds of
+        # the same name can't both pass the `name in self.profiles` check and one
+        # silently overwrite the other (RLock: save_profiles below re-enters it).
+        with self._lock:
+            if name in self.profiles:
+                return False
+            self.profiles[name] = Profile(
+                name=name,
+                proxy=proxy or None,
+                os_type=os_type,
+                device_type=device_type,
+                engine=engine,
+                resolution=resolution,
+                search_engine=search_engine,
+                bookmark_pool=bookmark_pool or None,
+                bookmarks=bookmarks,
+                certificate=certificate or None,
+                tags=tags or [],
+                notes=notes,
+            )
+            self.save_profiles()
+            pathlib.Path(self._data_path(name)).mkdir(exist_ok=True, parents=True)
         logger.info("Created profile: %s", name)
         return True
 
@@ -201,55 +211,59 @@ class ProfileManager:
         new_resolution: str | None = None,
         new_certificate: str | None = None,
     ) -> bool:
-        if original_name not in self.profiles:
-            return False
+        with self._lock:
+            if original_name not in self.profiles:
+                return False
 
-        if new_name != original_name and new_name in self.profiles:
-            return False
+            if new_name != original_name and new_name in self.profiles:
+                return False
 
-        profile = self.profiles[original_name]
-        profile.name = new_name
-        profile.proxy = new_proxy or None
-        profile.os_type = new_os
-        if new_device_type is not None:
-            profile.device_type = new_device_type
-        if new_engine is not None:
-            profile.engine = new_engine
-        if new_resolution is not None:
-            profile.resolution = new_resolution
-        if new_search_engine is not None:
-            profile.search_engine = new_search_engine
-        profile.bookmark_pool = new_bookmark_pool or None
-        if new_bookmarks is not None:
-            profile.bookmarks = new_bookmarks
-        if new_tags is not None:
-            profile.tags = new_tags
-        if new_notes is not None:
-            profile.notes = new_notes
-        if new_certificate is not None:
-            profile.certificate = new_certificate or None
-        if new_ai_control is not None:
-            profile.ai_control = new_ai_control
+            profile = self.profiles[original_name]
+            profile.name = new_name
+            profile.proxy = new_proxy or None
+            profile.os_type = new_os
+            if new_device_type is not None:
+                profile.device_type = new_device_type
+            if new_engine is not None:
+                profile.engine = new_engine
+            if new_resolution is not None:
+                profile.resolution = new_resolution
+            if new_search_engine is not None:
+                profile.search_engine = new_search_engine
+            profile.bookmark_pool = new_bookmark_pool or None
+            if new_bookmarks is not None:
+                profile.bookmarks = new_bookmarks
+            if new_tags is not None:
+                profile.tags = new_tags
+            if new_notes is not None:
+                profile.notes = new_notes
+            if new_certificate is not None:
+                profile.certificate = new_certificate or None
+            if new_ai_control is not None:
+                profile.ai_control = new_ai_control
 
-        if new_name != original_name:
-            self.profiles = {
-                (new_name if k == original_name else k): v
-                for k, v in self.profiles.items()
-            }
+            if new_name != original_name:
+                # Rename the data dir FIRST; only rekey the dict if it succeeds,
+                # so a locked/failed dir-rename (routine on Windows when the
+                # browser is running) can't leave memory and disk divergent.
+                old_dir = self._data_path(original_name)
+                if pathlib.Path(old_dir).exists():
+                    pathlib.Path(old_dir).rename(self._data_path(new_name))
+                self.profiles = {
+                    (new_name if k == original_name else k): v
+                    for k, v in self.profiles.items()
+                }
 
-            old_dir = self._data_path(original_name)
-            if pathlib.Path(old_dir).exists():
-                pathlib.Path(old_dir).rename(self._data_path(new_name))
-
-        self.save_profiles()
+            self.save_profiles()
         logger.info("Updated profile: %s -> %s", original_name, new_name)
         return True
 
     def set_cookie_status(self, name: str, status: str) -> bool:
-        if name not in self.profiles:
-            return False
-        self.profiles[name].cookie_import_status = status
-        self.save_profiles()
+        with self._lock:
+            if name not in self.profiles:
+                return False
+            self.profiles[name].cookie_import_status = status
+            self.save_profiles()
         return True
 
     def assign_tag(self, names: list[str], tag: str) -> int:
@@ -257,55 +271,75 @@ class ProfileManager:
         tag = tag.strip()
         if not tag:
             return 0
-        changed = 0
-        for name in names:
-            p = self.profiles.get(name)
-            if p is not None and tag not in p.tags:
-                p.tags.append(tag)
-                changed += 1
-        if changed:
-            self.save_profiles()
+        with self._lock:
+            changed = 0
+            for name in names:
+                p = self.profiles.get(name)
+                if p is not None and tag not in p.tags:
+                    p.tags.append(tag)
+                    changed += 1
+            if changed:
+                self.save_profiles()
         return changed
 
     def remove_tag(self, tag: str) -> int:
         """Remove a tag from every profile that has it. Returns count changed."""
-        changed = 0
-        for p in self.profiles.values():
-            if tag in p.tags:
-                p.tags = [x for x in p.tags if x != tag]
-                changed += 1
-        if changed:
-            self.save_profiles()
+        with self._lock:
+            changed = 0
+            for p in self.profiles.values():
+                if tag in p.tags:
+                    p.tags = [x for x in p.tags if x != tag]
+                    changed += 1
+            if changed:
+                self.save_profiles()
         return changed
 
     def clear_proxy(self, proxy_name: str) -> int:
         """Drop a proxy reference from every profile that uses it, so a deleted
         proxy leaves no dangling name behind (which stranded the profile page).
         Returns count changed."""
-        changed = 0
-        for p in self.profiles.values():
-            if p.proxy == proxy_name:
-                p.proxy = None
-                changed += 1
-        if changed:
-            self.save_profiles()
+        with self._lock:
+            changed = 0
+            for p in self.profiles.values():
+                if p.proxy == proxy_name:
+                    p.proxy = None
+                    changed += 1
+            if changed:
+                self.save_profiles()
         return changed
 
     def set_ai_control(self, name: str, enabled: bool) -> bool:
-        p = self.profiles.get(name)
-        if p is None:
-            return False
-        p.ai_control = enabled
-        self.save_profiles()
+        with self._lock:
+            p = self.profiles.get(name)
+            if p is None:
+                return False
+            p.ai_control = enabled
+            self.save_profiles()
         return True
 
+    def set_stop_hook(self, hook: "Callable[[str], None] | None") -> None:
+        self._stop_hook = hook
+
+    def _stop_if_running(self, name: str) -> None:
+        if self._stop_hook is not None:
+            try:
+                self._stop_hook(name)
+            except Exception as e:
+                logger.warning("stop hook failed for %s: %s", name, e)
+
     def delete_profile(self, name: str) -> bool:
-        if name in self.profiles:
-            del self.profiles[name]
-            self.save_profiles()
-            shutil.rmtree(self._data_path(name), ignore_errors=True)
-            logger.info("Deleted profile: %s", name)
-            return True
+        if name not in self.profiles:
+            return False
+        # Stop a live browser BEFORE rmtree (outside our lock — stop is blocking)
+        # so we never delete the data dir out from under a running engine.
+        self._stop_if_running(name)
+        with self._lock:
+            if name in self.profiles:
+                del self.profiles[name]
+                self.save_profiles()
+                shutil.rmtree(self._data_path(name), ignore_errors=True)
+                logger.info("Deleted profile: %s", name)
+                return True
         return False
 
     def wipe_all_profiles(self) -> int:
@@ -313,17 +347,21 @@ class ProfileManager:
         instant clean-out. Irreversible, like delete_profile: each profile's data
         dir is rmtree'd and profiles.json is emptied. Returns how many profiles
         were removed. The UI gates this behind a typed confirmation."""
-        names = list(self.profiles.keys())
-        for name in names:
-            shutil.rmtree(self._data_path(name), ignore_errors=True)
-        self.profiles.clear()
-        self.save_profiles()
+        for name in list(self.profiles.keys()):
+            self._stop_if_running(name)
+        with self._lock:
+            names = list(self.profiles.keys())
+            for name in names:
+                shutil.rmtree(self._data_path(name), ignore_errors=True)
+            self.profiles.clear()
+            self.save_profiles()
         if names:
             logger.info("Wiped all %d profiles", len(names))
         return len(names)
 
     def list_profiles(self) -> list[Profile]:
-        return list(self.profiles.values())
+        with self._lock:
+            return list(self.profiles.values())
 
     def export_profile(
         self,
@@ -345,15 +383,23 @@ class ProfileManager:
         zip_path: str,
         overwrite: bool = False,
     ) -> tuple[bool, str]:
-        success, result = import_from_zip(zip_path, DATA_DIR)
-        if not success:
-            return False, result
+        # Check the name collision BEFORE extracting — import_from_zip writes the
+        # archive's data over DATA_DIR/<name>, so doing it first (as before) let a
+        # non-overwrite import clobber an existing profile's data and only THEN
+        # report "already exists". Peek the name, gate under the lock, then extract.
+        peek_ok, peeked = peek_profile_name(zip_path)
+        if not peek_ok:
+            return False, peeked
+        with self._lock:
+            if peeked in self.profiles and not overwrite:
+                return False, f"Profile '{peeked}' already exists"
 
-        profile = result
-        if profile.name in self.profiles and not overwrite:
-            return False, f"Profile '{profile.name}' already exists"
+            success, result = import_from_zip(zip_path, DATA_DIR)
+            if not success:
+                return False, result
 
-        self.profiles[profile.name] = profile
-        self.save_profiles()
+            profile = result
+            self.profiles[profile.name] = profile
+            self.save_profiles()
         logger.info("Registered imported profile: %s", profile.name)
         return True, profile.name

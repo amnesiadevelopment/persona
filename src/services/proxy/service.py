@@ -1,3 +1,4 @@
+import urllib.parse
 import urllib.request
 
 from ...core.config import PROXY_CHECK_TIMEOUT
@@ -7,6 +8,12 @@ from ...utils.proxy_rotation import regenerate_session_token
 
 
 def _fetch_rotate_url(rotate_url: str, timeout: int) -> tuple[bool, str]:
+    # rotate_url comes from an untrusted pasted proxy string. Only fetch http(s):
+    # urllib.urlopen also honours file:// / ftp:// / data:, which would let a
+    # crafted rotate_url read a local file or reach an internal service.
+    scheme = urllib.parse.urlparse(rotate_url).scheme.lower()
+    if scheme not in ("http", "https"):
+        return False, "Rotate URL must be http or https"
     try:
         req = urllib.request.Request(rotate_url, headers={"User-Agent": "persona"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:

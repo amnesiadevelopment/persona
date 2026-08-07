@@ -11,26 +11,35 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 
 
 def atomic_write_json(path: str, data, *, private: bool = False) -> None:
     parent = os.path.dirname(path) or "."
     os.makedirs(parent, exist_ok=True)
-    tmp = path + ".new"
     # Serialize FIRST: if the data can't be encoded, raise before touching the
     # real file so a bad write can't destroy the existing good copy.
     text = json.dumps(data, indent=2)
+    # A UNIQUE temp per call (not a fixed "<path>.new"): two threads writing the
+    # same target concurrently would otherwise share one temp and interleave into
+    # a corrupt file before the rename. fsync before replace so the bytes are on
+    # disk if power is lost right after the (atomic) rename.
+    fd, tmp = tempfile.mkstemp(
+        dir=parent, prefix=os.path.basename(path) + ".", suffix=".new"
+    )
     try:
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            os.write(fd, text.encode("utf-8"))
-        finally:
-            os.close(fd)
-        if not private:
-            # match the process umask for non-secret files
-            os.chmod(tmp, 0o644 & ~_umask())
+        os.write(fd, text.encode("utf-8"))
+        os.fsync(fd)
+        os.close(fd)
+        fd = -1
+        os.chmod(tmp, 0o600 if private else (0o644 & ~_umask()))
         os.replace(tmp, path)
     except Exception:
+        if fd != -1:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         try:
             os.remove(tmp)
         except OSError:

@@ -77,3 +77,29 @@ def test_export_excludes_mtls_key(tmp_path):
     assert any("cookies.sqlite" in n for n in names)
     assert not any(".persona-mtls" in n for n in names)
     assert not any("client.pem" in n for n in names)
+
+
+def test_import_does_not_clobber_existing_before_reporting(tmp_path, monkeypatch):
+    # A non-overwrite import of a name that already exists must NOT extract (and
+    # overwrite) the existing profile's data before returning "already exists".
+    import src.core.config as cfg
+    import src.services.profile.manager as mod
+    pf, dd = tmp_path / "profiles.json", tmp_path / "data"
+    for m in (cfg, mod):
+        monkeypatch.setattr(m, "PROFILES_FILE", str(pf), raising=False)
+        monkeypatch.setattr(m, "DATA_DIR", str(dd), raising=False)
+    from src.services.profile.manager import ProfileManager
+    import pathlib
+    pm = ProfileManager()
+    pm.add_profile("dup", "", "windows")
+    # existing data on disk
+    ddir = pathlib.Path(pm._data_path("dup"))
+    ddir.mkdir(parents=True, exist_ok=True)
+    (ddir / "cookies.sqlite").write_bytes(b"ORIGINAL")
+    # archive with the same name carrying different data
+    zp = _write_zip(tmp_path, "dup", {"data/cookies.sqlite": b"ATTACKER"})
+    ok, msg = pm.import_profile(str(zp), overwrite=False)
+    assert ok is False
+    assert "already exists" in msg
+    # original data untouched
+    assert (ddir / "cookies.sqlite").read_bytes() == b"ORIGINAL"

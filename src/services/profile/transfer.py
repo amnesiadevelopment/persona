@@ -21,6 +21,27 @@ def _is_within(base: str, target: str) -> bool:
     return os.path.commonpath([base_r, target_r]) == base_r
 
 
+def peek_profile_name(zip_path: str) -> tuple[bool, str]:
+    """Read the archive's profile name WITHOUT extracting any data, so a caller
+    can gate on a name collision before import_from_zip writes over an existing
+    profile's dir. Returns (True, name) or (False, error)."""
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zipf:
+            if "profile.json" not in zipf.namelist():
+                return False, "Invalid profile archive (missing profile.json)"
+            name = json.loads(zipf.read("profile.json")).get("name")
+        if not name:
+            return False, "Invalid profile data (missing name)"
+        valid, msg = validate_profile_name(name)
+        if not valid:
+            return False, f"Invalid profile name in archive: {msg}"
+        return True, name
+    except zipfile.BadZipFile:
+        return False, "Invalid zip file"
+    except Exception as e:
+        return False, str(e)
+
+
 def export_to_zip(
     profile: Profile,
     profile_data_dir: str,

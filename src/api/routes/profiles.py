@@ -9,7 +9,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from ...core.config import DATA_DIR
 from ...core.logging import get_logger
 from ...utils.validation import validate_profile_name, validate_proxy_format
-from ..dependencies import get_browser_launcher, get_event_bus, get_profile_manager
+from ..dependencies import (
+    get_browser_launcher,
+    get_event_bus,
+    get_profile_manager,
+    get_proxy_store,
+)
 from ..helpers import build_profile_response, require_profile
 from ..schemas.common import ErrorResponse, SuccessResponse
 from ..schemas.profiles import (
@@ -33,6 +38,21 @@ logger = get_logger("api.profiles")
 router = APIRouter(prefix="/profiles", tags=["profiles"])
 
 
+def _validate_proxy_ref(proxy: str, ps) -> None:
+    """A profile's proxy field is a NAME reference into the proxy store; the API
+    also tolerates a raw URL for convenience. Accept an existing proxy name OR a
+    well-formed proxy URL. (Before, the route ran validate_proxy_format — a URL
+    regex — on the name and 400'd every proxy-by-name create/update.)"""
+    if proxy in ps.names():
+        return
+    valid, msg = validate_proxy_format(proxy)
+    if not valid:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Proxy '{proxy}' is not a known proxy name or a valid URL",
+        )
+
+
 @router.get("", response_model=ProfileListResponse)
 def list_profiles(
     pm: IProfileManager = Depends(get_profile_manager),
@@ -52,6 +72,7 @@ def create_profile(
     body: ProfileCreate,
     pm: IProfileManager = Depends(get_profile_manager),
     bl: IBrowserLauncher = Depends(get_browser_launcher),
+    ps=Depends(get_proxy_store),
     bus: EventBus = Depends(get_event_bus),
 ) -> ProfileResponse:
     valid, msg = validate_profile_name(body.name)
@@ -59,9 +80,7 @@ def create_profile(
         raise HTTPException(status_code=400, detail=msg)
 
     if body.proxy:
-        valid, msg = validate_proxy_format(body.proxy)
-        if not valid:
-            raise HTTPException(status_code=400, detail=msg)
+        _validate_proxy_ref(body.proxy, ps)
 
     if not pm.add_profile(
         body.name, body.proxy or "", body.os_type, notes=body.notes
@@ -97,6 +116,7 @@ def update_profile(
     body: ProfileUpdate,
     pm: IProfileManager = Depends(get_profile_manager),
     bl: IBrowserLauncher = Depends(get_browser_launcher),
+    ps=Depends(get_proxy_store),
     bus: EventBus = Depends(get_event_bus),
 ) -> ProfileResponse:
     require_profile(name, pm)
@@ -119,9 +139,7 @@ def update_profile(
             )
 
     if "proxy" in supplied and new_proxy:
-        valid, msg = validate_proxy_format(new_proxy)
-        if not valid:
-            raise HTTPException(status_code=400, detail=msg)
+        _validate_proxy_ref(new_proxy, ps)
 
     if not pm.update_profile(
         name, new_name, new_proxy or "", new_os, new_notes=new_notes

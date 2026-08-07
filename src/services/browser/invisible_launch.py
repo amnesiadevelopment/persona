@@ -330,6 +330,13 @@ def _download_invisible(progress=None, log=None, version: str | None = None) -> 
         return False
     sums = _parse_checksums(open(sums_path, encoding="utf-8").read())
     expected = sums.get(asset)
+    if not expected:
+        # No checksum for our asset means we can't verify the archive is genuine
+        # — refuse rather than install an unverifiable binary (a MITM could swap
+        # it). checksums.txt always lists every published asset, so this only
+        # happens on a tampered or truncated file.
+        say("Firefox engine: no checksum for this build — refusing unverified install.")
+        return False
 
     # Download, then verify the sha256. Over Tor the long transfer can flip a
     # byte (a circuit swaps mid-stream) and corrupt the archive; a single bad
@@ -343,8 +350,6 @@ def _download_invisible(progress=None, log=None, version: str | None = None) -> 
         ):
             say("Firefox engine: download didn't complete — will resume next start.")
             return False
-        if not expected:
-            break  # no checksum to verify against
         if _sha256_file(archive_path).lower() == expected.lower():
             break  # verified
         say("Firefox engine: checksum mismatch — re-downloading from scratch.")

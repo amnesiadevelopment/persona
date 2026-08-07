@@ -1,4 +1,7 @@
 import asyncio
+import ipaddress
+import socket
+import urllib.parse
 
 try:
     import aiohttp
@@ -8,6 +11,37 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
 
 from .proxy_parser import parse_proxy
+
+
+def _is_blocked_proxy_host(server: str) -> bool:
+    """True if the proxy endpoint resolves to loopback / private / link-local /
+    cloud-metadata space. check_proxy() connects to whatever host:port the user
+    pasted, so an unconstrained check is a caller-controlled port-scan oracle
+    against the local network and 169.254.169.254. A real upstream proxy is a
+    public host, so blocking private ranges costs nothing legitimate."""
+    host = urllib.parse.urlparse(server).hostname or ""
+    if not host:
+        return False
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return False  # can't resolve -> let the connect fail normally
+    for info in infos:
+        addr = info[4][0]
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            continue
+        if (
+            ip.is_loopback
+            or ip.is_private
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or addr == "169.254.169.254"
+        ):
+            return True
+    return False
 
 
 def proxy_ok_message(code: str, country: str) -> str:
@@ -44,6 +78,13 @@ async def check_proxy(
     if not proxy_config:
         return False, "Invalid proxy format", "", "", "", "", None, None
 
+    if _is_blocked_proxy_host(proxy_config["server"]):
+        return (
+            False,
+            "Proxy host is not allowed (private/loopback address)",
+            "", "", "", "", None, None,
+        )
+
     proxy_url = proxy_config["server"]
     if "username" in proxy_config:
         scheme, rest = proxy_url.split("://", 1)
@@ -75,10 +116,13 @@ async def check_proxy(
         return False, "Proxy connection timed out", "", "", "", "", None, None
     except aiohttp.ClientProxyConnectionError:
         return False, "Failed to connect to proxy", "", "", "", "", None, None
-    except aiohttp.ClientError as e:
-        return False, f"Proxy error: {e!s}", "", "", "", "", None, None
-    except Exception as e:
-        return False, f"Unexpected error: {e!s}", "", "", "", "", None, None
+    except aiohttp.ClientError:
+        # Don't echo the exception: for a DNS/connection failure it embeds the
+        # proxy host:port, and this message reaches the disk-backed daily log +
+        # the Activity Log, which the app otherwise keeps free of the endpoint.
+        return False, "Proxy connection failed", "", "", "", "", None, None
+    except Exception:
+        return False, "Proxy check failed", "", "", "", "", None, None
 
 
 def _run(

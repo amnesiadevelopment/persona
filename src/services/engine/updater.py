@@ -11,6 +11,8 @@ platform.fingerprint_chromium_filename() resolves to.
 import hashlib
 import json
 import os
+import shutil
+import threading
 import urllib.request
 
 from ...core.config import ENGINE_DIR
@@ -18,9 +20,17 @@ from ...core import platform as _platform
 
 ENGINE_BINARY = os.path.join(ENGINE_DIR, _platform.fingerprint_chromium_filename())
 VERSION_FILE = os.path.join(ENGINE_DIR, "version.txt")
+# Written LAST, after a whole engine is in place, so is_installed() can tell a
+# complete install from a half-extracted one (a Windows zip drops chrome.exe
+# and its DLLs as separate files — the binary can appear before its libraries).
+MARKER_FILE = os.path.join(ENGINE_DIR, ".engine-complete")
 RELEASES_API = (
     "https://api.github.com/repos/adryfish/fingerprint-chromium/releases/latest"
 )
+
+# Serialises concurrent installs (the UI update thread and ensure_engine can
+# both reach download_engine) so two extracts don't race into ENGINE_DIR.
+_install_lock = threading.Lock()
 
 
 def current_version() -> str:
@@ -43,24 +53,39 @@ def _binary_root() -> str:
     return ENGINE_BINARY
 
 
+def _install_complete() -> bool:
+    """True when a whole engine finished installing. The completion marker is
+    written last by download_engine; an engine installed before the marker
+    existed has version.txt (also written last, by ensure_engine), so accept
+    that as the legacy completion signal rather than force a re-download."""
+    return os.path.exists(MARKER_FILE) or os.path.exists(VERSION_FILE)
+
+
 def is_installed() -> bool:
-    """True when the engine binary (or macOS .app bundle) is present and
-    non-empty."""
+    """True when the engine binary (or macOS .app bundle) is present, non-empty,
+    AND the install completed (marker/version.txt present) — so a half-extracted
+    engine, where the binary is on disk but its libraries aren't, doesn't read as
+    ready and get launched."""
     root = _binary_root()
     try:
         if _platform.IS_MACOS:
-            return os.path.isdir(root) and os.path.isfile(ENGINE_BINARY)
-        return os.path.getsize(root) > 0
+            present = os.path.isdir(root) and os.path.isfile(ENGINE_BINARY)
+        else:
+            present = os.path.getsize(root) > 0
     except OSError:
         return False
+    return present and _install_complete()
 
 
-def sha256_ok(data: bytes, digest: str | None) -> bool:
-    """Verify data against a sha256 digest. Empty/absent digest passes
-    (we don't block an install when GitHub didn't give us a checksum).
+def sha256_ok(data: bytes, digest: str | None, allow_missing: bool = False) -> bool:
+    """Verify data against a sha256 digest. An absent digest fails closed: an
+    unverifiable asset could be a MITM swap, so we refuse it — UNLESS the caller
+    opts in with allow_missing (the Linux predictable-URL fallback, where the
+    asset lives outside the API that carries the digest, has no other source).
+    A present-but-wrong digest is always rejected.
     """
     if not digest:
-        return True
+        return allow_missing
     want = digest.split(":", 1)[-1].strip().lower()
     return hashlib.sha256(data).hexdigest() == want
 
@@ -146,11 +171,20 @@ def write_version(tag: str) -> None:
         pass
 
 
-def _download_to(path: str, url: str, timeout: int, digest: str | None, progress) -> bool:
+def _download_to(
+    path: str,
+    url: str,
+    timeout: int,
+    digest: str | None,
+    progress,
+    allow_missing: bool = False,
+) -> bool:
     """Download `url` to `path`, resuming across dropped connections (Tor), and
-    verify its sha256 when a digest is given. Returns True on a complete,
-    verified file. Shared by all OSes — the per-OS install step then turns this
-    raw asset into the runnable engine."""
+    verify its sha256. A missing digest fails closed (the .part is discarded and
+    we return False) unless allow_missing is set — an unverifiable asset could be
+    a MITM swap. Returns True only on a complete, verified file. Shared by all
+    OSes — the per-OS install step then turns this raw asset into the runnable
+    engine."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".part"
     attempts = 0
@@ -196,6 +230,11 @@ def _download_to(path: str, url: str, timeout: int, digest: str | None, progress
                 if h.hexdigest() != digest.split(":", 1)[-1].strip().lower():
                     os.remove(tmp)
                     return False
+            elif not allow_missing:
+                # No digest to verify against and the caller didn't opt in — an
+                # unverifiable asset could be a swap, so refuse it.
+                os.remove(tmp)
+                return False
             os.replace(tmp, path)
             return True
         except Exception:
@@ -215,15 +254,22 @@ def _install_linux(asset_path: str) -> bool:
 
 def _install_windows(asset_path: str) -> bool:
     """Extract the Windows zip into ENGINE_DIR. The archive holds chrome.exe plus
-    its DLLs/resources, which the launcher expects at ENGINE_DIR/chrome.exe."""
+    its DLLs/resources, which the launcher expects at ENGINE_DIR/chrome.exe.
+
+    Extraction goes into a staging dir first, then the whole tree is moved into
+    ENGINE_DIR — so chrome.exe never appears without the DLLs beside it, which
+    would let a launch pick up a half-extracted engine (#319)."""
     import zipfile
 
+    staging = os.path.join(ENGINE_DIR, ".staging")
+    shutil.rmtree(staging, ignore_errors=True)
     try:
+        os.makedirs(staging, exist_ok=True)
         with zipfile.ZipFile(asset_path) as zf:
             members = zf.namelist()
             # The zip may nest everything under a top-level folder; find where
-            # chrome.exe sits and flatten that folder into ENGINE_DIR so the
-            # launcher's ENGINE_DIR/chrome.exe path resolves.
+            # chrome.exe sits and flatten that folder into staging so the
+            # launcher's ENGINE_DIR/chrome.exe path resolves after the move.
             exe_member = next(
                 (m for m in members if m.replace("\\", "/").endswith("/chrome.exe")
                  or m == "chrome.exe"),
@@ -239,27 +285,52 @@ def _install_windows(asset_path: str) -> bool:
                 rel = norm[len(prefix):] if prefix else norm
                 if not rel:
                     continue
-                dest = os.path.join(ENGINE_DIR, *rel.split("/"))
+                dest = os.path.join(staging, *rel.split("/"))
                 if m.endswith("/"):
                     os.makedirs(dest, exist_ok=True)
                     continue
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 with zf.open(m) as src, open(dest, "wb") as out:
                     out.write(src.read())
+        if not os.path.isfile(os.path.join(staging, "chrome.exe")):
+            return False
+        _promote_staging(staging)
         os.remove(asset_path)
         return os.path.isfile(ENGINE_BINARY)
     except (OSError, zipfile.BadZipFile):
         return False
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def _promote_staging(staging: str) -> None:
+    """Move every entry from `staging` into ENGINE_DIR, replacing what's there.
+    Overwriting an upgrade's old files in place (rather than emptying ENGINE_DIR
+    first) keeps the window where the engine is incomplete as small as possible;
+    the completion marker, written afterwards, is what actually gates launch."""
+    for name in os.listdir(staging):
+        src = os.path.join(staging, name)
+        dst = os.path.join(ENGINE_DIR, name)
+        if os.path.isdir(dst):
+            shutil.rmtree(dst, ignore_errors=True)
+        elif os.path.exists(dst):
+            os.remove(dst)
+        shutil.move(src, dst)
 
 
 def _install_macos(asset_path: str) -> bool:
     """Mount the dmg, copy Chromium.app into ENGINE_DIR, detach. Requires the
-    macOS `hdiutil` tool, so this path only runs on macOS."""
-    import shutil
+    macOS `hdiutil` tool, so this path only runs on macOS.
+
+    ditto lands the .app in a staging path first, then it's swapped into place —
+    so a launch never sees a partially-copied bundle (the previous engine stays
+    whole until the new one is ready)."""
     import subprocess
     import tempfile
 
     mount = tempfile.mkdtemp(prefix="fpchrome-dmg-")
+    staging = os.path.join(ENGINE_DIR, ".staging-Chromium.app")
+    shutil.rmtree(staging, ignore_errors=True)
     try:
         rc = subprocess.run(
             ["hdiutil", "attach", asset_path, "-nobrowse", "-mountpoint", mount],
@@ -275,18 +346,19 @@ def _install_macos(asset_path: str) -> bool:
         if not app_src:
             return False
         dest = os.path.join(ENGINE_DIR, "Chromium.app")
-        if os.path.exists(dest):
-            shutil.rmtree(dest, ignore_errors=True)
         # ditto preserves the code signature/resource forks/permissions that a
         # plain copytree drops — Gatekeeper kills an unsigned-looking .app on
         # Apple Silicon (same reason the app-updater uses ditto).
-        import subprocess as _sp
-        _sp.run(["ditto", app_src, dest], check=True)
+        subprocess.run(["ditto", app_src, staging], check=True)
+        if os.path.exists(dest):
+            shutil.rmtree(dest, ignore_errors=True)
+        os.replace(staging, dest)
         return os.path.isfile(ENGINE_BINARY)
     except OSError:
         return False
     finally:
         subprocess.run(["hdiutil", "detach", mount], capture_output=True)
+        shutil.rmtree(staging, ignore_errors=True)
         try:
             os.remove(asset_path)
         except OSError:
@@ -298,10 +370,12 @@ def download_engine(
     timeout: int = 600,
     digest: str | None = None,
     progress=None,
+    allow_unverified: bool = False,
 ) -> bool:
     """Download the per-OS engine asset and install it so the launcher finds the
     runnable binary at ENGINE_BINARY. `progress(done, total)` is called as bytes
-    arrive."""
+    arrive. A missing digest fails closed unless allow_unverified is set (the
+    Linux predictable-URL fallback, whose asset carries no digest)."""
     if not url:
         return False
     os.makedirs(ENGINE_DIR, exist_ok=True)
@@ -309,13 +383,34 @@ def download_engine(
     # resumed .part survives restarts
     asset_name = url.rsplit("/", 1)[-1] or "engine.download"
     asset_path = os.path.join(ENGINE_DIR, asset_name)
-    if not _download_to(asset_path, url, timeout, digest, progress):
+    if not _download_to(
+        asset_path, url, timeout, digest, progress, allow_missing=allow_unverified
+    ):
         return False
-    if _platform.IS_WINDOWS:
-        return _install_windows(asset_path)
-    if _platform.IS_MACOS:
-        return _install_macos(asset_path)
-    return _install_linux(asset_path)
+    # Serialise the extract/move + marker: two concurrent installs into the
+    # shared ENGINE_DIR would interleave and could publish a mixed tree.
+    with _install_lock:
+        # Clear any prior completion marker so a failed install can't leave the
+        # engine reading as "complete" — is_installed() must reflect the actual
+        # on-disk state until we mark success below.
+        try:
+            os.remove(MARKER_FILE)
+        except OSError:
+            pass
+        if _platform.IS_WINDOWS:
+            ok = _install_windows(asset_path)
+        elif _platform.IS_MACOS:
+            ok = _install_macos(asset_path)
+        else:
+            ok = _install_linux(asset_path)
+        if ok:
+            # Marker LAST: only a fully-installed engine reads as ready.
+            try:
+                with open(MARKER_FILE, "w", encoding="utf-8") as f:
+                    f.write("ok")
+            except OSError:
+                pass
+        return ok
 
 
 def ensure_engine(
@@ -337,7 +432,18 @@ def ensure_engine(
         if not url:
             last = "could not reach GitHub releases"
             continue
-        if download_engine(url, timeout=timeout, digest=digest, progress=progress):
+        # A missing digest is only expected on the Linux predictable-URL
+        # fallback (the asset lives outside the API that carries the digest).
+        # Everywhere else a missing digest means an unverifiable asset — don't
+        # allow it.
+        allow_unverified = not digest and _platform.IS_LINUX
+        if download_engine(
+            url,
+            timeout=timeout,
+            digest=digest,
+            progress=progress,
+            allow_unverified=allow_unverified,
+        ):
             write_version(tag)
             return True, tag
         last = "download failed"

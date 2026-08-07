@@ -6,12 +6,14 @@ import os
 import pathlib
 import secrets
 
-TOKEN_DIR = os.path.expanduser("~/.persona")
-TOKEN_FILE = os.path.join(TOKEN_DIR, "mcp_token")
+from ..core.config import _under_home
 
 
 def _path() -> str:
-    return os.environ.get("PERSONA_MCP_TOKEN_FILE", TOKEN_FILE)
+    # Honour PERSONA_HOME like every other data file (an explicit
+    # PERSONA_MCP_TOKEN_FILE still wins), so an isolated instance gets its OWN
+    # token instead of reusing ~/.persona's.
+    return _under_home("mcp_token", "PERSONA_MCP_TOKEN_FILE")
 
 
 def get_or_create_token() -> str:

@@ -4,11 +4,18 @@ seen, etc.). Lives under the user's config dir, separate from per-profile data.
 
 import json
 import os
-import pathlib
+import threading
 import time
+
+from ..utils.atomic import atomic_write_json
 
 SETTINGS_DIR = os.path.expanduser("~/.persona")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
+
+# set() is a read-modify-write of the whole file, called from the UI thread and
+# the API/server background thread; serialize it so two concurrent sets can't
+# each read the old file and one clobber the other's key.
+_set_lock = threading.Lock()
 
 _ONBOARDING_KEY = "onboarding_done"
 _SERVER_KEY = "server_enabled"
@@ -75,12 +82,9 @@ def _load() -> dict:
 
 
 def _save(data: dict) -> None:
-    path = _path()
-    pathlib.Path(os.path.dirname(path)).mkdir(parents=True, exist_ok=True)
-    tmp = path + ".new"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-    os.replace(tmp, path)
+    # atomic_write_json gives a unique temp per call + fsync, so concurrent
+    # writers can't interleave into a corrupt settings.json.
+    atomic_write_json(_path(), data)
 
 
 def get(key: str, default=None):
@@ -93,18 +97,19 @@ def set(key: str, value) -> None:
     # other preference (onboarding_done among them, which re-triggered onboarding
     # after an update, #214). Retry through a transient lock first (#226); only
     # skip the write if it stays unreadable, and that self-heals on the next set.
-    data = None
-    for attempt in range(5):
-        try:
-            data = _read(_path())
-            break
-        except _UnreadableSettings:
-            if attempt < 4:
-                time.sleep(0.1)
-    if data is None:
-        return
-    data[key] = value
-    _save(data)
+    with _set_lock:
+        data = None
+        for attempt in range(5):
+            try:
+                data = _read(_path())
+                break
+            except _UnreadableSettings:
+                if attempt < 4:
+                    time.sleep(0.1)
+        if data is None:
+            return
+        data[key] = value
+        _save(data)
 
 
 def is_onboarding_done() -> bool:

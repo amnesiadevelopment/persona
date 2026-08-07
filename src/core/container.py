@@ -1,4 +1,5 @@
 import logging
+import threading
 
 from ..interfaces.protocols import IBrowserLauncher, IProfileManager, IProxyService
 from .config import LOG_DIR, LOG_LEVEL
@@ -10,65 +11,69 @@ class Container:
     def __init__(self) -> None:
         setup_logging(LOG_DIR, getattr(logging, LOG_LEVEL, logging.INFO))
         self._instances: dict = {}
+        # _build_api_server runs on a background thread while the UI thread also
+        # touches the container; without this lock two threads could each pass
+        # the "key not in _instances" check and build a service twice (two
+        # ProfileManagers/stores → divergent in-memory state, double file handles).
+        self._lock = threading.Lock()
+
+    def _get(self, key: str, factory):
+        # double-checked: fast path without the lock once built, lock only to build.
+        if key not in self._instances:
+            with self._lock:
+                if key not in self._instances:
+                    self._instances[key] = factory()
+        return self._instances[key]
 
     @property
     def event_bus(self) -> EventBus:
-        if "eb" not in self._instances:
-            self._instances["eb"] = EventBus()
-        return self._instances["eb"]
+        return self._get("eb", EventBus)
 
     @property
     def profile_manager(self) -> IProfileManager:
-        if "pm" not in self._instances:
+        def build():
             from ..services.profile.manager import ProfileManager
-
-            self._instances["pm"] = ProfileManager()
-        return self._instances["pm"]
+            return ProfileManager()
+        return self._get("pm", build)
 
     @property
     def browser_launcher(self) -> IBrowserLauncher:
-        if "bl" not in self._instances:
+        def build():
             from ..services.browser.launcher import BrowserLauncher
-
-            self._instances["bl"] = BrowserLauncher()
-        return self._instances["bl"]
+            return BrowserLauncher()
+        return self._get("bl", build)
 
     @property
     def proxy_service(self) -> IProxyService:
-        if "ps" not in self._instances:
+        def build():
             from ..services.proxy.service import ProxyService
-
-            self._instances["ps"] = ProxyService()
-        return self._instances["ps"]
+            return ProxyService()
+        return self._get("ps", build)
 
     @property
     def proxy_store(self):
-        if "pstore" not in self._instances:
+        def build():
             from ..services.proxy.store import ProxyStore
-
-            self._instances["pstore"] = ProxyStore()
-        return self._instances["pstore"]
+            return ProxyStore()
+        return self._get("pstore", build)
 
     @property
     def ssh_host_store(self):
-        if "sshstore" not in self._instances:
+        def build():
             from ..services.ssh.store import SSHHostStore
-
-            self._instances["sshstore"] = SSHHostStore()
-        return self._instances["sshstore"]
+            return SSHHostStore()
+        return self._get("sshstore", build)
 
     @property
     def bookmark_store(self):
-        if "bstore" not in self._instances:
+        def build():
             from ..services.bookmark.store import BookmarkStore
-
-            self._instances["bstore"] = BookmarkStore()
-        return self._instances["bstore"]
+            return BookmarkStore()
+        return self._get("bstore", build)
 
     @property
     def cert_store(self):
-        if "cstore" not in self._instances:
+        def build():
             from ..services.cert.store import CertStore
-
-            self._instances["cstore"] = CertStore()
-        return self._instances["cstore"]
+            return CertStore()
+        return self._get("cstore", build)
