@@ -51,6 +51,19 @@ def test_override_script_pins_date_locale_formatting():
     assert "toLocaleString" in js or "DateTimeFormat" in js
 
 
+def test_override_script_pins_number_currency_locale():
+    # Number.prototype.toLocaleString uses the host ICU locale internally (not the
+    # wrapped Intl.NumberFormat), so a currency NAME leaked in the host locale —
+    # creepjs's lang/timezone check read "1 US dollar" (en-US) under a pl-PL
+    # identity. The script must default Number/BigInt toLocaleString to the pin.
+    js = il._language_override_script("pl-PL")
+    assert "Number" in js
+    assert "toLocaleString" in js
+    # balanced braces/parens after the added block
+    assert js.count("{") == js.count("}")
+    assert js.count("(") == js.count(")")
+
+
 def test_override_script_defines_both_getters():
     js = il._language_override_script("fr-FR")
     # defines both navigator getters via the shared def() helper

@@ -16,6 +16,8 @@ pixel reads are left untouched so WebGL maths is unaffected.
 import json
 import pathlib
 
+from .worker_wrap import worker_wrap_js
+
 # One byte is nudged per this many bytes, by +/-1. Sparse enough to be invisible
 # and to keep the image plausible, dense enough that the readback hash differs
 # per profile.
@@ -23,8 +25,17 @@ _STRIDE = 17
 
 _CONTENT_SCRIPT = r"""
 (function () {
-  var SEED = __SEED__;
-  var STRIDE = __STRIDE__;
+  // Patch one realm G (window or a WorkerGlobalScope). Detectors read a WebGL
+  // pixel hash from an OffscreenCanvas inside a worker to catch a page-only
+  // spoof, so the readback noise must run in every realm — carried into workers
+  // below. SEED/STRIDE live INSIDE so applyWebglPatch.toString() carries them
+  // into the worker realm (a var in the outer IIFE would be undefined there).
+  function applyWebglPatch(G) {
+   try {
+    if (!G || G.__personaWebgl) return;
+    G.__personaWebgl = true;
+    var SEED = __SEED__;
+    var STRIDE = __STRIDE__;
 
   function bit(i) {
     var h = SEED ^ (i + 0x9e3779b1);
@@ -37,7 +48,10 @@ _CONTENT_SCRIPT = r"""
   function nativeWrap(orig, replacement) {
     try {
       Object.defineProperty(replacement, 'name', { value: orig.name });
-      replacement.toString = function () { return orig.toString(); };
+      // Mark for the native_ext Function.prototype.toString patch so a detector
+      // calling Function.prototype.toString.call(replacement) reads native. A
+      // plain replacement.toString override is bypassed by that .call form.
+      Object.defineProperty(replacement, '__pnaName', { value: orig.name });
     } catch (e) {}
     return replacement;
   }
@@ -67,8 +81,14 @@ _CONTENT_SCRIPT = r"""
     });
   }
 
-  try { if (window.WebGLRenderingContext) patch(WebGLRenderingContext.prototype); } catch (e) {}
-  try { if (window.WebGL2RenderingContext) patch(WebGL2RenderingContext.prototype); } catch (e) {}
+  try { if (G.WebGLRenderingContext) patch(G.WebGLRenderingContext.prototype); } catch (e) {}
+  try { if (G.WebGL2RenderingContext) patch(G.WebGL2RenderingContext.prototype); } catch (e) {}
+   } catch (e) {}
+  }
+
+  var SELF = (typeof self !== "undefined") ? self : this;
+  applyWebglPatch(SELF);
+__WORKER_WRAP__
 })();
 """
 
@@ -97,7 +117,9 @@ def build_webgl_extension(seed: int, base_dir: str) -> str:
     ext_dir.mkdir(parents=True, exist_ok=True)
     script = _CONTENT_SCRIPT.replace(
         "__SEED__", str(int(seed) & 0xFFFFFFFF)
-    ).replace("__STRIDE__", str(_STRIDE))
+    ).replace("__STRIDE__", str(_STRIDE)).replace(
+        "__WORKER_WRAP__", worker_wrap_js("applyWebglPatch")
+    )
     (ext_dir / "webgl.js").write_text(script, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(
         json.dumps(_MANIFEST, indent=2), encoding="utf-8"

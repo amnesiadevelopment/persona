@@ -15,6 +15,8 @@ groupId hashes.
 import json
 import pathlib
 
+from .worker_wrap import worker_wrap_js
+
 # Common real desktop resolutions (StatCounter-ish top set). Picking from a
 # real-world distribution keeps each profile plausible while differing between
 # profiles. availHeight subtracts a typical Windows taskbar (40px); availWidth
@@ -183,6 +185,74 @@ _CONTENT_SCRIPT = r"""
       );
     }
   } catch (e) {}
+
+  // --- navigator.hardwareConcurrency / deviceMemory ---
+  // fingerprint-chromium leaves these at the host's real values on a desktop
+  // profile (only the mobile presets set them), so a VM host leaked cores: 18 /
+  // ram: 8 under a Windows identity — an obvious tell (creepjs "device"
+  // rejected). Pin a plausible consumer-desktop (cores, GB-RAM) pair per seed.
+  var HM = [4, 8];
+  try {
+    var HCMEM = [[4, 8], [8, 8], [8, 16], [12, 16], [16, 16], [6, 8]];
+    HM = pick(HCMEM, 0xc0de5);
+    def(navigator, 'hardwareConcurrency', HM[0]);
+    // deviceMemory is a coarse power-of-two-ish bucket the browser caps at 8.
+    def(navigator, 'deviceMemory', Math.min(HM[1], 8));
+  } catch (e) {}
+
+  // Carry screen geometry + hardwareConcurrency/deviceMemory into same-realm
+  // about:blank / srcdoc child frames. A content script doesn't inject there, so
+  // creepjs reads a pristine screen (real 1920x1080) and real cores/ram from a
+  // fresh iframe and flags the page/iframe mismatch. Re-apply the SAME values on
+  // access.
+  try {
+    if (typeof HTMLIFrameElement !== "undefined") {
+      var proto = HTMLIFrameElement.prototype;
+      ["contentWindow", "contentDocument"].forEach(function (prop) {
+        var d0 = Object.getOwnPropertyDescriptor(proto, prop);
+        if (!d0 || !d0.get) return;
+        Object.defineProperty(proto, prop, {
+          configurable: true, enumerable: d0.enumerable,
+          get: function () {
+            var r = d0.get.call(this);
+            try {
+              var w = prop === "contentWindow" ? r : (r && r.defaultView);
+              if (w && w.screen && !w.__personaDevice) {
+                w.__personaDevice = true;
+                def(w.screen, 'width', W); def(w.screen, 'height', H);
+                def(w.screen, 'availWidth', W); def(w.screen, 'availHeight', H - TASKBAR);
+                def(w.screen, 'colorDepth', 24); def(w.screen, 'pixelDepth', 24);
+                def(w, 'devicePixelRatio', 1);
+                def(w.navigator, 'hardwareConcurrency', HM[0]);
+                def(w.navigator, 'deviceMemory', Math.min(HM[1], 8));
+              }
+            } catch (e) {}
+            return r;
+          },
+        });
+      });
+    }
+  } catch (e) {}
+
+  // Carry hardwareConcurrency/deviceMemory into Web/Shared Workers, where
+  // navigator.hardwareConcurrency otherwise reports the real host cores (a
+  // worker/page mismatch is a tell — a VM host leaked 32 in a worker while the
+  // page reported 12). SEED lives inside so applyHwPatch.toString() re-derives
+  // the SAME pair in the worker realm.
+  function applyHwPatch(G) {
+   try {
+    if (!G || !G.navigator || G.__personaHw) return;
+    G.__personaHw = true;
+    var SEED = __SEED__;
+    function h(x){var v=SEED^(x|0);v=Math.imul(v^(v>>>16),0x85ebca6b);v=Math.imul(v^(v>>>13),0xc2b2ae35);return (v^(v>>>16))>>>0;}
+    var P=[[4,8],[8,8],[8,16],[12,16],[16,16],[6,8]]; var m=P[h(0xc0de5)%P.length];
+    var def=function(o,k,val){try{var g=function(){return val;};try{Object.defineProperty(g,'__pnaName',{value:'get '+k});}catch(e){}Object.defineProperty(o,k,{get:g,configurable:true,enumerable:true});}catch(e){}};
+    def(G.navigator,'hardwareConcurrency',m[0]);
+    def(G.navigator,'deviceMemory',Math.min(m[1],8));
+   } catch (e) {}
+  }
+  var SELF = (typeof self !== "undefined") ? self : this;
+__HW_WORKER_WRAP__
 })();
 """
 
@@ -216,7 +286,9 @@ def build_device_extension(
     forced = f"[{resolution[0]}, {resolution[1]}]" if resolution else "null"
     script = _CONTENT_SCRIPT.replace(
         "__SEED__", str(int(seed) & 0xFFFFFFFF)
-    ).replace("__FORCED_RES__", forced)
+    ).replace("__FORCED_RES__", forced).replace(
+        "__HW_WORKER_WRAP__", worker_wrap_js("applyHwPatch")
+    )
     (ext_dir / "device.js").write_text(script, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(
         json.dumps(_MANIFEST, indent=2), encoding="utf-8"

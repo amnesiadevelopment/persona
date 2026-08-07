@@ -933,6 +933,52 @@ def _language_override_script(locale: str) -> str:
         "Date.prototype.toString=function(){return reZone(oTS.call(this),this);};"
         "Date.prototype.toTimeString=function(){"
         "return reZone(oTTS.call(this),this);};"
+        # Number/BigInt.toLocaleString use the host ICU locale internally (not the
+        # wrapped Intl.NumberFormat), so a currency name leaked in the host locale
+        # — creepjs's lang/timezone check read "1 US dollar" (en-US) under a pl-PL
+        # identity and flagged the mismatch. Default them to L too.
+        "[Number,typeof BigInt!=='undefined'?BigInt:null].forEach(function(C){"
+        "if(!C||!C.prototype||!C.prototype.toLocaleString)return;"
+        "const o=C.prototype.toLocaleString;"
+        "C.prototype.toLocaleString=function(l,opt){"
+        "return o.call(this,l===undefined?L:l,opt);};});"
+        # Web Workers get a fresh Intl at the host locale (add_init_script only
+        # runs in the page, not workers) — creepjs reads currency/list from a blob
+        # worker and saw "1 US dollar"/en. Carry a compact locale patch into
+        # blob:/data: workers by reading the original source, prepending the patch,
+        # and re-blobbing under the same scheme (the site's CSP already allows
+        # blob: workers). http(s) workers get an importScripts shim.
+        "try{"
+        "const WP='(function(L){try{"
+        "var wrap=function(n){var C=Intl[n];if(!C)return;var W=function(a,o){"
+        "return Reflect.construct(C,[a||L,o],W);};W.prototype=C.prototype;"
+        "if(C.supportedLocalesOf)W.supportedLocalesOf=C.supportedLocalesOf.bind(C);"
+        "Intl[n]=W;};"
+        "[\"NumberFormat\",\"DateTimeFormat\",\"ListFormat\",\"RelativeTimeFormat\","
+        "\"DisplayNames\",\"PluralRules\",\"Collator\"].forEach(wrap);"
+        "[Number,typeof BigInt!==\"undefined\"?BigInt:null].forEach(function(C){"
+        "if(!C||!C.prototype||!C.prototype.toLocaleString)return;"
+        "var o=C.prototype.toLocaleString;C.prototype.toLocaleString=function(l,opt){"
+        "return o.call(this,l===undefined?L:l,opt);};});"
+        "}catch(e){}})('+JSON.stringify(L)+');';"
+        "var wrapW=function(Orig){if(typeof Orig!=='function')return Orig;"
+        "var W=function(url,opt){try{"
+        "if(opt&&opt.type==='module')return Reflect.construct(Orig,[url,opt],W);"
+        "var s=String(url);"
+        "if(/^https?:/i.test(s)){var body=WP+'\\ntry{importScripts('+JSON.stringify(s)+');}catch(e){}';"
+        "var u=URL.createObjectURL(new Blob([body],{type:'application/javascript'}));"
+        "return Reflect.construct(Orig,[u,opt],W);}"
+        "if(/^blob:|^data:/i.test(s)){try{var x=new XMLHttpRequest();x.open('GET',s,false);x.send();"
+        "if(x.status===0||(x.status>=200&&x.status<300)){"
+        "var u2=URL.createObjectURL(new Blob([WP+'\\n'+x.responseText],{type:'application/javascript'}));"
+        "return Reflect.construct(Orig,[u2,opt],W);}}catch(e){}"
+        "return Reflect.construct(Orig,[url,opt],W);}"
+        "return Reflect.construct(Orig,[url,opt],W);"
+        "}catch(e){return Reflect.construct(Orig,[url,opt],W);}};"
+        "W.prototype=Orig.prototype;return W;};"
+        "if(self.Worker)self.Worker=wrapW(self.Worker);"
+        "if(self.SharedWorker)self.SharedWorker=wrapW(self.SharedWorker);"
+        "}catch(e){}"
         "}catch(e){}"
         "})();"
     )

@@ -44,6 +44,44 @@ def test_script_spoofs_screen_and_mediadevices(tmp_path):
     assert "nativeWrap" in js
 
 
+def test_spoofs_hardware_concurrency_and_device_memory(tmp_path):
+    # fingerprint-chromium leaves hardwareConcurrency/deviceMemory at the host's
+    # real values on a desktop profile (18 cores / 8 GB on a VM host), an obvious
+    # tell under a consumer-Windows identity. The script must pin a plausible pair.
+    js = pathlib.Path(
+        build_device_extension(1, str(tmp_path / "dev")) + "/device.js"
+    ).read_text()
+    assert "hardwareConcurrency" in js
+    assert "deviceMemory" in js
+
+
+def test_carries_hardware_into_workers(tmp_path):
+    # navigator.hardwareConcurrency in a Web Worker otherwise reports the real
+    # host cores (a VM host leaked 32 in a worker while the page reported 12) — a
+    # worker/page mismatch. The spoof must be carried into workers.
+    js = pathlib.Path(
+        build_device_extension(1, str(tmp_path / "dev")) + "/device.js"
+    ).read_text()
+    assert "applyHwPatch" in js
+    assert "SELF.Worker" in js
+    # SEED lives inside applyHwPatch so .toString() re-derives the same pair
+    body = js.split("function applyHwPatch(G)", 1)[1].split("var SELF", 1)[0]
+    assert "var SEED =" in body
+
+
+def test_carries_screen_and_hardware_into_iframes(tmp_path):
+    # creepjs reads a pristine screen (real 1920x1080) and real cores/ram from a
+    # fresh about:blank iframe where the content script didn't inject; the
+    # page/iframe mismatch is the tell. The spoof must be carried into same-realm
+    # child frames on access.
+    js = pathlib.Path(
+        build_device_extension(1, str(tmp_path / "dev")) + "/device.js"
+    ).read_text()
+    assert "contentWindow" in js
+    assert "contentDocument" in js
+    assert "HTMLIFrameElement" in js
+
+
 def test_script_pins_device_pixel_ratio(tmp_path):
     # A spoofed screen with the host's real DPR leaking through makes scanners
     # report screen.width*dpr (e.g. 3840*1.5=5760) — a resolution no monitor

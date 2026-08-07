@@ -36,18 +36,20 @@ def test_js_embeds_locale(tmp_path):
     assert "toTimeString" in js
 
 
-def test_worker_wrapper_skips_blob_and_data_urls(tmp_path):
-    # A site that builds its own Worker from a blob:/data: URL runs it under its
-    # own CSP (script-src). Re-wrapping it into OUR fresh blob: URL trips the
-    # site's CSP and the worker never starts — pixelscan's scan hung forever on
-    # exactly this. The wrapper must pass blob:/data: worker URLs through
-    # untouched and only inject into plain http(s) worker scripts.
+def test_worker_wrapper_patches_blob_workers_via_reblob(tmp_path):
+    # A site builds its Intl-probe Worker from a blob: URL; if we DON'T carry the
+    # locale patch into it, currency/ListFormat render the host locale in the
+    # worker (creepjs reads exactly that → lang/timezone lie). The wrapper reads
+    # the original blob:/data: source, prepends the patch, and re-blobs under the
+    # SAME scheme (the site's CSP already allows blob: workers, so it stays
+    # allowed — re-wrapping an http worker into a fresh blob is what tripped a
+    # strict CSP and hung pixelscan).
     d = build_locale_extension("pl-PL", str(tmp_path / "ext"))
     js = (pathlib.Path(d) / "locale.js").read_text()
-    # the wrapper only re-blobs plain http(s) worker scripts; anything else
-    # (blob:/data:) constructs the original worker untouched
-    assert "isPlain" in js
-    assert "https?:" in js
+    assert "https?:" in js                 # http(s) importScripts shim path
+    assert "blob:|^data:" in js            # blob:/data: re-blob path
+    assert "XMLHttpRequest" in js          # sync-read the original worker source
+    assert "PATCH" in js
 
 
 def test_js_is_iife_no_globals(tmp_path):

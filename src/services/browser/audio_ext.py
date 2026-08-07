@@ -15,6 +15,8 @@ to read as hardware variance, large enough to survive a coarse sum-and-hash.
 import json
 import pathlib
 
+from .worker_wrap import worker_wrap_js
+
 # Magnitude of the per-sample relative perturbation. Larger than the engine's
 # ~2e-7 sample-rate effect so it dominates the hash, small enough to stay a
 # plausible hardware-level audio fingerprint rather than audible distortion.
@@ -22,8 +24,18 @@ _NOISE_REL = 1e-5
 
 _CONTENT_SCRIPT = r"""
 (function () {
-  var SEED = __SEED__;
-  var REL = __REL__;
+  // Patch one realm G (window or a WorkerGlobalScope). Audio fingerprinting is
+  // commonly run in a worker via OfflineAudioContext, so the noise must apply in
+  // every realm — carried into workers below. SEED/REL live INSIDE so
+  // applyAudioPatch.toString() carries them into the worker realm (a var in the
+  // outer IIFE would be undefined there).
+  function applyAudioPatch(G) {
+   try {
+    if (!G || G.__personaAudio) return;
+    G.__personaAudio = true;
+    var SEED = __SEED__;
+    var REL = __REL__;
+    var AudioBuffer = G.AudioBuffer, AnalyserNode = G.AnalyserNode;
 
   // Deterministic per-(seed, index) sign in {-1, +1}; stable across page loads
   // and sessions, distinct per profile.
@@ -38,7 +50,10 @@ _CONTENT_SCRIPT = r"""
   function nativeWrap(orig, replacement) {
     try {
       Object.defineProperty(replacement, 'name', { value: orig.name });
-      replacement.toString = function () { return orig.toString(); };
+      // Mark for the native_ext Function.prototype.toString patch so a detector
+      // calling Function.prototype.toString.call(replacement) reads native. A
+      // plain replacement.toString override is bypassed by that .call form.
+      Object.defineProperty(replacement, '__pnaName', { value: orig.name });
     } catch (e) {}
     return replacement;
   }
@@ -83,6 +98,12 @@ _CONTENT_SCRIPT = r"""
       return r;
     });
   } catch (e) {}
+   } catch (e) {}
+  }
+
+  var SELF = (typeof self !== "undefined") ? self : this;
+  applyAudioPatch(SELF);
+__WORKER_WRAP__
 })();
 """
 
@@ -111,7 +132,7 @@ def build_audio_extension(seed: int, base_dir: str) -> str:
     ext_dir.mkdir(parents=True, exist_ok=True)
     script = _CONTENT_SCRIPT.replace("__SEED__", str(int(seed) & 0xFFFFFFFF)).replace(
         "__REL__", repr(_NOISE_REL)
-    )
+    ).replace("__WORKER_WRAP__", worker_wrap_js("applyAudioPatch"))
     (ext_dir / "audio.js").write_text(script, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(
         json.dumps(_MANIFEST, indent=2), encoding="utf-8"

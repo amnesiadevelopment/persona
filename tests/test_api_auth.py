@@ -11,13 +11,22 @@ from src.api.mcp_token import get_or_create_token
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    # Point the token + data dirs at tmp so the test is isolated and the token
-    # is deterministic for this run.
+    # Point every runtime path at tmp so the test is isolated from the real
+    # ~/.persona (else the ProfileManager loads the user's live profiles and a
+    # "profile already exists" 409 masks the real assertion). config computes the
+    # paths at import time and each store binds its own copy by value, so patch
+    # both config and every module that captured a path constant.
     import src.api.mcp_token as tok
     import src.core.config as cfg
+    import src.services.profile.manager as pm
 
+    data_dir = str(tmp_path / "data")
+    profiles_file = str(tmp_path / "profiles.json")
     monkeypatch.setattr(tok, "_path", lambda: str(tmp_path / "mcp_token"))
-    monkeypatch.setattr(cfg, "DATA_DIR", str(tmp_path / "data"), raising=False)
+    monkeypatch.setattr(cfg, "DATA_DIR", data_dir, raising=False)
+    monkeypatch.setattr(cfg, "PROFILES_FILE", profiles_file, raising=False)
+    monkeypatch.setattr(pm, "DATA_DIR", data_dir, raising=False)
+    monkeypatch.setattr(pm, "PROFILES_FILE", profiles_file, raising=False)
 
     from src.core.container import Container
 

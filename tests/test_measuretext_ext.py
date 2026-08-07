@@ -28,8 +28,11 @@ def test_script_hooks_measuretext_and_uses_dom_width(tmp_path):
     assert "getBoundingClientRect" in js
     # substitutes the repaired metrics through a Proxy over the native object
     assert "Proxy" in js
-    # masks the override so it doesn't read as patched
-    assert "[native code]" in js
+    # masks the override so it doesn't read as patched: marked with __pnaName so
+    # the native_ext toString patch renders it native even under
+    # Function.prototype.toString.call(fn) (an own .toString override is bypassed).
+    assert "__pnaName" in js
+    assert "measureText.toString = function" not in js
 
 
 def test_detects_noise_regardless_of_sign(tmp_path):

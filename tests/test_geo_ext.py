@@ -29,6 +29,15 @@ def test_overrides_getcurrentposition(tmp_path):
     assert "watchPosition" in js
 
 
+def test_overrides_are_native_masked(tmp_path):
+    # A detector calling Function.prototype.toString.call(geo.getCurrentPosition)
+    # would read the wrapper source; each override must carry __pnaName so the
+    # native_ext toString patch renders it native.
+    ext = build_geo_extension(1.0, 2.0, str(tmp_path / "geo"))
+    js = (pathlib.Path(ext) / "geo.js").read_text()
+    assert "__pnaName" in js
+
+
 def test_idempotent_path(tmp_path):
     base = str(tmp_path / "geo")
     assert build_geo_extension(1.0, 2.0, base) == build_geo_extension(1.0, 2.0, base)

@@ -40,9 +40,25 @@ def test_different_seeds_differ(tmp_path):
 
 
 def test_native_tostring_masking(tmp_path):
+    # Wrappers must mark themselves with __pnaName so the shared native_ext
+    # Function.prototype.toString patch renders them native even under
+    # Function.prototype.toString.call(fn). An own `.toString` override is
+    # bypassed by that .call form and must NOT be used.
     d = build_webgl_extension(1, str(tmp_path / "ext"))
     js = (pathlib.Path(d) / "webgl.js").read_text()
-    assert "toString" in js
+    assert "__pnaName" in js
+    assert "replacement.toString = function" not in js
+
+
+def test_carries_readpixels_noise_into_workers(tmp_path):
+    # Detectors read a WebGL pixel hash from an OffscreenCanvas inside a Worker;
+    # the readback noise must run there too, or page/worker hashes disagree.
+    js = (pathlib.Path(build_webgl_extension(1, str(tmp_path / "ext"))) / "webgl.js").read_text()
+    assert "applyWebglPatch" in js
+    assert "SELF.Worker" in js
+    body = js.split("function applyWebglPatch(G)", 1)[1].split("var SELF", 1)[0]
+    assert "var SEED =" in body
+    assert "var STRIDE =" in body
 
 
 def test_only_byte_buffers_touched(tmp_path):

@@ -21,6 +21,26 @@ const _applyLocalePatch = function (LOCALE, G) {
   try {
     if (!G || G.__personaLocale) return;
     G.__personaLocale = true;
+    // Make our wrapped built-ins read as native in THIS realm (page or worker):
+    // a masking detector (creepjs) calls Function.prototype.toString on Intl in a
+    // Web Worker and, seeing our wrapper source, marks the Timezone/Intl
+    // component "rejected". native_ext only patches the page realm, so re-apply
+    // the same __pnaName-aware toString here (idempotent per realm).
+    try {
+      const FP = G.Function && G.Function.prototype;
+      if (FP && !G.__pnaToStr) {
+        G.__pnaToStr = true;
+        const _ots = FP.toString;
+        const _pts = function () {
+          try { const n = this && this.__pnaName;
+            if (typeof n === "string") return "function " + n + "() { [native code] }";
+          } catch (e) {}
+          return _ots.apply(this, arguments);
+        };
+        try { Object.defineProperty(_pts, "__pnaName", { value: "toString" }); } catch (e) {}
+        FP.toString = _pts;
+      }
+    } catch (e) {}
     const Intl = G.Intl, Dp = G.Date && G.Date.prototype;
     if (!Intl) return;
     const _resolved = function (orig) {
@@ -98,19 +118,36 @@ try {
     if (typeof Orig !== "function") return Orig;
     const W = function (url, options) {
       try {
-        // A worker the site built from its own blob:/data: URL runs under that
-        // site's CSP (script-src). Re-wrapping it into OUR fresh blob: URL trips
-        // a strict CSP and the worker silently never starts (pixelscan's scan
-        // hung on exactly this). Only inject into plain http(s) worker scripts,
-        // where an importScripts shim is CSP-safe; pass everything else through.
-        const s = String(url);
-        const isPlain = /^https?:/i.test(s);
-        if (!isPlain || (options && options.type === "module")) {
+        if (options && options.type === "module") {
           return Reflect.construct(Orig, [url, options], W);
         }
-        const body = PATCH + "\ntry{importScripts(" + JSON.stringify(s) + ");}catch(e){}";
-        const u = URL.createObjectURL(new Blob([body], { type: "application/javascript" }));
-        return Reflect.construct(Orig, [u, options], W);
+        const s = String(url);
+        if (/^https?:/i.test(s)) {
+          // Plain http(s) worker: an importScripts shim carries the patch.
+          const body = PATCH + "\ntry{importScripts(" + JSON.stringify(s) + ");}catch(e){}";
+          const u = URL.createObjectURL(new Blob([body], { type: "application/javascript" }));
+          return Reflect.construct(Orig, [u, options], W);
+        }
+        if (/^blob:|^data:/i.test(s)) {
+          // The site built this worker from its own blob:/data: URL under its own
+          // CSP. Read the original source, PREPEND the patch, and re-blob with the
+          // SAME scheme — the site's CSP already allows blob:/data: workers, so
+          // this stays allowed (unlike wrapping an http worker into a fresh blob,
+          // which a strict script-src rejected and hung pixelscan). Falls back to
+          // the original worker if the source can't be read synchronously.
+          try {
+            const x = new XMLHttpRequest();
+            x.open("GET", s, false);   // sync; blob:/data: are local, no network
+            x.send();
+            if (x.status === 0 || (x.status >= 200 && x.status < 300)) {
+              const patched = PATCH + "\n" + x.responseText;
+              const u = URL.createObjectURL(new Blob([patched], { type: "application/javascript" }));
+              return Reflect.construct(Orig, [u, options], W);
+            }
+          } catch (e) {}
+          return Reflect.construct(Orig, [url, options], W);
+        }
+        return Reflect.construct(Orig, [url, options], W);
       } catch (e) { return Reflect.construct(Orig, [url, options], W); }
     };
     W.prototype = Orig.prototype;

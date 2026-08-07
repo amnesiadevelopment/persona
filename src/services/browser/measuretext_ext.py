@@ -97,9 +97,10 @@ CONTENT_SCRIPT = r"""
     }
     try {
       Object.defineProperty(measureText, 'name', { value: 'measureText' });
-      measureText.toString = function () {
-        return 'function measureText() { [native code] }';
-      };
+      // Mark for the native_ext Function.prototype.toString patch so a detector
+      // calling Function.prototype.toString.call(measureText) reads native. A
+      // plain measureText.toString override is bypassed by that .call form.
+      Object.defineProperty(measureText, '__pnaName', { value: 'measureText' });
     } catch (e) {}
     try { target.measureText = measureText; } catch (e) {}
   }

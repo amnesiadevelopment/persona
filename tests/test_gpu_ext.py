@@ -15,6 +15,31 @@ def test_builds_files(tmp_path):
     assert (p / "manifest.json").is_file()
 
 
+def test_native_tostring_masking(tmp_path):
+    # getExtension/getParameter wrappers must mark themselves with __pnaName so
+    # the native_ext Function.prototype.toString patch renders them native even
+    # under Function.prototype.toString.call(fn); an own `.toString` override is
+    # bypassed by that .call form and must NOT be used.
+    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g")), "gpu.js")
+    assert "__pnaName" in js
+    assert "replacement.toString = function" not in js
+
+
+def test_carries_gpu_spoof_into_workers(tmp_path):
+    # A detector reads the WebGL vendor/renderer from an OffscreenCanvas inside a
+    # Web Worker to catch a page-only spoof — the real GPU (a different IHV than
+    # the page reports) leaks there. The spoof must be carried into workers.
+    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g")), "gpu.js")
+    assert "applyGpuPatch" in js
+    assert "SELF.Worker" in js
+    assert "SharedWorker" in js
+    # SEED/OS must live INSIDE applyGpuPatch so .toString() carries them into the
+    # worker; a value referenced from the outer IIFE is undefined in the worker.
+    body = js.split("function applyGpuPatch(G)", 1)[1].split("var SELF", 1)[0]
+    assert "var SEED =" in body
+    assert 'var OS =' in body
+
+
 def test_manifest_mv3_main_world(tmp_path):
     d = build_gpu_extension(1, "windows", str(tmp_path / "g"))
     m = json.loads(_read(d, "manifest.json"))

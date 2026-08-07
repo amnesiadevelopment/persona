@@ -23,16 +23,24 @@ CONTENT_SCRIPT = """\
       timestamp: Date.now(),
     }};
   }}
+  // Mark each override for the native_ext Function.prototype.toString patch so a
+  // detector calling Function.prototype.toString.call(fn) reads native code, not
+  // the wrapper source.
+  function mark(fn, name) {{
+    try {{ Object.defineProperty(fn, "__pnaName", {{ value: name }}); }} catch (e) {{}}
+    try {{ Object.defineProperty(fn, "name", {{ value: name }}); }} catch (e) {{}}
+    return fn;
+  }}
   const geo = navigator.geolocation;
   if (geo) {{
-    geo.getCurrentPosition = function (success) {{
+    geo.getCurrentPosition = mark(function (success) {{
       if (typeof success === "function") success(pos());
-    }};
-    geo.watchPosition = function (success) {{
+    }}, "getCurrentPosition");
+    geo.watchPosition = mark(function (success) {{
       if (typeof success === "function") success(pos());
       return 0;
-    }};
-    geo.clearWatch = function () {{}};
+    }}, "watchPosition");
+    geo.clearWatch = mark(function () {{}}, "clearWatch");
   }}
 }})();
 """

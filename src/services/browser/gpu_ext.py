@@ -25,10 +25,22 @@ CloakBrowser issue reports): Windows = ANGLE-over-D3D11 with the literal
 import json
 import pathlib
 
+from .worker_wrap import worker_wrap_js
+
 _CONTENT_SCRIPT = r"""
 (function () {
-  var SEED = __SEED__;
-  var OS = "__OS__";
+  // Patch one realm G (window or a WorkerGlobalScope). Detectors read the WebGL
+  // vendor/renderer from an OffscreenCanvas inside a Web Worker to catch a
+  // page-only spoof — the real GPU (a different IHV than the page reports) leaks
+  // there. So the same override runs in every realm, carried into workers below.
+  // SEED/OS live INSIDE this function so applyGpuPatch.toString() carries them
+  // into the worker realm (a var in the outer IIFE would be undefined there).
+  function applyGpuPatch(G) {
+   try {
+    if (!G || G.__personaGpu) return;
+    G.__personaGpu = true;
+    var SEED = __SEED__;
+    var OS = "__OS__";
 
   function h32(x) {
     var h = SEED ^ (x | 0);
@@ -41,7 +53,10 @@ _CONTENT_SCRIPT = r"""
   function nativeWrap(orig, replacement) {
     try {
       Object.defineProperty(replacement, 'name', { value: orig.name });
-      replacement.toString = function () { return orig.toString(); };
+      // Mark for the native_ext Function.prototype.toString patch so a detector
+      // calling Function.prototype.toString.call(replacement) reads native. A
+      // plain replacement.toString override is bypassed by that .call form.
+      Object.defineProperty(replacement, '__pnaName', { value: orig.name });
     } catch (e) {}
     return replacement;
   }
@@ -139,8 +154,14 @@ _CONTENT_SCRIPT = r"""
     });
   }
 
-  try { installOn(window.WebGLRenderingContext, GL1); } catch (e) {}
-  try { installOn(window.WebGL2RenderingContext, GL2); } catch (e) {}
+  try { installOn(G.WebGLRenderingContext, GL1); } catch (e) {}
+  try { installOn(G.WebGL2RenderingContext, GL2); } catch (e) {}
+   } catch (e) {}
+  }
+
+  var SELF = (typeof self !== "undefined") ? self : this;
+  applyGpuPatch(SELF);
+__WORKER_WRAP__
 })();
 """
 
@@ -177,6 +198,7 @@ def build_gpu_extension(seed: int, os_type: str, base_dir: str) -> str:
         _CONTENT_SCRIPT
         .replace("__SEED__", str(int(seed) & 0xFFFFFFFF))
         .replace("__OS__", os_norm)
+        .replace("__WORKER_WRAP__", worker_wrap_js("applyGpuPatch"))
     )
     (ext_dir / "gpu.js").write_text(script, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(
