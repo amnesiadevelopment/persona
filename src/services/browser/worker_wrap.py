@@ -57,10 +57,17 @@ def realm_bootstrap_js(apply_fn_name: str) -> str:
         // Carry the whole registry into this realm's Web/Shared Workers. The
         // payload defines __pnaBoots from the stored leaf sources, then re-runs
         // the same bootstrap so the worker (and anything it spawns) is covered.
+        // The payload is rebuilt AT new-Worker time (not when the wrapper is
+        // installed): modules register their leaves across separate content
+        // scripts, so a payload snapshotted at install would carry only the
+        // leaves registered before the FIRST module ran __pnaBoot — every later
+        // module's spoof (e.g. hardwareConcurrency) would be missing in workers.
         try {
-          var SRC = ((typeof self !== "undefined" ? self : this).__pnaBootSrc || []).join(",");
-          var __BOOT = "(function(){try{self.__pnaBoots=[" + SRC + "];}catch(e){}" +
-            "(" + __pnaBoot.toString() + ")((typeof self!=='undefined'?self:this));})();";
+          var __buildBoot = function () {
+            var SRC = ((typeof self !== "undefined" ? self : this).__pnaBootSrc || []).join(",");
+            return "(function(){try{self.__pnaBoots=[" + SRC + "];}catch(e){}" +
+              "(" + __pnaBoot.toString() + ")((typeof self!=='undefined'?self:this));})();";
+          };
           var __wrapWorker = function (Orig) {
             if (typeof Orig !== "function") return Orig;
             var W = function (url, options) {
@@ -68,6 +75,7 @@ def realm_bootstrap_js(apply_fn_name: str) -> str:
                 if (options && options.type === "module") {
                   return Reflect.construct(Orig, [url, options], W);
                 }
+                var __BOOT = __buildBoot();
                 var s = String(url);
                 if (/^https?:/i.test(s)) {
                   var body = __BOOT + "\ntry{importScripts(" + JSON.stringify(s) + ");}catch(e){}";
