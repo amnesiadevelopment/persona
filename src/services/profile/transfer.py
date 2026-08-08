@@ -113,21 +113,20 @@ def import_from_zip(
             if not valid:
                 return False, f"Invalid profile name in archive: {msg}"
 
-            profile = Profile(
-                name=name,
-                proxy=profile_data.get("proxy"),
-                os_type=profile_data.get("os_type", "windows"),
-                device_type=profile_data.get("device_type", "desktop"),
-                engine=profile_data.get("engine", "chromium"),
-                resolution=profile_data.get("resolution", "auto"),
-                search_engine=profile_data.get("search_engine", "duckduckgo"),
-                bookmark_pool=profile_data.get("bookmark_pool"),
-                bookmarks=profile_data.get("bookmarks"),
-                certificate=profile_data.get("certificate"),
-                tags=profile_data.get("tags", []),
-                notes=profile_data.get("notes", ""),
-                ai_control=profile_data.get("ai_control", False),
-            )
+            # Build from the intersection of the archive and Profile's own field
+            # set (except name, validated above). Enumerating fields by hand kept
+            # silently dropping fields on import — cookie_import_status was the
+            # latest, a repeat of the same 12-field round-trip bug (audit5 LOW).
+            # Deriving from dataclasses.fields means a new field round-trips
+            # automatically; unknown keys in the archive are ignored.
+            import dataclasses
+
+            field_names = {f.name for f in dataclasses.fields(Profile)}
+            known = {
+                k: v for k, v in profile_data.items()
+                if k in field_names and k != "name"
+            }
+            profile = Profile(name=name, **known)
 
             data_files = [f for f in zipf.namelist() if f.startswith("data/")]
 

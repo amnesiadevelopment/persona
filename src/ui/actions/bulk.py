@@ -1,3 +1,4 @@
+import threading
 from collections.abc import Callable
 
 import flet as ft
@@ -16,16 +17,34 @@ def bulk_delete_profiles(
     log: Callable[[str], None],
     refresh: Callable[[], None],
     on_done: Callable[[], None],
+    ui: Callable[[Callable[[], None]], None] | None = None,
 ) -> None:
     if not names:
         return
 
     def do_bulk_delete() -> None:
-        for name in names:
-            pm.delete_profile(name)
-            log(get_string("deleted_profile", name=name))
-        on_done()
-        refresh()
+        # Delete on a daemon thread, NOT inline on the confirm dialog's UI-thread
+        # callback: each delete_profile blocks on terminate (proc.wait up to ~3s
+        # per running profile), so a bulk delete of several running profiles used
+        # to freeze the whole app for N×2-3s — the user thought it crashed and
+        # force-quit mid-delete (audit5 #6). The dialog closes immediately; the
+        # deletions run behind it and the list refreshes as each completes.
+        def work() -> None:
+            for name in names:
+                pm.delete_profile(name)
+                # log/refresh must land on the UI thread when we're off it.
+                _post(lambda n=name: log(get_string("deleted_profile", name=n)))
+                _post(refresh)
+            _post(on_done)
+            _post(refresh)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _post(fn: Callable[[], None]) -> None:
+        if ui is not None:
+            ui(fn)
+        else:
+            fn()
 
     count = len(names)
     open_confirm_dialog(

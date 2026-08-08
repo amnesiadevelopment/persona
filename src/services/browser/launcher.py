@@ -121,7 +121,12 @@ def is_engine_noise(msg: str) -> bool:
 
 class BrowserLauncher:
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        # A Condition (not a bare Lock) so stop_profile can WAIT for a
+        # spawn-in-flight to leave _starting: the spawn thread notifies when it
+        # registers or bails, and the stopper blocks until then. Without this a
+        # delete/wipe would rmtree the data dir while spawn_browser is still
+        # os.makedirs+seeding into it (audit5 #1).
+        self._lock = threading.Condition()
         self._active_sessions: dict[str, subprocess.Popen] = {}
         self._stop_notifiers: dict[str, threading.Event] = {}
         # Profiles whose spawn is in flight but not yet in _active_sessions.
@@ -129,6 +134,11 @@ class BrowserLauncher:
         # the same profile — fired while the slow spawn_browser() runs — is
         # rejected instead of starting a second browser on the same profile dir.
         self._starting: set[str] = set()
+        # Profiles whose in-flight spawn has been asked to abort (a stop/delete
+        # arrived mid-spawn). The spawn thread checks this after spawn_browser
+        # returns: if set, it terminates the just-spawned process and never
+        # registers a session, so the caller can safely remove the data dir.
+        self._aborting: set[str] = set()
         atexit.register(self.shutdown_all)
 
     def shutdown_all(self) -> None:
@@ -153,8 +163,10 @@ class BrowserLauncher:
             if profile.name in self._active_sessions or profile.name in self._starting:
                 return
             # Reserve the slot BEFORE releasing the lock so a concurrent launch
-            # of this profile can't slip past while spawn_browser() runs.
+            # of this profile can't slip past while spawn_browser() runs. Clear
+            # any stale abort flag from a prior aborted launch of this name.
             self._starting.add(profile.name)
+            self._aborting.discard(profile.name)
 
         log_callback(f"Starting {profile.name} ({profile.os_type})...")
         logger.info(f"Starting browser for profile: {profile.name}")
@@ -201,9 +213,26 @@ class BrowserLauncher:
         try:
             proc = spawn_browser(profile)
             with self._lock:
-                self._active_sessions[profile.name] = proc
-                self._stop_notifiers[profile.name] = stop_event
-                self._starting.discard(profile.name)
+                aborted = profile.name in self._aborting
+                if aborted:
+                    # A stop/delete arrived while we were spawning. Don't register
+                    # a session; terminate the process we just started and let the
+                    # waiting stopper proceed (it's what will rmtree the dir).
+                    self._starting.discard(profile.name)
+                    self._aborting.discard(profile.name)
+                    self._lock.notify_all()
+                else:
+                    self._active_sessions[profile.name] = proc
+                    self._stop_notifiers[profile.name] = stop_event
+                    self._starting.discard(profile.name)
+                    self._lock.notify_all()
+
+            if aborted:
+                terminate(proc, profile.name, timeout=1)
+                logger.info("Aborted in-flight spawn for profile: %s", profile.name)
+                if on_stop:
+                    on_stop()
+                return
 
             threading.Thread(
                 target=self._monitor_process,
@@ -219,6 +248,8 @@ class BrowserLauncher:
         except Exception as e:
             with self._lock:
                 self._starting.discard(profile.name)
+                self._aborting.discard(profile.name)
+                self._lock.notify_all()
             logger.exception(f"Error starting browser for {profile.name}: {e}")
             log_callback(f"Error starting process: {e}")
             if on_stop:
@@ -226,6 +257,24 @@ class BrowserLauncher:
 
     def stop_profile(self, profile_name: str, timeout: int = 2) -> bool:
         with self._lock:
+            if profile_name in self._starting:
+                # Spawn in flight: mark it to abort and WAIT until start_thread
+                # resolves it (registers-then-we-stop, or bails). Only then is
+                # nothing writing the data dir, so a caller (delete/wipe) may
+                # rmtree it safely. Returns True: we DID act on a live launch.
+                self._aborting.add(profile_name)
+                while profile_name in self._starting:
+                    self._lock.wait(timeout=10)
+                # If the spawn registered a session before seeing the abort flag,
+                # tear it down here.
+                proc = self._active_sessions.pop(profile_name, None)
+                notifier = self._stop_notifiers.pop(profile_name, None)
+                if notifier:
+                    notifier.set()
+                if proc is not None:
+                    terminate(proc, profile_name, timeout)
+                logger.info("Stopped in-flight browser for profile: %s", profile_name)
+                return True
             if profile_name not in self._active_sessions:
                 return False
             proc = self._active_sessions.pop(profile_name)

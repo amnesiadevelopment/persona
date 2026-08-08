@@ -7,10 +7,8 @@ import os
 import threading
 import time
 
+from ..core import config
 from ..utils.atomic import atomic_write_json
-
-SETTINGS_DIR = os.path.expanduser("~/.persona")
-SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
 
 # set() is a read-modify-write of the whole file, called from the UI thread and
 # the API/server background thread; serialize it so two concurrent sets can't
@@ -24,7 +22,14 @@ _LAST_VERSION_KEY = "last_seen_version"
 
 
 def _path() -> str:
-    return os.environ.get("PERSONA_SETTINGS_FILE", SETTINGS_FILE)
+    # Derive from PERSONA_HOME like every other data file (profiles, proxies,
+    # certs, bookmarks, mcp token). settings.json was the lone exception that
+    # hardcoded ~/.persona, so a portable/isolated PERSONA_HOME layout split
+    # onboarding_done/last_seen_version off from the rest of the data — the
+    # instance re-ran onboarding and re-showed the changelog every launch, and
+    # two isolated instances clobbered each other (audit5 #3). An explicit
+    # PERSONA_SETTINGS_FILE still wins.
+    return config._under_home("settings.json", "PERSONA_SETTINGS_FILE")
 
 
 def _quarantine(path: str) -> None:

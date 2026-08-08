@@ -511,7 +511,56 @@ def test_startup_notice_first_install_shows_onboarding(monkeypatch):
     app._show_startup_notice()
     assert calls["onboarding"] == 1
     assert calls["changelog"] is None
-    assert calls["recorded"] == "2.5.2"  # version recorded regardless
+    # audit5 #2: the version must NOT be recorded at onboarding-open — that would
+    # mark first-run "seen" before the user finishes, and an early quit would
+    # never re-show onboarding (nor bootstrap the engine). on_finish() records it.
+    assert calls["recorded"] is None
+
+
+def test_onboarding_on_finish_records_version(monkeypatch):
+    # audit5 #2: the version is recorded when onboarding COMPLETES (on_finish),
+    # not at dialog-open. Capture the on_finish the app hands to Onboarding, run
+    # it, and assert it both marks the flag and records the version.
+    from src.ui import app as app_mod
+
+    app = make_app(FakePage())
+    app._onboarding_open = True
+    app._engine_busy = False
+    app._pending_update = None
+    for m in ("_check_engine_async", "_ensure_engine2_async",
+              "_refresh_engine_text", "_safe_update"):
+        setattr(app, m, lambda *a, **k: None)
+
+    monkeypatch.setattr(app_mod.engine, "is_installed", lambda: True)
+
+    recorded = {"version": None, "done": False}
+    monkeypatch.setattr(
+        app_mod.app_settings, "mark_onboarding_done",
+        lambda: recorded.__setitem__("done", True),
+    )
+    monkeypatch.setattr(
+        app_mod.app_settings, "set_last_seen_version",
+        lambda v: recorded.__setitem__("version", v),
+    )
+    monkeypatch.setattr(app_mod.app_update, "APP_VERSION", "3.1.4")
+
+    captured = {}
+
+    class FakeOnboarding:
+        def __init__(self, page, on_finish, **kw):
+            captured["on_finish"] = on_finish
+
+        def open(self):
+            pass
+
+    monkeypatch.setattr(app_mod, "Onboarding", FakeOnboarding)
+
+    app._show_onboarding()
+    # simulate the user finishing the welcome
+    captured["on_finish"]()
+
+    assert recorded["done"] is True
+    assert recorded["version"] == "3.1.4"
 
 
 def test_startup_notice_after_update_shows_changelog(monkeypatch):
@@ -537,12 +586,28 @@ def test_startup_notice_same_version_shows_nothing(monkeypatch):
     assert calls["recorded"] == "2.5.2"
 
 
-def test_startup_notice_update_to_version_without_notes_shows_nothing(monkeypatch):
-    # An update whose version has no changelog entry must not pop an empty
-    # dialog — record the version and move on.
+def test_startup_notice_update_with_no_notes_at_or_below_shows_nothing(monkeypatch):
+    # An update to a version with nothing recorded AT OR BELOW it must not pop an
+    # empty dialog — record the version and move on. (audit5 #5 changed notes_for
+    # to fall back to nearest-older, so the empty case is now a version below the
+    # whole changelog, not merely one without an exact entry.)
     app, calls = _make_notice_app(
-        monkeypatch, onboarded=True, last_version="2.5.1", current="9.9.9"
+        monkeypatch, onboarded=True, last_version="0.0.0", current="0.0.1"
     )
     app._show_startup_notice()
     assert calls["changelog"] is None
-    assert calls["recorded"] == "9.9.9"
+    assert calls["recorded"] == "0.0.1"
+
+
+def test_startup_notice_patch_version_shows_nearest_older_notes(monkeypatch):
+    # audit5 #5: a version with no exact changelog entry (a patch release) now
+    # shows the nearest-older notes instead of silently skipping the dialog.
+    app, calls = _make_notice_app(
+        monkeypatch, onboarded=True, last_version="2.8.0", current="2.99.0"
+    )
+    app._show_startup_notice()
+    assert calls["changelog"] is not None
+    version, notes = calls["changelog"]
+    assert version == "2.99.0"
+    assert len(notes) > 0
+    assert calls["recorded"] == "2.99.0"

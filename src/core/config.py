@@ -15,7 +15,37 @@ def _home() -> str:
     return os.path.expanduser(os.getenv("PERSONA_HOME", "~/.persona"))
 
 
-PERSONA_HOME = _home()
+def _ensure_home(path: str) -> str:
+    """Create the runtime root, falling back to ~/.persona if the configured
+    PERSONA_HOME can't be made (unwritable, a UNC path that's offline, or a
+    parent that's a file). An unguarded makedirs here aborted the import of
+    core.config — loaded extremely early — with a bare traceback and no window
+    (audit5 #7). Uses the stdlib logger directly to avoid importing core.logging
+    at this depth. Returns the directory actually in use, so every path below is
+    derived from the home that really exists."""
+    import logging
+
+    try:
+        os.makedirs(path, exist_ok=True)
+        return path
+    except OSError:
+        logging.getLogger("config").error(
+            "PERSONA_HOME %r could not be created; falling back to ~/.persona",
+            path,
+        )
+        fallback = os.path.expanduser("~/.persona")
+        try:
+            os.makedirs(fallback, exist_ok=True)
+        except OSError:
+            logging.getLogger("config").error(
+                "fallback home %r also unavailable", fallback
+            )
+        return fallback
+
+
+# Resolve AND create the home up front so every _under_home path below is built
+# from the directory that actually exists (a fallback must apply to them too).
+PERSONA_HOME = _ensure_home(_home())
 
 
 def _under_home(name: str, env: str) -> str:
@@ -53,11 +83,24 @@ LOG_LEVEL = os.getenv("PERSONA_LOG_LEVEL", "INFO")
 PROXY_CHECK_TIMEOUT = _int_env("PERSONA_PROXY_TIMEOUT", 10)
 
 API_HOST = os.getenv("PERSONA_API_HOST", "127.0.0.1")
-API_PORT = _int_env("PERSONA_API_PORT", 8000)
 
-os.makedirs(PERSONA_HOME, exist_ok=True)
+
+def _port_env(env: str, default: int) -> int:
+    """A TCP port from an env override, clamped to the valid 1..65535 range.
+    validation.py enforces this range for proxy ports; the API port parser did
+    not, so PERSONA_API_PORT=0/-1/99999 sailed through to bind() and failed with
+    an opaque error (audit5 LOW). Out-of-range or non-numeric → the default."""
+    val = _int_env(env, default)
+    if not 1 <= val <= 65535:
+        return default
+    return val
+
+
+API_PORT = _port_env("PERSONA_API_PORT", 8000)
+
 # The runtime root holds proxy/ssh creds and profile data; keep it owner-only on
 # POSIX (chmod is a near-no-op on Windows, harmless). Never widen an existing dir.
+# (The directory itself was created up top by _ensure_home.)
 try:
     os.chmod(PERSONA_HOME, 0o700)
 except OSError:

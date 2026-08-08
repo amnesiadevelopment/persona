@@ -207,6 +207,7 @@ class App:
             import_cookies_file=self._import_cookies_file,
             export_cookies_file=self._export_cookies_file,
             open_add_proxy=self._goto_add_proxy,
+            ui_fn=self._ui,
         )
 
     def run(self) -> None:
@@ -824,11 +825,7 @@ class App:
 
     def _save_notes_inline(self, name: str, notes: str) -> None:
         """Save a profile's notes edited inline on the card (no dialog)."""
-        p = self.pm.profiles.get(name)
-        if p is None or getattr(p, "notes", "") == notes:
-            return
-        p.notes = notes
-        self.pm.save_profiles()
+        self.pm.set_notes(name, notes)
 
     def _engine2_version_text(self) -> str:
         from ..services.browser.invisible_launch import (
@@ -1091,6 +1088,10 @@ class App:
             else:
                 if not self.bstore.update_pool(existing.name, new_name, members):
                     return "Pool name already exists"
+                # Propagate a rename to every profile referencing the old pool
+                # name, so the reference stays valid (audit5 #4).
+                if new_name != existing.name:
+                    self.pm.rename_bookmark_pool(existing.name, new_name)
             self._render_active_page()
             self._safe_update()
             return None
@@ -1114,6 +1115,10 @@ class App:
         assert page is not None
 
         def do_delete() -> None:
+            # Drop the pool from every profile that referenced it FIRST — a
+            # deleted pool that lingered as a name made the profile launch with
+            # an empty toolbar (audit5 #4) — then remove it from the store.
+            self.pm.clear_bookmark_pool(name)
             self.bstore.delete_pool(name)
             self._render_active_page()
             self._safe_update()
@@ -1909,9 +1914,15 @@ class App:
                 if page is not None:
                     open_changelog_dialog(page, current, notes)
         # Record what this session runs so the next start can tell first-run
-        # from update from unchanged. Onboarding still marks its own flag; this
-        # only tracks the version.
-        app_settings.set_last_seen_version(current)
+        # from update from unchanged. NOT for ONBOARDING: _show_onboarding opens
+        # a non-blocking dialog and returns here immediately, so recording the
+        # version now would mark first-run "seen" before the user finishes (or
+        # even sees) it. Quit mid-welcome and decide_startup_notice would never
+        # return ONBOARDING again — and the engine bootstrap, gated behind the
+        # still-False onboarding flag, would be dead too. on_finish() records the
+        # version when onboarding actually completes.
+        if notice is not Notice.ONBOARDING:
+            app_settings.set_last_seen_version(current)
 
     def _show_onboarding(self) -> None:
         page = self.page
@@ -1957,6 +1968,10 @@ class App:
         def on_finish() -> None:
             self._onboarding_open = False
             app_settings.mark_onboarding_done()
+            # Record the version only now that onboarding actually completed, not
+            # at dialog-open — so an early quit re-triggers the welcome (#214,
+            # audit5 #2) instead of silently skipping it forever.
+            app_settings.set_last_seen_version(app_update.APP_VERSION)
             # if the operator skipped the download, fetch in the background
             if not engine.is_installed() and not self._engine_busy:
                 self._check_engine_async()
@@ -2057,31 +2072,37 @@ class App:
                 # synchronously (#234) so the row is interactive again.
                 self._engine2_busy = False
                 return
-            self._engine2_busy = True
-            self._engine2_status = "downloading..."
-            self._engine2_start_t = time.monotonic()
-            self._engine2_throttle = pf.ProgressThrottle()
-            self._engine2_pstate = pf.ProgressState()
-            self._engine2_bar.value = None
-            self._engine2_detail.value = "connecting..."
-            self._log("Firefox engine not found — downloading...")
-            self._refresh_sidebar()
+            # Everything after claiming the flag runs under try/finally so a rare
+            # exception (a refresh_sidebar failure, an unexpected raise) can't
+            # leave _engine2_busy stuck True and wedge the Firefox-engine row for
+            # the whole session (audit5 LOW — the other engine flows use finally).
             ok = False
-            # the binary is ~80MB over Tor; retry a few times so a dropped
-            # circuit doesn't leave the (required) engine uninstalled
-            for attempt in range(3):
-                try:
-                    ok = inv.ensure_invisible_installed(
-                        progress=self._engine2_progress_cb, log=self._log
-                    )
-                except Exception as e:
-                    self._log(f"Firefox engine download error: {e}")
-                    ok = False
-                if ok:
-                    break
-                if attempt < 2:
-                    self._log("Firefox engine download interrupted — retrying...")
-            self._engine2_busy = False
+            try:
+                self._engine2_busy = True
+                self._engine2_status = "downloading..."
+                self._engine2_start_t = time.monotonic()
+                self._engine2_throttle = pf.ProgressThrottle()
+                self._engine2_pstate = pf.ProgressState()
+                self._engine2_bar.value = None
+                self._engine2_detail.value = "connecting..."
+                self._log("Firefox engine not found — downloading...")
+                self._refresh_sidebar()
+                # the binary is ~80MB over Tor; retry a few times so a dropped
+                # circuit doesn't leave the (required) engine uninstalled
+                for attempt in range(3):
+                    try:
+                        ok = inv.ensure_invisible_installed(
+                            progress=self._engine2_progress_cb, log=self._log
+                        )
+                    except Exception as e:
+                        self._log(f"Firefox engine download error: {e}")
+                        ok = False
+                    if ok:
+                        break
+                    if attempt < 2:
+                        self._log("Firefox engine download interrupted — retrying...")
+            finally:
+                self._engine2_busy = False
             self._engine2_detail.value = ""
             if ok:
                 # Show the installed version straight away — clearing the status

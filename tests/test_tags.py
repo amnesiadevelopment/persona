@@ -32,6 +32,17 @@ def test_all_tags_empty():
     assert all_tags([_p("a")]) == []
 
 
+def test_all_tags_dedups_case_insensitively():
+    # audit5 LOW: "Work" and "work" must count as ONE tag — the chip cloud
+    # counted them separately (case-sensitive) while filtering matched both
+    # (case-insensitive), so a click filtered profiles the chip didn't count.
+    profiles = [_p("a", ["Work"]), _p("b", ["work"]), _p("c", ["EU"])]
+    tags = all_tags(profiles)
+    # one canonical entry per case-insensitive tag
+    assert len(tags) == 2
+    assert {t.lower() for t in tags} == {"work", "eu"}
+
+
 # --- update_profile carries tags ---
 
 
@@ -59,3 +70,14 @@ def test_update_profile_tags_none_keeps_existing(mgr):
     mgr.add_profile("p1", "", "windows", tags=["keep"])
     mgr.update_profile("p1", "p1", "", "windows")
     assert mgr.profiles["p1"].tags == ["keep"]
+
+
+def test_remove_tag_is_case_insensitive(mgr):
+    # audit5 LOW: removing a tag via a chip must strip every case variant, or a
+    # "Work"/"work" mix leaves the other behind after the ✕.
+    mgr.add_profile("a", "", "windows", tags=["Work", "eu"])
+    mgr.add_profile("b", "", "windows", tags=["work"])
+    changed = mgr.remove_tag("work")
+    assert changed == 2
+    assert mgr.profiles["a"].tags == ["eu"]
+    assert mgr.profiles["b"].tags == []

@@ -41,10 +41,16 @@ def build_tags_page(
     on_assign: Callable[[list[str], str], None],
     on_remove_tag: Callable[[str], None],
 ) -> ft.Container:
+    # Count tags case-insensitively so "Work"/"work" are one chip — the filter
+    # and remove both treat tags case-insensitively (audit5 LOW). Keep the first
+    # spelling seen as the canonical display form.
     counts: dict[str, int] = {}
+    canon: dict[str, str] = {}
     for p in profiles:
         for tag in p.tags:
-            counts[tag] = counts.get(tag, 0) + 1
+            key = tag.lower()
+            canon.setdefault(key, tag)
+            counts[key] = counts.get(key, 0) + 1
 
     checked: set[str] = set()
 
@@ -74,27 +80,44 @@ def build_tags_page(
         "[ assign to selected ]", height=44, style=_grey_style, disabled=True
     )
 
+    def _refresh_assign_state() -> None:
+        n = len(checked)
+        # Enable ONLY when there's a non-empty tag AND at least one profile
+        # picked. Enabled with an empty tag was a silent no-op that also cleared
+        # the selection (audit5 LOW).
+        ready = bool((tag_field.value or "").strip()) and n > 0
+        assign_btn.text = (
+            f"[ assign to {n} selected ]" if n else "[ assign to selected ]"
+        )
+        assign_btn.style = ACCENT_STYLE if ready else _grey_style
+        assign_btn.disabled = not ready
+        assign_btn.update()
+
     def on_toggle(name: str, value: bool) -> None:
         if value:
             checked.add(name)
         else:
             checked.discard(name)
-        n = len(checked)
-        assign_btn.text = (
-            f"[ assign to {n} selected ]" if n else "[ assign to selected ]"
-        )
-        assign_btn.style = ACCENT_STYLE if n else _grey_style
-        assign_btn.disabled = not checked
-        assign_btn.update()
+        _refresh_assign_state()
 
-    assign_btn.on_click = lambda _: on_assign(sorted(checked), tag_field.value or "")
+    tag_field.on_change = lambda _: _refresh_assign_state()
+
+    def _do_assign(_: object) -> None:
+        tag = (tag_field.value or "").strip()
+        if not tag or not checked:
+            return
+        on_assign(sorted(checked), tag)
+
+    assign_btn.on_click = _do_assign
 
     # Existing tags as a chip cloud; ✕ on a chip removes the tag everywhere.
     if counts:
         tag_cloud: ft.Control = ft.Row(
             spacing=8,
             wrap=True,
-            controls=[_tag_chip(t, counts[t], on_remove_tag) for t in sorted(counts)],
+            controls=[
+                _tag_chip(canon[k], counts[k], on_remove_tag) for k in sorted(counts)
+            ],
         )
     else:
         tag_cloud = _empty("no tags yet — assign one below")

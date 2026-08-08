@@ -5,6 +5,30 @@ not a git log. When cutting a release, add the new version's highlights here.
 """
 
 CHANGELOG: dict[str, list[str]] = {
+    "2.9.12": [
+        "Deleting profiles is smoother and safer: a bulk delete of open profiles "
+        "no longer freezes the window, and deleting or wiping a profile that's "
+        "still opening can no longer corrupt its data.",
+        "The welcome screen now reliably appears again if you close persona before "
+        "finishing first-run setup, instead of being skipped forever.",
+        "Deleting or renaming a bookmark pool now updates the profiles that used "
+        "it, so they no longer open with an empty bookmarks toolbar.",
+        "The what's-new notes now show after every update, and tags are matched "
+        "consistently regardless of capitalisation.",
+    ],
+    "2.9.11": [
+        "Stronger anti-detection: the spoofed GPU, screen and hardware now match "
+        "across every part of a page — nested frames and background workers no "
+        "longer leak your real graphics card or CPU. Voices and the GPU also match "
+        "the profile's operating system (including macOS and Android profiles).",
+        "A profile with an assigned proxy that can't be reached now refuses to "
+        "open rather than quietly falling back to a direct, unproxied connection — "
+        "so it can never expose your real IP by accident.",
+        "Firefox profiles on a proxy no longer leak your local network address "
+        "through WebRTC.",
+        "Several safety hardening fixes across updates, certificates and the "
+        "built-in control server.",
+    ],
     "2.8.1": [
         "Firefox certificates now work on Windows too (previously Linux-only). "
         "mTLS client certificates work on Windows and Linux with either engine; "
@@ -183,5 +207,23 @@ CHANGELOG: dict[str, list[str]] = {
 
 
 def notes_for(version: str) -> list[str]:
-    """The what's-new bullets for a version, or [] if none are recorded."""
-    return list(CHANGELOG.get(version, []))
+    """The what's-new bullets for a version.
+
+    Exact match first; otherwise fall back to the newest recorded version at or
+    below `version`, so a patch release with no entry of its own still shows the
+    latest notes instead of an empty dialog (the whole #215 feature was silently
+    dead for the 2.9.x line because the lookup was exact-key only — audit5 #5).
+    Returns [] only when nothing is recorded at or below `version`.
+    """
+    from ..services.engine.updater import parse_version
+
+    if version in CHANGELOG:
+        return list(CHANGELOG[version])
+    target = parse_version(version)
+    if not target:
+        return []
+    candidates = [v for v in CHANGELOG if parse_version(v) and parse_version(v) <= target]
+    if not candidates:
+        return []
+    nearest = max(candidates, key=parse_version)
+    return list(CHANGELOG[nearest])

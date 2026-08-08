@@ -20,11 +20,15 @@ def filter_profiles(profiles: list[Profile], query: str) -> list[Profile]:
 
 
 def all_tags(profiles: list[Profile]) -> list[str]:
-    """All distinct tags across profiles, sorted."""
-    tags: set[str] = set()
+    """All distinct tags across profiles, sorted, de-duplicated case-
+    insensitively so "Work" and "work" are one tag — the chip cloud counted
+    them separately while filtering matched both (audit5 LOW). Keeps the first
+    spelling seen (in sorted order) as the canonical display form."""
+    canon: dict[str, str] = {}
     for p in profiles:
-        tags.update(p.tags)
-    return sorted(tags)
+        for tag in p.tags:
+            canon.setdefault(tag.lower(), tag)
+    return [canon[k] for k in sorted(canon)]
 
 
 def filter_by_tag(profiles: list[Profile], tag: str) -> list[Profile]:

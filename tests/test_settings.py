@@ -88,6 +88,29 @@ def test_set_never_loses_existing_keys_when_read_transiently_fails(
     assert settings.is_onboarding_done() is True
 
 
+def test_settings_path_follows_persona_home(tmp_path, monkeypatch):
+    # audit5 #3: settings.json must live under PERSONA_HOME like every other data
+    # file, not a hardcoded ~/.persona — otherwise a portable/isolated layout
+    # splits onboarding/changelog state off from the rest of the data.
+    import os
+
+    from src.core import config
+
+    monkeypatch.delenv("PERSONA_SETTINGS_FILE", raising=False)
+    home = str(tmp_path / "portable-home")
+    monkeypatch.setattr(config, "PERSONA_HOME", home)
+    assert settings._path() == os.path.join(home, "settings.json")
+
+
+def test_explicit_settings_file_env_still_wins(tmp_path, monkeypatch):
+    from src.core import config
+
+    monkeypatch.setattr(config, "PERSONA_HOME", str(tmp_path / "home"))
+    explicit = str(tmp_path / "explicit.json")
+    monkeypatch.setenv("PERSONA_SETTINGS_FILE", explicit)
+    assert settings._path() == explicit
+
+
 def test_last_seen_version_absent_by_default():
     assert settings.last_seen_version() == ""
 

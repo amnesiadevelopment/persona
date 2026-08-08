@@ -18,6 +18,7 @@ def _full_profile():
         bookmark_pool="work",
         bookmarks=["gmail", "sheets"],
         certificate="admin-cert",
+        cookie_import_status="creep.json · 11 cookies",
         tags=["ops", "eu"],
         notes="primary ops account",
         ai_control=True,

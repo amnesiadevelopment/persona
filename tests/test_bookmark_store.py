@@ -168,6 +168,29 @@ def test_resolve_skips_deleted_names(tmp_path):
     assert [bm.name for bm in result] == ["a"]
 
 
+def test_resolve_unknown_pool_falls_back_to_defaults(tmp_path):
+    # audit5 #4: a profile pointing at a pool that was deleted (a stale, truthy
+    # but unknown pool_name) must NOT open with an empty toolbar. With no
+    # individual picks it falls through to the stock defaults, exactly like a
+    # None pool — the old `not pool_name` guard returned [] instead.
+    from src.services.bookmark.store import DEFAULT_BOOKMARKS
+
+    s = _store(tmp_path)
+    names = {b.name for b in s.resolve_selection("deleted-pool", None)}
+    assert names == {n for n in DEFAULT_BOOKMARKS if n in s.bookmarks}
+    assert names, "expected the stock defaults, not an empty toolbar"
+
+
+def test_resolve_unknown_pool_honors_explicit_empty(tmp_path):
+    # But a profile that was deliberately configured to an empty set
+    # (bookmark_names == []) stays empty even with a stale pool — the user's
+    # explicit choice wins; defaults only fill a never-configured profile.
+    s = _store(tmp_path)
+    s.add("a", "https://a.com")
+    result = s.resolve_selection("deleted-pool", [])
+    assert result == []
+
+
 def test_one_malformed_bookmark_is_skipped_not_fatal(tmp_path):
     import json
     path = tmp_path / "bookmarks.json"

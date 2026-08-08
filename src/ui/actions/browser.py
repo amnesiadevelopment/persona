@@ -18,6 +18,14 @@ def launch_or_stop(
     if not profile:
         return
 
+    # Mid-transition guard: stop_profile pops the session BEFORE its blocking
+    # terminate, so a second click during teardown sees is_running() False and
+    # would take the LAUNCH branch — relaunching a profile that's still tearing
+    # down. While a profile is loading (stopping or starting), ignore the click
+    # (audit5 LOW).
+    if state.is_loading(name):
+        return
+
     if bl.is_running(name):
         log(get_string("stopping_profile", name=name))
         state.set_loading(name, True)

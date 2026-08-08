@@ -291,12 +291,17 @@ class ProfileManager:
         return changed
 
     def remove_tag(self, tag: str) -> int:
-        """Remove a tag from every profile that has it. Returns count changed."""
+        """Remove a tag from every profile that has it, case-insensitively, so a
+        "Work"/"work" mix doesn't leave a variant behind after a chip ✕ — the
+        chip cloud and the tag filter both treat tags case-insensitively (audit5
+        LOW). Returns count changed."""
+        t = tag.lower()
         with self._lock:
             changed = 0
             for p in self.profiles.values():
-                if tag in p.tags:
-                    p.tags = [x for x in p.tags if x != tag]
+                kept = [x for x in p.tags if x.lower() != t]
+                if len(kept) != len(p.tags):
+                    p.tags = kept
                     changed += 1
             if changed:
                 self.save_profiles()
@@ -316,12 +321,54 @@ class ProfileManager:
                 self.save_profiles()
         return changed
 
+    def clear_bookmark_pool(self, pool_name: str) -> int:
+        """Drop a bookmark-pool reference from every profile that uses it, so a
+        deleted pool leaves no dangling name behind (which made the profile launch
+        with an empty toolbar). Mirror of clear_proxy. Returns count changed."""
+        with self._lock:
+            changed = 0
+            for p in self.profiles.values():
+                if p.bookmark_pool == pool_name:
+                    p.bookmark_pool = None
+                    changed += 1
+            if changed:
+                self.save_profiles()
+        return changed
+
+    def rename_bookmark_pool(self, old_name: str, new_name: str) -> int:
+        """Propagate a pool rename to every profile referencing the old name, so
+        the reference stays valid. Returns count changed."""
+        if not new_name or new_name == old_name:
+            return 0
+        with self._lock:
+            changed = 0
+            for p in self.profiles.values():
+                if p.bookmark_pool == old_name:
+                    p.bookmark_pool = new_name
+                    changed += 1
+            if changed:
+                self.save_profiles()
+        return changed
+
     def set_ai_control(self, name: str, enabled: bool) -> bool:
         with self._lock:
             p = self.profiles.get(name)
             if p is None:
                 return False
             p.ai_control = enabled
+            self.save_profiles()
+        return True
+
+    def set_notes(self, name: str, notes: str) -> bool:
+        """Save a profile's notes under the manager lock. The inline-edit path
+        used to mutate the Profile and save_profiles() directly off the lock —
+        the one write escaping the lock discipline, which could lose notes or
+        clobber a concurrent rename (audit5 LOW). Returns True when changed."""
+        with self._lock:
+            p = self.profiles.get(name)
+            if p is None or p.notes == notes:
+                return False
+            p.notes = notes
             self.save_profiles()
         return True
 
@@ -379,6 +426,11 @@ class ProfileManager:
     ) -> tuple[bool, str]:
         if name not in self.profiles:
             return False, "Profile not found"
+        # Stop a live browser before copying its data dir — the Cookies SQLite
+        # (+ -wal/-journal) is copied live otherwise, giving a torn/corrupt copy
+        # in the export. delete/update already stop first (audit5 LOW).
+        if include_data:
+            self._stop_if_running(name)
         return export_to_zip(
             self.profiles[name],
             self._data_path(name),

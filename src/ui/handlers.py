@@ -35,8 +35,12 @@ class AppHandlers:
         import_cookies_file=None,
         export_cookies_file=None,
         open_add_proxy: Callable[[], None] | None = None,
+        ui_fn: Callable[[Callable[[], None]], None] | None = None,
     ) -> None:
         self._pm = pm
+        # Marshal a callback onto the UI thread (App._ui); used to drive refresh
+        # from a background worker (e.g. the async bulk delete).
+        self._ui = ui_fn or (lambda fn: fn())
         self._bl = bl
         self._ps = ps
         self._state = state
@@ -154,6 +158,7 @@ class AppHandlers:
                 self._log,
                 self._refresh,
                 on_done=self._state.clear_selection,
+                ui=self._ui,
             )
 
     def on_bulk_launch(self) -> None:

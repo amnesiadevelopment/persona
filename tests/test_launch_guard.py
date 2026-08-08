@@ -76,6 +76,31 @@ def test_firefox_launch_blocked_when_engine_missing(monkeypatch):
     assert any("engine" in m.lower() for m in logs)
 
 
+def test_click_while_loading_is_noop(monkeypatch):
+    # audit5 LOW: stop_profile pops the session before its blocking terminate, so
+    # a second click during teardown sees is_running() False and would relaunch.
+    # While a profile is loading (stopping or starting), the click is ignored.
+    monkeypatch.setattr(browser_actions.engine, "is_installed", lambda: True)
+    bl = _BL()
+
+    class _Stopping(_BL):
+        def is_running(self, name):
+            # even if it briefly reads running, the loading guard fires first
+            return True
+
+    state = AppState()
+    state.set_loading("p1", True)
+    stopped = {"n": 0}
+    bl2 = _Stopping()
+    bl2.stop_profile = lambda name: stopped.__setitem__("n", stopped["n"] + 1)
+
+    browser_actions.launch_or_stop(
+        "p1", _PM(_Profile("p1")), bl2, state, lambda _: None
+    )
+    assert bl2.started is False  # did not launch
+    assert stopped["n"] == 0     # did not stop either — it's mid-transition
+
+
 def test_mobile_firefox_profile_does_not_require_firefox_engine(monkeypatch):
     # A legacy mobile profile stored engine="firefox" actually launches chromium
     # (effective_engine downgrades it), so the guard must NOT demand the Firefox

@@ -226,16 +226,25 @@ class BookmarkStore:
         de-duplicated and skipping names that no longer exist.
         """
         ordered: list[str] = []
-        if pool_name and pool_name in self.pools:
+        pool_known = bool(pool_name) and pool_name in self.pools
+        if pool_known:
             ordered.extend(self.pools[pool_name].bookmark_names)
+        elif pool_name:
+            # A truthy but unknown pool (the pool was deleted while a profile
+            # still referenced it) is treated as no pool — otherwise it fell
+            # through to [] and the profile opened with an EMPTY toolbar instead
+            # of the defaults, unlike how an unknown individual bookmark name is
+            # gracefully skipped (audit5 #4).
+            logger.info("Profile references unknown bookmark pool %r; using defaults", pool_name)
         if bookmark_names:
             ordered.extend(bookmark_names)
-        # An unconfigured profile (no pool, and bookmark_names is None because it
-        # was never chosen) gets the stock default bookmarks so it doesn't open
-        # with an empty bar. A profile that was configured to an empty set
-        # (bookmark_names == []) is honored as empty — the user cleared them on
-        # purpose and they must not come back. Any explicit list is used as-is.
-        if not ordered and not pool_name and bookmark_names is None:
+        # An unconfigured profile (no usable pool, and bookmark_names is None
+        # because it was never chosen) gets the stock default bookmarks so it
+        # doesn't open with an empty bar. A profile that was configured to an
+        # empty set (bookmark_names == []) is honored as empty — the user cleared
+        # them on purpose and they must not come back. Any explicit list is used
+        # as-is.
+        if not ordered and not pool_known and bookmark_names is None:
             ordered = [n for n in DEFAULT_BOOKMARKS if n in self.bookmarks]
         seen: set[str] = set()
         result: list[Bookmark] = []
