@@ -34,8 +34,8 @@ def test_script_spoofs_screen_and_mediadevices(tmp_path):
     ).read_text()
     # screen geometry
     assert "availHeight" in js and "colorDepth" in js
-    # taskbar inset so availHeight != height (a VM tell when equal)
-    assert "TASKBAR" in js
+    # a work-area inset so availHeight != height (a VM tell when equal)
+    assert "INSET" in js
     # mediaDevices set with a camera (no-camera reads as VM/server)
     assert "enumerateDevices" in js
     assert "videoinput" in js
@@ -80,6 +80,54 @@ def test_carries_screen_and_hardware_into_iframes(tmp_path):
     assert "contentWindow" in js
     assert "contentDocument" in js
     assert "HTMLIFrameElement" in js
+
+
+def test_screen_dpr_on_shared_registry_reaches_grandchild(tmp_path):
+    # The 4090-class leak, for resolution: screen.*/DPR spoofed only on page +
+    # one-level iframe (a non-recursive getter) let a grandchild iframe (iframe
+    # inside about:blank iframe) report the REAL monitor. screen/DPR must ride
+    # the shared recursive registry (applyScreenPatch) like gpu/webgl/audio, so
+    # every nested realm gets it — not device_ext's own non-recursive getter.
+    js = pathlib.Path(
+        build_device_extension(1, str(tmp_path / "dev")) + "/device.js"
+    ).read_text()
+    assert "applyScreenPatch" in js
+    assert "__pnaBoots.push(applyScreenPatch)" in js
+    # the module's own non-recursive iframe getter for screen must be gone —
+    # __personaDevice was its one-level marker; the registry recurses instead.
+    assert "__personaDevice" not in js
+    # SEED lives inside applyScreenPatch so .toString() re-derives W/H per realm
+    body = js.split("function applyScreenPatch(G)", 1)[1].split("__pnaBoot", 1)[0]
+    assert "var SEED =" in body
+
+
+def test_macos_preset_retina_and_menubar(tmp_path):
+    # #4: a macOS profile (Apple/Metal GPU) was given Windows geometry —
+    # colorDepth 24, DPR 1, a taskbar-40 availHeight — a systematic Mac tell.
+    # A macOS profile must present a Retina preset: DPR 2, colorDepth 30, a
+    # menu-bar inset (no bottom taskbar), and Mac resolutions.
+    js = pathlib.Path(
+        build_device_extension(1, str(tmp_path / "dev"), os_type="macos")
+        + "/device.js"
+    ).read_text()
+    body = js.split("function applyScreenPatch(G)", 1)[1].split("__pnaBoot", 1)[0]
+    assert 'var OS = "macos"' in body
+    # Retina DPR 2, 30-bit color, menu-bar (25) inset, Mac resolution pool
+    assert "var DPR = IS_MAC ? 2 : 1" in body
+    assert "var DEPTH = IS_MAC ? 30 : 24" in body
+    assert "var INSET = IS_MAC ? 25 : 40" in body
+    assert "[1728, 1117]" in body  # a Mac-only resolution (MacBook Pro 16")
+
+
+def test_windows_preset_stays_24bit_dpr1(tmp_path):
+    # A Windows/other profile must keep the existing 24-bit / DPR-1 / taskbar-40
+    # geometry — the macOS preset must not regress it.
+    js = pathlib.Path(
+        build_device_extension(1, str(tmp_path / "dev"), os_type="windows")
+        + "/device.js"
+    ).read_text()
+    body = js.split("function applyScreenPatch(G)", 1)[1].split("__pnaBoot", 1)[0]
+    assert 'var OS = "windows"' in body
 
 
 def test_script_pins_device_pixel_ratio(tmp_path):

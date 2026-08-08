@@ -218,7 +218,27 @@ class ProfileManager:
             if new_name != original_name and new_name in self.profiles:
                 return False
 
-            profile = self.profiles[original_name]
+            # Rename the data dir BEFORE touching any in-memory field, so a
+            # locked/failed dir-rename (routine on Windows when the browser is
+            # running) leaves the profile completely unchanged — no half-applied
+            # fields and no memory/disk divergence.
+            if new_name != original_name:
+                old_dir = self._data_path(original_name)
+                if pathlib.Path(old_dir).exists():
+                    try:
+                        pathlib.Path(old_dir).rename(self._data_path(new_name))
+                    except OSError as e:
+                        logger.warning(
+                            "Rename of profile data dir %r failed, keeping %r: %s",
+                            original_name, original_name, e,
+                        )
+                        return False
+                self.profiles = {
+                    (new_name if k == original_name else k): v
+                    for k, v in self.profiles.items()
+                }
+
+            profile = self.profiles[new_name]
             profile.name = new_name
             profile.proxy = new_proxy or None
             profile.os_type = new_os
@@ -241,18 +261,6 @@ class ProfileManager:
                 profile.certificate = new_certificate or None
             if new_ai_control is not None:
                 profile.ai_control = new_ai_control
-
-            if new_name != original_name:
-                # Rename the data dir FIRST; only rekey the dict if it succeeds,
-                # so a locked/failed dir-rename (routine on Windows when the
-                # browser is running) can't leave memory and disk divergent.
-                old_dir = self._data_path(original_name)
-                if pathlib.Path(old_dir).exists():
-                    pathlib.Path(old_dir).rename(self._data_path(new_name))
-                self.profiles = {
-                    (new_name if k == original_name else k): v
-                    for k, v in self.profiles.items()
-                }
 
             self.save_profiles()
         logger.info("Updated profile: %s -> %s", original_name, new_name)

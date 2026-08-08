@@ -36,20 +36,24 @@ def test_js_embeds_locale(tmp_path):
     assert "toTimeString" in js
 
 
-def test_worker_wrapper_patches_blob_workers_via_reblob(tmp_path):
-    # A site builds its Intl-probe Worker from a blob: URL; if we DON'T carry the
-    # locale patch into it, currency/ListFormat render the host locale in the
-    # worker (creepjs reads exactly that → lang/timezone lie). The wrapper reads
-    # the original blob:/data: source, prepends the patch, and re-blobs under the
-    # SAME scheme (the site's CSP already allows blob: workers, so it stays
-    # allowed — re-wrapping an http worker into a fresh blob is what tripped a
-    # strict CSP and hung pixelscan).
+def test_locale_on_shared_recursive_registry(tmp_path):
+    # #2: locale was the last major module with its OWN worker-wrap + a
+    # non-recursive iframe getter, so a NESTED iframe (grandchild) reported the
+    # host locale ("ru"/«доллар США») — the exact leak this module exists to
+    # fix. Route it through the shared recursive registry (applyLocalePatch),
+    # like gpu/webgl/audio/screen — one bootstrap reaches every nested realm.
     d = build_locale_extension("pl-PL", str(tmp_path / "ext"))
     js = (pathlib.Path(d) / "locale.js").read_text()
-    assert "https?:" in js                 # http(s) importScripts shim path
-    assert "blob:|^data:" in js            # blob:/data: re-blob path
-    assert "XMLHttpRequest" in js          # sync-read the original worker source
-    assert "PATCH" in js
+    assert "applyLocalePatch" in js
+    assert "__pnaBoots.push(applyLocalePatch)" in js
+    # the shared bootstrap supplies the worker/iframe carry; it re-blobs
+    # blob:/data: workers under the same scheme and recurses iframes.
+    assert "XMLHttpRequest" in js
+    assert "G.Worker" in js and "G.SharedWorker" in js
+    assert "HTMLIFrameElement" in js
+    # LOCALE lives INSIDE applyLocalePatch so .toString() carries it per realm
+    body = js.split("function applyLocalePatch(G)", 1)[1].split("__pnaBoot", 1)[0]
+    assert '"pl-PL"' in body
 
 
 def test_js_is_iife_no_globals(tmp_path):

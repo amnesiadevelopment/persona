@@ -4,7 +4,12 @@ A truncate-and-write in place loses the whole file if the process dies mid-write
 (crash, kill, power loss). Serializing to a sibling temp file and renaming it
 over the target makes the swap atomic: a reader sees either the old file or the
 whole new one, never a half-written one. Credential files are additionally
-written 0600 so they aren't world-readable on multi-user systems.
+written 0600 so they aren't world-readable on multi-user POSIX systems.
+
+On Windows os.chmod only toggles the read-only bit — it does NOT restrict who
+can read the file. The files live under the user's .persona home, which inherits
+the per-user ACL of the profile directory (already owner-scoped), so this is not
+a regression there; but the 0600 is a POSIX guarantee, not a Windows one.
 """
 
 from __future__ import annotations
@@ -32,6 +37,8 @@ def atomic_write_json(path: str, data, *, private: bool = False) -> None:
         os.fsync(fd)
         os.close(fd)
         fd = -1
+        # POSIX permission bits. On Windows this only clears the read-only bit
+        # (no owner-only restriction); see the module docstring.
         os.chmod(tmp, 0o600 if private else (0o644 & ~_umask()))
         os.replace(tmp, path)
     except Exception:

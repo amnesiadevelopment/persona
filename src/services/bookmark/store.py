@@ -4,6 +4,7 @@ import pathlib
 from ...core.config import BOOKMARKS_FILE
 from ...core.logging import get_logger
 from ...models.bookmark import Bookmark, Pool
+from ...utils.atomic import atomic_write_json
 
 logger = get_logger("bookmark.store")
 
@@ -66,20 +67,19 @@ class BookmarkStore:
 
     def _save(self) -> None:
         try:
-            with pathlib.Path(self._path).open("w", encoding="utf-8") as f:
-                json.dump(
-                    {
-                        "defaults_seeded": getattr(
-                            self, "_defaults_seeded", True
-                        ),
-                        "bookmarks": {
-                            n: b.to_dict() for n, b in self.bookmarks.items()
-                        },
-                        "pools": {n: p.to_dict() for n, p in self.pools.items()},
+            # Atomic (temp + os.replace) so a crash mid-save can't leave a
+            # half-written file that silently overwrites every bookmark on the
+            # next load.
+            atomic_write_json(
+                self._path,
+                {
+                    "defaults_seeded": getattr(self, "_defaults_seeded", True),
+                    "bookmarks": {
+                        n: b.to_dict() for n, b in self.bookmarks.items()
                     },
-                    f,
-                    indent=4,
-                )
+                    "pools": {n: p.to_dict() for n, p in self.pools.items()},
+                },
+            )
         except Exception as e:
             logger.exception("Error saving bookmarks: %s", e)
 

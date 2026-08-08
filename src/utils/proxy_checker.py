@@ -44,6 +44,33 @@ def _is_blocked_proxy_host(server: str) -> bool:
     return False
 
 
+def _validate_geo(
+    code: str, tz: str, lat, lon
+) -> tuple[str, str, float | None, float | None]:
+    """Sanitize the geo fields the check endpoint returned before they are
+    persisted into the profile's fingerprint. The response is attacker-influenced
+    (a MITM or a hostile endpoint could inject a bogus timezone/country to skew
+    the spoof), so drop anything malformed rather than store it: a 2-letter
+    country code, a plausible tz string, and lat/lon inside valid ranges."""
+    code = (code or "").strip().upper()
+    if len(code) != 2 or not code.isalpha():
+        code = ""
+    tz = tz if isinstance(tz, str) and "/" in tz else ""
+    try:
+        latf = float(lat)
+        if not (-90.0 <= latf <= 90.0):
+            latf = None
+    except (TypeError, ValueError):
+        latf = None
+    try:
+        lonf = float(lon)
+        if not (-180.0 <= lonf <= 180.0):
+            lonf = None
+    except (TypeError, ValueError):
+        lonf = None
+    return code, tz, latf, lonf
+
+
 def proxy_ok_message(code: str, country: str) -> str:
     """The activity-log message for a working proxy. Shows the exit COUNTRY (and
     flag) but never the exact exit IP: this tool's own logs are disk-backed and
@@ -72,7 +99,10 @@ async def check_proxy(
     """Probe a proxy. Returns
     (ok, message, country_code, country_name, ip, timezone, lat, lon)."""
     if not AIOHTTP_AVAILABLE:
-        return True, "Proxy check skipped (aiohttp not installed)", "", "", "", "", None, None
+        # NOT ok: a skipped check must never be recorded as a success (which
+        # would set last_check_ok=True and, with empty geo, erase the proxy's
+        # known-good country/timezone). ok=False leaves the geo fields intact.
+        return False, "Proxy check skipped (aiohttp not installed)", "", "", "", "", None, None
 
     proxy_config = parse_proxy(proxy_str)
     if not proxy_config:
@@ -94,18 +124,25 @@ async def check_proxy(
     try:
         timeout_obj = aiohttp.ClientTimeout(total=timeout)
         async with aiohttp.ClientSession(timeout=timeout_obj) as session:
+            # HTTPS geo endpoint: over cleartext HTTP a MITM on the exit could
+            # inject a bogus country/timezone that then feeds the persisted
+            # fingerprint. ipwho.is serves the same fields over TLS for free.
             async with session.get(
-                "http://ip-api.com/json/?fields=status,country,countryCode,query,timezone,lat,lon",
+                "https://ipwho.is/",
                 proxy=proxy_url,
             ) as response:
                 if response.status == 200:
                     data = await response.json()
-                    ip = data.get("query", "unknown")
+                    if not data.get("success", True):
+                        return False, "Proxy geo lookup failed", "", "", "", "", None, None
+                    ip = data.get("ip", "unknown")
                     country = data.get("country", "")
-                    code = (data.get("countryCode") or "").upper()
-                    tz = data.get("timezone", "")
-                    lat = data.get("lat")
-                    lon = data.get("lon")
+                    code = (data.get("country_code") or "").upper()
+                    tzobj = data.get("timezone")
+                    tz = (tzobj.get("id", "") if isinstance(tzobj, dict) else tzobj) or ""
+                    lat = data.get("latitude")
+                    lon = data.get("longitude")
+                    code, tz, lat, lon = _validate_geo(code, tz, lat, lon)
                     return (
                         True,
                         proxy_ok_message(code, country),

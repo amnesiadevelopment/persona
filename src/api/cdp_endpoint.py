@@ -1,7 +1,7 @@
 """Resolve the browser-level CDP WebSocket endpoint for an automation profile.
 
 fingerprint-chromium exposes the DevTools endpoint on
-http://127.0.0.1:<port>/json/version (the port comes from cdp_port_for). The
+http://127.0.0.1:<port>/json/version (the port comes from read_cdp_port). The
 `webSocketDebuggerUrl` field there is the browser-level URL Playwright/Puppeteer
 attach to. The port binds a beat after process start, so we poll briefly.
 """
@@ -12,7 +12,7 @@ import asyncio
 
 import httpx
 
-from ..services.browser.cdp import cdp_port_for
+from ..services.browser.cdp import read_cdp_port
 from .schemas.browser import BrowserCdpInfo, CdpWebSockets
 
 
@@ -50,8 +50,24 @@ def build_cdp_info(name: str, port: int, ws_url: str) -> BrowserCdpInfo:
     )
 
 
+async def _resolve_port(name: str, *, timeout_s: float = 15.0) -> int:
+    """Poll for chromium's DevToolsActivePort (written a beat after launch)."""
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout_s
+    last_exc: Exception | None = None
+    while loop.time() < deadline:
+        try:
+            return read_cdp_port(name)
+        except RuntimeError as exc:
+            last_exc = exc
+            await asyncio.sleep(0.25)
+    raise RuntimeError(
+        f"DevToolsActivePort for {name!r} not written within {timeout_s}s"
+    ) from last_exc
+
+
 async def cdp_info_for(name: str) -> BrowserCdpInfo:
     """Resolve full CDP info for a running automation profile by its name."""
-    port = cdp_port_for(name)
+    port = await _resolve_port(name)
     ws_url = await fetch_browser_ws_url(port)
     return build_cdp_info(name, port, ws_url)

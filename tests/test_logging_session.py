@@ -1,4 +1,6 @@
 import logging
+import os
+import sys
 
 import pytest
 
@@ -34,3 +36,14 @@ def test_session_marker_written_once_per_launch(tmp_path):
     setup_logging(str(tmp_path))
     setup_logging(str(tmp_path))
     assert _log_content(tmp_path).count(SESSION_MARKER) == 1
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+def test_log_dir_and_file_are_owner_only(tmp_path):
+    # #11: logs can carry proxy hostnames/IPs. Keep the dir 0700 and the log file
+    # 0600 so they aren't world-readable on a multi-user host.
+    setup_logging(str(tmp_path))
+    files = list(tmp_path.glob("persona_*.log"))
+    assert len(files) == 1
+    assert os.stat(tmp_path).st_mode & 0o777 == 0o700
+    assert os.stat(files[0]).st_mode & 0o777 == 0o600

@@ -1,15 +1,37 @@
 """CDP (remote debugging) port helper for AI-controlled profiles.
 
 Only profiles with ai_control=True are launched with a debugging port. The
-port is derived from the profile name so the MCP browser tools know where to
-attach without extra bookkeeping.
+browser is launched with ``--remote-debugging-port=0``: the kernel assigns an
+unpredictable ephemeral port, so a co-resident process cannot guess it and
+take the browser over (which would bypass the MCP bearer token guarding the
+rest of the local API). Chromium writes the actual port it bound to the first
+line of ``<user-data-dir>/DevToolsActivePort``; readers resolve it from there
+instead of deriving it from the profile name.
 """
 
-import zlib
+import os
 
-_BASE = 9222
-_SPAN = 100
+from ...core.config import DATA_DIR
 
 
-def cdp_port_for(name: str) -> int:
-    return _BASE + zlib.crc32(name.encode("utf-8")) % _SPAN
+def read_cdp_port(name: str, *, not_before: float | None = None) -> int:
+    """Return the debugging port chromium bound for ``name``.
+
+    Reads ``<profile_dir>/DevToolsActivePort`` (first line is the port). When
+    ``not_before`` is given, a file older than that timestamp is treated as a
+    stale leftover from a previous run and rejected — so we never attach to a
+    port the current process didn't open.
+    """
+    path = os.path.join(DATA_DIR, name, "DevToolsActivePort")
+    try:
+        if not_before is not None and os.path.getmtime(path) < not_before:
+            raise RuntimeError(
+                f"DevToolsActivePort for {name!r} is stale (pre-launch)"
+            )
+        with open(path, encoding="utf-8") as f:
+            first = f.readline().strip()
+        return int(first)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(
+            f"no live CDP port for {name!r} (DevToolsActivePort unreadable)"
+        ) from exc

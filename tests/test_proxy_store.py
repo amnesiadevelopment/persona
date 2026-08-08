@@ -279,3 +279,52 @@ def test_set_url_persists(tmp_path):
 def test_set_url_unknown(tmp_path):
     s = _store(tmp_path)
     assert s.set_url("missing", "socks5://9.9.9.9:1080") is False
+
+
+def test_one_malformed_record_is_skipped_not_fatal(tmp_path):
+    import json
+
+    path = tmp_path / "proxies.json"
+    path.write_text(
+        json.dumps(
+            {
+                "good": {"name": "good", "url": "socks5://1.2.3.4:1080"},
+                "bad": {"name": "bad"},  # missing required url
+            }
+        ),
+        encoding="utf-8",
+    )
+    s = ProxyStore(path=str(path))
+    # the good record still loaded; only the malformed one was dropped
+    assert s.url_for("good") == "socks5://1.2.3.4:1080"
+    assert s.get("bad") is None
+
+
+def test_corrupt_file_quarantined_not_overwritten(tmp_path):
+    import pathlib
+
+    path = tmp_path / "proxies.json"
+    path.write_text("{ this is not valid json", encoding="utf-8")
+    s = ProxyStore(path=str(path))
+    # An unreadable file holds every saved proxy+creds; it must be moved aside,
+    # not silently overwritten by the next save with the empty in-memory dict.
+    s.add("home", "socks5://user:pass@1.2.3.4:1080")
+    backups = list(pathlib.Path(tmp_path).glob("proxies.json.corrupt-*"))
+    assert backups, "corrupt proxies.json must be quarantined"
+    assert backups[0].read_text(encoding="utf-8") == "{ this is not valid json"
+
+
+def test_save_blocked_when_quarantine_fails(tmp_path, monkeypatch):
+    import pathlib
+
+    path = tmp_path / "proxies.json"
+    path.write_text("{ broken", encoding="utf-8")
+
+    def boom(*a, **k):
+        raise OSError("cannot rename")
+
+    monkeypatch.setattr(pathlib.Path, "rename", boom)
+    s = ProxyStore(path=str(path))
+    # rename failed -> saving disabled so we never overwrite the creds file
+    s.add("home", "socks5://user:pass@1.2.3.4:1080")
+    assert path.read_text(encoding="utf-8") == "{ broken"

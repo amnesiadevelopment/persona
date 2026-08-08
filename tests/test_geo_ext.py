@@ -38,6 +38,20 @@ def test_overrides_are_native_masked(tmp_path):
     assert "__pnaName" in js
 
 
+def test_geo_on_shared_recursive_registry(tmp_path):
+    # #3: geolocation is Window-only, so the leak vector is a fresh (nested)
+    # about:blank/srcdoc iframe with a pristine navigator.geolocation. Route the
+    # patch through the shared recursive registry so every child frame is covered.
+    ext = build_geo_extension(1.0, 2.0, str(tmp_path / "geo"))
+    js = (pathlib.Path(ext) / "geo.js").read_text()
+    assert "applyGeoPatch" in js
+    assert "__pnaBoots.push(applyGeoPatch)" in js
+    assert "HTMLIFrameElement" in js
+    # LAT/LON live inside the leaf so .toString() carries them per realm
+    body = js.split("function applyGeoPatch(G)", 1)[1].split("__pnaBoot", 1)[0]
+    assert "var LAT =" in body
+
+
 def test_idempotent_path(tmp_path):
     base = str(tmp_path / "geo")
     assert build_geo_extension(1.0, 2.0, base) == build_geo_extension(1.0, 2.0, base)

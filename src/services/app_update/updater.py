@@ -20,7 +20,7 @@ import time
 from ..engine.updater import is_newer
 from ...core import platform as _platform
 
-APP_VERSION = "2.9.7"
+APP_VERSION = "2.9.8"
 APP_REPO = "amnesiadevelopment/persona"
 
 
@@ -1191,6 +1191,16 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
     target_dir = os.path.dirname(target)
     if not os.access(target_dir, os.W_OK | os.X_OK):
         say(f"Update: {target_dir} not writable, can't replace.")
+        return False
+
+    # Re-verify the staged binary's sha256 at apply time, the way Windows/macOS
+    # do — the size check at download time isn't a corruption/integrity gate. A
+    # mismatch refuses and deletes the bad file so it isn't matched again.
+    if not verify_staged_installer(staged, log=log):
+        try:
+            os.remove(staged)
+        except OSError:
+            pass
         return False
 
     # 1) Prove the new AppImage launches on THIS host before touching the live

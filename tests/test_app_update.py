@@ -977,6 +977,30 @@ def test_linux_relaunch_scrubs_runtime_env(monkeypatch, tmp_path):
         assert k not in seen["env"], f"{k} leaked into the relaunched process"
 
 
+def test_linux_apply_reverifies_sha256_and_refuses_mismatch(monkeypatch, tmp_path):
+    # #7: Linux apply-time must re-verify the staged binary's sha256 like
+    # Windows/macOS do — a checksum mismatch refuses, deletes the bad file, and
+    # never swaps or execv's into it.
+    _force_os(monkeypatch, linux=True)
+    target = tmp_path / "persona.AppImage"
+    target.write_bytes(b"old")
+    staged = tmp_path / "staged.AppImage"
+    staged.write_bytes(b"new")
+    monkeypatch.setattr(au, "installed_appimage_path", lambda: str(target))
+    # A published checksum that does NOT match the staged bytes.
+    monkeypatch.setattr(au, "fetch_expected_sha256", lambda tag: "deadbeef" * 8)
+    # If verification wrongly passed, this would run — it must not.
+    monkeypatch.setattr(au, "verify_appimage_runs", lambda p: True)
+    execd = {"called": False}
+    monkeypatch.setattr(au.os, "execv", lambda p, a: execd.__setitem__("called", True))
+
+    msgs = []
+    assert au.apply_and_restart(str(staged), log=msgs.append) is False
+    assert execd["called"] is False
+    assert not staged.exists(), "a checksum-mismatched staged file must be deleted"
+    assert any("checksum mismatch" in m for m in msgs)
+
+
 def test_linux_swap_and_execv_wait_for_the_probe_to_be_reaped(
     monkeypatch, tmp_path
 ):

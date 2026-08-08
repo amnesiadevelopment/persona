@@ -20,9 +20,15 @@ from src.utils.validation import validate_profile_name, validate_proxy_format
     ("trailing ", False),          # trailing space
     ("CON", False), ("con", False),  # reserved (case-insensitive)
     ("PRN", False), ("NUL", False), ("COM1", False), ("LPT9", False),
-    ("..", True),                  # '..' has no invalid CHARS; the path-escape
-                                   # guard lives in ProfileManager._data_path,
-                                   # tested in test_transfer_security / manager.
+    ("CON.txt", False), ("nul.log", False),  # reserved even with an extension
+    ("name.", False),              # Windows strips a trailing dot -> lost dir
+    ("name ", False),              # trailing space (same class; also space rule)
+    ("a\x00b", False),             # NUL byte
+    ("tab\tname", False),          # control char (0x09)
+    ("..", False),                 # ends with a dot -> illegal on Windows (the
+                                   # path-escape guard in ProfileManager._data_path
+                                   # still backstops it too).
+    ("a.b", True),                 # a dot mid-name is fine
 ])
 def test_validate_profile_name(name, ok):
     valid, msg = validate_profile_name(name)

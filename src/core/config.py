@@ -27,6 +27,19 @@ def _under_home(name: str, env: str) -> str:
     return os.path.join(PERSONA_HOME, name)
 
 
+def _int_env(env: str, default: int) -> int:
+    """Read an int-valued env override, falling back to the default when it's
+    unset or non-numeric. A bad value (e.g. PERSONA_API_PORT=abc) must not crash
+    the whole app at import with a raw traceback and no window."""
+    val = os.getenv(env)
+    if val is None:
+        return default
+    try:
+        return int(val)
+    except ValueError:
+        return default
+
+
 PROFILES_FILE = _under_home("profiles.json", "PERSONA_PROFILES_FILE")
 PROXIES_FILE = _under_home("proxies.json", "PERSONA_PROXIES_FILE")
 CERTS_FILE = _under_home("certificates.json", "PERSONA_CERTS_FILE")
@@ -37,9 +50,15 @@ LOG_DIR = _under_home("logs", "PERSONA_LOG_DIR")
 ENGINE_DIR = _under_home("engine", "PERSONA_ENGINE_DIR")
 
 LOG_LEVEL = os.getenv("PERSONA_LOG_LEVEL", "INFO")
-PROXY_CHECK_TIMEOUT = int(os.getenv("PERSONA_PROXY_TIMEOUT", "10"))
+PROXY_CHECK_TIMEOUT = _int_env("PERSONA_PROXY_TIMEOUT", 10)
 
 API_HOST = os.getenv("PERSONA_API_HOST", "127.0.0.1")
-API_PORT = int(os.getenv("PERSONA_API_PORT", "8000"))
+API_PORT = _int_env("PERSONA_API_PORT", 8000)
 
 os.makedirs(PERSONA_HOME, exist_ok=True)
+# The runtime root holds proxy/ssh creds and profile data; keep it owner-only on
+# POSIX (chmod is a near-no-op on Windows, harmless). Never widen an existing dir.
+try:
+    os.chmod(PERSONA_HOME, 0o700)
+except OSError:
+    pass

@@ -14,7 +14,6 @@ from ..cert.store import CertStore
 from ..proxy.bridge import ProxyBridge
 from ..proxy.store import ProxyStore
 from .bookmarks_seed import seed_bookmarks
-from .cdp import cdp_port_for
 from .audio_ext import build_audio_extension
 from .device_ext import build_device_extension
 from .resolution import parse_resolution, resolve_resolution
@@ -75,7 +74,10 @@ def _proxy_arg(proxy_url: str | None) -> tuple[str | None, ProxyBridge | None]:
     if parsed.username:
         bridge = ProxyBridge(proxy_url)
         port = bridge.start()
-        logger.info("Proxy bridge for upstream %s on 127.0.0.1:%s", parsed.hostname, port)
+        # Log only the local bridge port. The upstream hostname identifies the
+        # proxy provider (and often carries session/geo labels) and would land,
+        # one line per launch, in the persistent log + Activity Log.
+        logger.info("Proxy bridge started on 127.0.0.1:%s", port)
         return f"socks5://127.0.0.1:{port}", bridge
     return parse_proxy_server(proxy_url), None
 
@@ -511,6 +513,7 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
                 profile.fingerprint_seed,
                 os.path.join(profile_dir, ".persona-device-ext"),
                 resolution=parse_resolution(getattr(profile, "resolution", "auto")),
+                os_type=profile.os_type,
             )
         )
     extensions.append(
@@ -678,11 +681,17 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
     args.append(f"--timezone={_proxy_timezone(proxy) if proxy else _timezone_for('US')}")
 
     if getattr(profile, "ai_control", False):
-        args.append(f"--remote-debugging-port={cdp_port_for(profile.name)}")
+        # Port 0 makes the kernel assign an unpredictable ephemeral port instead
+        # of a name-derived one a co-resident process could guess and drive (that
+        # would bypass the MCP bearer token). Chromium writes the bound port to
+        # <user-data-dir>/DevToolsActivePort; read_cdp_port resolves it there.
+        args.append("--remote-debugging-port=0")
         # Chrome 132+ rejects a DevTools WebSocket whose Origin isn't allow-listed
         # (403 "Rejected an incoming WebSocket connection"). The client's Origin
-        # includes the port (e.g. http://127.0.0.1:9238) and varies, so allow all
-        # origins — the port only listens on loopback, reachable by local tools.
+        # includes the now-unknown ephemeral port, so it can't be pre-listed; the
+        # unpredictable loopback port is the guard. A local attacker could forge
+        # any Origin anyway, so an Origin allow-list adds nothing against the
+        # co-resident threat this defends.
         args.append("--remote-allow-origins=*")
 
     proxy_server, bridge = _proxy_arg(proxy_url)
@@ -748,6 +757,12 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
         env.pop(var, None)
     if _platform.IS_LINUX:
         env.setdefault("DISPLAY", ":0")
+
+    if getattr(profile, "ai_control", False):
+        # Drop any DevToolsActivePort from a previous run so a reader can't
+        # attach to a stale port; chromium rewrites it once it binds port 0.
+        with _suppress():
+            os.remove(os.path.join(profile_dir, "DevToolsActivePort"))
 
     try:
         proc = subprocess.Popen(

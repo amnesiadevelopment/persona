@@ -28,11 +28,24 @@ def validate_profile_name(name: str) -> tuple[bool, str]:
     if found_invalid:
         return False, f"Name contains invalid characters: {', '.join(found_invalid)}"
 
+    # Control characters (0x00-0x1F) are illegal in Windows filenames and would
+    # produce a broken data-dir path.
+    if any(ord(c) < 0x20 for c in name):
+        return False, "Name cannot contain control characters"
+
     if name != name.strip():
         return False, "Name cannot start or end with spaces"
 
-    if name.upper() in _RESERVED_NAMES:
-        return False, f"'{name}' is a reserved system name"
+    # Windows silently strips a trailing dot/space from a filename, so a "name."
+    # profile would live in a "name" dir and never be found again.
+    if name.endswith((".", " ")):
+        return False, "Name cannot end with a dot or space"
+
+    # A reserved device name is reserved even with an extension (CON.txt, NUL.log
+    # all map to the device), so test the base name before the first dot.
+    base = name.split(".", 1)[0]
+    if base.upper() in _RESERVED_NAMES:
+        return False, f"'{name}' uses a reserved system name"
 
     return True, ""
 

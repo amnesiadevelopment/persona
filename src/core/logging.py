@@ -17,6 +17,21 @@ def setup_logging(
     log_filename = datetime.now().strftime("persona_%Y%m%d.log")
     log_path = os.path.join(log_dir, log_filename)
 
+    # Logs can carry proxy hostnames / IPs; keep the dir + file owner-only on
+    # POSIX (chmod is a near-no-op on Windows, harmless). Create the file first
+    # so the handler opens an already-0600 file.
+    try:
+        os.chmod(log_dir, 0o700)
+    except OSError:
+        pass
+    try:
+        if not os.path.exists(log_path):
+            os.close(os.open(log_path, os.O_CREAT | os.O_WRONLY, 0o600))
+        else:
+            os.chmod(log_path, 0o600)
+    except OSError:
+        pass
+
     logger = logging.getLogger("persona")
     logger.setLevel(log_level)
 

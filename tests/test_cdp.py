@@ -1,16 +1,42 @@
-from src.services.browser.cdp import cdp_port_for
+import os
+
+import pytest
+
+from src.services.browser import cdp
 
 
-def test_port_in_valid_range():
-    p = cdp_port_for("test8")
-    assert 9222 <= p <= 9322
+def _write_active_port(tmp_path, monkeypatch, name, port):
+    monkeypatch.setattr(cdp, "DATA_DIR", str(tmp_path))
+    profile_dir = tmp_path / name
+    profile_dir.mkdir()
+    (profile_dir / "DevToolsActivePort").write_text(
+        f"{port}\n/devtools/browser/abc-123\n", encoding="utf-8"
+    )
+    return profile_dir
 
 
-def test_port_deterministic():
-    assert cdp_port_for("acc") == cdp_port_for("acc")
+def test_reads_port_from_devtools_active_port(tmp_path, monkeypatch):
+    _write_active_port(tmp_path, monkeypatch, "acc", 51234)
+    assert cdp.read_cdp_port("acc") == 51234
 
 
-def test_distinct_names_usually_distinct():
-    ports = {cdp_port_for(f"p{i}") for i in range(20)}
-    # not a hard guarantee, but 20 names should spread across the range
-    assert len(ports) > 10
+def test_missing_file_raises(tmp_path, monkeypatch):
+    monkeypatch.setattr(cdp, "DATA_DIR", str(tmp_path))
+    with pytest.raises(RuntimeError):
+        cdp.read_cdp_port("not-running")
+
+
+def test_ignores_stale_file_older_than_launch(tmp_path, monkeypatch):
+    # A DevToolsActivePort left from a previous run must not be trusted as the
+    # current port. read_cdp_port takes a launch timestamp and rejects a file
+    # written before it.
+    pd = _write_active_port(tmp_path, monkeypatch, "acc", 40000)
+    stale_mtime = os.path.getmtime(pd / "DevToolsActivePort")
+    with pytest.raises(RuntimeError):
+        cdp.read_cdp_port("acc", not_before=stale_mtime + 100)
+
+
+def test_no_predictable_port_from_name(tmp_path, monkeypatch):
+    # The debugging port must NOT be derivable from the profile name — that was
+    # the local-takeover surface. cdp_port_for is gone.
+    assert not hasattr(cdp, "cdp_port_for")

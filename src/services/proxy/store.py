@@ -22,6 +22,7 @@ class ProxyStore:
         self._path = path
         self._now = now
         self.proxies: dict[str, Proxy] = {}
+        self._save_blocked = False
         # The container-shared store is mutated from the UI thread, the uvicorn
         # API thread, and proxy-check daemon threads. Serialize every read/write
         # so a mutation can't race a _save iterating self.proxies (RLock so a
@@ -35,25 +36,58 @@ class ProxyStore:
         try:
             with pathlib.Path(self._path).open(encoding="utf-8") as f:
                 data = json.load(f)
+            skipped = 0
             for name, p in data.items():
-                self.proxies[name] = Proxy(
-                    name=p["name"],
-                    url=p["url"],
-                    rotate_url=p.get("rotate_url", ""),
-                    country_code=p.get("country_code", ""),
-                    country_name=p.get("country_name", ""),
-                    last_ip=p.get("last_ip", ""),
-                    timezone=p.get("timezone", ""),
-                    lat=p.get("lat"),
-                    lon=p.get("lon"),
-                    checked_at=p.get("checked_at", 0.0),
-                    last_check_ok=p.get("last_check_ok"),
-                )
+                # One malformed record must not abort the whole load — the next
+                # save would overwrite proxies.json with only what parsed,
+                # discarding every proxy's SOCKS5 creds after it.
+                try:
+                    self.proxies[name] = Proxy(
+                        name=p["name"],
+                        url=p["url"],
+                        rotate_url=p.get("rotate_url", ""),
+                        country_code=p.get("country_code", ""),
+                        country_name=p.get("country_name", ""),
+                        last_ip=p.get("last_ip", ""),
+                        timezone=p.get("timezone", ""),
+                        lat=p.get("lat"),
+                        lon=p.get("lon"),
+                        checked_at=p.get("checked_at", 0.0),
+                        last_check_ok=p.get("last_check_ok"),
+                    )
+                except Exception:
+                    skipped += 1
+                    logger.exception("Skipping malformed proxy %r", name)
+            if skipped:
+                logger.warning("Skipped %d malformed proxy record(s)", skipped)
             logger.info("Loaded %d proxies", len(self.proxies))
         except Exception as e:
             logger.exception("Error loading proxies: %s", e)
+            self._quarantine_proxies_file()
+
+    def _quarantine_proxies_file(self) -> None:
+        # An unreadable proxies.json still holds every proxy the user saved with
+        # its SOCKS5 creds; move it aside so the next _save() can't overwrite it
+        # with the empty in-memory dict.
+        backup = f"{self._path}.corrupt-{int(self._now())}"
+        try:
+            pathlib.Path(self._path).rename(backup)
+            logger.warning("Moved unreadable proxies file to %s", backup)
+        except OSError:
+            self._save_blocked = True
+            logger.exception(
+                "Could not back up %s; proxy saving disabled to avoid "
+                "overwriting it",
+                self._path,
+            )
 
     def _save(self) -> None:
+        if self._save_blocked:
+            logger.error(
+                "Not saving: proxies file failed to load and could not be "
+                "backed up"
+            )
+            return
         try:
             # Proxy URLs carry SOCKS5 user:pass, so the file is written 0600 and
             # atomically (a crash mid-save must not corrupt every saved proxy).

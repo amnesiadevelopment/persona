@@ -7,33 +7,47 @@ Only APIs a real desktop Chrome actually exposes are added; mobile-only APIs
 import json
 import pathlib
 
+from .worker_wrap import realm_bootstrap_js
+
+# A fresh about:blank/srcdoc iframe (and a Web Worker) start without these
+# desktop-only APIs re-added, so a scanner reading such a pristine realm sees
+# "like headless" again. The shared recursive registry carries applyStealthPatch
+# into every nested realm.
 CONTENT_SCRIPT = r"""
 (function () {
-  try {
-    // navigator.connection.downlinkMax — present on real Chrome, missing in
-    // many headless/VM builds. CreepJS flags its absence as headless-like.
-    if (navigator.connection && !('downlinkMax' in navigator.connection)) {
-      Object.defineProperty(navigator.connection, 'downlinkMax', {
-        get: function () { return Infinity; },
-        configurable: true, enumerable: true,
-      });
-    }
-  } catch (e) {}
+  function applyStealthPatch(G) {
+   try {
+    if (!G || G.__personaStealth) return;
+    G.__personaStealth = true;
+    try {
+      // navigator.connection.downlinkMax — present on real Chrome, missing in
+      // many headless/VM builds. CreepJS flags its absence as headless-like.
+      var conn = G.navigator && G.navigator.connection;
+      if (conn && !('downlinkMax' in conn)) {
+        Object.defineProperty(conn, 'downlinkMax', {
+          get: function () { return Infinity; },
+          configurable: true, enumerable: true,
+        });
+      }
+    } catch (e) {}
 
-  try {
-    // ContentIndex API on ServiceWorkerRegistration — real Chrome exposes it.
-    if (window.ServiceWorkerRegistration &&
-        !('index' in ServiceWorkerRegistration.prototype)) {
-      function ContentIndex() {}
-      ContentIndex.prototype.getAll = function () { return Promise.resolve([]); };
-      ContentIndex.prototype.add = function () { return Promise.resolve(); };
-      ContentIndex.prototype.delete = function () { return Promise.resolve(); };
-      Object.defineProperty(ServiceWorkerRegistration.prototype, 'index', {
-        get: function () { return new ContentIndex(); },
-        configurable: true, enumerable: true,
-      });
-    }
-  } catch (e) {}
+    try {
+      // ContentIndex API on ServiceWorkerRegistration — real Chrome exposes it.
+      var SWR = G.ServiceWorkerRegistration;
+      if (SWR && !('index' in SWR.prototype)) {
+        function ContentIndex() {}
+        ContentIndex.prototype.getAll = function () { return Promise.resolve([]); };
+        ContentIndex.prototype.add = function () { return Promise.resolve(); };
+        ContentIndex.prototype.delete = function () { return Promise.resolve(); };
+        Object.defineProperty(SWR.prototype, 'index', {
+          get: function () { return new ContentIndex(); },
+          configurable: true, enumerable: true,
+        });
+      }
+    } catch (e) {}
+   } catch (e) {}
+  }
+__STEALTH_REALM_BOOTSTRAP__
 })();
 """
 
@@ -59,7 +73,10 @@ def build_stealth_extension(base_dir: str) -> str:
     """
     ext_dir = pathlib.Path(base_dir)
     ext_dir.mkdir(parents=True, exist_ok=True)
-    (ext_dir / "stealth.js").write_text(CONTENT_SCRIPT, encoding="utf-8")
+    js = CONTENT_SCRIPT.replace(
+        "__STEALTH_REALM_BOOTSTRAP__", realm_bootstrap_js("applyStealthPatch")
+    )
+    (ext_dir / "stealth.js").write_text(js, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(
         json.dumps(MANIFEST, indent=2), encoding="utf-8"
     )

@@ -1,26 +1,31 @@
 import json
 import pathlib
 
+from .worker_wrap import realm_bootstrap_js
+
 # Injected in the MAIN world at document_start. Wrapped in an IIFE so no injected
 # name leaks as a page global (a page redeclaring the same const would throw and
 # die — Sheets' calc worker did, see geo_ext #233).
 #
 # %LOCALE% is replaced with a JSON string literal at build time.
 #
-# Coverage: the page realm, Web/Shared Workers (content scripts don't inject
-# there), AND same-realm child frames created as about:blank / srcdoc (content
-# scripts don't inject there either — and creepjs/pixelscan read a "pristine"
-# Intl/Date/Number out of exactly such a frame to catch a page-only patch as a
-# lie, which is how the host locale "ru" / "доллар США" kept surfacing).
+# Coverage rides the shared recursive registry (realm_bootstrap_js): the page
+# realm, Web/Shared Workers, AND same-realm child frames (about:blank / srcdoc)
+# — recursively, so a NESTED iframe (grandchild) is covered too. creepjs/
+# pixelscan read a "pristine" Intl/Date/Number out of exactly such a frame to
+# catch a page-only patch as a lie, which is how the host locale "ru" /
+# "доллар США" kept surfacing.
 CONTENT_SCRIPT = r"""
 (function () {
-const LOCALE = %LOCALE%;
-
-// Patch one realm G (a window or worker global). Idempotent per realm.
-const _applyLocalePatch = function (LOCALE, G) {
+// Patch one realm G (a window or worker global). Idempotent per realm. LOCALE
+// lives INSIDE so applyLocalePatch.toString() carries it into every realm the
+// shared registry re-runs it in (a var in the outer IIFE would be undefined
+// there).
+function applyLocalePatch(G) {
   try {
     if (!G || G.__personaLocale) return;
     G.__personaLocale = true;
+    var LOCALE = %LOCALE%;
     // Make our wrapped built-ins read as native in THIS realm (page or worker):
     // a masking detector (creepjs) calls Function.prototype.toString on Intl in a
     // Web Worker and, seeing our wrapper source, marks the Timezone/Intl
@@ -105,86 +110,8 @@ const _applyLocalePatch = function (LOCALE, G) {
       C.prototype.toLocaleString = _mark(function (l, o) { return orig.call(this, l || LOCALE, o); }, "toLocaleString");
     });
   } catch (e) {}
-};
-
-const SELF = (typeof self !== "undefined") ? self : this;
-_applyLocalePatch(LOCALE, SELF);
-
-// Carry the patch into Web/Shared Workers.
-try {
-  const PATCH = "(" + _applyLocalePatch.toString() + ")(" + JSON.stringify(LOCALE) +
-                ", (typeof self!=='undefined'?self:this));";
-  const wrapWorker = function (Orig) {
-    if (typeof Orig !== "function") return Orig;
-    const W = function (url, options) {
-      try {
-        if (options && options.type === "module") {
-          return Reflect.construct(Orig, [url, options], W);
-        }
-        const s = String(url);
-        if (/^https?:/i.test(s)) {
-          // Plain http(s) worker: an importScripts shim carries the patch.
-          const body = PATCH + "\ntry{importScripts(" + JSON.stringify(s) + ");}catch(e){}";
-          const u = URL.createObjectURL(new Blob([body], { type: "application/javascript" }));
-          return Reflect.construct(Orig, [u, options], W);
-        }
-        if (/^blob:|^data:/i.test(s)) {
-          // The site built this worker from its own blob:/data: URL under its own
-          // CSP. Read the original source, PREPEND the patch, and re-blob with the
-          // SAME scheme — the site's CSP already allows blob:/data: workers, so
-          // this stays allowed (unlike wrapping an http worker into a fresh blob,
-          // which a strict script-src rejected and hung pixelscan). Falls back to
-          // the original worker if the source can't be read synchronously.
-          try {
-            const x = new XMLHttpRequest();
-            x.open("GET", s, false);   // sync; blob:/data: are local, no network
-            x.send();
-            if (x.status === 0 || (x.status >= 200 && x.status < 300)) {
-              const patched = PATCH + "\n" + x.responseText;
-              const u = URL.createObjectURL(new Blob([patched], { type: "application/javascript" }));
-              return Reflect.construct(Orig, [u, options], W);
-            }
-          } catch (e) {}
-          return Reflect.construct(Orig, [url, options], W);
-        }
-        return Reflect.construct(Orig, [url, options], W);
-      } catch (e) { return Reflect.construct(Orig, [url, options], W); }
-    };
-    W.prototype = Orig.prototype;
-    try { Object.defineProperty(W, "__pnaName", { value: Orig.name }); } catch (e) {}
-    try { Object.defineProperty(W, "name", { value: Orig.name }); } catch (e) {}
-    return W;
-  };
-  if (SELF.Worker) SELF.Worker = wrapWorker(SELF.Worker);
-  if (SELF.SharedWorker) SELF.SharedWorker = wrapWorker(SELF.SharedWorker);
-} catch (e) {}
-
-// Patch same-realm child frames (about:blank / srcdoc) on access — content
-// scripts don't inject there, so a scanner reading a fresh iframe's Intl would
-// otherwise see the host locale. (creepjs additionally reads a pristine realm
-// via a path JS can't intercept before its inline script runs — that residual
-// is an fp-chromium ICU-default-locale gap, out of a content script's reach.)
-try {
-  if (typeof HTMLIFrameElement !== "undefined") {
-    const proto = HTMLIFrameElement.prototype;
-    ["contentWindow", "contentDocument"].forEach(function (prop) {
-      const d = Object.getOwnPropertyDescriptor(proto, prop);
-      if (!d || !d.get) return;
-      Object.defineProperty(proto, prop, {
-        configurable: true,
-        enumerable: d.enumerable,
-        get: function () {
-          const r = d.get.call(this);
-          try {
-            const w = prop === "contentWindow" ? r : (r && r.defaultView);
-            if (w) _applyLocalePatch(LOCALE, w);
-          } catch (e) {}
-          return r;
-        },
-      });
-    });
-  }
-} catch (e) {}
+}
+__LOCALE_REALM_BOOTSTRAP__
 })();
 """
 
@@ -213,7 +140,9 @@ def build_locale_extension(locale: str, base_dir: str) -> str:
     --lang; this closes that gap."""
     ext_dir = pathlib.Path(base_dir)
     ext_dir.mkdir(parents=True, exist_ok=True)
-    js = CONTENT_SCRIPT.replace("%LOCALE%", json.dumps(locale))
+    js = CONTENT_SCRIPT.replace("%LOCALE%", json.dumps(locale)).replace(
+        "__LOCALE_REALM_BOOTSTRAP__", realm_bootstrap_js("applyLocalePatch")
+    )
     (ext_dir / "locale.js").write_text(js, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(
         json.dumps(MANIFEST, indent=2), encoding="utf-8"

@@ -1,5 +1,6 @@
 import json
 import os
+import pathlib
 import sys
 
 import pytest
@@ -52,6 +53,47 @@ def test_ssh_hosts_file_is_private(store):
     store.add(SSHHost(name="box", host="h", password="secret"))
     mode = os.stat(os.environ["PERSONA_SSH_HOSTS_FILE"]).st_mode & 0o777
     assert mode == 0o600
+
+
+def test_one_malformed_host_is_skipped_not_fatal(store, tmp_path):
+    path = tmp_path / "ssh.json"
+    path.write_text(
+        json.dumps(
+            {
+                "good": {"name": "good", "host": "1.2.3.4", "port": 22},
+                "bad": {"name": "bad", "port": "not-an-int"},  # int(port) raises
+            }
+        ),
+        encoding="utf-8",
+    )
+    s = SSHHostStore()
+    assert s.get("good").host == "1.2.3.4"
+    assert s.get("bad") is None
+
+
+def test_corrupt_file_quarantined_not_overwritten(store, tmp_path):
+    path = tmp_path / "ssh.json"
+    path.write_text("{ not valid json", encoding="utf-8")
+    s = SSHHostStore()
+    # An unreadable file holds passwords + passphrases; the next save must not
+    # overwrite it with the empty in-memory dict — it's quarantined instead.
+    s.add(SSHHost(name="box", host="h", password="secret"))
+    backups = list(tmp_path.glob("ssh.json.corrupt-*"))
+    assert backups, "corrupt ssh_hosts.json must be quarantined"
+    assert backups[0].read_text(encoding="utf-8") == "{ not valid json"
+
+
+def test_save_blocked_when_quarantine_fails(store, tmp_path, monkeypatch):
+    path = tmp_path / "ssh.json"
+    path.write_text("{ broken", encoding="utf-8")
+
+    def boom(*a, **k):
+        raise OSError("cannot rename")
+
+    monkeypatch.setattr(pathlib.Path, "rename", boom)
+    s = SSHHostStore()
+    s.add(SSHHost(name="box", host="h", password="secret"))
+    assert path.read_text(encoding="utf-8") == "{ broken"
 
 
 def test_resolver_uses_profile_proxy(monkeypatch):

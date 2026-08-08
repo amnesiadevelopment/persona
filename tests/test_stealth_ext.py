@@ -27,6 +27,17 @@ def test_patches_headless_signals(tmp_path):
     assert "contentIndex" in js or "ContentIndex" in js
 
 
+def test_stealth_on_shared_recursive_registry(tmp_path):
+    # #3: a fresh nested iframe / worker starts without these desktop APIs, so a
+    # scanner reading a pristine realm sees "like headless" again. Route through
+    # the shared recursive registry so every nested realm is covered.
+    d = build_stealth_extension(str(tmp_path / "ext"))
+    js = (pathlib.Path(d) / "stealth.js").read_text()
+    assert "applyStealthPatch" in js
+    assert "__pnaBoots.push(applyStealthPatch)" in js
+    assert "G.Worker" in js and "HTMLIFrameElement" in js
+
+
 def test_does_not_fake_mobile_only_apis(tmp_path):
     # ContactsManager is mobile-only; faking it on desktop would be inconsistent
     d = build_stealth_extension(str(tmp_path / "ext"))

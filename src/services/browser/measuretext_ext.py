@@ -27,86 +27,95 @@ throbber that also blocked every Sheets popover/overlay from painting.
 import json
 import pathlib
 
+from .worker_wrap import realm_bootstrap_js
+
+# The same noise repair must hold in a fresh child frame and in a Web Worker's
+# OffscreenCanvas measureText, else a scanner measuring text in a pristine realm
+# sees the raw noised geometry (functional inconsistency across realms). The
+# shared recursive registry carries applyMtPatch everywhere. The multiplicative
+# noise factor is a session constant, so it is learned once in a DOM-bearing
+# realm and shared via top.__personaMtFactor to realms without a DOM.
 CONTENT_SCRIPT = r"""
 (function () {
-  var proto = (window.CanvasRenderingContext2D || {}).prototype;
-  var off = (window.OffscreenCanvasRenderingContext2D || {}).prototype;
-  if (!proto || !proto.measureText) return;
+  function applyMtPatch(G) {
+   try {
+    if (!G || G.__personaMt) return;
+    var proto = (G.CanvasRenderingContext2D || {}).prototype;
+    var off = (G.OffscreenCanvasRenderingContext2D || {}).prototype;
+    if ((!proto || !proto.measureText) && (!off || !off.measureText)) return;
+    G.__personaMt = true;
 
-  // The engine's constant noise scale (noised = true * factor), learned once
-  // and then reused for every repair so no measurement ever touches the DOM.
-  var factor = null;
-
-  // One-shot, un-noised true width of `text` in `font`, via a throwaway DOM
-  // node that is appended, measured and removed immediately — it never stays
-  // resident, so it can't inherit the page's transitions or be rewritten in a
-  // hot path. Called at most once (until `factor` is known). Returns null when
-  // there's no DOM yet or the text renders to zero width.
-  function trueWidth(font, text) {
-    var root = document.documentElement || document.body;
-    if (!root) return null;
-    var span = document.createElement('span');
-    span.style.cssText =
-      'position:absolute;left:-99999px;top:0;white-space:pre;' +
-      'visibility:hidden;pointer-events:none;margin:0;padding:0;border:0;' +
-      'letter-spacing:0';
-    span.style.font = font;
-    span.textContent = String(text);
-    root.appendChild(span);
-    var w = span.getBoundingClientRect().width;
-    root.removeChild(span);
-    return w > 0 ? w : null;
-  }
-
-  function patch(target) {
-    var orig = target.measureText;
-    if (!orig) return;
-    function measureText(text) {
-      var m = orig.call(this, text);
-      try {
-        // The engine scales every metric by a tiny factor (~1e-6), so a
-        // non-empty string comes back with |width| far below one pixel — the
-        // sign of that factor varies with the fingerprint seed, so both a
-        // near-zero negative AND a near-zero positive are noise. Empty text
-        // legitimately measures zero, so only repair a non-empty string whose
-        // width collapsed below a single pixel.
-        var hasText = String(text).length > 0;
-        var corrupt = hasText && !(Math.abs(m.width) >= 1);
-        if (!corrupt) return m;
-        if (factor === null) {
-          var tw = trueWidth(this.font, text);
-          if (tw === null) return m;
-          var f = m.width / tw;
-          if (!isFinite(f) || f === 0) return m;
-          factor = f;
-        }
-        var scale = factor;
-        // Undo the uniform noise: every numeric TextMetrics field is the true
-        // value times `scale`, so dividing each by `scale` restores the real,
-        // self-consistent geometry. Non-numeric members (e.g. toJSON) pass
-        // through untouched, and a field the native object lacks is never
-        // synthesised — so no new tell is introduced.
-        return new Proxy(m, {
-          get: function (t, p) {
-            var v = t[p];
-            return (typeof v === 'number') ? v / scale : v;
-          },
-        });
-      } catch (e) {}
-      return m;
+    // One-shot, un-noised true width of `text` in `font`, via a throwaway DOM
+    // node measured and removed immediately (the bounding-rect read is not
+    // noised). Returns null when there's no DOM (a worker) or zero-width text.
+    function trueWidth(doc, font, text) {
+      var root = doc && (doc.documentElement || doc.body);
+      if (!root) return null;
+      var span = doc.createElement('span');
+      span.style.cssText =
+        'position:absolute;left:-99999px;top:0;white-space:pre;' +
+        'visibility:hidden;pointer-events:none;margin:0;padding:0;border:0;' +
+        'letter-spacing:0';
+      span.style.font = font;
+      span.textContent = String(text);
+      root.appendChild(span);
+      var w = span.getBoundingClientRect().width;
+      root.removeChild(span);
+      return w > 0 ? w : null;
     }
-    try {
-      Object.defineProperty(measureText, 'name', { value: 'measureText' });
-      // Mark for the native_ext Function.prototype.toString patch so a detector
-      // calling Function.prototype.toString.call(measureText) reads native. A
-      // plain measureText.toString override is bypassed by that .call form.
-      Object.defineProperty(measureText, '__pnaName', { value: 'measureText' });
-    } catch (e) {}
-    try { target.measureText = measureText; } catch (e) {}
-  }
 
-  patch(proto);
-  if (off && off.measureText) patch(off);
+    // The noise scale is a session constant; share the learned factor across
+    // realms via the top window so a DOM-less realm (worker) can still repair.
+    function getFactor() {
+      try { if (G.top && typeof G.top.__personaMtFactor === 'number') return G.top.__personaMtFactor; } catch (e) {}
+      return (typeof G.__personaMtFactor === 'number') ? G.__personaMtFactor : null;
+    }
+    function setFactor(f) {
+      G.__personaMtFactor = f;
+      try { if (G.top) G.top.__personaMtFactor = f; } catch (e) {}
+    }
+
+    function patch(target) {
+      var orig = target.measureText;
+      if (!orig) return;
+      function measureText(text) {
+        var m = orig.call(this, text);
+        try {
+          var hasText = String(text).length > 0;
+          var corrupt = hasText && !(Math.abs(m.width) >= 1);
+          if (!corrupt) return m;
+          var factor = getFactor();
+          if (factor === null) {
+            var doc = G.document;
+            var tw = trueWidth(doc, this.font, text);
+            if (tw === null) return m;  // no DOM here + not learned yet
+            var f = m.width / tw;
+            if (!isFinite(f) || f === 0) return m;
+            factor = f;
+            setFactor(f);
+          }
+          var scale = factor;
+          return new Proxy(m, {
+            get: function (t, p) {
+              var v = t[p];
+              return (typeof v === 'number') ? v / scale : v;
+            },
+          });
+        } catch (e) {}
+        return m;
+      }
+      try {
+        Object.defineProperty(measureText, 'name', { value: 'measureText' });
+        Object.defineProperty(measureText, '__pnaName', { value: 'measureText' });
+      } catch (e) {}
+      try { target.measureText = measureText; } catch (e) {}
+    }
+
+    if (proto && proto.measureText) patch(proto);
+    if (off && off.measureText) patch(off);
+   } catch (e) {}
+  }
+__MT_REALM_BOOTSTRAP__
 })();
 """
 
@@ -132,7 +141,10 @@ def build_measuretext_extension(base_dir: str) -> str:
     """
     ext_dir = pathlib.Path(base_dir)
     ext_dir.mkdir(parents=True, exist_ok=True)
-    (ext_dir / "measuretext.js").write_text(CONTENT_SCRIPT, encoding="utf-8")
+    js = CONTENT_SCRIPT.replace(
+        "__MT_REALM_BOOTSTRAP__", realm_bootstrap_js("applyMtPatch")
+    )
+    (ext_dir / "measuretext.js").write_text(js, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(
         json.dumps(MANIFEST, indent=2), encoding="utf-8"
     )

@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 from mcp.server.fastmcp import FastMCP
 
-from ..services.browser.cdp import cdp_port_for
+from .cdp_endpoint import _resolve_port
 
 if TYPE_CHECKING:
     from ..core.container import Container
@@ -44,13 +44,17 @@ def build_mcp(container: Container) -> FastMCP:
 
     @mcp.tool()
     def list_proxies() -> list[dict]:
-        """List configured proxies with their geo/check info."""
+        """List configured proxies with their coarse geo/check info.
+
+        The exit IP (last_ip) is deliberately omitted: it's the identity's exit
+        address, and the response goes to the connected LLM client off-machine —
+        the coarse country_code is enough to tell proxies apart.
+        """
         store = container.proxy_store
         return [
             {
                 "name": px.name,
                 "country": px.country_code,
-                "last_ip": px.last_ip,
                 "ok": px.last_check_ok,
             }
             for px in store.list_proxies()
@@ -129,7 +133,7 @@ def build_mcp(container: Container) -> FastMCP:
             raise ValueError("profile is not AI-enabled (enable AI control first)")
         if not bl.is_running(name):
             raise ValueError("profile is not running (launch it first)")
-        port = cdp_port_for(name)
+        port = await _resolve_port(name)
         pw = await async_playwright().start()
         browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
         ctx = browser.contexts[0]

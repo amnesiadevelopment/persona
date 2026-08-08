@@ -54,99 +54,121 @@ _CONTENT_SCRIPT = r"""
     } catch (e) {}
   }
 
-  // --- screen geometry ---
-  // Pick from common real desktop resolutions, but never smaller than the
-  // actual window — a screen smaller than its own window is an instant tell.
-  // We choose the smallest plausible resolution that still contains the
-  // window (+ taskbar), deterministically nudged by seed when several fit.
-  var RES = [
-    [1366, 768], [1440, 900], [1536, 864], [1600, 900], [1920, 1080],
-    [1680, 1050], [1920, 1200], [2560, 1080], [2560, 1440],
-  ];
-  var TASKBAR = 40;  // typical Windows taskbar height
-  // real window extent the screen must contain
-  var needW = Math.max(window.outerWidth || 0, window.innerWidth || 0);
-  var needH = (Math.max(window.outerHeight || 0, window.innerHeight || 0)) + TASKBAR;
-  var FORCED = __FORCED_RES__;
-  var W, H;
-  if (FORCED) {
-    // A user-picked resolution is honored outright: it's what the scanner
-    // should report, and the window can never be physically larger than the
-    // monitor it was sized against. Gating it on needW leaked the render scale:
-    // under --force-device-scale-factor the window extent (outerWidth) reads in
-    // PHYSICAL px (3840 on a 4K/150% panel), so a chosen 2560 failed the old
-    // containment check, fell through, and reported ~4K. The containment guard
-    // below governs only the seeded auto-pick, where a screen smaller than its
-    // own window is an instant tell.
-    W = FORCED[0]; H = FORCED[1];
-  } else {
-    var fits = RES.filter(function (r) { return r[0] >= needW && r[1] >= needH; });
-    if (!fits.length) {
-      // window bigger than every preset — round the real screen up a little
-      fits = [[Math.max(needW, 1920), Math.max(needH, 1080)]];
+  // --- screen geometry + devicePixelRatio + matchMedia ---
+  // These ride the shared recursive registry (applyScreenPatch) so every nested
+  // realm — page, iframe, grandchild iframe — reports the same spoofed monitor.
+  // A one-level getter left a grandchild iframe reading the REAL 4K panel (the
+  // 4090-class leak, for resolution). SEED/FORCED live INSIDE applyScreenPatch
+  // so .toString() re-derives them in each realm. W/H are computed once in the
+  // top window (where window.outerWidth is real) and stored on top so a child
+  // realm reuses the exact same values instead of re-measuring its own extent.
+  function applyScreenPatch(G) {
+   try {
+    if (!G || !G.screen || G.__personaScreen) return;
+    G.__personaScreen = true;
+    var SEED = __SEED__;
+    var FORCED = __FORCED_RES__;
+    var OS = "__OS__";
+    var IS_MAC = (OS === "macos");
+    // macOS has a ~25px top menu bar and no bottom taskbar; Windows a 40px
+    // bottom taskbar. Real Chrome reports 30-bit color + Retina DPR 2 on Mac,
+    // 24-bit + DPR 1 on a typical Windows desktop. screen.* is in logical CSS
+    // px (the engine already divides the panel by the render scale).
+    var INSET = IS_MAC ? 25 : 40;
+    var DEPTH = IS_MAC ? 30 : 24;
+    var DPR = IS_MAC ? 2 : 1;
+    function h(x){var v=SEED^(x|0);v=Math.imul(v^(v>>>16),0x85ebca6b);v=Math.imul(v^(v>>>13),0xc2b2ae35);return (v^(v>>>16))>>>0;}
+    var def=function(o,k,val){try{var g=function(){return val;};try{Object.defineProperty(g,'__pnaName',{value:'get '+k});}catch(e){}Object.defineProperty(o,k,{get:g,configurable:true,enumerable:true});}catch(e){}};
+    var nw=function(orig,rep){try{Object.defineProperty(rep,'name',{value:orig.name});Object.defineProperty(rep,'__pnaName',{value:orig.name});}catch(e){}return rep;};
+
+    // Logical (CSS-px) resolutions from a real-world distribution for the OS.
+    var RES = IS_MAC ? [
+      [1440, 900], [1512, 982], [1680, 1050], [1728, 1117], [2560, 1440],
+    ] : [
+      [1366, 768], [1440, 900], [1536, 864], [1600, 900], [1920, 1080],
+      [1680, 1050], [1920, 1200], [2560, 1080], [2560, 1440],
+    ];
+
+    // Reuse the top window's already-computed W/H so every realm agrees. Only
+    // the top realm has a real window extent to measure against.
+    var top;
+    try { top = G.top; } catch (e) { top = null; }
+    var wh = null;
+    try { if (top && top !== G && top.__personaScreenWH) wh = top.__personaScreenWH; } catch (e) {}
+
+    var W, H;
+    if (wh) {
+      W = wh.W; H = wh.H;
+    } else if (FORCED) {
+      // A user-picked resolution is honored outright (see #167: gating it on the
+      // window extent leaked the render scale under --force-device-scale-factor).
+      W = FORCED[0]; H = FORCED[1];
+    } else {
+      var needW = Math.max(G.outerWidth || 0, G.innerWidth || 0);
+      var needH = (Math.max(G.outerHeight || 0, G.innerHeight || 0)) + INSET;
+      var fits = RES.filter(function (r) { return r[0] >= needW && r[1] >= needH; });
+      if (!fits.length) {
+        fits = [[Math.max(needW, 1920), Math.max(needH, 1080)]];
+      }
+      var r = fits[h(0x5c0fee) % fits.length];
+      W = r[0]; H = r[1];
     }
-    var r = pick(fits, 0x5c0fee);
-    W = r[0]; H = r[1];
+    try { if (!G.__personaScreenWH) G.__personaScreenWH = { W: W, H: H }; } catch (e) {}
+
+    try {
+      def(G.screen, 'width', W);
+      def(G.screen, 'height', H);
+      def(G.screen, 'availWidth', W);
+      def(G.screen, 'availHeight', H - INSET);
+      def(G.screen, 'colorDepth', DEPTH);
+      def(G.screen, 'pixelDepth', DEPTH);
+      if (G.screen && G.screen.orientation) {
+        def(G.screen.orientation, 'type', 'landscape-primary');
+        def(G.screen.orientation, 'angle', 0);
+      }
+    } catch (e) {}
+
+    // devicePixelRatio must agree with the spoofed screen. The host's real DPR
+    // leaking through makes scanners read screen.width * dpr = a resolution no
+    // monitor has. Pin DPR (1 Windows / 2 Retina) and answer the matchMedia
+    // dppx / device-width / device-height probes consistently.
+    try {
+      def(G, 'devicePixelRatio', DPR);
+      var mm = G.matchMedia;
+      if (mm) {
+        var _mqDim = function (q, feature, target) {
+          var re = new RegExp('(min-|max-)?' + feature + '\\s*:\\s*(\\d+(?:\\.\\d+)?)\\s*px', 'i');
+          var m = q.match(re);
+          if (!m) return null;
+          var kind = (m[1] || '').toLowerCase(), n = parseFloat(m[2]);
+          if (kind === 'min-') return target >= n;
+          if (kind === 'max-') return target <= n;
+          return target === n;
+        };
+        // Match a resolution/device-pixel-ratio query against our pinned DPR.
+        var _dprRe = new RegExp('(^|[^\\d.])' + DPR + '(\\.0+)?\\s*dppx', 'i');
+        var _dprRatioRe = new RegExp('device-pixel-ratio\\s*:\\s*' + DPR + '(\\.0+)?\\s*\\)', 'i');
+        G.matchMedia = nw(mm, function (q) {
+          var res = mm.call(G, q);
+          if (/resolution|dppx|device-pixel-ratio|-webkit-device-pixel-ratio/i.test(q)) {
+            var wantsDpr = _dprRe.test(q) || _dprRatioRe.test(q);
+            try { def(res, 'matches', wantsDpr); } catch (e) {}
+          }
+          if (/device-width/i.test(q)) {
+            var mw = _mqDim(q, 'device-width', W);
+            if (mw !== null) { try { def(res, 'matches', mw); } catch (e) {} }
+          }
+          if (/device-height/i.test(q)) {
+            var mh = _mqDim(q, 'device-height', H);
+            if (mh !== null) { try { def(res, 'matches', mh); } catch (e) {} }
+          }
+          return res;
+        });
+      }
+    } catch (e) {}
+   } catch (e) {}
   }
-
-  try {
-    def(screen, 'width', W);
-    def(screen, 'height', H);
-    def(screen, 'availWidth', W);
-    def(screen, 'availHeight', H - TASKBAR);
-    def(screen, 'colorDepth', 24);
-    def(screen, 'pixelDepth', 24);
-    if (window.screen && window.screen.orientation) {
-      def(window.screen.orientation, 'type', 'landscape-primary');
-      def(window.screen.orientation, 'angle', 0);
-    }
-  } catch (e) {}
-
-  // devicePixelRatio must agree with the spoofed screen. The host's real DPR
-  // (1.5 on a 150%-scaled 4K monitor) leaks through untouched, and scanners
-  // read the "physical" resolution as screen.width * devicePixelRatio — so a
-  // spoofed 3840-wide screen at a real 1.5 DPR reports 5760x3240, a resolution
-  // no real monitor has and an obvious tell. Pin DPR to 1 so the physical
-  // resolution equals the spoofed screen (the overwhelmingly common desktop
-  // case). matchMedia('(resolution: Ndppx)') is the other DPR probe, so answer
-  // it consistently: only a 1dppx query matches.
-  try {
-    def(window, 'devicePixelRatio', 1);
-    var mm = window.matchMedia;
-    if (mm) {
-      // device-width/device-height read the PHYSICAL screen. Under
-      // --force-device-scale-factor the engine resolves them to the real panel
-      // divided by the scale (2560 -> 1706 at 1.5x), so they disagree with the
-      // spoofed screen.width/height — an instant tell. Answer them from the same
-      // W/H we pin on screen.* so both report one value.
-      var _mqDim = function (q, feature, target) {
-        var re = new RegExp('(min-|max-)?' + feature + '\\s*:\\s*(\\d+(?:\\.\\d+)?)\\s*px', 'i');
-        var m = q.match(re);
-        if (!m) return null;
-        var kind = (m[1] || '').toLowerCase(), n = parseFloat(m[2]);
-        if (kind === 'min-') return target >= n;
-        if (kind === 'max-') return target <= n;
-        return target === n;
-      };
-      window.matchMedia = nativeWrap(mm, function (q) {
-        var res = mm.call(window, q);
-        if (/resolution|dppx|device-pixel-ratio|-webkit-device-pixel-ratio/i.test(q)) {
-          var wantsOne = /(^|[^\d.])1(\.0+)?\s*dppx/i.test(q) ||
-                         /device-pixel-ratio\s*:\s*1(\.0+)?\s*\)/i.test(q);
-          try { def(res, 'matches', wantsOne); } catch (e) {}
-        }
-        if (/device-width/i.test(q)) {
-          var mw = _mqDim(q, 'device-width', W);
-          if (mw !== null) { try { def(res, 'matches', mw); } catch (e) {} }
-        }
-        if (/device-height/i.test(q)) {
-          var mh = _mqDim(q, 'device-height', H);
-          if (mh !== null) { try { def(res, 'matches', mh); } catch (e) {} }
-        }
-        return res;
-      });
-    }
-  } catch (e) {}
+__SCREEN_REALM_BOOTSTRAP__
 
   // --- mediaDevices.enumerateDevices ---
   // A believable consumer-desktop set: one mic + one default mic, one webcam,
@@ -200,39 +222,9 @@ _CONTENT_SCRIPT = r"""
     def(navigator, 'deviceMemory', Math.min(HM[1], 8));
   } catch (e) {}
 
-  // Carry screen geometry + hardwareConcurrency/deviceMemory into same-realm
-  // about:blank / srcdoc child frames. A content script doesn't inject there, so
-  // creepjs reads a pristine screen (real 1920x1080) and real cores/ram from a
-  // fresh iframe and flags the page/iframe mismatch. Re-apply the SAME values on
-  // access.
-  try {
-    if (typeof HTMLIFrameElement !== "undefined") {
-      var proto = HTMLIFrameElement.prototype;
-      ["contentWindow", "contentDocument"].forEach(function (prop) {
-        var d0 = Object.getOwnPropertyDescriptor(proto, prop);
-        if (!d0 || !d0.get) return;
-        Object.defineProperty(proto, prop, {
-          configurable: true, enumerable: d0.enumerable,
-          get: function () {
-            var r = d0.get.call(this);
-            try {
-              var w = prop === "contentWindow" ? r : (r && r.defaultView);
-              if (w && w.screen && !w.__personaDevice) {
-                w.__personaDevice = true;
-                def(w.screen, 'width', W); def(w.screen, 'height', H);
-                def(w.screen, 'availWidth', W); def(w.screen, 'availHeight', H - TASKBAR);
-                def(w.screen, 'colorDepth', 24); def(w.screen, 'pixelDepth', 24);
-                def(w, 'devicePixelRatio', 1);
-                def(w.navigator, 'hardwareConcurrency', HM[0]);
-                def(w.navigator, 'deviceMemory', Math.min(HM[1], 8));
-              }
-            } catch (e) {}
-            return r;
-          },
-        });
-      });
-    }
-  } catch (e) {}
+  // screen geometry + devicePixelRatio ride applyScreenPatch on the shared
+  // recursive registry (defined above), so they reach every nested realm
+  // (page / iframe / grandchild iframe) — not a one-level getter here.
 
   // Carry hardwareConcurrency/deviceMemory into Web/Shared Workers, where
   // navigator.hardwareConcurrency otherwise reports the real host cores (a
@@ -272,20 +264,35 @@ _MANIFEST = {
 
 
 def build_device_extension(
-    seed: int, base_dir: str, resolution: tuple[int, int] | None = None
+    seed: int,
+    base_dir: str,
+    resolution: tuple[int, int] | None = None,
+    os_type: str = "windows",
 ) -> str:
     """Generate an unpacked extension that spoofs screen geometry and the
     mediaDevices list deterministically per profile seed. Returns its dir.
 
     ``resolution`` forces the spoofed screen to a specific (width, height);
     when None the screen is picked from common desktop sizes by the seed.
+    ``os_type`` selects the screen preset: a macOS profile gets a Retina preset
+    (DPR 2, 30-bit color, menu-bar geometry, Mac resolutions) so it stays
+    consistent with its Apple/Metal GPU; everything else gets the Windows preset.
     """
     ext_dir = pathlib.Path(base_dir)
     ext_dir.mkdir(parents=True, exist_ok=True)
     forced = f"[{resolution[0]}, {resolution[1]}]" if resolution else "null"
+    os_norm = (
+        "macos"
+        if str(os_type).lower() in ("macos", "mac", "darwin", "ios")
+        else "windows"
+    )
     script = _CONTENT_SCRIPT.replace(
         "__SEED__", str(int(seed) & 0xFFFFFFFF)
     ).replace("__FORCED_RES__", forced).replace(
+        "__OS__", os_norm
+    ).replace(
+        "__SCREEN_REALM_BOOTSTRAP__", realm_bootstrap_js("applyScreenPatch")
+    ).replace(
         "__HW_REALM_BOOTSTRAP__", realm_bootstrap_js("applyHwPatch")  # noqa: E501
     )
     (ext_dir / "device.js").write_text(script, encoding="utf-8")

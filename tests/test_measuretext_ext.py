@@ -95,6 +95,18 @@ def test_measuring_node_is_not_resident(tmp_path):
     assert "removeChild" in js
 
 
+def test_measuretext_on_shared_recursive_registry(tmp_path):
+    # #3: the same noise repair must hold in a nested iframe and a Web Worker's
+    # OffscreenCanvas measureText. Route through the shared recursive registry;
+    # the session-constant factor is shared via top so a DOM-less realm repairs.
+    d = build_measuretext_extension(str(tmp_path / "mt"))
+    js = (pathlib.Path(d) / "measuretext.js").read_text()
+    assert "applyMtPatch" in js
+    assert "__pnaBoots.push(applyMtPatch)" in js
+    assert "G.Worker" in js and "HTMLIFrameElement" in js
+    assert "__personaMtFactor" in js
+
+
 def test_no_perpetual_animation_frame_loop(tmp_path):
     d = build_measuretext_extension(str(tmp_path / "mt"))
     js = (pathlib.Path(d) / "measuretext.js").read_text()
