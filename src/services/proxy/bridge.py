@@ -72,13 +72,21 @@ _KEEPALIVE_IDLE = 120
 _KEEPALIVE_INTVL = 15
 _KEEPALIVE_CNT = 5
 
-# Test hook: every tunnel socket (client-accept + upstream) we tuned, so a test
-# can assert the options are really set on the live sockets.
+# Test hook: the recently-tuned tunnel sockets (client-accept + upstream), so a
+# test can assert the options are really set on live sockets. Bounded so a long
+# session doesn't pin every socket ever tuned for the process lifetime — an
+# unbounded list was a slow memory leak. A WeakSet is unusable here: on Windows
+# the object returned by get_extra_info("socket") has no other strong referent,
+# so it would be GC'd out mid-tunnel and drop the reference the transport relies
+# on. Keep a small strong-ref ring instead.
+_TUNNEL_SOCKET_RING = 64
 _tunnel_sockets: "list[socket.socket]" = []
+_tunnel_sockets_lock = threading.Lock()
 
 
 def _debug_tunnel_sockets() -> "list[socket.socket]":
-    return list(_tunnel_sockets)
+    with _tunnel_sockets_lock:
+        return list(_tunnel_sockets)
 
 
 def _tune_tunnel_socket(sock: "socket.socket | None") -> None:
@@ -108,7 +116,10 @@ def _tune_tunnel_socket(sock: "socket.socket | None") -> None:
     except OSError:
         pass
     if tuned:
-        _tunnel_sockets.append(sock)
+        with _tunnel_sockets_lock:
+            _tunnel_sockets.append(sock)
+            if len(_tunnel_sockets) > _TUNNEL_SOCKET_RING:
+                del _tunnel_sockets[:-_TUNNEL_SOCKET_RING]
     # Per-connection keepalive idle/interval/count where the platform exposes
     # them. Linux: TCP_KEEPIDLE/INTVL/CNT. macOS: TCP_KEEPALIVE is the idle time.
     # Windows: no per-socket tunables here (system defaults apply); SO_KEEPALIVE
@@ -148,6 +159,13 @@ class ProxyBridge:
         self._up_port = p.port or 1080
         self._up_user = p.username or ""
         self._up_pass = p.password or ""
+        # SOCKS5 user/pass auth length-prefixes each credential with a single
+        # byte, so neither may exceed 255 UTF-8 bytes. Reject up front (fail
+        # CLOSED): a credential that can't be sent means we can't authenticate to
+        # the proxy, and launching anyway would fall through to a DIRECT clearnet
+        # connection.
+        if len(self._up_user.encode("utf-8")) > 255 or len(self._up_pass.encode("utf-8")) > 255:
+            raise ValueError("SOCKS5 username/password exceeds 255 bytes")
         self._port = 0
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
@@ -159,10 +177,16 @@ class ProxyBridge:
         return self._port
 
     def start(self) -> int:
-        """Start the listener in a background thread; return the local port."""
+        """Start the listener in a background thread; return the local port.
+
+        Raises if the listener never bound (port stays 0). Returning port 0 would
+        make the caller build socks5://127.0.0.1:0, which Chromium treats as
+        no-proxy → a silent DIRECT clearnet launch (fail-open). Fail CLOSED."""
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         self._ready.wait(timeout=5)
+        if not self._port:
+            raise RuntimeError("proxy bridge failed to bind a local port")
         return self._port
 
     def stop(self) -> None:
@@ -273,13 +297,15 @@ class ProxyBridge:
             await w.drain()
             ver, method = await r.readexactly(2)
             if method == 0x02:
-                auth = (
-                    b"\x01"
-                    + bytes([len(self._up_user)])
-                    + self._up_user.encode()
-                    + bytes([len(self._up_pass)])
-                    + self._up_pass.encode()
-                )
+                # Length-prefix the BYTE length, not the str length: SOCKS5 sends
+                # a 1-byte length then the raw bytes. For non-ASCII creds the UTF-8
+                # encoding is longer than the character count, so len(str) desyncs
+                # the frame (and can exceed 255). Encode first, then measure.
+                u = self._up_user.encode("utf-8")
+                p = self._up_pass.encode("utf-8")
+                if len(u) > 255 or len(p) > 255:
+                    raise RuntimeError("SOCKS5 username/password exceeds 255 bytes")
+                auth = b"\x01" + bytes([len(u)]) + u + bytes([len(p)]) + p
                 w.write(auth)
                 await w.drain()
                 _, status = await r.readexactly(2)

@@ -1706,6 +1706,33 @@ def _upsert_prefs_js(profile_dir: str, prefs: dict) -> None:
         pass
 
 
+def _scrub_prefs_js(profile_dir: str, keys) -> None:
+    """Remove the given prefs from the profile's prefs.js entirely.
+
+    A sampled profile carries its source's scale in prefs.js. If a later launch
+    picks Auto (no resolution), the resolution branch that writes
+    layout.css.devPixelsPerPx never runs, so the STALE value stays in prefs.js
+    and the first window opens at the sampled dpr, not the host's — a scale skew
+    the user never chose. Delete the leftover so Firefox falls back to its own
+    host-derived scale."""
+    if not profile_dir or not keys:
+        return
+    path = os.path.join(profile_dir, "prefs.js")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except OSError:
+        return
+    kept = [ln for ln in lines if not any(f'"{k}"' in ln for k in keys)]
+    if len(kept) == len(lines):
+        return
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.writelines(kept)
+    except OSError:
+        pass
+
+
 def _engine_lib_dir():
     """Directory of the active engine's NSS shared libraries (the Firefox
     executable's parent). certutil links against them, so the loader is pointed
@@ -2165,6 +2192,25 @@ def _profile_prefs(cfg: dict) -> dict:
             "font.name-list.emoji": "Segoe UI Emoji, Twemoji Mozilla",
         }
     )
+    # WebRTC IP-leak guard for a PROXIED profile. The engine's srflx override is
+    # driven by an egress-IP lookup that _install_geo_shortcircuit nulls whenever
+    # persona passes a concrete timezone (nearly always) — so for a NON-Tor SOCKS5
+    # proxy FF would otherwise gather real host/srflx ICE candidates that don't
+    # match the exit IP (an RTCPeerConnection tell). The Chromium path already
+    # forbids non-proxied UDP; give FF the equivalent: force ICE to relay-only and
+    # hide host candidates, and route TURN/STUN + DNS through the proxy. On a
+    # direct profile WebRTC stays normal (the real IP IS the identity there).
+    if cfg.get("proxy_url"):
+        prefs.update(
+            {
+                "media.peerconnection.ice.relay_only": True,
+                "media.peerconnection.ice.no_host": True,
+                "media.peerconnection.ice.default_address_only": True,
+                "media.peerconnection.ice.proxy_only_if_behind_proxy": True,
+                "media.peerconnection.use_document_iceservers": False,
+                "network.proxy.socks_remote_dns": True,
+            }
+        )
     # The chosen search engine feeds the Home button and the start page a
     # first launch navigates to (see _child — with startup.page=0 Firefox
     # itself never loads the homepage at startup). (Firefox 150 has no
@@ -2627,6 +2673,12 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
         _upsert_prefs_js(
             profile_dir, {"layout.css.devPixelsPerPx": str(dpr)}
         )
+    else:
+        # Auto (no chosen resolution): the resolution branch above never runs, so
+        # a sampled profile's leftover devPixelsPerPx would still be in prefs.js
+        # and open the first window at the SAMPLED scale, not the host's. Scrub it
+        # so Firefox uses its own host-derived scale.
+        _scrub_prefs_js(profile_dir, ("layout.css.devPixelsPerPx",))
     if proxy:
         kwargs["proxy"] = proxy
         # Firefox owns its own proxy sockets (playwright's native proxy), so the
@@ -3521,6 +3573,37 @@ def _win_path_needle(path: str) -> str:
     return path.replace("/", "\\").lower()
 
 
+# FF is launched with -profile <profile_dir>/.invisible-profile. Matching the
+# bare profile_dir is a SUBSTRING match, so "work" also matches "work2"'s command
+# line (\work is inside \work2) — resolving/killing pids for "work" tears down
+# "work2"'s LIVE browser (the #150 wrong-kill class, between prefix-sibling
+# personas). Anchor the match to the exact profile arg by appending the
+# .invisible-profile subdir, which is unique per profile.
+_INVISIBLE_SUBDIR = ".invisible-profile"
+
+
+def _ff_profile_arg(profile_dir: str) -> str:
+    """The exact -profile value FF is launched with (unique per profile).
+
+    Idempotent: callers already pass the .invisible-profile path (it's what
+    cfg['profile_dir'] holds), but a caller that passes the bare base dir gets it
+    anchored too — either way the match is on the full, prefix-unambiguous arg.
+
+    Separator-agnostic: a Windows profile_dir can carry BOTH separators
+    (expanduser keeps the caller's forward slash — C:\\Users\\u/.persona\\...),
+    and this runs on Linux too. Test the last path component by splitting on
+    either separator rather than through os.path, whose split depends on the
+    host os.sep (on Linux os.path.basename never splits a backslash path, so the
+    idempotency check would miss an already-anchored Windows path and double the
+    suffix)."""
+    p = profile_dir or ""
+    last = p.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    if last == _INVISIBLE_SUBDIR:
+        return p
+    sep = "\\" if ("\\" in p and "/" not in p.rstrip("/")) else "/"
+    return p.rstrip("/\\") + sep + _INVISIBLE_SUBDIR
+
+
 def _profile_firefox_pids(profile_dir: str):
     """PIDs of firefox.exe processes belonging to THIS profile (Windows),
     matched by profile_dir in the command line. Returns None when no resolver
@@ -3546,14 +3629,18 @@ def _profile_firefox_pids(profile_dir: str):
         return None
     entries = _win_firefox_command_lines()
     if entries is not None:
-        needle = _win_path_needle(profile_dir)
+        # Anchor to the exact -profile arg so a prefix-sibling (work2) isn't
+        # matched by work's needle.
+        needle = _win_path_needle(_ff_profile_arg(profile_dir))
         matched = {
             pid for pid, cl in entries if cl and needle in _win_path_needle(cl)
         }
         if matched or all(cl is not None for _pid, cl in entries):
             return matched
     try:
-        pat = _ps_single_quote("*" + profile_dir.replace("/", "\\") + "*")
+        pat = _ps_single_quote(
+            "*" + _ff_profile_arg(profile_dir).replace("/", "\\") + "*"
+        )
         ps = (
             "Get-CimInstance Win32_Process -Filter \"Name='firefox.exe'\" | "
             f"Where-Object {{ $_.CommandLine -like {pat} }} | "
@@ -3739,7 +3826,9 @@ def _firefox_pid(profile_dir: str):
             # dir. CIM/WMI exposes CommandLine; PowerShell keeps this dependency
             # free of extra packages. The real command line holds the pathlib-
             # normalized (backslash) dir — fold separators like _win_path_needle.
-            pat = _ps_single_quote("*" + profile_dir.replace("/", "\\") + "*")
+            pat = _ps_single_quote(
+                "*" + _ff_profile_arg(profile_dir).replace("/", "\\") + "*"
+            )
             ps = (
                 "Get-CimInstance Win32_Process -Filter "
                 "\"Name='firefox.exe'\" | "
@@ -3757,9 +3846,11 @@ def _firefox_pid(profile_dir: str):
             return None
     try:
         # `--` stops pgrep parsing the pattern (which starts with "-profile") as
-        # options. Match on the profile dir alone — it's unique per profile.
+        # options. Anchor on the exact -profile arg (…/.invisible-profile) so a
+        # prefix-sibling profile (work2) isn't matched by work's pattern.
         out = subprocess.check_output(
-            ["pgrep", "-f", "--", re.escape(profile_dir)], text=True
+            ["pgrep", "-f", "--", re.escape(_ff_profile_arg(profile_dir))],
+            text=True,
         )
     except Exception:
         return None

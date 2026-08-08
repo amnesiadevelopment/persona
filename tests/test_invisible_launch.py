@@ -1935,6 +1935,82 @@ def test_child_no_chrome_scale_on_unity_dpr_host(monkeypatch, tmp_path):
     # present but a no-op without a userChrome.css to load).
 
 
+def test_child_auto_resolution_scrubs_stale_devpixelsperpx(monkeypatch, tmp_path):
+    # #9 (audit4): a profile sampled from another carries that source's
+    # layout.css.devPixelsPerPx in prefs.js. Launching it with Auto (no chosen
+    # resolution) must not open the first window at the SAMPLED scale — the stale
+    # pref has to be scrubbed so Firefox uses the host's own dpr.
+    import os
+    import sys
+    import threading
+    import types
+
+    # Seed the leftover the sampled profile would carry.
+    (tmp_path / "prefs.js").write_text(
+        'user_pref("layout.css.devPixelsPerPx", "2.5");\n'
+        'user_pref("browser.startup.homepage", "about:blank");\n',
+        encoding="utf-8",
+    )
+
+    captured = {}
+
+    class FakeCtx:
+        pages = [object()]
+
+        def add_init_script(self, *_a, **_k):
+            pass
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def _default_context_kwargs(self):
+            return {}
+
+        def __enter__(self):
+            return FakeCtx()
+
+        def __exit__(self, *a):
+            return False
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(invisible_launch, "_work_area", lambda: (2560, 1392))
+    monkeypatch.setattr(invisible_launch, "_system_dpr", lambda: 1.0)
+    monkeypatch.setattr(
+        invisible_launch, "_thread_close_watch", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None, rescan=True: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_raise_profile_window", lambda *a, **k: None
+    )
+
+    stop = threading.Event()
+    stop.set()
+    r, w = os.pipe()
+    invisible_launch._child(
+        {
+            "profile_dir": str(tmp_path),
+            "profile_name": "t",
+            "seed": 1,
+            # No "resolution" key -> Auto.
+        },
+        w,
+        stop_event=stop,
+    )
+    os.close(r)
+
+    prefs_js = (tmp_path / "prefs.js").read_text(encoding="utf-8")
+    # The stale scale is gone; the unrelated pref is untouched.
+    assert "layout.css.devPixelsPerPx" not in prefs_js
+    assert "browser.startup.homepage" in prefs_js
+    # And the engine wasn't handed a devPixelsPerPx override either.
+    assert "layout.css.devPixelsPerPx" not in captured.get("extra_prefs", {})
+
+
 def test_devpixelsperpx_matches_host_dpr_in_engine_prefs():
     # #216 against the REAL engine pref pipeline: the host dpr (1.5) must reach the
     # engine intact via layout.css.devPixelsPerPx, which natively drives BOTH
@@ -4585,3 +4661,47 @@ def test_init_places_db_trusts_live_roots_over_stale_wal_recheck(monkeypatch, tm
 
     ok = invisible_launch._init_places_db(str(tmp_path), seed=1, log=None)
     assert ok is True, "must trust the live roots confirmation over a stale WAL recheck"
+
+
+def test_profile_prefs_webrtc_hardened_for_proxied_profile():
+    # #4 (audit4): the geo short-circuit nulls the engine's srflx override, so a
+    # NON-Tor SOCKS5 FF profile would gather real ICE candidates != exit IP (a
+    # WebRTC tell). A proxied profile must force ICE relay-only + hide host
+    # candidates (the FF equivalent of chromium's disable_non_proxied_udp).
+    prefs = _profile_prefs({
+        "search_engine": "duckduckgo",
+        "proxy_url": "socks5://user:pass@1.2.3.4:1080",
+    })
+    assert prefs.get("media.peerconnection.ice.relay_only") is True
+    assert prefs.get("media.peerconnection.ice.no_host") is True
+    assert prefs.get("media.peerconnection.ice.default_address_only") is True
+    assert prefs.get("network.proxy.socks_remote_dns") is True
+
+
+def test_profile_prefs_no_webrtc_override_for_direct_profile():
+    # A direct (no-proxy) profile keeps WebRTC normal — the real IP IS the
+    # identity there, so relay-only would be an unusual tell.
+    prefs = _profile_prefs({"search_engine": "duckduckgo"})
+    assert "media.peerconnection.ice.relay_only" not in prefs
+
+
+def test_profile_pids_anchored_no_prefix_sibling_crosskill(monkeypatch):
+    # #8 (audit4): matching the bare profile_dir is a SUBSTRING match, so "work"
+    # also matches "work2"'s command line and would resolve/kill work2's LIVE
+    # firefox. Anchoring on the exact -profile arg (…/.invisible-profile) must
+    # match ONLY the intended profile.
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", True)
+
+    work_cl = r'firefox.exe -no-remote -profile "C:\data\work\.invisible-profile" -foreground'
+    work2_cl = r'firefox.exe -no-remote -profile "C:\data\work2\.invisible-profile" -foreground'
+    monkeypatch.setattr(
+        invisible_launch, "_win_firefox_command_lines",
+        lambda: [(100, work_cl), (200, work2_cl)],
+    )
+
+    # resolving pids for "work" must NOT include work2's pid (200)
+    got = invisible_launch._profile_firefox_pids(r"C:\data\work")
+    assert got == {100}, got
+    # and "work2" resolves only its own
+    got2 = invisible_launch._profile_firefox_pids(r"C:\data\work2")
+    assert got2 == {200}, got2

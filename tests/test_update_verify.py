@@ -48,8 +48,39 @@ def test_fetch_expected_sha256_retries_then_gives_up(monkeypatch):
 
 
 def test_fetch_expected_sha256_empty_when_asset_not_listed(monkeypatch):
-    monkeypatch.setattr(au, "_curl_get", lambda url, **k: "aaaa  other-file.zip\n")
+    # asset not in checksums.txt AND no sidecar → empty
+    def curl(url, **k):
+        if url.endswith("checksums.txt"):
+            return "aaaa  other-file.zip\n"
+        return ""  # no sidecar
+    monkeypatch.setattr(au, "_curl_get", curl)
     assert au.fetch_expected_sha256("v9.9.9", name="persona-windows-setup.exe") == ""
+
+
+def test_fetch_expected_sha256_reads_sidecar_for_mac_linux(monkeypatch):
+    # #6 (audit4 HIGH): mac dmg / linux AppImage aren't in checksums.txt; their
+    # hash lives in a per-asset {asset}.sha256 sidecar. The updater must read it,
+    # else verify falls open on mac/linux (RCE via a swapped installer).
+    def curl(url, **k):
+        if url.endswith("checksums.txt"):
+            return "aaaa  persona-windows-setup.exe\n"  # asset not here
+        if url.endswith("persona-x86_64.AppImage.sha256"):
+            return "deadbeefcafe  persona-x86_64.AppImage\n"
+        return ""
+    monkeypatch.setattr(au, "_curl_get", curl)
+    got = au.fetch_expected_sha256("v9.9.9", name="persona-x86_64.AppImage")
+    assert got == "deadbeefcafe"
+
+
+def test_fetch_expected_sha256_checksums_txt_still_wins_for_windows(monkeypatch):
+    # the windows exe hash still comes from the combined checksums.txt
+    def curl(url, **k):
+        if url.endswith("checksums.txt"):
+            return "1234abcd  persona-windows-setup.exe\n"
+        return ""
+    monkeypatch.setattr(au, "_curl_get", curl)
+    got = au.fetch_expected_sha256("v9.9.9", name="persona-windows-setup.exe")
+    assert got == "1234abcd"
 
 
 # --- verify_staged_installer ---

@@ -89,3 +89,30 @@ def test_mtls_terminator_log_omits_admin_host():
     src = inspect.getsource(mgr)
     assert "host, port_, port)" not in src
     assert "terminator for %r on 127.0.0.1:%s" in src
+
+
+def test_sftp_path_confined_to_sftp_dir(tmp_path, monkeypatch):
+    # #2 (audit4 HIGH): sftp local paths from the off-machine LLM must be confined
+    # to ~/.persona/sftp — absolute paths and '..' traversal are rejected so a
+    # download/upload can't touch the token/creds/binary anywhere else on disk.
+    import os
+
+    import pytest
+
+    import src.api.mcp_server as ms
+
+    monkeypatch.setattr(ms, "_SFTP_DIR", str(tmp_path / "sftp"))
+
+    # a plain relative name is allowed and lands inside the sftp dir
+    safe = ms._confine_sftp_path("report.txt")
+    assert safe.startswith(os.path.realpath(str(tmp_path / "sftp")))
+
+    # a nested relative path is fine too
+    safe2 = ms._confine_sftp_path("sub/dir/x.bin")
+    assert "sub" in safe2
+
+    # absolute paths, drive letters and '..' traversal are rejected
+    for bad in ("/etc/passwd", r"C:\Windows\evil.exe",
+                "../../.persona/mcp_token", "../../../profiles.json"):
+        with pytest.raises(ValueError):
+            ms._confine_sftp_path(bad)

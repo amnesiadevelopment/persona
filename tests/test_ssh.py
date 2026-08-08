@@ -101,3 +101,36 @@ def test_proxy_socket_routes_through_socks():
     banner = sock.recv(32)
     sock.close()
     assert banner.startswith(b"SSH-2.0")
+
+
+def test_connect_never_uses_autoadd_policy():
+    # #3 (audit4 HIGH): the SSH session rides an untrusted SOCKS exit (MITM
+    # position). AutoAddPolicy would auto-accept a spoofed key and leak the
+    # cleartext password/passphrase. The client must use the TOFU policy instead.
+    import inspect
+
+    src = inspect.getsource(C.connect)
+    assert "AutoAddPolicy()" not in src  # no AutoAdd instantiation
+    assert "set_missing_host_key_policy(_TOFUPolicy())" in src
+
+
+def test_tofu_policy_pins_new_host_key_0600(tmp_path, monkeypatch):
+    import os
+    import stat
+
+    import paramiko
+
+    monkeypatch.setattr(C, "PERSONA_HOME", str(tmp_path))
+    monkeypatch.setattr(C, "_KNOWN_HOSTS", str(tmp_path / "known_hosts"))
+
+    client = paramiko.SSHClient()
+    key = paramiko.RSAKey.generate(2048)
+    C._TOFUPolicy().missing_host_key(client, "srv.example.com", key)
+
+    kh = tmp_path / "known_hosts"
+    assert kh.exists(), "a first-sight host key must be pinned"
+    content = kh.read_text()
+    assert "srv.example.com" in content
+    if os.name != "nt":
+        mode = stat.S_IMODE(os.stat(kh).st_mode)
+        assert mode == 0o600

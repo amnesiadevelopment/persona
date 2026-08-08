@@ -82,6 +82,27 @@ def _proxy_arg(proxy_url: str | None) -> tuple[str | None, ProxyBridge | None]:
     return parse_proxy_server(proxy_url), None
 
 
+class ProxyUnresolvedError(RuntimeError):
+    """A profile has a proxy ASSIGNED but it could not be resolved to a usable
+    URL (deleted/renamed proxy, or a stored value that lost its scheme/port)."""
+
+
+def _require_proxy_resolved(profile: Profile, proxy_url: str | None) -> None:
+    """Fail CLOSED when a proxy is assigned but unresolvable.
+
+    The entire anti-leak block (--proxy-server, DoH off, WebRTC/QUIC/DNS guards)
+    is gated on a resolved proxy_url. If a profile has profile.proxy set but
+    resolve() yielded nothing, launching anyway opens a DIRECT clearnet window
+    with the real IP/DNS/WebRTC — a total de-anonymization with no error shown.
+    A security tool must fail closed: refuse the launch instead.
+    """
+    if getattr(profile, "proxy", None) and not proxy_url:
+        raise ProxyUnresolvedError(
+            f"Profile {profile.name!r} has proxy {profile.proxy!r} assigned but it "
+            "could not be resolved (deleted/renamed?). Refusing to launch DIRECT."
+        )
+
+
 # Map a proxy's country to a sensible browser locale, so Accept-Language
 # matches the exit IP. Falls back to en-US when the country is unknown.
 _COUNTRY_LOCALE = {
@@ -304,7 +325,10 @@ def _spawn_invisible(profile: Profile, profile_dir: str):
     from .invisible_launch import is_invisible_installed, spawn
 
     store = ProxyStore()
-    proxy_url = store.resolve(profile.proxy) or ""
+    _resolved = store.resolve(profile.proxy)
+    # Fail CLOSED: never launch FF DIRECT for a profile that HAS a proxy assigned.
+    _require_proxy_resolved(profile, _resolved)
+    proxy_url = _resolved or ""
     proxy = store.get(profile.proxy) if profile.proxy else None
     # Locale + timezone follow the proxy's geo so they match the exit IP. Always
     # resolve to a CONCRETE zone — never leave it empty: invisible treats an
@@ -416,6 +440,8 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
     store = ProxyStore()
     proxy = store.get(profile.proxy) if profile.proxy else None
     proxy_url = store.resolve(profile.proxy)
+    # Fail CLOSED: never open a DIRECT window for a profile that HAS a proxy.
+    _require_proxy_resolved(profile, proxy_url)
 
     # An assigned mTLS certificate starts a local terminator that presents the
     # client cert to the admin host only; its own upstream is the profile's real
@@ -464,7 +490,8 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
         # `lang`, at parity with the Firefox engine.
         extensions.append(
             build_voice_extension(
-                lang, os.path.join(profile_dir, ".persona-voice-ext")
+                lang, os.path.join(profile_dir, ".persona-voice-ext"),
+                os_type=profile.os_type,
             )
         )
         extensions.append(

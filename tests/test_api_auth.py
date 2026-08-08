@@ -99,6 +99,15 @@ def test_health_is_open(client):
     assert r.status_code == 200
 
 
+def test_docs_endpoints_disabled(client):
+    # #9 (audit4): /docs, /redoc, /openapi.json bypass the bearer + Host guards
+    # (they match neither /mcp nor /api/v1). They must not exist at all.
+    c, _ = client
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        r = c.get(path, headers={"host": "127.0.0.1:8000"})
+        assert r.status_code == 404, f"{path} should be disabled"
+
+
 def test_browser_launch_requires_token(client):
     c, _ = client
     r = c.post("/api/v1/browser/anything/launch", headers={"host": "127.0.0.1:8000"})

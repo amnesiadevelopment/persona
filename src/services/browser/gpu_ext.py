@@ -79,8 +79,23 @@ _CONTENT_SCRIPT = r"""
     { unmaskedVendor: "Google Inc. (Apple)",
       unmaskedRenderer: "ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Pro, Unspecified Version)" }
   ];
+  // Android mobile Chrome runs WebGL over ANGLE-on-OpenGL-ES with a real phone
+  // GPU. A D3D11 desktop string on a phone UA is impossible; use the Adreno/Mali
+  // pool + GLES version strings below.
+  var ANDROID_GPUS = [
+    { unmaskedVendor: "Google Inc. (Qualcomm)",
+      unmaskedRenderer: "ANGLE (Qualcomm, Adreno (TM) 730, OpenGL ES 3.2)" },
+    { unmaskedVendor: "Google Inc. (Qualcomm)",
+      unmaskedRenderer: "ANGLE (Qualcomm, Adreno (TM) 660, OpenGL ES 3.2)" },
+    { unmaskedVendor: "Google Inc. (ARM)",
+      unmaskedRenderer: "ANGLE (ARM, Mali-G78 MP20, OpenGL ES 3.2)" },
+    { unmaskedVendor: "Google Inc. (ARM)",
+      unmaskedRenderer: "ANGLE (ARM, Mali-G710 MC10, OpenGL ES 3.2)" }
+  ];
 
-  var POOL = (OS === "macos") ? MAC_GPUS : WIN_GPUS;
+  var POOL = (OS === "macos") ? MAC_GPUS
+           : (OS === "android") ? ANDROID_GPUS
+           : WIN_GPUS;
   var GPU = pick(POOL, 0x67900);
 
   // Stable Chrome desktop limits for these GPU tiers on the ANGLE/D3D11 & Metal
@@ -235,9 +250,10 @@ def build_gpu_extension(seed: int, os_type: str, base_dir: str) -> str:
     """
     ext_dir = pathlib.Path(base_dir)
     ext_dir.mkdir(parents=True, exist_ok=True)
+    ot = str(os_type).lower()
     os_norm = (
-        "macos"
-        if str(os_type).lower() in ("macos", "mac", "darwin", "ios")
+        "macos" if ot in ("macos", "mac", "darwin", "ios")
+        else "android" if ot in ("android",)
         else "windows"
     )
     script = (

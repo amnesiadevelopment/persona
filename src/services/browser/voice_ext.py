@@ -27,26 +27,66 @@ function applyVoicePatch(G) {
   if (!G || G.__personaVoice || !G.speechSynthesis) return;
   G.__personaVoice = true;
   const LANG = %LANG%;
+  const OS = "%OS%";  // "windows" | "macos" | "linux"
   const base = (LANG.split('-')[0] || 'en');
-  const WIN = [
-    {name:'Microsoft David - English (United States)', lang:'en-US'},
-    {name:'Microsoft Zira - English (United States)', lang:'en-US'},
-    {name:'Microsoft Mark - English (United States)', lang:'en-US'},
-  ];
-  const LOCALE_VOICE = {
-    'pl': {name:'Microsoft Paulina - Polish (Poland)', lang:'pl-PL'},
-    'de': {name:'Microsoft Hedda - German (Germany)', lang:'de-DE'},
-    'fr': {name:'Microsoft Hortense - French (France)', lang:'fr-FR'},
-    'es': {name:'Microsoft Helena - Spanish (Spain)', lang:'es-ES'},
-    'uk': {name:'Microsoft Ostap - Ukrainian (Ukraine)', lang:'uk-UA'},
-    'ru': {name:'Microsoft Irina - Russian (Russia)', lang:'ru-RU'},
-  }[base];
-  const spec = LOCALE_VOICE && LOCALE_VOICE.lang !== 'en-US' ? [LOCALE_VOICE].concat(WIN) : WIN.slice();
+
+  // Per-OS voice roster: a macOS/iOS profile ships an Apple GPU + MacIntel, so a
+  // Microsoft SAPI voice list is a hard OS-mismatch tell (real Apple = Samantha/
+  // Alex/Daniel). Linux uses eSpeak. getVoices() is a top-weight cross-check.
+  let BASE, LOCALE_VOICE, mkURI, defaultLocal;
+  if (OS === "macos") {
+    BASE = [
+      {name:'Samantha', lang:'en-US'},
+      {name:'Alex', lang:'en-US'},
+      {name:'Daniel', lang:'en-GB'},
+    ];
+    LOCALE_VOICE = {
+      'pl': {name:'Zosia', lang:'pl-PL'}, 'de': {name:'Anna', lang:'de-DE'},
+      'fr': {name:'Thomas', lang:'fr-FR'}, 'es': {name:'Mónica', lang:'es-ES'},
+      'uk': {name:'Lesya', lang:'uk-UA'}, 'ru': {name:'Milena', lang:'ru-RU'},
+      'it': {name:'Alice', lang:'it-IT'}, 'nl': {name:'Xander', lang:'nl-NL'},
+    }[base];
+    mkURI = function (v) { return 'com.apple.speech.synthesis.voice.' + v.name.toLowerCase(); };
+    defaultLocal = 'en-US';
+  } else if (OS === "linux") {
+    BASE = [
+      {name:'English (America)', lang:'en-US'},
+      {name:'English (Great Britain)', lang:'en-GB'},
+    ];
+    LOCALE_VOICE = {
+      'pl': {name:'Polish', lang:'pl-PL'}, 'de': {name:'German', lang:'de-DE'},
+      'fr': {name:'French (France)', lang:'fr-FR'}, 'es': {name:'Spanish', lang:'es-ES'},
+      'uk': {name:'Ukrainian', lang:'uk-UA'}, 'ru': {name:'Russian', lang:'ru-RU'},
+    }[base];
+    mkURI = function (v) { return v.name; };
+    defaultLocal = 'en-US';
+  } else {
+    BASE = [
+      {name:'Microsoft David - English (United States)', lang:'en-US'},
+      {name:'Microsoft Zira - English (United States)', lang:'en-US'},
+      {name:'Microsoft Mark - English (United States)', lang:'en-US'},
+    ];
+    LOCALE_VOICE = {
+      'pl': {name:'Microsoft Paulina - Polish (Poland)', lang:'pl-PL'},
+      'de': {name:'Microsoft Hedda - German (Germany)', lang:'de-DE'},
+      'fr': {name:'Microsoft Hortense - French (France)', lang:'fr-FR'},
+      'es': {name:'Microsoft Helena - Spanish (Spain)', lang:'es-ES'},
+      'uk': {name:'Microsoft Ostap - Ukrainian (Ukraine)', lang:'uk-UA'},
+      'ru': {name:'Microsoft Irina - Russian (Russia)', lang:'ru-RU'},
+    }[base];
+    mkURI = function (v) {
+      return 'Microsoft Server Speech Text to Speech Voice (' + v.lang + ', ' +
+             v.name.replace(/^Microsoft /, '').split(' - ')[0] + ')';
+    };
+    defaultLocal = 'en-US';
+  }
+  const spec = LOCALE_VOICE && LOCALE_VOICE.lang !== defaultLocal
+    ? [LOCALE_VOICE].concat(BASE) : BASE.slice();
   const proto = (G.SpeechSynthesisVoice && G.SpeechSynthesisVoice.prototype) || Object.prototype;
   const voices = spec.map(function (v, idx) {
     const o = Object.create(proto);
     Object.defineProperties(o, {
-      voiceURI: {value: 'Microsoft Server Speech Text to Speech Voice (' + v.lang + ', ' + v.name.replace(/^Microsoft /, '').split(' - ')[0] + ')', enumerable: true},
+      voiceURI: {value: mkURI(v), enumerable: true},
       name: {value: v.name, enumerable: true},
       lang: {value: v.lang, enumerable: true},
       localService: {value: true, enumerable: true},
@@ -85,14 +125,25 @@ MANIFEST = {
 }
 
 
-def build_voice_extension(locale: str, base_dir: str) -> str:
+def build_voice_extension(
+    locale: str, base_dir: str, os_type: str = "windows"
+) -> str:
     """Generate an unpacked extension that replaces the speechSynthesis voice
-    list with a Windows-plausible set matching `locale`, hiding the host OS
-    voices (a macOS + host-locale tell that chromium otherwise leaks)."""
+    list with an OS-appropriate, `locale`-matched set: Apple voices for macOS/iOS,
+    eSpeak for Linux, Microsoft SAPI for Windows. Hardcoding Windows voices on a
+    macOS/iOS profile (which ships an Apple GPU) was a hard OS-mismatch tell."""
     ext_dir = pathlib.Path(base_dir)
     ext_dir.mkdir(parents=True, exist_ok=True)
-    js = CONTENT_SCRIPT.replace("%LANG%", json.dumps(locale or "en-US")).replace(
-        "__REALM_BOOTSTRAP__", realm_bootstrap_js("applyVoicePatch")
+    os_norm = (
+        "macos" if str(os_type).lower() in ("macos", "mac", "darwin", "ios")
+        else "linux" if str(os_type).lower() in ("linux", "android")
+        else "windows"
+    )
+    js = (
+        CONTENT_SCRIPT
+        .replace("%LANG%", json.dumps(locale or "en-US"))
+        .replace("%OS%", os_norm)
+        .replace("__REALM_BOOTSTRAP__", realm_bootstrap_js("applyVoicePatch"))
     )
     (ext_dir / "voices.js").write_text(js, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(json.dumps(MANIFEST, indent=2), encoding="utf-8")

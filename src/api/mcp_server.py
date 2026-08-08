@@ -8,14 +8,45 @@ layer added later.
 
 from __future__ import annotations
 
+import os
+
 from typing import TYPE_CHECKING
 
 from mcp.server.fastmcp import FastMCP
 
+from ..core.config import PERSONA_HOME
 from .cdp_endpoint import _resolve_port
 
 if TYPE_CHECKING:
     from ..core.container import Container
+
+
+# sftp_get/sftp_put move bytes to/from a client-supplied local path. The client
+# is off-machine (the LLM) and content it browses can carry prompt injection, so
+# an unconfined path lets an attacker WRITE over the token/creds/binary or READ
+# proxies.json / ssh_hosts.json / cert keys out to a remote host. Confine every
+# local path to a dedicated dir under PERSONA_HOME and reject anything that
+# escapes it.
+_SFTP_DIR = os.path.join(PERSONA_HOME, "sftp")
+
+
+def _confine_sftp_path(local_path: str) -> str:
+    """Resolve ``local_path`` inside the dedicated sftp dir, or raise ValueError.
+
+    Rejects absolute paths and any ``..`` traversal; the realpath must stay
+    inside _SFTP_DIR. Returns the safe absolute path (parent dirs created).
+    """
+    os.makedirs(_SFTP_DIR, exist_ok=True)
+    base = os.path.realpath(_SFTP_DIR)
+    # A client path is always interpreted RELATIVE to the sftp dir; an absolute
+    # path (or a drive-letter / leading slash) is rejected outright.
+    if os.path.isabs(local_path) or (len(local_path) > 1 and local_path[1] == ":"):
+        raise ValueError("sftp local_path must be relative to the sftp dir")
+    candidate = os.path.realpath(os.path.join(base, local_path))
+    if candidate != base and not candidate.startswith(base + os.sep):
+        raise ValueError("sftp local_path escapes the sftp dir")
+    os.makedirs(os.path.dirname(candidate), exist_ok=True)
+    return candidate
 
 
 def build_mcp(container: Container) -> FastMCP:
@@ -321,24 +352,34 @@ def build_mcp(container: Container) -> FastMCP:
 
     @mcp.tool()
     async def sftp_get(host_name: str, remote_path: str, local_path: str) -> dict:
-        """Download a file from the SSH host to a local path."""
+        """Download a file from the SSH host into persona's sftp dir.
+
+        local_path is relative to ~/.persona/sftp — absolute paths and '..' are
+        rejected so a download can't overwrite the token/creds/binary.
+        """
         import asyncio
 
         from ..services.ssh import client as ssh
 
+        safe = _confine_sftp_path(local_path)
         target = _ssh_target(host_name)
-        await asyncio.to_thread(ssh.sftp_get, target, remote_path, local_path)
-        return {"ok": True, "local_path": local_path}
+        await asyncio.to_thread(ssh.sftp_get, target, remote_path, safe)
+        return {"ok": True, "local_path": safe}
 
     @mcp.tool()
     async def sftp_put(host_name: str, local_path: str, remote_path: str) -> dict:
-        """Upload a local file to the SSH host."""
+        """Upload a file from persona's sftp dir to the SSH host.
+
+        local_path is relative to ~/.persona/sftp — absolute paths and '..' are
+        rejected so creds/keys elsewhere on disk can't be exfiltrated.
+        """
         import asyncio
 
         from ..services.ssh import client as ssh
 
+        safe = _confine_sftp_path(local_path)
         target = _ssh_target(host_name)
-        await asyncio.to_thread(ssh.sftp_put, target, local_path, remote_path)
+        await asyncio.to_thread(ssh.sftp_put, target, safe, remote_path)
         return {"ok": True, "remote_path": remote_path}
 
     return mcp

@@ -294,6 +294,33 @@ class Terminator:
                 self._srv.close()
             except OSError:
                 pass
+        # The decrypted, UNENCRYPTED client key + leaf key sit on disk in
+        # .persona-mtls for the session's lifetime; the P12 password protects
+        # nothing at rest once they're written. Wipe them when the terminator
+        # stops so the operator's real mTLS key isn't left as plaintext PEM.
+        for path in (self._client_pem, self.leaf.key_path, self.leaf.cert_path):
+            _secure_delete(path)
+
+
+def _secure_delete(path: str | None) -> None:
+    """Best-effort secure delete: overwrite the file with zeros, then unlink.
+    (On SSDs/COW filesystems overwrite isn't a guarantee, but it beats leaving a
+    plaintext private key readable indefinitely.)"""
+    if not path:
+        return
+    try:
+        if os.path.exists(path):
+            size = os.path.getsize(path)
+            with open(path, "r+b", buffering=0) as f:
+                f.write(b"\x00" * size)
+                f.flush()
+                os.fsync(f.fileno())
+    except OSError:
+        pass
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def _pipe_both(a: socket.socket, b: socket.socket) -> None:

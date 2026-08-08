@@ -80,7 +80,19 @@ def test_real_macos_strings(tmp_path):
 
 def test_os_gate_present(tmp_path):
     js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g")), "gpu.js")
-    assert 'var POOL = (OS === "macos") ? MAC_GPUS : WIN_GPUS;' in js
+    # 3-way pool gate: macOS→Apple/Metal, android→Adreno/Mali, else Windows/D3D11
+    assert '(OS === "macos") ? MAC_GPUS' in js
+    assert '(OS === "android") ? ANDROID_GPUS' in js
+    assert "WIN_GPUS" in js
+
+
+def test_android_profile_gets_mobile_gpu(tmp_path):
+    # #5 (audit4): an Android profile (phone UA + touch) returning a D3D11 desktop
+    # GPU is impossible — it must get the Adreno/Mali ANGLE-over-GLES pool.
+    js = _read(build_gpu_extension(1, "android", str(tmp_path / "g")), "gpu.js")
+    assert 'var OS = "android"' in js
+    assert "Adreno" in js and "Mali" in js
+    assert "OpenGL ES 3.2" in js
 
 
 def test_version_strings(tmp_path):

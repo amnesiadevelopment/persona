@@ -414,6 +414,59 @@ def test_silent_but_open_tunnel_is_NOT_reaped():
         bridge.stop()
 
 
+def test_start_raises_when_no_port_bound(monkeypatch):
+    # #9 (audit4) fail-closed: if the listener never binds, _port stays 0.
+    # Returning 0 lets the caller build socks5://127.0.0.1:0, which Chromium
+    # treats as no-proxy → a silent DIRECT clearnet launch (deanon). start()
+    # must RAISE instead of returning a bogus port.
+    bridge = ProxyBridge("socks5://user:pass@1.2.3.4:1080")
+
+    # Never let _serve set the port: simulate a bind that never completes.
+    async def _never_binds():
+        return
+
+    monkeypatch.setattr(bridge, "_serve", _never_binds)
+    try:
+        import pytest
+
+        with pytest.raises(RuntimeError, match="failed to bind"):
+            bridge.start()
+    finally:
+        bridge.stop()
+
+
+def test_non_ascii_credentials_are_byte_length_prefixed():
+    # #9 (audit4): SOCKS5 sends a 1-byte length then the raw credential bytes.
+    # A cred with non-ASCII chars (e.g. Cyrillic) encodes to MORE UTF-8 bytes
+    # than str characters — len(str) would desync the frame (FakeUpstream reads
+    # ulen then exactly ulen bytes). The bridge must encode first, then measure.
+    upstream = FakeUpstream("ok")
+    upstream.start()
+    # Cyrillic user + password: 'юзер' is 4 chars / 8 UTF-8 bytes.
+    bridge = ProxyBridge(f"socks5://юзер:парол@127.0.0.1:{upstream.port}")
+    bridge.start()
+    try:
+        client, reply = _socks5_request(bridge.port)
+        assert reply[1] == 0x00
+        # The upstream decoded exactly what we sent — frame stayed in sync.
+        assert upstream.auth == ("юзер", "парол")
+        client.close()
+    finally:
+        upstream.join(timeout=5)
+        bridge.stop()
+
+
+def test_over_long_credentials_are_rejected():
+    # A credential longer than 255 BYTES cannot fit SOCKS5's 1-byte length
+    # field; sending a truncated length would desync the frame. Constructing the
+    # bridge must fail CLOSED — raise up front rather than start a listener that
+    # can't authenticate and would fall through to a DIRECT clearnet connection.
+    import pytest
+
+    with pytest.raises(ValueError, match="255 bytes"):
+        ProxyBridge(f"socks5://u:{'x' * 300}@127.0.0.1:1080")
+
+
 def test_dead_upstream_eof_tears_the_tunnel_down():
     # The other half: a truly dead upstream (it closes after one exchange = EOF)
     # MUST tear the tunnel down so the browser rebuilds — the real half-open case,

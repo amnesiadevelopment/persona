@@ -9,11 +9,52 @@ session presents from the proxy's IP. Auth supports both a private key
 
 from __future__ import annotations
 
+import os
+import threading
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
 import paramiko
 import socks
+
+from ...core.config import PERSONA_HOME
+from ...core.logging import get_logger
+
+logger = get_logger("ssh.client")
+
+# Trust-on-first-use host-key store. The SSH session is DELIBERATELY routed
+# through an untrusted SOCKS exit (Tor / commercial / residential) — exactly the
+# MITM position. AutoAddPolicy would auto-accept a spoofed key from a compromised
+# exit and hand it the cleartext password + key passphrase. Instead we pin the
+# host key on first sight into a persona-managed known_hosts (0600) and hard-
+# reject on any later mismatch.
+_KNOWN_HOSTS = os.path.join(PERSONA_HOME, "known_hosts")
+_KNOWN_HOSTS_LOCK = threading.Lock()
+
+
+class _TOFUPolicy(paramiko.MissingHostKeyPolicy):
+    """Pin an unseen host key on first sight; a MissingHostKey callback only
+    fires when the key is NOT already in known_hosts. A key that IS present but
+    DIFFERENT is rejected by paramiko before this callback (raises), which is the
+    MITM-detection we want. So here we only persist a genuinely-new key."""
+
+    def missing_host_key(self, client, hostname, key):
+        with _KNOWN_HOSTS_LOCK:
+            try:
+                os.makedirs(PERSONA_HOME, exist_ok=True)
+                hostkeys = client.get_host_keys()
+                hostkeys.add(hostname, key.get_name(), key)
+                hostkeys.save(_KNOWN_HOSTS)
+                try:
+                    os.chmod(_KNOWN_HOSTS, 0o600)
+                except OSError:
+                    pass
+                logger.info(
+                    "Pinned SSH host key for %s (%s) on first sight",
+                    hostname, key.get_name(),
+                )
+            except Exception:
+                logger.exception("Could not persist SSH host key for %s", hostname)
 
 
 @dataclass
@@ -72,7 +113,15 @@ def connect(target: SSHTarget, timeout: float = 20.0) -> paramiko.SSHClient:
     """Open an SSH connection to target (through its proxy when set). Caller
     closes the returned client."""
     client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    # Load previously-pinned keys; TOFU-pin an unseen host, hard-reject a changed
+    # one (paramiko raises on a known-but-mismatched key). Never AutoAddPolicy —
+    # the untrusted SOCKS exit is a MITM position for a password/passphrase steal.
+    if os.path.exists(_KNOWN_HOSTS):
+        try:
+            client.load_host_keys(_KNOWN_HOSTS)
+        except Exception:
+            logger.exception("Could not load %s", _KNOWN_HOSTS)
+    client.set_missing_host_key_policy(_TOFUPolicy())
     sock = _proxy_socket(target, timeout)
     pkey = _load_key(target)
     client.connect(

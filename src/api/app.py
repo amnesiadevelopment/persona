@@ -74,6 +74,13 @@ def create_app(container: Container) -> FastAPI:
         description="Local REST API for persona profile management",
         version="1.0.0",
         lifespan=lifespan,
+        # The default /docs, /redoc, /openapi.json match neither /mcp nor /api/v1,
+        # so the bearer + DNS-rebinding Host guards below never run for them — any
+        # local process / rebound page could enumerate every route + schema. This
+        # is a local management API, not a public one; disable the doc endpoints.
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
     )
     app.state.container = container
 

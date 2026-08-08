@@ -538,3 +538,66 @@ def test_chromium_no_proxy_timezone_matches_en_us_language(monkeypatch, tmp_path
         f"no-proxy chromium must pin a US tz to match en-US, got {tz!r}"
     )
     assert "Europe/Kyiv" not in tz, "host timezone must not leak on a direct profile"
+
+
+def test_assigned_but_unresolvable_proxy_fails_closed(monkeypatch, tmp_path):
+    # #1 (audit4 CRITICAL): a profile with a proxy ASSIGNED but unresolvable
+    # (deleted/renamed) must FAIL CLOSED — never open a DIRECT clearnet window.
+    import pytest
+
+    from src.services.browser.process import ProxyUnresolvedError
+
+    class _StoreNoResolve:
+        def resolve(self, name):
+            return None  # assigned proxy can't be resolved
+
+        def get(self, name):
+            return None
+
+    class _Bookmarks:
+        def resolve_selection(self, *a, **k):
+            return []
+
+    spawned = []
+    monkeypatch.setattr(process, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(process, "ProxyStore", _StoreNoResolve)
+    monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
+    monkeypatch.setattr(process, "write_window_entry", lambda name: None)
+    monkeypatch.setattr(process._platform, "IS_LINUX", False)
+    monkeypatch.setattr(process.subprocess, "Popen",
+                        lambda *a, **k: spawned.append(True))
+
+    with pytest.raises(ProxyUnresolvedError):
+        process.spawn_browser(Profile(name="deanon-risk", proxy="ghost-proxy"))
+    assert spawned == [], "must NOT spawn a browser when the proxy is unresolvable"
+
+
+def test_no_proxy_profile_still_launches(monkeypatch, tmp_path):
+    # A profile with NO proxy assigned is a legitimate direct profile and must
+    # still launch (the fail-closed guard only triggers on an ASSIGNED proxy).
+    class _Store:
+        def resolve(self, name):
+            return None
+
+        def get(self, name):
+            return None
+
+    class _Bookmarks:
+        def resolve_selection(self, *a, **k):
+            return []
+
+    captured = {}
+    monkeypatch.setattr(process, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(process, "ProxyStore", _Store)
+    monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
+    monkeypatch.setattr(process, "write_window_entry", lambda name: None)
+    monkeypatch.setattr(process._platform, "IS_LINUX", False)
+
+    class _Proc:
+        pass
+
+    monkeypatch.setattr(process.subprocess, "Popen",
+                        lambda *a, **k: captured.setdefault("p", _Proc()) or captured["p"])
+    # no proxy => no exception
+    proc = process.spawn_browser(Profile(name="direct-ok", proxy=None))
+    assert proc is not None

@@ -333,3 +333,26 @@ def test_terminator_routes_upstream_through_socks(tmp_path):
     finally:
         socks_stop()
         stop()
+
+
+def test_stop_wipes_client_and_leaf_keys(tmp_path):
+    # #7 (audit4): the decrypted UNENCRYPTED client key + leaf key sit in
+    # .persona-mtls; stop() must securely delete them so the operator's real mTLS
+    # key isn't left as plaintext PEM at rest.
+    import os
+
+    leaf = term.make_leaf("admin.example.com", str(tmp_path))
+    assert os.path.exists(leaf.key_path)
+    assert os.path.exists(leaf.cert_path)
+
+    # a stand-in client PEM (the decrypted key would live here)
+    client_pem = os.path.join(str(tmp_path), "client.pem")
+    with open(client_pem, "w") as f:
+        f.write("-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----\n")
+
+    t = term.Terminator("admin.example.com", leaf, client_pem)
+    t.stop()
+
+    assert not os.path.exists(client_pem), "client key PEM must be wiped on stop"
+    assert not os.path.exists(leaf.key_path), "leaf key must be wiped on stop"
+    assert not os.path.exists(leaf.cert_path), "leaf cert must be wiped on stop"

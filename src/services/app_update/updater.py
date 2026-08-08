@@ -20,7 +20,7 @@ import time
 from ..engine.updater import is_newer
 from ...core import platform as _platform
 
-APP_VERSION = "2.9.10"
+APP_VERSION = "2.9.11"
 APP_REPO = "amnesiadevelopment/persona"
 
 
@@ -501,15 +501,21 @@ def _sha256_file(path: str) -> str:
 
 
 def fetch_expected_sha256(tag: str, name: str = "", attempts: int = 3) -> str:
-    """The sha256 CI publishes in the release's checksums.txt for this OS's
-    asset, or '' when unavailable (older release without one, asset not listed,
-    or the fetch failed after retries)."""
+    """The sha256 CI publishes for this OS's asset, or '' when unavailable.
+
+    Checks two sources: the combined checksums.txt (which the windows CI job
+    fills with the exe + app.zip) AND the per-asset sidecar {asset}.sha256 that
+    the macOS/Linux jobs publish. Without the sidecar lookup, verify on mac/linux
+    fell through to a fail-OPEN size check — a channel-controlling party could
+    then ship an arbitrary dmg/AppImage the auto-updater would install (RCE)."""
     if not tag:
         return ""
     name = name or asset_name()
-    url = f"https://github.com/{APP_REPO}/releases/download/{tag}/checksums.txt"
+    base = f"https://github.com/{APP_REPO}/releases/download/{tag}"
+
+    # 1) combined checksums.txt (windows exe + app.zip live here)
     for _ in range(attempts):
-        body = _curl_get(url)
+        body = _curl_get(f"{base}/checksums.txt")
         if not body:
             continue
         for line in body.splitlines():
@@ -517,7 +523,17 @@ def fetch_expected_sha256(tag: str, name: str = "", attempts: int = 3) -> str:
             # sha256sum format: "<hex>  <name>" ('*' prefix in binary mode)
             if len(parts) >= 2 and parts[-1].lstrip("*") == name:
                 return parts[0].strip().lower()
-        return ""
+        break  # fetched but the asset isn't in this file — try the sidecar
+
+    # 2) per-asset sidecar {asset}.sha256 (macOS dmg + Linux AppImage)
+    for _ in range(attempts):
+        body = _curl_get(f"{base}/{name}.sha256")
+        if not body:
+            continue
+        parts = body.split()
+        if parts:
+            return parts[0].strip().lower()
+        break
     return ""
 
 
