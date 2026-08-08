@@ -88,3 +88,28 @@ def test_ios_color_depth_is_32_android_is_24(tmp_path):
     assert "colorDepth" in ios
     assert "IS_IOS ? 32 : 24" in ios
     assert "IS_IOS ? 32 : 24" in android
+
+
+def test_mobile_on_shared_recursive_registry(tmp_path):
+    # #1 (audit3): mobile_ext was the only _ext not on the shared registry, so a
+    # nested worker/iframe reported the desktop-backed engine's platform / cores /
+    # pointer:fine while the page claimed a phone → instant "mobile emulation".
+    # It must ride the recursive registry like every other _ext.
+    from src.services.browser.mobile_ext import build_mobile_extension
+
+    d = build_mobile_extension(
+        str(tmp_path / "m"), is_ios=False, platform="Android",
+        model="Pixel 8", ua_full_version="148.0.0.0",
+        css_width=412, css_height=915, dpr=2.625,
+        device_memory=8, hardware_concurrency=8, touch_points=5,
+    )
+    js = (pathlib.Path(d) / "mobile.js").read_text()
+    assert "applyMobilePatch" in js
+    assert "__pnaBoots.push(applyMobilePatch)" in js
+    assert "G.Worker" in js and "HTMLIFrameElement" in js
+    # worker-safe: Window-only bits gated so the leaf doesn't throw in a worker
+    assert "if (G.screen)" in js
+    assert "if (G.matchMedia)" in js
+    # params live inside the leaf so .toString() carries them per realm
+    body = js.split("function applyMobilePatch(G)", 1)[1].split("__pnaBoot", 1)[0]
+    assert "var IS_IOS" in body and "var HWC" in body

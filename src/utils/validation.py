@@ -10,9 +10,13 @@ _RESERVED_NAMES = {
     *(f"LPT{i}" for i in range(1, 10)),
 }
 _PROXY_PATTERN = re.compile(
-    r"^(?:(?P<scheme>https?|socks[45])://)?"
+    # Kept in sync with the launch parser (proxy_parser): allow underscores in
+    # hostnames (real provider gateways like gate_us.smartproxy.com use them) and
+    # the socks5h scheme, so a proxy that connects at runtime isn't rejected on
+    # save (a paste-then-save that contradicts itself).
+    r"^(?:(?P<scheme>https?|socks[45]h?)://)?"
     r"(?:(?P<user>[^:@]+):(?P<pass>[^@]+)@)?"
-    r"(?P<host>[a-zA-Z0-9.-]+|\d{1,3}(?:\.\d{1,3}){3})"
+    r"(?P<host>[a-zA-Z0-9._-]+|\d{1,3}(?:\.\d{1,3}){3})"
     r":(?P<port>\d{1,5})$",
 )
 

@@ -1,5 +1,6 @@
 import json
 import pathlib
+import time
 
 from ...core.config import BOOKMARKS_FILE
 from ...core.logging import get_logger
@@ -23,6 +24,7 @@ class BookmarkStore:
         self._path = path
         self.bookmarks: dict[str, Bookmark] = {}
         self.pools: dict[str, Pool] = {}
+        self._save_blocked = False
         self._load()
 
     def _load(self) -> None:
@@ -32,11 +34,30 @@ class BookmarkStore:
         try:
             with pathlib.Path(self._path).open(encoding="utf-8") as f:
                 data = json.load(f)
+            skipped = 0
+            # One malformed record must not abort the whole load — the next save
+            # would overwrite bookmarks.json with only what parsed (or nothing),
+            # silently losing every bookmark + pool after it.
             for name, b in data.get("bookmarks", {}).items():
-                self.bookmarks[name] = Bookmark(name=b["name"], url=b["url"])
+                try:
+                    self.bookmarks[name] = Bookmark(
+                        name=b.get("name", name), url=b["url"]
+                    )
+                except Exception:
+                    skipped += 1
+                    logger.exception("Skipping malformed bookmark %r", name)
             for name, p in data.get("pools", {}).items():
-                self.pools[name] = Pool(
-                    name=p["name"], bookmark_names=p.get("bookmark_names", [])
+                try:
+                    self.pools[name] = Pool(
+                        name=p.get("name", name),
+                        bookmark_names=p.get("bookmark_names", []),
+                    )
+                except Exception:
+                    skipped += 1
+                    logger.exception("Skipping malformed pool %r", name)
+            if skipped:
+                logger.warning(
+                    "Skipped %d malformed bookmark/pool record(s)", skipped
                 )
             # A store created before a default was added never had that default
             # seeded. Add any missing defaults ONCE (guarded by a marker) so an
@@ -58,6 +79,23 @@ class BookmarkStore:
             )
         except Exception as e:
             logger.exception("Error loading bookmarks: %s", e)
+            self._quarantine_bookmarks_file()
+
+    def _quarantine_bookmarks_file(self) -> None:
+        # An unreadable bookmarks.json still holds the user's bookmarks + pools;
+        # move it aside so the next _save() can't overwrite it with an empty (or
+        # defaults-only) store.
+        backup = f"{self._path}.corrupt-{int(time.time())}"
+        try:
+            pathlib.Path(self._path).rename(backup)
+            logger.warning("Moved unreadable bookmarks file to %s", backup)
+        except OSError:
+            self._save_blocked = True
+            logger.exception(
+                "Could not back up %s; bookmark saving disabled to avoid "
+                "overwriting it",
+                self._path,
+            )
 
     def _seed_defaults(self) -> None:
         for name, url in DEFAULT_BOOKMARKS.items():
@@ -66,6 +104,12 @@ class BookmarkStore:
         self._save()
 
     def _save(self) -> None:
+        if self._save_blocked:
+            logger.error(
+                "Not saving: bookmarks file failed to load and could not be "
+                "backed up"
+            )
+            return
         try:
             # Atomic (temp + os.replace) so a crash mid-save can't leave a
             # half-written file that silently overwrites every bookmark on the

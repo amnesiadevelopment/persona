@@ -126,6 +126,12 @@ def _write_appzip_swap_bat(exe: str, new_zip: str, new_hash: str,
     after the holder is gone (errno-32 avoidance, #195), bounded polls, self-
     delete."""
     image = os.path.basename(exe)
+    # flet re-extracts app.zip into this dir on the next boot when app.zip.hash
+    # changes. If a straggler handle still holds the OLD extraction, that
+    # delete-and-reextract hits errno-32 and the new persona comes up white (#195).
+    # Purge it in the swap .bat AFTER every holder is gone — mirroring the
+    # full-installer relauncher (updater.py) which the fast path skipped.
+    flet_app = r"%APPDATA%\persona\persona\flet\app"
     checks = ""
     if old_pid:
         checks += (
@@ -142,6 +148,7 @@ def _write_appzip_swap_bat(exe: str, new_zip: str, new_hash: str,
         'cd /d "%~dp0" >nul 2>&1\r\n'
         "set tries=0\r\n"
         "set boots=0\r\n"
+        "set purges=0\r\n"
         ":wait\r\n"
         + checks +
         "goto swap\r\n"
@@ -154,6 +161,16 @@ def _write_appzip_swap_bat(exe: str, new_zip: str, new_hash: str,
         # copy the new code + hash over the install-dir originals. /Y overwrites.
         f'copy /Y "{new_zip}" "{dst_zip}" >nul 2>&1\r\n'
         f'copy /Y "{new_hash}" "{dst_hash}" >nul 2>&1\r\n'
+        # Purge the stale flet extraction so the new persona re-extracts cleanly
+        # instead of racing a straggler handle on delete-and-reextract (#195).
+        ":purge\r\n"
+        f'if not exist "{flet_app}" goto launch\r\n'
+        f'rd /s /q "{flet_app}" >nul 2>&1\r\n'
+        f'if not exist "{flet_app}" goto launch\r\n'
+        "set /a purges+=1\r\n"
+        "if %purges% geq 60 goto launch\r\n"
+        "ping -n 1 127.0.0.1 >nul\r\n"
+        "goto purge\r\n"
         ":launch\r\n"
         f'start "" /D "{os.path.dirname(exe)}" "{exe}"\r\n'
         # After start, the new persona re-extracts app.zip behind its boot

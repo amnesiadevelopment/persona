@@ -259,10 +259,15 @@ def build_mcp(container: Container) -> FastMCP:
 
     @mcp.tool()
     def list_ssh_hosts() -> list[dict]:
-        """List saved SSH hosts (host, user, and the profile whose proxy is used)."""
+        """List saved SSH hosts by name and the profile whose proxy is used.
+
+        Only the name + profile are exposed: the response goes to the connected
+        LLM client off-machine, and host/port/user together fingerprint and
+        locate the operator's infra + login. ssh_exec resolves the real host
+        server-side by name.
+        """
         return [
-            {"name": h.name, "host": h.host, "port": h.port,
-             "user": h.username, "profile": h.profile}
+            {"name": h.name, "profile": h.profile}
             for h in container.ssh_host_store.list()
         ]
 

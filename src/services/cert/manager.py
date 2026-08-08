@@ -71,8 +71,9 @@ def start_cert_session(
         admin_port=port_,
     )
     port = t.start()
-    logger.info("mTLS terminator for %r (%s:%s) on 127.0.0.1:%s",
-                cert.name, host, port_, port)
+    # Log only the cert name + loopback port; the admin host:port is internal
+    # infra that shouldn't land in the persistent / Activity log.
+    logger.info("mTLS terminator for %r on 127.0.0.1:%s", cert.name, port)
     return CertSession(
         port=port,
         proxy_url=f"http://127.0.0.1:{port}",

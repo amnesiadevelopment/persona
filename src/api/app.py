@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import contextlib
+import hmac
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -99,7 +100,13 @@ def create_app(container: Container) -> FastAPI:
                     {"error": "forbidden host"}, status_code=403
                 )
             header = request.headers.get("authorization", "")
-            if header != f"Bearer {token}":
+            # Constant-time compare: a plain `!=` short-circuits at the first
+            # differing byte, leaking the matched-prefix length as a timing
+            # oracle a co-resident process could use to recover the token.
+            supplied = (
+                header[len("Bearer "):] if header.startswith("Bearer ") else ""
+            )
+            if not hmac.compare_digest(supplied, token):
                 return JSONResponse({"error": "unauthorized"}, status_code=401)
         return await call_next(request)
 

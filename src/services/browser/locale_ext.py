@@ -29,12 +29,14 @@ function applyLocalePatch(G) {
     // Make our wrapped built-ins read as native in THIS realm (page or worker):
     // a masking detector (creepjs) calls Function.prototype.toString on Intl in a
     // Web Worker and, seeing our wrapper source, marks the Timezone/Intl
-    // component "rejected". native_ext only patches the page realm, so re-apply
-    // the same __pnaName-aware toString here (idempotent per realm).
+    // component "rejected". native_ext also patches this per realm via the shared
+    // registry, but load order between the two leaves isn't guaranteed — so re-
+    // apply the same __pnaName-aware toString here, sharing native_ext's guard
+    // flag (__pnaToStringPatched) so at most ONE of the two ever wraps a realm.
     try {
       const FP = G.Function && G.Function.prototype;
-      if (FP && !G.__pnaToStr) {
-        G.__pnaToStr = true;
+      if (FP && !G.__pnaToStringPatched) {
+        G.__pnaToStringPatched = true;
         const _ots = FP.toString;
         const _pts = function () {
           try { const n = this && this.__pnaName;

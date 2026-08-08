@@ -3,6 +3,7 @@ import asyncio
 from src.api.mcp_server import build_mcp
 from src.core.container import Container
 from src.services.proxy.store import ProxyStore
+from src.services.ssh.store import SSHHost, SSHHostStore
 
 
 def _call(mcp, name, args=None):
@@ -56,3 +57,35 @@ def test_proxy_bridge_log_omits_upstream_hostname(caplog, monkeypatch):
     joined = " ".join(r.getMessage() for r in caplog.records)
     assert "decodo-secret-provider.com" not in joined
     assert "51999" in joined  # the local bridge port is still logged
+
+
+def test_list_ssh_hosts_omits_host_user_port(tmp_path, monkeypatch):
+    # #11: host+port+user together fingerprint and locate the operator's infra +
+    # login. The off-machine LLM client should get only name + profile;
+    # ssh_exec resolves the real host server-side by name.
+    monkeypatch.setenv("PERSONA_SSH_HOSTS_FILE", str(tmp_path / "ssh.json"))
+    c = Container()
+    store = c.ssh_host_store
+    store.add(SSHHost(
+        name="box", host="10.20.30.40", port=2222,
+        username="rootadmin", profile="P1",
+    ))
+    mcp = build_mcp(c)
+    result = _call(mcp, "list_ssh_hosts")
+    blob = repr(result)
+    assert "10.20.30.40" not in blob
+    assert "rootadmin" not in blob
+    assert "2222" not in blob
+    assert "box" in blob and "P1" in blob
+
+
+def test_mtls_terminator_log_omits_admin_host():
+    # #10: the mTLS terminator log must not carry the internal admin hostname —
+    # same class as the proxy-hostname fix. Only the loopback port is logged.
+    import inspect
+
+    from src.services.cert import manager as mgr
+
+    src = inspect.getsource(mgr)
+    assert "host, port_, port)" not in src
+    assert "terminator for %r on 127.0.0.1:%s" in src

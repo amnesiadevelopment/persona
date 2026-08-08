@@ -79,6 +79,38 @@ if [ ! -s "$tmp" ]; then
   echo "manually from https://github.com/$REPO/releases/latest" >&2
   exit 1
 fi
+
+# Verify the download against the published sha256 BEFORE making it executable
+# and moving it onto PATH. Without this a MITM'd/CDN-corrupted/redirected
+# download would install a trojaned `persona` run with full user privileges —
+# the initial-install trust root that every later in-app update check builds on.
+sum_url="${url}.sha256"
+echo "Verifying checksum..."
+expected="$(curl -fsSL "$sum_url" 2>/dev/null | awk '{print $1}' | head -n1)"
+if [ -z "$expected" ]; then
+  echo "ERROR: could not fetch the published checksum ($sum_url)." >&2
+  echo "Refusing to install an unverified binary. Try again, or verify manually." >&2
+  rm -f "$tmp"
+  exit 1
+fi
+if command -v sha256sum >/dev/null 2>&1; then
+  actual="$(sha256sum "$tmp" | awk '{print $1}')"
+elif command -v shasum >/dev/null 2>&1; then
+  actual="$(shasum -a 256 "$tmp" | awk '{print $1}')"
+else
+  echo "ERROR: no sha256sum/shasum available to verify the download." >&2
+  rm -f "$tmp"
+  exit 1
+fi
+if [ "$actual" != "$expected" ]; then
+  echo "ERROR: checksum mismatch — the download is corrupt or tampered." >&2
+  echo "  expected: $expected" >&2
+  echo "  actual:   $actual" >&2
+  rm -f "$tmp"
+  exit 1
+fi
+echo "Checksum OK."
+
 chmod +x "$tmp"
 mv "$tmp" "$DEST/persona"
 echo "Installed to $DEST/persona"

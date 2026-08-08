@@ -58,6 +58,30 @@ def test_api_v1_accepts_valid_token(client):
     assert r.status_code == 200
 
 
+def test_token_compared_constant_time(client):
+    # #3: the bearer check must not short-circuit on the first differing byte (a
+    # timing oracle a co-resident process could use to recover the token). A
+    # token sharing a long prefix must still be rejected.
+    c, token = client
+    almost = token[:-1] + ("0" if token[-1] != "0" else "1")
+    r = c.get(
+        "/api/v1/profiles",
+        headers={"host": "127.0.0.1:8000", "authorization": f"Bearer {almost}"},
+    )
+    assert r.status_code == 401
+
+
+def test_auth_uses_hmac_compare_digest():
+    # Guard against a regression back to `!=`.
+    import inspect
+
+    import src.api.app as app_mod
+
+    src = inspect.getsource(app_mod.create_app)
+    assert "compare_digest" in src
+    assert 'header != f"Bearer' not in src
+
+
 def test_api_v1_rejects_foreign_host(client):
     # DNS-rebinding: a rebound attacker domain resolves to 127.0.0.1 but its Host
     # header is the attacker domain — reject before even checking the token.

@@ -152,6 +152,54 @@ _CONTENT_SCRIPT = r"""
       } catch (e) {}
       return realGetParameter.call(this, pname);
     });
+
+    // getShaderPrecisionFormat otherwise returns the HOST GPU's real precision
+    // (D3D11/Metal go through native ANGLE, not SwiftShader on Windows/mac), which
+    // contradicts the spoofed renderer — a renderer↔precision mismatch creepjs
+    // cross-checks. Normalize to the canonical ANGLE-over-D3D11/Metal values that
+    // every real Chrome reports for these backends (float highp/medium/low all
+    // 127/127/23; int 31/30/0), so precision agrees with the claimed ANGLE GPU.
+    var realGSPF = proto.getShaderPrecisionFormat;
+    if (realGSPF) {
+      var HIGH_FLOAT = 0x8DF2, MEDIUM_FLOAT = 0x8DF1, LOW_FLOAT = 0x8DF0;
+      proto.getShaderPrecisionFormat = nativeWrap(realGSPF, function (shaderType, precisionType) {
+        try {
+          var isFloat = (precisionType === HIGH_FLOAT ||
+                         precisionType === MEDIUM_FLOAT ||
+                         precisionType === LOW_FLOAT);
+          var out = isFloat ? { rangeMin: 127, rangeMax: 127, precision: 23 }
+                            : { rangeMin: 31, rangeMax: 30, precision: 0 };
+          // Return a WebGLShaderPrecisionFormat-shaped object; a plain object is
+          // indistinguishable via the standard getters detectors read.
+          return out;
+        } catch (e) {}
+        return realGSPF.call(this, shaderType, precisionType);
+      });
+    }
+
+    // getSupportedExtensions otherwise reflects the host GPU's real extension set
+    // (e.g. a real RTX exposes extensions a claimed UHD 630 wouldn't). Return the
+    // stable ANGLE-D3D11/Metal set real Chrome reports so it matches the renderer.
+    var realGSE = proto.getSupportedExtensions;
+    if (realGSE) {
+      var STABLE_EXTS = [
+        "ANGLE_instanced_arrays", "EXT_blend_minmax", "EXT_color_buffer_half_float",
+        "EXT_disjoint_timer_query", "EXT_float_blend", "EXT_frag_depth",
+        "EXT_shader_texture_lod", "EXT_texture_compression_bptc",
+        "EXT_texture_compression_rgtc", "EXT_texture_filter_anisotropic",
+        "OES_element_index_uint", "OES_fbo_render_mipmap", "OES_standard_derivatives",
+        "OES_texture_float", "OES_texture_float_linear", "OES_texture_half_float",
+        "OES_texture_half_float_linear", "OES_vertex_array_object",
+        "WEBGL_color_buffer_float", "WEBGL_compressed_texture_s3tc",
+        "WEBGL_compressed_texture_s3tc_srgb", "WEBGL_debug_renderer_info",
+        "WEBGL_debug_shaders", "WEBGL_depth_texture", "WEBGL_draw_buffers",
+        "WEBGL_lose_context", "WEBGL_multi_draw"
+      ];
+      proto.getSupportedExtensions = nativeWrap(realGSE, function () {
+        try { return STABLE_EXTS.slice(); } catch (e) {}
+        return realGSE.call(this);
+      });
+    }
   }
 
   try { installOn(G.WebGLRenderingContext, GL1); } catch (e) {}

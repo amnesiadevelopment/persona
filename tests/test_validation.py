@@ -43,6 +43,9 @@ def test_validate_profile_name(name, ok):
     ("socks5://1.2.3.4:1080", True),
     ("http://user:pass@host.com:3128", True),
     ("socks5://user:pass@gate.decodo.com:10000", True),
+    # audit3 low: kept in sync with the launch parser
+    ("socks5://user:pass@gate_us.smartproxy.com:7000", True),  # underscore host
+    ("socks5h://user:pass@gate.decodo.com:10000", True),       # socks5h scheme
     ("nonsense", False),                          # no host:port
     ("1.2.3.4", False),                           # missing port
     ("1.2.3.4:0", False),                         # port 0

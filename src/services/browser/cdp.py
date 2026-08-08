@@ -7,6 +7,18 @@ take the browser over (which would bypass the MCP bearer token guarding the
 rest of the local API). Chromium writes the actual port it bound to the first
 line of ``<user-data-dir>/DevToolsActivePort``; readers resolve it from there
 instead of deriving it from the profile name.
+
+SECURITY NOTE (ai_control exposes an UNAUTHENTICATED control channel): the
+DevTools HTTP/WS endpoint is served by chromium itself, NOT by FastAPI, so the
+MCP bearer token does not protect it. The ephemeral port is the guard against a
+name-based guess, BUT the port is still discoverable by a co-resident, same-user
+process via a loopback scan or /proc/net/tcp — and the DevToolsActivePort file is
+readable by the same user. There is no way to hide a listening loopback port from
+a same-user process, so file permissions add nothing here. Enabling ai_control is
+therefore a deliberate trade-off: it opens an unauthenticated CDP channel any
+process running as this user can drive. Leave ai_control off for profiles that
+don't need automation. (A future hardening would be --remote-debugging-pipe, but
+playwright's connect_over_cdp attaches over TCP, not a pipe.)
 """
 
 import os

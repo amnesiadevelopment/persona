@@ -123,3 +123,24 @@ def test_carries_gpu_spoof_into_iframes(tmp_path):
     js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g")), "gpu.js")
     assert "contentWindow" in js and "HTMLIFrameElement" in js
     assert "__pnaBoot(w)" in js
+
+
+def test_shader_precision_and_extensions_spoofed(tmp_path):
+    # #5 (audit3): getShaderPrecisionFormat otherwise returns the HOST GPU's real
+    # precision (native D3D11/Metal on Win/mac), contradicting the spoofed
+    # renderer — a renderer↔precision mismatch creepjs cross-checks. And
+    # getSupportedExtensions reflects the host GPU's real set. Both must be
+    # normalized to the canonical ANGLE values.
+    import pathlib
+
+    from src.services.browser.gpu_ext import build_gpu_extension
+
+    js = pathlib.Path(
+        build_gpu_extension(1, "windows", str(tmp_path / "g")) + "/gpu.js"
+    ).read_text()
+    assert "getShaderPrecisionFormat = nativeWrap" in js
+    assert "getSupportedExtensions = nativeWrap" in js
+    # canonical ANGLE-D3D11 float precision (127/127/23) present
+    assert "rangeMin: 127" in js and "precision: 23" in js
+    # stable extension set includes s3tc (a real-GPU marker, not SwiftShader)
+    assert "WEBGL_compressed_texture_s3tc" in js

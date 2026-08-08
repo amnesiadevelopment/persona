@@ -166,3 +166,46 @@ def test_resolve_skips_deleted_names(tmp_path):
     s.add("a", "https://a.com")
     result = s.resolve_selection(None, ["a", "ghost"])
     assert [bm.name for bm in result] == ["a"]
+
+
+def test_one_malformed_bookmark_is_skipped_not_fatal(tmp_path):
+    import json
+    path = tmp_path / "bookmarks.json"
+    path.write_text(json.dumps({
+        "defaults_seeded": True,
+        "bookmarks": {
+            "good": {"name": "good", "url": "https://ok.example"},
+            "bad": {"name": "bad"},  # missing url
+        },
+        "pools": {},
+    }), encoding="utf-8")
+    s = BookmarkStore(path=str(path))
+    assert s.get("good").url == "https://ok.example"
+    assert s.get("bad") is None
+
+
+def test_corrupt_bookmarks_file_quarantined_not_overwritten(tmp_path):
+    import pathlib
+    path = tmp_path / "bookmarks.json"
+    path.write_text("{ not valid json", encoding="utf-8")
+    s = BookmarkStore(path=str(path))
+    # An unreadable file holds the user's bookmarks; the next save must not
+    # overwrite it with the empty/defaults store — it's quarantined instead.
+    s.add("leaks", "https://browserleaks.com")
+    backups = list(pathlib.Path(tmp_path).glob("bookmarks.json.corrupt-*"))
+    assert backups, "corrupt bookmarks.json must be quarantined"
+    assert backups[0].read_text(encoding="utf-8") == "{ not valid json"
+
+
+def test_save_blocked_when_quarantine_fails(tmp_path, monkeypatch):
+    import pathlib
+    path = tmp_path / "bookmarks.json"
+    path.write_text("{ broken", encoding="utf-8")
+
+    def boom(*a, **k):
+        raise OSError("cannot rename")
+
+    monkeypatch.setattr(pathlib.Path, "rename", boom)
+    s = BookmarkStore(path=str(path))
+    s.add("leaks", "https://browserleaks.com")
+    assert path.read_text(encoding="utf-8") == "{ broken"

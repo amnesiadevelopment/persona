@@ -1,6 +1,8 @@
 import json
 import os
 import pathlib
+import shutil
+import tempfile
 import zipfile
 from datetime import datetime
 
@@ -9,6 +11,12 @@ from ...models.profile import Profile
 from ...utils.validation import validate_profile_name
 
 logger = get_logger("profile.transfer")
+
+# A shared profile zip is UNTRUSTED input. Cap the total uncompressed size and
+# the entry count so a zip-bomb (a tiny archive that inflates to GBs / millions
+# of files) can't exhaust the disk during import.
+_MAX_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
+_MAX_ENTRIES = 50_000
 
 # The mTLS terminator drops the client cert + UNENCRYPTED private key here inside
 # the profile dir; never let it ride along in an exported/shared profile zip.
@@ -122,27 +130,61 @@ def import_from_zip(
             )
 
             data_files = [f for f in zipf.namelist() if f.startswith("data/")]
+
+            # Zip-bomb guard: reject before extracting a single byte if the
+            # archive's declared uncompressed size or entry count is over the cap.
+            total = sum(
+                i.file_size for i in zipf.infolist() if i.filename.startswith("data/")
+            )
+            if total > _MAX_UNCOMPRESSED_BYTES:
+                return False, "Profile archive is too large (possible zip bomb)"
+            if len(data_files) > _MAX_ENTRIES:
+                return False, "Profile archive has too many files (possible zip bomb)"
+
             if data_files:
                 profile_data_dir = os.path.join(data_dir, name)
-                pathlib.Path(profile_data_dir).mkdir(exist_ok=True, parents=True)
-
-                for file in data_files:
-                    if file.endswith("/"):
-                        continue
-                    member = os.path.relpath(file, "data")
-                    target_path = os.path.join(profile_data_dir, member)
-                    # Zip-slip guard: a member like '../../.../Startup/evil.bat'
-                    # (or a Windows backslash/drive-letter arcname) would resolve
-                    # outside the profile dir and write attacker bytes anywhere.
-                    # Reject any member whose resolved path leaves profile_data_dir.
-                    if not _is_within(profile_data_dir, target_path):
-                        return False, f"Unsafe path in archive: {file}"
-                    pathlib.Path(target_path).parent.mkdir(
-                        exist_ok=True,
-                        parents=True,
-                    )
-                    with zipf.open(file) as src, open(target_path, "wb") as dst:
-                        dst.write(src.read())
+                # Extract into a sibling temp dir and move it into place only on
+                # FULL success, so a partial/aborted import never leaves a
+                # half-extracted, unregistered profile data dir behind.
+                pathlib.Path(data_dir).mkdir(exist_ok=True, parents=True)
+                staging = tempfile.mkdtemp(
+                    dir=data_dir, prefix=f".import-{name}-"
+                )
+                try:
+                    written = 0
+                    for file in data_files:
+                        if file.endswith("/"):
+                            continue
+                        member = os.path.relpath(file, "data")
+                        target_path = os.path.join(staging, member)
+                        # Zip-slip guard: a member like '../../…/Startup/evil.bat'
+                        # (or a Windows backslash/drive-letter arcname) resolves
+                        # outside the staging dir and writes attacker bytes
+                        # anywhere. Reject any member that leaves staging.
+                        if not _is_within(staging, target_path):
+                            return False, f"Unsafe path in archive: {file}"
+                        pathlib.Path(target_path).parent.mkdir(
+                            exist_ok=True, parents=True,
+                        )
+                        # Bounded, chunked copy so a lying local header can't
+                        # inflate past the cap during the read itself.
+                        with zipf.open(file) as src, open(target_path, "wb") as dst:
+                            while True:
+                                chunk = src.read(1024 * 1024)
+                                if not chunk:
+                                    break
+                                written += len(chunk)
+                                if written > _MAX_UNCOMPRESSED_BYTES:
+                                    return False, "Profile archive is too large (possible zip bomb)"
+                                dst.write(chunk)
+                    # Atomic-ish swap: remove any existing dir, move staging in.
+                    if os.path.exists(profile_data_dir):
+                        shutil.rmtree(profile_data_dir, ignore_errors=True)
+                    os.replace(staging, profile_data_dir)
+                    staging = None
+                finally:
+                    if staging is not None:
+                        shutil.rmtree(staging, ignore_errors=True)
 
             logger.info("Imported profile from zip: %s", name)
             return True, profile

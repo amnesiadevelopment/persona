@@ -1629,35 +1629,45 @@ class App:
         def work() -> None:
             import time
 
-            self._update_start_t = time.monotonic()
-            self._app_update_status = "downloading"
-            self._refresh_sidebar()
-            staged = app_update.download_update(
-                url, progress=self._update_progress_cb, size=self._app_update_size,
-                tag=self._app_update_tag,
-            )
-            self._update_in_progress = False
-            if staged and not app_update.verify_staged_installer(
-                staged, tag=self._app_update_tag, log=self._log
-            ):
-                try:
-                    os.remove(staged)  # a full-size corrupt file would otherwise
-                except OSError:        # be matched again by find_ready_staged
-                    pass
-                staged = ""
-            if staged:
-                self._update_staged = staged
-                self._app_update_status = "ready"
-                self._log("Update downloaded.")
+            # Reset the in-flight flag in finally: a transient raise in
+            # download_update (conn reset, disk full, staging perm) would
+            # otherwise leave it True forever, dead-ending every later update.
+            try:
+                self._update_start_t = time.monotonic()
+                self._app_update_status = "downloading"
                 self._refresh_sidebar()
-                self._when_update_ready(self._app_latest, staged)
-            else:
+                staged = app_update.download_update(
+                    url, progress=self._update_progress_cb, size=self._app_update_size,
+                    tag=self._app_update_tag,
+                )
+                if staged and not app_update.verify_staged_installer(
+                    staged, tag=self._app_update_tag, log=self._log
+                ):
+                    try:
+                        os.remove(staged)  # a full-size corrupt file would otherwise
+                    except OSError:        # be matched again by find_ready_staged
+                        pass
+                    staged = ""
+                if staged:
+                    self._update_staged = staged
+                    self._app_update_status = "ready"
+                    self._log("Update downloaded.")
+                    self._refresh_sidebar()
+                    self._when_update_ready(self._app_latest, staged)
+                else:
+                    self._app_update_status = "failed"
+                    # clear the seen tag so the periodic check re-triggers a fresh
+                    # download next cycle (it skips tags it already announced)
+                    self._app_latest = ""
+                    self._log("Update download failed — will retry.")
+                    self._refresh_sidebar()
+            except Exception as e:
                 self._app_update_status = "failed"
-                # clear the seen tag so the periodic check re-triggers a fresh
-                # download next cycle (it skips tags it already announced)
                 self._app_latest = ""
-                self._log("Update download failed — will retry.")
+                self._log(f"Update download failed: {e}")
                 self._refresh_sidebar()
+            finally:
+                self._update_in_progress = False
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -1792,24 +1802,30 @@ class App:
                 import time
 
                 self._update_in_progress = True
-                self._update_start_t = time.monotonic()
-                self._app_update_status = "downloading"
-                self._refresh_sidebar()
-                staged = app_update.download_update(
-                    self._app_update_url,
-                    progress=self._update_progress_cb,
-                    size=self._app_update_size,
-                    tag=self._app_update_tag,
-                )
-                self._update_in_progress = False
-                if staged:
-                    self._update_staged = staged
-                    self._log("Update downloaded — restarting...")
-                    self._apply_update(staged)
-                else:
-                    self._app_update_status = "failed"
-                    self._log("Update download failed — try again.")
+                try:
+                    self._update_start_t = time.monotonic()
+                    self._app_update_status = "downloading"
                     self._refresh_sidebar()
+                    staged = app_update.download_update(
+                        self._app_update_url,
+                        progress=self._update_progress_cb,
+                        size=self._app_update_size,
+                        tag=self._app_update_tag,
+                    )
+                    if staged:
+                        self._update_staged = staged
+                        self._log("Update downloaded — restarting...")
+                        self._apply_update(staged)
+                    else:
+                        self._app_update_status = "failed"
+                        self._log("Update download failed — try again.")
+                        self._refresh_sidebar()
+                except Exception as e:
+                    self._app_update_status = "failed"
+                    self._log(f"Update download failed: {e}")
+                    self._refresh_sidebar()
+                finally:
+                    self._update_in_progress = False
 
             threading.Thread(target=work, daemon=True).start()
 
@@ -1920,10 +1936,18 @@ class App:
                         pass
                     self._engine_progress_cb(done_bytes, total)
 
-                ok, _msg = engine.ensure_engine(progress=both)
-                self._engine_busy = False
-                if ok:
-                    self._engine_latest = engine.current_version()
+                # Reset _engine_busy in finally: a raise in ensure_engine would
+                # otherwise wedge it True forever, dead-ending every later
+                # engine download/launch this session.
+                ok = False
+                try:
+                    ok, _msg = engine.ensure_engine(progress=both)
+                    if ok:
+                        self._engine_latest = engine.current_version()
+                except Exception as e:
+                    self._log(f"Engine install failed: {e}")
+                finally:
+                    self._engine_busy = False
                 self._refresh_engine_text()
                 self._refresh_sidebar()
                 done(ok)
@@ -2121,14 +2145,20 @@ class App:
         self.engine_text.value = "connecting..."
         self._refresh_sidebar()
 
-        ok, msg = engine.ensure_engine(progress=self._engine_progress_cb)
-        self._engine_busy = False
+        # Reset _engine_busy in finally so a raise in ensure_engine doesn't wedge
+        # the flag True and dead-end every later launch/download this session.
+        try:
+            ok, msg = engine.ensure_engine(progress=self._engine_progress_cb)
+            if ok:
+                self._engine_latest = engine.current_version()
+                self._log(f"Engine installed: {engine.current_version()}")
+            else:
+                self._log(f"Engine download failed: {msg}")
+        except Exception as e:
+            self._log(f"Engine download failed: {e}")
+        finally:
+            self._engine_busy = False
         self._engine_detail.value = ""
-        if ok:
-            self._engine_latest = engine.current_version()
-            self._log(f"Engine installed: {engine.current_version()}")
-        else:
-            self._log(f"Engine download failed: {msg}")
         self._refresh_engine_text()
         self._refresh_sidebar()
 
@@ -2186,15 +2216,21 @@ class App:
             self._log(f"Downloading Firefox engine {tag}...")
             self._refresh_sidebar()
             ok = False
-            for attempt in range(3):
-                ok = ff_engine.download_engine(
-                    tag, progress=self._engine2_progress_cb, log=self._log
-                )
-                if ok:
-                    break
-                if attempt < 2:
-                    self._log("Firefox engine download interrupted — retrying...")
-            self._engine2_busy = False
+            # Reset _engine2_busy in finally so a raise in download_engine can't
+            # wedge it True and dead-end every later FF-engine download.
+            try:
+                for attempt in range(3):
+                    ok = ff_engine.download_engine(
+                        tag, progress=self._engine2_progress_cb, log=self._log
+                    )
+                    if ok:
+                        break
+                    if attempt < 2:
+                        self._log("Firefox engine download interrupted — retrying...")
+            except Exception as e:
+                self._log(f"Firefox engine download failed: {e}")
+            finally:
+                self._engine2_busy = False
             self._engine2_detail.value = ""
             self._engine2_status = ""
             if ok:
@@ -2212,16 +2248,22 @@ class App:
         self._log(f"Downloading engine {self._engine_latest}...")
 
         def work() -> None:
-            _tag, url, digest = engine.fetch_latest_full()
-            ok = engine.download_engine(
-                url, digest=digest, progress=self._engine_progress_cb
-            )
-            if ok:
-                engine.write_version(self._engine_latest)
-                self._log(f"Engine updated to {self._engine_latest}")
-            else:
-                self._log("Engine update failed")
-            self._engine_busy = False
+            # Reset _engine_busy in finally so a raise in fetch/download can't
+            # wedge it True and dead-end every later engine action this session.
+            try:
+                _tag, url, digest = engine.fetch_latest_full()
+                ok = engine.download_engine(
+                    url, digest=digest, progress=self._engine_progress_cb
+                )
+                if ok:
+                    engine.write_version(self._engine_latest)
+                    self._log(f"Engine updated to {self._engine_latest}")
+                else:
+                    self._log("Engine update failed")
+            except Exception as e:
+                self._log(f"Engine update failed: {e}")
+            finally:
+                self._engine_busy = False
             self._engine_detail.value = ""
             self._refresh_engine_text()
 

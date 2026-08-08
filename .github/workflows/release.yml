@@ -169,6 +169,14 @@ jobs:
             exit 1
           fi
 
+      - name: Checksum the AppImage
+        run: |
+          # install.sh verifies the download against this before chmod/mv, so
+          # a MITM'd/corrupt AppImage can't land on PATH. Same shape as the dmg
+          # sidecar checksum.
+          sha256sum persona-x86_64.AppImage > persona-x86_64.AppImage.sha256
+          cat persona-x86_64.AppImage.sha256
+
       - name: Upload the AppImage artifact
         uses: actions/upload-artifact@v4
         with:
@@ -180,7 +188,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: persona-x86_64.AppImage
+          files: |
+            persona-x86_64.AppImage
+            persona-x86_64.AppImage.sha256
           generate_release_notes: true
 
   build-windows:

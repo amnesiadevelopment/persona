@@ -183,3 +183,26 @@ def test_fastswap_bat_waits_a_real_beat_before_confirming_launch(tmp_path):
     assert "boots" in bat
     assert "lss 5" in launch
     assert "lss 930" not in bat
+
+
+def test_swap_bat_purges_flet_extraction(tmp_path):
+    # #12 (audit3): the fast-update swap .bat must purge the stale flet\app
+    # extraction (like the full installer) so the new persona re-extracts
+    # cleanly instead of racing a straggler handle → errno-32 white screen (#195).
+    from src.services.app_update.fast_update import _write_appzip_swap_bat
+
+    bat_path = _write_appzip_swap_bat(
+        exe=r"C:\Users\x\AppData\Local\persona\persona.exe",
+        new_zip=str(tmp_path / "new.zip"),
+        new_hash=str(tmp_path / "new.hash"),
+        dst_zip=r"C:\dst\app.zip",
+        dst_hash=r"C:\dst\app.zip.hash",
+        old_pid=1234,
+    )
+    import pathlib
+    content = pathlib.Path(bat_path).read_text()
+    assert r"flet\app" in content
+    assert "rd /s /q" in content
+    # bounded so a never-dying holder can't block the relaunch forever
+    assert "purges" in content
+    pathlib.Path(bat_path).unlink()

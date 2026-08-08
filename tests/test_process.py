@@ -420,6 +420,53 @@ def test_failed_launch_stops_bridge_no_orphan(monkeypatch, tmp_path):
     assert stopped == [True]
 
 
+def test_failed_launch_stops_cert_terminator_before_popen(monkeypatch, tmp_path):
+    # #6: an mTLS terminator starts EARLY (line ~431); the ~10 build_*_extension
+    # disk-I/O calls between it and Popen can raise. Any such failure must stop
+    # the terminator, not just a Popen failure — else its loopback listener +
+    # key material orphan.
+    import pytest
+
+    stopped = []
+
+    class _CertSession:
+        proxy_url = None
+        ca_path = None
+        port = 47000
+        admin_host = "admin.internal"
+        spki_b64 = "spki"
+
+        def stop(self):
+            stopped.append(True)
+
+    class _Store:
+        def resolve(self, name):
+            return None
+
+        def get(self, name):
+            return None
+
+    class _Bookmarks:
+        def resolve_selection(self, *a, **k):
+            return []
+
+    monkeypatch.setattr(process, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(process, "ProxyStore", _Store)
+    monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
+    monkeypatch.setattr(process, "write_window_entry", lambda name: None)
+    monkeypatch.setattr(process, "_cert_session_for", lambda *a, **k: _CertSession())
+    monkeypatch.setattr(process._platform, "IS_LINUX", False)
+    # make an extension build (after the terminator started) blow up
+    monkeypatch.setattr(
+        process, "build_gpu_extension",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    with pytest.raises(OSError):
+        process.spawn_browser(Profile(name="cert-fail", certificate="c1"))
+    assert stopped == [True]
+
+
 def test_hidpi_host_gets_render_scale_flag(monkeypatch, tmp_path):
     monkeypatch.setattr(process, "_host_display_scale", lambda: 1.5)
     captured = _spawn_chromium_args(
