@@ -201,17 +201,18 @@ jobs:
           # header users execute) and CI then publishes a matching .sha256, so a
           # compromised tool from the mutable `continuous` tag would ship a valid-
           # checksummed backdoor (audit6 #11). Pinned to 1.9.0.
+          # appimagetool is itself a type-2 AppImage whose runtime needs FUSE to
+          # self-mount — even --appimage-extract runs through that runtime. ubuntu-
+          # 24.04 (Noble) ships without libfuse2, so it just prints its banner and
+          # exits 1. Install libfuse2t64 (fall back to libfuse2) so the
+          # (sha256-pinned) tool can run.
+          sudo apt-get install -y libfuse2t64 || sudo apt-get install -y libfuse2
           AIT_SHA256=46fdd785094c7f6e545b61afcfb0f3d98d8eab243f644b4b17698c01d06083d1
           curl -fsSL -o /tmp/appimagetool \
             https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage
           echo "$AIT_SHA256  /tmp/appimagetool" | sha256sum -c -
           chmod +x /tmp/appimagetool
-          # ubuntu-24.04 has no libfuse2, so running the AppImage directly (even
-          # with --appimage-extract-and-run) just prints its version banner and
-          # exits 1. Extract it ourselves once and run its AppRun — no FUSE needed,
-          # and the sha256 pin above still guarantees the tool's integrity.
-          ( cd /tmp && ./appimagetool --appimage-extract >/dev/null )
-          AIT=/tmp/squashfs-root/AppRun
+          AIT=/tmp/appimagetool
           APPDIR=/tmp/persona.AppDir
           rm -rf "$APPDIR"; mkdir -p "$APPDIR/usr"
           # flet build output lives in build/linux (executable + lib/ + data/)
