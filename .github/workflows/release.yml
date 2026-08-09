@@ -206,6 +206,12 @@ jobs:
             https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage
           echo "$AIT_SHA256  /tmp/appimagetool" | sha256sum -c -
           chmod +x /tmp/appimagetool
+          # ubuntu-24.04 has no libfuse2, so running the AppImage directly (even
+          # with --appimage-extract-and-run) just prints its version banner and
+          # exits 1. Extract it ourselves once and run its AppRun — no FUSE needed,
+          # and the sha256 pin above still guarantees the tool's integrity.
+          ( cd /tmp && ./appimagetool --appimage-extract >/dev/null )
+          AIT=/tmp/squashfs-root/AppRun
           APPDIR=/tmp/persona.AppDir
           rm -rf "$APPDIR"; mkdir -p "$APPDIR/usr"
           # flet build output lives in build/linux (executable + lib/ + data/)
@@ -232,7 +238,7 @@ jobs:
           exec "\$HERE/$BINREL" "\$@"
           EOF
           chmod +x "$APPDIR/AppRun"
-          ARCH=x86_64 /tmp/appimagetool --appimage-extract-and-run "$APPDIR" persona-x86_64.AppImage
+          ARCH=x86_64 "$AIT" "$APPDIR" persona-x86_64.AppImage
           ls -la persona-x86_64.AppImage
 
       - name: Sanity-check the AppImage size
