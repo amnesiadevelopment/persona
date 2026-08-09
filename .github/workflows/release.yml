@@ -68,6 +68,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install --prefer-binary -r requirements.txt
           if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; else pip install pytest; fi
+          # The engine packages are a git dependency not in requirements.txt (the
+          # build jobs install them the same way). Without them the Firefox-engine
+          # tests fail with ModuleNotFoundError on a clean runner even though they
+          # pass locally where the engine is in the venv. Install so the CI suite
+          # matches the local one.
+          pip install "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git"
       - name: Run the test suite
         run: python -m pytest -q
 
