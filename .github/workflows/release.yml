@@ -196,20 +196,19 @@ jobs:
 
       - name: Package the bundle into an AppImage
         run: |
-          # Pin appimagetool to a specific release + verify its sha256 before
-          # executing it: it builds the shipped AppImage (including the runtime
-          # header users execute) and CI then publishes a matching .sha256, so a
-          # compromised tool from the mutable `continuous` tag would ship a valid-
-          # checksummed backdoor (audit6 #11). Pinned to 1.9.0.
-          # appimagetool is itself a type-2 AppImage whose runtime needs FUSE to
-          # self-mount — even --appimage-extract runs through that runtime. ubuntu-
-          # 24.04 (Noble) ships without libfuse2, so it just prints its banner and
-          # exits 1. Install libfuse2t64 (fall back to libfuse2) so the
-          # (sha256-pinned) tool can run.
+          # Pin appimagetool + verify its sha256 before executing it: it builds
+          # the shipped AppImage (incl. the runtime header users execute) and CI
+          # then publishes a matching .sha256, so a compromised tool from a mutable
+          # tag would ship a valid-checksummed backdoor (audit6 #11).
+          # Use the classic C appimagetool from the ARCHIVED (frozen) AppImageKit
+          # repo, NOT AppImage/appimagetool's newer Go build — the latter's build
+          # only prints its version banner and exits 1 on the current runner (its
+          # CLI changed). AppImageKit is frozen so its continuous asset is stable;
+          # we pin its sha256. libfuse2t64 lets the type-2 tool self-mount on Noble.
           sudo apt-get install -y libfuse2t64 || sudo apt-get install -y libfuse2
-          AIT_SHA256=46fdd785094c7f6e545b61afcfb0f3d98d8eab243f644b4b17698c01d06083d1
+          AIT_SHA256=b90f4a8b18967545fda78a445b27680a1642f1ef9488ced28b65398f2be7add2
           curl -fsSL -o /tmp/appimagetool \
-            https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage
+            https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
           echo "$AIT_SHA256  /tmp/appimagetool" | sha256sum -c -
           chmod +x /tmp/appimagetool
           AIT=/tmp/appimagetool
