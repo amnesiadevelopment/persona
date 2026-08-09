@@ -239,7 +239,9 @@ jobs:
           exec "\$HERE/$BINREL" "\$@"
           EOF
           chmod +x "$APPDIR/AppRun"
-          ARCH=x86_64 "$AIT" "$APPDIR" persona-x86_64.AppImage
+          # Use the same --appimage-extract-and-run flag the working v2.9.12
+          # recipe used; with libfuse2t64 installed above the tool self-mounts.
+          ARCH=x86_64 "$AIT" --appimage-extract-and-run "$APPDIR" persona-x86_64.AppImage
           ls -la persona-x86_64.AppImage
 
       - name: Sanity-check the AppImage size
