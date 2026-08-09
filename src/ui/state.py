@@ -3,11 +3,19 @@ import os
 import re
 import threading
 import time
+from collections import deque
 
 from ..core.config import LOG_DIR
 from ..core.logging import SESSION_MARKER
 
 ITEMS_PER_PAGE = 8
+
+# Cap the in-memory Activity Log. It was an unbounded list that grew for the
+# whole session, and the fullscreen log dialog materialised every line in one
+# patch — a slow open and steady memory growth on a long-running session (audit6
+# LOW f). A bounded ring keeps the recent history the UI actually shows; older
+# lines remain on disk in the persistent file log.
+_MAX_LOG_LINES = 2000
 
 
 def _load_recent_log_lines(limit: int = 200) -> list[str]:
@@ -46,7 +54,9 @@ class AppState:
         self.current_page: int = 1
         self.log_collapsed: bool = False
 
-        self._log_lines: list[str] = _load_recent_log_lines()
+        self._log_lines: "deque[str]" = deque(
+            _load_recent_log_lines(), maxlen=_MAX_LOG_LINES
+        )
         self._loading_profiles: set[str] = set()
         self._loading_lock = threading.Lock()
         self._log_lock = threading.Lock()
@@ -100,7 +110,8 @@ class AppState:
             if not self._pending_log_flush:
                 return None
             self._pending_log_flush = False
-            return "\n".join(self._log_lines[-50:])
+            # deque doesn't support slicing; snapshot then take the tail.
+            return "\n".join(list(self._log_lines)[-50:])
 
     def get_all_log_lines(self) -> list[str]:
         with self._log_lock:

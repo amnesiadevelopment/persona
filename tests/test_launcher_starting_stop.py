@@ -88,6 +88,55 @@ def test_stop_profile_true_and_blocks_for_spawn_in_flight(monkeypatch):
     assert "inflight" not in bl.running_profile_names()
 
 
+def test_stop_returns_only_after_process_terminated(monkeypatch):
+    # audit6 #5: the abort branch must terminate the browser BEFORE leaving
+    # _starting — else stop_profile's wait wakes while the process is still alive
+    # and delete/wipe rmtree the dir under a live browser. Make terminate slow and
+    # assert the process is fully dead by the time stop_profile returns.
+    started = threading.Event()
+    release = threading.Event()
+    made = {}
+    order = []
+
+    def slow_spawn(profile):
+        started.set()
+        release.wait(2.0)
+        p = _Proc()
+        made["proc"] = p
+        return p
+
+    def slow_terminate(proc, name, timeout=2):
+        time.sleep(0.2)          # emulate the ~2s terminate window
+        proc.terminate()
+        order.append("terminated")
+
+    monkeypatch.setattr(launcher_mod, "spawn_browser", slow_spawn)
+    monkeypatch.setattr(launcher_mod, "terminate", slow_terminate)
+    _quiet(monkeypatch)
+
+    bl = BrowserLauncher()
+    p = Profile(name="race", os_type="windows")
+    t = threading.Thread(target=bl.start_thread, args=(p, lambda _l: None))
+    t.start()
+    started.wait(2.0)
+
+    def do_stop():
+        bl.stop_profile("race")
+        order.append("stop-returned")
+
+    ts = threading.Thread(target=do_stop)
+    ts.start()
+    time.sleep(0.1)
+    release.set()
+    ts.join(3)
+    t.join(3)
+
+    # the process was terminated BEFORE stop_profile returned — no window where a
+    # caller could rmtree under a live browser.
+    assert made["proc"].terminated is True
+    assert order == ["terminated", "stop-returned"], order
+
+
 def test_aborted_spawn_does_not_register_session(monkeypatch):
     started = threading.Event()
     release = threading.Event()

@@ -52,6 +52,7 @@ def open_proxy_dialog(
     proxy: Proxy | None = None,
     on_checked: Callable[..., None] | None = None,
     on_check_failed: Callable[[str], None] | None = None,
+    ui: Callable[[Callable[[], None]], None] | None = None,
 ) -> None:
     is_edit = proxy is not None
     fields = split_proxy_url(proxy.url) if proxy is not None else split_proxy_url("")
@@ -104,6 +105,13 @@ def open_proxy_dialog(
 
     def on_paste(_: ft.ControlEvent) -> None:
         raw = (paste_field.value or "").strip()
+        # A multi-line paste (several provider lines at once) used to be parsed as
+        # ONE line and silently discarded — this dialog adds a single proxy, so
+        # take the FIRST non-empty line and fill the fields from it rather than
+        # dropping everything (audit6 LOW d). A true bulk import is out of scope.
+        if "\n" in raw:
+            first = next((ln.strip() for ln in raw.splitlines() if ln.strip()), "")
+            raw = first
         if ":" not in raw:
             return
         parsed = parse_proxy_line(raw)
@@ -154,6 +162,13 @@ def open_proxy_dialog(
         await ft.Clipboard().set(url)
         copy_btn.content = ft.Text("[ copied ]", font_family=MONO, color=COLORS["success"])
         page.update()
+        # Revert the label after a beat so it doesn't stay "[ copied ]" and go
+        # stale once the fields are edited (audit6 LOW e).
+        import asyncio
+
+        await asyncio.sleep(1.5)
+        copy_btn.content = "[ copy proxy ]"
+        page.update()
 
     copy_btn = ft.OutlinedButton(
         "[ copy proxy ]",
@@ -171,14 +186,24 @@ def open_proxy_dialog(
         tz: str,
         lat: float | None,
         lon: float | None,
+        checked_url: str = "",
     ) -> None:
+        # Only PERSIST a check result onto the stored proxy when the URL that was
+        # actually checked equals the stored proxy.url. In edit mode the dialog
+        # fields may hold an UNSAVED URL; persisting its geo (or a failure flag)
+        # onto the stored record — which cancel won't undo — gives a proxy whose
+        # exit is in one country but whose persisted geo/tz says another, a silent
+        # fingerprint mismatch across every profile using it (audit6 #6). The flag
+        # icon still reflects the live check either way; only the DB write is
+        # gated.
+        persist = proxy is not None and checked_url == proxy.url
         if success:
             flag_holder.content = _flag_control(code)
-            if on_checked is not None and proxy is not None:
+            if persist and on_checked is not None:
                 on_checked(proxy.name, code, country, ip, tz, lat, lon)
         else:
             flag_holder.content = _fail_control()
-            if on_check_failed is not None and proxy is not None:
+            if persist and on_check_failed is not None:
                 on_check_failed(proxy.name)
 
     def on_check_click(_: ft.ControlEvent) -> None:
@@ -187,7 +212,8 @@ def open_proxy_dialog(
         )
         page.update()
         _do_check(
-            page, current_url, addr_error, check_btn, proxy_service, on_check_result
+            page, current_url, addr_error, check_btn, proxy_service,
+            on_check_result, ui=ui,
         )
 
     check_btn.on_click = on_check_click
@@ -342,14 +368,28 @@ def _do_check(
     addr_error: ft.Text,
     check_btn: ft.OutlinedButton,
     proxy_service: IProxyService,
-    on_result: Callable[[bool, str, str, str, str, float | None, float | None], None],
+    on_result: Callable[..., None],
+    ui: Callable[[Callable[[], None]], None] | None = None,
 ) -> None:
+    def _post(fn: Callable[[], None]) -> None:
+        # Marshal UI mutations onto the flet session thread. The check runs on a
+        # worker; touching controls / page.update() from it is the #124 freeze
+        # class (audit6 #9). When no marshaler is supplied (older callers/tests),
+        # run inline.
+        if ui is not None:
+            ui(fn)
+        else:
+            fn()
+
     url = current_url()
     if not url or "://:" in url or url.endswith("://"):
+        # Pre-flight input validation: this is a "you didn't type a host/port"
+        # message, NOT a proxy-check failure. Do NOT call on_result — flagging
+        # the stored proxy as failed here permanently marked a working proxy bad
+        # just because a field was momentarily blank mid-edit (audit6 #6).
         addr_error.value = "Enter host and port to check"
         addr_error.color = COLORS["warning"]
         addr_error.visible = True
-        on_result(False, "", "", "", "", None, None)
         page.update()
         return
 
@@ -362,12 +402,16 @@ def _do_check(
         success, message, code, name, ip, tz, lat, lon = proxy_service.check_proxy_detailed_sync(
             url
         )
-        check_btn.content = ft.Text("[ check ]", font_family=MONO)
-        check_btn.disabled = False
-        addr_error.value = message
-        addr_error.color = COLORS["success"] if success else COLORS["error"]
-        addr_error.visible = True
-        on_result(success, code, name, ip, tz, lat, lon)
-        page.update()
+
+        def apply() -> None:
+            check_btn.content = ft.Text("[ check ]", font_family=MONO)
+            check_btn.disabled = False
+            addr_error.value = message
+            addr_error.color = COLORS["success"] if success else COLORS["error"]
+            addr_error.visible = True
+            on_result(success, code, name, ip, tz, lat, lon, url)
+            page.update()
+
+        _post(apply)
 
     threading.Thread(target=do_check, daemon=True).start()

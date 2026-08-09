@@ -134,3 +134,111 @@ def test_tofu_policy_pins_new_host_key_0600(tmp_path, monkeypatch):
     if os.name != "nt":
         mode = stat.S_IMODE(os.stat(kh).st_mode)
         assert mode == 0o600
+
+
+class _FakeSSHServer:
+    """A minimal real paramiko SSH server on loopback that presents a chosen
+    host key, so a client's known_hosts pinning + changed-key rejection can be
+    exercised end-to-end (no mocks). Serves exactly one connection then stops."""
+
+    def __init__(self, host_key):
+        import paramiko
+
+        self._host_key = host_key
+        self._sock = socket.socket()
+        self._sock.bind(("127.0.0.1", 0))
+        self._sock.listen(1)
+        self._sock.settimeout(5)
+        self.port = self._sock.getsockname()[1]
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+        class _Handler(paramiko.ServerInterface):
+            def check_auth_password(self, username, password):
+                return paramiko.AUTH_SUCCESSFUL
+
+            def check_auth_none(self, username):
+                return paramiko.AUTH_SUCCESSFUL
+
+            def get_allowed_auths(self, username):
+                return "password,none"
+
+            def check_channel_request(self, kind, chanid):
+                return paramiko.OPEN_SUCCEEDED
+
+        self._handler_cls = _Handler
+
+    def _serve(self):
+        import paramiko
+
+        try:
+            conn, _ = self._sock.accept()
+        except OSError:
+            return
+        try:
+            t = paramiko.Transport(conn)
+            t.add_server_key(self._host_key)
+            t.start_server(server=self._handler_cls())
+            # keep the transport alive briefly so the handshake completes
+            t.join(timeout=3)
+        except Exception:
+            pass
+
+    def close(self):
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+
+
+def test_connect_rejects_changed_host_key_mitm(tmp_path, monkeypatch):
+    # audit6 #4 (Mars's explicit concern): the MITM-detection half of the TOFU
+    # fix — connect() loading known_hosts so paramiko RAISES on a changed key —
+    # had no behavioral test. Pin server key A, then serve key B on the same
+    # host:port and assert connect() raises BadHostKeyException. Deleting the
+    # load_host_keys call in connect() makes this fail (the changed key would be
+    # silently re-pinned).
+    import paramiko
+
+    monkeypatch.setattr(C, "PERSONA_HOME", str(tmp_path))
+    monkeypatch.setattr(C, "_KNOWN_HOSTS", str(tmp_path / "known_hosts"))
+
+    key_a = paramiko.RSAKey.generate(2048)
+    key_b = paramiko.ECDSAKey.generate()
+
+    # First connection: server presents key A. TOFU pins it (first sight).
+    srv_a = _FakeSSHServer(key_a)
+    target_a = C.SSHTarget(
+        host="127.0.0.1", port=srv_a.port, username="u", password="p", proxy_url=""
+    )
+    try:
+        client = C.connect(target_a, timeout=5)
+        client.close()
+    finally:
+        srv_a.close()
+
+    assert (tmp_path / "known_hosts").exists(), "key A should have been pinned"
+
+    # Second connection to the SAME host:port but the server now presents key B
+    # (a MITM swapping the host key). paramiko must reject it.
+    srv_b = _FakeSSHServer(key_b)
+    target_b = C.SSHTarget(
+        host="127.0.0.1", port=srv_b.port, username="u", password="p", proxy_url=""
+    )
+    # NOTE: known_hosts pins by host:port; use the same port so the pin applies.
+    # Re-pin key A under srv_b's port first so the change is on the SAME key entry.
+    import os
+
+    # Pin key A to srv_b.port so the second connect sees a *changed* key there.
+    hostkeys = paramiko.HostKeys()
+    if os.path.exists(str(tmp_path / "known_hosts")):
+        hostkeys.load(str(tmp_path / "known_hosts"))
+    entry = f"[127.0.0.1]:{srv_b.port}"
+    hostkeys.add(entry, key_a.get_name(), key_a)
+    hostkeys.save(str(tmp_path / "known_hosts"))
+
+    try:
+        with pytest.raises(paramiko.BadHostKeyException):
+            C.connect(target_b, timeout=5)
+    finally:
+        srv_b.close()

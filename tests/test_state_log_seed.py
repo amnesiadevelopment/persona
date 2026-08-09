@@ -104,3 +104,18 @@ def test_appstate_seeds_from_log_dir(tmp_path, monkeypatch):
 
     st = state.AppState()
     assert st.get_all_log_lines() == ["10:00:01  > hello"]
+
+
+def test_activity_log_is_bounded(tmp_path, monkeypatch):
+    # audit6 LOW f: the in-memory Activity Log must not grow unbounded for the
+    # whole session (memory + a slow fullscreen-dialog open). It's a bounded ring.
+    monkeypatch.setattr(state, "LOG_DIR", str(tmp_path / "empty"))
+    monkeypatch.setattr(state, "_MAX_LOG_LINES", 100)
+    st = state.AppState()
+    for i in range(500):
+        st.add_log(f"line {i}")
+    lines = st.get_all_log_lines()
+    assert len(lines) == 100, f"log grew to {len(lines)}, cap not enforced"
+    # keeps the MOST RECENT lines
+    assert "line 499" in lines[-1]
+    assert "line 400" in lines[0]

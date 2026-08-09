@@ -393,9 +393,21 @@ class ProfileManager:
                 del self.profiles[name]
                 self.save_profiles()
                 shutil.rmtree(self._data_path(name), ignore_errors=True)
+                self._remove_window_entry(name)
                 logger.info("Deleted profile: %s", name)
                 return True
         return False
+
+    @staticmethod
+    def _remove_window_entry(name: str) -> None:
+        # Drop the Linux desktop entry (embeds the profile name in cleartext) so
+        # a delete/wipe leaves no forensic trace (audit6 LOW c). No-op elsewhere.
+        try:
+            from ..browser.window_entry import remove_window_entry
+
+            remove_window_entry(name)
+        except Exception:
+            pass
 
     def wipe_all_profiles(self) -> int:
         """Delete EVERY profile and its data in one pass — a panic wipe for an
@@ -408,6 +420,7 @@ class ProfileManager:
             names = list(self.profiles.keys())
             for name in names:
                 shutil.rmtree(self._data_path(name), ignore_errors=True)
+                self._remove_window_entry(name)
             self.profiles.clear()
             self.save_profiles()
         if names:

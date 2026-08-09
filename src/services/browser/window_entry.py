@@ -53,3 +53,16 @@ def write_window_entry(profile_name: str, icon: str = "chromium") -> str:
     )
     path.write_text(content, encoding="utf-8")
     return str(path)
+
+
+def remove_window_entry(profile_name: str) -> None:
+    """Delete a profile's desktop entry. The entry embeds the profile NAME in
+    cleartext (Name=, and the filename); leaving it after a delete or a panic
+    wipe was a forensic trace that survived the wipe (audit6 LOW c). Best-effort;
+    absent file is fine."""
+    try:
+        (_entry_dir() / _safe_filename(profile_name)).unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        logger.warning("Could not remove desktop entry for %s: %s", profile_name, e)

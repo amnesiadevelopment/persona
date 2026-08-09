@@ -16,11 +16,63 @@ on:
         default: all
         options: [all, windows, linux, macos]
 
+# Default every job to READ-only. The build jobs run untrusted third-party code
+# (git-dep setup.py, flet build, appimagetool) and must not hold a write-capable
+# token that code could exfiltrate to rewrite the release channel (audit6 #1).
+# Only the final `publish` job — which runs NO third-party code — is granted
+# contents: write, at the job level.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  # Gate the whole release on two cheap checks BEFORE any OS spends 15 min
+  # building. preflight: the tag must equal APP_VERSION (a mismatch ships a
+  # manifest version the installed code disagrees with → perpetual update loop,
+  # audit6 #10). tests: the suite must pass — release.yml never ran it, so a tag
+  # could ship with every security regression test red (audit6 #2).
+  preflight:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+      - name: Tag must match APP_VERSION
+        # Only meaningful on a tag push; a manual workflow_dispatch has no tag to
+        # match, so skip the assertion there (the job still runs so downstream
+        # needs: are satisfied).
+        if: github.event_name == 'push'
+        run: |
+          ver="$(python3 -c "import re,pathlib; print(re.search(r'APP_VERSION\s*=\s*\"([^\"]+)\"', pathlib.Path('src/services/app_update/updater.py').read_text()).group(1))")"
+          tag="${GITHUB_REF_NAME}"
+          echo "APP_VERSION=$ver  tag=$tag"
+          if [ "v$ver" != "$tag" ]; then
+            echo "::error::tag $tag does not match APP_VERSION $ver — bump updater.py before tagging"
+            exit 1
+          fi
+
+  tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install --prefer-binary -r requirements.txt
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; else pip install pytest; fi
+      - name: Run the test suite
+        run: python -m pytest -q
+
   build-linux:
+    needs: [preflight, tests]
     runs-on: ubuntu-24.04
     # On a tag, build every OS. On a manual run, build only the chosen OS (or
     # all) — so iterating on the Windows installer doesn't wait on Linux/macOS.
@@ -29,16 +81,22 @@ jobs:
       contains(fromJSON('["all","linux"]'), github.event.inputs.os)
     steps:
       - name: Check out the code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          # Don't leave the write-capable GITHUB_TOKEN in .git/config: these jobs
+          # then run third-party code (git-dep setup.py, flet build, appimagetool)
+          # that could read it and rewrite the release channel (audit6 #1). The
+          # publish job re-checks out with credentials only where it needs them.
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.13"
           cache: pip
 
       - name: Set up Flutter
-        uses: subosito/flutter-action@v2
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2  # v2
         with:
           # flet 0.85.3 pins this exact Flutter version; using "stable" makes
           # flet try to reinstall the right one interactively and the build
@@ -69,6 +127,10 @@ jobs:
         # HEAD playwright bumps the required core past our pin), the bundled
         # engine raises ImportError and reads as "not ready" forever (#234). Fail
         # the build here instead of shipping that.
+        # LIMITATION (audit6 LOW g): this validates the RUNNER's pip env, not the
+        # actual flet-shipped bundle. A flet-build packaging bug that drops/downgrades
+        # a package would pass here yet ship broken. A true guard would import from
+        # inside the built bundle; tracked as a follow-up.
         run: |
           pip install "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git"
           pip check
@@ -128,8 +190,15 @@ jobs:
 
       - name: Package the bundle into an AppImage
         run: |
+          # Pin appimagetool to a specific release + verify its sha256 before
+          # executing it: it builds the shipped AppImage (including the runtime
+          # header users execute) and CI then publishes a matching .sha256, so a
+          # compromised tool from the mutable `continuous` tag would ship a valid-
+          # checksummed backdoor (audit6 #11). Pinned to 1.9.0.
+          AIT_SHA256=46fdd785094c7f6e545b61afcfb0f3d98d8eab243f644b4b17698c01d06083d1
           curl -fsSL -o /tmp/appimagetool \
-            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+            https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage
+          echo "$AIT_SHA256  /tmp/appimagetool" | sha256sum -c -
           chmod +x /tmp/appimagetool
           APPDIR=/tmp/persona.AppDir
           rm -rf "$APPDIR"; mkdir -p "$APPDIR/usr"
@@ -178,22 +247,18 @@ jobs:
           cat persona-x86_64.AppImage.sha256
 
       - name: Upload the AppImage artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: persona-appimage
-          path: persona-x86_64.AppImage
-          if-no-files-found: error
-
-      - name: Publish to the GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
+          # Include the sha256 sidecar so the fan-in publish job (audit6 #12)
+          # gets it too — install.sh + the updater verify against it.
+          path: |
             persona-x86_64.AppImage
             persona-x86_64.AppImage.sha256
-          generate_release_notes: true
+          if-no-files-found: error
 
   build-windows:
+    needs: [preflight, tests]
     runs-on: windows-latest
     if: >-
       github.event_name != 'workflow_dispatch' ||
@@ -206,16 +271,22 @@ jobs:
       PYTHONUTF8: "1"
     steps:
       - name: Check out the code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          # Don't leave the write-capable GITHUB_TOKEN in .git/config: these jobs
+          # then run third-party code (git-dep setup.py, flet build, appimagetool)
+          # that could read it and rewrite the release channel (audit6 #1). The
+          # publish job re-checks out with credentials only where it needs them.
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.13"
           cache: pip
 
       - name: Set up Flutter
-        uses: subosito/flutter-action@v2
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2  # v2
         with:
           flutter-version: "3.41.7"
           cache: true
@@ -226,8 +297,51 @@ jobs:
           pip install flet==0.85.3
           pip install --prefer-binary -r requirements.txt
 
+      - name: Assert the engine packages resolve in lockstep
+        # Same guard as the Linux job (audit6 #3: Win/Mac had NO engine guards, so
+        # a drift/downgrade could ship a broken 2nd engine on the two most-used
+        # platforms and publish green). See the Linux step for the full rationale.
+        shell: bash
+        run: |
+          pip install "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git"
+          pip check
+          python -c "import invisible_playwright, invisible_core._pin; print('engine import + _pin OK')"
+
+      - name: Guard against an engine downgrade
+        shell: bash
+        run: |
+          installed="$(python -c 'from invisible_core.constants import BINARY_VERSION; print(BINARY_VERSION)' 2>/dev/null || true)"
+          baseline="$(cat engine-baseline.txt 2>/dev/null | tr -d '[:space:]' || true)"
+          echo "installed engine='$installed'  baseline='$baseline'"
+          in_num="${installed#firefox-}"
+          base_num="${baseline#firefox-}"
+          is_int() { case "$1" in ""|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+          if is_int "$in_num" && is_int "$base_num"; then
+            if [ "$in_num" -lt "$base_num" ]; then
+              echo "ERROR: engine $installed is OLDER than the baseline $baseline — refusing to ship a downgrade." >&2
+              exit 1
+            fi
+            echo "engine $installed >= baseline $baseline — OK"
+          else
+            echo "WARNING: engine version unreadable (installed='$installed', baseline='$baseline') — skipping downgrade guard."
+          fi
+
       - name: Build the Windows bundle
         run: flet build windows -v --no-rich-output
+
+      - name: Assert required packages are bundled
+        # audit6 #3: the Linux job asserts both engines are in the bundle; Windows
+        # had no such check. flet's Windows layout differs, so match the package
+        # dir anywhere under build/windows rather than a fixed site-packages path.
+        shell: bash
+        run: |
+          for pkg in invisible_playwright invisible_core; do
+            if [ -z "$(find build/windows -type d -name "$pkg" -print -quit)" ]; then
+              echo "ERROR: $pkg missing from the Windows bundle - not bundled." >&2
+              exit 1
+            fi
+          done
+          echo "bundled engine packages OK"
 
       - name: Show what flet produced
         shell: bash
@@ -533,7 +647,7 @@ jobs:
           "$appSha *app.zip" | Add-Content checksums.txt
 
       - name: Upload the Windows artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: persona-windows
           path: |
@@ -544,19 +658,8 @@ jobs:
             update-manifest.json
           if-no-files-found: error
 
-      - name: Publish to the GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            persona-windows-setup.exe
-            checksums.txt
-            app.zip
-            app.zip.hash
-            update-manifest.json
-          generate_release_notes: true
-
   build-macos:
+    needs: [preflight, tests]
     runs-on: macos-latest
     if: >-
       github.event_name != 'workflow_dispatch' ||
@@ -568,16 +671,22 @@ jobs:
       PIP_ONLY_BINARY: cryptography
     steps:
       - name: Check out the code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          # Don't leave the write-capable GITHUB_TOKEN in .git/config: these jobs
+          # then run third-party code (git-dep setup.py, flet build, appimagetool)
+          # that could read it and rewrite the release channel (audit6 #1). The
+          # publish job re-checks out with credentials only where it needs them.
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.13"
           cache: pip
 
       - name: Set up Flutter
-        uses: subosito/flutter-action@v2
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2  # v2
         with:
           flutter-version: "3.41.7"
           cache: true
@@ -588,8 +697,50 @@ jobs:
           pip install flet==0.85.3
           pip install --prefer-binary -r requirements.txt
 
+      - name: Assert the engine packages resolve in lockstep
+        # audit6 #3: same engine guard as Linux; macOS had none. See the Linux
+        # step for the full rationale.
+        run: |
+          pip install "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git"
+          pip check
+          python -c "import invisible_playwright, invisible_core._pin; print('engine import + _pin OK')"
+
+      - name: Guard against an engine downgrade
+        run: |
+          installed="$(python -c 'from invisible_core.constants import BINARY_VERSION; print(BINARY_VERSION)' 2>/dev/null || true)"
+          baseline="$(cat engine-baseline.txt 2>/dev/null | tr -d '[:space:]' || true)"
+          echo "installed engine='$installed'  baseline='$baseline'"
+          in_num="${installed#firefox-}"
+          base_num="${baseline#firefox-}"
+          is_int() { case "$1" in ""|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+          if is_int "$in_num" && is_int "$base_num"; then
+            if [ "$in_num" -lt "$base_num" ]; then
+              echo "ERROR: engine $installed is OLDER than the baseline $baseline — refusing to ship a downgrade." >&2
+              exit 1
+            fi
+            echo "engine $installed >= baseline $baseline — OK"
+          else
+            echo "WARNING: engine version unreadable (installed='$installed', baseline='$baseline') — skipping downgrade guard."
+          fi
+
       - name: Build the macOS bundle
         run: flet build macos -v --no-rich-output
+
+      - name: Assert required packages are bundled
+        # audit6 #3: assert both engines made it into the .app bundle.
+        run: |
+          APP="$(find build/macos -maxdepth 3 -name '*.app' | head -1)"
+          if [ -z "$APP" ]; then
+            echo "ERROR: no .app produced by flet build macos" >&2
+            exit 1
+          fi
+          for pkg in invisible_playwright invisible_core; do
+            if [ -z "$(find "$APP" -type d -name "$pkg" -print -quit)" ]; then
+              echo "ERROR: $pkg missing from the macOS .app bundle - not bundled." >&2
+              exit 1
+            fi
+          done
+          echo "bundled engine packages OK"
 
       - name: Package the .app into a dmg
         run: |
@@ -625,17 +776,51 @@ jobs:
           cat persona-macos.dmg.sha256
 
       - name: Upload the macOS artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: persona-macos
-          path: persona-macos.dmg
-          if-no-files-found: error
-
-      - name: Publish to the GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
+          # Include the dmg's sha256 sidecar so the fan-in publish job gets it.
+          path: |
             persona-macos.dmg
             persona-macos.dmg.sha256
+          if-no-files-found: error
+
+  # Fan-in: ONE publish job, gated on all three builds succeeding, so a release
+  # is never partial — every OS asset lands together or none does (audit6 #12).
+  # This is the only job with contents: write, and it runs NO third-party build
+  # code (just download-artifact + gh-release), so the write token is never
+  # exposed to untrusted code (audit6 #1). Only on a tag push.
+  publish:
+    needs: [build-linux, build-windows, build-macos]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          path: dist
+      - name: Flatten artifacts and list them
+        run: |
+          # download-artifact nests each artifact under dist/<artifact-name>/;
+          # collect the files into one dir for the release upload.
+          mkdir -p out
+          find dist -type f -exec cp {} out/ \;
+          echo "=== assets to publish ==="
+          ls -la out
+          # Fail CLOSED if any expected asset is missing — a partial release
+          # would 404 install.sh / the updater on the deterministic asset URL.
+          for f in \
+            persona-x86_64.AppImage persona-x86_64.AppImage.sha256 \
+            persona-windows-setup.exe checksums.txt app.zip app.zip.hash \
+            update-manifest.json persona-macos.dmg persona-macos.dmg.sha256; do
+            if [ ! -f "out/$f" ]; then
+              echo "::error::expected release asset missing: $f"; exit 1
+            fi
+          done
+      - name: Publish the GitHub Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2
+        with:
+          files: out/*
           generate_release_notes: true

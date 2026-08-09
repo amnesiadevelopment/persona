@@ -919,6 +919,7 @@ class App:
             existing,
             on_checked=on_checked,
             on_check_failed=on_check_failed,
+            ui=self._ui,
         )
 
     def _edit_proxy(self, name: str) -> None:

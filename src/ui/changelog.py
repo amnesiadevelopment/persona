@@ -5,6 +5,17 @@ not a git log. When cutting a release, add the new version's highlights here.
 """
 
 CHANGELOG: dict[str, list[str]] = {
+    "2.9.13": [
+        "Deleting or wiping a profile while it's still opening can no longer "
+        "corrupt or half-delete its data — the browser is fully stopped first.",
+        "Proxies with passwords containing special characters (/ # ? @) now save "
+        "and connect correctly instead of being rejected or failing to launch.",
+        "Checking a proxy after editing its address no longer writes the wrong "
+        "location onto the saved proxy, and a blank field no longer marks a "
+        "working proxy as failed.",
+        "Deleting a profile now removes its leftover desktop shortcut on Linux, so "
+        "a wipe leaves no trace of the profile name behind.",
+    ],
     "2.9.12": [
         "Deleting profiles is smoother and safer: a bulk delete of open profiles "
         "no longer freezes the window, and deleting or wiping a profile that's "

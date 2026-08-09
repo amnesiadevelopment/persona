@@ -161,6 +161,11 @@ class BrowserLauncher:
     ) -> None:
         with self._lock:
             if profile.name in self._active_sessions or profile.name in self._starting:
+                # Already running/starting: refuse the duplicate, but tell the
+                # caller so it clears its own is_loading flag — returning silently
+                # left the card stuck "loading" and uncontrollable (audit6 LOW b).
+                if on_stop:
+                    on_stop()
                 return
             # Reserve the slot BEFORE releasing the lock so a concurrent launch
             # of this profile can't slip past while spawn_browser() runs. Clear
@@ -184,8 +189,14 @@ class BrowserLauncher:
                     return
                 stop_event.set()
                 with self._lock:
-                    self._active_sessions.pop(profile.name, None)
-                    self._stop_notifiers.pop(profile.name, None)
+                    # Evict by proc IDENTITY, not just by name: a delayed stale
+                    # notifier from a previous crashed launch must not pop the NEW
+                    # live session the user relaunched (which would leave the new
+                    # browser untracked, stop_profile False for it, and a second
+                    # engine launchable on the same dir) (audit6 #7).
+                    if self._active_sessions.get(profile.name) is proc:
+                        self._active_sessions.pop(profile.name, None)
+                        self._stop_notifiers.pop(profile.name, None)
                 reason = close_reason[0]
                 if reason in _QUIET_CLOSE_REASONS:
                     log_callback(f"Session ended: {profile.name}")
@@ -214,37 +225,56 @@ class BrowserLauncher:
             proc = spawn_browser(profile)
             with self._lock:
                 aborted = profile.name in self._aborting
-                if aborted:
-                    # A stop/delete arrived while we were spawning. Don't register
-                    # a session; terminate the process we just started and let the
-                    # waiting stopper proceed (it's what will rmtree the dir).
-                    self._starting.discard(profile.name)
-                    self._aborting.discard(profile.name)
-                    self._lock.notify_all()
-                else:
+                if not aborted:
                     self._active_sessions[profile.name] = proc
                     self._stop_notifiers[profile.name] = stop_event
                     self._starting.discard(profile.name)
                     self._lock.notify_all()
 
             if aborted:
+                # A stop/delete arrived while we were spawning. Terminate the
+                # process we just started and only THEN leave _starting — the
+                # waiting stopper (which will rmtree the data dir) blocks on the
+                # name being in _starting, so keeping the reservation until the
+                # browser is DEAD guarantees nothing is still writing the dir when
+                # it proceeds. Discarding+notifying BEFORE terminate (audit6 #5)
+                # woke the stopper while the browser was still alive → rmtree
+                # under a live process, the same corruption class audit-5 #1 fixed.
                 terminate(proc, profile.name, timeout=1)
+                with self._lock:
+                    self._starting.discard(profile.name)
+                    self._aborting.discard(profile.name)
+                    self._lock.notify_all()
                 logger.info("Aborted in-flight spawn for profile: %s", profile.name)
                 if on_stop:
                     on_stop()
                 return
 
-            threading.Thread(
-                target=self._monitor_process,
-                args=(proc, profile.name, log_callback, on_ready,
-                      notify_stopped, close_reason, last_output),
-                daemon=True,
-            ).start()
-            threading.Thread(
-                target=wait_for_exit,
-                args=(proc, profile.name, notify_stopped),
-                daemon=True,
-            ).start()
+            try:
+                threading.Thread(
+                    target=self._monitor_process,
+                    args=(proc, profile.name, log_callback, on_ready,
+                          notify_stopped, close_reason, last_output),
+                    daemon=True,
+                ).start()
+                threading.Thread(
+                    target=wait_for_exit,
+                    args=(proc, profile.name, notify_stopped),
+                    daemon=True,
+                ).start()
+            except Exception:
+                # The session is already REGISTERED but a monitor/wait thread
+                # failed to start (rare: thread-table exhaustion). Without this
+                # the process would run live but unmonitored while we log "Error
+                # starting" — nobody would ever drain its stdout or reap it
+                # (audit6 LOW a). Tear the registered session down cleanly.
+                terminate(proc, profile.name, timeout=1)
+                with self._lock:
+                    if self._active_sessions.get(profile.name) is proc:
+                        self._active_sessions.pop(profile.name, None)
+                        self._stop_notifiers.pop(profile.name, None)
+                    self._lock.notify_all()
+                raise
         except Exception as e:
             with self._lock:
                 self._starting.discard(profile.name)

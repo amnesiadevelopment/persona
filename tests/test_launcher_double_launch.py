@@ -67,6 +67,37 @@ def test_concurrent_launch_spawns_once(monkeypatch):
     assert bl.is_running("race") is True
 
 
+def test_duplicate_launch_calls_on_stop_to_clear_loading(monkeypatch):
+    # audit6 LOW b: a refused duplicate launch must call on_stop so the caller
+    # clears its is_loading flag — returning silently left the card stuck
+    # "loading" and uncontrollable until a restart.
+    release = threading.Event()
+
+    def slow_spawn(profile):
+        release.wait(2.0)
+        return _Proc()
+
+    monkeypatch.setattr(launcher_mod, "spawn_browser", slow_spawn)
+    monkeypatch.setattr(launcher_mod, "wait_for_exit", lambda *a, **k: None)
+    monkeypatch.setattr(BrowserLauncher, "_monitor_process", lambda *a, **k: None)
+
+    bl = BrowserLauncher()
+    p = Profile(name="dup", os_type="windows")
+
+    # first launch reserves the slot (spawn still in flight)
+    t1 = threading.Thread(target=bl.start_thread, args=(p, lambda _l: None))
+    t1.start()
+    time.sleep(0.05)
+
+    # second launch of the same profile is refused — but must fire on_stop
+    stopped = []
+    bl.start_thread(p, lambda _l: None, on_stop=lambda: stopped.append(True))
+    assert stopped == [True], "duplicate refusal must call on_stop to clear loading"
+
+    release.set()
+    t1.join(3)
+
+
 def test_is_running_true_during_spawn(monkeypatch):
     started = threading.Event()
     release = threading.Event()

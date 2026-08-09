@@ -1,5 +1,6 @@
 from src.utils.proxy_parser import (
     build_proxy_url,
+    parse_proxy,
     parse_proxy_server,
     split_proxy_url,
 )
@@ -56,3 +57,40 @@ def test_roundtrip():
 def test_built_url_is_valid_proxy_server():
     url = build_proxy_url("socks5", "1.2.3.4", "1080", "u", "p")
     assert parse_proxy_server(url) == "socks5://1.2.3.4:1080"
+
+
+import pytest
+
+
+@pytest.mark.parametrize("pw", ["p/ss", "p#ss", "p?ss", "p@ss", "p:ss", "p ss", "пароль"])
+def test_special_char_password_round_trips_and_parses(pw):
+    # audit6 #8: a password with URL-reserved characters must survive build ->
+    # split (shows the real password) AND build -> launch-parse (host stays
+    # intact, creds decode). Assembling raw creds broke urlparse: `/#?` emptied
+    # the host (→ fail-closed no-proxy), `@` was rejected at save.
+    url = build_proxy_url("socks5", "1.2.3.4", "1080", "user", pw)
+
+    # split round-trips to the real credential
+    f = split_proxy_url(url)
+    assert f["host"] == "1.2.3.4"
+    assert f["port"] == "1080"
+    assert f["username"] == "user"
+    assert f["password"] == pw
+
+    # the launch parser sees an intact host:port and the DECODED credentials
+    cfg = parse_proxy(url)
+    assert cfg is not None, f"launcher rejected the built url for pw={pw!r}"
+    assert cfg["server"] == "socks5://1.2.3.4:1080"
+    assert cfg["username"] == "user"
+    assert cfg["password"] == pw
+
+
+def test_special_char_password_reaches_socks_bridge_decoded():
+    # The chromium credential-stripping bridge must send the DECODED password to
+    # the upstream SOCKS5 proxy, not the %XX form (audit6 #8).
+    from src.services.proxy.bridge import ProxyBridge
+
+    url = build_proxy_url("socks5", "1.2.3.4", "1080", "user", "p/s#s?x")
+    b = ProxyBridge(url)
+    assert b._up_user == "user"
+    assert b._up_pass == "p/s#s?x"

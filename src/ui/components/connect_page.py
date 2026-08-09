@@ -296,6 +296,12 @@ def _copy_button(value: str) -> ft.Control:
         await ft.Clipboard().set(value)
         btn.content = ft.Text("[ copied ]", font_family=MONO, size=11, color=COLORS["success"])
         btn.update()
+        # Revert so it doesn't stay "[ copied ]" and read stale (audit6 LOW e).
+        import asyncio
+
+        await asyncio.sleep(1.5)
+        btn.content = "[ copy ]"
+        btn.update()
 
     btn.on_click = on_copy
     return btn

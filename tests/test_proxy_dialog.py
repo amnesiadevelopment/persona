@@ -196,3 +196,55 @@ def test_check_passes_geo_with_lat_lon_to_on_checked():
     assert checked == [
         ("mob", "US", "United States", "9.9.9.9", "America/New_York", 25.77, -80.19)
     ]
+
+
+def _check_btn(dlg):
+    return next(
+        c for c in _walk(dlg)
+        if isinstance(c, ft.OutlinedButton) and getattr(c, "content", None) == "[ check ]"
+    )
+
+
+def test_check_of_edited_unsaved_url_does_not_persist_geo():
+    # audit6 #6: in edit mode, checking a URL the user changed but hasn't SAVED
+    # must NOT write its geo onto the stored proxy (cancel wouldn't undo it),
+    # else the stored record's geo/tz disagree with its actual exit — a silent
+    # fingerprint mismatch. The flag icon still updates; only the DB write is
+    # gated on the checked URL matching the stored url.
+    page = _FakePage()
+    checked = []
+    px = Proxy("mob", "socks5://u:p@h:1")
+    open_proxy_dialog(
+        page, _FakeService(), on_save=lambda *a: None, proxy=px,
+        on_checked=lambda *a: checked.append(a),
+    )
+    dlg = page.shown
+    # change the host to something the stored url doesn't have (unsaved edit)
+    _field(dlg, "Host").value = "different-host"
+    btn = _check_btn(dlg)
+    btn.on_click(None)
+    deadline = time.time() + 5
+    while btn.disabled:
+        assert time.time() < deadline, "check never completed"
+        time.sleep(0.01)
+    time.sleep(0.05)
+    assert checked == [], "geo of an unsaved URL must not be persisted"
+
+
+def test_preflight_invalid_input_does_not_flag_stored_proxy():
+    # audit6 #6: clearing the host mid-edit then clicking [check] is an input
+    # error, not a proxy failure — it must NOT call on_check_failed and flag a
+    # working stored proxy as bad.
+    page = _FakePage()
+    failed = []
+    px = Proxy("mob", "socks5://u:p@h:1")
+    open_proxy_dialog(
+        page, _FakeService(), on_save=lambda *a: None, proxy=px,
+        on_check_failed=lambda name: failed.append(name),
+    )
+    dlg = page.shown
+    _field(dlg, "Host").value = ""   # blank host -> pre-flight invalid
+    _field(dlg, "Port").value = ""
+    _check_btn(dlg).on_click(None)
+    time.sleep(0.05)
+    assert failed == [], "a pre-flight input error must not flag the stored proxy"

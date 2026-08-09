@@ -1,7 +1,11 @@
 import pathlib
 import re
 
-from src.services.browser.window_entry import app_id_for, write_window_entry
+from src.services.browser.window_entry import (
+    app_id_for,
+    remove_window_entry,
+    write_window_entry,
+)
 
 
 def test_app_id_is_dbus_valid_and_unique():
@@ -51,3 +55,19 @@ def test_filename_sanitized(tmp_path, monkeypatch):
     text = pathlib.Path(path).read_text(encoding="utf-8")
     # the human-facing Name keeps the original profile name
     assert "Name=my acc/01" in text
+
+
+def test_remove_window_entry_deletes_the_file(tmp_path, monkeypatch):
+    # audit6 LOW c: the desktop entry embeds the profile name in cleartext;
+    # delete/wipe must remove it so no forensic trace survives.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    path = write_window_entry("secret-acct")
+    assert pathlib.Path(path).exists()
+    remove_window_entry("secret-acct")
+    assert not pathlib.Path(path).exists()
+
+
+def test_remove_window_entry_absent_is_noop(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    # no exception when there's nothing to remove
+    remove_window_entry("never-existed")

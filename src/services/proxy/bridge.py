@@ -13,7 +13,7 @@ import socket
 import struct
 import threading
 import time
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 # Time budget for ONE upstream CONNECT attempt (TCP to the proxy + SOCKS5
 # greeting/auth/CONNECT). Over Tor the proxy leg double-hops, so a single attempt
@@ -157,8 +157,10 @@ class ProxyBridge:
         p = urlparse(upstream_url if "://" in upstream_url else "socks5://" + upstream_url)
         self._up_host = p.hostname or ""
         self._up_port = p.port or 1080
-        self._up_user = p.username or ""
-        self._up_pass = p.password or ""
+        # Decode percent-encoded creds (build_proxy_url encodes them) so the SOCKS5
+        # auth sends the real username/password, not the %XX form (audit6 #8).
+        self._up_user = unquote(p.username) if p.username else ""
+        self._up_pass = unquote(p.password) if p.password else ""
         # SOCKS5 user/pass auth length-prefixes each credential with a single
         # byte, so neither may exceed 255 UTF-8 bytes. Reject up front (fail
         # CLOSED): a credential that can't be sent means we can't authenticate to
