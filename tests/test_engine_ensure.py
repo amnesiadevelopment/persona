@@ -5,6 +5,19 @@ import pytest
 from src.services.engine import updater
 
 
+class _Opener:
+    """Stand-in for the range-preserving opener: .open(req) returns the next
+    fake response and records the Range header the caller sent."""
+
+    def __init__(self, factory):
+        self._factory = factory
+        self.ranges = []
+
+    def open(self, req, timeout=0):
+        self.ranges.append(req.headers.get("Range"))
+        return self._factory(req)
+
+
 def _wire_engine_dir(monkeypatch, tmp_path):
     """Point ENGINE_BINARY/MARKER_FILE/VERSION_FILE at tmp_path and force
     non-macOS so is_installed() checks the plain binary + completion marker."""
@@ -103,7 +116,7 @@ def test_download_to_refuses_missing_digest(tmp_path, monkeypatch):
             return self._data.pop(0) if self._data else b""
 
     monkeypatch.setattr(
-        updater.urllib.request, "urlopen", lambda *a, **k: FakeResp()
+        updater, "range_opener", lambda: _Opener(lambda *a, **k: FakeResp())
     )
     ok = updater._download_to(str(path), "http://x/engine", 5, None, None)
     assert ok is False
@@ -130,10 +143,63 @@ def test_download_to_allows_missing_digest_when_opted_in(tmp_path, monkeypatch):
             return self._data.pop(0) if self._data else b""
 
     monkeypatch.setattr(
-        updater.urllib.request, "urlopen", lambda *a, **k: FakeResp()
+        updater, "range_opener", lambda: _Opener(lambda *a, **k: FakeResp())
     )
     ok = updater._download_to(
         str(path), "http://x/engine", 5, None, None, allow_missing=True
     )
     assert ok is True
     assert path.read_bytes() == payload
+
+
+def test_download_to_uses_range_preserving_opener():
+    # audit7 #8: GitHub 302s to a signed CDN URL and the default redirect handler
+    # drops the Range header, so every resume re-downloads the whole file (200)
+    # — over Tor that never finishes. _download_to must build its opener from the
+    # range-preserving one so the tail request survives the redirect.
+    import inspect
+
+    src = inspect.getsource(updater._download_to)
+    assert "range_opener()" in src
+    assert "urlopen" not in src  # no bare urlopen that would lose Range
+
+
+def test_download_to_resumes_with_206_after_a_dropped_connection(tmp_path, monkeypatch):
+    # First open: partial body then EOF (dropped circuit). Second open: sees the
+    # Range header, returns 206 with the tail, appends to the .part. The verified
+    # digest of the concatenation matches → install succeeds.
+    path = tmp_path / "engine.bin"
+    full = b"ABCDEFGHIJ"  # 10 bytes
+    digest = hashlib.sha256(full).hexdigest()
+
+    class Resp:
+        def __init__(self, body, start, total):
+            self._data = [body, b""]
+            self.status = 206 if start else 200
+            self.headers = {
+                "Content-Range": f"bytes {start}-{start + len(body) - 1}/{total}"
+            }
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, n):
+            return self._data.pop(0) if self._data else b""
+
+    def factory(req):
+        rng = req.headers.get("Range")
+        start = int(rng.split("=")[1].split("-")[0]) if rng else 0
+        # first call drops after 4 bytes; the resume delivers the rest
+        return Resp(full[start:4] if start == 0 else full[start:], start, len(full))
+
+    opener = _Opener(factory)
+    monkeypatch.setattr(updater, "range_opener", lambda: opener)
+
+    ok = updater._download_to(str(path), "http://x/engine", 5, digest, None)
+    assert ok is True
+    assert path.read_bytes() == full
+    # the resume actually sent a Range header (proves append-not-restart)
+    assert any(r and r.startswith("bytes=4-") for r in opener.ranges)

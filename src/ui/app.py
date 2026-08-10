@@ -671,9 +671,13 @@ class App:
                     stored_path = self.cert_store.import_p12(c.name, c.p12_path)
                 except OSError as e:
                     return f"could not store certificate file: {e}"
-            saved = Certificate(
-                name=c.name, p12_path=stored_path, password=c.password
-            )
+            # Rebuild from ALL of c's fields (overriding only the stored path), so
+            # a hand-enumerated constructor can't silently drop one — the url was
+            # being omitted here, so mTLS persisted DISABLED (start_terminator
+            # bails on an empty url) on every add/edit, with data loss (audit7 #4).
+            import dataclasses
+
+            saved = dataclasses.replace(c, p12_path=stored_path)
             if name:
                 if not self.cert_store.update(name, saved):
                     return "Update failed (name conflict?)"

@@ -27,6 +27,9 @@ class FakeLauncher:
     def is_running(self, name):
         return name in self._running
 
+    def started_at(self, name):
+        return 1000.0 if name in self._running else None
+
     def start_thread(self, profile, log, on_ready=None, on_stop=None):
         self.launched.append(profile)
         self._running.add(profile.name)
@@ -58,7 +61,7 @@ def client(monkeypatch):
     app.dependency_overrides[get_profile_manager] = lambda: pm
     app.dependency_overrides[get_event_bus] = lambda: FakeBus()
 
-    async def fake_cdp(name):
+    async def fake_cdp(name, *, not_before=None):
         from src.api.schemas.browser import BrowserCdpInfo, CdpWebSockets
         return BrowserCdpInfo(
             name=name, debug_port=9333,

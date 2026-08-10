@@ -569,11 +569,18 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
                 os.path.join(profile_dir, ".persona-gpu-ext"),
             )
         )
-        if proxy and proxy.lat is not None and proxy.lon is not None:
+        if proxy:
+            # A proxy with coords → pin them. A proxy WITHOUT usable coords (many
+            # geo endpoints return a valid country + timezone but null/malformed
+            # lat/lon) → build the extension in DENY mode so getCurrentPosition
+            # can't fall through to the REAL host coordinates while the locale and
+            # timezone already say the exit country (audit7 #5). Only a proxy-less
+            # profile leaves geolocation untouched.
+            has_coords = proxy.lat is not None and proxy.lon is not None
             extensions.append(
                 build_geo_extension(
-                    proxy.lat,
-                    proxy.lon,
+                    proxy.lat if has_coords else None,
+                    proxy.lon if has_coords else None,
                     os.path.join(profile_dir, ".persona-geo-ext"),
                 )
             )
@@ -738,6 +745,15 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
             args.append("--remote-allow-origins=*")
 
         proxy_server, bridge = _proxy_arg(proxy_url)
+        # Defense in depth (audit7 #1): resolve() now gates on parseability, but
+        # if a profile has a proxy assigned and we STILL ended up with no usable
+        # proxy_server here, launching would silently skip the whole anti-leak
+        # block and go DIRECT. Fail CLOSED rather than deanonymize.
+        if getattr(profile, "proxy", None) and not proxy_server:
+            raise ProxyUnresolvedError(
+                f"Profile {profile.name!r} has proxy {profile.proxy!r} assigned but "
+                "it did not yield a usable --proxy-server. Refusing to launch DIRECT."
+            )
         if proxy_server:
             args.append(f"--proxy-server={proxy_server}")
             # Keep DNS and WebRTC from leaking past the proxy. Chrome's built-in

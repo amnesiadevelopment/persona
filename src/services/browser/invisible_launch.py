@@ -473,25 +473,6 @@ def prune_superseded_builds(log=None) -> None:
     _prune_old_engine_builds(keep=active, log=log)
 
 
-class _KeepRangeRedirect(__import__("urllib.request", fromlist=["HTTPRedirectHandler"]).HTTPRedirectHandler):
-    """Re-attach the Range header after a redirect.
-
-    GitHub release downloads 302 to a signed CDN URL, and urllib's default
-    redirect handler builds the follow-up request WITHOUT the original headers —
-    so the Range header is lost and the CDN returns the whole file (200) instead
-    of the requested tail (206). That silently restarts the download from zero on
-    every resume, which over Tor never finishes. Carry Range across the redirect
-    so resume actually works."""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        new = super().redirect_request(req, fp, code, msg, headers, newurl)
-        if new is not None:
-            rng = req.headers.get("Range")
-            if rng:
-                new.add_header("Range", rng)
-        return new
-
-
 def _resumable_download(
     url: str,
     path: str,
@@ -511,7 +492,9 @@ def _resumable_download(
     import urllib.error
     import urllib.request
 
-    opener = urllib.request.build_opener(_KeepRangeRedirect)
+    from ...utils.httpdl import range_opener
+
+    opener = range_opener()
 
     # Bound the retries by CONSECUTIVE no-progress attempts, not total attempts:
     # over a slow Tor circuit (Mars saw ~0.1 MB/s) a 118MB archive drops its

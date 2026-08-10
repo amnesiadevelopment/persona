@@ -28,7 +28,11 @@ dependencies = [
     # requirements.txt — flet build bundles deps from pyproject, so a package
     # that's only in requirements.txt is missing from the built app (that's
     # exactly why Camoufox showed ModuleNotFoundError in prod).
-    "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git",
+    # Pinned to an exact commit (not a floating branch) so a supply-chain push to
+    # the upstream repo can't land in a build unverified. This is the commit the
+    # test suite is green against and that pins invisible_core==18.13.0 below; bump
+    # both together after re-running the suite.
+    "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git@e2deaa50594894b236d39ac763d244aa1327e9c5",
     # invisible_core is invisible_playwright's own dependency, but flet build does
     # NOT resolve a git package's transitive deps — so it must be declared here or
     # the bundle ships without it and the engine raises ImportError ("invisible-core

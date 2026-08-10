@@ -26,6 +26,13 @@ CONTENT_SCRIPT = r"""
     var LAT = __LAT__;
     var LON = __LON__;
     var ACC = 100;
+    // DENY mode (LAT/LON null): the proxy has a country/timezone but no usable
+    // coordinates, so we can't hand out a location coherent with the exit. Rather
+    // than let getCurrentPosition fall through to the REAL host coords (a
+    // "spoofed location" tell — country=DE but coords in the operator's real
+    // city, audit7 #5), deny permission. A denied geolocation is the most common
+    // real-world state and reveals nothing.
+    var DENY = (LAT === null || LON === null);
     function pos() {
       return {
         coords: {
@@ -34,6 +41,11 @@ CONTENT_SCRIPT = r"""
         },
         timestamp: Date.now(),
       };
+    }
+    function denied() {
+      // GeolocationPositionError.PERMISSION_DENIED === 1
+      return { code: 1, message: "User denied Geolocation",
+               PERMISSION_DENIED: 1, POSITION_UNAVAILABLE: 2, TIMEOUT: 3 };
     }
     // Mark each override for the native_ext Function.prototype.toString patch so
     // a detector calling Function.prototype.toString.call(fn) reads native code.
@@ -44,10 +56,12 @@ CONTENT_SCRIPT = r"""
     }
     var geo = G.navigator.geolocation;
     if (geo) {
-      geo.getCurrentPosition = mark(function (success) {
+      geo.getCurrentPosition = mark(function (success, error) {
+        if (DENY) { if (typeof error === "function") error(denied()); return; }
         if (typeof success === "function") success(pos());
       }, "getCurrentPosition");
-      geo.watchPosition = mark(function (success) {
+      geo.watchPosition = mark(function (success, error) {
+        if (DENY) { if (typeof error === "function") error(denied()); return 0; }
         if (typeof success === "function") success(pos());
         return 0;
       }, "watchPosition");
@@ -75,9 +89,15 @@ MANIFEST = {
 }
 
 
-def build_geo_extension(lat: float, lon: float, base_dir: str) -> str:
+def build_geo_extension(
+    lat: float | None, lon: float | None, base_dir: str
+) -> str:
     """Generate an unpacked extension that pins navigator.geolocation to the
     given coordinates, so a site's location matches the proxy's exit IP.
+
+    When lat/lon are None the extension runs in DENY mode: getCurrentPosition /
+    watchPosition return PERMISSION_DENIED instead of the real host coords. Use
+    that when the proxy has a country/timezone but no usable coordinates.
 
     A JS-layer override (not native): a site inspecting getCurrentPosition's
     source could tell it was replaced. Acceptable for manual use; the

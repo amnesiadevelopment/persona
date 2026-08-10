@@ -45,9 +45,81 @@ def realm_bootstrap_js(apply_fn_name: str) -> str:
   if (!SELF.__pnaBootInstalled) {
     SELF.__pnaBootInstalled = true;
 
-    var __pnaBoot = function (G) {
+    var __pnaBoot = function __pnaBoot(G) {
       try {
         if (!G) return;
+        // __buildBoot and __wrapWorker are defined INSIDE __pnaBoot so that
+        // __pnaBoot.toString() (shipped in the worker payload) carries them —
+        // otherwise a worker that re-runs __pnaBoot hits ReferenceError on
+        // __wrapWorker, its self.Worker stays native, and any NESTED worker it
+        // spawns runs unspoofed (creepjs reads the engine-default GPU there).
+        var __buildBoot = function () {
+          var SRC = ((typeof self !== "undefined" ? self : this).__pnaBootSrc || []).join(",");
+          // Assign __pnaBoot to a NAME in the worker scope (self.__pnaBoot) before
+          // calling it: the wrapper it installs calls __buildBoot -> __pnaBoot
+          // .toString(), which needs __pnaBoot to be resolvable in that realm.
+          // A bare anonymous "(fn)(self)" left __pnaBoot undefined in the worker,
+          // so a NESTED worker's wrapper threw and ran unspoofed (creepjs GPU tell).
+          return "(function(){try{self.__pnaBoots=[" + SRC + "];}catch(e){}" +
+            "try{self.__pnaBoot=(" + __pnaBoot.toString() + ");}catch(e){}" +
+            "try{self.__pnaBoot((typeof self!=='undefined'?self:this));}catch(e){}})();";
+        };
+        var __wrapWorker = function (Orig) {
+          if (typeof Orig !== "function") return Orig;
+          var W = function (url, options) {
+            try {
+              var __BOOT = __buildBoot();
+              var s = String(url);
+              // Resolve a RELATIVE worker URL (e.g. creepjs's './creep.js') to an
+              // absolute one so it takes the http(s) importScripts path below. A
+              // relative URL matched none of the scheme tests and fell through to
+              // the native, UNSPOOFED construct — the real path creepjs uses to
+              // read the engine-default GPU from a worker.
+              if (!/^(https?:|blob:|data:)/i.test(s)) {
+                try {
+                  var base = (self.location && self.location.href) || undefined;
+                  var rs = new URL(s, base).href;
+                  if (/^https?:/i.test(rs)) s = rs;
+                } catch (er) {}
+              }
+              if (options && options.type === "module") {
+                try {
+                  var abs = s;
+                  try { abs = new URL(s, (self.location && self.location.href) || undefined).href; } catch (e0) {}
+                  var mbody = __BOOT + "\nimport(" + JSON.stringify(abs) + ").catch(function(e){});";
+                  var mu = URL.createObjectURL(new Blob([mbody], { type: "application/javascript" }));
+                  return Reflect.construct(Orig, [mu, options], W);
+                } catch (em) {
+                  return Reflect.construct(Orig, [url, options], W);
+                }
+              }
+              if (/^https?:/i.test(s)) {
+                var body = __BOOT + "\ntry{importScripts(" + JSON.stringify(s) + ");}catch(e){}";
+                var u = URL.createObjectURL(new Blob([body], { type: "application/javascript" }));
+                return Reflect.construct(Orig, [u, options], W);
+              }
+              if (/^blob:|^data:/i.test(s)) {
+                try {
+                  var x = new XMLHttpRequest();
+                  x.open("GET", s, false);
+                  x.send();
+                  if (x.status === 0 || (x.status >= 200 && x.status < 300)) {
+                    var patched = __BOOT + "\n" + x.responseText;
+                    var u2 = URL.createObjectURL(new Blob([patched], { type: "application/javascript" }));
+                    return Reflect.construct(Orig, [u2, options], W);
+                  }
+                } catch (e) {}
+                return Reflect.construct(Orig, [url, options], W);
+              }
+              return Reflect.construct(Orig, [url, options], W);
+            } catch (e) { return Reflect.construct(Orig, [url, options], W); }
+          };
+          W.prototype = Orig.prototype;
+          try { Object.defineProperty(W, "__pnaName", { value: Orig.name }); } catch (e) {}
+          try { Object.defineProperty(W, "name", { value: Orig.name }); } catch (e) {}
+          return W;
+        };
+
         // Apply every registered leaf to realm G.
         try {
           var L = G.__pnaBoots || (typeof self !== "undefined" ? self : this).__pnaBoots || [];
@@ -62,47 +134,10 @@ def realm_bootstrap_js(apply_fn_name: str) -> str:
         // scripts, so a payload snapshotted at install would carry only the
         // leaves registered before the FIRST module ran __pnaBoot — every later
         // module's spoof (e.g. hardwareConcurrency) would be missing in workers.
+        // Carry the whole registry into this realm's Web/Shared Workers (defs of
+        // __buildBoot/__wrapWorker live above, inside __pnaBoot, so they ship in
+        // the worker payload and cover nested workers).
         try {
-          var __buildBoot = function () {
-            var SRC = ((typeof self !== "undefined" ? self : this).__pnaBootSrc || []).join(",");
-            return "(function(){try{self.__pnaBoots=[" + SRC + "];}catch(e){}" +
-              "(" + __pnaBoot.toString() + ")((typeof self!=='undefined'?self:this));})();";
-          };
-          var __wrapWorker = function (Orig) {
-            if (typeof Orig !== "function") return Orig;
-            var W = function (url, options) {
-              try {
-                if (options && options.type === "module") {
-                  return Reflect.construct(Orig, [url, options], W);
-                }
-                var __BOOT = __buildBoot();
-                var s = String(url);
-                if (/^https?:/i.test(s)) {
-                  var body = __BOOT + "\ntry{importScripts(" + JSON.stringify(s) + ");}catch(e){}";
-                  var u = URL.createObjectURL(new Blob([body], { type: "application/javascript" }));
-                  return Reflect.construct(Orig, [u, options], W);
-                }
-                if (/^blob:|^data:/i.test(s)) {
-                  try {
-                    var x = new XMLHttpRequest();
-                    x.open("GET", s, false);
-                    x.send();
-                    if (x.status === 0 || (x.status >= 200 && x.status < 300)) {
-                      var patched = __BOOT + "\n" + x.responseText;
-                      var u2 = URL.createObjectURL(new Blob([patched], { type: "application/javascript" }));
-                      return Reflect.construct(Orig, [u2, options], W);
-                    }
-                  } catch (e) {}
-                  return Reflect.construct(Orig, [url, options], W);
-                }
-                return Reflect.construct(Orig, [url, options], W);
-              } catch (e) { return Reflect.construct(Orig, [url, options], W); }
-            };
-            W.prototype = Orig.prototype;
-            try { Object.defineProperty(W, "__pnaName", { value: Orig.name }); } catch (e) {}
-            try { Object.defineProperty(W, "name", { value: Orig.name }); } catch (e) {}
-            return W;
-          };
           if (G.Worker) G.Worker = __wrapWorker(G.Worker);
           if (G.SharedWorker) G.SharedWorker = __wrapWorker(G.SharedWorker);
         } catch (e) {}

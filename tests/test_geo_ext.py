@@ -57,6 +57,29 @@ def test_idempotent_path(tmp_path):
     assert build_geo_extension(1.0, 2.0, base) == build_geo_extension(1.0, 2.0, base)
 
 
+def test_deny_mode_when_coords_none(tmp_path):
+    # audit7 #5: a proxy with a country/timezone but null coords must NOT let
+    # getCurrentPosition fall through to the real host location. build_geo_extension
+    # with lat/lon None runs in DENY mode — LAT/LON serialize to null and the
+    # override returns PERMISSION_DENIED (code 1).
+    ext = build_geo_extension(None, None, str(tmp_path / "geo"))
+    js = (pathlib.Path(ext) / "geo.js").read_text()
+    assert "var LAT = null" in js and "var LON = null" in js
+    assert "DENY" in js
+    assert "PERMISSION_DENIED: 1" in js
+    assert "code: 1" in js
+    # the error callback is invoked in deny mode
+    assert "error(denied())" in js
+
+
+def test_coords_mode_does_not_deny(tmp_path):
+    # with real coords, DENY resolves false and success returns the pinned pos.
+    ext = build_geo_extension(52.52, 13.405, str(tmp_path / "geo"))
+    js = (pathlib.Path(ext) / "geo.js").read_text()
+    assert "52.52" in js and "13.405" in js
+    assert "var LAT = null" not in js
+
+
 def test_script_is_iife_no_globals(tmp_path):
     # #233: this content script runs in the MAIN world. A bare top-level
     # const/function becomes a page global, and when the page's own bundle later

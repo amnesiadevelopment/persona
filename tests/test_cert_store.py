@@ -81,6 +81,64 @@ def test_certificates_file_is_private(store):
     assert mode == 0o600
 
 
+def test_corrupt_file_is_quarantined_not_overwritten(store, tmp_path):
+    # audit7 #7: certificates.json holds every .p12 bundle password. If the file
+    # is unreadable JSON, the next _save() would clobber it with the empty
+    # in-memory dict — silently destroying every stored password. It must be moved
+    # aside (.corrupt-<ts>) so a save can't overwrite it.
+    path = os.environ["PERSONA_CERTS_FILE"]
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("{ this is not valid json")
+    reloaded = CertStore()
+    assert reloaded.certs == {}
+    # original preserved under a .corrupt-* sibling
+    d = os.path.dirname(path)
+    corrupt = [n for n in os.listdir(d) if ".corrupt-" in n]
+    assert corrupt, "corrupt certificates.json must be quarantined"
+    # a subsequent save writes a fresh file, leaving the quarantined copy intact
+    reloaded.add(Certificate(name="admin", p12_path="/a.p12", password="pw"))
+    assert json.load(open(path))["admin"]["password"] == "pw"
+
+
+def test_save_blocked_when_quarantine_fails(store, tmp_path, monkeypatch):
+    # if the corrupt file can't be moved aside, saving must be disabled rather
+    # than overwrite the unreadable-but-secret-bearing file with an empty dict.
+    path = os.environ["PERSONA_CERTS_FILE"]
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("}{ broken")
+
+    import pathlib as _pl
+    monkeypatch.setattr(
+        _pl.Path, "rename",
+        lambda self, target: (_ for _ in ()).throw(OSError("cannot move")),
+    )
+    reloaded = CertStore()
+    assert reloaded._save_blocked is True
+    # a save is a no-op; the broken file is left exactly as-is
+    reloaded.add(Certificate(name="x", p12_path="/x.p12"))
+    assert open(path).read() == "}{ broken"
+
+
+def test_malformed_record_skipped_not_aborting_load(store):
+    # one bad record must not abort the whole load and drop every later cert's
+    # password on the next save.
+    path = os.environ["PERSONA_CERTS_FILE"]
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "good": {"name": "good", "p12_path": "/g.p12", "password": "pw"},
+                "bad": ["not", "a", "dict"],
+            },
+            f,
+        )
+    reloaded = CertStore()
+    assert reloaded.get("good").password == "pw"
+    assert reloaded.get("bad") is None
+    # not quarantined — the file parsed as JSON, only one record was malformed
+    d = os.path.dirname(path)
+    assert not [n for n in os.listdir(d) if ".corrupt-" in n]
+
+
 def test_import_p12_copies_into_store_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("PERSONA_CERTS_FILE", str(tmp_path / "certs.json"))
     certs_dir = tmp_path / "vault"

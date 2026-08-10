@@ -147,11 +147,18 @@ _CONTENT_SCRIPT = r"""
           }
         } catch (e) {}
       });
-      if (typeof G.TouchEvent === 'undefined') {
-        try { G.TouchEvent = function TouchEvent() {}; } catch (e) {}
-      }
-      if (typeof G.Touch === 'undefined') {
-        try { G.Touch = function Touch() {}; } catch (e) {}
+      // Window realms ONLY: a real Android Chrome worker has no TouchEvent/Touch
+      // on its global, so defining them in a WorkerGlobalScope (this leaf runs in
+      // workers via the registry) was a net-new mobile tell — typeof TouchEvent
+      // === 'function' in a worker (audit7 #6). Gate on G.Window like the touch
+      // prototypes above.
+      if (G.Window) {
+        if (typeof G.TouchEvent === 'undefined') {
+          try { G.TouchEvent = function TouchEvent() {}; } catch (e) {}
+        }
+        if (typeof G.Touch === 'undefined') {
+          try { G.Touch = function Touch() {}; } catch (e) {}
+        }
       }
     } catch (e) {}
 

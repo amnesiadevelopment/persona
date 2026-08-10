@@ -20,7 +20,7 @@ import time
 from ..engine.updater import is_newer
 from ...core import platform as _platform
 
-APP_VERSION = "2.9.13"
+APP_VERSION = "2.9.14"
 APP_REPO = "amnesiadevelopment/persona"
 
 
@@ -538,13 +538,22 @@ def fetch_expected_sha256(tag: str, name: str = "", attempts: int = 3) -> str:
 
 
 def _tag_from_staged(staged: str) -> str:
-    """Recover the release tag baked into the staged filename by staged_path()."""
+    """Recover the release tag baked into the staged filename by staged_path().
+
+    The Linux AppImage case was MISSING, so a staged .AppImage.part yielded tag=''
+    → fetch_expected_sha256('')='' → verify_staged_installer took the fail-OPEN
+    'no published checksum' branch and an unverified AppImage was os.execv'd
+    (audit7 #2). The dot-prefixed name and the two-part .AppImage.part suffix are
+    matched here so the real tag is recovered and the checksum is actually
+    verified. Order the Linux case first because its suffix is the most specific.
+    """
     name = os.path.basename(staged or "")
     for prefix, suffix in (
+        (".persona-update-", ".AppImage.part"),
         ("persona-update-setup-", ".exe"),
         ("persona-update-", ".dmg"),
     ):
-        if name.startswith(prefix) and name.endswith(suffix):
+        if name.startswith(prefix) and name.endswith(suffix) and len(name) > len(prefix) + len(suffix):
             return name[len(prefix):-len(suffix)]
     return ""
 

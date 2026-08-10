@@ -155,3 +155,46 @@ def test_edit_without_new_file_keeps_existing_path():
     assert saved[0].p12_path == "/v/admin.p12"
     assert saved[0].password == "new"
     assert page.popped is True
+
+
+def test_app_on_save_persists_the_admin_url(monkeypatch):
+    # audit7 #4: the app's on_save rebuilt Certificate WITHOUT url → mTLS
+    # persisted disabled (start_terminator bails on empty url) + data loss. The
+    # saved certificate must carry the url the dialog produced.
+    import threading
+    from types import SimpleNamespace
+
+    from src.ui.app import App
+    import src.ui.dialogs.certificate as cert_dialog_mod
+
+    app = App.__new__(App)
+    app.page = _FakePage()
+    app.refs = SimpleNamespace(file_picker=object())
+    stored = {}
+    app.cert_store = SimpleNamespace(
+        get=lambda n: None,
+        add=lambda c: stored.__setitem__("cert", c) or True,
+        update=lambda n, c: stored.__setitem__("cert", c) or True,
+        import_p12=lambda name, path: "/store/admin.p12",
+        names=lambda: [],
+    )
+    app._certs_dir = lambda: "/store"
+    app._render_active_page = lambda: None
+    app._safe_update = lambda: None
+
+    captured = {}
+    # the method imports open_certificate_dialog locally from dialogs.certificate,
+    # so patch it there.
+    monkeypatch.setattr(
+        cert_dialog_mod, "open_certificate_dialog",
+        lambda page, existing, picker, on_save: captured.__setitem__("on_save", on_save),
+    )
+    app._open_certificate_dialog()
+    # the dialog produced a full certificate WITH a url
+    c = Certificate(name="admin", p12_path="/tmp/picked.p12", password="pw",
+                    url="https://admin.example.com/")
+    err = captured["on_save"](c)
+    assert err is None
+    assert stored["cert"].url == "https://admin.example.com/", "url must be persisted"
+    assert stored["cert"].p12_path == "/store/admin.p12"  # copied into the store
+    assert stored["cert"].password == "pw"

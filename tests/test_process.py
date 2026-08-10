@@ -572,6 +572,44 @@ def test_assigned_but_unresolvable_proxy_fails_closed(monkeypatch, tmp_path):
     assert spawned == [], "must NOT spawn a browser when the proxy is unresolvable"
 
 
+def test_named_proxy_with_unparseable_url_fails_closed(monkeypatch, tmp_path):
+    # audit7 #1 regression: the fail-closed guard only checked emptiness, but a
+    # NAMED proxy with a truthy-but-unparseable url (no port) resolved TRUTHY,
+    # passed the guard, then chromium's parser returned None → --proxy-server
+    # dropped and the whole anti-leak block skipped → DIRECT clearnet on a profile
+    # WITH a proxy. Even if a broken url reaches spawn, the defense-in-depth check
+    # on proxy_server must fail CLOSED.
+    import pytest
+
+    from src.services.browser.process import ProxyUnresolvedError
+
+    class _StoreBrokenUrl:
+        # simulate a store that (wrongly) hands back an unparseable url for a
+        # named proxy — the spawn-time guard must still refuse.
+        def resolve(self, name):
+            return "socks5://1.2.3.4"  # no port -> parse_proxy_server returns None
+
+        def get(self, name):
+            return None
+
+    class _Bookmarks:
+        def resolve_selection(self, *a, **k):
+            return []
+
+    spawned = []
+    monkeypatch.setattr(process, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(process, "ProxyStore", _StoreBrokenUrl)
+    monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
+    monkeypatch.setattr(process, "write_window_entry", lambda name: None)
+    monkeypatch.setattr(process._platform, "IS_LINUX", False)
+    monkeypatch.setattr(process.subprocess, "Popen",
+                        lambda *a, **k: spawned.append(True))
+
+    with pytest.raises(ProxyUnresolvedError):
+        process.spawn_browser(Profile(name="broken-proxy", proxy="myproxy"))
+    assert spawned == [], "must NOT spawn DIRECT when the proxy url is unparseable"
+
+
 def test_no_proxy_profile_still_launches(monkeypatch, tmp_path):
     # A profile with NO proxy assigned is a legitimate direct profile and must
     # still launch (the fail-closed guard only triggers on an ASSIGNED proxy).

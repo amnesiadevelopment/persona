@@ -54,7 +54,7 @@ async def browser_status(
     if running:
         # Best-effort: only profiles launched with automation expose a CDP port.
         try:
-            cdp = await cdp_info_for(name)
+            cdp = await cdp_info_for(name, not_before=bl.started_at(name))
         except Exception:
             cdp = None
     return BrowserStatusResponse(name=name, is_running=running, cdp=cdp)
@@ -113,7 +113,7 @@ async def launch_browser(
     # endpoint there just times out (~15s) even though the window is already up.
     if automation and engine != "firefox":
         try:
-            cdp = await cdp_info_for(name)
+            cdp = await cdp_info_for(name, not_before=bl.started_at(name))
         except Exception as exc:
             logger.warning("CDP endpoint not ready for %s: %s", name, exc)
 
@@ -139,7 +139,7 @@ async def browser_cdp(
     if not bl.is_running(name):
         raise HTTPException(status_code=409, detail="Browser is not running")
     try:
-        return await cdp_info_for(name)
+        return await cdp_info_for(name, not_before=bl.started_at(name))
     except Exception as exc:
         raise HTTPException(
             status_code=409,

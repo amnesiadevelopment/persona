@@ -66,14 +66,18 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install --prefer-binary -r requirements.txt
+          # Install the project from pyproject so the test suite runs against the
+          # EXACT dependency set the build bundles (flet==0.85.3,
+          # invisible_core==18.13.0, the git engine) — installing requirements.txt
+          # instead let the gate go green on a flet/core combo the release never
+          # ships (audit7 LOW). The git engine is a direct pyproject dep, so
+          # `pip install .` pulls it too.
+          pip install --prefer-binary .
+          # pip check surfaces a version conflict — e.g. invisible_playwright's
+          # pinned invisible_core drifting from pyproject's == pin — before the
+          # build jobs even start.
+          pip check
           if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; else pip install pytest; fi
-          # The engine packages are a git dependency not in requirements.txt (the
-          # build jobs install them the same way). Without them the Firefox-engine
-          # tests fail with ModuleNotFoundError on a clean runner even though they
-          # pass locally where the engine is in the venv. Install so the CI suite
-          # matches the local one.
-          pip install "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git"
       - name: Run the test suite
         run: python -m pytest -q
 
@@ -138,21 +142,21 @@ jobs:
         # a package would pass here yet ship broken. A true guard would import from
         # inside the built bundle; tracked as a follow-up.
         run: |
-          pip install "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git"
+          pip install "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git@e2deaa50594894b236d39ac763d244aa1327e9c5"
           pip check
           python -c "import invisible_playwright, invisible_core._pin; print('engine import + _pin OK')"
 
       - name: Guard against an engine downgrade
-        # invisible_playwright is pinned to git HEAD (no commit) so builds always
-        # take the latest patched Firefox engine — but a stale HEAD once shipped
-        # the older firefox-13 (flat Twemoji emoji) in a release that already had
-        # firefox-15. Never ship an engine build LOWER than the last release's:
+        # invisible_playwright is pinned to an exact commit, but a bump to that
+        # pin (or its transitive engine) must never regress: a stale engine once
+        # shipped the older firefox-13 (flat Twemoji emoji) in a release that
+        # already had firefox-15. Never ship an engine build LOWER than the last:
         # compare the resolved BINARY_VERSION against the committed baseline in
         # engine-baseline.txt and fail if it regressed. The baseline is bumped
         # by hand when tagging a release that intentionally moves the engine
         # forward, so the floor only ever rises. (Numeric compare on firefox-NN.)
         run: |
-          installed="$(python -c 'from invisible_core.constants import BINARY_VERSION; print(BINARY_VERSION)' 2>/dev/null || true)"
+          installed="$(python -c 'from invisible_playwright.constants import BINARY_VERSION; print(BINARY_VERSION)' 2>/dev/null || true)"
           baseline="$(cat engine-baseline.txt 2>/dev/null | tr -d '[:space:]' || true)"
           echo "installed engine='$installed'  baseline='$baseline'"
           in_num="${installed#firefox-}"
@@ -162,18 +166,32 @@ jobs:
           # skips the check with a warning, it doesn't block a release). Each
           # value is checked separately: a non-empty all-digit string.
           is_int() { case "$1" in ""|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
-          if is_int "$in_num" && is_int "$base_num"; then
-            if [ "$in_num" -lt "$base_num" ]; then
-              echo "ERROR: engine $installed is OLDER than the baseline $baseline — refusing to ship a downgrade." >&2
-              exit 1
-            fi
-            echo "engine $installed >= baseline $baseline — OK"
-          else
-            echo "WARNING: engine version unreadable (installed='$installed', baseline='$baseline') — skipping downgrade guard."
+          # Fail CLOSED: an unreadable engine version means the engine didn't
+          # install or its constants module moved — that is exactly the state a
+          # downgrade/supply-chain swap produces, so refuse the build instead of
+          # skipping the check (audit7 LOW-2). The baseline is a committed repo
+          # file and must parse too; if it doesn't, the guard is misconfigured
+          # and we also refuse rather than ship unguarded.
+          if ! is_int "$base_num"; then
+            echo "ERROR: engine baseline '$baseline' is unreadable — refusing to ship without a downgrade floor." >&2
+            exit 1
           fi
+          if ! is_int "$in_num"; then
+            echo "ERROR: installed engine version '$installed' is unreadable — the engine failed to install or its constants moved; refusing to ship." >&2
+            exit 1
+          fi
+          if [ "$in_num" -lt "$base_num" ]; then
+            echo "ERROR: engine $installed is OLDER than the baseline $baseline — refusing to ship a downgrade." >&2
+            exit 1
+          fi
+          echo "engine $installed >= baseline $baseline — OK"
 
       - name: Build the Linux bundle
-        run: flet build linux -v --no-rich-output
+        # Stamp the bundle with APP_VERSION, not pyproject's static version=1.0.0
+        # (which flet would otherwise bake into the app metadata, audit7 LOW).
+        run: |
+          ver="$(python3 -c "import re,pathlib; print(re.search(r'APP_VERSION\s*=\s*\"([^\"]+)\"', pathlib.Path('src/services/app_update/updater.py').read_text()).group(1))")"
+          flet build linux -v --no-rich-output --build-version "$ver"
 
       - name: Assert required packages are bundled
         # Both engines are hard requirements. flet resolves them from pyproject
@@ -317,31 +335,44 @@ jobs:
         # platforms and publish green). See the Linux step for the full rationale.
         shell: bash
         run: |
-          pip install "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git"
+          pip install "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git@e2deaa50594894b236d39ac763d244aa1327e9c5"
           pip check
           python -c "import invisible_playwright, invisible_core._pin; print('engine import + _pin OK')"
 
       - name: Guard against an engine downgrade
         shell: bash
         run: |
-          installed="$(python -c 'from invisible_core.constants import BINARY_VERSION; print(BINARY_VERSION)' 2>/dev/null || true)"
+          installed="$(python -c 'from invisible_playwright.constants import BINARY_VERSION; print(BINARY_VERSION)' 2>/dev/null || true)"
           baseline="$(cat engine-baseline.txt 2>/dev/null | tr -d '[:space:]' || true)"
           echo "installed engine='$installed'  baseline='$baseline'"
           in_num="${installed#firefox-}"
           base_num="${baseline#firefox-}"
           is_int() { case "$1" in ""|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
-          if is_int "$in_num" && is_int "$base_num"; then
-            if [ "$in_num" -lt "$base_num" ]; then
-              echo "ERROR: engine $installed is OLDER than the baseline $baseline — refusing to ship a downgrade." >&2
-              exit 1
-            fi
-            echo "engine $installed >= baseline $baseline — OK"
-          else
-            echo "WARNING: engine version unreadable (installed='$installed', baseline='$baseline') — skipping downgrade guard."
+          # Fail CLOSED: an unreadable engine version means the engine didn't
+          # install or its constants module moved — that is exactly the state a
+          # downgrade/supply-chain swap produces, so refuse the build instead of
+          # skipping the check (audit7 LOW-2). The baseline is a committed repo
+          # file and must parse too; if it doesn't, the guard is misconfigured
+          # and we also refuse rather than ship unguarded.
+          if ! is_int "$base_num"; then
+            echo "ERROR: engine baseline '$baseline' is unreadable — refusing to ship without a downgrade floor." >&2
+            exit 1
           fi
+          if ! is_int "$in_num"; then
+            echo "ERROR: installed engine version '$installed' is unreadable — the engine failed to install or its constants moved; refusing to ship." >&2
+            exit 1
+          fi
+          if [ "$in_num" -lt "$base_num" ]; then
+            echo "ERROR: engine $installed is OLDER than the baseline $baseline — refusing to ship a downgrade." >&2
+            exit 1
+          fi
+          echo "engine $installed >= baseline $baseline — OK"
 
       - name: Build the Windows bundle
-        run: flet build windows -v --no-rich-output
+        # Stamp the bundle with APP_VERSION, not pyproject's static version=1.0.0.
+        run: |
+          $ver = (Select-String -Path src/services/app_update/updater.py -Pattern 'APP_VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          flet build windows -v --no-rich-output --build-version $ver
 
       - name: Assert required packages are bundled
         # audit6 #3: the Linux job asserts both engines are in the bundle; Windows
@@ -715,30 +746,43 @@ jobs:
         # audit6 #3: same engine guard as Linux; macOS had none. See the Linux
         # step for the full rationale.
         run: |
-          pip install "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git"
+          pip install "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git@e2deaa50594894b236d39ac763d244aa1327e9c5"
           pip check
           python -c "import invisible_playwright, invisible_core._pin; print('engine import + _pin OK')"
 
       - name: Guard against an engine downgrade
         run: |
-          installed="$(python -c 'from invisible_core.constants import BINARY_VERSION; print(BINARY_VERSION)' 2>/dev/null || true)"
+          installed="$(python -c 'from invisible_playwright.constants import BINARY_VERSION; print(BINARY_VERSION)' 2>/dev/null || true)"
           baseline="$(cat engine-baseline.txt 2>/dev/null | tr -d '[:space:]' || true)"
           echo "installed engine='$installed'  baseline='$baseline'"
           in_num="${installed#firefox-}"
           base_num="${baseline#firefox-}"
           is_int() { case "$1" in ""|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
-          if is_int "$in_num" && is_int "$base_num"; then
-            if [ "$in_num" -lt "$base_num" ]; then
-              echo "ERROR: engine $installed is OLDER than the baseline $baseline — refusing to ship a downgrade." >&2
-              exit 1
-            fi
-            echo "engine $installed >= baseline $baseline — OK"
-          else
-            echo "WARNING: engine version unreadable (installed='$installed', baseline='$baseline') — skipping downgrade guard."
+          # Fail CLOSED: an unreadable engine version means the engine didn't
+          # install or its constants module moved — that is exactly the state a
+          # downgrade/supply-chain swap produces, so refuse the build instead of
+          # skipping the check (audit7 LOW-2). The baseline is a committed repo
+          # file and must parse too; if it doesn't, the guard is misconfigured
+          # and we also refuse rather than ship unguarded.
+          if ! is_int "$base_num"; then
+            echo "ERROR: engine baseline '$baseline' is unreadable — refusing to ship without a downgrade floor." >&2
+            exit 1
           fi
+          if ! is_int "$in_num"; then
+            echo "ERROR: installed engine version '$installed' is unreadable — the engine failed to install or its constants moved; refusing to ship." >&2
+            exit 1
+          fi
+          if [ "$in_num" -lt "$base_num" ]; then
+            echo "ERROR: engine $installed is OLDER than the baseline $baseline — refusing to ship a downgrade." >&2
+            exit 1
+          fi
+          echo "engine $installed >= baseline $baseline — OK"
 
       - name: Build the macOS bundle
-        run: flet build macos -v --no-rich-output
+        # Stamp the bundle with APP_VERSION, not pyproject's static version=1.0.0.
+        run: |
+          ver="$(python3 -c "import re,pathlib; print(re.search(r'APP_VERSION\s*=\s*\"([^\"]+)\"', pathlib.Path('src/services/app_update/updater.py').read_text()).group(1))")"
+          flet build macos -v --no-rich-output --build-version "$ver"
 
       - name: Assert required packages are bundled
         # audit6 #3: assert both engines made it into the .app bundle.

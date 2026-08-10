@@ -5,6 +5,21 @@ not a git log. When cutting a release, add the new version's highlights here.
 """
 
 CHANGELOG: dict[str, list[str]] = {
+    "2.9.14": [
+        "A profile whose proxy address is unusable now refuses to open instead of "
+        "quietly connecting directly and exposing your real IP.",
+        "Mobile and macOS profiles are now more convincing: Android profiles report "
+        "mobile-correct graphics support, and background workers no longer reveal "
+        "desktop-only touch or graphics traits.",
+        "A proxy that has a country but no precise location now denies location "
+        "requests instead of leaking your real coordinates.",
+        "Client certificates keep their login address when saved, so mTLS logins no "
+        "longer silently stop working.",
+        "Automatic updates verify their download before installing on Linux, and a "
+        "dropped connection now resumes the download instead of restarting it.",
+        "Saved certificates are protected against corruption the same way proxies "
+        "and SSH hosts already were.",
+    ],
     "2.9.13": [
         "Deleting or wiping a profile while it's still opening can no longer "
         "corrupt or half-delete its data — the browser is fully stopped first.",

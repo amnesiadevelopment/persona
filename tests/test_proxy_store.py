@@ -87,6 +87,24 @@ def test_resolve_unknown_garbage(tmp_path):
     assert s.resolve("not-a-proxy") is None
 
 
+def test_resolve_named_proxy_with_unparseable_url_is_none(tmp_path):
+    # audit7 #1 (regression of the fail-closed proxy guard): a NAMED proxy whose
+    # stored url can't be parsed (missing port, bare host) must resolve to None,
+    # NOT return the truthy-but-useless url. The launch guard only checks
+    # emptiness, so a truthy url passed the guard while chromium's parser then
+    # returned None → no --proxy-server AND the whole anti-leak block skipped →
+    # DIRECT clearnet on a profile WITH a proxy. resolve must gate on
+    # parseability, matching the raw-url fallback path.
+    s = _store(tmp_path)
+    s.add("broken-noport", "socks5://1.2.3.4")   # no port
+    s.add("broken-barehost", "just-a-host")
+    assert s.resolve("broken-noport") is None
+    assert s.resolve("broken-barehost") is None
+    # a well-formed named proxy still resolves
+    s.add("good", "socks5://1.2.3.4:1080")
+    assert s.resolve("good") == "socks5://1.2.3.4:1080"
+
+
 def test_persistence_across_instances(tmp_path):
     path = str(tmp_path / "proxies.json")
     s1 = ProxyStore(path=path)

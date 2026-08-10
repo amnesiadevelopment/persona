@@ -57,6 +57,36 @@ def test_second_module_applies_without_reinstall():
     assert "applyFoo(SELF)" in js
 
 
+def test_module_workers_are_wrapped():
+    # A module worker (new Worker(url, {type:'module'})) can't importScripts, so
+    # it used to run UNSPOOFED — creepjs reads WebGL from a worker and saw the
+    # engine-default GPU (a page!=worker mismatch). The wrapper must handle the
+    # module type by building a module blob that runs __BOOT then dynamic-imports
+    # the original module.
+    js = realm_bootstrap_js("applyGpuPatch")
+    assert 'options.type === "module"' in js
+    assert "import(" in js  # dynamic import of the original module
+
+
+def test_relative_worker_urls_are_resolved():
+    # creepjs spawns its worker from a RELATIVE url ('./creep.js'); a relative url
+    # matched no scheme test and fell through to the native, unspoofed construct.
+    # The wrapper resolves a relative url to an absolute one so it takes the
+    # http(s) importScripts path.
+    js = realm_bootstrap_js("applyGpuPatch")
+    assert "new URL(s, base)" in js
+    assert "(https?:|blob:|data:)" in js
+
+
+def test_pnaboot_is_named_for_nested_workers():
+    # The worker payload runs __pnaBoot, which itself must spawn-wrap the worker's
+    # OWN nested workers — that needs __pnaBoot resolvable by name inside its own
+    # serialized body (a named function expression), else a nested worker's
+    # wrapper throws and runs unspoofed.
+    js = realm_bootstrap_js("applyGpuPatch")
+    assert "function __pnaBoot(G)" in js
+
+
 def test_bootstrap_balanced():
     js = realm_bootstrap_js("applyFoo")
     assert js.count("{") == js.count("}")

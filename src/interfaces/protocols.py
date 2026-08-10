@@ -57,6 +57,8 @@ class IBrowserLauncher(Protocol):
 
     def is_running(self, profile_name: str) -> bool: ...
 
+    def started_at(self, profile_name: str) -> float | None: ...
+
 
 class IProxyService(Protocol):
     def check_proxy_sync(

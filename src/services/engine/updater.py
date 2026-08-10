@@ -17,6 +17,7 @@ import urllib.request
 
 from ...core.config import ENGINE_DIR
 from ...core import platform as _platform
+from ...utils.httpdl import range_opener
 
 ENGINE_BINARY = os.path.join(ENGINE_DIR, _platform.fingerprint_chromium_filename())
 VERSION_FILE = os.path.join(ENGINE_DIR, "version.txt")
@@ -190,6 +191,10 @@ def _download_to(
     attempts = 0
     max_attempts = 40
     total = 0
+    # GitHub 302s to a signed CDN URL; a range-preserving opener keeps the Range
+    # header across that redirect so a resume gets the tail (206) instead of the
+    # whole file (200), which over Tor would restart from zero every attempt.
+    opener = range_opener()
     while attempts < max_attempts:
         attempts += 1
         have = os.path.getsize(tmp) if os.path.exists(tmp) else 0
@@ -197,7 +202,7 @@ def _download_to(
         if have:
             req.add_header("Range", f"bytes={have}-")
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with opener.open(req, timeout=timeout) as resp:
                 cr = resp.headers.get("Content-Range")
                 if cr and "/" in cr:
                     try:

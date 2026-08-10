@@ -3,6 +3,7 @@ import contextlib
 import re
 import subprocess
 import threading
+import time
 from collections import deque
 from collections.abc import Callable
 
@@ -129,6 +130,10 @@ class BrowserLauncher:
         self._lock = threading.Condition()
         self._active_sessions: dict[str, subprocess.Popen] = {}
         self._stop_notifiers: dict[str, threading.Event] = {}
+        # Wall-clock time each session was registered. read_cdp_port compares a
+        # DevToolsActivePort's mtime against this so a reader never attaches to a
+        # port file left behind by a previous run of the same profile.
+        self._session_started_at: dict[str, float] = {}
         # Profiles whose spawn is in flight but not yet in _active_sessions.
         # start_thread reserves the slot here synchronously so a second launch of
         # the same profile — fired while the slow spawn_browser() runs — is
@@ -149,6 +154,7 @@ class BrowserLauncher:
                     notifier.set()
                 terminate(proc, name)
             self._active_sessions.clear()
+            self._session_started_at.clear()
         logger.info("All browser sessions terminated")
 
     def start_thread(
@@ -197,6 +203,7 @@ class BrowserLauncher:
                     if self._active_sessions.get(profile.name) is proc:
                         self._active_sessions.pop(profile.name, None)
                         self._stop_notifiers.pop(profile.name, None)
+                        self._session_started_at.pop(profile.name, None)
                 reason = close_reason[0]
                 if reason in _QUIET_CLOSE_REASONS:
                     log_callback(f"Session ended: {profile.name}")
@@ -228,6 +235,7 @@ class BrowserLauncher:
                 if not aborted:
                     self._active_sessions[profile.name] = proc
                     self._stop_notifiers[profile.name] = stop_event
+                    self._session_started_at[profile.name] = time.time()
                     self._starting.discard(profile.name)
                     self._lock.notify_all()
 
@@ -273,6 +281,7 @@ class BrowserLauncher:
                     if self._active_sessions.get(profile.name) is proc:
                         self._active_sessions.pop(profile.name, None)
                         self._stop_notifiers.pop(profile.name, None)
+                        self._session_started_at.pop(profile.name, None)
                     self._lock.notify_all()
                 raise
         except Exception as e:
@@ -299,6 +308,7 @@ class BrowserLauncher:
                 # tear it down here.
                 proc = self._active_sessions.pop(profile_name, None)
                 notifier = self._stop_notifiers.pop(profile_name, None)
+                self._session_started_at.pop(profile_name, None)
                 if notifier:
                     notifier.set()
                 if proc is not None:
@@ -309,6 +319,7 @@ class BrowserLauncher:
                 return False
             proc = self._active_sessions.pop(profile_name)
             notifier = self._stop_notifiers.pop(profile_name, None)
+            self._session_started_at.pop(profile_name, None)
         if notifier:
             notifier.set()
         terminate(proc, profile_name, timeout)
@@ -323,6 +334,7 @@ class BrowserLauncher:
             for n in stale:
                 self._active_sessions.pop(n, None)
                 self._stop_notifiers.pop(n, None)
+                self._session_started_at.pop(n, None)
             # A profile whose spawn is still in flight counts as running so the
             # UI shows it busy and a second launch is refused.
             return set(self._active_sessions.keys()) | set(self._starting)
@@ -340,7 +352,16 @@ class BrowserLauncher:
                 return True
             del self._active_sessions[profile_name]
             self._stop_notifiers.pop(profile_name, None)
+            self._session_started_at.pop(profile_name, None)
             return False
+
+    def started_at(self, profile_name: str) -> float | None:
+        """Wall-clock time the session was registered, or None if not running.
+
+        read_cdp_port uses it as ``not_before`` so a stale DevToolsActivePort
+        from a previous run of the same profile is never trusted."""
+        with self._lock:
+            return self._session_started_at.get(profile_name)
 
     def _monitor_process(
         self,

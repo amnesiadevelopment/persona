@@ -122,6 +122,35 @@ def test_verify_uses_tag_from_staged_filename(monkeypatch, tmp_path):
     assert seen["tag"] == "v2.4.0"
 
 
+def test_tag_recovered_from_linux_appimage_part():
+    # audit7 #2: the Linux staged name (.persona-update-<tag>.AppImage.part) must
+    # yield the real tag — it used to return '' → checksum lookup skipped → an
+    # unverified AppImage ran.
+    assert au._tag_from_staged(".persona-update-v2.9.14.AppImage.part") == "v2.9.14"
+    assert au._tag_from_staged("/tmp/.persona-update-v2.9.14.AppImage.part") == "v2.9.14"
+    # the tagless name still yields '' (no tag baked in)
+    assert au._tag_from_staged(".persona-update.AppImage.part") == ""
+
+
+def test_linux_appimage_verify_actually_checks_checksum(monkeypatch, tmp_path):
+    # audit7 #2: a staged Linux AppImage with a recoverable tag must be sha256-
+    # verified, not fall through to the fail-OPEN size-only branch. A mismatching
+    # checksum must REFUSE (an unverified/substituted AppImage must never run).
+    staged = tmp_path / ".persona-update-v2.9.14.AppImage.part"
+    staged.write_bytes(b"attacker-substituted-appimage")
+    seen = {}
+
+    def fetch(tag, **k):
+        seen["tag"] = tag
+        return "0" * 64  # a real published checksum that WON'T match
+
+    monkeypatch.setattr(au, "fetch_expected_sha256", fetch)
+    msgs = []
+    assert au.verify_staged_installer(str(staged), log=msgs.append) is False
+    assert seen["tag"] == "v2.9.14", "tag must be recovered so the checksum is fetched"
+    assert any("mismatch" in m.lower() for m in msgs)
+
+
 # --- apply_and_restart (Windows path) must not launch a refused installer ---
 
 

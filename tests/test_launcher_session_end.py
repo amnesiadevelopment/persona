@@ -60,6 +60,39 @@ def _run_session(monkeypatch, lines, returncode=0):
     return messages
 
 
+def test_started_at_set_while_running_cleared_after_end(monkeypatch):
+    # audit7 LOW: read_cdp_port needs the session's launch time as `not_before`
+    # so a stale DevToolsActivePort from a previous run is rejected. The launcher
+    # records started_at on registration and clears it when the session ends.
+    import time
+
+    proc = _Proc([])  # never exits on its own; poll() stays None until we stop it
+    monkeypatch.setattr(launcher_mod, "spawn_browser", lambda p: proc)
+    # Keep the session alive: replace the monitor with one that blocks until the
+    # process is terminated, so registration persists for the assertions.
+    registered = threading.Event()
+
+    def fake_monitor(*a, **k):
+        registered.set()
+        proc._exited.wait()
+
+    monkeypatch.setattr(BrowserLauncher, "_monitor_process", fake_monitor)
+
+    bl = BrowserLauncher()
+    before = time.time()
+    bl.start_thread(
+        Profile(name="fox", engine="firefox", os_type="windows"),
+        lambda m: None,
+    )
+    assert registered.wait(5)
+    ts = bl.started_at("fox")
+    assert ts is not None and ts >= before
+    assert bl.started_at("absent") is None
+
+    assert bl.stop_profile("fox")
+    assert bl.started_at("fox") is None
+
+
 def test_user_close_logs_quiet_session_end(monkeypatch):
     # A clean user close (window-gone from the close-watch) must stay quiet:
     # the plain "Session ended" line, no "unexpectedly" noise.

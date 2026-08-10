@@ -164,7 +164,7 @@ def build_mcp(container: Container) -> FastMCP:
             raise ValueError("profile is not AI-enabled (enable AI control first)")
         if not bl.is_running(name):
             raise ValueError("profile is not running (launch it first)")
-        port = await _resolve_port(name)
+        port = await _resolve_port(name, not_before=bl.started_at(name))
         pw = await async_playwright().start()
         browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
         ctx = browser.contexts[0]

@@ -130,7 +130,13 @@ class ProxyStore:
         with self._lock:
             proxy = self.proxies.get(ref)
             if proxy:
-                return proxy.url
+                # Gate a NAMED proxy on parseability too, not just the raw-url
+                # fallback below. A stored url with no port ("socks5://1.2.3.4")
+                # or a bare host is truthy but unusable: chromium's parser returns
+                # None for it, so --proxy-server is dropped AND the anti-leak block
+                # is skipped → DIRECT clearnet on a profile WITH a proxy. Returning
+                # None here makes the launch guard fail CLOSED (audit7 #1).
+                return proxy.url if parse_proxy_server(proxy.url) else None
         return ref if parse_proxy_server(ref) else None
 
     def add(self, name: str, url: str, rotate_url: str = "") -> bool:

@@ -101,7 +101,11 @@ _CONTENT_SCRIPT = r"""
   // Stable Chrome desktop limits for these GPU tiers on the ANGLE/D3D11 & Metal
   // backends. Float ranges are Float32Array so they read identically to a
   // native getParameter() return (detectors check the type).
-  var COMMON = {
+  // Desktop D3D11/Metal limits. MAX_VIEWPORT_DIMS is the giveaway: desktop ANGLE
+  // reports [32767,32767], but a real Adreno/Mali GLES device reports [16384,
+  // 16384] — a desktop viewport on an Adreno renderer is another cross-check
+  // impossibility (audit7 #3). Select the limit block by OS like the GPU pool.
+  var COMMON_DESKTOP = {
     7936: "WebKit",                            // VENDOR (masked)
     7937: "WebKit WebGL",                       // RENDERER (masked)
     3379: 16384,                                // MAX_TEXTURE_SIZE
@@ -118,6 +122,24 @@ _CONTENT_SCRIPT = r"""
     33901: new Float32Array([1, 1024]),         // ALIASED_POINT_SIZE_RANGE
     33902: new Float32Array([1, 1])             // ALIASED_LINE_WIDTH_RANGE
   };
+  var COMMON_ANDROID = {
+    7936: "WebKit",
+    7937: "WebKit WebGL",
+    3379: 16384,                                // MAX_TEXTURE_SIZE (Adreno/Mali)
+    34076: 16384,                               // MAX_CUBE_MAP_TEXTURE_SIZE
+    3386: new Float32Array([16384, 16384]),     // MAX_VIEWPORT_DIMS (GLES, not 32767)
+    34024: 16384,                               // MAX_RENDERBUFFER_SIZE
+    34921: 16,
+    36347: 4096,
+    36349: 1024,
+    36348: 30,
+    35660: 16,
+    34930: 16,
+    35661: 32,
+    33901: new Float32Array([1, 1024]),
+    33902: new Float32Array([1, 1])
+  };
+  var COMMON = (OS === "android") ? COMMON_ANDROID : COMMON_DESKTOP;
   var GL1 = {
     7938: "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
     35724: "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)"
@@ -197,7 +219,13 @@ _CONTENT_SCRIPT = r"""
     // stable ANGLE-D3D11/Metal set real Chrome reports so it matches the renderer.
     var realGSE = proto.getSupportedExtensions;
     if (realGSE) {
-      var STABLE_EXTS = [
+      // Extensions must match the CLAIMED renderer, not just the host. The
+      // desktop set below has s3tc/s3tc_srgb (DXT) + bptc + rgtc — Direct3D/BC
+      // formats a real Adreno/Mali NEVER exposes; those GPUs expose ETC/ETC1/ASTC
+      // instead. Shipping the desktop set on an Android profile was a hard
+      // renderer<->extension impossibility CreepJS/Pixelscan cross-check (audit7
+      // #3). Apple/Metal also has no s3tc. Pick the set by OS like the GPU pool.
+      var DESKTOP_EXTS = [
         "ANGLE_instanced_arrays", "EXT_blend_minmax", "EXT_color_buffer_half_float",
         "EXT_disjoint_timer_query", "EXT_float_blend", "EXT_frag_depth",
         "EXT_shader_texture_lod", "EXT_texture_compression_bptc",
@@ -210,6 +238,34 @@ _CONTENT_SCRIPT = r"""
         "WEBGL_debug_shaders", "WEBGL_depth_texture", "WEBGL_draw_buffers",
         "WEBGL_lose_context", "WEBGL_multi_draw"
       ];
+      var APPLE_EXTS = [
+        "ANGLE_instanced_arrays", "EXT_blend_minmax", "EXT_color_buffer_half_float",
+        "EXT_disjoint_timer_query", "EXT_float_blend", "EXT_frag_depth",
+        "EXT_shader_texture_lod", "EXT_texture_compression_bptc",
+        "EXT_texture_compression_rgtc", "EXT_texture_filter_anisotropic",
+        "OES_element_index_uint", "OES_fbo_render_mipmap", "OES_standard_derivatives",
+        "OES_texture_float", "OES_texture_float_linear", "OES_texture_half_float",
+        "OES_texture_half_float_linear", "OES_vertex_array_object",
+        "WEBGL_color_buffer_float", "WEBGL_debug_renderer_info",
+        "WEBGL_debug_shaders", "WEBGL_depth_texture", "WEBGL_draw_buffers",
+        "WEBGL_lose_context", "WEBGL_multi_draw"
+      ];
+      var ANDROID_EXTS = [
+        "ANGLE_instanced_arrays", "EXT_blend_minmax", "EXT_color_buffer_half_float",
+        "EXT_disjoint_timer_query", "EXT_float_blend", "EXT_frag_depth",
+        "EXT_shader_texture_lod", "EXT_texture_filter_anisotropic",
+        "KHR_parallel_shader_compile", "OES_element_index_uint",
+        "OES_fbo_render_mipmap", "OES_standard_derivatives", "OES_texture_float",
+        "OES_texture_float_linear", "OES_texture_half_float",
+        "OES_texture_half_float_linear", "OES_vertex_array_object",
+        "WEBGL_color_buffer_float", "WEBGL_compressed_texture_astc",
+        "WEBGL_compressed_texture_etc", "WEBGL_compressed_texture_etc1",
+        "WEBGL_debug_renderer_info", "WEBGL_debug_shaders", "WEBGL_depth_texture",
+        "WEBGL_draw_buffers", "WEBGL_lose_context", "WEBGL_multi_draw"
+      ];
+      var STABLE_EXTS = (OS === "android") ? ANDROID_EXTS
+                      : (OS === "macos") ? APPLE_EXTS
+                      : DESKTOP_EXTS;
       proto.getSupportedExtensions = nativeWrap(realGSE, function () {
         try { return STABLE_EXTS.slice(); } catch (e) {}
         return realGSE.call(this);

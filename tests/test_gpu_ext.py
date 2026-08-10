@@ -156,3 +156,42 @@ def test_shader_precision_and_extensions_spoofed(tmp_path):
     assert "rangeMin: 127" in js and "precision: 23" in js
     # stable extension set includes s3tc (a real-GPU marker, not SwiftShader)
     assert "WEBGL_compressed_texture_s3tc" in js
+
+
+def test_android_extensions_and_limits_are_gles_coherent(tmp_path):
+    # audit7 #3: an Android profile spoofs an Adreno/Mali renderer, so its
+    # extension set + limits must be GLES-coherent — NOT desktop D3D11. s3tc/bptc/
+    # rgtc (DXT/BC) never appear on a real Adreno/Mali; ETC/ETC1/ASTC do; and the
+    # viewport is 16384 not the desktop 32767. Shipping the desktop set was a
+    # renderer<->extension impossibility CreepJS/Pixelscan cross-check.
+    import pathlib
+
+    from src.services.browser.gpu_ext import build_gpu_extension
+
+    js = pathlib.Path(
+        build_gpu_extension(1, "android", str(tmp_path / "a")) + "/gpu.js"
+    ).read_text()
+    # the ANDROID set is what the code selects for OS==="android"
+    assert 'STABLE_EXTS = (OS === "android") ? ANDROID_EXTS' in js
+    assert "WEBGL_compressed_texture_etc" in js
+    assert "WEBGL_compressed_texture_astc" in js
+    assert "KHR_parallel_shader_compile" in js
+    # Android limit block selected + GLES viewport present
+    assert "COMMON = (OS === \"android\") ? COMMON_ANDROID" in js
+    assert "16384, 16384" in js  # MAX_VIEWPORT_DIMS for GLES
+
+
+def test_apple_extensions_drop_s3tc(tmp_path):
+    # audit7 #3: Apple/Metal has no s3tc either; the macOS set drops it.
+    import pathlib
+
+    from src.services.browser.gpu_ext import build_gpu_extension
+
+    js = pathlib.Path(
+        build_gpu_extension(1, "macos", str(tmp_path / "m")) + "/gpu.js"
+    ).read_text()
+    assert '(OS === "macos") ? APPLE_EXTS' in js
+    # APPLE_EXTS must not contain s3tc (verify the array itself, not the whole
+    # file — DESKTOP_EXTS still has it for windows profiles)
+    apple = js.split("APPLE_EXTS = [", 1)[1].split("]", 1)[0]
+    assert "s3tc" not in apple

@@ -50,14 +50,20 @@ def build_cdp_info(name: str, port: int, ws_url: str) -> BrowserCdpInfo:
     )
 
 
-async def _resolve_port(name: str, *, timeout_s: float = 15.0) -> int:
-    """Poll for chromium's DevToolsActivePort (written a beat after launch)."""
+async def _resolve_port(
+    name: str, *, timeout_s: float = 15.0, not_before: float | None = None
+) -> int:
+    """Poll for chromium's DevToolsActivePort (written a beat after launch).
+
+    ``not_before`` is the session's launch time: a DevToolsActivePort older than
+    it is a leftover from a previous run and is rejected, so we never attach to a
+    stale port."""
     loop = asyncio.get_event_loop()
     deadline = loop.time() + timeout_s
     last_exc: Exception | None = None
     while loop.time() < deadline:
         try:
-            return read_cdp_port(name)
+            return read_cdp_port(name, not_before=not_before)
         except RuntimeError as exc:
             last_exc = exc
             await asyncio.sleep(0.25)
@@ -66,8 +72,8 @@ async def _resolve_port(name: str, *, timeout_s: float = 15.0) -> int:
     ) from last_exc
 
 
-async def cdp_info_for(name: str) -> BrowserCdpInfo:
+async def cdp_info_for(name: str, *, not_before: float | None = None) -> BrowserCdpInfo:
     """Resolve full CDP info for a running automation profile by its name."""
-    port = await _resolve_port(name)
+    port = await _resolve_port(name, not_before=not_before)
     ws_url = await fetch_browser_ws_url(port)
     return build_cdp_info(name, port, ws_url)

@@ -113,3 +113,38 @@ def test_mobile_on_shared_recursive_registry(tmp_path):
     # params live inside the leaf so .toString() carries them per realm
     body = js.split("function applyMobilePatch(G)", 1)[1].split("__pnaBoot", 1)[0]
     assert "var IS_IOS" in body and "var HWC" in body
+
+
+def test_touch_constructors_gated_behind_window(tmp_path):
+    # audit7 #6: the leaf runs in Web Workers via the shared registry. A real
+    # Android Chrome worker has NO TouchEvent/Touch on its global (they're
+    # Window-only), so defining them unconditionally made `typeof TouchEvent ===
+    # 'function'` true inside a worker — a net-new mobile-emulation tell. The
+    # TouchEvent/Touch assignments must sit inside an `if (G.Window)` gate.
+    d = build_mobile_extension(
+        str(tmp_path / "m"), is_ios=False, platform="Android",
+        model="Pixel 8", ua_full_version="148.0.0.0",
+        css_width=412, css_height=915, dpr=2.625,
+        device_memory=8, hardware_concurrency=8, touch_points=5,
+    )
+    js = (pathlib.Path(d) / "mobile.js").read_text()
+    # Both TouchEvent and Touch constructor assignments must live inside a
+    # `if (G.Window) { ... }` block. Find the G.Window gate that immediately
+    # precedes the TouchEvent assignment (there are several G.Window checks) and
+    # walk its braces: the assignment must fall between the guard's `{` and `}`.
+    te = js.index("G.TouchEvent = function")
+    guard = js.rindex("if (G.Window)", 0, te)
+    open_brace = js.index("{", guard)
+    depth, close_brace = 0, None
+    for i in range(open_brace, len(js)):
+        if js[i] == "{":
+            depth += 1
+        elif js[i] == "}":
+            depth -= 1
+            if depth == 0:
+                close_brace = i
+                break
+    assert close_brace is not None
+    block = js[open_brace:close_brace]
+    assert "G.TouchEvent = function" in block, "TouchEvent must be defined inside the G.Window gate"
+    assert "G.Touch = function" in block, "Touch must be defined inside the G.Window gate"
