@@ -5,6 +5,15 @@ class ProfileCreate(BaseModel):
     name: str
     proxy: str | None = None
     os_type: str = "windows"
+    device_type: str = "desktop"
+    engine: str = "chromium"
+    resolution: str = "auto"
+    search_engine: str = "duckduckgo"
+    bookmark_pool: str | None = None
+    bookmarks: list[str] | None = None
+    certificate: str | None = None
+    tags: list[str] | None = None
+    ai_control: bool = False
     notes: str = ""
 
 
@@ -14,6 +23,15 @@ class ProfileUpdate(BaseModel):
     name: str | None = None
     proxy: str | None = None
     os_type: str | None = None
+    device_type: str | None = None
+    engine: str | None = None
+    resolution: str | None = None
+    search_engine: str | None = None
+    bookmark_pool: str | None = None
+    bookmarks: list[str] | None = None
+    certificate: str | None = None
+    tags: list[str] | None = None
+    ai_control: bool | None = None
     notes: str | None = None
 
 
@@ -21,6 +39,15 @@ class ProfileResponse(BaseModel):
     name: str
     proxy: str | None
     os_type: str
+    device_type: str = "desktop"
+    engine: str = "chromium"
+    resolution: str = "auto"
+    search_engine: str = "duckduckgo"
+    bookmark_pool: str | None = None
+    bookmarks: list[str] | None = None
+    certificate: str | None = None
+    tags: list[str] = []
+    ai_control: bool = False
     notes: str = ""
     data_dir: str
     is_running: bool

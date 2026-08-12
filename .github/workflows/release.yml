@@ -654,7 +654,14 @@ jobs:
           $fletVer = (pip show flet | Select-String '^Version:').ToString().Trim()
           $pyVer   = (python --version 2>&1).ToString().Trim()
           $fluVer  = (flutter --version 2>&1 | Select-Object -First 1).ToString().Trim()
-          $fpInput = "$reqHash|$fletVer|$pyVer|$fluVer"
+          # The bundled engine + driver live in pyproject (invisible_playwright pin
+          # + invisible_core==NN), NOT requirements.txt, so a bump there changes the
+          # SHIPPED runtime but left the fingerprint stable → the update tried a
+          # fast app.zip swap that can't carry a new engine package, re-introducing
+          # the #405 driver/engine split. Fold the invisible pins into the print so
+          # an engine/driver bump correctly flips requires_full_install to true.
+          $invPins = ((Select-String -Path pyproject.toml -Pattern 'invisible_(playwright\.git@[0-9a-f]+|core==[0-9.]+)').Matches | ForEach-Object { $_.Value }) -join '|'
+          $fpInput = "$reqHash|$fletVer|$pyVer|$fluVer|$invPins"
           $sha = [System.Security.Cryptography.SHA256]::Create()
           $runtimeFp = ([System.BitConverter]::ToString(
             $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($fpInput))) `

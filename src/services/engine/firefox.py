@@ -84,9 +84,13 @@ def fetch_latest(timeout: int = 20) -> tuple[str, bool]:
     asset; False means the build needs a newer engine package, i.e. a persona
     update."""
     try:
-        from invisible_playwright.constants import BROKEN_VERSIONS
+        from invisible_playwright.constants import (
+            BINARY_VERSION,
+            BROKEN_VERSIONS,
+        )
 
         asset = _expected_asset()
+        pkg_num = build_number(BINARY_VERSION)
     except Exception:
         return "", False
     try:
@@ -110,7 +114,14 @@ def fetch_latest(timeout: int = 20) -> tuple[str, bool]:
             best_assets = [a.get("name", "") for a in rel.get("assets", [])]
     if not best_tag:
         return "", False
-    return best_tag, asset in best_assets
+    # Compatible only when the release ships this OS's expected asset AND its
+    # build number does not exceed what the bundled driver can drive. A newer
+    # firefox-NN (even one carrying the same upstream asset) speaks a juggler
+    # contract the shipped invisible_playwright can't drive, so it needs a persona
+    # update that ships the matching driver — report it incompatible rather than
+    # let the updater install an unlaunchable engine (#405).
+    compatible = (asset in best_assets) and build_number(best_tag) <= pkg_num
+    return best_tag, compatible
 
 
 def download_engine(tag: str, progress=None, log=None) -> bool:

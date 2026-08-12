@@ -117,6 +117,17 @@ def installed_builds() -> list[str]:
             num = build_number(d.name)
             if num < 0:
                 continue
+            # Never surface a build NEWER than the bundled package can drive.
+            # invisible_playwright talks to the engine over juggler, and that
+            # contract changes between firefox-NN builds — even ones sharing an
+            # upstream Firefox version (firefox-18 and firefox-19 are both 151.0
+            # but different juggler builds). A build past pinned_num therefore
+            # can't be driven by the shipped pkg and every launch fails (#405);
+            # capping here makes a stranded newer install fall back to the drivable
+            # pinned build. A newer engine must arrive with a persona update that
+            # ships the matching driver (see engine/firefox.fetch_latest).
+            if num > pinned_num:
+                continue
             tag = f"firefox-{num}"
             if tag in BROKEN_VERSIONS or d.name in BROKEN_VERSIONS:
                 continue
@@ -2278,12 +2289,16 @@ class _WorkerSession:
 
 
 def _enter_on_worker(InvisiblePlaywright, kwargs, profile_dir, attempts, per_try,
-                     stop_event=None):
+                     stop_event=None, err_out=None):
     """Enter on a dedicated worker thread, bounding each attempt to `per_try`
     seconds; on overrun kill this profile's Firefox and retry on a FRESH
     worker (the wedged one is abandoned — see _WorkerSession). Returns a
     _WorkerSession on success, or None if every attempt overran or STOP
-    cancelled the launch."""
+    cancelled the launch.
+
+    When an attempt's enter RAISES (not overruns), the reason is stored in
+    err_out['err'] if err_out is a dict, so the caller can surface the real error
+    instead of a misleading "timed out"."""
     import queue
     import threading
 
@@ -2300,7 +2315,12 @@ def _enter_on_worker(InvisiblePlaywright, kwargs, profile_dir, attempts, per_try
             try:
                 inv = InvisiblePlaywright(**kwargs)
                 ctx = inv.__enter__()
-            except BaseException:  # noqa: BLE001 — the bound/retry decides
+            except BaseException as exc:  # noqa: BLE001 — the bound/retry decides
+                # Record the real reason so the caller can report it instead of a
+                # blanket "launch timed out": an enter that RAISES (e.g. a
+                # driver/engine version mismatch) is not a timeout, and masking it
+                # sent us chasing a phantom cause (#405).
+                holder["err"] = f"{type(exc).__name__}: {exc}"
                 entered.set()
                 return
             holder["inv"] = inv
@@ -2329,6 +2349,10 @@ def _enter_on_worker(InvisiblePlaywright, kwargs, profile_dir, attempts, per_try
             return _WorkerSession(
                 holder["inv"], holder["ctx"], t, requests, results
             )
+        # Remember an enter-error reason (if the attempt raised rather than
+        # overran) so the caller reports it instead of "timed out".
+        if isinstance(err_out, dict) and "err" in holder:
+            err_out["err"] = holder["err"]
         # Overrun (or a stop, or an enter error). Kill this profile's Firefox
         # so the abandoned worker's blocked call eventually unwinds and its
         # Firefox tree is gone, then settle before a fresh attempt so we never
@@ -2344,7 +2368,8 @@ def _enter_on_worker(InvisiblePlaywright, kwargs, profile_dir, attempts, per_try
     return None
 
 
-def _enter_with_timeout(InvisiblePlaywright, kwargs, profile_dir, attempts, per_try):
+def _enter_with_timeout(InvisiblePlaywright, kwargs, profile_dir, attempts,
+                        per_try, err_out=None):
     """Enter an InvisiblePlaywright context on the FORK path (Linux), bounding
     each attempt to `per_try` seconds and retrying. Returns (inv, ctx) on
     success, or (None, None) if every attempt timed out.
@@ -2352,7 +2377,9 @@ def _enter_with_timeout(InvisiblePlaywright, kwargs, profile_dir, attempts, per_
     __enter__ is a blocking call, so it runs in a thread; when the attempt
     overruns we kill the launching Firefox so the blocked call raises and the
     thread unwinds, then try again with a clean profile lock. The Windows/macOS
-    thread path uses _enter_on_worker instead (see _WorkerSession)."""
+    thread path uses _enter_on_worker instead (see _WorkerSession). An attempt
+    that RAISES (not overruns) records the reason in err_out['err'] so the caller
+    can report it instead of a blanket timeout (#405)."""
     import threading
 
     for _ in range(attempts):
@@ -2371,6 +2398,9 @@ def _enter_with_timeout(InvisiblePlaywright, kwargs, profile_dir, attempts, per_
         t.join(per_try)
         if "ctx" in holder:
             return holder["inv"], holder["ctx"]
+        if isinstance(err_out, dict) and holder.get("err") is not None:
+            e = holder["err"]
+            err_out["err"] = f"{type(e).__name__}: {e}"
         # Timed out or failed — kill the launching Firefox so the thread unwinds,
         # clear the stale lock, and retry.
         pid = _firefox_pid(profile_dir)
@@ -2746,22 +2776,28 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     attempts = 2 if proxy else 3
     session = None
     inv = ctx = None
+    enter_err: dict = {}
     if in_thread:
         session = _enter_on_worker(
             InvisiblePlaywright, kwargs, profile_dir,
             attempts=attempts, per_try=per_try, stop_event=stop_event,
+            err_out=enter_err,
         )
         if session is not None:
             inv, ctx = session.inv, session.ctx
     else:
         inv, ctx = _enter_with_timeout(
             InvisiblePlaywright, kwargs, profile_dir,
-            attempts=attempts, per_try=per_try,
+            attempts=attempts, per_try=per_try, err_out=enter_err,
         )
     if ctx is None:
         _release_lock()
         if stop_event is not None and stop_event.is_set():
             emit("LAUNCH_CANCELLED")
+        elif enter_err.get("err"):
+            # The enter RAISED — report the real reason (e.g. an engine/driver
+            # version mismatch), not a blanket timeout (#405).
+            emit(f"LAUNCH_FAILED: {enter_err['err']}")
         else:
             emit("LAUNCH_FAILED: launch timed out")
         emit("BROWSER_CLOSED")

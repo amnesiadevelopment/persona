@@ -83,7 +83,19 @@ def create_profile(
         _validate_proxy_ref(body.proxy, ps)
 
     if not pm.add_profile(
-        body.name, body.proxy or "", body.os_type, notes=body.notes
+        body.name,
+        body.proxy or "",
+        body.os_type,
+        search_engine=body.search_engine,
+        bookmark_pool=body.bookmark_pool,
+        bookmarks=body.bookmarks,
+        tags=body.tags,
+        device_type=body.device_type,
+        notes=body.notes,
+        engine=body.engine,
+        resolution=body.resolution,
+        certificate=body.certificate,
+        ai_control=body.ai_control,
     ):
         raise HTTPException(status_code=409, detail="Profile already exists")
 
@@ -141,8 +153,25 @@ def update_profile(
     if "proxy" in supplied and new_proxy:
         _validate_proxy_ref(new_proxy, ps)
 
+    # bookmark_pool is assigned unconditionally by update_profile, so pass the
+    # profile's current value when the PATCH omits it (else it would be wiped).
+    # Every other optional field is only applied when non-None, so an omitted
+    # field passes None and stays untouched.
     if not pm.update_profile(
-        name, new_name, new_proxy or "", new_os, new_notes=new_notes
+        name,
+        new_name,
+        new_proxy or "",
+        new_os,
+        new_search_engine=supplied.get("search_engine"),
+        new_bookmark_pool=supplied.get("bookmark_pool", profile.bookmark_pool),
+        new_bookmarks=supplied.get("bookmarks"),
+        new_tags=supplied.get("tags"),
+        new_ai_control=supplied.get("ai_control"),
+        new_device_type=supplied.get("device_type"),
+        new_notes=new_notes,
+        new_engine=supplied.get("engine"),
+        new_resolution=supplied.get("resolution"),
+        new_certificate=supplied.get("certificate"),
     ):
         raise HTTPException(status_code=409, detail="Update failed (name conflict?)")
 

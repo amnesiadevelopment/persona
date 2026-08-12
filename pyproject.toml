@@ -30,9 +30,9 @@ dependencies = [
     # exactly why Camoufox showed ModuleNotFoundError in prod).
     # Pinned to an exact commit (not a floating branch) so a supply-chain push to
     # the upstream repo can't land in a build unverified. This is the commit the
-    # test suite is green against and that pins invisible_core==18.13.0 below; bump
+    # test suite is green against and that pins invisible_core==19.14.0 below; bump
     # both together after re-running the suite.
-    "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git@e2deaa50594894b236d39ac763d244aa1327e9c5",
+    "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git@651a8da7cec716e05e878f8ed66208f600cc676e",
     # invisible_core is invisible_playwright's own dependency, but flet build does
     # NOT resolve a git package's transitive deps — so it must be declared here or
     # the bundle ships without it and the engine raises ImportError ("invisible-core
@@ -41,7 +41,7 @@ dependencies = [
     # so the version carrying the release-pin check (invisible_core._pin) lands in
     # the build. A git pin here mismatched playwright's == pin; the PyPI == pin keeps
     # them in lockstep and lets `pip check` catch a drift before release.
-    "invisible_core==18.13.0",
+    "invisible_core==19.14.0",
 ]
 
 [tool.pytest.ini_options]

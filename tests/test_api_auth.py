@@ -195,3 +195,83 @@ def test_create_profile_rejects_bad_proxy(client):
         headers=_auth(token),
     )
     assert r.status_code == 400
+
+
+def test_create_profile_honours_all_fields(client):
+    # #402: ProfileCreate only declared name/proxy/os_type/notes, so a profile
+    # created via REST was always chromium/auto/desktop/no-bookmarks regardless of
+    # the body. engine/resolution/device_type/bookmarks/search_engine must be
+    # stored, and the response must reflect them.
+    c, token = client
+    h = _auth(token)
+    body = {
+        "name": "fullprofile",
+        "os_type": "android",
+        "engine": "firefox",
+        "resolution": "1280x720",
+        "device_type": "mobile",
+        "search_engine": "google",
+        "bookmarks": ["https://a.example", "https://b.example"],
+        "notes": "hi",
+    }
+    r = c.post("/api/v1/profiles", json=body, headers=h)
+    assert r.status_code == 201, r.text
+    j = r.json()
+    assert j["engine"] == "firefox"
+    assert j["resolution"] == "1280x720"
+    assert j["device_type"] == "mobile"
+    assert j["search_engine"] == "google"
+    assert j["bookmarks"] == ["https://a.example", "https://b.example"]
+    # and the manager actually persisted them
+    prof = c.app.state.container.profile_manager.profiles["fullprofile"]
+    assert prof.engine == "firefox" and prof.resolution == "1280x720"
+    assert prof.device_type == "mobile" and prof.bookmarks == body["bookmarks"]
+
+
+def test_update_profile_changes_engine_and_resolution(client):
+    c, token = client
+    h = _auth(token)
+    c.post("/api/v1/profiles", json={"name": "p2", "os_type": "windows"}, headers=h)
+    r = c.patch(
+        "/api/v1/profiles/p2",
+        json={"engine": "firefox", "resolution": "1920x1080"},
+        headers=h,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["engine"] == "firefox"
+    assert r.json()["resolution"] == "1920x1080"
+    # untouched fields stay put
+    assert r.json()["os_type"] == "windows"
+
+
+def test_update_profile_omitted_fields_are_untouched(client):
+    # PATCH is partial: a body that omits bookmarks must NOT wipe an existing
+    # bookmark selection. exclude_unset guards this.
+    c, token = client
+    h = _auth(token)
+    c.post(
+        "/api/v1/profiles",
+        json={"name": "p3", "os_type": "windows", "bookmarks": ["https://x.example"]},
+        headers=h,
+    )
+    r = c.patch("/api/v1/profiles/p3", json={"notes": "changed"}, headers=h)
+    assert r.status_code == 200, r.text
+    prof = c.app.state.container.profile_manager.profiles["p3"]
+    assert prof.bookmarks == ["https://x.example"]
+    assert prof.notes == "changed"
+
+
+def test_update_profile_can_clear_bookmarks(client):
+    # Distinguish "omitted" (keep) from "explicitly []" (clear). Sending
+    # bookmarks: [] must empty them.
+    c, token = client
+    h = _auth(token)
+    c.post(
+        "/api/v1/profiles",
+        json={"name": "p4", "os_type": "windows", "bookmarks": ["https://y.example"]},
+        headers=h,
+    )
+    r = c.patch("/api/v1/profiles/p4", json={"bookmarks": []}, headers=h)
+    assert r.status_code == 200, r.text
+    prof = c.app.state.container.profile_manager.profiles["p4"]
+    assert prof.bookmarks == []

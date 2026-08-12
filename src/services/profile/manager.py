@@ -163,6 +163,7 @@ class ProfileManager:
         engine: str = "chromium",
         resolution: str = "auto",
         certificate: str | None = None,
+        ai_control: bool = False,
     ) -> bool:
         # Validate up front so an invalid/traversal name is rejected before it's
         # registered — import and the MCP tool used to reach here unchecked.
@@ -188,6 +189,7 @@ class ProfileManager:
                 certificate=certificate or None,
                 tags=tags or [],
                 notes=notes,
+                ai_control=ai_control,
             )
             self.save_profiles()
             pathlib.Path(self._data_path(name)).mkdir(exist_ok=True, parents=True)

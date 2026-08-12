@@ -1,0 +1,80 @@
+name: engine-autoupdate
+
+# Watch for a newer patched-Firefox engine and, when one appears, bump the pins
+# and cut a release so persona rebuilds with the engine + its matching driver in
+# lockstep. The engine (firefox-NN binary) and its driver (invisible_playwright,
+# which pins invisible_core==NN) MUST ship together — a newer firefox-NN speaks a
+# juggler contract only the newer driver can drive (#405). scripts/engine_autobump.py
+# reads invisible_playwright's latest release + the invisible_core it pins; if that
+# major (== firefox-NN) is newer than what pyproject pins, it rewrites the pins +
+# APP_VERSION + engine-baseline + CHANGELOG. This job then commits to main and pushes
+# a v<APP_VERSION> tag, which triggers release.yml to build + publish.
+
+on:
+  schedule:
+    - cron: "0 6 * * *"   # daily 06:00 UTC
+  workflow_dispatch: {}    # allow a manual check
+
+# Only this job needs to write (commit + tag). Nothing here runs third-party code
+# with the token in scope beyond the trusted bump script.
+permissions:
+  contents: write
+
+concurrency:
+  group: engine-autoupdate
+  cancel-in-progress: false
+
+jobs:
+  check-and-bump:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out main
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          ref: main
+          # keep the checkout token so we can push the bump commit + tag
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.13"
+
+      - name: Detect newer engine + bump pins
+        id: bump
+        run: |
+          out="$(python3 scripts/engine_autobump.py .)"
+          echo "$out"
+          ver="$(printf '%s\n' "$out" | sed -n 's/^BUMP=//p' | tail -1)"
+          base="$(printf '%s\n' "$out" | sed -n 's/^NEW_BASELINE=//p' | tail -1)"
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "baseline=$base" >> "$GITHUB_OUTPUT"
+
+      - name: Commit + tag the bump
+        if: steps.bump.outputs.version != 'none' && steps.bump.outputs.version != ''
+        env:
+          VER: ${{ steps.bump.outputs.version }}
+          BASE: ${{ steps.bump.outputs.baseline }}
+        run: |
+          # sanity: the tag must not already exist (idempotent re-runs)
+          if git rev-parse -q --verify "refs/tags/v${VER}" >/dev/null; then
+            echo "tag v${VER} already exists — nothing to do"; exit 0
+          fi
+          git config user.name  "persona-engine-bot"
+          git config user.email "noreply@persona.dev"
+          git add pyproject.toml engine-baseline.txt \
+            src/services/app_update/updater.py src/ui/changelog.py
+          {
+            echo "engine: auto-bump to ${BASE} (driver+engine in lockstep, #405-C)"
+            echo
+            echo "Bumps invisible_playwright + invisible_core pins to the newest"
+            echo "patched-Firefox build and cuts v${VER} so persona rebuilds"
+            echo "engine+driver together."
+            echo
+            echo "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
+          } > /tmp/bump_msg.txt
+          git commit -F /tmp/bump_msg.txt
+          git tag "v${VER}"
+          git push origin main
+          git push origin "v${VER}"
+          echo "pushed v${VER} — release.yml will build it"

@@ -62,6 +62,10 @@ def _serve(monkeypatch, payload):
 
 
 def test_fetch_latest_picks_highest_firefox_tag(monkeypatch):
+    # pkg drives firefox-16, so firefox-16 is the highest compatible.
+    import invisible_core.constants as consts
+
+    monkeypatch.setattr(consts, "BINARY_VERSION", "firefox-16")
     _serve(
         monkeypatch,
         [
@@ -261,16 +265,61 @@ def test_stub_pinned_build_installed_once_marker_written(monkeypatch, tmp_path):
 
 
 def test_active_build_prefers_newer_complete_build(monkeypatch, tmp_path):
+    # A newer build is used ONLY when the bundled pkg can drive it — i.e. its
+    # build number is <= the pkg's BINARY_VERSION. Here pkg is firefox-16 so both
+    # 15 and 16 are drivable and the highest (16) wins.
+    # firefox-15 is marked complete so it counts even though it isn't the pinned
+    # build; firefox-16 (pinned + marked) is the highest drivable → active.
     _fake_cache(
         monkeypatch,
         tmp_path,
-        [("firefox-15", True, False), ("firefox-16", True, True)],
+        [("firefox-15", True, True), ("firefox-16", True, True)],
+        binary_version="firefox-16",
     )
     assert inv.installed_builds() == ["firefox-15", "firefox-16"]
     assert inv.active_build() == "firefox-16"
+    # active == pkg build here, so the launcher resolves it itself (override None).
     override = inv._binary_path_override()
-    assert override is not None
-    assert "firefox-16" in override
+    assert override is None or "firefox-16" in override
+
+
+def test_active_build_caps_at_pkg_binary_version(monkeypatch, tmp_path):
+    # #405: the FF engine auto-updater downloaded firefox-19 (upstream 151.0) but
+    # the bundled invisible_playwright is firefox-18 — a DIFFERENT juggler build
+    # of the same upstream it CANNOT drive → every launch failed. installed_builds
+    # must never surface a build newer than the pkg's BINARY_VERSION, so a
+    # stranded firefox-19 install silently falls back to the drivable firefox-18.
+    _fake_cache(
+        monkeypatch,
+        tmp_path,
+        [("firefox-18", True, False), ("firefox-19", True, True)],
+        binary_version="firefox-18",
+    )
+    assert inv.installed_builds() == ["firefox-18"]
+    assert inv.active_build() == "firefox-18"
+    # never point launches at the undrivable firefox-19
+    override = inv._binary_path_override()
+    assert override is None or "firefox-19" not in override
+
+
+def test_fetch_latest_incompatible_when_build_exceeds_pkg(monkeypatch):
+    # #405: a firefox-NN newer than the bundled pkg carries the SAME upstream
+    # asset (both 151.0) so the old asset-only gate said "compatible" and it got
+    # auto-installed → broke FF. fetch_latest must report it incompatible (needs a
+    # persona update that ships the matching driver), even though the asset matches.
+    import invisible_core.constants as consts
+
+    monkeypatch.setattr(consts, "BINARY_VERSION", "firefox-18")
+    _serve(
+        monkeypatch,
+        [
+            {"tag_name": "firefox-19", "assets": FULL_ASSETS},
+            {"tag_name": "firefox-18", "assets": FULL_ASSETS},
+        ],
+    )
+    tag, compatible = ff.fetch_latest()
+    assert tag == "firefox-19"
+    assert compatible is False
 
 
 def test_active_build_ignores_unmarked_build(monkeypatch, tmp_path):
@@ -331,7 +380,8 @@ def _wire_checksummed_dl(monkeypatch, archive_bytes=b"data"):
 def test_install_engine_build_marks_completion(monkeypatch, tmp_path):
     from invisible_playwright.constants import BINARY_ENTRY_REL
 
-    _fake_cache(monkeypatch, tmp_path, [])
+    # pkg drives firefox-16, so installing it becomes active (not capped out).
+    _fake_cache(monkeypatch, tmp_path, [], binary_version="firefox-16")
     entry_rel = BINARY_ENTRY_REL[sys.platform]
     _wire_checksummed_dl(monkeypatch)
 
@@ -549,14 +599,16 @@ def test_prune_superseded_builds_cleans_stale_pinned_at_startup(monkeypatch, tmp
     # ~600MB pinned firefox-15 behind (the old prune kept it). The startup
     # housekeeping prune reclaims it now that firefox-16 is active — without a
     # fresh download.
+    # pkg drives firefox-16, so both 15 (stale, marked) and 16 (active) are
+    # visible to installed_builds and the older one is reclaimed.
     _fake_cache(
         monkeypatch,
         tmp_path,
         [
-            ("firefox-15", True, False),  # superseded pinned, left stale
+            ("firefox-15", True, True),   # superseded, left stale
             ("firefox-16", True, True),   # active
         ],
-        binary_version="firefox-15",
+        binary_version="firefox-16",
     )
     logs = []
     inv.prune_superseded_builds(log=logs.append)

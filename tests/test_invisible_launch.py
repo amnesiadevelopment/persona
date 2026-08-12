@@ -515,6 +515,37 @@ def test_enter_on_worker_bounded_abandons_wedged_launch_and_retries(
     assert _time.monotonic() - t0 < 10
 
 
+def test_enter_on_worker_surfaces_enter_error(monkeypatch, tmp_path):
+    # #405: when the engine __enter__ RAISES (e.g. a driver/engine version
+    # mismatch), _enter_on_worker must record the reason in err_out['err'] so the
+    # launch reports the real cause instead of a misleading "launch timed out".
+    class Engine:
+        def __init__(self, **kw):
+            pass
+
+        def __enter__(self):
+            raise RuntimeError("juggler handshake failed")
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox",
+        lambda d, known_pids=None, rescan=True: None,
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_wait_profile_released", lambda d, **k: True
+    )
+
+    err = {}
+    session = invisible_launch._enter_on_worker(
+        Engine, {}, str(tmp_path), attempts=1, per_try=5, err_out=err
+    )
+    assert session is None
+    assert "RuntimeError" in err.get("err", "")
+    assert "juggler handshake failed" in err["err"]
+
+
 def test_enter_on_worker_stop_event_aborts_without_retry(monkeypatch, tmp_path):
     # Pressing [stop] during a wedged launch aborts it (kill + settle) and does
     # NOT retry. per_try is large to prove the abort came from STOP, not the
@@ -3886,7 +3917,7 @@ def test_proxied_launch_gets_a_larger_per_attempt_budget(monkeypatch, tmp_path):
     monkeypatch.setattr(invisible_launch, "_kill_profile_firefox", lambda d, pids=None, rescan=True: None)
 
     def fake_enter(InvisiblePlaywright, kwargs, profile_dir, attempts, per_try,
-                   stop_event=None):
+                   stop_event=None, err_out=None):
         captured["per_try"] = per_try
         captured["attempts"] = attempts
         return None  # force LAUNCH_FAILED so _child returns promptly
@@ -3934,7 +3965,7 @@ def test_proxied_launch_enables_firefox_tcp_keepalive(monkeypatch, tmp_path):
     monkeypatch.setattr(invisible_launch, "_kill_profile_firefox", lambda d, pids=None, rescan=True: None)
 
     def fake_enter(InvisiblePlaywright, kwargs, profile_dir, attempts, per_try,
-                   stop_event=None):
+                   stop_event=None, err_out=None):
         captured["extra_prefs"] = dict(kwargs.get("extra_prefs", {}))
         captured["proxy"] = kwargs.get("proxy")
         return None
