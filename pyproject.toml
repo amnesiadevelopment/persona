@@ -32,7 +32,7 @@ dependencies = [
     # the upstream repo can't land in a build unverified. This is the commit the
     # test suite is green against and that pins invisible_core==19.14.0 below; bump
     # both together after re-running the suite.
-    "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git@651a8da7cec716e05e878f8ed66208f600cc676e",
+    "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git@5ed8dd6ba2b2281d76a55bc3152c345945051474",
     # invisible_core is invisible_playwright's own dependency, but flet build does
     # NOT resolve a git package's transitive deps — so it must be declared here or
     # the bundle ships without it and the engine raises ImportError ("invisible-core
