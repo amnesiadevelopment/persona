@@ -142,7 +142,9 @@ jobs:
         # a package would pass here yet ship broken. A true guard would import from
         # inside the built bundle; tracked as a follow-up.
         run: |
-          pip install "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git@e2deaa50594894b236d39ac763d244aa1327e9c5"
+          pin="$(python -c "import re,pathlib; print(re.search(r'invisible_playwright @ git\+[^\"]+', pathlib.Path('pyproject.toml').read_text()).group(0))")"
+          echo "installing engine from pyproject pin: $pin"
+          pip install "$pin"
           pip check
           python -c "import invisible_playwright, invisible_core._pin; print('engine import + _pin OK')"
 
@@ -335,7 +337,9 @@ jobs:
         # platforms and publish green). See the Linux step for the full rationale.
         shell: bash
         run: |
-          pip install "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git@e2deaa50594894b236d39ac763d244aa1327e9c5"
+          pin="$(python -c "import re,pathlib; print(re.search(r'invisible_playwright @ git\+[^\"]+', pathlib.Path('pyproject.toml').read_text()).group(0))")"
+          echo "installing engine from pyproject pin: $pin"
+          pip install "$pin"
           pip check
           python -c "import invisible_playwright, invisible_core._pin; print('engine import + _pin OK')"
 
@@ -753,7 +757,9 @@ jobs:
         # audit6 #3: same engine guard as Linux; macOS had none. See the Linux
         # step for the full rationale.
         run: |
-          pip install "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git@e2deaa50594894b236d39ac763d244aa1327e9c5"
+          pin="$(python -c "import re,pathlib; print(re.search(r'invisible_playwright @ git\+[^\"]+', pathlib.Path('pyproject.toml').read_text()).group(0))")"
+          echo "installing engine from pyproject pin: $pin"
+          pip install "$pin"
           pip check
           python -c "import invisible_playwright, invisible_core._pin; print('engine import + _pin OK')"
 
