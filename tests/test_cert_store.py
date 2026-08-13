@@ -158,3 +158,71 @@ def test_import_p12_copies_into_store_dir(tmp_path, monkeypatch):
     # a different name yields a distinct file so certs never collide
     dest2 = st.import_p12("staging", str(src))
     assert dest2 != dest
+
+
+def test_import_p12_names_that_sanitize_alike_do_not_collide(tmp_path, monkeypatch):
+    # audit8 #5: "acme admin", "acme.admin", "acme_admin" all sanitized to the
+    # SAME filename and shutil.copyfile had no existence check → the 2nd import
+    # silently clobbered the 1st cert's .p12 on disk, so the 1st cert loaded the
+    # WRONG key. Distinct imports MUST get distinct files regardless of name.
+    monkeypatch.setenv("PERSONA_CERTS_FILE", str(tmp_path / "certs.json"))
+    monkeypatch.setenv("PERSONA_CERTS_DIR", str(tmp_path / "vault"))
+    src1 = tmp_path / "a.p12"
+    src1.write_bytes(b"KEY-ONE")
+    src2 = tmp_path / "b.p12"
+    src2.write_bytes(b"KEY-TWO")
+
+    st = CertStore()
+    d1 = st.import_p12("acme admin", str(src1))
+    d2 = st.import_p12("acme.admin", str(src2))
+    assert d1 != d2, "names that sanitize alike must not share a stored file"
+    # neither bundle was overwritten — each keeps its own key material
+    assert open(d1, "rb").read() == b"KEY-ONE"
+    assert open(d2, "rb").read() == b"KEY-TWO"
+
+
+def test_remove_deletes_the_stored_p12(tmp_path, monkeypatch):
+    # removing a certificate must delete its .p12 from disk (it holds private key
+    # material); leaving it orphaned leaks the key bundle inside PERSONA_HOME.
+    monkeypatch.setenv("PERSONA_CERTS_FILE", str(tmp_path / "certs.json"))
+    monkeypatch.setenv("PERSONA_CERTS_DIR", str(tmp_path / "vault"))
+    src = tmp_path / "a.p12"
+    src.write_bytes(b"KEY")
+    st = CertStore()
+    dest = st.import_p12("admin", str(src))
+    st.add(Certificate(name="admin", p12_path=dest))
+    assert os.path.isfile(dest)
+    assert st.remove("admin")
+    assert not os.path.exists(dest), "remove must delete the stored .p12"
+
+
+def test_remove_never_deletes_a_file_outside_the_store(tmp_path, monkeypatch):
+    # a legacy cert whose p12_path points at the user's own file (outside the
+    # store dir) must NOT be deleted on remove — only store-owned copies are ours.
+    monkeypatch.setenv("PERSONA_CERTS_FILE", str(tmp_path / "certs.json"))
+    monkeypatch.setenv("PERSONA_CERTS_DIR", str(tmp_path / "vault"))
+    external = tmp_path / "downloads" / "mine.p12"
+    external.parent.mkdir()
+    external.write_bytes(b"USER-FILE")
+    st = CertStore()
+    st.add(Certificate(name="legacy", p12_path=str(external)))
+    assert st.remove("legacy")
+    assert external.exists(), "a user's own file outside the store is never deleted"
+
+
+def test_update_deletes_orphaned_old_p12(tmp_path, monkeypatch):
+    # re-importing a new bundle for an existing cert leaves the old store-owned
+    # .p12 orphaned; update must delete it so stale key material doesn't linger.
+    monkeypatch.setenv("PERSONA_CERTS_FILE", str(tmp_path / "certs.json"))
+    monkeypatch.setenv("PERSONA_CERTS_DIR", str(tmp_path / "vault"))
+    src1 = tmp_path / "a.p12"
+    src1.write_bytes(b"OLD")
+    src2 = tmp_path / "b.p12"
+    src2.write_bytes(b"NEW")
+    st = CertStore()
+    old = st.import_p12("admin", str(src1))
+    st.add(Certificate(name="admin", p12_path=old))
+    new = st.import_p12("admin", str(src2))
+    assert st.update("admin", Certificate(name="admin", p12_path=new))
+    assert not os.path.exists(old), "the superseded .p12 must be removed"
+    assert os.path.isfile(new)

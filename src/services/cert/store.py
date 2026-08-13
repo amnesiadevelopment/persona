@@ -15,6 +15,7 @@ import pathlib
 import shutil
 import threading
 import time
+import uuid
 from dataclasses import asdict, dataclass
 
 from ...core.logging import get_logger
@@ -153,29 +154,51 @@ class CertStore:
                 return False
             if cert.name != name and cert.name in self.certs:
                 return False
+            old_path = self.certs[name].p12_path
             del self.certs[name]
             self.certs[cert.name] = cert
             self._save()
+            # A re-import points the record at a new store-owned .p12; delete the
+            # superseded one so stale private-key material doesn't linger.
+            if old_path != cert.p12_path:
+                self._delete_owned_p12(old_path)
         return True
 
     def remove(self, name: str) -> bool:
         with self._lock:
             if name not in self.certs:
                 return False
+            path = self.certs[name].p12_path
             del self.certs[name]
             self._save()
+            # The .p12 holds private-key material; delete our own copy so a
+            # removed certificate doesn't leave its key bundle inside PERSONA_HOME.
+            self._delete_owned_p12(path)
         return True
+
+    def _delete_owned_p12(self, path: str) -> None:
+        """Delete a .p12 ONLY if it lives inside persona's own store dir. A
+        legacy record may point at the user's original file outside the store —
+        that is never ours to delete."""
+        if not path:
+            return
+        certs_dir = os.path.abspath(_certs_dir())
+        try:
+            if os.path.abspath(path).startswith(certs_dir + os.sep):
+                os.remove(path)
+        except OSError:
+            logger.exception("Could not delete stored certificate file %s", path)
 
     def import_p12(self, name: str, source_path: str) -> str:
         """Copy a picked .p12/.pfx into persona's certificate store and return
         the stored path. The certificate lives inside persona; the user's
-        original file is left untouched. The stored filename is derived from the
-        certificate name so distinct certificates never collide."""
+        original file is left untouched. The stored filename is a fresh UUID, so
+        two certificates whose names sanitize alike ("acme admin" vs
+        "acme.admin") can never share a file and clobber each other's key."""
         with self._lock:
             certs_dir = _certs_dir()
             os.makedirs(certs_dir, exist_ok=True)
             ext = os.path.splitext(source_path)[1] or ".p12"
-            safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in name)
-            dest = os.path.join(certs_dir, f"{safe}{ext}")
+            dest = os.path.join(certs_dir, f"{uuid.uuid4().hex}{ext}")
             shutil.copyfile(source_path, dest)
         return dest

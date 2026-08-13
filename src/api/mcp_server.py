@@ -281,12 +281,20 @@ def build_mcp(container: Container) -> FastMCP:
     # --- SSH / SFTP / tmux tools (route through the host's profile proxy) ---
 
     def _ssh_target(host_name: str):
+        from ..services.proxy.errors import ProxyUnresolvedError
         from ..services.ssh.resolver import target_for
 
         host = container.ssh_host_store.get(host_name)
         if host is None:
             raise ValueError(f"SSH host {host_name!r} not found")
-        return target_for(host, container.profile_manager, container.proxy_store)
+        try:
+            return target_for(
+                host, container.profile_manager, container.proxy_store
+            )
+        except ProxyUnresolvedError as e:
+            # Fail closed: never connect DIRECT from the real IP. Surface as a
+            # tool error to the client instead of routing around the proxy.
+            raise ValueError(str(e)) from e
 
     @mcp.tool()
     def list_ssh_hosts() -> list[dict]:

@@ -3501,11 +3501,21 @@ def test_child_first_launch_swallows_cmdline_url_and_opens_start_page(
         def goto(self, url, **kwargs):
             gotos.append((url, kwargs))
 
+        def evaluate(self, _expr):
+            # A usable page (with a browsingContext) answers a trivial eval; the
+            # start-page nav must pick THIS existing tab, not open a new one.
+            return 0
+
     class FakeCtx:
         pages = [FakePage()]
 
         def add_init_script(self, *_a, **_k):
             pass
+
+        def new_page(self):
+            raise AssertionError(
+                "must reuse the usable existing tab, not open a new page"
+            )
 
     class FakeEngine:
         def __init__(self, **kwargs):
@@ -3553,6 +3563,102 @@ def test_child_first_launch_swallows_cmdline_url_and_opens_start_page(
     url, kwargs = gotos[0]
     assert "duckduckgo.com" in url
     assert kwargs.get("wait_until") == "commit"  # don't block on a full load
+
+
+def test_child_first_launch_start_page_skips_contextless_default_tab(
+    monkeypatch, tmp_path
+):
+    # fx-19 regression (live-proven): the default ctx.pages[0] can come up with
+    # NO browsingContext — page.goto/evaluate raise "browsingContext is
+    # undefined" and the launch reports LAUNCH_FAILED: TargetClosedError. A
+    # fresh ctx.new_page() works fully. The start-page nav must skip the dead
+    # default tab and navigate a usable page instead.
+    import os
+    import sys
+    import threading
+    import types
+
+    from src.services.browser import invisible_launch
+
+    captured: dict = {}
+    gotos: list = []
+
+    class DeadDefaultPage:
+        def evaluate(self, _expr):
+            raise Exception(
+                "Protocol error (Page.navigate): can't access property "
+                "'loadURI', browsingContext is undefined"
+            )
+
+        def goto(self, url, **kwargs):
+            raise AssertionError("the dead default tab must never be navigated")
+
+    class LivePage:
+        def evaluate(self, _expr):
+            return 0
+
+        def goto(self, url, **kwargs):
+            gotos.append((url, kwargs))
+
+    live = LivePage()
+
+    class FakeCtx:
+        pages = [DeadDefaultPage()]
+
+        def add_init_script(self, *_a, **_k):
+            pass
+
+        def new_page(self):
+            # opening a fresh page adds a usable one; the nav must land here
+            self.pages = self.pages + [live]
+            return live
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def _default_context_kwargs(self):
+            return {}
+
+        def __enter__(self):
+            return FakeCtx()
+
+        def __exit__(self, *a):
+            return False
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(
+        invisible_launch, "_thread_close_watch", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        invisible_launch,
+        "_kill_profile_firefox",
+        lambda d, pids=None, rescan=True: None,
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_raise_profile_window", lambda *a, **k: None
+    )
+
+    stop = threading.Event()
+    stop.set()
+    r, w = os.pipe()
+    invisible_launch._child(
+        {
+            "profile_dir": str(tmp_path),
+            "profile_name": "t",
+            "seed": 1,
+            "search_engine": "duckduckgo",
+        },
+        w,
+        stop_event=stop,
+    )
+    os.close(r)
+
+    # the start page was navigated on the fresh usable page, not the dead one
+    assert len(gotos) == 1
+    assert "duckduckgo.com" in gotos[0][0]
 
 
 def test_child_restore_launch_leaves_restored_tabs_alone(monkeypatch, tmp_path):
@@ -4736,3 +4842,72 @@ def test_profile_pids_anchored_no_prefix_sibling_crosskill(monkeypatch):
     # and "work2" resolves only its own
     got2 = invisible_launch._profile_firefox_pids(r"C:\data\work2")
     assert got2 == {200}, got2
+
+
+def _write_compat(prof, engine_dir):
+    (prof / "compatibility.ini").write_text(
+        "[Compatibility]\n"
+        "LastVersion=151.0_x/x\n"
+        f"LastPlatformDir={engine_dir}\n"
+        f"LastAppDir={engine_dir}/browser\n"
+    )
+
+
+def test_reset_prefs_on_engine_build_change_drops_prefs(tmp_path):
+    # A profile last opened by an older stealth build carries a prefs.js the newer
+    # build SIGSEGVs on (live-proven fx-18 -> fx-19). Firefox's own
+    # compatibility.ini names the build that last ran the profile; when it differs
+    # from the build about to launch, the derived prefs.js must be removed.
+    from src.services.browser.invisible_launch import (
+        _reset_prefs_on_engine_build_change,
+    )
+
+    prof = tmp_path
+    (prof / "prefs.js").write_text('user_pref("x", 1);\n')
+    _write_compat(prof, "/cache/firefox-18")
+    (prof / "cookies.sqlite").write_bytes(b"USER-COOKIES")  # user data stays
+
+    reset = _reset_prefs_on_engine_build_change(str(prof), "/cache/firefox-19")
+    assert reset is True
+    assert not (prof / "prefs.js").exists(), "stale prefs.js must be removed"
+    # user data is never touched
+    assert (prof / "cookies.sqlite").read_bytes() == b"USER-COOKIES"
+
+
+def test_reset_prefs_noop_when_build_unchanged(tmp_path):
+    from src.services.browser.invisible_launch import (
+        _reset_prefs_on_engine_build_change,
+    )
+
+    prof = tmp_path
+    (prof / "prefs.js").write_text('user_pref("x", 1);\n')
+    _write_compat(prof, "/cache/firefox-19")
+    reset = _reset_prefs_on_engine_build_change(str(prof), "/cache/firefox-19")
+    assert reset is False
+    assert (prof / "prefs.js").exists(), "same build must keep prefs.js"
+
+
+def test_reset_prefs_noop_when_never_opened(tmp_path):
+    # A profile Firefox has never run (no compatibility.ini) has only persona's
+    # freshly-seeded prefs.js, which is safe: the guard must NOT delete it, or a
+    # brand-new profile loses the prefs persona just wrote (e.g. devPixelsPerPx).
+    from src.services.browser.invisible_launch import (
+        _reset_prefs_on_engine_build_change,
+    )
+
+    prof = tmp_path
+    (prof / "prefs.js").write_text('user_pref("x", 1);\n')
+    reset = _reset_prefs_on_engine_build_change(str(prof), "/cache/firefox-19")
+    assert reset is False
+    assert (prof / "prefs.js").exists(), "a never-opened profile keeps its prefs.js"
+
+
+def test_reset_prefs_noop_when_build_changed_but_no_prefs(tmp_path):
+    from src.services.browser.invisible_launch import (
+        _reset_prefs_on_engine_build_change,
+    )
+
+    prof = tmp_path
+    _write_compat(prof, "/cache/firefox-18")
+    reset = _reset_prefs_on_engine_build_change(str(prof), "/cache/firefox-19")
+    assert reset is False  # nothing to remove

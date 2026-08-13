@@ -5,6 +5,16 @@ not a git log. When cutting a release, add the new version's highlights here.
 """
 
 CHANGELOG: dict[str, list[str]] = {
+    "2.9.16": [
+        "Firefox profiles open reliably after an engine update — a profile last "
+        "used by the previous engine build no longer crashes on launch; its saved "
+        "cookies, logins and bookmarks are kept.",
+        "SSH, SFTP and tmux now refuse to connect when a host's proxy can't be "
+        "resolved, instead of quietly connecting directly and exposing your real "
+        "IP and login.",
+        "Importing two client certificates whose names look alike no longer "
+        "overwrites one another's key file.",
+    ],
     "2.9.15": [
         "Firefox profiles launch reliably again after an engine update — the "
         "browser engine and its driver now always update together, so a new "

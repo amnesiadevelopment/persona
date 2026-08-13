@@ -1727,6 +1727,58 @@ def _scrub_prefs_js(profile_dir: str, keys) -> None:
         pass
 
 
+def _profile_last_engine_dir(profile_dir: str) -> str:
+    """The engine directory Firefox last ran this profile from, read from the
+    profile's own compatibility.ini (LastPlatformDir). Empty when Firefox has
+    never opened the profile yet (no compatibility.ini). This is Firefox's own
+    record of which build last touched the profile — an exact, native signal."""
+    path = os.path.join(profile_dir, "compatibility.ini")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if line.startswith("LastPlatformDir="):
+                    return line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return ""
+
+
+def _reset_prefs_on_engine_build_change(profile_dir: str, engine_dir: str) -> bool:
+    """Drop the profile's Firefox-written prefs.js when the engine BUILD changed.
+
+    A profile's prefs.js is written by the Firefox build that last ran it. The
+    stealth engine's prefs.js is NOT forward-compatible across builds: a profile
+    seeded on firefox-18 makes firefox-19 SIGSEGV on startup (live-proven — the
+    launch dies as TargetClosedError before the window paints). Firefox
+    regenerates prefs.js from its defaults + the profile's user.js on the next
+    start, and every piece of USER data (cookies, logins, history, bookmarks,
+    cert9/key4) lives in the sqlite/db files, which are untouched — so removing
+    the derived prefs.js is a safe, lossless migration.
+
+    The check uses Firefox's OWN compatibility.ini (LastPlatformDir): it exists
+    only after Firefox has run the profile, and names the build it ran from. When
+    that differs from the build about to launch, prefs.js is stale — remove it.
+    A profile Firefox has never opened (no compatibility.ini) has only persona's
+    freshly-seeded prefs.js, which is safe, so this is a no-op there.
+    Returns True when prefs.js was removed."""
+    if not profile_dir or not engine_dir:
+        return False
+    last_dir = _profile_last_engine_dir(profile_dir)
+    if not last_dir:
+        return False  # Firefox never opened this profile — nothing stale yet
+    if os.path.normpath(last_dir) == os.path.normpath(engine_dir):
+        return False  # same build as last time
+    prefs = os.path.join(profile_dir, "prefs.js")
+    if not os.path.exists(prefs):
+        return False
+    try:
+        os.remove(prefs)
+        return True
+    except OSError:
+        logger.exception("Could not reset prefs.js on engine build change")
+        return False
+
+
 def _engine_lib_dir():
     """Directory of the active engine's NSS shared libraries (the Firefox
     executable's parent). certutil links against them, so the loader is pointed
@@ -2547,6 +2599,24 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
         except OSError:
             pass
 
+    # The engine build may have moved since this profile last opened (auto-update
+    # or a persona release that bumps the pinned build). The stealth engine's
+    # prefs.js is not forward-compatible: a firefox-18-seeded profile SIGSEGVs
+    # firefox-19 on startup. Drop the stale prefs.js (Firefox regenerates it; all
+    # user data is in the sqlite/db files) before any seeding writes to it. The
+    # engine dir is the profile's LastPlatformDir — see the compatibility.ini check.
+    _engine_dir = ""
+    try:
+        from invisible_playwright.download import cache_dir_for_version
+
+        _build = active_build()
+        if _build:
+            _engine_dir = str(cache_dir_for_version(_build))
+    except Exception:
+        _engine_dir = ""
+    if _engine_dir and _reset_prefs_on_engine_build_change(profile_dir, _engine_dir):
+        emit("ENGINE_BUILD_CHANGED: reset prefs for the new Firefox build")
+
     # Deterministic per-profile seed so the same profile keeps a stable
     # fingerprint across launches AND app restarts.
     seed = _resolve_seed(cfg)
@@ -2862,13 +2932,32 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     # The window is on screen the moment __enter__ returns, so report ready now.
     emit("BROWSER_STARTED")
 
+    # firefox-19's restored/cmdline first tab can come up WITHOUT a
+    # browsingContext: driving it raises "can't access property 'loadURI',
+    # browsingContext is undefined" (live-proven on the fx-19 build — the
+    # default ctx.pages[0] is unusable while a fresh ctx.new_page() works
+    # fully). _live_page returns the first tab that actually has a context,
+    # opening one if the existing tabs are all context-less, so navigation and
+    # eval never hit the dead default tab.
+    def _live_page():
+        pages = list(ctx.pages)
+        for pg in pages:
+            try:
+                # A page with a browsingContext answers a trivial eval; the dead
+                # default tab raises here without navigating anything.
+                pg.evaluate("0")
+                return pg
+            except Exception:
+                continue
+        return ctx.new_page()
+
     # Publish an eval hook so the MCP browser tools can drive this FF session
     # (FF has no CDP). Runs JS on the live page through on_ctx, which marshals
     # onto the worker that owns the thread-affine ctx. Bounded so a wedged page
     # can't hang the MCP request forever.
     def _ff_eval(expr: str):
         def _do():
-            page = ctx.pages[0] if ctx.pages else None
+            page = _live_page()
             if page is None:
                 return None
             return page.evaluate(expr)
@@ -2876,7 +2965,7 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
 
     def _ff_goto(url: str):
         def _do():
-            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            page = _live_page()
             page.goto(url, wait_until="commit", timeout=30000)
             return {"url": page.url}
         return on_ctx(_do)
@@ -2910,9 +2999,9 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
         _start = kwargs["extra_prefs"].get("browser.startup.homepage")
         if _start:
             def _open_start_page():
-                pages = ctx.pages
-                if pages:
-                    pages[0].goto(_start, wait_until="commit", timeout=15000)
+                # _live_page skips a context-less fx-19 default tab (which would
+                # raise browsingContext-undefined) and navigates a usable one.
+                _live_page().goto(_start, wait_until="commit", timeout=15000)
             on_ctx(_open_start_page)
 
     # Set by stop_gracefully when a STOP tears the browser down; the

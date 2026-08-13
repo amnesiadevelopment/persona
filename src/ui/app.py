@@ -622,10 +622,16 @@ class App:
         from ..services.ssh import client as ssh
         from ..services.ssh.resolver import target_for
 
+        from ..services.proxy.errors import ProxyUnresolvedError
+
         host = self.ssh_store.get(host_name)
         if host is None:
             return 1, "", f"host {host_name!r} not found"
-        target = target_for(host, self.pm, self.pstore)
+        try:
+            target = target_for(host, self.pm, self.pstore)
+        except ProxyUnresolvedError as e:
+            # Fail closed: refuse to connect DIRECT from the real IP.
+            return 1, "", str(e)
         return ssh.run_command(target, command)
 
     def _open_ssh_host_dialog(self, name: str | None = None) -> None:

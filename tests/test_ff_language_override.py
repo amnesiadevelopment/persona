@@ -64,6 +64,22 @@ def test_override_script_pins_number_currency_locale():
     assert js.count("(") == js.count(")")
 
 
+def test_override_script_carries_locale_into_workers():
+    # add_init_script only runs in the page; Web Workers get a fresh Intl at the
+    # host locale, so creepjs reads currency/list from a blob worker as en-US
+    # under pl-PL. The script must wrap Worker/SharedWorker to carry a locale
+    # patch into blob:/data: (via re-blob) and http(s) (via importScripts) workers.
+    js = il._language_override_script("pl-PL")
+    assert "self.Worker" in js
+    assert "SharedWorker" in js
+    assert "importScripts" in js
+    assert "blob:|^data:" in js
+    assert "XMLHttpRequest" in js
+    # balanced after the added worker block
+    assert js.count("{") == js.count("}")
+    assert js.count("(") == js.count(")")
+
+
 def test_override_script_defines_both_getters():
     js = il._language_override_script("fr-FR")
     # defines both navigator getters via the shared def() helper

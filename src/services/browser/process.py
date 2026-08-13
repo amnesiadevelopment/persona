@@ -12,6 +12,7 @@ from ...utils.proxy_parser import parse_proxy_server
 from ..bookmark.store import BookmarkStore
 from ..cert.store import CertStore
 from ..proxy.bridge import ProxyBridge
+from ..proxy.errors import ProxyUnresolvedError
 from ..proxy.store import ProxyStore
 from .bookmarks_seed import seed_bookmarks
 from .audio_ext import build_audio_extension
@@ -80,11 +81,6 @@ def _proxy_arg(proxy_url: str | None) -> tuple[str | None, ProxyBridge | None]:
         logger.info("Proxy bridge started on 127.0.0.1:%s", port)
         return f"socks5://127.0.0.1:{port}", bridge
     return parse_proxy_server(proxy_url), None
-
-
-class ProxyUnresolvedError(RuntimeError):
-    """A profile has a proxy ASSIGNED but it could not be resolved to a usable
-    URL (deleted/renamed proxy, or a stored value that lost its scheme/port)."""
 
 
 def _require_proxy_resolved(profile: Profile, proxy_url: str | None) -> None:
