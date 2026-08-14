@@ -5,6 +5,10 @@ not a git log. When cutting a release, add the new version's highlights here.
 """
 
 CHANGELOG: dict[str, list[str]] = {
+    "2.9.17": [
+        "Firefox profiles keep their dark theme after an engine update, and no "
+        "longer needlessly reset their settings on every launch.",
+    ],
     "2.9.16": [
         "Firefox profiles open reliably after an engine update — a profile last "
         "used by the previous engine build no longer crashes on launch; its saved "

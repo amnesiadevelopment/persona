@@ -21,6 +21,10 @@
 </p>
 
 <p align="center">
+  <a href="https://amnesiadevelopment.github.io/persona/"><b>🌐 Website</b></a>
+</p>
+
+<p align="center">
   <img src="docs/screenshot.png" width="820" alt="persona main window" />
 </p>
 

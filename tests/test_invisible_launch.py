@@ -4887,6 +4887,27 @@ def test_reset_prefs_noop_when_build_unchanged(tmp_path):
     assert (prof / "prefs.js").exists(), "same build must keep prefs.js"
 
 
+def test_reset_prefs_noop_when_only_dir_naming_differs(tmp_path):
+    # compatibility.ini's LastPlatformDir is the SHORT build dir (…/firefox-19)
+    # while cache_dir_for_version returns the FULL name
+    # (…/firefox-19_151.0_2026…). Same firefox-19 build — the guard must NOT
+    # reset prefs.js every launch just because the path strings differ (that
+    # bug reset prefs.js on EVERY launch and lost the dark theme repeatedly).
+    from src.services.browser.invisible_launch import (
+        _reset_prefs_on_engine_build_change,
+    )
+
+    prof = tmp_path
+    (prof / "prefs.js").write_text('user_pref("x", 1);\n')
+    _write_compat(prof, "/home/user/.cache/invisible-playwright/firefox-19")
+    reset = _reset_prefs_on_engine_build_change(
+        str(prof),
+        "/home/user/.cache/invisible-playwright/firefox-19_151.0_20260811005825",
+    )
+    assert reset is False
+    assert (prof / "prefs.js").exists(), "same build, different dir name = keep"
+
+
 def test_reset_prefs_noop_when_never_opened(tmp_path):
     # A profile Firefox has never run (no compatibility.ini) has only persona's
     # freshly-seeded prefs.js, which is safe: the guard must NOT delete it, or a

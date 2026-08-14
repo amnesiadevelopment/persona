@@ -10,6 +10,7 @@ import json
 import multiprocessing as mp
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -1743,6 +1744,16 @@ def _profile_last_engine_dir(profile_dir: str) -> str:
     return ""
 
 
+def _firefox_build_of(path: str) -> str:
+    """The firefox-NN build token in an engine dir path. compatibility.ini's
+    LastPlatformDir names the SHORT build dir (…/firefox-19), while
+    cache_dir_for_version returns the FULL name (…/firefox-19_151.0_2026…); both
+    carry the same firefox-NN, so compare on that, not the raw path."""
+    base = os.path.basename(os.path.normpath(path)) if path else ""
+    m = re.match(r"(firefox-\d+)", base)
+    return m.group(1) if m else base
+
+
 def _reset_prefs_on_engine_build_change(profile_dir: str, engine_dir: str) -> bool:
     """Drop the profile's Firefox-written prefs.js when the engine BUILD changed.
 
@@ -1766,8 +1777,8 @@ def _reset_prefs_on_engine_build_change(profile_dir: str, engine_dir: str) -> bo
     last_dir = _profile_last_engine_dir(profile_dir)
     if not last_dir:
         return False  # Firefox never opened this profile — nothing stale yet
-    if os.path.normpath(last_dir) == os.path.normpath(engine_dir):
-        return False  # same build as last time
+    if _firefox_build_of(last_dir) == _firefox_build_of(engine_dir):
+        return False  # same firefox-NN build as last time
     prefs = os.path.join(profile_dir, "prefs.js")
     if not os.path.exists(prefs):
         return False
@@ -2616,6 +2627,17 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
         _engine_dir = ""
     if _engine_dir and _reset_prefs_on_engine_build_change(profile_dir, _engine_dir):
         emit("ENGINE_BUILD_CHANGED: reset prefs for the new Firefox build")
+        # Resetting prefs.js drops the dark-theme + bookmarks-toolbar chrome prefs
+        # that a first-launch warmup would have baked in. On a profile that
+        # already has its bookmarks seeded the warmup is skipped, so the first
+        # visible launch after a reset opened LIGHT (live-proven on the boevaya
+        # Linux). Re-write the warmup chrome prefs and re-activate the dark theme
+        # (which also invalidates the addon startup cache) so the chrome comes
+        # back dark. (Firefox rebuilds its toolbar-theme startup cache lazily, so
+        # the tab strip goes dark immediately and the toolbar follows on the next
+        # launch — the same first-launch behaviour a brand-new profile has; #242.)
+        _upsert_prefs_js(profile_dir, _WARMUP_CHROME_PREFS)
+        _activate_dark_theme(profile_dir)
 
     # Deterministic per-profile seed so the same profile keeps a stable
     # fingerprint across launches AND app restarts.
