@@ -3,13 +3,13 @@ import os
 import pathlib
 import shutil
 import threading
-import time
 from collections.abc import Callable
 
 from ...core.config import DATA_DIR, PROFILES_FILE
 from ...core.logging import get_logger
 from ...models.profile import Profile
 from ...utils.atomic import atomic_write_json
+from ...utils.store_guard import StoreGuardMixin
 from ...utils.validation import validate_profile_name
 from .transfer import export_to_zip, import_from_zip, peek_profile_name
 
@@ -20,7 +20,11 @@ class InvalidProfileName(ValueError):
     """A profile name that fails validation or would escape the data dir."""
 
 
-class ProfileManager:
+class ProfileManager(StoreGuardMixin):
+    _guard_logger = logger
+    _guard_noun_plural = "profiles"
+    _guard_noun_singular = "profile"
+
     def __init__(self) -> None:
         self.profiles: dict[str, Profile] = {}
         self._save_blocked = False
@@ -116,28 +120,20 @@ class ProfileManager:
                 logger.exception("Error loading profiles: %s", e)
                 self._quarantine_profiles_file()
 
+    def _store_path(self) -> str:
+        # Read the module global on every call: the profile specs monkeypatch
+        # manager.PROFILES_FILE, so a value bound at import time elsewhere
+        # would bypass the patch and touch the real ~/.persona/profiles.json.
+        return PROFILES_FILE
+
     def _quarantine_profiles_file(self) -> None:
         # An unreadable profiles.json still holds every profile the user has;
         # move it aside so the next save_profiles() can't overwrite it with
         # the empty in-memory dict.
-        backup = f"{PROFILES_FILE}.corrupt-{int(time.time())}"
-        try:
-            pathlib.Path(PROFILES_FILE).rename(backup)
-            logger.warning("Moved unreadable profiles file to %s", backup)
-        except OSError:
-            self._save_blocked = True
-            logger.exception(
-                "Could not back up %s; profile saving disabled to avoid "
-                "overwriting it",
-                PROFILES_FILE,
-            )
+        self._quarantine_store_file()
 
     def save_profiles(self) -> None:
-        if self._save_blocked:
-            logger.error(
-                "Not saving: profiles file failed to load and could not be "
-                "backed up"
-            )
+        if self._save_is_blocked():
             return
         try:
             with self._lock:

@@ -9,11 +9,16 @@ from ...core.logging import get_logger
 from ...models.proxy import Proxy
 from ...utils.atomic import atomic_write_json
 from ...utils.proxy_parser import parse_proxy_server
+from ...utils.store_guard import StoreGuardMixin
 
 logger = get_logger("proxy.store")
 
 
-class ProxyStore:
+class ProxyStore(StoreGuardMixin):
+    _guard_logger = logger
+    _guard_noun_plural = "proxies"
+    _guard_noun_singular = "proxy"
+
     def __init__(
         self,
         path: str = PROXIES_FILE,
@@ -65,28 +70,17 @@ class ProxyStore:
             logger.exception("Error loading proxies: %s", e)
             self._quarantine_proxies_file()
 
+    def _store_path(self) -> str:
+        return self._path
+
     def _quarantine_proxies_file(self) -> None:
         # An unreadable proxies.json still holds every proxy the user saved with
         # its SOCKS5 creds; move it aside so the next _save() can't overwrite it
         # with the empty in-memory dict.
-        backup = f"{self._path}.corrupt-{int(self._now())}"
-        try:
-            pathlib.Path(self._path).rename(backup)
-            logger.warning("Moved unreadable proxies file to %s", backup)
-        except OSError:
-            self._save_blocked = True
-            logger.exception(
-                "Could not back up %s; proxy saving disabled to avoid "
-                "overwriting it",
-                self._path,
-            )
+        self._quarantine_store_file()
 
     def _save(self) -> None:
-        if self._save_blocked:
-            logger.error(
-                "Not saving: proxies file failed to load and could not be "
-                "backed up"
-            )
+        if self._save_is_blocked():
             return
         try:
             # Proxy URLs carry SOCKS5 user:pass, so the file is written 0600 and
