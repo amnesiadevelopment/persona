@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import src.services.browser.engine_install as eng
 import src.services.browser.invisible_launch as inv
 from src.services.engine import firefox as ff
 
@@ -373,7 +374,7 @@ def _wire_checksummed_dl(monkeypatch, archive_bytes=b"data"):
             Path(path).write_bytes(archive_bytes)
         return True
 
-    monkeypatch.setattr(inv, "_resumable_download", fake_dl)
+    monkeypatch.setattr(eng, "_resumable_download", fake_dl)
     return asset
 
 
@@ -390,7 +391,7 @@ def test_install_engine_build_marks_completion(monkeypatch, tmp_path):
         p.parent.mkdir(parents=True, exist_ok=True)
         p.touch()
 
-    monkeypatch.setattr(inv, "_extract_as", fake_extract)
+    monkeypatch.setattr(eng, "_extract_as", fake_extract)
 
     assert inv.install_engine_build("firefox-16") is True
     assert (tmp_path / "firefox-16" / inv._INSTALL_MARKER).exists()
@@ -404,7 +405,7 @@ def test_install_engine_build_no_marker_when_extract_incomplete(
     _wire_checksummed_dl(monkeypatch)
     # extraction produced no binary (bad archive) → not installed, no marker,
     # the previous build stays active
-    monkeypatch.setattr(inv, "_extract_as", lambda a, d, n: None)
+    monkeypatch.setattr(eng, "_extract_as", lambda a, d, n: None)
 
     assert inv.install_engine_build("firefox-16") is False
     assert not (tmp_path / "firefox-16" / inv._INSTALL_MARKER).exists()
@@ -432,8 +433,8 @@ def test_install_engine_build_refuses_when_checksum_missing(monkeypatch, tmp_pat
         p.parent.mkdir(parents=True, exist_ok=True)
         p.touch()
 
-    monkeypatch.setattr(inv, "_resumable_download", fake_dl)
-    monkeypatch.setattr(inv, "_extract_as", fake_extract)
+    monkeypatch.setattr(eng, "_resumable_download", fake_dl)
+    monkeypatch.setattr(eng, "_extract_as", fake_extract)
 
     assert inv.install_engine_build("firefox-16") is False
     assert not (tmp_path / "firefox-16" / inv._INSTALL_MARKER).exists()
@@ -465,14 +466,14 @@ def test_install_engine_build_refuses_on_checksum_mismatch(monkeypatch, tmp_path
             Path(path).write_bytes(b"tampered")
         return True
 
-    monkeypatch.setattr(inv, "_resumable_download", fake_dl_tampered)
+    monkeypatch.setattr(eng, "_resumable_download", fake_dl_tampered)
 
     def fake_extract(archive, dst, asset):
         p = Path(dst) / Path(entry_rel)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.touch()
 
-    monkeypatch.setattr(inv, "_extract_as", fake_extract)
+    monkeypatch.setattr(eng, "_extract_as", fake_extract)
 
     assert inv.install_engine_build("firefox-16") is False
     assert not (tmp_path / "firefox-16" / inv._INSTALL_MARKER).exists()
