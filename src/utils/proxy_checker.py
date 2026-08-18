@@ -14,19 +14,53 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
 
 from .proxy_parser import parse_proxy
+from .validation import PROXY_SCHEMES
 
-# Schemes that speak SOCKS, not HTTP CONNECT. aiohttp's `proxy=` parameter
-# implements HTTP(S) proxies ONLY and does not validate the scheme: handed a
-# socks5:// URL it sends an HTTP `CONNECT`, which a SOCKS server (waiting for a
-# \x05 greeting) never answers. socks5 is persona's default scheme, so the geo
-# check failed permanently for the app's primary proxy type — and a proxy with
-# no country/timezone makes the launcher fall back to the operator's REAL host
-# timezone inside a proxied profile. These schemes take the SOCKS path below.
-_SOCKS_SCHEMES = frozenset({"socks4", "socks4a", "socks5", "socks5h"})
+# Exception classes for the except arms in check_proxy. They must NOT name
+# `aiohttp` directly: the SOCKS path is stdlib-only and runs with aiohttp
+# absent, and Python evaluates an except expression while another exception is
+# in flight — an unbound `aiohttp` there would raise NameError and lose the
+# real error. An empty tuple simply never matches.
+if AIOHTTP_AVAILABLE:
+    _PROXY_CONNECT_ERRORS: tuple[type[BaseException], ...] = (
+        aiohttp.ClientProxyConnectionError,
+    )
+    _CLIENT_ERRORS: tuple[type[BaseException], ...] = (aiohttp.ClientError,)
+else:
+    _PROXY_CONNECT_ERRORS = ()
+    _CLIENT_ERRORS = ()
+
+#: The socks schemes the validator accepts, derived from ITS tuple rather than
+#: retyped here — see PROXY_SCHEMES. Used for documentation and by the tests;
+#: the runtime decision is _is_socks_scheme(), which is deliberately broader.
+SOCKS_SCHEMES = frozenset(s for s in PROXY_SCHEMES if s.startswith("socks"))
 
 # Hard cap on the geo response we will buffer. The body is attacker-influenced
 # (hostile endpoint or a MITM on the exit), so an unbounded read is a memory DoS.
 _MAX_GEO_BODY = 256 * 1024
+
+
+def _is_socks_scheme(scheme: str) -> bool:
+    """True for every scheme that must take a real SOCKS handshake.
+
+    aiohttp's `proxy=` parameter implements HTTP(S) proxies ONLY and does not
+    validate the scheme: handed a socks5:// URL it sends an HTTP `CONNECT`,
+    which a SOCKS server (waiting for a \\x05 greeting) never answers. socks5 is
+    persona's default scheme, so the geo check failed permanently for the app's
+    primary proxy type — and a proxy left with no country/timezone makes the
+    launcher fall back to the operator's REAL host timezone inside a proxied
+    profile (services/browser/process.py:306-314). Routing a socks URL to
+    aiohttp is therefore a location leak, not just a broken check.
+
+    Matched as a PREFIX, not against a fixed set. A hand-written set drifted
+    from validation.py in both directions on the first attempt at this fix
+    (guarding an impossible `socks4a`, missing the reachable `socks4h`), and
+    `check_proxy` gates on `parse_proxy`, which accepts ANY scheme and never
+    consults the validator — so a stored or API-supplied URL can carry a socks
+    spelling no allowlist anticipated. Every one of them fails closed here;
+    only sending one to aiohttp reproduces the leak.
+    """
+    return scheme.startswith("socks")
 
 
 def _ssl_context() -> ssl.SSLContext:
@@ -212,9 +246,17 @@ async def _socks4_connect(
     port: int,
     username: str,
 ) -> None:
-    """SOCKS4a CONNECT (the 0.0.0.x destination-IP form that carries a domain
-    name), so socks4/socks4a URLs the validator accepts also get a real
-    handshake instead of an HTTP CONNECT no SOCKS server will answer."""
+    """SOCKS4a CONNECT — the 0.0.0.1 destination-IP form that carries a domain
+    name — for both socks4 and socks4h.
+
+    The SOCKS4a form is sent even for plain `socks4://`, and a STRICT SOCKS4
+    server that does not implement the 4a extension will read 0.0.0.1 as a
+    literal destination and refuse. That is deliberate: the alternative is to
+    resolve the geo endpoint locally, which emits a DNS query from the
+    operator's real resolver for a host the proxy is supposed to reach — a
+    location leak, and the very class of tell this module exists to close. A
+    refusal fails closed (ok=False, geo untouched); a DNS leak does not.
+    """
     uid = (username or "").encode("utf-8")
     host_b = host.encode("idna") if not host.isascii() else host.encode("ascii")
     if b"\x00" in uid or not host_b:
@@ -252,10 +294,21 @@ async def _read_http_body(reader: asyncio.StreamReader, headers: dict) -> bytes:
         if n > _MAX_GEO_BODY:
             raise ValueError("geo response too large")
         return await reader.readexactly(n)
-    body = await reader.read(_MAX_GEO_BODY + 1)
-    if len(body) > _MAX_GEO_BODY:
-        raise ValueError("geo response too large")
-    return body
+    # Neither Content-Length nor chunked — legal under the `Connection: close`
+    # this client asks for, so the body runs to EOF. It must be READ to EOF:
+    # StreamReader.read(n) returns as soon as ANY data is buffered, so a body
+    # split across TLS records came back truncated, the JSON failed to parse,
+    # and the check fell into the empty-geo failure arm — the same real-timezone
+    # leak this module exists to close, reintroduced intermittently.
+    out = bytearray()
+    while True:
+        chunk = await reader.read(65536)
+        if not chunk:
+            break
+        out += chunk
+        if len(out) > _MAX_GEO_BODY:  # enforced every pass, not just at the end
+            raise ValueError("geo response too large")
+    return bytes(out)
 
 
 async def _http_get_json(
@@ -342,6 +395,15 @@ async def _geo_via_socks(
         return await _http_get_json(reader, writer, target_host, path)
     finally:
         writer.close()
+        # Await the close: on a TLS transport an un-awaited close defers the
+        # shutdown to GC, which surfaces as "Task was destroyed but it is
+        # pending" / unraised SSL errors in the app's disk-backed log. Errors
+        # here are about tearing down a connection whose answer we already have,
+        # so they must not turn a good check into a failure.
+        try:
+            await writer.wait_closed()
+        except (OSError, ssl.SSLError):
+            pass
 
 
 async def check_proxy(
@@ -349,16 +411,12 @@ async def check_proxy(
 ) -> tuple[bool, str, str, str, str, str, float | None, float | None]:
     """Probe a proxy. Returns
     (ok, message, country_code, country_name, ip, timezone, lat, lon)."""
-    if not AIOHTTP_AVAILABLE:
-        # NOT ok: a skipped check must never be recorded as a success (which
-        # would set last_check_ok=True and, with empty geo, erase the proxy's
-        # known-good country/timezone). ok=False leaves the geo fields intact.
-        return False, "Proxy check skipped (aiohttp not installed)", "", "", "", "", None, None
-
     proxy_config = parse_proxy(proxy_str)
     if not proxy_config:
         return False, "Invalid proxy format", "", "", "", "", None, None
 
+    # Runs for EVERY scheme, ahead of the branch: check_proxy connects to
+    # whatever host:port the user pasted, so this is the SSRF gate.
     if _is_blocked_proxy_host(proxy_config["server"]):
         return (
             False,
@@ -366,21 +424,27 @@ async def check_proxy(
             "", "", "", "", None, None,
         )
 
+    scheme = urllib.parse.urlparse(proxy_config["server"]).scheme.lower()
+    is_socks = _is_socks_scheme(scheme)
+
+    if not is_socks and not AIOHTTP_AVAILABLE:
+        # NOT ok: a skipped check must never be recorded as a success (which
+        # would set last_check_ok=True and, with empty geo, erase the proxy's
+        # known-good country/timezone). ok=False leaves the geo fields intact.
+        # Scoped to the aiohttp branch — the SOCKS path is stdlib-only, and
+        # since socks5 is persona's DEFAULT scheme, skipping it here would
+        # leave exactly the empty geo (and the real-host-timezone fallback)
+        # this module exists to prevent.
+        return False, "Proxy check skipped (aiohttp not installed)", "", "", "", "", None, None
+
     proxy_url = proxy_config["server"]
     if "username" in proxy_config:
-        scheme, rest = proxy_url.split("://", 1)
+        url_scheme, rest = proxy_url.split("://", 1)
         password = proxy_config.get("password", "")
-        proxy_url = f"{scheme}://{proxy_config['username']}:{password}@{rest}"
-
-    scheme = urllib.parse.urlparse(proxy_config["server"]).scheme.lower()
+        proxy_url = f"{url_scheme}://{proxy_config['username']}:{password}@{rest}"
 
     try:
-        if scheme in _SOCKS_SCHEMES:
-            # aiohttp speaks HTTP CONNECT only and ignores the URL scheme, so
-            # this branch must NOT go through it: a SOCKS server never answers
-            # a CONNECT, the check failed permanently for persona's default
-            # scheme, and a proxy left with no country/timezone makes the
-            # launcher fall back to the operator's real host zone.
+        if is_socks:
             status, data = await asyncio.wait_for(
                 _geo_via_socks(proxy_config, scheme, "https://ipwho.is/"),
                 timeout,
@@ -398,6 +462,11 @@ async def check_proxy(
                     status = response.status
                     data = await response.json() if status == 200 else None
         if status == 200:
+            if data is None:
+                # A 200 whose body is valid JSON but not an object. Fails closed
+                # either way; this reports it accurately instead of tripping an
+                # AttributeError into the generic "Proxy check failed" arm.
+                return False, "Proxy geo lookup failed", "", "", "", "", None, None
             if not data.get("success", True):
                 return False, "Proxy geo lookup failed", "", "", "", "", None, None
             ip = data.get("ip", "unknown")
@@ -416,9 +485,9 @@ async def check_proxy(
         return False, f"Proxy returned status {status}", "", "", "", "", None, None
     except asyncio.TimeoutError:
         return False, "Proxy connection timed out", "", "", "", "", None, None
-    except aiohttp.ClientProxyConnectionError:
+    except _PROXY_CONNECT_ERRORS:
         return False, "Failed to connect to proxy", "", "", "", "", None, None
-    except aiohttp.ClientError:
+    except _CLIENT_ERRORS:
         # Don't echo the exception: for a DNS/connection failure it embeds the
         # proxy host:port, and this message reaches the disk-backed daily log +
         # the Activity Log, which the app otherwise keeps free of the endpoint.
