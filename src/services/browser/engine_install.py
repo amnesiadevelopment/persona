@@ -11,10 +11,6 @@ import os
 import sys
 import time
 
-from ...core.logging import get_logger
-
-logger = get_logger("browser.invisible")
-
 
 # Written into a build's cache dir after a successful extraction. A build
 # other than the package-pinned one only counts as installed once this exists,
