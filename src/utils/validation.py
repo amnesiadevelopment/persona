@@ -9,12 +9,26 @@ _RESERVED_NAMES = {
     *(f"COM{i}" for i in range(1, 10)),
     *(f"LPT{i}" for i in range(1, 10)),
 }
+#: Every proxy scheme persona accepts. SINGLE SOURCE OF TRUTH — the pattern
+#: below is built from this tuple, and src/utils/proxy_checker.py derives which
+#: of these need a real SOCKS handshake from it rather than from a hand-written
+#: copy. That copy drifted once (it guarded a `socks4a` this validator rejects
+#: while missing the `socks4h` it accepts, so socks4h proxies still had their
+#: geo check sent as an HTTP CONNECT no SOCKS server answers — which leaks the
+#: operator's real timezone into a proxied profile). Adding a scheme here is
+#: enough; there is deliberately no second list to keep in sync.
+PROXY_SCHEMES = ("http", "https", "socks4", "socks4h", "socks5", "socks5h")
+
+# Longest-first so the alternation can't match a bare prefix ("http" out of
+# "https") and strand the rest of the URL.
+_SCHEME_ALTERNATION = "|".join(sorted(PROXY_SCHEMES, key=len, reverse=True))
+
 _PROXY_PATTERN = re.compile(
     # Kept in sync with the launch parser (proxy_parser): allow underscores in
     # hostnames (real provider gateways like gate_us.smartproxy.com use them) and
     # the socks5h scheme, so a proxy that connects at runtime isn't rejected on
     # save (a paste-then-save that contradicts itself).
-    r"^(?:(?P<scheme>https?|socks[45]h?)://)?"
+    r"^(?:(?P<scheme>" + _SCHEME_ALTERNATION + r")://)?"
     r"(?:(?P<user>[^:@]+):(?P<pass>[^@]+)@)?"
     r"(?P<host>[a-zA-Z0-9._-]+|\d{1,3}(?:\.\d{1,3}){3})"
     r":(?P<port>\d{1,5})$",
