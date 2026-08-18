@@ -1,4 +1,4 @@
-import src.services.browser.process as process
+import src.services.browser.launch_policy as launch_policy
 from src.services.browser.process import _locale_for, _proxy_timezone, _timezone_for
 
 
@@ -35,5 +35,8 @@ def test_proxy_timezone_derives_from_country():
 
 
 def test_proxy_timezone_unchecked_falls_back_to_host_zone(monkeypatch):
-    monkeypatch.setattr(process, "_host_timezone", lambda: "Europe/Kyiv")
+    # Patch on launch_policy, not process: _proxy_timezone lives there too and
+    # resolves _host_timezone in its OWN namespace, so a patch on the process
+    # re-export alias is silently bypassed (real host zone would be read).
+    monkeypatch.setattr(launch_policy, "_host_timezone", lambda: "Europe/Kyiv")
     assert _proxy_timezone(_Proxy()) == "Europe/Kyiv"

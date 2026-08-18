@@ -1,4 +1,5 @@
 import src.services.browser.invisible_launch as il
+import src.services.browser.launch_policy as launch_policy
 import src.services.browser.process as process
 from src.models.profile import Profile
 
@@ -128,7 +129,10 @@ def test_firefox_unchecked_proxy_ships_host_zone_not_utc(monkeypatch, tmp_path):
     monkeypatch.setattr(il, "spawn", lambda cfg: captured.append(cfg) or _Spawned())
     monkeypatch.setattr(process, "ProxyStore", _StoreWithGeolessProxy)
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
-    monkeypatch.setattr(process, "_host_timezone", lambda: "Europe/Kyiv")
+    # Patch on launch_policy, not process: _proxy_timezone lives there too and
+    # resolves _host_timezone in its OWN namespace, so a patch on the process
+    # re-export alias is silently bypassed (real host zone would be read).
+    monkeypatch.setattr(launch_policy, "_host_timezone", lambda: "Europe/Kyiv")
     profile = Profile(name="tz-firefox", engine="firefox", proxy="p1")
     process._spawn_invisible(profile, str(tmp_path))
     assert captured[0]["timezone"] == "Europe/Kyiv"
@@ -144,7 +148,10 @@ def test_chromium_unchecked_proxy_ships_host_zone_not_utc(monkeypatch, tmp_path)
     monkeypatch.setattr(process, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(process, "ProxyStore", _StoreWithGeolessProxy)
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
-    monkeypatch.setattr(process, "_host_timezone", lambda: "Europe/Kyiv")
+    # Patch on launch_policy, not process: _proxy_timezone lives there too and
+    # resolves _host_timezone in its OWN namespace, so a patch on the process
+    # re-export alias is silently bypassed (real host zone would be read).
+    monkeypatch.setattr(launch_policy, "_host_timezone", lambda: "Europe/Kyiv")
     monkeypatch.setattr(process.subprocess, "Popen", _FakePopen)
     profile = Profile(name="tz-chromium", proxy="p1")
     process.spawn_browser(profile)
@@ -528,7 +535,10 @@ def test_chromium_no_proxy_timezone_matches_en_us_language(monkeypatch, tmp_path
     monkeypatch.setattr(process, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(process, "ProxyStore", _Store)
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
-    monkeypatch.setattr(process, "_host_timezone", lambda: "Europe/Kyiv")
+    # Patch on launch_policy, not process: _proxy_timezone lives there too and
+    # resolves _host_timezone in its OWN namespace, so a patch on the process
+    # re-export alias is silently bypassed (real host zone would be read).
+    monkeypatch.setattr(launch_policy, "_host_timezone", lambda: "Europe/Kyiv")
     monkeypatch.setattr(process.subprocess, "Popen", _FakePopen)
     process.spawn_browser(Profile(name="direct-chromium"))
     tz = next(
