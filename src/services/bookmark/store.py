@@ -1,11 +1,11 @@
 import json
 import pathlib
-import time
 
 from ...core.config import BOOKMARKS_FILE
 from ...core.logging import get_logger
 from ...models.bookmark import Bookmark, Pool
 from ...utils.atomic import atomic_write_json
+from ...utils.store_guard import StoreGuardMixin
 
 logger = get_logger("bookmark.store")
 
@@ -19,7 +19,11 @@ DEFAULT_BOOKMARKS = {
 }
 
 
-class BookmarkStore:
+class BookmarkStore(StoreGuardMixin):
+    _guard_logger = logger
+    _guard_noun_plural = "bookmarks"
+    _guard_noun_singular = "bookmark"
+
     def __init__(self, path: str = BOOKMARKS_FILE) -> None:
         self._path = path
         self.bookmarks: dict[str, Bookmark] = {}
@@ -81,21 +85,14 @@ class BookmarkStore:
             logger.exception("Error loading bookmarks: %s", e)
             self._quarantine_bookmarks_file()
 
+    def _store_path(self) -> str:
+        return self._path
+
     def _quarantine_bookmarks_file(self) -> None:
         # An unreadable bookmarks.json still holds the user's bookmarks + pools;
         # move it aside so the next _save() can't overwrite it with an empty (or
         # defaults-only) store.
-        backup = f"{self._path}.corrupt-{int(time.time())}"
-        try:
-            pathlib.Path(self._path).rename(backup)
-            logger.warning("Moved unreadable bookmarks file to %s", backup)
-        except OSError:
-            self._save_blocked = True
-            logger.exception(
-                "Could not back up %s; bookmark saving disabled to avoid "
-                "overwriting it",
-                self._path,
-            )
+        self._quarantine_store_file()
 
     def _seed_defaults(self) -> None:
         for name, url in DEFAULT_BOOKMARKS.items():
@@ -104,11 +101,7 @@ class BookmarkStore:
         self._save()
 
     def _save(self) -> None:
-        if self._save_blocked:
-            logger.error(
-                "Not saving: bookmarks file failed to load and could not be "
-                "backed up"
-            )
+        if self._save_is_blocked():
             return
         try:
             # Atomic (temp + os.replace) so a crash mid-save can't leave a

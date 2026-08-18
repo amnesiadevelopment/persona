@@ -12,12 +12,12 @@ import json
 import os
 import pathlib
 import threading
-import time
 from dataclasses import asdict, dataclass
 
 from ...core.config import PERSONA_HOME
 from ...core.logging import get_logger
 from ...utils.atomic import atomic_write_json
+from ...utils.store_guard import StoreGuardMixin
 
 logger = get_logger("ssh.store")
 
@@ -46,7 +46,11 @@ class SSHHost:
         return asdict(self)
 
 
-class SSHHostStore:
+class SSHHostStore(StoreGuardMixin):
+    _guard_logger = logger
+    _guard_noun_plural = "ssh hosts"
+    _guard_noun_singular = "ssh host"
+
     def __init__(self) -> None:
         self.hosts: dict[str, SSHHost] = {}
         self._save_blocked = False
@@ -86,29 +90,18 @@ class SSHHostStore:
             logger.exception("Error loading ssh hosts: %s", e)
             self._quarantine_hosts_file()
 
+    def _store_path(self) -> str:
+        # Recomputed per call: PERSONA_SSH_HOSTS_FILE can point elsewhere.
+        return _hosts_file()
+
     def _quarantine_hosts_file(self) -> None:
         # An unreadable ssh_hosts.json still holds every host's password +
         # passphrase; move it aside so the next _save() can't overwrite it with
         # the empty in-memory dict.
-        path = _hosts_file()
-        backup = f"{path}.corrupt-{int(time.time())}"
-        try:
-            pathlib.Path(path).rename(backup)
-            logger.warning("Moved unreadable ssh hosts file to %s", backup)
-        except OSError:
-            self._save_blocked = True
-            logger.exception(
-                "Could not back up %s; ssh host saving disabled to avoid "
-                "overwriting it",
-                path,
-            )
+        self._quarantine_store_file()
 
     def _save(self) -> None:
-        if self._save_blocked:
-            logger.error(
-                "Not saving: ssh hosts file failed to load and could not be "
-                "backed up"
-            )
+        if self._save_is_blocked():
             return
         try:
             # Holds SSH passwords + key passphrases, so 0600 + atomic.

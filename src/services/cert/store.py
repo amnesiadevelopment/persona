@@ -14,12 +14,12 @@ import os
 import pathlib
 import shutil
 import threading
-import time
 import uuid
 from dataclasses import asdict, dataclass
 
 from ...core.logging import get_logger
 from ...utils.atomic import atomic_write_json
+from ...utils.store_guard import StoreGuardMixin
 
 logger = get_logger("cert.store")
 
@@ -58,7 +58,13 @@ class Certificate:
         return asdict(self)
 
 
-class CertStore:
+class CertStore(StoreGuardMixin):
+    _guard_logger = logger
+    _guard_noun_plural = "certificates"
+    # Singular differs from a naive plural-minus-s: the existing log says
+    # "certificate saving disabled", not "certificates saving disabled".
+    _guard_noun_singular = "certificate"
+
     def __init__(self) -> None:
         self.certs: dict[str, Certificate] = {}
         self._save_blocked = False
@@ -94,29 +100,18 @@ class CertStore:
             logger.exception("Error loading certificates: %s", e)
             self._quarantine_certs_file()
 
+    def _store_path(self) -> str:
+        # Recomputed per call: PERSONA_CERTS_FILE can point elsewhere.
+        return _certs_file()
+
     def _quarantine_certs_file(self) -> None:
         # An unreadable certificates.json still holds every .p12 bundle password;
         # move it aside so the next _save() can't overwrite it with the empty
         # in-memory dict.
-        path = _certs_file()
-        backup = f"{path}.corrupt-{int(time.time())}"
-        try:
-            pathlib.Path(path).rename(backup)
-            logger.warning("Moved unreadable certificates file to %s", backup)
-        except OSError:
-            self._save_blocked = True
-            logger.exception(
-                "Could not back up %s; certificate saving disabled to avoid "
-                "overwriting it",
-                path,
-            )
+        self._quarantine_store_file()
 
     def _save(self) -> None:
-        if self._save_blocked:
-            logger.error(
-                "Not saving: certificates file failed to load and could not be "
-                "backed up"
-            )
+        if self._save_is_blocked():
             return
         try:
             # Holds .p12 bundle passwords, so 0600 + atomic.
