@@ -1035,10 +1035,10 @@ class App:
         ]
 
         def do_delete() -> None:
-            # Drop the proxy from every profile that used it FIRST — a deleted
-            # proxy that still lingers as a name on a profile stranded the
-            # profile page — then remove it from the store.
-            self.pm.clear_proxy(name)
+            # pstore.delete owns the whole operation: it records which profiles
+            # used the proxy and THEN drops the reference from each of them. Do
+            # not clear the references here — doing so first is exactly the bug
+            # that made a restored proxy come back with nothing pointing at it.
             self.pstore.delete(name)
             self._render_active_page()
             self._safe_update()
@@ -1218,10 +1218,10 @@ class App:
         assert page is not None
 
         def do_delete() -> None:
-            # Drop the pool from every profile that referenced it FIRST — a
-            # deleted pool that lingered as a name made the profile launch with
-            # an empty toolbar (audit5 #4) — then remove it from the store.
-            self.pm.clear_bookmark_pool(name)
+            # bstore.delete_pool owns the whole operation: it records which
+            # profiles referenced the pool and THEN drops the reference from
+            # each. Do not clear the references here — doing so first is exactly
+            # the bug that made a restored pool come back unreferenced.
             self.bstore.delete_pool(name)
             self._render_active_page()
             self._safe_update()

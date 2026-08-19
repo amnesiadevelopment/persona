@@ -116,6 +116,39 @@ def test_a_trashed_profile_is_not_addressable_through_the_api(env):
     ).status_code == 404
 
 
+def test_a_delete_that_could_not_park_the_data_is_not_reported_as_success(
+    env, monkeypatch
+):
+    # delete_profile returns False when the data dir cannot be moved, leaving
+    # the profile fully intact. Replying 200 "deleted" regardless told the
+    # caller an identity was gone while it was still on disk — the exact
+    # claim-outlives-the-code defect this ticket closes, on the safety-critical
+    # side. Lane parity: the UI lane reports the failure too.
+    _create_profile(env)
+    monkeypatch.setattr(
+        env.container.profile_manager, "delete_profile", lambda name: False
+    )
+
+    r = env.client.delete("/api/v1/profiles/alpha", headers=env.headers)
+
+    assert r.status_code == 500, r.text
+    assert "alpha" in r.json()["detail"]
+
+
+def test_a_profile_that_could_not_be_parked_is_still_there_afterwards(
+    env, monkeypatch
+):
+    _create_profile(env)
+    monkeypatch.setattr(
+        env.container.profile_manager, "delete_profile", lambda name: False
+    )
+    env.client.delete("/api/v1/profiles/alpha", headers=env.headers)
+
+    assert env.client.get(
+        "/api/v1/profiles/alpha", headers=env.headers
+    ).status_code == 200
+
+
 # --- reading the trash ---
 
 

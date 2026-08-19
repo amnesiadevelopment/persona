@@ -16,11 +16,31 @@ from .transfer import export_to_zip, import_from_zip, peek_profile_name
 
 logger = get_logger("profile.manager")
 
-#: Where a trashed profile's data dir is parked, inside DATA_DIR. A dot-prefixed
-#: name so it can never collide with a profile (validate_profile_name accepts a
-#: leading dot, but _trash_data_path is the only thing that ever builds a path
-#: here and it accepts opaque hex tokens only).
-TRASH_DIR_NAME = ".trash"
+#: Directory name of the park area where trashed profile data dirs live. It sits
+#: BESIDE DATA_DIR, never inside it.
+TRASH_DIR_NAME = "trash_data"
+
+
+def trash_data_root() -> str:
+    """The park area for trashed profile data dirs: a SIBLING of DATA_DIR, never
+    a subdirectory of it.
+
+    An in-DATA_DIR park area was addressable as a profile. validate_profile_name
+    (".trash") is valid, so _data_path(".trash") resolved to the park area
+    ITSELF: every other profile's trashed cookies were parked inside a live,
+    launchable profile's data dir, and deleting that profile failed outright
+    (renaming a directory into itself). Outside DATA_DIR no profile name can
+    name the park area at all, so "nothing in the trash is reachable as a live
+    record" holds by CONSTRUCTION rather than by reserving a name a validator
+    might later accept again.
+
+    Derived from DATA_DIR's parent at call time, not frozen at import, for two
+    reasons: it keeps the park area on the SAME filesystem as the data dir, so
+    the move-not-copy rename cannot fail with EXDEV; and DATA_DIR is monkey-
+    patched per-test, so a derived root follows it instead of leaking trashed
+    profile data into the real PERSONA_HOME during a test run.
+    """
+    return os.path.join(os.path.dirname(os.path.normpath(DATA_DIR)), TRASH_DIR_NAME)
 
 
 class InvalidProfileName(ValueError):
@@ -70,19 +90,25 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
         token. The trash must not become a NEW arbitrary-path primitive beside
         _data_path, so it gets the same treatment: the token is constrained to
         hex (no separators, no dots, so no traversal is even expressible), and
-        the resolved path is then confirmed to stay inside DATA_DIR — belt AND
-        braces, exactly as for a profile name. The token, not the profile name,
-        names the directory: the trash area then carries no profile name in
-        cleartext, matching why the desktop entry is removed on delete."""
+        the resolved path is then confirmed to stay inside the park area — belt
+        AND braces, exactly as for a profile name. The token, not the profile
+        name, names the directory: the trash area then carries no profile name in
+        cleartext, matching why the desktop entry is removed on delete.
+
+        The park area is trash_data_root(), OUTSIDE DATA_DIR — see its docstring:
+        no profile name can address a directory that isn't under the profile data
+        dir, so a trashed data dir can never land inside a live profile's own
+        directory."""
         if not token or not all(c in "0123456789abcdefABCDEF" for c in token):
             raise InvalidTrashToken(f"not an opaque trash token: {token!r}")
-        base = os.path.realpath(DATA_DIR)
-        target_dir = os.path.join(DATA_DIR, TRASH_DIR_NAME, token)
+        root = trash_data_root()
+        base = os.path.realpath(root)
+        target_dir = os.path.join(root, token)
         # realpath of a not-yet-existing leaf is still its lexical parent + leaf,
         # so this check is meaningful before the move as well as after it.
         target = os.path.realpath(target_dir)
-        if os.path.commonpath([base, target]) != base:
-            raise InvalidTrashToken(f"trash token escapes the data dir: {token!r}")
+        if os.path.commonpath([base, target]) != base or target == base:
+            raise InvalidTrashToken(f"trash token escapes the trash area: {token!r}")
         return target_dir
 
     def _load_profiles(self) -> None:
@@ -522,14 +548,16 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
         paths that are genuinely irreversible."""
         if not material_path:
             return
-        base = os.path.realpath(DATA_DIR)
+        base = os.path.realpath(trash_data_root())
         target = os.path.realpath(material_path)
-        # Never rmtree a path outside the data dir, whatever a hand-edited
+        # Never rmtree a path outside the park area, whatever a hand-edited
         # trash.json claims. The trash must not become a path by which a delete
-        # escapes the data dir.
+        # escapes into arbitrary filesystem locations. Parked dirs live under
+        # trash_data_root() only, so that — not DATA_DIR — is the containment
+        # root; a LIVE profile's data dir is deliberately NOT deletable here.
         if os.path.commonpath([base, target]) != base or target == base:
             logger.warning(
-                "Refusing to delete trashed material outside the data dir: %s",
+                "Refusing to delete trashed material outside the trash area: %s",
                 material_path,
             )
             return

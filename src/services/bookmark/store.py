@@ -237,19 +237,29 @@ class BookmarkStore(StoreGuardMixin, TrashableMixin):
 
     def delete_pool(self, name: str) -> bool:
         """Move a pool to the trash. The bookmarks themselves are untouched;
-        restore brings the pool back with the same membership list."""
+        restore brings the pool back with the same membership list.
+
+        This method owns the WHOLE operation, including dropping the pool from
+        every profile that referenced it. That is deliberate: the reference has
+        to be RECORDED before it is cleared, and when the two halves lived in the
+        caller the UI did them in the opposite order (clear_bookmark_pool
+        first), so the store recorded no referencing profiles at all and a
+        restore silently returned a pool nothing pointed at. Owning both here
+        makes that ordering impossible to get wrong from a new lane.
+        """
         if name not in self.pools:
             return False
         pool = self.pools.pop(name)
         self._save()
-        # Which profiles referenced this pool, so restore can re-point them. The
-        # caller clears the dangling reference (a lingering pool name made the
-        # profile launch with an empty toolbar), so it is only recoverable if we
-        # record it here first.
+        # RECORD the referencing profiles first, then clear them — never the
+        # reverse. A deleted pool left lingering as a name made the profile
+        # launch with an empty toolbar (audit5 #4), so the reference must go;
+        # recording it here is the only thing that lets restore put it back.
         refs = []
         pm = self._profile_manager
         if pm is not None:
             refs = [p.name for p in pm.list_profiles() if p.bookmark_pool == name]
+            pm.clear_bookmark_pool(name)
         self._trash().add(
             "pool",
             name,
