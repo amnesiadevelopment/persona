@@ -96,6 +96,18 @@ class App:
         self.ps: IProxyService = c.proxy_service
         # Delete/wipe must stop a running browser before rmtree'ing its data dir.
         self.pm.set_stop_hook(self.bl.stop_profile)
+        # Engine pruning deletes whole build trees (~320-600MB each) and keeps
+        # only the HIGHEST build — so a profile still running on the PREVIOUS
+        # build when a new one lands would have the tree it is executing from
+        # deleted out from under it. POSIX does not refuse that unlink (only
+        # Windows does, by accident), so pruning has to ASK. engine_install
+        # sits below the launcher in the layering and cannot import it, so the
+        # oracle is injected here, at construction — strictly before any prune
+        # can run, which is what makes the otherwise-unguarded startup prune
+        # (_check_engine2_async → prune_superseded_builds) safe by construction.
+        # running_profile_names() reaps dead sessions via poll() before
+        # answering, so it is the already-trusted oracle the app updater uses.
+        self._wire_engine_prune_guard()
         self.pstore = c.proxy_store
         self.ssh_store = c.ssh_host_store
         self.bstore = c.bookmark_store
@@ -1475,6 +1487,24 @@ class App:
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _wire_engine_prune_guard(self) -> None:
+        """Tell the engine-install layer how to ask whether a profile is running,
+        so pruning defers instead of deleting a build out from under a live
+        session. Called once from __init__ — before any prune path exists — so
+        every prune (startup housekeeping and post-download alike) is covered
+        without each call site needing its own condition.
+
+        Best-effort: a failure to wire must never stop the app from starting,
+        and leaves exactly today's behaviour (unset ⇒ prune proceeds)."""
+        try:
+            from ..services.browser import invisible_launch as inv
+
+            inv.set_in_use_provider(
+                lambda: len(self.bl.running_profile_names()) > 0
+            )
+        except Exception:
+            logger.exception("Could not wire the engine-prune in-use guard")
+
     def _auto_update_engine2_async(self) -> None:
         """On startup: check the engine repo and, if a newer AND compatible
         firefox-NN build exists, download it automatically in the background —
@@ -2228,9 +2258,13 @@ class App:
 
     def _update_engine2_async(self) -> None:
         """Download the newer firefox-NN build. It lands in its own versioned
-        cache dir with a completion marker written last, so the active build —
-        and any profile running on it — is untouched until the new one is
-        whole; the next launch picks it up."""
+        cache dir with a completion marker written last, so the active build is
+        untouched until the new one is whole; the next launch picks it up.
+
+        A successful download then prunes superseded builds — which would delete
+        the build a profile started on the PREVIOUS build is executing from, so
+        pruning defers entirely while any profile runs (the guard wired in
+        _wire_engine_prune_guard). Disk is reclaimed on a later prune instead."""
         from ..services.engine import firefox as ff_engine
 
         tag = self._engine2_latest
