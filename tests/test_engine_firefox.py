@@ -3,6 +3,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import src.services.browser.engine_install as eng
 import src.services.browser.invisible_launch as inv
 from src.services.engine import firefox as ff
@@ -643,3 +645,156 @@ def test_prune_leaves_unmarked_half_downloads(monkeypatch, tmp_path):
     )
     inv._prune_old_engine_builds(keep="firefox-16")
     assert (tmp_path / "firefox-14").exists()
+
+
+def test_prune_defers_while_a_profile_is_running(monkeypatch, tmp_path):
+    # PS-14: pruning deletes whole build trees and keeps only the HIGHEST
+    # build, so a profile still running on the PREVIOUS build has the tree it
+    # is executing from deleted out from under it. The old code relied on
+    # shutil.rmtree raising OSError "if the build is in use" — true only on
+    # Windows; POSIX unlink happily succeeds, so on Linux/macOS the deletion
+    # went through and Firefox lost every resource it had not yet lazily
+    # loaded (omni.ja, component libs, locale files). Pruning must ASK.
+    _fake_cache(
+        monkeypatch,
+        tmp_path,
+        [
+            ("firefox-14", True, True),   # would be pruned if we didn't defer
+            ("firefox-15", True, True),   # the build the live profile is on
+            ("firefox-16", True, True),   # the newly-installed active build
+        ],
+        binary_version="firefox-15",
+    )
+    monkeypatch.setattr(eng, "_in_use_provider", lambda: True)
+    # Any rmtree at all is the defect — assert on the call, not just the
+    # survival of the dir, so a "deleted then restored" impl can't pass.
+    import shutil
+
+    monkeypatch.setattr(
+        shutil,
+        "rmtree",
+        lambda *a, **k: pytest.fail("pruned a build while a profile was running"),
+    )
+    logs = []
+    inv._prune_old_engine_builds(keep="firefox-16", log=logs.append)
+
+    assert (tmp_path / "firefox-14").exists()
+    assert (tmp_path / "firefox-15").exists(), (
+        "the build a running profile is executing from must survive the prune"
+    )
+    assert (tmp_path / "firefox-16").exists()
+    # The deferral is logged, and says WHY — a silent skip reads as a bug when
+    # disk isn't reclaimed.
+    assert any("running" in m for m in logs), logs
+
+
+def test_prune_proceeds_when_no_profile_is_running(monkeypatch, tmp_path):
+    # The guard defers only while something is actually running: with the
+    # provider reporting "none", pruning reclaims exactly what it always did.
+    _fake_cache(
+        monkeypatch,
+        tmp_path,
+        [
+            ("firefox-14", True, True),
+            ("firefox-15", True, False),
+            ("firefox-16", True, True),
+        ],
+        binary_version="firefox-15",
+    )
+    monkeypatch.setattr(eng, "_in_use_provider", lambda: False)
+    logs = []
+    inv._prune_old_engine_builds(keep="firefox-16", log=logs.append)
+
+    assert not (tmp_path / "firefox-14").exists()
+    assert not (tmp_path / "firefox-15").exists()
+    assert (tmp_path / "firefox-16").exists()
+    assert not any("running" in m for m in logs), logs
+
+
+def test_prune_startup_housekeeping_defers_while_running(monkeypatch, tmp_path):
+    # prune_superseded_builds is the STARTUP prune (app.py's engine check calls
+    # it unguarded); it delegates to _prune_old_engine_builds, so it must
+    # inherit the deferral rather than need its own condition.
+    _fake_cache(
+        monkeypatch,
+        tmp_path,
+        [
+            ("firefox-15", True, True),   # superseded, but possibly in use
+            ("firefox-16", True, True),   # active
+        ],
+        binary_version="firefox-16",
+    )
+    monkeypatch.setattr(eng, "_in_use_provider", lambda: True)
+    logs = []
+    inv.prune_superseded_builds(log=logs.append)
+
+    assert (tmp_path / "firefox-15").exists()
+    assert (tmp_path / "firefox-16").exists()
+    assert any("running" in m for m in logs), logs
+
+
+def test_prune_with_no_provider_wired_behaves_exactly_as_before(monkeypatch, tmp_path):
+    # A direct library call with no UI has no session state to consult. Unset
+    # must mean "prune proceeds" — the guard is a safety net over the wired
+    # production path, not a fail-closed brake that would silently stop
+    # reclaiming ~320-600MB per stale build in every non-UI caller.
+    _fake_cache(
+        monkeypatch,
+        tmp_path,
+        [("firefox-14", True, True), ("firefox-16", True, True)],
+        binary_version="firefox-15",
+    )
+    monkeypatch.setattr(eng, "_in_use_provider", None)
+    inv._prune_old_engine_builds(keep="firefox-16")
+    assert not (tmp_path / "firefox-14").exists()
+
+
+def test_prune_proceeds_when_the_provider_raises(monkeypatch, tmp_path):
+    # A broken oracle must not wedge disk reclamation forever — degrade to
+    # today's behaviour rather than never pruning again.
+    _fake_cache(
+        monkeypatch,
+        tmp_path,
+        [("firefox-14", True, True), ("firefox-16", True, True)],
+        binary_version="firefox-15",
+    )
+
+    def boom():
+        raise RuntimeError("launcher unavailable")
+
+    monkeypatch.setattr(eng, "_in_use_provider", boom)
+    logs = []
+    inv._prune_old_engine_builds(keep="firefox-16", log=logs.append)
+    assert not (tmp_path / "firefox-14").exists()
+    # Failing open degrades back into the exact deletion this guard exists to
+    # prevent, so it must not do so SILENTLY: the raise is diagnosable, and the
+    # message carries the cause rather than just noting a failure.
+    assert any("in-use check failed" in m for m in logs), logs
+    assert any("launcher unavailable" in m for m in logs), logs
+
+
+def test_set_in_use_provider_is_visible_to_the_prune_path(monkeypatch, tmp_path):
+    # invisible_launch re-exports engine_install's names, and `from x import y`
+    # binds by VALUE — so re-exporting the _in_use_provider VARIABLE would hand
+    # out a stale copy the setter's rebind never reaches. Wiring through the
+    # setter (the only supported route) must actually reach the prune that
+    # reads engine_install's own global.
+    _fake_cache(
+        monkeypatch,
+        tmp_path,
+        [("firefox-14", True, True), ("firefox-16", True, True)],
+        binary_version="firefox-15",
+    )
+    monkeypatch.setattr(eng, "_in_use_provider", None)
+    inv.set_in_use_provider(lambda: True)
+    try:
+        logs = []
+        inv._prune_old_engine_builds(keep="firefox-16", log=logs.append)
+    finally:
+        # module global — restore explicitly so the suite isn't polluted
+        inv.set_in_use_provider(None)
+
+    assert (tmp_path / "firefox-14").exists(), (
+        "a provider wired via set_in_use_provider must reach the prune path"
+    )
+    assert any("running" in m for m in logs), logs

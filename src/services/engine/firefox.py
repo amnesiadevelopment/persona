@@ -128,7 +128,12 @@ def download_engine(tag: str, progress=None, log=None) -> bool:
     """Download the given firefox-NN build via the launcher's Tor-resumable
     fetch: sha256-verified against the release's checksums.txt, extracted into
     its own versioned cache dir, completion-marked last — so the active build
-    and any running profile stay untouched until the new one is whole."""
+    stays untouched until the new one is whole.
+
+    Installing then prunes superseded builds, which would delete the build a
+    profile running on the PREVIOUS one is executing from; that prune defers
+    while any profile runs (see engine_install.set_in_use_provider), so a
+    running profile is left alone here too."""
     from ..browser import invisible_launch as inv
 
     return inv.install_engine_build(tag, progress=progress, log=log)
