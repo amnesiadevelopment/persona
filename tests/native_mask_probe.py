@@ -121,13 +121,20 @@ def native_form(name: str) -> str:
     return "function " + name + "() { [native code] }"
 
 
-def stringify_in_realm(tmp_path, scripts, stubs, probe, *, install_native=True):
+def stringify_in_realm(
+    tmp_path, scripts, stubs, probe, *, install_native=True, native_first=True
+):
     """Run `scripts` in an isolated node realm and return what `probe` evaluates to.
 
     `install_native` is the FALSIFICATION switch (PS-17 AC#3). With it False the
     native_ext content script is not loaded, so `Function.prototype.toString` is
     the engine's own: any assertion that the wrapper reads as native MUST go red.
     A test that still passes here would be testing nothing.
+
+    `native_first` places native_ext's script before (default) or after the given
+    scripts. native_ext documents that load order does not matter — every content
+    script in the realm shares one Function.prototype — so the False case pins
+    that claim by execution.
     """
     node = shutil.which("node")
     if not node:
@@ -139,7 +146,8 @@ def stringify_in_realm(tmp_path, scripts, stubs, probe, *, install_native=True):
     scripts = [str(s) for s in scripts]
     if install_native:
         native_dir = build_native_extension(str(work / "native_ext"))
-        scripts = [str(pathlib.Path(native_dir) / "native.js")] + scripts
+        native_js = str(pathlib.Path(native_dir) / "native.js")
+        scripts = [native_js] + scripts if native_first else scripts + [native_js]
 
     harness = work / "harness.js"
     harness.write_text(_HARNESS, encoding="utf-8")
@@ -157,7 +165,7 @@ def stringify_in_realm(tmp_path, scripts, stubs, probe, *, install_native=True):
     return json.loads(out.stdout)["result"]
 
 
-def assert_reads_native(tmp_path, scripts, stubs, probe, name):
+def assert_reads_native(tmp_path, scripts, stubs, probe, name, *, native_first=True):
     """Assert the wrapper `probe` selects stringifies natively — AND that it does
     so BECAUSE of native_ext's patch.
 
@@ -165,14 +173,26 @@ def assert_reads_native(tmp_path, scripts, stubs, probe, name):
     counterfactual (AC#3): with the cloak absent the same probe must NOT read
     native, which is what binds this test to the mechanism instead of merely
     executing code that happens to be green.
+
+    `probe` must select a wrapper a real extension installs. Do NOT mark a
+    hand-rolled function with the marker here: that would hardcode the mechanism
+    into the test, so it would go red for a mechanism RENAME rather than for a
+    masking regression — the exact defect class PS-17 exists to remove. The marker
+    protocol stays private to src/.
     """
-    masked = stringify_in_realm(tmp_path, scripts, stubs, probe, install_native=True)
+    masked = stringify_in_realm(
+        tmp_path, scripts, stubs, probe,
+        install_native=True, native_first=native_first,
+    )
     assert masked == native_form(name), (
         f"wrapper did not stringify as native under "
         f"Function.prototype.toString.call: {masked!r}"
     )
 
-    unmasked = stringify_in_realm(tmp_path, scripts, stubs, probe, install_native=False)
+    unmasked = stringify_in_realm(
+        tmp_path, scripts, stubs, probe,
+        install_native=False, native_first=native_first,
+    )
     assert unmasked != native_form(name), (
         "FALSIFICATION FAILED: the wrapper read as native with native_ext's patch "
         "NOT installed, so this test does not actually witness the cloak."
