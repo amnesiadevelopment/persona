@@ -4932,3 +4932,245 @@ def test_reset_prefs_noop_when_build_changed_but_no_prefs(tmp_path):
     _write_compat(prof, "/cache/firefox-18")
     reset = _reset_prefs_on_engine_build_change(str(prof), "/cache/firefox-19")
     assert reset is False  # nothing to remove
+
+
+# ---------------------------------------------------------------------------
+# PS-18: the bookmark warm-up starts a REAL Firefox against the profile's own
+# directory with the profile's own fingerprint seed. It must reach the network
+# over the profile's assigned proxy, never over the operator's real address.
+# ---------------------------------------------------------------------------
+
+
+def _warmup_engine_rig(monkeypatch, tmp_path):
+    """The verified `_init_places_db` idiom (mirrors
+    test_init_places_db_uses_profile_seed): a FakeEngine capturing `**kwargs`,
+    injected as the `invisible_playwright` module, on a pinned non-Linux
+    platform (on Linux the warm-up runs visible-offscreen for #242) with the
+    profile-release wait stubbed.
+
+    Returns `(captured, constructed)`. `captured` holds the engine kwargs
+    VERBATIM — nothing is pre-seeded into it, so "no proxy key" is a real
+    assertion rather than an artifact of the rig. `constructed` records one
+    entry per engine construction, so a fail-closed run can assert that no
+    engine was ever started.
+    """
+    import sys
+    import types
+
+    from tests.test_firefox_bookmarks import _make_places
+
+    monkeypatch.setattr(invisible_launch._platform, "IS_LINUX", False)
+
+    captured = {}
+    constructed = []
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            constructed.append(kwargs)
+            captured.update(kwargs)
+
+        def __enter__(self):
+            _make_places(str(tmp_path / "places.sqlite"))
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(
+        invisible_launch, "_wait_profile_released", lambda d, **k: True
+    )
+    return captured, constructed
+
+
+def test_init_places_db_runs_the_warmup_over_the_assigned_proxy(
+    monkeypatch, tmp_path
+):
+    # The warm-up is a real Firefox on the profile's own dir and seed. Handed a
+    # proxied profile, it must hand the engine that proxy — otherwise anything
+    # the run emits (OCSP/CRL, an engine-internal probe, whatever a future
+    # engine bump adds) leaves on the operator's real IP, correlated with this
+    # profile's identity. Asserts the RESOLVED dict, not merely that some key
+    # was set, so the value has to survive the whole hand-down.
+    captured, constructed = _warmup_engine_rig(monkeypatch, tmp_path)
+
+    proxy = invisible_launch._proxy_dict("socks5://user:pw@10.9.9.9:1080")
+    assert invisible_launch._init_places_db(
+        str(tmp_path), 4242, proxy=proxy, proxy_declared=True
+    ) is True
+
+    assert captured["proxy"] == proxy
+    assert captured["proxy"]["server"] == "socks5://10.9.9.9:1080"
+    assert captured["proxy"]["username"] == "user"
+    assert captured["proxy"]["password"] == "pw"
+    # Still the profile's real identity — the proxy rides along with the seed,
+    # it doesn't replace the warm-up's purpose.
+    assert captured["seed"] == 4242
+    assert captured["profile_dir"] == str(tmp_path)
+
+
+def test_init_places_db_warmup_keeps_geo_shortcircuit_and_quiet_prefs(
+    monkeypatch, tmp_path
+):
+    # #207/#208/#242: the concrete timezone/locale short-circuit the engine's
+    # own egress-IP and locale lookups at __enter__ (three HTTPS echo endpoints
+    # + api.ipify.org), which is what stopped the warm-up wedging for minutes.
+    # Threading the proxy through must not cost those, nor the quiet-startup
+    # pref set. Asserted under a proxy, which is the path this slice changed.
+    captured, _ = _warmup_engine_rig(monkeypatch, tmp_path)
+
+    assert invisible_launch._init_places_db(
+        str(tmp_path), 7,
+        proxy=invisible_launch._proxy_dict("socks5://127.0.0.1:9050"),
+        proxy_declared=True,
+    ) is True
+
+    assert captured["timezone"] == "UTC"
+    assert captured["locale"] == "en-US"
+    prefs = captured["extra_prefs"]
+    for key, value in invisible_launch._NO_STARTUP_FETCH.items():
+        assert prefs[key] == value, f"warm-up lost quiet-startup pref {key}"
+    assert prefs["toolkit.shutdown.fastShutdownStage"] == 3
+
+
+def test_init_places_db_unproxied_profile_passes_no_proxy_key(
+    monkeypatch, tmp_path
+):
+    # A direct profile must behave exactly as it did before this slice: the
+    # engine still starts, and no proxy key is handed to it at all (not even
+    # proxy=None) so the engine's own defaults are untouched.
+    captured, constructed = _warmup_engine_rig(monkeypatch, tmp_path)
+
+    assert invisible_launch._init_places_db(str(tmp_path), 11) is True
+
+    assert "proxy" not in captured
+    assert len(constructed) == 1, "the warm-up engine must still start"
+    assert captured["seed"] == 11
+
+
+def test_init_places_db_fails_closed_when_declared_proxy_is_unusable(
+    monkeypatch, tmp_path
+):
+    # DEFENSE IN DEPTH — UNREACHABLE TODAY BY CONSTRUCTION, exercised here by
+    # calling _init_places_db directly. In production the child cannot reach
+    # this state: _spawn_invisible's _require_proxy_resolved (process.py:127)
+    # raises before cfg is built, and cfg carries only proxy_url, which
+    # _proxy_dict maps to None only when it is falsy — indistinguishable in the
+    # child from "no proxy assigned". Kept because the alternative failure mode
+    # is a real Firefox running DIRECT against a profile identity, which is the
+    # exact thing this ticket exists to prevent. Do not read it as a live path.
+    captured, constructed = _warmup_engine_rig(monkeypatch, tmp_path)
+
+    logs = []
+    result = invisible_launch._init_places_db(
+        str(tmp_path), 3, proxy=None, proxy_declared=True, log=logs.append
+    )
+
+    assert result is False
+    assert constructed == [], "no engine may start without the declared proxy"
+    assert captured == {}
+    assert any("proxy" in line.lower() for line in logs), (
+        f"the refusal must say why; logged: {logs!r}"
+    )
+
+
+def test_seed_firefox_bookmarks_threads_the_proxy_into_the_warmup(
+    monkeypatch, tmp_path
+):
+    # The seeder is the only caller of the warm-up, so it is the link that
+    # carries the proxy from the launch config down to the engine. Binds to the
+    # hand-down itself: the value the seeder was given must arrive at
+    # _init_places_db unchanged.
+    seen = {}
+
+    def fake_init(profile_dir, seed, **kwargs):
+        seen.update(kwargs)
+        seen["seed"] = seed
+        return False
+
+    monkeypatch.setattr(invisible_launch, "_init_places_db", fake_init)
+    monkeypatch.setattr(
+        invisible_launch, "_seed_places_from_template", lambda d: False
+    )
+
+    proxy = invisible_launch._proxy_dict("socks5://127.0.0.1:9050")
+    invisible_launch._seed_firefox_bookmarks(
+        str(tmp_path),
+        [{"name": "a", "url": "https://example.com"}],
+        5,
+        None,
+        attempts=1,
+        proxy=proxy,
+        proxy_declared=True,
+    )
+
+    assert seen["proxy"] == proxy
+    assert seen["proxy_declared"] is True
+
+
+def test_child_hands_the_bookmark_seed_the_profiles_assigned_proxy(
+    monkeypatch, tmp_path
+):
+    # AC4 by EXECUTION rather than by grep: drive the real production path
+    # (_child → _launch_and_watch → _seed_firefox_bookmarks) and assert the
+    # proxy actually arrives. The wiring cannot be left off without this going
+    # red. Also pins that it is the SAME _proxy_dict construction the visible
+    # launch uses, not a second parallel one.
+    import os
+    import sys
+    import threading
+    import types
+
+    seen = {}
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            pass
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", False)
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox",
+        lambda d, pids=None, rescan=True: None,
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_enter_on_worker", lambda *a, **k: None
+    )
+
+    def fake_seed(profile_dir, bookmarks, seed, stop_event=None, **kwargs):
+        seen.clear()
+        seen.update(kwargs)
+        return True
+
+    monkeypatch.setattr(invisible_launch, "_seed_firefox_bookmarks", fake_seed)
+
+    def run(proxy_url):
+        seen.clear()
+        r, w = os.pipe()
+        cfg = {
+            "profile_dir": str(tmp_path),
+            "profile_name": "t",
+            "seed": 1,
+            "bookmarks": [{"name": "a", "url": "https://example.com"}],
+        }
+        if proxy_url:
+            cfg["proxy_url"] = proxy_url
+        invisible_launch._child(cfg, w, stop_event=threading.Event())
+        os.close(r)
+        return dict(seen)
+
+    proxied = run("socks5://127.0.0.1:9050")
+    assert proxied["proxy"] == invisible_launch._proxy_dict(
+        "socks5://127.0.0.1:9050"
+    )
+    assert proxied["proxy_declared"] is True
+
+    # A direct profile declares nothing, so the warm-up's fail-closed guard
+    # stays out of the way and the seed runs as it always has.
+    direct = run("")
+    assert direct["proxy"] is None
+    assert direct["proxy_declared"] is False
