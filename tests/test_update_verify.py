@@ -1,9 +1,14 @@
-"""The Windows self-update must verify the staged installer's sha256 against
-the release's published checksums.txt BEFORE running it. Size-only completeness
-let a truncated/corrupted download execute as an installer (a broken half
-install). A fetched-and-mismatching checksum always refuses; a checksum that
-can't be fetched (older release without one, or network down) falls back to the
-existing size check so old releases still update."""
+"""The self-update must verify the staged installer's sha256 against the
+release's published checksum BEFORE running it. Size-only completeness let a
+truncated/corrupted download execute as an installer (a broken half install),
+and a size check can never tell a truncated download from a SUBSTITUTED one.
+
+The missing-checksum policy is fail-CLOSED (PS-6), shared with the engine
+updater: a fetched-and-mismatching checksum refuses, and so does a checksum that
+cannot be fetched at all — an older release without one, or a network drop.
+fetch_expected_sha256 already retries, so on exhaustion a transient failure is
+indistinguishable from an absent digest and both refuse. Availability of an
+update is never weighed against the integrity of what gets executed."""
 
 import hashlib
 import os
@@ -101,12 +106,41 @@ def test_verify_refuses_on_mismatching_sha256(monkeypatch, tmp_path):
     assert any("checksum" in m.lower() for m in msgs)
 
 
-def test_verify_falls_back_when_checksum_unavailable(monkeypatch, tmp_path):
+def test_verify_refuses_when_checksum_unavailable(monkeypatch, tmp_path):
+    # PS-6: this used to pass (fall back to the download-time size check and
+    # install anyway). A size check proves completeness, never integrity — it
+    # cannot tell a truncated download from a substituted installer, which is
+    # the fail-OPEN 5e00d66 and bfc7cbf were each reaching for. The policy is
+    # now fail-CLOSED and shared with the engine updater: an installer we can't
+    # verify never runs, and the refusal is explained rather than silent.
     staged, _ = _write_staged(tmp_path)
     monkeypatch.setattr(au, "fetch_expected_sha256", lambda tag, **k: "")
     msgs = []
-    assert au.verify_staged_installer(str(staged), log=msgs.append) is True
-    assert any("checksum" in m.lower() for m in msgs)  # warns, doesn't block
+    assert au.verify_staged_installer(str(staged), log=msgs.append) is False
+    assert any("checksum" in m.lower() for m in msgs)
+    # the operator is told WHY, not just that nothing happened
+    assert any("refus" in m.lower() for m in msgs)
+
+
+def test_verify_refuses_when_checksum_fetch_fails_transiently(monkeypatch, tmp_path):
+    # PS-6, the accepted consequence stated explicitly so it isn't re-litigated
+    # as a bug: fetch_expected_sha256 already retries and returns '' on
+    # exhaustion, so a transient network failure is indistinguishable from an
+    # absent checksum — and both refuse. Availability of an update is never
+    # weighed against the integrity of what gets executed (Invariant #0).
+    staged, digest = _write_staged(tmp_path)
+    calls = {"n": 0}
+
+    def flaky_fetch(tag, **k):
+        calls["n"] += 1
+        return ""  # every retry inside fetch_expected_sha256 already failed
+
+    monkeypatch.setattr(au, "fetch_expected_sha256", flaky_fetch)
+    assert au.verify_staged_installer(str(staged), log=lambda m: None) is False
+    # and the very same staged file verifies once the digest IS reachable, so
+    # the refusal is about the missing digest, not about the file
+    monkeypatch.setattr(au, "fetch_expected_sha256", lambda tag, **k: digest)
+    assert au.verify_staged_installer(str(staged), log=lambda m: None) is True
 
 
 def test_verify_uses_tag_from_staged_filename(monkeypatch, tmp_path):
@@ -205,18 +239,56 @@ def test_apply_launches_on_matching_checksum(monkeypatch, tmp_path):
     sys.platform != "win32",
     reason="exercises the real Windows apply_and_restart os._exit path",
 )
-def test_apply_launches_when_checksum_unavailable(monkeypatch, tmp_path):
+def test_apply_refuses_to_launch_when_checksum_unavailable(monkeypatch, tmp_path):
+    # PS-6: the apply-time twin of the verify flip. This used to LAUNCH the
+    # installer when no checksum could be fetched. Under fail-closed the
+    # installer must never start, the process must not exit into it, and the
+    # unverifiable file is dropped so it re-downloads fresh.
     _force_windows(monkeypatch)
     staged, _ = _write_staged(tmp_path)
     monkeypatch.setattr(au, "fetch_expected_sha256", lambda tag, **k: "")
-    launched = []
-    monkeypatch.setattr(au.subprocess, "Popen", lambda *a, **k: launched.append(a))
-    monkeypatch.setattr(au, "_installed_windows_exe", lambda: "")
+    monkeypatch.setattr(
+        au.subprocess, "Popen",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("installer launched!")),
+    )
+    monkeypatch.setattr(
+        au.os, "_exit", lambda *a: (_ for _ in ()).throw(AssertionError("exited!"))
+    )
+    msgs = []
+    assert au.apply_and_restart(str(staged), log=msgs.append) is False
+    assert not staged.exists()
+    assert any("checksum" in m.lower() for m in msgs)
 
-    class Exit(Exception):
-        pass
 
-    monkeypatch.setattr(au.os, "_exit", lambda *a: (_ for _ in ()).throw(Exit()))
-    with pytest.raises(Exit):
-        au.apply_and_restart(str(staged), log=lambda m: None)
-    assert launched and str(staged) in launched[0][0]
+# --- PS-6: ONE missing-checksum contract, asserted on BOTH sides ---
+
+
+def test_app_and_engine_share_one_missing_checksum_contract():
+    # The whole point of PS-6: the app path installed on a missing checksum
+    # while the engine path refused, for the IDENTICAL situation. Both now read
+    # the same policy from the same module, so the two can no longer drift —
+    # this is the assertion that fails if either side grows its own copy again.
+    from src.utils import httpdl
+    from src.services.engine import updater as eu
+
+    # no digest -> refuse, on both sides, through the one shared helper
+    assert httpdl.verify_bytes(b"anything", "") is False
+    assert httpdl.verify_file(__file__, "") is False
+    assert eu.sha256_ok(b"anything", "") is False
+
+    # the single opt-in (engine Linux predictable-URL fallback) is explicit,
+    # per-call, and covers ONLY "there is no digest" — never "it didn't match"
+    assert eu.sha256_ok(b"anything", "", allow_missing=True) is True
+    assert eu.sha256_ok(b"anything", "deadbeef", allow_missing=True) is False
+    assert httpdl.verify_bytes(b"anything", "deadbeef", allow_missing=True) is False
+
+
+def test_app_verify_has_no_allow_missing_escape_hatch():
+    # The refusal must not be re-openable by a caller: verify_staged_installer
+    # deliberately exposes no allow_missing/force parameter, so there is no way
+    # to ask the app path to install an unverified installer. Re-introducing
+    # fail-open under a new name is the regression this ticket exists to prevent.
+    import inspect
+
+    params = inspect.signature(au.verify_staged_installer).parameters
+    assert set(params) == {"staged", "tag", "log"}, params
