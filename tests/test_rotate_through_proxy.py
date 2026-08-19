@@ -189,6 +189,76 @@ _PLAIN_TEXT_200 = (
     b"rotation successful."
 )
 
+# The aiohttp branch's rotate target is http:// so the proxy is spoken to in
+# absolute-form (no CONNECT, no TLS) — the shape a real HTTP proxy sees.
+ROTATE_URL_HTTP = "http://rotate.example/refresh/1?apiKey=k"
+
+
+def _rotate_through_http_proxy_seq(monkeypatch, responses: list[bytes]):
+    """The aiohttp-branch twin of `_rotate_through_socks5_seq`.
+
+    Stands up a real forward HTTP proxy — aiohttp sends absolute-form
+    (`GET http://rotate.example/... HTTP/1.1`) to it, so the proxy answers
+    directly and no CONNECT or TLS is involved. Same scripted-response contract
+    as the SOCKS harness: one response per connection, in order, with the last
+    repeating so a redirect loop is a single-element list.
+
+    This exists because the aiohttp redirect branch was previously pinned only
+    by a source-level grep. Nothing drove it end-to-end, which is exactly how
+    its bound came to differ from the SOCKS branch's by one hop without any
+    test noticing.
+    """
+    seen: list[dict[str, object]] = []
+    srv, port = _listener()
+    srv.listen(16)
+    srv.settimeout(0.25)
+    stop = threading.Event()
+
+    def serve() -> None:
+        index = 0
+        while not stop.is_set():
+            try:
+                conn, _ = srv.accept()
+            except (socket.timeout, TimeoutError):
+                continue
+            except OSError:
+                return
+            record: dict[str, object] = {}
+            seen.append(record)
+            response = responses[min(index, len(responses) - 1)]
+            index += 1
+            conn.settimeout(10)
+            try:
+                request = b""
+                while b"\r\n\r\n" not in request:
+                    chunk = conn.recv(4096)
+                    if not chunk:
+                        break
+                    request += chunk
+                record["request"] = request
+                conn.sendall(response)
+            except Exception as exc:                       # surfaced via asserts
+                record["error"] = repr(exc)
+            finally:
+                conn.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        result = service_mod._fetch_rotate_url(
+            ROTATE_URL_HTTP, f"http://user:pass@127.0.0.1:{port}", 10
+        )
+    finally:
+        stop.set()
+        thread.join(20)
+        srv.close()
+    return result, seen
+
+
+def _chain(hops: int) -> list[bytes]:
+    """`hops` redirects in a row, then a 200 — a chain of exactly that length."""
+    return [_redirect(f"/hop{i + 1}") for i in range(hops)] + [_PLAIN_TEXT_200]
+
 
 # --------------------------------------------------------------------------
 # THE regression assertion: the request goes through the tunnel, and the
@@ -344,30 +414,82 @@ def test_redirect_to_a_non_http_scheme_is_refused(tmp_path, monkeypatch):
 def test_a_redirect_loop_is_bounded_and_fails(tmp_path, monkeypatch):
     """A self-referential Location is the hostile case: unbounded, it hangs.
 
-    The chain is capped, and because the last status is still a 3xx the verdict
-    is a failure — the operator loses a rotate attempt and sees why.
+    The chain is capped and the verdict is a failure — the operator loses a
+    rotate attempt and sees why.
+
+    The reason names the HOP BUDGET, not the last status code. Exhausting the
+    budget is one condition, so it gets one message on both transports: the
+    SOCKS loop raises _TooManyRotateRedirects where aiohttp raises
+    TooManyRedirects, and they share an except arm. Reporting `HTTP 302` here
+    (as this path used to) told the operator the endpoint had answered with a
+    redirect, when the real fact is that persona gave up following one.
     """
     (ok, detail), seen = _rotate_through_socks5_seq(
         tmp_path, monkeypatch, [_redirect("https://rotate.example/loop")]
     )
 
     assert ok is False, f"a redirect loop reported success: {detail}"
-    assert detail == "HTTP 302"
+    assert detail == "rotate request failed: too many redirects"
     # Bounded: the original request plus at most _MAX_ROTATE_REDIRECTS hops.
     assert len(seen) == proxy_checker._MAX_ROTATE_REDIRECTS + 1, (
         f"hop bound not enforced: {len(seen)} connections"
     )
 
 
-def test_both_transports_state_the_same_redirect_bound():
+@pytest.mark.parametrize("hops", [0, 1, 4, 5, 6, 7])
+def test_both_transports_agree_at_every_chain_length(tmp_path, monkeypatch, hops):
     """One function must not have two redirect behaviours chosen by transport.
 
     socks5 is persona's DEFAULT scheme, so a divergent bound would leave most
     operators on the weaker path — the drift this module exists to prevent.
-    The aiohttp branch must read the shared constant, not its library default.
+
+    This assertion is BEHAVIOURAL on purpose. Its predecessor grepped
+    `inspect.getsource` for `max_redirects=_MAX_ROTATE_REDIRECTS`, which any
+    SOCKS-side bound whatsoever satisfies — so it passed while the two branches
+    differed by a hop, and kept passing when the SOCKS loop was deliberately
+    sabotaged to `+ 99`. A test named for a property it does not test is worse
+    than no test: it is what the next maintainer will trust. This one drives a
+    chain of exactly `hops` redirects through EACH transport against real
+    listeners and requires the same verdict, so it survives a refactor that
+    stops using the literal — and it fails if either bound moves.
+
+    The parametrization straddles the boundary deliberately: `_MAX_ROTATE_REDIRECTS`
+    follows must succeed and one more must fail, on both. That is where the
+    branches used to part company, because `max_redirects=N` fails ON the N-th
+    redirect while the SOCKS loop permits N follows.
+    """
+    socks_result, socks_seen = _rotate_through_socks5_seq(
+        tmp_path, monkeypatch, _chain(hops)
+    )
+    http_result, http_seen = _rotate_through_http_proxy_seq(monkeypatch, _chain(hops))
+
+    assert socks_result == http_result, (
+        f"{hops}-redirect chain: socks5 said {socks_result}, http said "
+        f"{http_result} — one function, two behaviours chosen by transport"
+    )
+
+    # And pin WHICH verdict they agree on, so the two cannot drift together
+    # into being uniformly wrong.
+    if hops <= proxy_checker._MAX_ROTATE_REDIRECTS:
+        assert socks_result == (True, "HTTP 200"), f"{socks_seen} / {http_seen}"
+    else:
+        ok, _detail = socks_result
+        assert ok is False, (
+            f"a chain of {hops} exceeded the {proxy_checker._MAX_ROTATE_REDIRECTS}"
+            f"-hop bound and was reported as success anyway"
+        )
+
+
+def test_the_aiohttp_redirect_bound_is_offset_deliberately():
+    """The `+ 1` at the aiohttp call site is load-bearing, not a typo.
+
+    `max_redirects=N` fails ON the N-th redirect; the SOCKS loop permits N
+    follows. Passing the bare constant is what made the two disagree. This
+    documents the asymmetry at the point someone would "simplify" it away —
+    but it is the BEHAVIOURAL test above that actually binds it.
     """
     source = inspect.getsource(proxy_checker.fetch_status_via_proxy)
-    assert "max_redirects=_MAX_ROTATE_REDIRECTS" in source
+    assert "max_redirects=_MAX_ROTATE_REDIRECTS + 1" in source
     assert "allow_redirects=True" in source
 
 
