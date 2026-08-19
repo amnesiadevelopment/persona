@@ -16,6 +16,23 @@ except ImportError:
 from .proxy_parser import parse_proxy
 from .validation import PROXY_SCHEMES
 
+class _TooManyRotateRedirects(Exception):
+    """The SOCKS branch's counterpart of `aiohttp.TooManyRedirects`.
+
+    Exists so exhausting the hop budget is the SAME event on both transports.
+    Without it the two branches agreed on the verdict and disagreed on the
+    reason: aiohttp raised TooManyRedirects and the operator was told `too many
+    redirects`, while the SOCKS loop fell out still holding the last 3xx and
+    the operator was told `HTTP 302` — the same condition, reported two ways,
+    selected by transport. It is stdlib-only and therefore always defined, so
+    the SOCKS path keeps working with aiohttp absent.
+
+    Deliberately NOT raised for a 3xx that could not be followed (no Location,
+    a refused scheme). That is a different fact about the endpoint and still
+    reports its real status code.
+    """
+
+
 # Exception classes for the except arms in check_proxy. They must NOT name
 # `aiohttp` directly: the SOCKS path is stdlib-only and runs with aiohttp
 # absent, and Python evaluates an except expression while another exception is
@@ -30,13 +47,21 @@ if AIOHTTP_AVAILABLE:
     # ClientError subclass, so without its own arm a redirect loop would be
     # reported to the operator as "connection failed" — a wrong diagnosis for a
     # proxy that answered perfectly well.
+    #
+    # _TooManyRotateRedirects rides in the SAME tuple because it is the SAME
+    # condition on the other transport. One membership, one message: the arm
+    # cannot report the exhausted budget two ways.
     _REDIRECT_LIMIT_ERRORS: tuple[type[BaseException], ...] = (
         aiohttp.TooManyRedirects,
+        _TooManyRotateRedirects,
     )
 else:
     _PROXY_CONNECT_ERRORS = ()
     _CLIENT_ERRORS = ()
-    _REDIRECT_LIMIT_ERRORS = ()
+    # Not empty in this branch: the SOCKS path is stdlib-only and raises this
+    # itself, so the hop budget must still be reported correctly with aiohttp
+    # absent.
+    _REDIRECT_LIMIT_ERRORS = (_TooManyRotateRedirects,)
 
 #: The socks schemes the validator accepts, derived from ITS tuple rather than
 #: retyped here — see PROXY_SCHEMES. Used for documentation and by the tests;
@@ -600,22 +625,28 @@ async def _status_via_socks(proxy_config: dict, scheme: str, url: str) -> int:
         if status not in _REDIRECT_STATUSES:
             return status
 
+        # A 3xx that CANNOT be followed (no Location, a refused scheme) is a
+        # fact about the endpoint, not about the hop budget. Its real status is
+        # returned UNCHANGED so the operator sees the actual code; the caller's
+        # `status < 300` verdict is what makes it a failure.
         location = headers.get("location", "")
         if not location:
-            break
+            return status
         # urljoin so a relative Location ("/final") resolves against the URL it
         # came from, which is the common provider shape.
         nxt = urllib.parse.urljoin(url, location)
         if urllib.parse.urlparse(nxt).scheme.lower() not in ("http", "https"):
-            break
+            return status
         url = nxt
 
-    # Fell out of the loop still holding a 3xx: the chain was unfollowable (no
-    # Location, a refused scheme) or longer than the hop budget — a
-    # misconfiguration or a redirect loop, which an unbounded chain would hang
-    # on. The status is returned UNCHANGED so the operator sees the real code;
-    # the caller's `status < 300` verdict is what makes it a failure.
-    return status
+    # The budget is spent and the chain was STILL going — a redirect loop or an
+    # over-long chain, which an unbounded follow would hang on. Raised rather
+    # than returned so it is the same event aiohttp reports for the same
+    # condition: both transports then tell the operator `too many redirects`
+    # instead of one saying that and the other reporting the last 3xx.
+    raise _TooManyRotateRedirects(
+        f"rotate chain exceeded {_MAX_ROTATE_REDIRECTS} redirects"
+    )
 
 
 async def fetch_status_via_proxy(
@@ -647,10 +678,14 @@ async def fetch_status_via_proxy(
     and loopback SOCKS endpoints (Tor, `ssh -D`) must keep working.
 
     Redirects are FOLLOWED, on both transports, to the same
-    _MAX_ROTATE_REDIRECTS bound — the aiohttp branch is pinned to that constant
-    rather than left on its library default so the two cannot state different
-    numbers. A rotate endpoint commonly sits behind a 301/302, and the direct
-    urlopen this replaced followed them for free.
+    _MAX_ROTATE_REDIRECTS bound: each permits that many follows and fails on
+    the next one. The aiohttp branch is pinned to the shared constant rather
+    than left on its library default so the two cannot diverge — note the
+    deliberate `+ 1` at the call site, which exists because `max_redirects`
+    fails ON the N-th redirect while the SOCKS loop permits N follows; the
+    two arguments express the same bound in different units. A rotate endpoint
+    commonly sits behind a 301/302, and the direct urlopen this replaced
+    followed them for free.
 
     Returns (status < 300, "HTTP <status>") — or (False, reason) if the request
     could not be sent through the proxy at all. It NEVER falls back to a direct
@@ -700,8 +735,21 @@ async def fetch_status_via_proxy(
                     # not have two redirect behaviours selected by transport —
                     # and socks5 is persona's DEFAULT scheme, so the divergent
                     # one would be what most operators actually get.
+                    #
+                    # THE `+ 1` IS LOAD-BEARING — do not "simplify" it away.
+                    # The two arguments do not mean the same thing: the SOCKS
+                    # loop runs one initial request plus _MAX_ROTATE_REDIRECTS
+                    # follows, while aiohttp's max_redirects fails ON the N-th
+                    # redirect, permitting only N-1 follows. Passing the bare
+                    # constant made a chain of exactly _MAX_ROTATE_REDIRECTS
+                    # hops succeed on socks5 and fail on http — the same
+                    # one-function-two-behaviours drift this comment claims to
+                    # prevent, an order of magnitude smaller. The `+ 1` makes
+                    # both transports permit _MAX_ROTATE_REDIRECTS follows and
+                    # fail on the next one.
+                    # test_both_transports_agree_at_every_chain_length pins it.
                     allow_redirects=True,
-                    max_redirects=_MAX_ROTATE_REDIRECTS,
+                    max_redirects=_MAX_ROTATE_REDIRECTS + 1,
                     headers={
                         "User-Agent": _NEUTRAL_USER_AGENT,
                         "Accept": "*/*",
