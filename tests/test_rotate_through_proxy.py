@@ -401,12 +401,22 @@ def test_redirect_to_a_non_http_scheme_is_refused(tmp_path, monkeypatch):
 
     A `Location: file:///etc/passwd` (or a scheme downgrade) must not ride
     through on the second hop, and the refusal must not read as success.
+
+    The message names PERSONA's refusal, not the endpoint's 302. This is a
+    deliberate change from the previous round's `HTTP 302`: the endpoint
+    answered fine and the proxy carried it fine, so reporting the endpoint's
+    status described the wrong actor — and `connection failed` (what the
+    aiohttp branch used to say here) sent the operator to debug a proxy that
+    had just worked perfectly.
     """
     (ok, detail), seen = _rotate_through_socks5_seq(
         tmp_path, monkeypatch, [_redirect("file:///etc/passwd")]
     )
 
-    assert (ok, detail) == (False, "HTTP 302"), f"server: {seen}"
+    assert (ok, detail) == (
+        False,
+        "rotate request failed: redirect to a non-http(s) target refused",
+    ), f"server: {seen}"
     # It was never followed: the one connection is the original request.
     assert len(seen) == 1, f"the refused target was fetched anyway: {seen}"
 
@@ -480,17 +490,100 @@ def test_both_transports_agree_at_every_chain_length(tmp_path, monkeypatch, hops
         )
 
 
-def test_the_aiohttp_redirect_bound_is_offset_deliberately():
-    """The `+ 1` at the aiohttp call site is load-bearing, not a typo.
+#: The redirect outcomes that do NOT end in a followable chain, and the number
+#: of connections each should cost. `_chain()` only ever builds chains that end
+#: in a 200, so these are precisely the outcomes the length-parametrized test
+#: above cannot reach — and every divergence found in this ticket's review
+#: history lived here rather than in a successful follow.
+_UNFOLLOWABLE = {
+    "no_location": (
+        [b"HTTP/1.1 302 Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"],
+        (False, "HTTP 302"),
+        1,
+    ),
+    "refused_scheme_file": (
+        [_redirect("file:///etc/passwd")],
+        (False, "rotate request failed: redirect to a non-http(s) target refused"),
+        1,
+    ),
+    "refused_scheme_ftp": (
+        [_redirect("ftp://elsewhere.example/y")],
+        (False, "rotate request failed: redirect to a non-http(s) target refused"),
+        1,
+    ),
+    "error_status": (
+        [b"HTTP/1.1 503 Service Unavailable\r\n"
+         b"Content-Length: 0\r\nConnection: close\r\n\r\n"],
+        (False, "HTTP 503"),
+        1,
+    ),
+    "redirect_loop": (
+        [_redirect("/loop")],
+        (False, "rotate request failed: too many redirects"),
+        proxy_checker._MAX_ROTATE_REDIRECTS + 1,
+    ),
+}
 
-    `max_redirects=N` fails ON the N-th redirect; the SOCKS loop permits N
-    follows. Passing the bare constant is what made the two disagree. This
-    documents the asymmetry at the point someone would "simplify" it away —
-    but it is the BEHAVIOURAL test above that actually binds it.
+
+@pytest.mark.parametrize("case", sorted(_UNFOLLOWABLE))
+def test_both_transports_agree_on_unfollowable_outcomes(tmp_path, monkeypatch, case):
+    """Transport parity for the chains that DON'T end in a 200.
+
+    `test_both_transports_agree_at_every_chain_length` compares only followable
+    chains, and that gap is exactly where this ticket's divergences kept
+    hiding: a refused non-http(s) `Location` was reported as `HTTP 302` on
+    SOCKS and `connection failed` on aiohttp (whose
+    `NonHttpUrlRedirectClientError` subclasses `ClientError`), and on the
+    declared floor of `aiohttp>=3.9.0` — which raises a bare `ValueError` and
+    has no such class at all — as `rotate request failed`. One condition, three
+    operator-facing messages, selected by transport and by library version.
+
+    Comparing the FULL result tuple matters as much as parametrizing the
+    outcomes: the round-3 divergence was found only because the message, not
+    just the boolean verdict, was part of the comparison.
+
+    Connection counts are asserted too, so "agreeing" cannot mean both
+    transports quietly fetching a target they were supposed to refuse.
     """
-    source = inspect.getsource(proxy_checker.fetch_status_via_proxy)
-    assert "max_redirects=_MAX_ROTATE_REDIRECTS + 1" in source
-    assert "allow_redirects=True" in source
+    responses, expected, connections = _UNFOLLOWABLE[case]
+
+    socks_result, socks_seen = _rotate_through_socks5_seq(
+        tmp_path, monkeypatch, responses
+    )
+    http_result, http_seen = _rotate_through_http_proxy_seq(monkeypatch, responses)
+
+    assert socks_result == http_result, (
+        f"{case}: socks5 said {socks_result}, http said {http_result} — one "
+        f"condition, two operator-facing answers chosen by transport"
+    )
+    # Pin WHICH answer, so the two cannot drift together into being uniformly
+    # wrong — and so the message keeps naming the right actor.
+    assert socks_result == expected, f"{case}: {socks_seen} / {http_seen}"
+    assert len(socks_seen) == connections, f"{case}: socks made {len(socks_seen)}"
+    assert len(http_seen) == connections, f"{case}: http made {len(http_seen)}"
+
+
+def test_the_library_never_follows_a_redirect_itself():
+    """aiohttp must be asked for ONE hop, never a chain.
+
+    This is the structural guarantee that replaced three rounds of finding
+    fresh ways the two transports disagreed. While the library owned redirect
+    policy for HTTP proxies and this module owned it for SOCKS, every property
+    of that policy was a latent divergence — the hop bound, the message for an
+    exhausted budget, and the handling of a non-http(s) `Location`, which
+    aiohttp reports differently across its own supported versions and so could
+    not be matched at all without raising the dependency floor.
+
+    `allow_redirects=False` makes the library's redirect behaviour unreachable
+    rather than merely matched. A source assertion is the right shape here
+    because the property is "this argument is present": the behavioural test
+    above proves the two transports agree, and this one names the reason they
+    cannot stop agreeing.
+    """
+    source = inspect.getsource(proxy_checker._one_hop_via_aiohttp)
+    assert "allow_redirects=False" in source
+    # And the follow-policy arguments are gone: they belong to the loop now.
+    assert "max_redirects" not in source
 
 
 # --------------------------------------------------------------------------
