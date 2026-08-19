@@ -68,8 +68,8 @@ def test_regenerated_token_differs_every_time():
 def test_rotate_uses_rotate_url_when_set(monkeypatch):
     calls = []
 
-    def fake_fetch(url, timeout):
-        calls.append((url, timeout))
+    def fake_fetch(url, proxy_url, timeout):
+        calls.append((url, proxy_url, timeout))
         return True, "HTTP 200"
 
     monkeypatch.setattr(service_mod, "_fetch_rotate_url", fake_fetch)
@@ -77,14 +77,22 @@ def test_rotate_uses_rotate_url_when_set(monkeypatch):
     url, note = s.rotate_proxy(
         "socks5://u:p@h:1", "https://api.asocks.com/v2/proxy/refresh/1?apiKey=k"
     )
-    assert calls == [("https://api.asocks.com/v2/proxy/refresh/1?apiKey=k", 7)]
+    # The proxy being rotated must be handed down as the TRANSPORT for the
+    # rotate request — it is not enough that rotate_proxy merely holds it.
+    assert calls == [
+        (
+            "https://api.asocks.com/v2/proxy/refresh/1?apiKey=k",
+            "socks5://u:p@h:1",
+            7,
+        )
+    ]
     assert url == "socks5://u:p@h:1"
     assert "rotate endpoint OK" in note
 
 
 def test_rotate_reports_rotate_url_failure(monkeypatch):
     monkeypatch.setattr(
-        service_mod, "_fetch_rotate_url", lambda u, t: (False, "HTTP 500")
+        service_mod, "_fetch_rotate_url", lambda u, p, t: (False, "HTTP 500")
     )
     s = ProxyService()
     url, note = s.rotate_proxy("socks5://u:p@h:1", "https://rotate.example/x")

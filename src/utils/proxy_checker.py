@@ -16,6 +16,42 @@ except ImportError:
 from .proxy_parser import parse_proxy
 from .validation import PROXY_SCHEMES
 
+class _TooManyRotateRedirects(Exception):
+    """The rotate chain outran its hop budget.
+
+    Raised by _follow_rotate_chain, which is the ONLY redirect implementation
+    in this module — so this is transport-independent by construction rather
+    than by two branches agreeing to raise comparable things.
+
+    Deliberately NOT raised for a 3xx that could not be followed for lack of a
+    `Location`. That is a fact about the ENDPOINT (it redirected nowhere) and
+    still reports its real status code; this one is a fact about PERSONA (it
+    stopped following).
+    """
+
+
+class _RefusedRedirectScheme(Exception):
+    """A `Location:` pointed somewhere that is not http(s), so it was refused.
+
+    Its own exception, and its own operator-facing message, because it is a
+    fact about PERSONA's refusal rather than about the endpoint's answer — the
+    same distinction _TooManyRotateRedirects draws. Reporting the endpoint's
+    `HTTP 302` here described the wrong actor: the endpoint answered fine and
+    persona declined to follow it to `file:///etc/passwd`.
+
+    This is also the class that used to be aiohttp's to raise, and the reason
+    the library no longer follows redirects at all (see _follow_rotate_chain):
+    across the declared floor of `aiohttp>=3.9.0` the same condition surfaced
+    as THREE different operator-facing messages — `NonHttpUrlRedirectClientError`
+    (a ClientError subclass, so it was misreported as `connection failed`) on
+    newer versions, a bare `ValueError` on 3.9.0 (which has no such class at
+    all, so it fell through to the generic arm), and the SOCKS branch's
+    `HTTP 302`. Owning the hop ourselves makes the library's version-dependent
+    behaviour UNREACHABLE rather than merely matched, which is the only way to
+    settle a 3.9-vs-3.14 split without raising the dependency floor.
+    """
+
+
 # Exception classes for the except arms in check_proxy. They must NOT name
 # `aiohttp` directly: the SOCKS path is stdlib-only and runs with aiohttp
 # absent, and Python evaluates an except expression while another exception is
@@ -30,6 +66,21 @@ else:
     _PROXY_CONNECT_ERRORS = ()
     _CLIENT_ERRORS = ()
 
+# The rotate path's two redirect outcomes. NEITHER is conditional on aiohttp
+# any more, and that is the point: the rotate fetch passes
+# `allow_redirects=False`, so the library never processes a `Location` and
+# cannot raise about one. Both conditions are decided in _follow_rotate_chain,
+# on one code path, for both transports.
+#
+# This replaced a tuple that paired `aiohttp.TooManyRedirects` with our own
+# exception so the two branches would report the same message. That worked for
+# the hop budget and failed for everything else, because matching a library's
+# behaviour case-by-case only ever covers the cases you thought of — three
+# rounds of review found three more. Not letting the library have the
+# behaviour is the version of this that cannot drift.
+_REDIRECT_LIMIT_ERRORS: tuple[type[BaseException], ...] = (_TooManyRotateRedirects,)
+_REFUSED_SCHEME_ERRORS: tuple[type[BaseException], ...] = (_RefusedRedirectScheme,)
+
 #: The socks schemes the validator accepts, derived from ITS tuple rather than
 #: retyped here — see PROXY_SCHEMES. Used for documentation and by the tests;
 #: the runtime decision is _is_socks_scheme(), which is deliberately broader.
@@ -38,6 +89,38 @@ SOCKS_SCHEMES = frozenset(s for s in PROXY_SCHEMES if s.startswith("socks"))
 # Hard cap on the geo response we will buffer. The body is attacker-influenced
 # (hostile endpoint or a MITM on the exit), so an unbounded read is a memory DoS.
 _MAX_GEO_BODY = 256 * 1024
+
+#: User-Agent for requests that travel to a THIRD-PARTY endpoint on the
+#: operator's behalf (the provider rotate endpoint). Deliberately neutral: the
+#: rotate path used to send `User-Agent: persona`, which self-identified the
+#: tool to the proxy provider on every rotation. `persona-proxy-check/1.0`
+#: (below, on the geo probe) is a different case — it only ever reaches the geo
+#: endpoint we chose — so it is left alone.
+_NEUTRAL_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+
+#: Redirect hops the rotate fetch will follow, stated ONCE for both transports.
+#: A rotate endpoint commonly sits behind a 301/302 (vanity path -> API host,
+#: http->https canonicalisation, a provider URL migration), and the direct
+#: urlopen this path replaced followed those for free. Returning the 3xx
+#: unfollowed would report `rotate endpoint OK (HTTP 302)` to the operator for a
+#: rotation that NEVER HAPPENED — a silent false success, strictly worse than
+#: the honest failure the rest of this path is built around.
+#:
+#: Both branches are pinned to this same number on purpose. The aiohttp branch
+#: would otherwise inherit its library default (10) while the SOCKS branch
+#: hard-coded its own, leaving one function with two behaviours selected by
+#: transport — and socks5 is persona's DEFAULT scheme, so the divergent one
+#: would be what most operators actually get. That is the drift this module
+#: exists to prevent (see _is_socks_scheme, _http_get_head).
+_MAX_ROTATE_REDIRECTS = 5
+
+#: The 3xx codes that carry a `Location` worth following. 300 (Multiple Choices)
+#: and 304 (Not Modified) are deliberately absent: neither designates a single
+#: replacement request.
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
 
 def _is_socks_scheme(scheme: str) -> bool:
@@ -346,19 +429,30 @@ async def _read_http_body(reader: asyncio.StreamReader, headers: dict) -> bytes:
     return bytes(out)
 
 
-async def _http_get_json(
+async def _http_get_head(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
     host: str,
     path: str,
-) -> tuple[int, dict | None]:
-    """Minimal HTTP/1.1 GET over an already-established (TLS) stream."""
+    user_agent: str,
+    accept: str,
+) -> tuple[int, dict[str, str]]:
+    """Write a minimal HTTP/1.1 GET over an already-established (TLS) stream and
+    parse the status line + response headers. The body is left unread on the
+    reader for the caller to consume (or discard).
+
+    Shared by both in-tunnel callers — the JSON geo probe and the status-only
+    rotate fetch — on purpose: this is the module whose entire existence is owed
+    to a hand-maintained scheme set drifting from its source of truth (see
+    _is_socks_scheme). Two hand-rolled copies of the request write and the head
+    parse would drift the same way.
+    """
     writer.write(
         (
             f"GET {path} HTTP/1.1\r\n"
             f"Host: {host}\r\n"
-            "User-Agent: persona-proxy-check/1.0\r\n"
-            "Accept: application/json\r\n"
+            f"User-Agent: {user_agent}\r\n"
+            f"Accept: {accept}\r\n"
             "Accept-Encoding: identity\r\n"
             "Connection: close\r\n"
             "\r\n"
@@ -374,26 +468,78 @@ async def _http_get_json(
         if ":" in line:
             key, value = line.split(":", 1)
             headers[key.strip().lower()] = value.strip()
+    return status, headers
+
+
+async def _http_get_json(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    host: str,
+    path: str,
+) -> tuple[int, dict | None]:
+    """Minimal HTTP/1.1 GET over an already-established (TLS) stream."""
+    status, headers = await _http_get_head(
+        reader, writer, host, path, "persona-proxy-check/1.0", "application/json"
+    )
     if status != 200:
         return status, None
     data = json.loads(await _read_http_body(reader, headers))
     return status, (data if isinstance(data, dict) else None)
 
 
-async def _geo_via_socks(
+async def _http_get_status(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    host: str,
+    path: str,
+) -> tuple[int, dict[str, str]]:
+    """Status-only GET: the response BODY IS NEVER PARSED.
+
+    A provider rotate endpoint commonly answers `200 OK` with plain text (or an
+    empty body). Reusing _http_get_json here would turn a perfectly successful
+    rotation into a JSONDecodeError, so the status line is all this reads.
+
+    The response HEADERS come back with it, because a 3xx has to be followed and
+    `Location` is a HEADER. "Never parse the body" was never a reason to ignore
+    the head — the two are different reads, and conflating them is what made an
+    unfollowed 302 report as a successful rotation.
+    """
+    return await _http_get_head(reader, writer, host, path, _NEUTRAL_USER_AGENT, "*/*")
+
+
+async def _open_socks_stream(
     proxy_config: dict, scheme: str, url: str
-) -> tuple[int, dict | None]:
-    """Fetch the geo endpoint through a real SOCKS handshake.
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter, str, str]:
+    """Open a stream to `url`'s host THROUGH the SOCKS proxy, TLS included.
+
+    Returns (reader, writer, target_host, path) with the tunnel established and
+    — for an https target — TLS already negotiated INSIDE it. The caller owns
+    the writer and must close it.
 
     Uses plain asyncio + the stdlib only — the same approach the in-tree bridge
     (src/services/proxy/bridge.py) already takes — so this adds no dependency
     and cannot raise at import time in an environment where PySocks or
     aiohttp_socks happen not to be installed.
+
+    Extracted so the SOCKS4-vs-5 dispatch, the in-tunnel TLS and the
+    connect-failure teardown exist ONCE rather than once per caller. Both
+    in-tunnel callers (the JSON geo probe and the status-only rotate fetch) are
+    the same tunnel differing only in what they read off it; two copies meant a
+    future fix to the handshake had two sites to find, which is the same drift
+    argument _is_socks_scheme and _http_get_head are already built on.
+
+    The target host is always handed to the proxy as a DOMAIN NAME (atyp 0x03 /
+    the SOCKS4a form) and never resolved here, so no DNS query for it ever
+    leaves the operator's real resolver.
     """
     target = urllib.parse.urlparse(url)
     target_host = target.hostname or ""
     target_port = target.port or (443 if target.scheme == "https" else 80)
     path = target.path or "/"
+    if target.query:
+        # A rotate endpoint's API key/session id lives in the query string —
+        # dropping it would turn every rotate into an unauthenticated request.
+        path = f"{path}?{target.query}"
     upstream = urllib.parse.urlparse(proxy_config["server"])
 
     loop = asyncio.get_running_loop()
@@ -412,9 +558,9 @@ async def _geo_via_socks(
                 proxy_config.get("username", ""),
                 proxy_config.get("password", ""),
             )
-        # TLS is negotiated INSIDE the SOCKS tunnel, against the geo endpoint's
-        # own certificate: the proxy carries opaque bytes and can no more read
-        # or forge the response than it could before. (It also means the
+        # TLS is negotiated INSIDE the SOCKS tunnel, against the target's own
+        # certificate: the proxy carries opaque bytes and can no more read or
+        # forge the response than it could before. (It also means the
         # credentials went out in the SOCKS handshake, not as the cleartext
         # pre-TLS `Proxy-Authorization: Basic` header aiohttp was emitting.)
         context = _ssl_context() if target.scheme == "https" else None
@@ -426,19 +572,297 @@ async def _geo_via_socks(
     except BaseException:
         sock.close()
         raise
+    return reader, writer, target_host, path
+
+
+async def _close_stream(writer: asyncio.StreamWriter) -> None:
+    """Tear a tunnel down without letting the teardown fail the result.
+
+    Await the close: on a TLS transport an un-awaited close defers the shutdown
+    to GC, which surfaces as "Task was destroyed but it is pending" / unraised
+    SSL errors in the app's disk-backed log. Errors here are about tearing down
+    a connection whose answer we already have, so they must not turn a good
+    check into a failure.
+    """
+    writer.close()
+    try:
+        await writer.wait_closed()
+    except (OSError, ssl.SSLError):
+        pass
+
+
+async def _geo_via_socks(
+    proxy_config: dict, scheme: str, url: str
+) -> tuple[int, dict | None]:
+    """Fetch the geo endpoint through a real SOCKS handshake."""
+    reader, writer, target_host, path = await _open_socks_stream(
+        proxy_config, scheme, url
+    )
     try:
         return await _http_get_json(reader, writer, target_host, path)
     finally:
-        writer.close()
-        # Await the close: on a TLS transport an un-awaited close defers the
-        # shutdown to GC, which surfaces as "Task was destroyed but it is
-        # pending" / unraised SSL errors in the app's disk-backed log. Errors
-        # here are about tearing down a connection whose answer we already have,
-        # so they must not turn a good check into a failure.
+        await _close_stream(writer)
+
+
+async def _one_hop_via_socks(
+    proxy_config: dict, scheme: str, url: str
+) -> tuple[int, dict[str, str]]:
+    """ONE status-only GET through a real SOCKS handshake. Never follows.
+
+    Stops at the status line — the body is never parsed — so a plain-text rotate
+    response is a success rather than a JSONDecodeError. The response headers
+    come back with it because `Location` is a header and the caller's redirect
+    loop needs it.
+
+    A FRESH tunnel per hop is what keeps the exit-side resolution property true
+    for every request in a chain: the target host goes to the proxy as a domain
+    name and is never resolved on the operator's real resolver, on hop 1 and on
+    hop 5 alike.
+    """
+    reader, writer, target_host, path = await _open_socks_stream(
+        proxy_config, scheme, url
+    )
+    try:
+        return await _http_get_status(reader, writer, target_host, path)
+    finally:
+        await _close_stream(writer)
+
+
+async def _one_hop_via_aiohttp(session, proxy_url: str, url: str) -> tuple[int, dict[str, str]]:
+    """ONE status-only GET through an HTTP proxy. Never follows.
+
+    `allow_redirects=False` is the load-bearing argument in this function, and
+    it is what ended a whole class of review findings — see _follow_rotate_chain
+    and _RefusedRedirectScheme. aiohttp is reduced to exactly what the SOCKS
+    branch does: perform one request, hand back the status and the headers, make
+    no policy decision about a `Location`.
+
+    The body is never read, let alone parsed.
+    """
+    async with session.get(
+        url,
+        proxy=proxy_url,
+        allow_redirects=False,
+        headers={"User-Agent": _NEUTRAL_USER_AGENT, "Accept": "*/*"},
+    ) as response:
+        return response.status, {k.lower(): v for k, v in response.headers.items()}
+
+
+async def _follow_rotate_chain(do_hop, url: str) -> int:
+    """Follow the rotate endpoint's redirect chain. ONE implementation, both
+    transports.
+
+    `do_hop` performs a single request and returns (status, headers); it is the
+    ONLY part that differs between SOCKS and aiohttp. Every decision about a
+    redirect — whether to follow, where to, how many times, and what each
+    failure is called — is made HERE, once.
+
+    That structure is the fix for a defect class, not a style preference. This
+    policy used to be implemented twice: by this loop for SOCKS, and by aiohttp
+    for HTTP proxies. Three consecutive review rounds each found a fresh way
+    the two disagreed — follow vs. don't-follow, a hop-budget off-by-one
+    (`max_redirects=N` fails ON the N-th while `range(N + 1)` permits N
+    follows: the same bound in different units), two different messages for an
+    exhausted budget, and finally a refused non-http(s) `Location` reported
+    three ways across the declared `aiohttp>=3.9.0` range. Each was fixed by
+    making the library's behaviour match ours in one more case; the class kept
+    producing new instances because matching case-by-case only ever covers the
+    cases you thought of. With `allow_redirects=False` the library's redirect
+    behaviour is not matched, it is UNREACHABLE — including the parts of it
+    that vary by version, which no amount of matching could have fixed without
+    raising the dependency floor.
+
+    A 3xx IS followed. Returning it unfollowed would hand the caller a status
+    the old `< 400` verdict read as success, reporting `rotate endpoint OK
+    (HTTP 302)` for a rotation that never happened: the redirect target — the
+    request that would ACTUALLY have rotated the proxy — was never fetched. The
+    direct urlopen this path replaced followed redirects for free.
+
+    Three outcomes, deliberately distinct because they are facts about
+    different actors:
+
+    * a status that is not a followable 3xx -> returned as-is (the endpoint's
+      answer, including a 3xx that redirected NOWHERE for lack of a Location);
+    * _RefusedRedirectScheme -> persona refused a non-http(s) target;
+    * _TooManyRotateRedirects -> persona stopped following.
+
+    The http/https guard is RE-APPLIED per hop: the caller's guard only ever
+    sees the ORIGINAL url, so a `Location: file:///etc/passwd` or a scheme
+    downgrade must not ride through on a later hop.
+    """
+    for _hop in range(_MAX_ROTATE_REDIRECTS + 1):
+        status, headers = await do_hop(url)
+
+        if status not in _REDIRECT_STATUSES:
+            return status
+
+        # A 3xx with no Location redirected nowhere. That is the ENDPOINT's
+        # answer, so its real status is returned unchanged and the caller's
+        # `status < 300` verdict is what makes it a failure.
+        location = headers.get("location", "")
+        if not location:
+            return status
+        # urljoin so a relative Location ("/final") resolves against the URL it
+        # came from, which is the common provider shape.
+        nxt = urllib.parse.urljoin(url, location)
+        if urllib.parse.urlparse(nxt).scheme.lower() not in ("http", "https"):
+            raise _RefusedRedirectScheme(
+                "rotate chain redirected to a non-http(s) target"
+            )
+        url = nxt
+
+    # The budget is spent and the chain was STILL going — a redirect loop or an
+    # over-long chain, which an unbounded follow would hang on.
+    raise _TooManyRotateRedirects(
+        f"rotate chain exceeded {_MAX_ROTATE_REDIRECTS} redirects"
+    )
+
+
+async def fetch_status_via_proxy(
+    proxy_str: str, url: str, timeout: int
+) -> tuple[bool, str]:
+    """GET `url` THROUGH `proxy_str`, reporting only whether it succeeded.
+
+    Written for the provider rotate endpoint, which used to be fetched with a
+    bare urlopen on the operator's REAL IP — disclosing, in one timestamped
+    request, that this real address controls that proxy account, plus a DNS
+    query from the operator's real resolver for the provider's hostname.
+
+    Two properties matter as much as the routing itself:
+
+    * The rotate target is resolved AT THE EXIT, never locally. The SOCKS path
+      sends the host as a domain name (atyp 0x03 / the SOCKS4a form) and the
+      aiohttp path hands the absolute URL to the proxy. That is the same rule
+      _socks4_connect already fails closed for, now applied here.
+    * It also REMOVES rather than adds SSRF exposure: the request no longer
+      originates from the operator's machine, so a crafted rotate_url can no
+      longer reach the local network or a cloud metadata endpoint from here.
+      (The caller's http/https-only scheme guard still stands — it blocks
+      file:// / data:// — but the local-network reach it was written against
+      is gone.)
+
+    _is_blocked_proxy_host is deliberately NOT applied to the transport proxy.
+    That gate guards check_proxy against a PASTED string being used as a
+    port-scan oracle; here the proxy is already stored and operator-configured,
+    and loopback SOCKS endpoints (Tor, `ssh -D`) must keep working.
+
+    Redirects are FOLLOWED, to the _MAX_ROTATE_REDIRECTS bound. Both transports
+    get that behaviour from the SAME loop (_follow_rotate_chain): each performs
+    a single hop and makes no policy decision about a `Location`, so the bound,
+    the per-hop scheme guard and every failure message are shared by
+    construction rather than by two implementations being kept in agreement.
+    aiohttp is called with `allow_redirects=False` precisely so its own
+    redirect handling — which varies across the declared `aiohttp>=3.9.0`
+    range — is never reached. A rotate endpoint commonly sits behind a 301/302,
+    and the direct urlopen this replaced followed them for free.
+
+    Returns (status < 300, "HTTP <status>") — or (False, reason) if the request
+    could not be sent through the proxy at all. It NEVER falls back to a direct
+    send: no transport means no request.
+
+    The verdict is `< 300`, NOT `< 400`, and the difference is the whole point:
+    a 3xx that reaches this line is one that could NOT be followed (no Location,
+    a non-http(s) Location, or a chain past the hop bound). Its redirect target
+    — the request that would actually have rotated the proxy — was never
+    fetched, so counting it as success would write `rotate endpoint OK (HTTP
+    302)` to the operator's activity log for a rotation that never happened.
+    A followed redirect never reaches here as a 3xx; it arrives as the final
+    status of the chain.
+    """
+    proxy_config = parse_proxy(proxy_str)
+    if not proxy_config:
+        return False, "rotate request not sent: no proxy transport"
+
+    scheme = urllib.parse.urlparse(proxy_config["server"]).scheme.lower()
+    is_socks = _is_socks_scheme(scheme)
+
+    if not is_socks and not AIOHTTP_AVAILABLE:
+        # Fail closed, exactly as check_proxy does for the same branch: the only
+        # alternative to "not sent" here would be a direct send on the real IP,
+        # which is the leak this function exists to close.
+        return False, "rotate request not sent: aiohttp not installed"
+
+    proxy_url = proxy_config["server"]
+    if "username" in proxy_config:
+        url_scheme, rest = proxy_url.split("://", 1)
+        password = proxy_config.get("password", "")
+        proxy_url = f"{url_scheme}://{proxy_config['username']}:{password}@{rest}"
+
+    try:
+        if is_socks:
+
+            async def do_hop(hop_url: str) -> tuple[int, dict[str, str]]:
+                return await _one_hop_via_socks(proxy_config, scheme, hop_url)
+
+            # ONE wait_for around the WHOLE chain, not per hop: `timeout` is the
+            # operator's budget for rotating the proxy, and a per-hop timeout
+            # would silently let a redirect chain take _MAX_ROTATE_REDIRECTS
+            # times longer than they asked for.
+            status = await asyncio.wait_for(_follow_rotate_chain(do_hop, url), timeout)
+        else:
+            # ClientTimeout(total=) applied to a session whose redirects we now
+            # drive ourselves is PER REQUEST, so it is the same per-hop problem
+            # in aiohttp's units. The wait_for below is what actually bounds the
+            # chain, and it bounds both transports identically.
+            timeout_obj = aiohttp.ClientTimeout(total=timeout)
+            async with aiohttp.ClientSession(timeout=timeout_obj) as session:
+
+                async def do_hop(hop_url: str) -> tuple[int, dict[str, str]]:
+                    return await _one_hop_via_aiohttp(session, proxy_url, hop_url)
+
+                status = await asyncio.wait_for(
+                    _follow_rotate_chain(do_hop, url), timeout
+                )
+        return status < 300, f"HTTP {status}"
+    except asyncio.TimeoutError:
+        return False, "rotate request timed out"
+    except _REDIRECT_LIMIT_ERRORS:
+        # The proxy and the endpoint both worked; the redirect chain was a loop
+        # or too long. Raised by _follow_rotate_chain for BOTH transports, so
+        # this message cannot depend on which one ran.
+        return False, "rotate request failed: too many redirects"
+    except _REFUSED_SCHEME_ERRORS:
+        # PERSONA refused the target — the endpoint answered fine and the proxy
+        # carried it fine, so neither "HTTP 302" nor "connection failed"
+        # describes what happened. `Location: file:///etc/passwd` is the hostile
+        # case the per-hop guard exists for, and it is the one where the
+        # operator most deserves an accurate message rather than being sent to
+        # debug their proxy.
+        return False, "rotate request failed: redirect to a non-http(s) target refused"
+    except _PROXY_CONNECT_ERRORS:
+        return False, "rotate request failed: could not connect to proxy"
+    except _CLIENT_ERRORS:
+        # Never echo the exception: its text embeds the proxy host:port, and
+        # this string reaches the disk-backed daily log and the Activity Log,
+        # which the app otherwise keeps free of the endpoint.
+        return False, "rotate request failed: connection failed"
+    except OSError:
+        return False, "rotate request failed: could not connect to proxy"
+    except Exception:
+        return False, "rotate request failed"
+
+
+def fetch_status_via_proxy_sync(
+    proxy_str: str, url: str, timeout: int
+) -> tuple[bool, str]:
+    """Blocking wrapper — the rotate path runs on a background thread.
+
+    `timeout` is explicit on both this and the async form, matching the reason
+    `_fetch_rotate_url` refuses a default for `proxy_url`: on a path whose whole
+    premise is that a caller must not silently get behaviour it did not ask for,
+    a defaulted argument is the mechanism by which that happens.
+    """
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
-            await writer.wait_closed()
-        except (OSError, ssl.SSLError):
-            pass
+            return loop.run_until_complete(
+                fetch_status_via_proxy(proxy_str, url, timeout)
+            )
+        finally:
+            loop.close()
+    except Exception:
+        return False, "rotate request failed"
 
 
 async def check_proxy(
