@@ -2,6 +2,7 @@ import json
 import pathlib
 
 from src.services.browser.audio_ext import build_audio_extension
+from tests.native_mask_probe import AUDIO_STUBS, assert_reads_native
 
 
 def test_creates_files(tmp_path):
@@ -41,13 +42,25 @@ def test_different_seeds_differ(tmp_path):
 
 
 def test_native_tostring_masking(tmp_path):
-    # Wrappers must mark themselves with __pnaName so the shared native_ext
-    # Function.prototype.toString patch renders them native even under
-    # Function.prototype.toString.call(fn); an own `.toString` override is
-    # bypassed by that .call form and must NOT be used.
+    # THE INVARIANT: an audio wrapper must stringify as native under
+    # Function.prototype.toString.call(fn) — the form a masking detector uses,
+    # and the one an own `.toString` override is bypassed by.
+    #
+    # Asserted by EXECUTION, not by grepping the generated text for the marker
+    # the current implementation happens to use. A substring check passes whether
+    # or not the override installed and whether or not the patch honours it, and
+    # would fail on a marker-free implementation that is strictly better.
+    # assert_reads_native also runs the counterfactual: without native_ext's
+    # patch the same probe must NOT read native.
     d = build_audio_extension(1, str(tmp_path / "ext"))
     js = (pathlib.Path(d) / "audio.js").read_text()
-    assert "__pnaName" in js
+    assert_reads_native(
+        tmp_path,
+        [pathlib.Path(d) / "audio.js"],
+        AUDIO_STUBS,
+        "Function.prototype.toString.call(AudioBuffer.prototype.getChannelData)",
+        "getChannelData",
+    )
     assert "replacement.toString = function" not in js
 
 

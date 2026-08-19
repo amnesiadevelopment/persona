@@ -2,6 +2,7 @@ import json
 import pathlib
 
 from src.services.browser.measuretext_ext import build_measuretext_extension
+from tests.native_mask_probe import CANVAS_STUBS, assert_reads_native
 
 
 def test_builds_unpacked_extension(tmp_path):
@@ -28,10 +29,23 @@ def test_script_hooks_measuretext_and_uses_dom_width(tmp_path):
     assert "getBoundingClientRect" in js
     # substitutes the repaired metrics through a Proxy over the native object
     assert "Proxy" in js
-    # masks the override so it doesn't read as patched: marked with __pnaName so
-    # the native_ext toString patch renders it native even under
-    # Function.prototype.toString.call(fn) (an own .toString override is bypassed).
-    assert "__pnaName" in js
+    # THE INVARIANT: the measureText override must stringify as native under
+    # Function.prototype.toString.call(fn) — the form a masking detector uses,
+    # and the one an own `.toString` override is bypassed by.
+    #
+    # Asserted by EXECUTION, not by grepping the generated text for the marker
+    # the current implementation happens to use. A substring check passes whether
+    # or not the override installed and whether or not the patch honours it, and
+    # would fail on a marker-free implementation that is strictly better.
+    # assert_reads_native also runs the counterfactual: without native_ext's
+    # patch the same probe must NOT read native.
+    assert_reads_native(
+        tmp_path,
+        [pathlib.Path(d) / "measuretext.js"],
+        CANVAS_STUBS,
+        "Function.prototype.toString.call(CanvasRenderingContext2D.prototype.measureText)",
+        "measureText",
+    )
     assert "measureText.toString = function" not in js
 
 
