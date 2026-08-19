@@ -42,3 +42,9 @@ def get_event_bus(
     container: Container = Depends(_container),
 ) -> EventBus:
     return container.event_bus
+
+
+def get_trash_service(
+    container: Container = Depends(_container),
+):
+    return container.trash_service

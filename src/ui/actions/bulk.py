@@ -31,9 +31,13 @@ def bulk_delete_profiles(
         # deletions run behind it and the list refreshes as each completes.
         def work() -> None:
             for name in names:
-                pm.delete_profile(name)
+                # Surface a failed park rather than reporting every profile as
+                # deleted: delete_profile returns False when the data dir could
+                # not be moved, leaving the profile fully intact.
+                ok = pm.delete_profile(name)
+                key = "deleted_profile" if ok else "delete_profile_failed"
                 # log/refresh must land on the UI thread when we're off it.
-                _post(lambda n=name: log(get_string("deleted_profile", name=n)))
+                _post(lambda n=name, k=key: log(get_string(k, name=n)))
                 _post(refresh)
             _post(on_done)
             _post(refresh)
@@ -52,7 +56,12 @@ def bulk_delete_profiles(
         "",
         do_bulk_delete,
         title=f"Delete {count} profile{'s' if count != 1 else ''}?",
-        body="This action cannot be undone.",
+        # Truthful now that a delete is recoverable: these move to the trash,
+        # they are not destroyed. The panic wipe is the irreversible one.
+        body=(
+            f"{'They' if count != 1 else 'It'} move"
+            f"{'' if count != 1 else 's'} to the trash and can be restored."
+        ),
     )
 
 
