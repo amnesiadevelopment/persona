@@ -2,6 +2,7 @@ import json
 import pathlib
 
 from src.services.browser.geo_ext import build_geo_extension
+from tests.native_mask_probe import GEO_STUBS, assert_reads_native
 
 
 def test_creates_manifest_and_script(tmp_path):
@@ -30,12 +31,24 @@ def test_overrides_getcurrentposition(tmp_path):
 
 
 def test_overrides_are_native_masked(tmp_path):
-    # A detector calling Function.prototype.toString.call(geo.getCurrentPosition)
-    # would read the wrapper source; each override must carry __pnaName so the
-    # native_ext toString patch renders it native.
+    # THE INVARIANT: each geolocation override must stringify as native under
+    # Function.prototype.toString.call(fn) — the form a detector reading
+    # geo.getCurrentPosition's source would use.
+    #
+    # Asserted by EXECUTION, not by grepping the generated text for the marker
+    # the current implementation happens to use. A substring check passes whether
+    # or not the override installed and whether or not the patch honours it, and
+    # would fail on a marker-free implementation that is strictly better.
+    # assert_reads_native also runs the counterfactual: without native_ext's
+    # patch the same probe must NOT read native.
     ext = build_geo_extension(1.0, 2.0, str(tmp_path / "geo"))
-    js = (pathlib.Path(ext) / "geo.js").read_text()
-    assert "__pnaName" in js
+    assert_reads_native(
+        tmp_path,
+        [pathlib.Path(ext) / "geo.js"],
+        GEO_STUBS,
+        "Function.prototype.toString.call(navigator.geolocation.getCurrentPosition)",
+        "getCurrentPosition",
+    )
 
 
 def test_geo_on_shared_recursive_registry(tmp_path):
