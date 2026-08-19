@@ -10,11 +10,12 @@ from ...models.proxy import Proxy
 from ...utils.atomic import atomic_write_json
 from ...utils.proxy_parser import parse_proxy_server
 from ...utils.store_guard import StoreGuardMixin
+from ...utils.trashable import TrashableMixin
 
 logger = get_logger("proxy.store")
 
 
-class ProxyStore(StoreGuardMixin):
+class ProxyStore(StoreGuardMixin, TrashableMixin):
     _guard_logger = logger
     _guard_noun_plural = "proxies"
     _guard_noun_singular = "proxy"
@@ -223,10 +224,62 @@ class ProxyStore(StoreGuardMixin):
         return True
 
     def delete(self, name: str) -> bool:
+        """Move a proxy to the trash. Its credentials go with it — trash.json is
+        written 0600 inside PERSONA_HOME, exactly like proxies.json — so trashing
+        a proxy does NOT remove its secret material from disk. Permanent deletion
+        does; the interface says so rather than implying otherwise."""
         with self._lock:
             if name not in self.proxies:
                 return False
-            del self.proxies[name]
+            proxy = self.proxies.pop(name)
             self._save()
-        logger.info("Deleted proxy: %s", name)
+        # Which profiles used it, so restore can re-point them. The caller drops
+        # the dangling reference from every profile (a lingering proxy name
+        # stranded the profile page), so it's only recoverable if recorded here.
+        refs = []
+        pm = self._profile_manager
+        if pm is not None:
+            refs = [p.name for p in pm.list_profiles() if p.proxy == name]
+        self._trash().add(
+            "proxy", name, {"proxy": proxy.to_dict(), "profiles": refs}
+        )
+        logger.info("Moved proxy to trash: %s", name)
         return True
+
+    def restore_proxy(self, entry) -> tuple[bool, str]:
+        """Put a trashed proxy back with its credentials and geo, re-pointing
+        the profiles that used it."""
+        name = entry.name
+        with self._lock:
+            if name in self.proxies:
+                return False, (
+                    f"A proxy named '{name}' already exists. Rename or delete "
+                    "it, then restore again."
+                )
+            d = entry.payload.get("proxy") or {}
+            self.proxies[name] = Proxy(
+                name=d.get("name", name),
+                url=d.get("url", ""),
+                rotate_url=d.get("rotate_url", ""),
+                country_code=d.get("country_code", ""),
+                country_name=d.get("country_name", ""),
+                last_ip=d.get("last_ip", ""),
+                timezone=d.get("timezone", ""),
+                lat=d.get("lat"),
+                lon=d.get("lon"),
+                checked_at=d.get("checked_at", 0.0),
+                last_check_ok=d.get("last_check_ok"),
+            )
+            self._save()
+        pm = self._profile_manager
+        if pm is not None:
+            for profile_name in entry.payload.get("profiles") or []:
+                profile = pm.profiles.get(profile_name)
+                # Only re-point a profile that is still unassigned: the operator
+                # may have picked another proxy in the meantime, and a restore
+                # must not silently change a live profile's exit IP.
+                if profile is not None and profile.proxy is None:
+                    profile.proxy = name
+            pm.save_profiles()
+        logger.info("Restored proxy from trash: %s", name)
+        return True, ""

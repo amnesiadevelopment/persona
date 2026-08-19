@@ -52,7 +52,12 @@ def bulk_delete_profiles(
         "",
         do_bulk_delete,
         title=f"Delete {count} profile{'s' if count != 1 else ''}?",
-        body="This action cannot be undone.",
+        # Truthful now that a delete is recoverable: these move to the trash,
+        # they are not destroyed. The panic wipe is the irreversible one.
+        body=(
+            f"{'They' if count != 1 else 'It'} move"
+            f"{'' if count != 1 else 's'} to the trash and can be restored."
+        ),
     )
 
 

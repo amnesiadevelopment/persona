@@ -99,9 +99,10 @@ def test_nav_buttons_still_navigate_with_logo_click_wired():
         and c.on_click is not None
         and c is not header.content
     ]
-    assert len(nav_containers) == 6
+    assert len(nav_containers) == 7
     for c in nav_containers:
         c.on_click(None)
     assert navigated == [
-        "profiles", "network", "bookmarks", "tags", "certificates", "connect"
+        "profiles", "network", "bookmarks", "tags", "certificates", "connect",
+        "trash",
     ]

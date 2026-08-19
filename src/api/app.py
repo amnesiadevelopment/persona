@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from ..core.logging import get_logger
-from .routes import browser_router, profiles_router, proxy_router
+from .routes import browser_router, profiles_router, proxy_router, trash_router
 from .mcp_token import get_or_create_token
 from .schemas.common import SuccessResponse
 
@@ -123,6 +123,7 @@ def create_app(container: Container) -> FastAPI:
     app.include_router(profiles_router, prefix=API_PREFIX)
     app.include_router(browser_router, prefix=API_PREFIX)
     app.include_router(proxy_router, prefix=API_PREFIX)
+    app.include_router(trash_router, prefix=API_PREFIX)
 
     @app.get("/api/v1/health", response_model=SuccessResponse, tags=["health"])
     def health_check() -> SuccessResponse:
