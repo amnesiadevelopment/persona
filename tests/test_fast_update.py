@@ -80,9 +80,13 @@ def test_install_app_zip_paths_none_when_absent(tmp_path, monkeypatch):
 
 
 def test_sha256_of_bytes_matches_hashlib():
+    # httpdl is where the ONE hashing helper lives (PS-6); assert it there
+    # rather than through a re-export on this module, so a dead-import pass over
+    # fast_update.py can't quietly break this test.
     import hashlib
+    from src.utils import httpdl
     data = b"persona code"
-    assert fu.sha256_bytes(data) == hashlib.sha256(data).hexdigest()
+    assert httpdl.sha256_bytes(data) == hashlib.sha256(data).hexdigest()
 
 
 def test_manifest_and_appzip_urls_from_assets():

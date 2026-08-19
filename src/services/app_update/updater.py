@@ -9,7 +9,6 @@ $APPIMAGE). When running from source the check still reports availability but
 apply_and_restart is a no-op guarded by the $APPIMAGE check.
 """
 
-import hashlib
 import os
 import subprocess
 import sys
@@ -19,6 +18,8 @@ import time
 
 from ..engine.updater import is_newer
 from ...core import platform as _platform
+from ...utils.httpdl import atomic_replace, curl_download, digest_ok, sha256_file
+from . import install_env, relaunch_bat
 
 APP_VERSION = "2.9.18"
 APP_REPO = "amnesiadevelopment/persona"
@@ -365,44 +366,32 @@ def download_update(
         progress(0, total)
         watcher.start()
 
-    deadline = time.monotonic() + timeout
+    # The transfer is utils.httpdl's shared curl downloader (resume, retries and
+    # the completion rule live there, one copy for every update path); the
+    # timeout policy stays here because it's this path's own — a short connect
+    # timeout plus a speed floor, matching install.sh, so a dead Tor circuit
+    # fails fast and retries on a fresh one instead of hanging.
     try:
-        for _ in range(_MAX_ATTEMPTS):
-            if time.monotonic() > deadline:
-                break
-            cmd = [
-                "curl", "-fsSL",
+        ok = curl_download(
+            url,
+            staged,
+            timeout_args=[
                 "--connect-timeout", str(_CONNECT_TIMEOUT),
                 "--speed-limit", str(_SPEED_LIMIT),
                 "--speed-time", str(_SPEED_TIME),
-                "-C", "-",            # resume from where the .part left off
-                "-o", staged,
-                url,
-            ]
-            try:
-                rc = subprocess.run(
-                    cmd, capture_output=True, **_platform.no_window_kwargs()
-                ).returncode
-            except FileNotFoundError:
-                break  # no curl; nothing else to try
-            have = os.path.getsize(staged) if os.path.exists(staged) else 0
-            # Done when the file is fully here. Several ways the last attempt can
-            # leave a COMPLETE file with a non-zero rc, all of which we accept:
-            #  - have >= total (the real size, now correctly read past redirects)
-            #  - curl exited 33/36 (HTTP 416 Range Not Satisfiable): -C - asked
-            #    to resume an already-complete file, which means it's done
-            #  - total unknown but curl succeeded
-            complete = bool(total) and have >= total
-            range_done = rc in (33, 36) and bool(total) and have >= total
-            if complete or range_done or (rc == 0 and not total and have > 0):
-                if progress is not None and total:
-                    progress(have, total)  # flush 100% to the UI
-                os.chmod(staged, 0o755)
-                return staged
-            # otherwise: rc != 0 (timeout/slow/drop) or short file -> loop+resume
+            ],
+            attempts=_MAX_ATTEMPTS,
+            total=total,
+            deadline=time.monotonic() + timeout,
+        )
     finally:
         stop.set()
-    return ""
+    if not ok:
+        return ""
+    if progress is not None and total:
+        progress(total, total)  # flush 100% to the UI
+    os.chmod(staged, 0o755)
+    return staged
 
 
 def verify_appimage_runs(path: str, timeout: int = 30) -> bool:
@@ -492,14 +481,6 @@ def verify_appimage_runs(path: str, timeout: int = 30) -> bool:
         shutil.rmtree(workdir, ignore_errors=True)
 
 
-def _sha256_file(path: str) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def fetch_expected_sha256(tag: str, name: str = "", attempts: int = 3) -> str:
     """The sha256 CI publishes for this OS's asset, or '' when unavailable.
 
@@ -560,11 +541,30 @@ def _tag_from_staged(staged: str) -> str:
 
 def verify_staged_installer(staged: str, tag: str = "", log=None) -> bool:
     """True when the staged installer's sha256 matches the checksum published
-    for its release. A fetched-and-mismatching checksum ALWAYS refuses (a
-    truncated/corrupted download must never run as an installer). When no
-    checksum can be fetched — an older release that never published one, or
-    the network dropped — fall back to the size check already done at download
-    time rather than blocking updates, and say so."""
+    for its release. FAIL-CLOSED: an installer we cannot verify never runs.
+
+    A fetched-and-mismatching checksum refuses (a truncated/corrupted download
+    must never run as an installer), and so does a checksum that cannot be
+    fetched at all. This used to fall back to the download-time size check and
+    install anyway — the same fail-open the engine updater already refused for
+    the identical situation, and the defect class 5e00d66 and bfc7cbf were each
+    reaching for. A size check is a completeness check, never an integrity one:
+    it cannot tell a truncated download from a substituted installer.
+
+    The refusal is deliberately not conditional on WHY the digest is missing.
+    fetch_expected_sha256 already retries, and on exhaustion a transient network
+    failure is indistinguishable from an absent checksum — so both refuse.
+    Availability of an update is never weighed against the integrity of what
+    gets executed (Invariant #0): a user who does not update has lost nothing, a
+    user who installs an unverified binary has lost the machine. CI has
+    published a checksum for every asset on every OS since 7b119f6 (v2.9.10), so
+    no reachable release is blocked by this.
+
+    There is no allow_missing opt-in here, on purpose: every app-update asset
+    has a digest source. The one call site in the project that genuinely has
+    none is the engine's Linux predictable-URL fallback, which opts in
+    explicitly at its own call.
+    """
 
     def say(msg: str) -> None:
         if log is not None:
@@ -575,51 +575,27 @@ def verify_staged_installer(staged: str, tag: str = "", log=None) -> bool:
 
     expected = fetch_expected_sha256(tag or _tag_from_staged(staged))
     if not expected:
-        say("Update: no published checksum for this release — "
-            "relying on the size check.")
-        return True
+        say("Update: no published checksum could be fetched for this release — "
+            "refusing to run an unverified installer. Keeping the current "
+            "version; the update will be retried.")
+        return False
     try:
-        actual = _sha256_file(staged)
+        actual = sha256_file(staged)
     except OSError as e:
         say(f"Update: couldn't read the installer to verify it: {e}")
         return False
-    if actual == expected:
+    if digest_ok(actual, expected):
         return True
     say("Update: installer checksum mismatch — refusing to run it. "
         "Keeping the current version; the download will be retried.")
     return False
 
 
-def _installed_windows_exe() -> str:
-    """Best-effort path to the installed persona.exe, so the updater can relaunch
-    it after a silent install (rather than relying on the installer's own
-    relaunch, which came up to a black window under a lowered token). Falls back
-    to sys.executable's directory, then the default install path."""
-    candidates = []
-    try:
-        # in a flet build, sys.executable IS persona.exe
-        exe = sys.executable
-        if exe and exe.lower().endswith("persona.exe"):
-            candidates.append(exe)
-        if exe:
-            candidates.append(os.path.join(os.path.dirname(exe), "persona.exe"))
-    except Exception:
-        pass
-    # per-user install location (current), then the old per-machine one
-    local = os.environ.get("LOCALAPPDATA")
-    if local:
-        candidates.append(os.path.join(local, "persona", "persona.exe"))
-    candidates.append(
-        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"),
-                     "persona", "persona.exe")
-    )
-    for c in candidates:
-        try:
-            if c and os.path.isfile(c):
-                return c
-        except Exception:
-            continue
-    return ""
+# Both of these are now owned by install_env, which the code-only fast path also
+# imports — it used to reach in here for the private names from inside a
+# function body to dodge an import cycle. The underscore aliases stay because
+# they are this module's established internal spelling.
+_installed_windows_exe = install_env.installed_windows_exe
 
 
 # Per-process values the flet runtime plants in os.environ: PYTHONPATH /
@@ -631,35 +607,8 @@ def _installed_windows_exe() -> str:
 # stale port the client never connects to — it starts and dies with no window
 # (#135 on Linux; the same inheritance runs through the Windows relaunch chain
 # persona -> cmd -> start persona.exe).
-_RUNTIME_ENV_VARS = (
-    "PYTHONPATH",
-    "PYTHONHOME",
-    "PYTHONINSPECT",
-    "PYTHONDONTWRITEBYTECODE",
-    "PYTHONNOUSERSITE",
-    "PYTHONUNBUFFERED",
-    "FLET_SERVER_UDS_PATH",
-    "FLET_SERVER_PORT",
-    "FLET_PYTHON_CALLBACK_SOCKET_ADDR",
-    "FLET_APP_CONSOLE",
-    "FLET_APP_STORAGE_DATA",
-    "FLET_APP_STORAGE_TEMP",
-    "FLET_PLATFORM",
-    "FLET_ASSETS_DIR",
-    # the client hides its window when this is merely PRESENT (any value) and
-    # nothing client-side ever shows it again — inherited across a relaunch it
-    # turns the new persona into an invisible zombie
-    "FLET_HIDE_WINDOW_ON_START",
-)
-
-
-def _relaunch_env() -> dict:
-    """A copy of the environment with every flet/python runtime var dropped,
-    for processes that outlive this persona and start the next one."""
-    env = dict(os.environ)
-    for var in _RUNTIME_ENV_VARS:
-        env.pop(var, None)
-    return env
+_RUNTIME_ENV_VARS = install_env.RUNTIME_ENV_VARS
+_relaunch_env = install_env.relaunch_env
 
 
 def _write_relaunch_bat(exe: str, installer: str, installer_pid, old_pid: int) -> str:
@@ -712,108 +661,34 @@ def _write_relaunch_bat(exe: str, installer: str, installer_pid, old_pid: int) -
     beat itself stays ~1s (cmd has no reliable sub-second sleep: `ping -w`
     against a blackhole address returns instantly when a gateway answers
     with unreachable, and a near-zero sleep would burn the iteration bound
-    while the installer still runs)."""
-    image = os.path.basename(exe)
+    while the installer still runs).
+
+    The script itself — the bounded wait loop, the flet-extraction purge, the
+    launch-and-confirm retry, the self-delete — comes from the shared generator
+    (relaunch_bat), which the fast path's app.zip swapper also uses. Only the
+    WAIT SET below is this path's own. The two used to be hand-maintained
+    near-clones with identical magic constants, which is how #195 got fixed here
+    and missed there.
+    """
     installer_image = os.path.basename(installer)
     installer_stage2 = os.path.splitext(installer_image)[0] + ".tmp"
     checks = ""
     for pid in (installer_pid, old_pid):
-        if not pid:
-            continue
-        checks += (
-            f'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul\r\n'
-            "if not errorlevel 1 goto hold\r\n"
-        )
-    # /FO CSV: the default table format truncates long image names to fit a
-    # 25-char column, and a truncated name never matches. /L: the names
-    # carry regex-special dots. A substring hit against another CSV field is
-    # harmless — it only keeps a beat busy, and the wait stays bounded.
-    names = " ".join(
-        f'/C:"{name}"'
-        for name in dict.fromkeys((installer_image, installer_stage2, image))
+        checks += relaunch_bat.pid_check(pid)
+    # The whole Inno process family plus the exe itself, matched against ONE
+    # tasklist snapshot: the downloaded setup loader, Inno's elevated <name>.tmp
+    # second stage, and any lingering persona.
+    checks += relaunch_bat.image_snapshot_check(
+        (installer_image, installer_stage2, os.path.basename(exe))
     )
-    checks += (
-        f"tasklist /FO CSV /NH 2>nul | findstr /I /L {names} >nul\r\n"
-        "if not errorlevel 1 goto hold\r\n"
+    # The stage is empty for this path — the installer has already replaced the
+    # files by the time everything has exited, so there is nothing to do between
+    # the wait and the purge. The label survives as a jump target (and as the
+    # documented "no dead time here" boundary, #205).
+    content = relaunch_bat.build_bat(
+        exe, wait_checks=checks, stage_label="settle"
     )
-    # path_provider resolves the app-data root as %APPDATA%\<company>\<product>
-    # (both "persona" in pyproject.toml), and the flet bootstrap unpacks
-    # app.zip to flet\app beneath it — the dir it deletes on a hash change
-    flet_app = r"%APPDATA%\persona\persona\flet\app"
-    content = (
-        "@echo off\r\n"
-        'cd /d "%~dp0" >nul 2>&1\r\n'
-        "set tries=0\r\n"
-        "set boots=0\r\n"
-        "set purges=0\r\n"
-        ":wait\r\n"
-        + checks +
-        "goto settle\r\n"
-        ":hold\r\n"
-        "set /a tries+=1\r\n"
-        # The poll beat is a near-instant `ping -n 1` (~10ms), not a full ~1s
-        # `ping -n 2`: the ~0.3s tasklist snapshot above is throttle enough,
-        # so the loop catches the installer's exit within a fraction of a
-        # second instead of up to a second late — every one of those seconds
-        # is the user staring at nothing. The bound rises to ~900 beats to
-        # keep the same ~5-minute wall-clock headroom for a slow silent
-        # install now that each beat is a fraction of what it was.
-        "if %tries% geq 900 goto launch\r\n"
-        "ping -n 1 127.0.0.1 >nul\r\n"
-        "goto wait\r\n"
-        ":settle\r\n"
-        # No sleep here: the wait loop already proved every holder is gone, so
-        # handle release is done, and the purge below retries rd on the rare
-        # straggler handle. A settle ping was a full second of dead time
-        # between the update closing persona and reopening it.
-        ":purge\r\n"
-        f'if not exist "{flet_app}" goto launch\r\n'
-        f'rd /s /q "{flet_app}" >nul 2>&1\r\n'
-        f'if not exist "{flet_app}" goto launch\r\n'
-        "set /a purges+=1\r\n"
-        # bounded: covers handle-release stragglers; a holder that never dies
-        # must not block the relaunch forever. Recheck near-instantly — the
-        # exists probe is the throttle, not the ping.
-        "if %purges% geq 60 goto launch\r\n"
-        "ping -n 1 127.0.0.1 >nul\r\n"
-        "goto purge\r\n"
-        ":launch\r\n"
-        # empty title + quoted path: `start` treats the first quoted token as a
-        # window title, so a bare path with spaces would launch nothing
-        f'start "" /D "{os.path.dirname(exe)}" "{exe}"\r\n'
-        # `start` returns once CreateProcess succeeded, but the new persona then
-        # re-extracts app.zip behind its boot screen before persona.exe registers
-        # in tasklist — several seconds. A near-instant recheck sees "not running
-        # yet" and re-launches, spawning a SECOND instance that races the
-        # extraction; one wins, the other dies → "reopened then closed again
-        # quickly" (#229). So wait a real ~3s beat BEFORE confirming, and only
-        # re-launch a handful of times (a `start` that lost a race with the
-        # installer mid-swap fails silently — that's the case worth retrying, not
-        # a slow first boot).
-        "ping -n 4 127.0.0.1 >nul\r\n"
-        f'tasklist /FI "IMAGENAME eq {image}" /FO CSV /NH 2>nul'
-        f' | find /I "{image}" >nul\r\n'
-        "if not errorlevel 1 goto done\r\n"
-        "set /a boots+=1\r\n"
-        "if %boots% lss 5 goto launch\r\n"
-        ":done\r\n"
-        '(goto) 2>nul & del "%~f0"\r\n'
-    )
-    fd, path = tempfile.mkstemp(prefix="persona-relaunch-", suffix=".bat")
-    try:
-        # ascii on purpose: cmd reads .bat files in the OEM codepage, which only
-        # agrees with Python's encodings in the ASCII range. A non-ASCII exe
-        # path raises here and the caller falls back to the inline relaunch,
-        # which passes the path through the (Unicode) process command line.
-        with os.fdopen(fd, "w", encoding="ascii", newline="") as f:
-            f.write(content)
-    except Exception:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-        raise
-    return path
+    return relaunch_bat.write_bat(content, prefix="persona-relaunch-")
 
 
 _TRANSLOCATION_MARKER = "/AppTranslocation/"
@@ -1060,152 +935,159 @@ def _try_windows_fast_update(say) -> bool:
     return fu.apply_code_only_and_restart(app_zip_url, sha, log=say)
 
 
-def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
-    """Replace the running AppImage with the staged download and re-exec into
-    it — but ONLY after proving the new binary actually launches, and with the
-    old binary kept as a backup that is restored if anything goes wrong. This
-    can never leave a non-launchable AppImage in place (the v2.1.3 brick). On
-    any failure it returns False, keeps the working version, and `log` explains
-    why. Does not return on success (process is replaced)."""
+def _apply_windows(staged: str, say) -> bool | None:
+    """Hand the downloaded installer control, then relaunch persona ourselves.
 
-    def say(msg: str) -> None:
-        if log is not None:
-            try:
-                log(msg)
-            except Exception:
-                pass
-
-    # Windows: hand the downloaded installer control. It has a fixed AppId, so
-    # it upgrades the existing install in place (old files removed, one entry in
-    # Programs and Features) and restarts persona — no manual download. A running
-    # .exe can't replace itself, but a SEPARATE installer process can replace it
-    # while persona exits, which is exactly what Chrome/Discord-style updaters do.
-    if _platform.IS_WINDOWS:
-        # Fast path (#205): most releases change only the app's Python code
-        # (app.zip, ~1MB), not the 218MB runtime the Inno installer reinstalls.
-        # When the release's manifest says a code-only update is safe (runtime /
-        # deps unchanged), swap app.zip + its hash and relaunch — seconds instead
-        # of the ~30s reinstall. Does not return on success. Any decline/failure
-        # falls through to the full installer below (unchanged), so a bad manifest
-        # or a runtime-changing release always degrades to the working full path.
-        if _try_windows_fast_update(say):
-            return True  # unreachable on success (process exited); safety net
-        if not staged or not os.path.isfile(staged):
-            say("Update: installer missing.")
-            return False
-        if not verify_staged_installer(staged, log=log):
-            try:
-                os.remove(staged)  # a full-size corrupt file would otherwise
-            except OSError:        # be matched again by find_ready_staged
-                pass
-            return False
-        say("Update: launching the installer…")
-        exe = _installed_windows_exe()
-        try:
-            # /VERYSILENT installs with no windows at all (/SILENT still shows a
-            # progress dialog); /CLOSEAPPLICATIONS closes this persona so its
-            # files can be replaced; /NORESTART keeps it from rebooting Windows.
-            # /MERGETASKS deselects the installer's wipe tasks explicitly: Inno
-            # remembers task selections from a previous interactive install and
-            # re-applies them on silent upgrades, so without this a single
-            # box-checked reinstall would wipe profiles/engines on every update.
-            installer = subprocess.Popen(
-                [
-                    staged,
-                    "/VERYSILENT",
-                    "/CLOSEAPPLICATIONS",
-                    "/NORESTART",
-                    "/MERGETASKS=!wipedata,!wipeengines",
-                ],
-                close_fds=True,
-                # the installer outlives this persona and everything IT may
-                # start (its own relaunch entries, Restart Manager restarts)
-                # inherits its environment — hand it the scrubbed copy so this
-                # process's runtime vars can't poison a persona started from
-                # inside the installer's process tree (see _RUNTIME_ENV_VARS)
-                env=_relaunch_env(),
-                # this process's cwd IS the flet app extraction dir
-                # (serious_python chdirs there); a child that inherits it
-                # holds a directory handle the new persona's
-                # delete-and-reextract trips over with errno 32 (#195) —
-                # every process the update spawns gets a cwd outside it
-                cwd=tempfile.gettempdir(),
-                **_platform.no_window_kwargs(),
-            )
-        except Exception as e:
-            say(f"Update: couldn't start the installer: {e}")
-            return False
-        # Relaunch persona OURSELVES after the installer finishes, in this same
-        # (normal) user context — NOT from the installer's [Run] entry. The
-        # installer's runasoriginaluser relaunch ran persona in a lowered-token
-        # shell where the flet/Flutter client came up to a black window that never
-        # painted. An invisible cmd waits for the whole installer process FAMILY
-        # to exit — by image name, because the setup.exe elevates via UAC and
-        # the pid Popen gave us is only the un-elevated broker that dies as soon
-        # as the user clicks Yes (#174) — then starts the new persona.exe. The
-        # cmd chain is spawned by THIS un-elevated persona before it exits, so
-        # everything it starts (including the new persona) stays at normal user
-        # integrity; the elevated installer never touches the relaunch.
-        if exe:
-            try:
-                try:
-                    cmd = ["cmd", "/c",
-                           _write_relaunch_bat(exe, staged,
-                                               getattr(installer, "pid", None),
-                                               os.getpid())]
-                except Exception:
-                    cmd = [
-                        "cmd", "/c",
-                        # waiter .bat unwritable (broken temp dir, non-ascii
-                        # path) — wait a fixed ~14s for the silent install to
-                        # finish swapping files, then launch
-                        "ping", "-n", "15", "127.0.0.1", ">nul", "&",
-                        "start", "", "/D", os.path.dirname(exe), exe,
-                    ]
-                subprocess.Popen(
-                    cmd,
-                    close_fds=True,
-                    # the cmd -> start -> persona.exe chain inherits THIS
-                    # dying process's environment; hand it a scrubbed copy or
-                    # the new persona re-applies our stale runtime vars and
-                    # comes up dead (#135's Windows twin: the update installed
-                    # but nothing reopened, while a manual open worked).
-                    env=_relaunch_env(),
-                    # the cmd is ALIVE — by design — when the new persona
-                    # boots; an inherited cwd inside the flet extraction is a
-                    # handle its delete-and-reextract dies on (#195)
-                    cwd=tempfile.gettempdir(),
-                    # ONE merged creationflags — spreading no_window_kwargs()
-                    # here as well would pass creationflags twice, a TypeError
-                    # at the call site that silently kills the relaunch.
-                    # CREATE_NO_WINDOW keeps the cmd invisible but with a real
-                    # (hidden) console; DETACHED_PROCESS strips the console
-                    # entirely, and a console-less cmd wedges forever running a
-                    # batch file (its pipes and goto never execute).
-                    creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                    | getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
-            except Exception as e:
-                say(f"Update: couldn't schedule the relaunch: {e}")
-        # Exit now so the installer can overwrite our files.
-        say("Update: restarting…")
-        try:
-            sys.stdout.flush()
-            sys.stderr.flush()
-        except Exception:
-            pass
-        os._exit(0)
-
-    # macOS: verify the dmg, mount it, swap the installed .app for the one
-    # inside (with the old bundle kept as a backup until the copy succeeds),
-    # then relaunch once this process exits.
-    if _platform.IS_MACOS:
-        return _apply_macos(staged, say)
-
-    if not _platform.IS_LINUX:
-        say("Update available — download the new version from the releases page.")
+    The installer has a fixed AppId, so it upgrades the existing install in
+    place (old files removed, one entry in Programs and Features). A running
+    .exe can't replace itself, but a SEPARATE installer process can replace it
+    while persona exits — what Chrome/Discord-style updaters do. Returns False
+    with the current version intact on any failure before the handover; does not
+    return on success (this process exits so the installer can overwrite it).
+    """
+    # Fast path (#205): most releases change only the app's Python code
+    # (app.zip, ~1MB), not the 218MB runtime the Inno installer reinstalls.
+    # When the release's manifest says a code-only update is safe (runtime /
+    # deps unchanged), swap app.zip + its hash and relaunch — seconds instead
+    # of the ~30s reinstall. Does not return on success. Any decline/failure
+    # falls through to the full installer below (unchanged), so a bad manifest
+    # or a runtime-changing release always degrades to the working full path.
+    if _try_windows_fast_update(say):
+        return True  # unreachable on success (process exited); safety net
+    if not staged or not os.path.isfile(staged):
+        say("Update: installer missing.")
         return False
+    if not _verify_or_discard(staged, say):
+        return False
+    say("Update: launching the installer…")
+    exe = _installed_windows_exe()
+    try:
+        # /VERYSILENT installs with no windows at all (/SILENT still shows a
+        # progress dialog); /CLOSEAPPLICATIONS closes this persona so its
+        # files can be replaced; /NORESTART keeps it from rebooting Windows.
+        # /MERGETASKS deselects the installer's wipe tasks explicitly: Inno
+        # remembers task selections from a previous interactive install and
+        # re-applies them on silent upgrades, so without this a single
+        # box-checked reinstall would wipe profiles/engines on every update.
+        installer = subprocess.Popen(
+            [
+                staged,
+                "/VERYSILENT",
+                "/CLOSEAPPLICATIONS",
+                "/NORESTART",
+                "/MERGETASKS=!wipedata,!wipeengines",
+            ],
+            close_fds=True,
+            # the installer outlives this persona and everything IT may
+            # start (its own relaunch entries, Restart Manager restarts)
+            # inherits its environment — hand it the scrubbed copy so this
+            # process's runtime vars can't poison a persona started from
+            # inside the installer's process tree (see _RUNTIME_ENV_VARS)
+            env=_relaunch_env(),
+            # this process's cwd IS the flet app extraction dir
+            # (serious_python chdirs there); a child that inherits it
+            # holds a directory handle the new persona's
+            # delete-and-reextract trips over with errno 32 (#195) —
+            # every process the update spawns gets a cwd outside it
+            cwd=tempfile.gettempdir(),
+            **_platform.no_window_kwargs(),
+        )
+    except Exception as e:
+        say(f"Update: couldn't start the installer: {e}")
+        return False
+    if exe:
+        _schedule_windows_relaunch(exe, staged, installer, say)
+    # Exit now so the installer can overwrite our files.
+    _exit_for_relaunch(say)
 
+
+def _schedule_windows_relaunch(exe: str, staged: str, installer, say) -> None:
+    """Start the invisible cmd that relaunches persona once the installer is
+    done. Never raises — a failed relaunch must not stop the update itself.
+
+    Relaunch persona OURSELVES after the installer finishes, in this same
+    (normal) user context — NOT from the installer's [Run] entry. The
+    installer's runasoriginaluser relaunch ran persona in a lowered-token shell
+    where the flet/Flutter client came up to a black window that never painted.
+    An invisible cmd waits for the whole installer process FAMILY to exit — by
+    image name, because the setup.exe elevates via UAC and the pid Popen gave us
+    is only the un-elevated broker that dies as soon as the user clicks Yes
+    (#174) — then starts the new persona.exe. The cmd chain is spawned by THIS
+    un-elevated persona before it exits, so everything it starts (including the
+    new persona) stays at normal user integrity; the elevated installer never
+    touches the relaunch.
+    """
+    try:
+        try:
+            cmd = ["cmd", "/c",
+                   _write_relaunch_bat(exe, staged,
+                                       getattr(installer, "pid", None),
+                                       os.getpid())]
+        except Exception:
+            cmd = [
+                "cmd", "/c",
+                # waiter .bat unwritable (broken temp dir, non-ascii
+                # path) — wait a fixed ~14s for the silent install to
+                # finish swapping files, then launch
+                "ping", "-n", "15", "127.0.0.1", ">nul", "&",
+                "start", "", "/D", os.path.dirname(exe), exe,
+            ]
+        subprocess.Popen(
+            cmd,
+            close_fds=True,
+            # the cmd -> start -> persona.exe chain inherits THIS
+            # dying process's environment; hand it a scrubbed copy or
+            # the new persona re-applies our stale runtime vars and
+            # comes up dead (#135's Windows twin: the update installed
+            # but nothing reopened, while a manual open worked).
+            env=_relaunch_env(),
+            # the cmd is ALIVE — by design — when the new persona
+            # boots; an inherited cwd inside the flet extraction is a
+            # handle its delete-and-reextract dies on (#195)
+            cwd=tempfile.gettempdir(),
+            # ONE merged creationflags — spreading no_window_kwargs()
+            # here as well would pass creationflags twice, a TypeError
+            # at the call site that silently kills the relaunch.
+            # CREATE_NO_WINDOW keeps the cmd invisible but with a real
+            # (hidden) console; DETACHED_PROCESS strips the console
+            # entirely, and a console-less cmd wedges forever running a
+            # batch file (its pipes and goto never execute).
+            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception as e:
+        say(f"Update: couldn't schedule the relaunch: {e}")
+
+
+def _verify_or_discard(staged: str, say) -> bool:
+    """Verify the staged artifact and DELETE it when it doesn't verify, so a
+    full-size corrupt/substituted file isn't matched again by find_ready_staged
+    and re-run on the next attempt. The verify itself is fail-closed."""
+    if verify_staged_installer(staged, log=say):
+        return True
+    try:
+        os.remove(staged)
+    except OSError:
+        pass
+    return False
+
+
+def _exit_for_relaunch(say) -> None:
+    """Flush and exit so whatever we just scheduled can replace our files."""
+    say("Update: restarting…")
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    os._exit(0)
+
+
+def _apply_linux(staged: str, extra_args, say) -> bool:
+    """Replace the running AppImage with the staged download and re-exec into it
+    — but ONLY after proving the new binary actually launches, and with the old
+    binary kept as a backup that is restored if the swap fails. This can never
+    leave a non-launchable AppImage in place (the v2.1.3 brick)."""
     target = installed_appimage_path()
     if target is None:
         say("Update: not running as an AppImage, can't self-replace.")
@@ -1219,13 +1101,9 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
         return False
 
     # Re-verify the staged binary's sha256 at apply time, the way Windows/macOS
-    # do — the size check at download time isn't a corruption/integrity gate. A
+    # do — the completeness check at download time isn't an integrity gate. A
     # mismatch refuses and deletes the bad file so it isn't matched again.
-    if not verify_staged_installer(staged, log=log):
-        try:
-            os.remove(staged)
-        except OSError:
-            pass
+    if not _verify_or_discard(staged, say):
         return False
 
     # 1) Prove the new AppImage launches on THIS host before touching the live
@@ -1237,28 +1115,8 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
         return False
 
     # 2) Back up the working binary, then swap in the verified new one. If the
-    #    swap fails, restore the backup so we never lose a launchable app.
-    backup = target + ".bak"
-    try:
-        shutil = __import__("shutil")
-        shutil.copy2(target, backup)
-    except Exception as e:
-        say(f"Update: couldn't back up the current version ({e}); aborting.")
-        return False
-    try:
-        f = os.open(staged, os.O_RDONLY)
-        try:
-            os.fsync(f)
-        finally:
-            os.close(f)
-        os.replace(staged, target)  # same fs; old inode stays live while open
-        os.chmod(target, 0o755)
-    except Exception as e:
-        say(f"Update: replacing the AppImage failed: {e}; restoring backup.")
-        try:
-            os.replace(backup, target)
-        except Exception:
-            pass
+    #    swap fails, the backup is restored so we never lose a launchable app.
+    if not atomic_replace(staged, target, mode=0o755, log=say):
         return False
 
     # 3) Re-exec exactly as launched. (Never force APPIMAGE_EXTRACT_AND_RUN — on
@@ -1271,10 +1129,6 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
     except Exception:
         pass
     say("Update: restarting…")
-    try:
-        os.remove(backup)  # verified to launch; the backup is no longer needed
-    except OSError:
-        pass
     # execv inherits the current working directory. If we were launched from a
     # dir that no longer exists after the swap (e.g. the old AppImage's mount
     # point), the relaunched process can't getcwd() and dies at startup with
@@ -1297,3 +1151,40 @@ def apply_and_restart(staged: str, extra_args=None, log=None) -> bool:
         say(f"Update: relaunch failed: {e}")
         return False
     return False  # unreachable on success
+
+
+def apply_and_restart(staged: str, extra_args=None, log=None) -> bool | None:
+    """Install the staged update for THIS platform and restart into it.
+
+    Dispatch only — each platform's strategy lives in its own function
+    (_apply_windows / _apply_macos / _apply_linux), which is what makes the
+    per-platform discipline readable: hand off to the installer on Windows, swap
+    the .app bundle on macOS, verify-then-swap-then-execv the AppImage on Linux.
+
+    THE RETURN VALUE IS NOT A RESULT. On success this call DOES NOT RETURN —
+    every platform either execv's or os._exit()s — so a returned False means
+    "the update did not happen, and `log` explains why", and there is no value
+    that means success. The old `-> bool` promised an answer that two of the
+    three platforms could never deliver (the source carried `# unreachable on
+    success` twice); callers correctly ignore it and simply carry on with the
+    current version when this returns.
+    """
+
+    def say(msg: str) -> None:
+        if log is not None:
+            try:
+                log(msg)
+            except Exception:
+                pass
+
+    if _platform.IS_WINDOWS:
+        return _apply_windows(staged, say)
+    if _platform.IS_MACOS:
+        # verify the dmg, mount it, swap the installed .app for the one inside
+        # (old bundle kept as a backup until the copy succeeds), then relaunch
+        # once this process exits.
+        return _apply_macos(staged, say)
+    if not _platform.IS_LINUX:
+        say("Update available — download the new version from the releases page.")
+        return False
+    return _apply_linux(staged, extra_args, say)

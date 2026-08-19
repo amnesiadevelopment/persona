@@ -4,6 +4,7 @@ and never deletes the staged file when it bails. Regression for v2.1.3, which
 replaced the running AppImage with one that wouldn't start ("open dir error")
 and left the app unopenable."""
 
+import hashlib
 import os
 import sys
 
@@ -28,6 +29,17 @@ def _stub_target(monkeypatch, tmp_path):
     staged = tmp_path / "p.AppImage.part"
     staged.write_bytes(b"new")
     monkeypatch.setattr(au, "installed_appimage_path", lambda: str(target))
+    # PS-6 made the missing-checksum policy fail-CLOSED, so an AppImage with no
+    # published digest never reaches the swap. This staged name carries no
+    # recoverable tag, so publish the REAL digest of the staged bytes — the way
+    # CI publishes one for every released asset. These tests are about the
+    # UNBRICKABLE SWAP (launch probe, backup, rollback, relaunch), all of which
+    # sits behind that gate; stubbing verify_staged_installer out would take the
+    # gate off the path they exercise, so the genuine verify runs and passes.
+    monkeypatch.setattr(
+        au, "fetch_expected_sha256",
+        lambda tag, **k: hashlib.sha256(staged.read_bytes()).hexdigest(),
+    )
     return target, staged
 
 
