@@ -157,6 +157,35 @@ class BookmarkStore(StoreGuardMixin, TrashableMixin):
         logger.info("Updated bookmark: %s -> %s", original_name, new_name)
         return True
 
+    def _pool_ordering(self, pool_name: str, base: list[str]) -> list[str]:
+        """The pool's member ordering INCLUDING members already in the trash.
+
+        Capturing the ordering off the LIVE pool is not enough: a sibling that
+        was trashed earlier has already been stripped from it, so a member
+        deleted second records an ordering its predecessor is missing from, and
+        comes back in front of it. (That is root cause #1 — the recorded
+        descriptor was relative to a list that no longer existed.)
+
+        A trashed peer is not gone, and it still knows where it sat, so fold each
+        one back in using its OWN recorded ordering and the same anchor rule that
+        restore uses. Oldest deletion first, because the earliest snapshot is the
+        one that still remembers the most peers. The result is the pool as it
+        stood before any of them were deleted, which is the only ordering a
+        restore can be measured against.
+        """
+        ordering = list(base)
+        trashed = sorted(self._trash().list("bookmark"), key=lambda e: e.deleted_at)
+        for entry in trashed:
+            payload = entry.payload or {}
+            if pool_name not in (payload.get("pools") or []):
+                continue
+            self._insert_member(
+                ordering,
+                entry.name,
+                (payload.get("pool_orders") or {}).get(pool_name),
+            )
+        return ordering
+
     def delete(self, name: str) -> bool:
         """Move a bookmark to the trash. It leaves the bookmark list and every
         pool that held it, and comes back to both on restore."""
@@ -169,14 +198,22 @@ class BookmarkStore(StoreGuardMixin, TrashableMixin):
         # order its bookmarks appear on the profile's toolbar, so restoring a
         # member to the END of the list would hand back a visibly different
         # toolbar and would not be the same record.
-        pools = [
-            p.name for p in self.pools.values() if name in p.bookmark_names
-        ]
-        positions = {
-            p.name: p.bookmark_names.index(name)
+        #
+        # Record the pool's ORDERING, not this member's index. An absolute
+        # integer is not a stable descriptor of position: it is applied later to
+        # a list that may still be missing an arbitrary subset of peers, and no
+        # amount of clamping makes it stable — see _insert_member.
+        #
+        # The ordering is taken through _pool_ordering, not off the live pool,
+        # because a peer trashed EARLIER has already been stripped from it. Every
+        # member's recorded ordering therefore describes the same pre-delete
+        # pool, whichever order the members were deleted in.
+        orders = {
+            p.name: self._pool_ordering(p.name, p.bookmark_names)
             for p in self.pools.values()
             if name in p.bookmark_names
         }
+        pools = list(orders)
         for pool in self.pools.values():
             if name in pool.bookmark_names:
                 pool.bookmark_names = [n for n in pool.bookmark_names if n != name]
@@ -187,31 +224,51 @@ class BookmarkStore(StoreGuardMixin, TrashableMixin):
             {
                 "bookmark": bookmark.to_dict(),
                 "pools": pools,
-                "pool_positions": positions,
+                "pool_orders": orders,
             },
         )
         logger.info("Moved bookmark to trash: %s", name)
         return True
 
     @staticmethod
-    def _insert_member(members: list[str], name: str, position: int | None) -> None:
-        """Put a member back at the position it was deleted from.
+    def _insert_member(
+        members: list[str], name: str, order: list[str] | None = None
+    ) -> None:
+        """Put a member back where it belongs RELATIVE to its surviving peers.
 
         A pool's order IS the order the bookmarks appear on the profile's
         toolbar, so appending a restored member to the end hands back a visibly
-        different toolbar. The index is clamped because peers may have been
-        deleted meanwhile, and a stale index must degrade to "at the end" rather
-        than raise.
+        different toolbar and is not "the same working state".
+
+        The descriptor is the pool's member ORDERING at delete time, never an
+        absolute index. An integer slot is only meaningful when every peer that
+        preceded it is present, and neither end of that holds here: the index was
+        recorded against a pool a sibling delete had already shifted, and it was
+        applied to a list still missing an arbitrary subset of peers. Clamping
+        only converted "wrong slot" into "at the end" — it could not make an
+        absolute index stable, because it isn't.
+
+        So place the name AFTER THE LAST MEMBER THAT PRECEDED IT and is currently
+        present, falling back to the front, and to the end when the ordering says
+        nothing about it. That rule is stable under any number of absent peers
+        and any restore order, and it collapses both failure modes into one:
+        peers that are still trashed simply do not anchor anything, and each one
+        lands correctly as it comes back.
         """
         if name in members:
             return
-        if position is None:
+        if not order or name not in order:
             members.append(name)
             return
-        members.insert(max(0, min(int(position), len(members))), name)
+        preceded_by = set(order[: order.index(name)])
+        anchor = -1
+        for i, existing in enumerate(members):
+            if existing in preceded_by:
+                anchor = i
+        members.insert(anchor + 1, name)
 
     def _record_membership(
-        self, bookmark_name: str, pool_name: str, position: int | None = None
+        self, bookmark_name: str, pool_name: str, order: list[str] | None = None
     ) -> None:
         """File the bookmark<->pool edge wherever each half currently lives.
 
@@ -239,23 +296,24 @@ class BookmarkStore(StoreGuardMixin, TrashableMixin):
         pool = self.pools.get(pool_name)
         if pool is not None:
             if bookmark_name in self.bookmarks:
-                self._insert_member(pool.bookmark_names, bookmark_name, position)
+                self._insert_member(pool.bookmark_names, bookmark_name, order)
                 self._save()
                 return
             # The pool is back, the bookmark is still in the trash. Remember the
             # edge ON the bookmark so its own restore completes it — dropping it
-            # here is what lost the membership for good. The position rides along
-            # so the later restore still lands the member where it was.
+            # here is what lost the membership for good. The ORDERING rides along
+            # so the later restore still lands the member among its peers, and it
+            # stays correct however many of those peers are still trashed.
             entry = self._trash().find("bookmark", bookmark_name)
             if entry is None:
                 return
 
-            def _add_pool(e, pool_name=pool_name, position=position) -> None:
+            def _add_pool(e, pool_name=pool_name, order=order) -> None:
                 pools = e.payload.setdefault("pools", [])
                 if pool_name not in pools:
                     pools.append(pool_name)
-                if position is not None:
-                    e.payload.setdefault("pool_positions", {})[pool_name] = position
+                if order:
+                    e.payload.setdefault("pool_orders", {})[pool_name] = list(order)
 
             self._trash().update_entry(entry.id, _add_pool)
             return
@@ -265,10 +323,10 @@ class BookmarkStore(StoreGuardMixin, TrashableMixin):
         if entry is None:
             return
 
-        def _add_member(e, bookmark_name=bookmark_name, position=position) -> None:
+        def _add_member(e, bookmark_name=bookmark_name, order=order) -> None:
             data = e.payload.setdefault("pool", {})
             members = data.setdefault("bookmark_names", [])
-            self._insert_member(members, bookmark_name, position)
+            self._insert_member(members, bookmark_name, order)
 
         self._trash().update_entry(entry.id, _add_member)
 
@@ -286,9 +344,9 @@ class BookmarkStore(StoreGuardMixin, TrashableMixin):
         )
         # Resolve each membership against the trash as well as the live store: a
         # pool that has not been restored YET must not silently lose this member.
-        positions = entry.payload.get("pool_positions") or {}
+        orders = entry.payload.get("pool_orders") or {}
         for pool_name in entry.payload.get("pools") or []:
-            self._record_membership(name, pool_name, positions.get(pool_name))
+            self._record_membership(name, pool_name, orders.get(pool_name))
         self._save()
         logger.info("Restored bookmark from trash: %s", name)
         return True, ""
@@ -342,6 +400,18 @@ class BookmarkStore(StoreGuardMixin, TrashableMixin):
         if name not in self.pools:
             return False
         pool = self.pools.pop(name)
+        # Snapshot the ordering INCLUDING members already in the trash, the same
+        # way delete() does. The live list has already lost any member trashed
+        # earlier, and a member trashed LATER inherits its ordering from this
+        # snapshot — so a snapshot missing a peer teaches every later member a
+        # pool that peer was never in, and it comes back on the wrong side of it.
+        # Reconstructing here is what makes the parked pool snapshot and the
+        # parked bookmark edges agree by construction rather than by coincidence.
+        #
+        # A trashed member listed here is NOT resurrected: restore_pool filters
+        # the snapshot to live bookmarks, and a member that was permanently
+        # deleted resolves to nothing in either store and stays dropped.
+        snapshot = self._pool_ordering(name, pool.bookmark_names)
         self._save()
         # RECORD the referencing profiles first, then clear them — never the
         # reverse. A deleted pool left lingering as a name made the profile
@@ -352,10 +422,12 @@ class BookmarkStore(StoreGuardMixin, TrashableMixin):
         if pm is not None:
             refs = [p.name for p in pm.list_profiles() if p.bookmark_pool == name]
             pm.clear_bookmark_pool(name)
+        payload = pool.to_dict()
+        payload["bookmark_names"] = snapshot
         self._trash().add(
             "pool",
             name,
-            {"pool": pool.to_dict(), "profiles": refs},
+            {"pool": payload, "profiles": refs},
         )
         logger.info("Moved pool to trash: %s", name)
         return True
@@ -378,12 +450,19 @@ class BookmarkStore(StoreGuardMixin, TrashableMixin):
         # A member that is merely STILL IN THE TRASH is not gone — filtering it
         # away here is what silently lost the membership when the pool was
         # restored first. Park the edge on that bookmark's own entry so its
-        # restore rejoins this pool, at the position it holds in this snapshot;
-        # a member that is neither live nor trashed really has been permanently
-        # deleted, and stays dropped.
-        for position, member in enumerate(snapshot):
+        # restore rejoins this pool, among the peers it sat between in THIS
+        # snapshot; a member that is neither live nor trashed really has been
+        # permanently deleted, and stays dropped.
+        #
+        # The snapshot is passed WHOLE, as the ordering, rather than as each
+        # member's index in it. Several members can be absent at once, and an
+        # index into this list is only meaningful once every earlier one is back
+        # — which is exactly the assumption that put a member at the wrong slot
+        # when two had been deleted. The ordering re-anchors each member as it
+        # returns, in any order.
+        for member in snapshot:
             if member not in self.bookmarks:
-                self._record_membership(member, name, position)
+                self._record_membership(member, name, snapshot)
         pm = self._profile_manager
         if pm is not None:
             for profile_name in entry.payload.get("profiles") or []:
