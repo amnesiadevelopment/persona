@@ -103,6 +103,41 @@ def _is_blocked_proxy_host(server: str) -> bool:
     return False
 
 
+def _is_loopback_only_host(server: str) -> bool:
+    """True if the proxy endpoint resolves to loopback and NOTHING else.
+
+    This is the narrow exemption the operator lane is allowed to make on top of
+    _is_blocked_proxy_host — it never replaces that rule, it only subtracts the
+    loopback case from it. The two are composed at the call site
+    (`blocked and not (allow_loopback and loopback_only)`), so the SSRF rule
+    stays single-sourced in _is_blocked_proxy_host rather than being copied.
+
+    "and nothing else" is load-bearing: a name that resolves to BOTH 127.0.0.1
+    and 192.168.1.10 is not a local tunnel, it is the private-range target the
+    guard exists to refuse, so any non-loopback answer withdraws the exemption.
+    An unresolvable host gets no exemption either — _is_blocked_proxy_host lets
+    those through to fail at connect, and this must not widen that.
+    """
+    host = urllib.parse.urlparse(server).hostname or ""
+    if not host:
+        return False
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return False
+    seen = False
+    for info in infos:
+        addr = info[4][0]
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            return False  # something we can't reason about -> no exemption
+        if not ip.is_loopback:
+            return False
+        seen = True
+    return seen
+
+
 def _validate_geo(
     code: str, tz: str, lat, lon
 ) -> tuple[str, str, float | None, float | None]:
@@ -407,17 +442,40 @@ async def _geo_via_socks(
 
 
 async def check_proxy(
-    proxy_str: str, timeout: int = 10
+    proxy_str: str, timeout: int = 10, *, allow_loopback: bool = False
 ) -> tuple[bool, str, str, str, str, str, float | None, float | None]:
     """Probe a proxy. Returns
-    (ok, message, country_code, country_name, ip, timezone, lat, lon)."""
+    (ok, message, country_code, country_name, ip, timezone, lat, lon).
+
+    `allow_loopback` is the LANE selector, and it defaults to the strict
+    (remote-lane) posture so a future caller that forgets it inherits the safe
+    one. It exempts loopback — 127.0.0.0/8, ::1, localhost — and ONLY loopback;
+    private, link-local, reserved, multicast and 169.254.169.254 stay refused
+    on both lanes.
+
+    Why the operator lane may make that exemption: its input is a proxy the
+    operator typed into their own dialog and stored, and an operator can already
+    point their own browser at any local port, so reaching 127.0.0.1:9050 grants
+    no capability they did not have. The port-scan-oracle risk the guard was
+    written for is entirely about the REMOTE caller (the REST route hands us a
+    raw off-machine string), and that lane keeps the full guard.
+
+    Refusing loopback on BOTH lanes is what made Tor / `ssh -D` profiles
+    permanently unverifiable: the check could never pass, geo stayed empty, and
+    _proxy_timezone then declared the operator's REAL host timezone inside a
+    proxied profile.
+    """
     proxy_config = parse_proxy(proxy_str)
     if not proxy_config:
         return False, "Invalid proxy format", "", "", "", "", None, None
 
     # Runs for EVERY scheme, ahead of the branch: check_proxy connects to
-    # whatever host:port the user pasted, so this is the SSRF gate.
-    if _is_blocked_proxy_host(proxy_config["server"]):
+    # whatever host:port the user pasted, so this is the SSRF gate. The
+    # loopback exemption SUBTRACTS from this rule rather than replacing it —
+    # _is_blocked_proxy_host stays the single source of what is forbidden.
+    if _is_blocked_proxy_host(proxy_config["server"]) and not (
+        allow_loopback and _is_loopback_only_host(proxy_config["server"])
+    ):
         return (
             False,
             "Proxy host is not allowed (private/loopback address)",
@@ -502,13 +560,15 @@ async def check_proxy(
 
 
 def _run(
-    proxy_str: str, timeout: int
+    proxy_str: str, timeout: int, *, allow_loopback: bool = False
 ) -> tuple[bool, str, str, str, str, str, float | None, float | None]:
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            return loop.run_until_complete(check_proxy(proxy_str, timeout))
+            return loop.run_until_complete(
+                check_proxy(proxy_str, timeout, allow_loopback=allow_loopback)
+            )
         finally:
             loop.close()
     except Exception as e:
@@ -516,6 +576,10 @@ def _run(
 
 
 def check_proxy_sync(proxy_str: str, timeout: int = 10) -> tuple[bool, str]:
+    """REMOTE lane. Sole caller is the REST route (src/api/routes/proxy.py),
+    which hands us a raw string from an off-machine API caller — the genuine
+    port-scan oracle. The full SSRF guard applies: no loopback exemption, and
+    the refusal happens before any socket is opened."""
     ok, message = _run(proxy_str, timeout)[:2]
     return ok, message
 
@@ -524,4 +588,9 @@ def check_proxy_detailed_sync(
     proxy_str: str,
     timeout: int = 10,
 ) -> tuple[bool, str, str, str, str, str, float | None, float | None]:
-    return _run(proxy_str, timeout)
+    """OPERATOR lane. UI-only (src/ui/app.py, src/ui/dialogs/proxy.py): the
+    input is the operator's own stored / just-typed proxy, so loopback — and
+    loopback alone — is checkable here. That is what lets a Tor or `ssh -D`
+    endpoint establish real geography instead of leaving it empty and letting
+    the profile declare the host timezone."""
+    return _run(proxy_str, timeout, allow_loopback=True)
