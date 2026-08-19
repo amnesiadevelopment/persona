@@ -8,7 +8,6 @@ running platform while the launcher always finds the binary at the path
 platform.fingerprint_chromium_filename() resolves to.
 """
 
-import hashlib
 import json
 import os
 import shutil
@@ -17,7 +16,8 @@ import urllib.request
 
 from ...core.config import ENGINE_DIR
 from ...core import platform as _platform
-from ...utils.httpdl import range_opener
+from ...utils import httpdl
+from ...utils.httpdl import atomic_replace, range_opener, resumable_download
 
 ENGINE_BINARY = os.path.join(ENGINE_DIR, _platform.fingerprint_chromium_filename())
 VERSION_FILE = os.path.join(ENGINE_DIR, "version.txt")
@@ -84,11 +84,12 @@ def sha256_ok(data: bytes, digest: str | None, allow_missing: bool = False) -> b
     opts in with allow_missing (the Linux predictable-URL fallback, where the
     asset lives outside the API that carries the digest, has no other source).
     A present-but-wrong digest is always rejected.
+
+    This is the project-wide missing-checksum policy, and it now lives in one
+    place (utils.httpdl) that the app updater shares — the app path used to fail
+    OPEN on the identical situation.
     """
-    if not digest:
-        return allow_missing
-    want = digest.split(":", 1)[-1].strip().lower()
-    return hashlib.sha256(data).hexdigest() == want
+    return httpdl.verify_bytes(data, digest, allow_missing=allow_missing)
 
 
 def parse_version(text: str) -> tuple[int, ...]:
@@ -185,76 +186,32 @@ def _download_to(
     we return False) unless allow_missing is set — an unverifiable asset could be
     a MITM swap. Returns True only on a complete, verified file. Shared by all
     OSes — the per-OS install step then turns this raw asset into the runnable
-    engine."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".part"
-    attempts = 0
-    max_attempts = 40
-    total = 0
-    # GitHub 302s to a signed CDN URL; a range-preserving opener keeps the Range
-    # header across that redirect so a resume gets the tail (206) instead of the
-    # whole file (200), which over Tor would restart from zero every attempt.
-    opener = range_opener()
-    while attempts < max_attempts:
-        attempts += 1
-        have = os.path.getsize(tmp) if os.path.exists(tmp) else 0
-        req = urllib.request.Request(url)
-        if have:
-            req.add_header("Range", f"bytes={have}-")
-        try:
-            with opener.open(req, timeout=timeout) as resp:
-                cr = resp.headers.get("Content-Range")
-                if cr and "/" in cr:
-                    try:
-                        total = int(cr.rsplit("/", 1)[-1])
-                    except ValueError:
-                        total = 0
-                else:
-                    cl = int(resp.headers.get("Content-Length") or 0)
-                    total = (have + cl) if cl else 0
-                mode = "ab" if have and resp.status == 206 else "wb"
-                if mode == "wb":
-                    have = 0
-                done = have
-                with open(tmp, mode) as out:
-                    while True:
-                        chunk = resp.read(1 << 20)
-                        if not chunk:
-                            break
-                        out.write(chunk)
-                        done += len(chunk)
-                        if progress is not None:
-                            progress(done, total)
-            if total and os.path.getsize(tmp) < total:
-                continue  # dropped early, resume
-            if digest:
-                h = hashlib.sha256()
-                with open(tmp, "rb") as f:
-                    for blk in iter(lambda: f.read(1 << 20), b""):
-                        h.update(blk)
-                if h.hexdigest() != digest.split(":", 1)[-1].strip().lower():
-                    os.remove(tmp)
-                    return False
-            elif not allow_missing:
-                # No digest to verify against and the caller didn't opt in — an
-                # unverifiable asset could be a swap, so refuse it.
-                os.remove(tmp)
-                return False
-            os.replace(tmp, path)
-            return True
-        except Exception:
-            continue  # keep the partial for the next resume attempt
-    return False
+    engine.
+
+    The transfer itself is utils.httpdl's resumable_download, shared with the app
+    updater. The opener is built here, through this module's range_opener(), so
+    the Range header survives GitHub's 302 to a signed CDN URL — without that a
+    resume gets the whole file (200) instead of the tail (206) and over Tor never
+    finishes.
+    """
+    return resumable_download(
+        path,
+        url,
+        timeout,
+        digest,
+        progress=progress,
+        allow_missing=allow_missing,
+        opener_factory=lambda: range_opener(),
+    )
 
 
 def _install_linux(asset_path: str) -> bool:
-    """The downloaded AppImage IS the engine; make it executable in place."""
-    try:
-        os.replace(asset_path, ENGINE_BINARY)
-        os.chmod(ENGINE_BINARY, 0o755)
-        return True
-    except OSError:
-        return False
+    """The downloaded AppImage IS the engine; make it executable in place.
+
+    Via the shared atomic replace, so a failed swap restores the engine that was
+    working instead of leaving none at all — the rollback the app updater always
+    had for its own AppImage and this path silently lacked."""
+    return atomic_replace(asset_path, ENGINE_BINARY, mode=0o755)
 
 
 def _install_windows(asset_path: str) -> bool:

@@ -1,3 +1,4 @@
+import os
 import hashlib
 
 import pytest
@@ -203,3 +204,53 @@ def test_download_to_resumes_with_206_after_a_dropped_connection(tmp_path, monke
     assert path.read_bytes() == full
     # the resume actually sent a Range header (proves append-not-restart)
     assert any(r and r.startswith("bytes=4-") for r in opener.ranges)
+
+
+# --- PS-6: the Linux engine install gained the rollback the app updater had ---
+
+
+def test_install_linux_restores_the_working_engine_when_the_swap_fails(
+    tmp_path, monkeypatch
+):
+    # _install_linux used to be a bare os.replace + chmod with NO backup: a
+    # failed swap left the user with no engine at all, while the app updater's
+    # AppImage swap had kept a .bak and restored it "so we never lose a
+    # launchable app" since v2.1.3. Both now go through the shared
+    # atomic_replace, so the engine gets that same guarantee.
+    engine = tmp_path / "engine.AppImage"
+    engine.write_bytes(b"working-engine")
+    asset = tmp_path / "downloaded.AppImage"
+    asset.write_bytes(b"new-engine")
+    monkeypatch.setattr(updater, "ENGINE_BINARY", str(engine))
+
+    real_replace = updater.os.replace
+
+    def failing_replace(src, dst):
+        if str(src) == str(asset):
+            raise OSError("Text file busy")  # the asset->engine swap fails
+        return real_replace(src, dst)  # the backup->engine restore succeeds
+
+    monkeypatch.setattr(updater.os, "replace", failing_replace)
+
+    assert updater._install_linux(str(asset)) is False
+    # the working engine is still there, and still WORKING — not a leftover
+    # .bak the launcher can't find, and not a half-written file
+    assert engine.read_bytes() == b"working-engine"
+    assert not (tmp_path / "engine.AppImage.bak").exists()
+
+
+def test_install_linux_swaps_in_the_new_engine_and_leaves_no_backup(
+    tmp_path, monkeypatch
+):
+    # the success path: the new engine is in place, executable, and the backup
+    # is cleaned up rather than left behind to grow on every update
+    engine = tmp_path / "engine.AppImage"
+    engine.write_bytes(b"old-engine")
+    asset = tmp_path / "downloaded.AppImage"
+    asset.write_bytes(b"new-engine")
+    monkeypatch.setattr(updater, "ENGINE_BINARY", str(engine))
+
+    assert updater._install_linux(str(asset)) is True
+    assert engine.read_bytes() == b"new-engine"
+    assert not (tmp_path / "engine.AppImage.bak").exists()
+    assert os.access(str(engine), os.X_OK)
