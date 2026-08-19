@@ -55,12 +55,28 @@ def realm_bootstrap_js(apply_fn_name: str) -> str:
         // spawns runs unspoofed (creepjs reads the engine-default GPU there).
         var __buildBoot = function () {
           var SRC = ((typeof self !== "undefined" ? self : this).__pnaBootSrc || []).join(",");
+          // The payload MUST re-seed BOTH registry globals, because they are not
+          // interchangeable: __pnaBoots holds live functions (what runs in THIS
+          // realm) and __pnaBootSrc holds their text (the only one of the two
+          // that can cross a realm boundary — a function cannot be cloned into a
+          // Worker). A payload that set only __pnaBoots left __pnaBootSrc
+          // undefined inside the worker, so that worker's own __buildBoot took
+          // the "|| []" fallback above, SRC was the empty string, and every
+          // worker IT spawned received "self.__pnaBoots=[]" — an empty registry.
+          // No leaf ran at depth >= 2 and nothing threw: a nested worker
+          // reported the REAL GPU/renderer/hardwareConcurrency/audio/fonts while
+          // the page reported spoofed ones. The iframe path at the bottom of
+          // __pnaBoot has always copied both names for exactly this reason.
+          // The source is derived FROM the functions just installed rather than
+          // embedding SRC a second time: embedding it twice would re-double the
+          // payload at every level, growing it exponentially with worker depth.
           // Assign __pnaBoot to a NAME in the worker scope (self.__pnaBoot) before
           // calling it: the wrapper it installs calls __buildBoot -> __pnaBoot
           // .toString(), which needs __pnaBoot to be resolvable in that realm.
           // A bare anonymous "(fn)(self)" left __pnaBoot undefined in the worker,
           // so a NESTED worker's wrapper threw and ran unspoofed (creepjs GPU tell).
           return "(function(){try{self.__pnaBoots=[" + SRC + "];}catch(e){}" +
+            "try{self.__pnaBootSrc=self.__pnaBoots.map(function(f){return '('+f.toString()+')';});}catch(e){}" +
             "try{self.__pnaBoot=(" + __pnaBoot.toString() + ");}catch(e){}" +
             "try{self.__pnaBoot((typeof self!=='undefined'?self:this));}catch(e){}})();";
         };
