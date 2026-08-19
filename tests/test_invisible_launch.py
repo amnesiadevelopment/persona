@@ -5174,3 +5174,146 @@ def test_child_hands_the_bookmark_seed_the_profiles_assigned_proxy(
     direct = run("")
     assert direct["proxy"] is None
     assert direct["proxy_declared"] is False
+
+
+def test_child_installs_geo_shortcircuit_before_the_proxied_warmup(
+    monkeypatch, tmp_path
+):
+    # PS-18 follow-up. Handing the warm-up a proxy re-arms #207/#208 unless the
+    # geo shortcircuit is installed BEFORE the warm-up runs, not merely before
+    # the visible launch.
+    #
+    # The mechanism, verified in the installed packages rather than assumed:
+    # the engine's __enter__ (invisible_playwright/launcher.py) calls
+    # prepare_session_geo(timezone, proxy) BEFORE it forks Firefox, and in
+    # invisible_core/_geo.py the `if proxy_set: discover_egress_ip(proxy)`
+    # branch sits ABOVE the concrete-IANA early return. So timezone="UTC"
+    # suppresses the RAISE but NOT the round-trips — measured 12.5s against a
+    # blackholed SOCKS endpoint vs 0.00s unproxied. The warm-up's own wedge
+    # detector then waits enter_timeout=8.0s for a Firefox PROCESS to appear
+    # and, finding none (the lookup runs before the fork), kills a perfectly
+    # healthy enter and retries — ending in BOOKMARK_SEED_FAILED for every
+    # proxied bookmarked profile.
+    #
+    # WHY THIS DRIVES _child AND NOT _init_places_db DIRECTLY: the ordering is
+    # the whole defect. _install_geo_shortcircuit lives in _launch_and_watch, so
+    # a direct _init_places_db call would install it in NEITHER arrangement and
+    # the test would pass against the bug. Binding to the mechanism means
+    # exercising the real production sequence.
+    pytest.importorskip("invisible_playwright")
+    pytest.importorskip("invisible_core")
+    import os
+    import sys
+    import threading
+    import types
+
+    import invisible_core._geo as core_geo
+    from invisible_playwright import _geo as ip_geo
+    from invisible_playwright import launcher as iplauncher
+
+    from tests.test_firefox_bookmarks import _make_places
+
+    # Restore the real resolver afterwards: _install_geo_shortcircuit rebinds a
+    # module attribute directly, which would otherwise leak into later tests.
+    monkeypatch.setattr(
+        iplauncher, "prepare_session_geo", iplauncher.prepare_session_geo
+    )
+
+    # RECORD the lookup, never raise from it. prepare_session_geo wraps
+    # discover_egress_ip in `except Exception: egress_err = exc` and, for a
+    # concrete zone, returns SessionGeo(tz, None) without re-raising — so a
+    # `boom` that raises is SWALLOWED and the test passes while the lookup is
+    # really happening. (Confirmed by falsification: with the hoist removed, a
+    # raising stub still went green. The pre-existing idiom at
+    # test_geo_shortcircuit_skips_egress_lookup_with_concrete_timezone has the
+    # same blind spot; left untouched here per AC8.)
+    egress_calls = []
+
+    def record_egress(*a, **k):
+        egress_calls.append(a[0] if a else None)
+        return None
+
+    monkeypatch.setattr(core_geo, "discover_egress_ip", record_egress)
+
+    entered = []
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            self._kwargs = kwargs
+
+        def __enter__(self):
+            # Reproduce the ONE real engine behaviour this test is about: the
+            # launcher resolves session geo at entry, before forking Firefox.
+            # Looked up on the module at call time, exactly as launcher.py does,
+            # so an installed shortcircuit is what decides whether the lookup
+            # goes to the network.
+            geo = iplauncher.prepare_session_geo(
+                self._kwargs.get("timezone"), self._kwargs.get("proxy")
+            )
+            entered.append((self._kwargs.get("proxy"), geo.timezone))
+            _make_places(str(tmp_path / "places.sqlite"))
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    # A fake engine CLASS, but the real _geo/launcher submodules — the
+    # shortcircuit imports those two off this module, and a bare ModuleType
+    # would make it silently no-op and the test vacuous.
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    mod._geo = ip_geo
+    mod.launcher = iplauncher
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+
+    monkeypatch.setattr(invisible_launch._platform, "IS_LINUX", False)
+    monkeypatch.setattr(
+        invisible_launch, "_wait_profile_released", lambda d, **k: True
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_seed_places_from_template", lambda d: False
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_ensure_firefox_policies", lambda: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox",
+        lambda d, pids=None, rescan=True: None,
+    )
+    # Abort the VISIBLE launch right after the warm-up: this test is about the
+    # warm-up's entry, and a real close-watch loop would hang it.
+    monkeypatch.setattr(
+        invisible_launch, "_enter_on_worker", lambda *a, **k: None
+    )
+
+    r, w = os.pipe()
+    invisible_launch._child(
+        {
+            "profile_dir": str(tmp_path),
+            "profile_name": "t",
+            "seed": 42,
+            "bookmarks": [{"name": "a", "url": "https://example.com"}],
+            "proxy_url": "socks5://127.0.0.1:9050",
+        },
+        w,
+        stop_event=threading.Event(),
+    )
+    os.close(r)
+
+    # The warm-up really did run, really was handed the proxy, and really
+    # entered — so `boom` not firing means the lookup was short-circuited, not
+    # that the path was never exercised.
+    assert entered, "the bookmark warm-up engine never entered — test is vacuous"
+    warm_proxy, warm_tz = entered[0]
+    assert warm_proxy == invisible_launch._proxy_dict("socks5://127.0.0.1:9050")
+    assert warm_tz == "UTC"
+    # THE ASSERTION THIS TEST EXISTS FOR: the warm-up entered WITH a proxy and
+    # still performed no egress discovery, because the shortcircuit was already
+    # installed. Without the hoist this list holds one call and the run costs
+    # ~12.5s on a cold circuit — past the 8.0s enter_timeout, which is what
+    # turns a healthy enter into BOOKMARK_SEED_FAILED.
+    assert egress_calls == [], (
+        "the proxied bookmark warm-up performed the egress-IP lookup "
+        f"({egress_calls!r}) — _install_geo_shortcircuit must run BEFORE the "
+        "warm-up, not just before the visible launch (#207/#208)"
+    )
