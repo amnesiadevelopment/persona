@@ -18,6 +18,7 @@ _NAV_ITEMS = [
     ("tags", ft.Icons.LABEL_OUTLINE, "tags"),
     ("certificates", ft.Icons.DESCRIPTION_OUTLINED, "certificates"),
     ("connect", ft.Icons.SMART_TOY_OUTLINED, "connect"),
+    ("trash", ft.Icons.DELETE_OUTLINE, "trash"),
 ]
 
 

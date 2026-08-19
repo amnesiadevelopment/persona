@@ -20,6 +20,7 @@ from dataclasses import asdict, dataclass
 from ...core.logging import get_logger
 from ...utils.atomic import atomic_write_json
 from ...utils.store_guard import StoreGuardMixin
+from ...utils.trashable import TrashableMixin
 
 logger = get_logger("cert.store")
 
@@ -58,7 +59,7 @@ class Certificate:
         return asdict(self)
 
 
-class CertStore(StoreGuardMixin):
+class CertStore(StoreGuardMixin, TrashableMixin):
     _guard_logger = logger
     _guard_noun_plural = "certificates"
     # Singular differs from a naive plural-minus-s: the existing log says
@@ -160,16 +161,107 @@ class CertStore(StoreGuardMixin):
         return True
 
     def remove(self, name: str) -> bool:
+        """Move a certificate to the trash. The .p12 — private-key material — is
+        MOVED into a trash area inside persona's own certificate store, not
+        deleted: trashing a certificate does NOT remove its key bundle from disk,
+        and its bundle password rides along in trash.json (0600, like
+        certificates.json). Permanent deletion is what actually destroys both."""
         with self._lock:
             if name not in self.certs:
                 return False
-            path = self.certs[name].p12_path
-            del self.certs[name]
+            cert = self.certs.pop(name)
             self._save()
-            # The .p12 holds private-key material; delete our own copy so a
-            # removed certificate doesn't leave its key bundle inside PERSONA_HOME.
-            self._delete_owned_p12(path)
+            parked = self._park_owned_p12(cert.p12_path)
+        self._trash().add(
+            "certificate",
+            name,
+            {"certificate": cert.to_dict(), "parked_p12": parked},
+            material_path=parked,
+        )
+        logger.info("Moved certificate to trash: %s", name)
         return True
+
+    def restore_certificate(self, entry) -> tuple[bool, str]:
+        """Put a trashed certificate back, moving its .p12 out of the trash area
+        so the restored record points at a working bundle again."""
+        name = entry.name
+        with self._lock:
+            if name in self.certs:
+                return False, (
+                    f"A certificate named '{name}' already exists. Rename or "
+                    "delete it, then restore again."
+                )
+            d = entry.payload.get("certificate") or {}
+            p12_path = d.get("p12_path", "")
+            parked = entry.payload.get("parked_p12") or ""
+            if parked:
+                restored = self._unpark_owned_p12(parked, p12_path)
+                if restored is None:
+                    return False, (
+                        "Could not restore the certificate's .p12 bundle; the "
+                        "certificate was left in the trash."
+                    )
+                p12_path = restored
+            self.certs[name] = Certificate(
+                name=d.get("name", name),
+                p12_path=p12_path,
+                password=d.get("password", ""),
+                url=d.get("url", ""),
+            )
+            self._save()
+        logger.info("Restored certificate from trash: %s", name)
+        return True, ""
+
+    def _trash_certs_dir(self) -> str:
+        """Where a trashed certificate's .p12 is parked: INSIDE persona's own
+        certificate store dir, so it keeps exactly the protection it had and
+        stays covered by _delete_owned_p12's containment check."""
+        return os.path.join(_certs_dir(), ".trash")
+
+    def _park_owned_p12(self, path: str) -> str:
+        """Move a store-owned .p12 into the trash area, returning its new path.
+
+        Returns "" when there is nothing of ours to move — either no path at all,
+        or a LEGACY record pointing at the operator's original file outside the
+        store. That file is never persona's to move any more than it is ours to
+        delete, so it is left exactly where it is (and restore points back at
+        it unchanged).
+        """
+        if not path or not self._is_owned_p12(path):
+            return ""
+        try:
+            trash_dir = self._trash_certs_dir()
+            os.makedirs(trash_dir, exist_ok=True)
+            dest = os.path.join(trash_dir, os.path.basename(path))
+            os.replace(path, dest)
+            return dest
+        except OSError:
+            logger.exception("Could not park certificate file %s in the trash", path)
+            return ""
+
+    def _unpark_owned_p12(self, parked: str, original: str) -> str | None:
+        """Move a parked .p12 back to where the restored record expects it."""
+        if not os.path.exists(parked):
+            # Nothing to move back; the record still points at its original path.
+            return original
+        dest = original if original and self._is_owned_p12(original) else (
+            os.path.join(_certs_dir(), os.path.basename(parked))
+        )
+        try:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            os.replace(parked, dest)
+            return dest
+        except OSError:
+            logger.exception("Could not restore certificate file %s", parked)
+            return None
+
+    @staticmethod
+    def _is_owned_p12(path: str) -> bool:
+        """True when a .p12 lives inside persona's own store dir — the same test
+        _delete_owned_p12 applies, kept in one place so parking and deleting can
+        never disagree about what persona owns."""
+        certs_dir = os.path.abspath(_certs_dir())
+        return os.path.abspath(path).startswith(certs_dir + os.sep)
 
     def _delete_owned_p12(self, path: str) -> None:
         """Delete a .p12 ONLY if it lives inside persona's own store dir. A
@@ -177,9 +269,8 @@ class CertStore(StoreGuardMixin):
         that is never ours to delete."""
         if not path:
             return
-        certs_dir = os.path.abspath(_certs_dir())
         try:
-            if os.path.abspath(path).startswith(certs_dir + os.sep):
+            if self._is_owned_p12(path):
                 os.remove(path)
         except OSError:
             logger.exception("Could not delete stored certificate file %s", path)

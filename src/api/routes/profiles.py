@@ -183,7 +183,11 @@ def update_profile(
 @router.delete(
     "/{name}",
     response_model=SuccessResponse,
-    responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+    responses={
+        404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+        500: {"model": ErrorResponse},
+    },
 )
 def delete_profile(
     name: str,
@@ -197,10 +201,22 @@ def delete_profile(
             status_code=409,
             detail="Stop the browser before deleting",
         )
-    pm.delete_profile(name)
+    # delete_profile returns False when the data dir could not be parked (disk
+    # full, permissions, cross-device): the profile is then left completely
+    # intact. Replying 200 "deleted" regardless told the caller an identity was
+    # gone while it was still on disk — a claim the code does not deliver, which
+    # is precisely what this ticket closes. Lane parity: the UI says the same.
+    if not pm.delete_profile(name):
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Could not move profile '{name}' to the trash; "
+                "it is unchanged."
+            ),
+        )
     logger.info("API deleted profile: %s", name)
     bus.emit()
-    return SuccessResponse(message=f"Profile '{name}' deleted")
+    return SuccessResponse(message=f"Profile '{name}' moved to the trash")
 
 
 @router.get(

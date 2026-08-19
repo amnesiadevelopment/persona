@@ -10,17 +10,48 @@ from ...core.logging import get_logger
 from ...models.profile import Profile
 from ...utils.atomic import atomic_write_json
 from ...utils.store_guard import StoreGuardMixin
+from ...utils.trashable import TrashableMixin
 from ...utils.validation import validate_profile_name
 from .transfer import export_to_zip, import_from_zip, peek_profile_name
 
 logger = get_logger("profile.manager")
+
+#: Directory name of the park area where trashed profile data dirs live. It sits
+#: BESIDE DATA_DIR, never inside it.
+TRASH_DIR_NAME = "trash_data"
+
+
+def trash_data_root() -> str:
+    """The park area for trashed profile data dirs: a SIBLING of DATA_DIR, never
+    a subdirectory of it.
+
+    An in-DATA_DIR park area was addressable as a profile. validate_profile_name
+    (".trash") is valid, so _data_path(".trash") resolved to the park area
+    ITSELF: every other profile's trashed cookies were parked inside a live,
+    launchable profile's data dir, and deleting that profile failed outright
+    (renaming a directory into itself). Outside DATA_DIR no profile name can
+    name the park area at all, so "nothing in the trash is reachable as a live
+    record" holds by CONSTRUCTION rather than by reserving a name a validator
+    might later accept again.
+
+    Derived from DATA_DIR's parent at call time, not frozen at import, for two
+    reasons: it keeps the park area on the SAME filesystem as the data dir, so
+    the move-not-copy rename cannot fail with EXDEV; and DATA_DIR is monkey-
+    patched per-test, so a derived root follows it instead of leaking trashed
+    profile data into the real PERSONA_HOME during a test run.
+    """
+    return os.path.join(os.path.dirname(os.path.normpath(DATA_DIR)), TRASH_DIR_NAME)
 
 
 class InvalidProfileName(ValueError):
     """A profile name that fails validation or would escape the data dir."""
 
 
-class ProfileManager(StoreGuardMixin):
+class InvalidTrashToken(ValueError):
+    """A trash token that isn't an opaque hex id or would escape the data dir."""
+
+
+class ProfileManager(StoreGuardMixin, TrashableMixin):
     _guard_logger = logger
     _guard_noun_plural = "profiles"
     _guard_noun_singular = "profile"
@@ -53,6 +84,32 @@ class ProfileManager(StoreGuardMixin):
         if os.path.commonpath([base, target]) != base:
             raise InvalidProfileName(f"profile name escapes the data dir: {name!r}")
         return os.path.join(DATA_DIR, name)
+
+    def _trash_data_path(self, token: str) -> str:
+        """Where a trashed profile's data dir lives, keyed by its opaque trash
+        token. The trash must not become a NEW arbitrary-path primitive beside
+        _data_path, so it gets the same treatment: the token is constrained to
+        hex (no separators, no dots, so no traversal is even expressible), and
+        the resolved path is then confirmed to stay inside the park area — belt
+        AND braces, exactly as for a profile name. The token, not the profile
+        name, names the directory: the trash area then carries no profile name in
+        cleartext, matching why the desktop entry is removed on delete.
+
+        The park area is trash_data_root(), OUTSIDE DATA_DIR — see its docstring:
+        no profile name can address a directory that isn't under the profile data
+        dir, so a trashed data dir can never land inside a live profile's own
+        directory."""
+        if not token or not all(c in "0123456789abcdefABCDEF" for c in token):
+            raise InvalidTrashToken(f"not an opaque trash token: {token!r}")
+        root = trash_data_root()
+        base = os.path.realpath(root)
+        target_dir = os.path.join(root, token)
+        # realpath of a not-yet-existing leaf is still its lexical parent + leaf,
+        # so this check is meaningful before the move as well as after it.
+        target = os.path.realpath(target_dir)
+        if os.path.commonpath([base, target]) != base or target == base:
+            raise InvalidTrashToken(f"trash token escapes the trash area: {token!r}")
+        return target_dir
 
     def _load_profiles(self) -> None:
         with self._lock:
@@ -381,20 +438,130 @@ class ProfileManager(StoreGuardMixin):
                 logger.warning("stop hook failed for %s: %s", name, e)
 
     def delete_profile(self, name: str) -> bool:
+        """Move a profile to the trash: it leaves the profile list and its data
+        dir leaves the launchable area, but both are recoverable via
+        restore_profile until retention expires or the operator deletes it
+        permanently.
+
+        The data dir is MOVED, never copied — a browser profile is large, and two
+        copies of one identity would diverge. The move goes through the same
+        validated choke point as every other profile filesystem op.
+        """
         if name not in self.profiles:
             return False
-        # Stop a live browser BEFORE rmtree (outside our lock — stop is blocking)
-        # so we never delete the data dir out from under a running engine.
+        # Stop a live browser BEFORE moving its data dir (outside our lock — stop
+        # is blocking): a data dir cannot be moved out from under a live engine
+        # any more than it could be removed.
         self._stop_if_running(name)
         with self._lock:
+            if name not in self.profiles:
+                return False
+            profile = self.profiles[name]
+            token = self._trash().new_id()
+            live_dir = self._data_path(name)
+            parked = ""
+            if pathlib.Path(live_dir).exists():
+                dest = self._trash_data_path(token)
+                try:
+                    pathlib.Path(dest).parent.mkdir(parents=True, exist_ok=True)
+                    pathlib.Path(live_dir).rename(dest)
+                    parked = dest
+                except OSError as e:
+                    # Keep the profile completely unchanged rather than delete a
+                    # data dir we could not park — a failed trash must not become
+                    # the irreversible delete the trash exists to replace.
+                    logger.warning(
+                        "Could not move profile data dir for %r to the trash: %s",
+                        name, e,
+                    )
+                    return False
+            del self.profiles[name]
+            self.save_profiles()
+            self._trash().add(
+                "profile",
+                name,
+                profile.to_dict(),
+                entry_id=token,
+                material_path=parked,
+            )
+            # The desktop entry carries the profile name in cleartext, so it goes
+            # the moment the profile is trashed (audit6 LOW c) and comes back only
+            # on restore — a trashed profile leaves no more trace than a deleted
+            # one did.
+            self._remove_window_entry(name)
+            logger.info("Moved profile to trash: %s", name)
+            return True
+
+    def restore_profile(self, entry) -> tuple[bool, str]:
+        """Put a trashed profile back exactly as it was, under its own name.
+
+        Refused when the name is taken — and refused rather than renamed on
+        purpose. A profile's entire presented machine derives from crc32(name)
+        (Profile.fingerprint_seed), so restoring under a different name would
+        hand back the cookie jar attached to a DIFFERENT fingerprint: a silently
+        changed identity. Free the name and restore again.
+        """
+        name = entry.name
+        with self._lock:
             if name in self.profiles:
-                del self.profiles[name]
-                self.save_profiles()
-                shutil.rmtree(self._data_path(name), ignore_errors=True)
-                self._remove_window_entry(name)
-                logger.info("Deleted profile: %s", name)
-                return True
-        return False
+                return False, (
+                    f"A profile named '{name}' already exists. A profile's "
+                    "fingerprint is derived from its name, so restoring under a "
+                    "different name would return its cookies under a different "
+                    "identity. Rename or delete the existing profile, then "
+                    "restore again."
+                )
+            live_dir = self._data_path(name)
+            parked = entry.material_path
+            if parked and pathlib.Path(parked).exists():
+                if pathlib.Path(live_dir).exists():
+                    return False, (
+                        f"A data directory for '{name}' is already in place; "
+                        "move it aside before restoring."
+                    )
+                try:
+                    pathlib.Path(parked).rename(live_dir)
+                except OSError as e:
+                    return False, f"Could not restore the profile's data: {e}"
+            try:
+                self.profiles[name] = Profile(**entry.payload)
+            except Exception as e:
+                # Put the data dir back in the trash area so a failed restore
+                # leaves the profile still recoverable, not half-moved.
+                if parked and pathlib.Path(live_dir).exists():
+                    try:
+                        pathlib.Path(live_dir).rename(parked)
+                    except OSError:
+                        logger.exception(
+                            "Could not re-park profile data for %r", name
+                        )
+                logger.exception("Could not rebuild trashed profile %r", name)
+                return False, f"Could not restore the profile record: {e}"
+            self.save_profiles()
+        logger.info("Restored profile from trash: %s", name)
+        return True, ""
+
+    @staticmethod
+    def destroy_trashed_material(material_path: str) -> None:
+        """Destroy a trashed profile's parked data dir, for good. Called on
+        permanent deletion, retention expiry and the panic wipe — the three
+        paths that are genuinely irreversible."""
+        if not material_path:
+            return
+        base = os.path.realpath(trash_data_root())
+        target = os.path.realpath(material_path)
+        # Never rmtree a path outside the park area, whatever a hand-edited
+        # trash.json claims. The trash must not become a path by which a delete
+        # escapes into arbitrary filesystem locations. Parked dirs live under
+        # trash_data_root() only, so that — not DATA_DIR — is the containment
+        # root; a LIVE profile's data dir is deliberately NOT deletable here.
+        if os.path.commonpath([base, target]) != base or target == base:
+            logger.warning(
+                "Refusing to delete trashed material outside the trash area: %s",
+                material_path,
+            )
+            return
+        shutil.rmtree(material_path, ignore_errors=True)
 
     @staticmethod
     def _remove_window_entry(name: str) -> None:
@@ -409,9 +576,12 @@ class ProfileManager(StoreGuardMixin):
 
     def wipe_all_profiles(self) -> int:
         """Delete EVERY profile and its data in one pass — a panic wipe for an
-        instant clean-out. Irreversible, like delete_profile: each profile's data
-        dir is rmtree'd and profiles.json is emptied. Returns how many profiles
-        were removed. The UI gates this behind a typed confirmation."""
+        instant clean-out. Genuinely irreversible, unlike delete_profile: each
+        profile's data dir is rmtree'd, profiles.json is emptied, and the trash
+        is PURGED — the wipe bypasses the trash entirely and destroys whatever is
+        already in it, so nothing survives it in a recoverable form. Returns how
+        many profiles were removed. The UI gates this behind a typed
+        confirmation whose "this cannot be undone" is therefore true."""
         for name in list(self.profiles.keys()):
             self._stop_if_running(name)
         with self._lock:
@@ -421,9 +591,22 @@ class ProfileManager(StoreGuardMixin):
                 self._remove_window_entry(name)
             self.profiles.clear()
             self.save_profiles()
+        # Purge the trash as part of the wipe. A wipe that quietly parked fifty
+        # logged-in profiles in a recoverable store would be the interface
+        # claiming a protection the code does not deliver.
+        self._purge_trash_for_wipe()
         if names:
             logger.info("Wiped all %d profiles", len(names))
         return len(names)
+
+    def _purge_trash_for_wipe(self) -> None:
+        try:
+            from ..trash.service import destroy_entry
+
+            for entry in self._trash().clear():
+                destroy_entry(entry, self)
+        except Exception:
+            logger.exception("Could not purge the trash during the wipe")
 
     def list_profiles(self) -> list[Profile]:
         with self._lock:

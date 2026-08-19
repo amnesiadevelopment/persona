@@ -15,7 +15,12 @@ class Container:
         # touches the container; without this lock two threads could each pass
         # the "key not in _instances" check and build a service twice (two
         # ProfileManagers/stores → divergent in-memory state, double file handles).
-        self._lock = threading.Lock()
+        # RLock, not Lock: a factory may resolve another service from the same
+        # container (every trashable store asks for the shared trash_store, and
+        # two of them for the profile_manager), which re-enters _get on THIS
+        # thread. A plain Lock deadlocked the first such build outright. Two
+        # distinct threads are still serialized exactly as before.
+        self._lock = threading.RLock()
 
     def _get(self, key: str, factory):
         # double-checked: fast path without the lock once built, lock only to build.
@@ -33,7 +38,9 @@ class Container:
     def profile_manager(self) -> IProfileManager:
         def build():
             from ..services.profile.manager import ProfileManager
-            return ProfileManager()
+            pm = ProfileManager()
+            pm.set_trash(self.trash_store)
+            return pm
         return self._get("pm", build)
 
     @property
@@ -54,26 +61,64 @@ class Container:
     def proxy_store(self):
         def build():
             from ..services.proxy.store import ProxyStore
-            return ProxyStore()
+            store = ProxyStore()
+            store.set_trash(self.trash_store)
+            store.set_profile_manager(self.profile_manager)
+            return store
         return self._get("pstore", build)
 
     @property
     def ssh_host_store(self):
         def build():
             from ..services.ssh.store import SSHHostStore
-            return SSHHostStore()
+            store = SSHHostStore()
+            store.set_trash(self.trash_store)
+            return store
         return self._get("sshstore", build)
 
     @property
     def bookmark_store(self):
         def build():
             from ..services.bookmark.store import BookmarkStore
-            return BookmarkStore()
+            store = BookmarkStore()
+            store.set_trash(self.trash_store)
+            store.set_profile_manager(self.profile_manager)
+            return store
         return self._get("bstore", build)
 
     @property
     def cert_store(self):
         def build():
             from ..services.cert.store import CertStore
-            return CertStore()
+            store = CertStore()
+            store.set_trash(self.trash_store)
+            return store
         return self._get("cstore", build)
+
+    @property
+    def trash_store(self):
+        """The ONE trash every store and every lane files into. Built without
+        touching any other service so the stores above can depend on it without
+        a cycle."""
+        def build():
+            from ..services.trash.store import TrashStore
+            return TrashStore()
+        return self._get("trash", build)
+
+    @property
+    def trash_service(self):
+        """Restore / permanent-delete across every record kind. Both lanes — the
+        REST endpoints and the UI trash page — go through this one object, so a
+        restore through the API and a restore through the window cannot drift
+        apart."""
+        def build():
+            from ..services.trash.service import TrashService
+            return TrashService(
+                self.trash_store,
+                profile_manager=self.profile_manager,
+                bookmark_store=self.bookmark_store,
+                proxy_store=self.proxy_store,
+                ssh_host_store=self.ssh_host_store,
+                cert_store=self.cert_store,
+            )
+        return self._get("trashsvc", build)

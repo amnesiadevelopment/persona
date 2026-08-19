@@ -37,7 +37,15 @@ def open_confirm_dialog(
             font_family=MONO,
         ),
         content=ft.Text(
-            body if body is not None else "This action cannot be undone.",
+            # The ordinary delete no longer claims it cannot be undone, because
+            # it can: the record moves to the trash and can be restored exactly
+            # as it was. Only the panic wipe and "delete permanently" are
+            # genuinely irreversible, and those say so in their own dialogs. A
+            # claim that outlives the code it describes is the defect the
+            # Honest-interface direction exists to eliminate.
+            body
+            if body is not None
+            else "It moves to the trash and can be restored.",
             size=13,
             color=COLORS["text_sub"],
             font_family=MONO,

@@ -1,6 +1,7 @@
 from .connect_page import build_connect_page
 from .certificates_page import build_certificates_page
 from .tags_page import build_tags_page
+from .trash_page import build_trash_page
 from .bulk_bar import rebuild_bulk_bar
 from .content_area import build_content_area
 from .empty_state import build_empty_state
@@ -17,6 +18,7 @@ __all__ = [
     "build_network_page",
     "build_bookmarks_page",
     "build_tags_page",
+    "build_trash_page",
     "build_connect_page",
     "build_certificates_page",
     "build_profile_card",

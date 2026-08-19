@@ -18,6 +18,7 @@ from ...core.config import PERSONA_HOME
 from ...core.logging import get_logger
 from ...utils.atomic import atomic_write_json
 from ...utils.store_guard import StoreGuardMixin
+from ...utils.trashable import TrashableMixin
 
 logger = get_logger("ssh.store")
 
@@ -46,7 +47,7 @@ class SSHHost:
         return asdict(self)
 
 
-class SSHHostStore(StoreGuardMixin):
+class SSHHostStore(StoreGuardMixin, TrashableMixin):
     _guard_logger = logger
     _guard_noun_plural = "ssh hosts"
     _guard_noun_singular = "ssh host"
@@ -141,9 +142,39 @@ class SSHHostStore(StoreGuardMixin):
         return True
 
     def remove(self, name: str) -> bool:
+        """Move an SSH host to the trash. Its password and key passphrase go
+        with it — trash.json is written 0600 inside PERSONA_HOME, exactly like
+        ssh_hosts.json — so trashing a host does NOT remove its secret material
+        from disk. Permanent deletion does."""
         with self._lock:
             if name not in self.hosts:
                 return False
-            del self.hosts[name]
+            host = self.hosts.pop(name)
             self._save()
+        self._trash().add("ssh_host", name, {"host": host.to_dict()})
+        logger.info("Moved ssh host to trash: %s", name)
         return True
+
+    def restore_host(self, entry) -> tuple[bool, str]:
+        """Put a trashed SSH host back with its credentials and routing."""
+        name = entry.name
+        with self._lock:
+            if name in self.hosts:
+                return False, (
+                    f"An SSH host named '{name}' already exists. Rename or "
+                    "delete it, then restore again."
+                )
+            d = entry.payload.get("host") or {}
+            self.hosts[name] = SSHHost(
+                name=d.get("name", name),
+                host=d.get("host", ""),
+                port=int(d.get("port", 22)),
+                username=d.get("username", ""),
+                key_path=d.get("key_path", ""),
+                key_passphrase=d.get("key_passphrase", ""),
+                password=d.get("password", ""),
+                profile=d.get("profile", ""),
+            )
+            self._save()
+        logger.info("Restored ssh host from trash: %s", name)
+        return True, ""
