@@ -1,9 +1,11 @@
+import time
 from collections.abc import Callable
 
 import flet as ft
 
 from ...models.profile import Profile
 from ...models.proxy import Proxy
+from ...utils.timefmt import humanize_since
 from ..flags import flag_path
 from ..theme.colors import COLORS
 from ..theme.styles import MONO, row_button
@@ -15,6 +17,14 @@ _OS_LABELS = {"windows": "windows", "macos": "macos", "linux": "linux"}
 # shifts when a flag replaces the placeholder.
 _IND_W = 30
 _IND_H = 20
+
+# How long a successful proxy check stays good enough to be drawn as a flag.
+# Past this, the indicator reports "last known, and it is old" instead of
+# continuing to assert a country: the exit behind a rotating/backconnect URL
+# moves without any event reaching us, so an ageless flag would keep growing in
+# confidence while its evidence rots. Render-only — crossing this threshold
+# never triggers a re-check, it only changes what the operator is told.
+PROXY_STALE_AFTER_S = 24 * 60 * 60
 
 
 def _tag_chips(tags: list[str]) -> ft.Control:
@@ -49,24 +59,71 @@ def _indicator_box(content: ft.Control, border: bool = True) -> ft.Container:
     )
 
 
+def proxy_indicator_state(proxy: Proxy, now: float) -> str:
+    """Which indicator state a proxy is in, as a function of age AND outcome.
+
+    Pure and render-only: it reads the stored `checked_at` / `last_check_ok`
+    and nothing else — it never probes, so calling it cannot open a socket.
+
+    - "failed"      -> the last check failed. A failure does not age into
+                       something softer; it stays a failure at any age.
+    - "unverified"  -> no successful check is on record (`checked_at == 0.0`),
+                       whatever else is stored. A country code written to disk
+                       at an unrecorded past moment is not evidence.
+    - "stale"       -> verified, but longer than PROXY_STALE_AFTER_S ago.
+    - "verified"    -> verified within the threshold.
+    """
+    if proxy.last_check_ok is False:
+        return "failed"
+    # A stored country_code alone never produces a verified state: without a
+    # timestamp there is no moment at which anything was confirmed.
+    if not proxy.checked_at or not proxy.last_check_ok:
+        return "unverified"
+    if (now - proxy.checked_at) > PROXY_STALE_AFTER_S:
+        return "stale"
+    return "verified"
+
+
+def _proxy_age_label(proxy: Proxy, state: str, now: float) -> str:
+    """Human 'when was this last checked' phrase, shared by tooltip and meta."""
+    if state == "failed":
+        if proxy.checked_at:
+            return f"check failed {humanize_since(proxy.checked_at, now)}"
+        return "check failed"
+    if state == "unverified":
+        return "not checked yet"
+    return f"checked {humanize_since(proxy.checked_at, now)}"
+
+
 def _proxy_indicator(
     proxy: Proxy | None,
     on_check_proxy: Callable[[str], None] | None,
     is_checking: bool,
+    now: float,
 ) -> ft.Control:
     """Left-of-name indicator that doubles as the proxy check button.
 
     - no proxy        -> a 'direct' box (not clickable)
     - checking        -> a spinner
     - checked ok      -> the country flag (click to re-check)
+    - stale           -> the country code, dimmed, NOT a flag (click to re-check)
     - check failed    -> an ✕ (click to re-check)
     - not checked yet -> a dot placeholder (click to check)
+
+    The flag is deliberately not drawn once the check is older than
+    PROXY_STALE_AFTER_S: the operator launches from this row, and a rotating
+    exit moves underneath a stored country code with no event to tell us. The
+    age itself is carried on the card's meta line (see build_profile_card), so
+    the indicator never asserts a country without its provenance sitting beside
+    it. Reading a timestamp is the whole mechanism — nothing here re-checks.
     """
     if proxy is None:
         return _indicator_box(
             ft.Icon(ft.Icons.HOME_OUTLINED, size=15, color=COLORS["text_dim"]),
             border=False,
         )
+
+    state = proxy_indicator_state(proxy, now)
 
     if is_checking:
         inner: ft.Control = _indicator_box(
@@ -75,26 +132,48 @@ def _proxy_indicator(
             ),
             border=False,
         )
-    elif proxy.last_check_ok is False:
+    elif state == "failed":
         inner = _indicator_box(
             ft.Text("✕", size=14, color=COLORS["error"], font_family=MONO)
         )
     else:
-        path = flag_path(proxy.country_code) if proxy.country_code else None
+        path = (
+            flag_path(proxy.country_code)
+            if state == "verified" and proxy.country_code
+            else None
+        )
         if path:
             inner = ft.Image(src=path, width=_IND_W, height=_IND_H, border_radius=2)
+        elif state == "stale" and proxy.country_code:
+            # Distinct from the flag on purpose: the country is what we last
+            # saw, not what we know now, so it is reported as text-with-an-age
+            # rather than drawn as the confident graphic.
+            inner = _indicator_box(
+                ft.Text(
+                    proxy.country_code.strip().lower(),
+                    size=11,
+                    color=COLORS["text_dim"],
+                    font_family=MONO,
+                    italic=True,
+                )
+            )
         else:
-            # has a proxy but no successful check yet
+            # has a proxy but no successful check yet (or a stale check with no
+            # country on record)
             inner = _indicator_box(
                 ft.Text("·", size=14, color=COLORS["text_dim"], font_family=MONO)
             )
 
     if on_check_proxy is None or is_checking:
         return inner
+    # Clickability is never gated on freshness: a stale or failed indicator is
+    # exactly the one the operator most needs to be able to re-check.
     return ft.Container(
         content=inner,
         on_click=lambda _, n=proxy.name: on_check_proxy(n),
         ink=True,
+        # The action label is a stable, asserted contract; the age rides the
+        # meta line instead of being concatenated in here.
         tooltip="Check this profile's proxy",
     )
 
@@ -158,7 +237,10 @@ def build_profile_card(
         profile.name, on_edit, on_delete, is_running=is_running
     )
     select_box = _build_select_box(profile.name, is_selected, on_select)
-    indicator = _proxy_indicator(proxy, on_check_proxy, proxy_checking)
+    # Obtained here, exactly as the network page does at build time, so the
+    # caller's signature is untouched and no re-check is implied by a redraw.
+    now = time.time()
+    indicator = _proxy_indicator(proxy, on_check_proxy, proxy_checking, now)
 
     if is_running:
         border_color = COLORS["accent"]
@@ -172,6 +254,13 @@ def build_profile_card(
     # A running profile is already shown by the accent border and the stop
     # button; a "· running" suffix here would be redundant.
     meta = f"{os_label} · {proxy_label}"
+    if proxy is not None:
+        # The age rides the meta line as well as the tooltip, so the operator
+        # reads it while scanning rather than only on hover. Same phrasing as
+        # the network page — one vocabulary for one fact.
+        meta += (
+            f" · {_proxy_age_label(proxy, proxy_indicator_state(proxy, now), now)}"
+        )
 
     left_block = ft.Row(
         spacing=14,
