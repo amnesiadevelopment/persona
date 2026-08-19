@@ -104,8 +104,40 @@ def test_override_script_defines_both_getters():
 # "DateTimeFormat"), Object.keys(Intl.DateTimeFormat) === ["wrapped",
 # "supportedLocalesOf"] (real: []), and Intl.DateTimeFormat.wrapped handed back
 # the REAL constructor — the host's true value one documented property read away.
+#
+# The native form is SPIDERMONKEY's, not the V8 one-liner native_ext.py emits.
+# Firefox prints three lines with a four-space indent, and a native ACCESSOR
+# stringifies WITHOUT the `get ` prefix its .name carries. Emitting V8's form here
+# would trade the `.name === "Wrapped"` tell for an equally cheap toString tell
+# over a wider surface — every override, since every override is cloaked. Both
+# divergences are captured from a clean Firefox 151 with no init scripts, and
+# test_cloak_matches_the_engines_own_native_shape re-derives them from the live
+# engine so this cannot drift back to a hard-coded string.
 
-_NATIVE_FORM = "() { [native code] }"
+_NATIVE_FORM = "() {\n    [native code]\n}"
+# what node's OWN natives print — V8, for the passthrough assertion only
+_V8_NATIVE_FORM = "() { [native code] }"
+
+# every function the two builders install: probe key -> (.name, name in SOURCE).
+# They differ exactly for accessors, which is the second SpiderMonkey divergence.
+_EXPECTED = {
+    "toString": ("toString", "toString"),
+    "DateTimeFormat": ("DateTimeFormat", "DateTimeFormat"),
+    "NumberFormat": ("NumberFormat", "NumberFormat"),
+    "Collator": ("Collator", "Collator"),
+    "supportedLocalesOf": ("supportedLocalesOf", "supportedLocalesOf"),
+    "resolvedOptions": ("resolvedOptions", "resolvedOptions"),
+    "toLocaleDateString": ("toLocaleDateString", "toLocaleDateString"),
+    "dateToString": ("toString", "toString"),
+    "toTimeString": ("toTimeString", "toTimeString"),
+    "numberToLocaleString": ("toLocaleString", "toLocaleString"),
+    "bigintToLocaleString": ("toLocaleString", "toLocaleString"),
+    "Worker": ("Worker", "Worker"),
+    "get language": ("get language", "language"),
+    "get languages": ("get languages", "languages"),
+    "get outerWidth": ("get outerWidth", "outerWidth"),
+    "get outerHeight": ("get outerHeight", "outerHeight"),
+}
 
 
 def test_cloak_prelude_is_double_quoted_and_single_line():
@@ -134,18 +166,33 @@ def test_cloak_patches_function_prototype_tostring_by_chaining():
     assert "__pnaName" not in cloak
 
 
-def test_cloak_reproduces_the_chromium_native_form():
-    # byte-identical to native_ext.py's template
-    assert '"function "+(n||"")+"() { [native code] }"' in il._native_cloak_js()
+def test_cloak_emits_the_spidermonkey_native_form_not_v8s():
+    cloak = il._native_cloak_js()
+    # three lines, four-space indent — SpiderMonkey. NOT native_ext.py's V8
+    # one-liner, which is correct there only because it is a Chromium extension.
+    assert '"function "+(n||"")+"() {"+__nl+"    [native code]"+__nl+"}"' in cloak
+    assert '"() { [native code] }"' not in cloak
+    # the newline is built with fromCharCode, never written as an escape: a "\n"
+    # would be eaten by the OUTER literal when the prelude is inlined into the
+    # single-quoted worker payload, putting a raw newline inside a double-quoted
+    # string in the worker source — a SyntaxError.
+    assert "var __nl=String.fromCharCode(10);" in cloak
+    # __cloak takes the stringified name apart from the pinned .name, because a
+    # native accessor reports "get language" but stringifies as "function
+    # language()". Both accessor call sites must pass the bare property name.
+    assert "var __cloak=function(f,n,s){" in cloak
+    assert "__nm.set(f,s===undefined?n:s);" in cloak
+    both = il._language_override_script("en-US") + il._outer_size_override_script()
+    assert both.count("__cloak(()=>v,'get '+k,k)") == 2
 
 
 def test_override_scripts_carry_the_cloak_into_every_realm():
     js = il._language_override_script("pl-PL")
     # page realm + the re-blobbed worker payload each need their own copy: a
     # worker is a separate realm with its own Function.prototype
-    assert js.count(_NATIVE_FORM) == 2
+    assert js.count("[native code]") == 2
     # the window-realm builder is separate and conditional — it needs one too
-    assert il._outer_size_override_script().count(_NATIVE_FORM) == 1
+    assert il._outer_size_override_script().count("[native code]") == 1
 
 
 def test_override_script_drops_the_wrapped_backdoor():
@@ -169,8 +216,9 @@ def test_override_script_adds_no_enumerable_own_property():
 
 def test_override_scripts_cloak_every_installed_function():
     js = il._language_override_script("en-US") + il._outer_size_override_script()
-    # navigator + window accessors carry the accessor's own "get <prop>" name
-    assert js.count("__cloak(()=>v,'get '+k)") == 2
+    # navigator + window accessors carry the accessor's own "get <prop>" name,
+    # and stringify under the bare property name (SpiderMonkey drops the prefix)
+    assert js.count("__cloak(()=>v,'get '+k,k)") == 2
     # Intl constructors, their supportedLocalesOf and resolvedOptions
     assert "__cloak(Wrapped,Orig.name)" in js
     assert "__cloak(Orig.supportedLocalesOf.bind(Orig)" in js
@@ -301,15 +349,10 @@ def test_every_override_reports_the_originals_name_and_native_form(cloak_probe, 
     # reports the ORIGINAL's name and stringifies as the native form — in the
     # page realm AND inside the re-blobbed worker payload — including the
     # Function.prototype.toString patch itself.
-    expected = {
-        "dateToString": "toString",
-        "numberToLocaleString": "toLocaleString",
-        "bigintToLocaleString": "toLocaleString",
-    }
     for key, (name, text) in cloak_probe[realm].items():
-        want = expected.get(key, key)
-        assert name == want, f"{realm}.{key} reports .name {name!r}"
-        assert text == f"function {want}{_NATIVE_FORM}", f"{realm}.{key} -> {text!r}"
+        want_name, want_src = _EXPECTED[key]
+        assert name == want_name, f"{realm}.{key} reports .name {name!r}"
+        assert text == f"function {want_src}{_NATIVE_FORM}", f"{realm}.{key} -> {text!r}"
 
 
 def test_wrapped_backdoor_is_gone_and_nothing_is_enumerable(cloak_probe):
@@ -340,7 +383,148 @@ def test_reported_values_are_unchanged(cloak_probe):
 def test_tostring_passthrough_is_intact_for_everything_else(cloak_probe):
     # an uncloaked function still stringifies to its real source, and a genuine
     # built-in still stringifies natively — the patch only answers for its own
-    # WeakMap entries
+    # WeakMap entries. This harness runs under node, so the untouched builtin
+    # prints V8's form; the cloak deliberately prints SpiderMonkey's, which is
+    # why the two constants differ here and must not be conflated.
     p = cloak_probe["passthrough"]
     assert "return a" in p["userFn"]
-    assert p["nativeFn"] == f"function map{_NATIVE_FORM}"
+    assert p["nativeFn"] == f"function map{_V8_NATIVE_FORM}"
+
+
+# --- the engine itself is the oracle ----------------------------------------
+# Everything above pins the native form to a string this file also spells out, so
+# the whole set stays green if the string is wrong for the target engine — which
+# is exactly how the V8 one-liner reached a Firefox-only path in the first place.
+# These tests never spell it out: they LEARN the shape from an untouched builtin
+# in the running engine and require every override to match it. They are the only
+# assertions here that can catch the template drifting to another engine's form.
+
+_FF_PROBE = r"""
+  const T = Function.prototype.toString;
+  // the engine's own native shape, with the name factored out
+  const norm = (s) => s.replace(/^function\s*[^(]*\(/, "function (");
+  const srcName = (s) => ((s.match(/^function\s*([^(]*)\(/) || [0, ""])[1]).trim();
+  const SHAPE = norm(T.call(Object.getPrototypeOf));
+  const rows = {};
+  const check = (label, fn, wantName, wantSrc) => {
+    const s = T.call(fn);
+    rows[label] = { name: fn.name, wantName: wantName, str: s,
+                    shape: norm(s), src: srcName(s), wantSrc: wantSrc };
+  };
+"""
+
+_FF_PAGE = "() => {" + _FF_PROBE + r"""
+  const g = (o, k) => (Object.getOwnPropertyDescriptor(o, k) || {}).get;
+  for (const k of ["Collator", "DateTimeFormat", "NumberFormat", "PluralRules",
+                   "ListFormat", "RelativeTimeFormat", "DisplayNames", "Segmenter"]) {
+    if (!Intl[k]) continue;
+    check("Intl." + k, Intl[k], k, k);
+    check("Intl." + k + ".supportedLocalesOf", Intl[k].supportedLocalesOf,
+          "supportedLocalesOf", "supportedLocalesOf");
+    check("Intl." + k + ".p.resolvedOptions", Intl[k].prototype.resolvedOptions,
+          "resolvedOptions", "resolvedOptions");
+  }
+  for (const k of ["toLocaleString", "toLocaleDateString", "toLocaleTimeString",
+                   "toString", "toTimeString"])
+    check("Date.p." + k, Date.prototype[k], k, k);
+  check("Number.p.toLocaleString", Number.prototype.toLocaleString,
+        "toLocaleString", "toLocaleString");
+  check("BigInt.p.toLocaleString", BigInt.prototype.toLocaleString,
+        "toLocaleString", "toLocaleString");
+  check("self.Worker", self.Worker, "Worker", "Worker");
+  check("F.p.toString", Function.prototype.toString, "toString", "toString");
+  for (const k of ["language", "languages"])
+    check("get navigator." + k, g(Navigator.prototype, k), "get " + k, k);
+  for (const k of ["outerWidth", "outerHeight"])
+    check("get window." + k, g(window, k), "get " + k, k);
+
+  // the sweep a scanner already runs: walk the realm, keep every function that
+  // claims [native code] but whose shape differs from the engine's own
+  const seen = new Set(); const tells = [];
+  const walk = (o, path, depth) => {
+    if (!o || seen.has(o) || depth > 2) return;
+    seen.add(o);
+    for (const k of Object.getOwnPropertyNames(o)) {
+      const d = Object.getOwnPropertyDescriptor(o, k);
+      if (!d) continue;
+      for (const fn of [d.value, d.get, d.set]) {
+        if (typeof fn !== "function") continue;
+        let s; try { s = T.call(fn); } catch (e) { continue; }
+        if (s.indexOf("[native code]") !== -1 && norm(s) !== SHAPE)
+          tells.push(path + "." + k + " -> " + JSON.stringify(s));
+      }
+      if (depth < 2 && d.value && (typeof d.value === "object" ||
+                                   typeof d.value === "function")) {
+        try { walk(d.value, path + "." + k, depth + 1); } catch (e) {}
+      }
+    }
+  };
+  walk(globalThis, "", 0);
+  return { shape: SHAPE, rows: rows, tells: tells };
+}"""
+
+_FF_WORKER = ("() => new Promise((res, rej) => {\n  const src = " + json.dumps(
+    _FF_PROBE + r"""
+  for (const k of ["Collator", "DateTimeFormat", "NumberFormat", "PluralRules",
+                   "ListFormat", "RelativeTimeFormat", "DisplayNames", "Segmenter"]) {
+    if (!Intl[k]) continue;
+    check("Intl." + k, Intl[k], k, k);
+    check("Intl." + k + ".supportedLocalesOf", Intl[k].supportedLocalesOf,
+          "supportedLocalesOf", "supportedLocalesOf");
+  }
+  check("Number.p.toLocaleString", Number.prototype.toLocaleString,
+        "toLocaleString", "toLocaleString");
+  check("BigInt.p.toLocaleString", BigInt.prototype.toLocaleString,
+        "toLocaleString", "toLocaleString");
+  check("F.p.toString", Function.prototype.toString, "toString", "toString");
+  postMessage(JSON.stringify({ shape: SHAPE, rows: rows, tells: [] }));
+""") + ";\n"
+    # built through the WRAPPED self.Worker, so this exercises the re-blob path
+    "  const w = new Worker(URL.createObjectURL("
+    "new Blob([src], {type: 'text/javascript'})));\n"
+    "  w.onmessage = (e) => res(JSON.parse(e.data));\n"
+    "  w.onerror = (e) => rej(new Error(e.message));\n})")
+
+
+@pytest.fixture(scope="module")
+def firefox_probe():
+    """Run both init scripts in a REAL Firefox, in the real registration order."""
+    sync_playwright = pytest.importorskip(
+        "playwright.sync_api", reason="playwright not installed").sync_playwright
+    try:
+        with sync_playwright() as p:
+            browser = p.firefox.launch()
+            try:
+                ctx = browser.new_context(locale="pl-PL")
+                # the order invisible_launch.py registers them in
+                ctx.add_init_script(il._outer_size_override_script())
+                ctx.add_init_script(il._language_override_script("pl-PL"))
+                page = ctx.new_page()
+                page.goto("data:text/html,<meta charset=utf-8><title>x</title>")
+                return {"page": page.evaluate(_FF_PAGE),
+                        "worker": page.evaluate(_FF_WORKER)}
+            finally:
+                browser.close()
+    except Exception as exc:  # browser binary absent, no sandbox, no display...
+        pytest.skip(f"firefox not runnable here: {exc}")
+
+
+@pytest.mark.parametrize("realm", ["page", "worker"])
+def test_cloak_matches_the_engines_own_native_shape(firefox_probe, realm):
+    # criterion 2, against the ONLY oracle that counts: SpiderMonkey itself.
+    # SHAPE is read off Object.getPrototypeOf at runtime, so a template written
+    # for another engine fails here no matter what this file believes.
+    probe = firefox_probe[realm]
+    shape = probe["shape"]
+    assert "[native code]" in shape
+    bad = {k: v for k, v in probe["rows"].items()
+           if v["shape"] != shape or v["src"] != v["wantSrc"]
+           or v["name"] != v["wantName"]}
+    assert not bad, json.dumps(bad, indent=1)
+    assert len(probe["rows"]) >= 19
+
+
+def test_no_function_in_the_realm_betrays_itself_by_shape(firefox_probe):
+    # the generic scanner sweep: on main this returned exactly the 31 persona
+    # overrides and nothing else — a 100%-precision detector list
+    assert firefox_probe["page"]["tells"] == []

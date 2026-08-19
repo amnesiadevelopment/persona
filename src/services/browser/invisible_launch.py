@@ -257,8 +257,28 @@ def _native_cloak_js() -> str:
     persona extension, so the cloak could not reach it by construction. Without it
     a page reads `Intl.DateTimeFormat.name === "Wrapped"` or stringifies any
     wrapper and sees injected source: a one-line, zero-false-positive masking
-    tell. This reproduces native_ext.py's exact native form,
-    `function <name>() { [native code] }`, for the init-script realms.
+    tell.
+
+    The native form is SPIDERMONKEY's, NOT native_ext.py's. That file (and
+    locale_ext.py / geo_ext.py) emits V8's one-line `function x() { [native code]
+    }`, which is correct there because all three are Chromium extensions. This is
+    the first time the cloak crosses into Firefox, and the template does not
+    survive the crossing — SpiderMonkey prints three lines with a four-space
+    indent. Captured from a clean Firefox 151 with no init scripts at all:
+
+        Array.prototype.map -> "function map() {\\n    [native code]\\n}"
+
+    Emitting V8's form here would leave a detector one line better off than the
+    `.name === "Wrapped"` tell this replaces, over a WIDER surface — every
+    override, since every override is cloaked:
+
+        Intl.DateTimeFormat.toString().replace("DateTimeFormat","map")
+            !== Array.prototype.map.toString()
+
+    A native ACCESSOR diverges a second way: its `.name` carries the `get `
+    prefix but its SOURCE TEXT does not — `get language` stringifies as `function
+    language() {...}`. So __cloak takes the stringified name separately from the
+    pinned `.name`; the accessor call sites pass the bare property name.
 
     Two deliberate improvements on the Chromium marker:
 
@@ -272,19 +292,28 @@ def _native_cloak_js() -> str:
     The patch itself is cloaked as "toString" because a detector stringifies
     Function.prototype.toString to catch exactly this trick (native_ext.py:44-47).
 
-    The text uses double quotes only and contains no newline, so the SAME string
-    is valid both here in the page realm and inlined inside the single-quoted
-    worker-payload literal below. Parens and braces are balanced — see the
+    The text uses double quotes only and contains no newline and no backslash, so
+    the SAME string is valid both here in the page realm and inlined inside the
+    single-quoted worker-payload literal below — which is why the newline in the
+    native form is built with String.fromCharCode(10) rather than written as an
+    escape: a `\\n` would be consumed by the OUTER literal when the prelude is
+    inlined, putting a raw newline inside a double-quoted string in the worker
+    source and making it a SyntaxError. Parens and braces are balanced — see the
     balanced-count assertions in tests/test_ff_language_override.py."""
     return (
-        # wrapper -> the name it must report. WeakMap, so a wrapper that is
-        # dropped is collectable and the page cannot enumerate the registry.
+        # wrapper -> the name its SOURCE TEXT must carry (no `get ` prefix for an
+        # accessor). WeakMap, so a wrapper that is dropped is collectable and the
+        # page cannot enumerate the registry.
         "var __nm=new WeakMap();"
+        # SpiderMonkey's shape: three lines, four-space indent. See the docstring
+        # — this is deliberately NOT native_ext.py's V8 one-liner.
+        "var __nl=String.fromCharCode(10);"
         "var __nat=function(n){"
-        'return "function "+(n||"")+"() { [native code] }";};'
+        'return "function "+(n||"")+"() {"+__nl+"    [native code]"+__nl+"}";};'
         # Pin .name to the original's (non-enumerable + configurable, exactly the
-        # descriptor a native function's own `name` carries) and record it.
-        "var __cloak=function(f,n){try{__nm.set(f,n);"
+        # descriptor a native function's own `name` carries) and record the name
+        # to STRINGIFY as, which is `s` when it differs from `.name` (accessors).
+        "var __cloak=function(f,n,s){try{__nm.set(f,s===undefined?n:s);"
         'Object.defineProperty(f,"name",{value:n,configurable:true});}'
         "catch(e){}return f;};"
         # Chain, don't flag-guard: __pts is whoever patched before us (native
@@ -314,9 +343,10 @@ def _outer_size_override_script() -> str:
         "(() => {" + _native_cloak_js() +
         # The getter is what a page reaches through
         # Object.getOwnPropertyDescriptor(window,'outerWidth').get — cloak it as
-        # "get outerWidth", the name and native form the real accessor reports.
+        # the real accessor reads: .name "get outerWidth", source text
+        # `function outerWidth() {...}` (SpiderMonkey drops the prefix there).
         "const def=(o,k,v)=>{try{Object.defineProperty(o,k,"
-        "{get:__cloak(()=>v,'get '+k),configurable:true})}catch(e){}};"
+        "{get:__cloak(()=>v,'get '+k,k),configurable:true})}catch(e){}};"
         "def(window,'outerWidth', window.innerWidth + 14);"
         "def(window,'outerHeight', window.innerHeight + 91);"
         "})();"
@@ -344,7 +374,7 @@ def _language_override_script(locale: str) -> str:
         "(() => {" + _native_cloak_js() +
         "const L=" + loc_js + ",LS=" + langs_js + ";"
         "const def=(k,v)=>{try{Object.defineProperty(Navigator.prototype,k,"
-        "{get:__cloak(()=>v,'get '+k),configurable:true})}catch(e){}};"
+        "{get:__cloak(()=>v,'get '+k,k),configurable:true})}catch(e){}};"
         "def('language', L);"
         "def('languages', Object.freeze(LS.slice()));"
         # firefox-17 also leaks the host locale through the Intl API and Date's
