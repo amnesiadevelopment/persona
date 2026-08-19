@@ -65,6 +65,21 @@ ANDROID_PRESETS = [
 
 # iOS Safari has no Client Hints (Apple doesn't ship UA-CH); userAgentData is
 # undefined on real iOS, which the mobile extension must reproduce.
+#
+# VERSION FLOOR — read before adding a preset claiming an OLDER iOS.
+# gpu_ext.py's iOS WebGL extension set (IOS_GL1_EXTS / IOS_GL2_EXTS) is only
+# valid for iOS >= 17. Two floors stack:
+#   - s3tc/bptc/rgtc (BC compression) requires iOS >= 16.4
+#     (DisplayMtl::supportsBCTextureCompression is annotated for 16.4).
+#   - the 2023-08-08 WebKit batch — EXT_clip_control, WEBGL_polygon_mode,
+#     EXT_conservative_depth, EXT_render_snorm, EXT_depth_clamp,
+#     WEBGL_render_shared_exponent, WEBGL_stencil_texturing — ships no earlier
+#     than iOS 17.
+# ALIASED_POINT_SIZE_RANGE in COMMON_IOS is likewise [1,511] for iOS >= 15.0
+# and was [1,64] below that.
+# Every preset here claims iOS 17.5, which clears all three. A preset claiming
+# an older iOS would present an extension set that device could not report —
+# an internally impossible profile. Update gpu_ext.py alongside it.
 IOS_PRESETS = [
     DevicePreset(
         key="iphone-15", os_type="ios", label="iPhone 15",
