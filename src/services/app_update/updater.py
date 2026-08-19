@@ -935,7 +935,7 @@ def _try_windows_fast_update(say) -> bool:
     return fu.apply_code_only_and_restart(app_zip_url, sha, log=say)
 
 
-def _apply_windows(staged: str, say) -> bool:
+def _apply_windows(staged: str, say) -> bool | None:
     """Hand the downloaded installer control, then relaunch persona ourselves.
 
     The installer has a fixed AppId, so it upgrades the existing install in
@@ -1153,7 +1153,7 @@ def _apply_linux(staged: str, extra_args, say) -> bool:
     return False  # unreachable on success
 
 
-def apply_and_restart(staged: str, extra_args=None, log=None) -> None:
+def apply_and_restart(staged: str, extra_args=None, log=None) -> bool | None:
     """Install the staged update for THIS platform and restart into it.
 
     Dispatch only — each platform's strategy lives in its own function

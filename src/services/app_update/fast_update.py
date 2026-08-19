@@ -21,7 +21,7 @@ import sys
 import tempfile
 
 from ...core import platform as _platform
-from ...utils.httpdl import curl_download, digest_ok, sha256_bytes, sha256_file
+from ...utils.httpdl import curl_download, digest_ok, sha256_file
 from . import install_env, relaunch_bat
 
 MANIFEST_ASSET = "update-manifest.json"
