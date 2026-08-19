@@ -248,6 +248,87 @@ def _with_context_overrides(InvisiblePlaywright, overrides: dict):
     return _WithOverrides
 
 
+def _native_cloak_js() -> str:
+    """JS prelude that makes every function an init script installs read as a
+    native built-in. The Firefox counterpart of native_ext.py.
+
+    native_ext.py is a Chromium MV3 extension (world: MAIN), loaded only from the
+    Chromium launch path — Firefox launches through this module and loads no
+    persona extension, so the cloak could not reach it by construction. Without it
+    a page reads `Intl.DateTimeFormat.name === "Wrapped"` or stringifies any
+    wrapper and sees injected source: a one-line, zero-false-positive masking
+    tell.
+
+    The native form is SPIDERMONKEY's, NOT native_ext.py's. That file (and
+    locale_ext.py / geo_ext.py) emits V8's one-line `function x() { [native code]
+    }`, which is correct there because all three are Chromium extensions. This is
+    the first time the cloak crosses into Firefox, and the template does not
+    survive the crossing — SpiderMonkey prints three lines with a four-space
+    indent. Captured from a clean Firefox 151 with no init scripts at all:
+
+        Array.prototype.map -> "function map() {\\n    [native code]\\n}"
+
+    Emitting V8's form here would leave a detector one line better off than the
+    `.name === "Wrapped"` tell this replaces, over a WIDER surface — every
+    override, since every override is cloaked:
+
+        Intl.DateTimeFormat.toString().replace("DateTimeFormat","map")
+            !== Array.prototype.map.toString()
+
+    A native ACCESSOR diverges a second way: its `.name` carries the `get `
+    prefix but its SOURCE TEXT does not — `get language` stringifies as `function
+    language() {...}`. So __cloak takes the stringified name separately from the
+    pinned `.name`; the accessor call sites pass the bare property name.
+
+    Two deliberate improvements on the Chromium marker:
+
+    * the wrapper -> native-name mapping lives in a closure-scoped WeakMap, not in
+      an own `__pnaName` property, so NO own property is added to any wrapper and
+      the internal state is invisible to enumeration and to a symbol sweep;
+    * the Function.prototype.toString patch CHAINS onto whatever is already
+      installed instead of guarding on a global flag, so two independently
+      injected scripts compose with no shared global name between them.
+
+    The patch itself is cloaked as "toString" because a detector stringifies
+    Function.prototype.toString to catch exactly this trick (native_ext.py:44-47).
+
+    The text uses double quotes only and contains no newline and no backslash, so
+    the SAME string is valid both here in the page realm and inlined inside the
+    single-quoted worker-payload literal below — which is why the newline in the
+    native form is built with String.fromCharCode(10) rather than written as an
+    escape: a `\\n` would be consumed by the OUTER literal when the prelude is
+    inlined, putting a raw newline inside a double-quoted string in the worker
+    source and making it a SyntaxError. Parens and braces are balanced — see the
+    balanced-count assertions in tests/test_ff_language_override.py."""
+    return (
+        # wrapper -> the name its SOURCE TEXT must carry (no `get ` prefix for an
+        # accessor). WeakMap, so a wrapper that is dropped is collectable and the
+        # page cannot enumerate the registry.
+        "var __nm=new WeakMap();"
+        # SpiderMonkey's shape: three lines, four-space indent. See the docstring
+        # — this is deliberately NOT native_ext.py's V8 one-liner.
+        "var __nl=String.fromCharCode(10);"
+        "var __nat=function(n){"
+        'return "function "+(n||"")+"() {"+__nl+"    [native code]"+__nl+"}";};'
+        # Pin .name to the original's (non-enumerable + configurable, exactly the
+        # descriptor a native function's own `name` carries) and record the name
+        # to STRINGIFY as, which is `s` when it differs from `.name` (accessors).
+        "var __cloak=function(f,n,s){try{__nm.set(f,s===undefined?n:s);"
+        'Object.defineProperty(f,"name",{value:n,configurable:true});}'
+        "catch(e){}return f;};"
+        # Chain, don't flag-guard: __pts is whoever patched before us (native
+        # toString on the first script to run in this realm).
+        "var __pts=Function.prototype.toString;"
+        'var __ts=function(){"use strict";'
+        # `this` is the function being stringified. Strict mode so a primitive
+        # `this` stays primitive and still reaches the original for its TypeError.
+        'try{var n=__nm.get(this);if(typeof n==="string")return __nat(n);}catch(e){}'
+        "return __pts.apply(this,arguments);};"
+        '__cloak(__ts,"toString");'
+        "try{Function.prototype.toString=__ts;}catch(e){}"
+    )
+
+
 def _outer_size_override_script() -> str:
     """JS that pins window.outerWidth/outerHeight to the real window (inner +
     chrome), not the spoofed screen.
@@ -259,9 +340,13 @@ def _outer_size_override_script() -> str:
     outer ≈ inner + chrome (both below screen), which is what a normal window
     looks like. Chrome offsets match the engine's own (_CHROME_W/_CHROME_H)."""
     return (
-        "(() => {"
+        "(() => {" + _native_cloak_js() +
+        # The getter is what a page reaches through
+        # Object.getOwnPropertyDescriptor(window,'outerWidth').get — cloak it as
+        # the real accessor reads: .name "get outerWidth", source text
+        # `function outerWidth() {...}` (SpiderMonkey drops the prefix there).
         "const def=(o,k,v)=>{try{Object.defineProperty(o,k,"
-        "{get:()=>v,configurable:true})}catch(e){}};"
+        "{get:__cloak(()=>v,'get '+k,k),configurable:true})}catch(e){}};"
         "def(window,'outerWidth', window.innerWidth + 14);"
         "def(window,'outerHeight', window.innerHeight + 91);"
         "})();"
@@ -286,10 +371,10 @@ def _language_override_script(locale: str) -> str:
     langs_js = json.dumps(langs)
     loc_js = json.dumps(locale)
     return (
-        "(() => {"
+        "(() => {" + _native_cloak_js() +
         "const L=" + loc_js + ",LS=" + langs_js + ";"
         "const def=(k,v)=>{try{Object.defineProperty(Navigator.prototype,k,"
-        "{get:()=>v,configurable:true})}catch(e){}};"
+        "{get:__cloak(()=>v,'get '+k,k),configurable:true})}catch(e){}};"
         "def('language', L);"
         "def('languages', Object.freeze(LS.slice()));"
         # firefox-17 also leaks the host locale through the Intl API and Date's
@@ -299,28 +384,44 @@ def _language_override_script(locale: str) -> str:
         # force every Intl formatter and Date's default locale to L so a scanner
         # sees one consistent locale.
         "try{"
+        # __om is the re-wrap guard that Wrapped.wrapped used to be. That was an
+        # ENUMERABLE own property that handed the page the real constructor —
+        # Object.keys(Intl.DateTimeFormat) was ["wrapped","supportedLocalesOf"]
+        # (real: []) and one documented read recovered the host's true value. A
+        # closure WeakMap keeps the guard and exposes nothing. Scope is this
+        # script's own execution, which is the whole guard: add_init_script runs
+        # once per document and each document is a fresh realm, so the repeat this
+        # guards is forceLocale seeing a ctor it already wrapped.
+        "const __om=new WeakMap();"
         "const forceLocale=(ctor)=>{if(!ctor)return;"
-        "const Orig=ctor.wrapped||ctor;"
+        "const Orig=__om.get(ctor)||ctor;"
         "const Wrapped=function(locales,options){"
         "const l=(locales===undefined||locales===null||"
         "(Array.isArray(locales)&&locales.length===0))?L:locales;"
         "return new.target?Reflect.construct(Orig,[l,options],new.target)"
         ":Orig(l,options);};"
         "Wrapped.prototype=Orig.prototype;"
-        "Wrapped.wrapped=Orig;"
-        "if(Orig.supportedLocalesOf)Wrapped.supportedLocalesOf="
-        "Orig.supportedLocalesOf.bind(Orig);"
+        "__om.set(Wrapped,Orig);"
+        "__cloak(Wrapped,Orig.name);"
+        # defineProperty, not assignment: an assignment creates an ENUMERABLE own
+        # property, which is what put "supportedLocalesOf" into Object.keys. The
+        # descriptor below is the one the native method carries.
+        "if(Orig.supportedLocalesOf){"
+        "const slo=__cloak(Orig.supportedLocalesOf.bind(Orig),"
+        "Orig.supportedLocalesOf.name);"
+        "try{Object.defineProperty(Wrapped,'supportedLocalesOf',"
+        "{value:slo,writable:true,configurable:true});}catch(e){}}"
         "const ro=Orig.prototype&&Orig.prototype.resolvedOptions;"
-        "if(ro){Orig.prototype.resolvedOptions=function(){"
-        "const o=ro.call(this);o.locale=L;return o;};}"
+        "if(ro){Orig.prototype.resolvedOptions=__cloak(function(){"
+        "const o=ro.call(this);o.locale=L;return o;},ro.name);}"
         "return Wrapped;};"
         "['DateTimeFormat','NumberFormat','RelativeTimeFormat','Collator',"
         "'PluralRules','ListFormat','DisplayNames','Segmenter'].forEach(k=>{"
         "if(Intl[k]){const w=forceLocale(Intl[k]);if(w)Intl[k]=w;}});"
         # Date locale-aware methods default to L when no locale is passed.
         "const patchDate=(name)=>{const orig=Date.prototype[name];if(!orig)return;"
-        "Date.prototype[name]=function(locales,options){"
-        "return orig.call(this,locales===undefined?L:locales,options);};};"
+        "Date.prototype[name]=__cloak(function(locales,options){"
+        "return orig.call(this,locales===undefined?L:locales,options);},orig.name);};"
         "['toLocaleString','toLocaleDateString','toLocaleTimeString']"
         ".forEach(patchDate);"
         # Date.prototype.toString/toTimeString/toDateString render the timezone
@@ -336,9 +437,10 @@ def _language_override_script(locale: str) -> str:
         "const i=s.indexOf(' '+OP);const zn=zoneName(d);"
         "return i<0||!zn?s:s.slice(0,i)+' '+OP+zn+CP;};"
         "const oTS=Date.prototype.toString,oTTS=Date.prototype.toTimeString;"
-        "Date.prototype.toString=function(){return reZone(oTS.call(this),this);};"
-        "Date.prototype.toTimeString=function(){"
-        "return reZone(oTTS.call(this),this);};"
+        "Date.prototype.toString=__cloak(function(){"
+        "return reZone(oTS.call(this),this);},oTS.name);"
+        "Date.prototype.toTimeString=__cloak(function(){"
+        "return reZone(oTTS.call(this),this);},oTTS.name);"
         # Number/BigInt.toLocaleString use the host ICU locale internally (not the
         # wrapped Intl.NumberFormat), so a currency name leaked in the host locale
         # — creepjs's lang/timezone check read "1 US dollar" (en-US) under a pl-PL
@@ -346,8 +448,8 @@ def _language_override_script(locale: str) -> str:
         "[Number,typeof BigInt!=='undefined'?BigInt:null].forEach(function(C){"
         "if(!C||!C.prototype||!C.prototype.toLocaleString)return;"
         "const o=C.prototype.toLocaleString;"
-        "C.prototype.toLocaleString=function(l,opt){"
-        "return o.call(this,l===undefined?L:l,opt);};});"
+        "C.prototype.toLocaleString=__cloak(function(l,opt){"
+        "return o.call(this,l===undefined?L:l,opt);},o.name);});"
         # Web Workers get a fresh Intl at the host locale (add_init_script only
         # runs in the page, not workers) — creepjs reads currency/list from a blob
         # worker and saw "1 US dollar"/en. Carry a compact locale patch into
@@ -355,17 +457,26 @@ def _language_override_script(locale: str) -> str:
         # and re-blobbing under the same scheme (the site's CSP already allows
         # blob: workers). http(s) workers get an importScripts shim.
         "try{"
-        "const WP='(function(L){try{"
+        # The worker is a SEPARATE realm with its own Function.prototype, so the
+        # page-realm cloak above cannot reach it — the payload carries its own
+        # inlined copy. _native_cloak_js() is double-quoted and newline-free by
+        # construction, so it drops straight into this single-quoted literal.
+        "const WP='(function(L){try{" + _native_cloak_js() +
         "var wrap=function(n){var C=Intl[n];if(!C)return;var W=function(a,o){"
         "return Reflect.construct(C,[a||L,o],W);};W.prototype=C.prototype;"
-        "if(C.supportedLocalesOf)W.supportedLocalesOf=C.supportedLocalesOf.bind(C);"
+        "__cloak(W,C.name);"
+        "if(C.supportedLocalesOf){var s=__cloak(C.supportedLocalesOf.bind(C),"
+        "C.supportedLocalesOf.name);"
+        "try{Object.defineProperty(W,\"supportedLocalesOf\","
+        "{value:s,writable:true,configurable:true});}catch(e){}}"
         "Intl[n]=W;};"
         "[\"NumberFormat\",\"DateTimeFormat\",\"ListFormat\",\"RelativeTimeFormat\","
         "\"DisplayNames\",\"PluralRules\",\"Collator\"].forEach(wrap);"
         "[Number,typeof BigInt!==\"undefined\"?BigInt:null].forEach(function(C){"
         "if(!C||!C.prototype||!C.prototype.toLocaleString)return;"
-        "var o=C.prototype.toLocaleString;C.prototype.toLocaleString=function(l,opt){"
-        "return o.call(this,l===undefined?L:l,opt);};});"
+        "var o=C.prototype.toLocaleString;C.prototype.toLocaleString=__cloak("
+        "function(l,opt){"
+        "return o.call(this,l===undefined?L:l,opt);},o.name);});"
         "}catch(e){}})('+JSON.stringify(L)+');';"
         "var wrapW=function(Orig){if(typeof Orig!=='function')return Orig;"
         "var W=function(url,opt){try{"
@@ -381,7 +492,7 @@ def _language_override_script(locale: str) -> str:
         "return Reflect.construct(Orig,[url,opt],W);}"
         "return Reflect.construct(Orig,[url,opt],W);"
         "}catch(e){return Reflect.construct(Orig,[url,opt],W);}};"
-        "W.prototype=Orig.prototype;return W;};"
+        "W.prototype=Orig.prototype;return __cloak(W,Orig.name);};"
         "if(self.Worker)self.Worker=wrapW(self.Worker);"
         "if(self.SharedWorker)self.SharedWorker=wrapW(self.SharedWorker);"
         "}catch(e){}"
