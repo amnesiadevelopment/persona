@@ -283,6 +283,49 @@ def test_app_and_engine_share_one_missing_checksum_contract():
     assert httpdl.verify_bytes(b"anything", "deadbeef", allow_missing=True) is False
 
 
+def test_allow_missing_does_not_cover_a_present_but_unusable_digest():
+    # "no digest was published" and "a digest arrived but is unusable" are two
+    # different facts, and the opt-in was granted for the FIRST one only.
+    # normalize_digest() flattens "sha256:", ":" and "  x  " to "", so a policy
+    # written as `if not normalize_digest(d): return allow_missing` hands a
+    # malformed digest the opt-in exit and ACCEPTS it — fail-open under a new
+    # name, and the same shape as bfc7cbf (a guard and the check it protects
+    # disagreeing about the meaning of one word). These forms must be REFUSED
+    # even under allow_missing.
+    from src.utils import httpdl
+    from src.services.engine import updater as eu
+
+    # Whitespace-only is in this list ON PURPOSE. It is the row that makes the
+    # obvious fix (`digest is None or not str(digest).strip()`) wrong: that
+    # spelling calls "   " missing and hands it the opt-in, but on main "   "
+    # fails CLOSED, so it would be a widening smuggled in by the fix for a
+    # widening.
+    for bad in ("sha256:", ":", "sha256: ", "sha256::", "   ", "\t\n"):
+        # None of these is "nothing was published", so none may take the opt-in
+        # exit — whatever they normalize to.
+        assert httpdl.digest_missing(bad) is False, bad
+        assert httpdl.digest_ok("deadbeef", bad, allow_missing=True) is False, bad
+        assert httpdl.verify_bytes(b"anything", bad, allow_missing=True) is False, bad
+        assert httpdl.verify_file(__file__, bad, allow_missing=True) is False, bad
+        assert eu.sha256_ok(b"anything", bad, allow_missing=True) is False, bad
+
+    # The specific trap this guards: these normalize to "" exactly like a digest
+    # that was never published, which is why a policy keyed on normalize_digest()
+    # hands them the opt-in. ("sha256::" is deliberately NOT here — it splits on
+    # the FIRST colon and normalizes to ":", so it reaches the same refusal by
+    # the compare instead. Both routes must refuse; only this one is the trap.)
+    for flattens in ("sha256:", ":", "sha256: ", "   ", "\t\n"):
+        assert httpdl.normalize_digest(flattens) == "", flattens
+
+    # Only a genuinely absent digest keeps the opt-in — and "absent" must mean
+    # exactly what the one gate that grants the opt-in means by it
+    # (engine/updater.py: `allow_unverified = not digest and IS_LINUX`).
+    for blank in ("", None):
+        assert httpdl.digest_missing(blank) is True, blank
+        assert httpdl.verify_bytes(b"anything", blank) is False, blank
+        assert httpdl.verify_bytes(b"anything", blank, allow_missing=True) is True, blank
+
+
 def test_app_verify_has_no_allow_missing_escape_hatch():
     # The refusal must not be re-openable by a caller: verify_staged_installer
     # deliberately exposes no allow_missing/force parameter, so there is no way

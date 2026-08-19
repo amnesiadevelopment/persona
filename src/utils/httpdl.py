@@ -100,8 +100,37 @@ def sha256_file(path: str) -> str:
 
 def normalize_digest(digest: str | None) -> str:
     """A bare lowercase hex digest from any of the forms our sources publish:
-    the GitHub API's "sha256:abcd…", a sha256sum line's plain hex, or ''."""
+    the GitHub API's "sha256:abcd…", a sha256sum line's plain hex, or ''.
+
+    Returns '' for anything unusable, which is NOT the same fact as "nothing was
+    published" — see digest_missing.
+    """
     return (digest or "").split(":", 1)[-1].strip().lower()
+
+
+def digest_missing(digest: str | None) -> bool:
+    """True only when NO digest was published at all: None or ''.
+
+    This is deliberately NOT `not normalize_digest(digest)`. The two questions
+    look the same and are not:
+
+      * "sha256:", ":", "   " -> a digest ARRIVED and is unusable
+      * None, ""             -> nothing was ever published
+
+    Only the second is what an `allow_missing` opt-in was granted for. Collapsing
+    them lets a malformed digest take the opt-in exit and be ACCEPTED, which is
+    fail-open under a new name — the exact regression PS-6 exists to prevent.
+
+    IT IS ALSO, CHARACTER FOR CHARACTER, THE `not digest` THAT THE ONE CALLER OF
+    THE OPT-IN USES AS ITS GATE (engine/updater.py: `allow_unverified = not
+    digest and IS_LINUX`). That identity is the point, not a coincidence: bfc7cbf
+    was a real fix left inert because a guard and the check it protected disagreed
+    about one word, so "missing" MUST mean the same thing on both sides of that
+    seam. Note this deliberately excludes whitespace-only ("   "), which the gate
+    reads as a digest that arrived — widening this to `.strip()` would make the
+    two disagree again and hand "   " an acceptance that today fails closed.
+    """
+    return not digest
 
 
 # --- the missing-checksum policy (see module docstring) ----------------------
@@ -113,17 +142,19 @@ def digest_ok(actual: str, digest: str | None, allow_missing: bool = False) -> b
     No expected digest fails closed (returns False) unless the caller explicitly
     opts in with allow_missing. A present-but-wrong digest is always rejected,
     even under allow_missing — opting in covers "there is no digest to check",
-    never "the digest did not match".
+    never "the digest did not match", and never "the digest was unusable".
     """
+    if digest_missing(digest):
+        return allow_missing  # nothing was ever published
     want = normalize_digest(digest)
     if not want:
-        return allow_missing
+        return False  # a digest arrived but is unusable — never accept it
     return (actual or "").strip().lower() == want
 
 
 def verify_bytes(data: bytes, digest: str | None, allow_missing: bool = False) -> bool:
     """Verify an in-memory payload against a sha256 digest, fail-closed."""
-    if not normalize_digest(digest):
+    if digest_missing(digest):
         return allow_missing
     return digest_ok(sha256_bytes(data), digest)
 
@@ -131,7 +162,7 @@ def verify_bytes(data: bytes, digest: str | None, allow_missing: bool = False) -
 def verify_file(path: str, digest: str | None, allow_missing: bool = False) -> bool:
     """Verify a file against a sha256 digest, fail-closed. An unreadable file is
     never accepted — we could not verify it, which is exactly the case we refuse."""
-    if not normalize_digest(digest):
+    if digest_missing(digest):
         return allow_missing
     try:
         return digest_ok(sha256_file(path), digest)
