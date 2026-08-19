@@ -27,6 +27,7 @@ from .engine_install import (  # noqa: F401
     _binary_path_override,
     _build_is_whole,
     _download_invisible,
+    _engine_in_use,
     _ensure_firefox_policies,
     _extract_as,
     _invisible_binary_path,
@@ -39,6 +40,12 @@ from .engine_install import (  # noqa: F401
     installed_version,
     is_invisible_installed,
     prune_superseded_builds,
+    # NOTE: the SETTER is re-exported, never `_in_use_provider` itself — a
+    # `from ... import` binds a name by VALUE, so a re-exported variable would
+    # be a stale copy that the setter's rebind in engine_install never reaches.
+    # Pruning reads its own module global, so going through set_in_use_provider
+    # is what makes the wiring visible to it.
+    set_in_use_provider,
 )
 from .firefox_bookmarks import places_ready
 

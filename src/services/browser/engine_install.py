@@ -31,6 +31,55 @@ _INSTALL_MARKER = ".persona-complete"
 # and rejects a stub.
 _WHOLE_BUILD_BYTES = 50_000_000
 
+# Answers "is any profile running right now?" for the prune path. Firefox loads
+# lazily from its build dir all session long (omni.ja, component libs, locale
+# resources), so deleting a build a profile is executing from makes anything not
+# yet opened unreadable. POSIX unlink semantics do NOT refuse that deletion —
+# only Windows does, by accident of its sharing rules — so `except OSError` is
+# not a guard on Linux/macOS and pruning has to ASK instead.
+#
+# Injected rather than imported: engine_install sits BELOW launcher/ui in the
+# layering, so it cannot import running_profile_names itself. Set once at
+# startup via set_in_use_provider.
+#
+# Unset ⇒ pruning proceeds. Deferral is a safety net over the real, wired
+# production path (App.__init__ → _wire_engine_prune_guard), not a substitute
+# for it; a direct library call with no UI has no session state to defer to.
+_in_use_provider = None  # Callable[[], bool] | None
+
+
+def set_in_use_provider(fn) -> None:
+    """Wire the oracle pruning consults before deleting an engine build.
+
+    `fn` is a zero-arg callable returning True while any profile is running.
+    Called once at startup by the UI, which owns the launcher; passing None
+    clears it (pruning then proceeds unguarded)."""
+    global _in_use_provider
+    _in_use_provider = fn
+
+
+def _engine_in_use(log=None) -> bool:
+    """True when the wired provider reports a running profile. A provider that
+    raises is treated as 'not in use': a broken oracle must not permanently
+    wedge disk reclamation, and this restores exactly today's behaviour.
+
+    That fail-OPEN default is the one path where a fault degrades back into the
+    very deletion this guard exists to prevent, and it would otherwise do so
+    silently — so a raising provider is LOGGED. `log` is optional purely so the
+    predicate stays callable bare (`_engine_in_use()`)."""
+    fn = _in_use_provider
+    if fn is None:
+        return False
+    try:
+        return bool(fn())
+    except Exception as e:
+        if log:
+            log(
+                f"Firefox engine: in-use check failed ({e!r}) — treating as "
+                "no profile running; pruning proceeds"
+            )
+        return False
+
 
 def _build_is_whole(build_dir) -> bool:
     """True when `build_dir` holds an unpacked engine, not just an aborted
@@ -400,7 +449,27 @@ def _prune_old_engine_builds(keep: str, log=None) -> None:
     weight and its removal never triggers a re-download. Never `keep` itself.
     A markerless dir at the pinned version is the shipped engine, safe to
     remove; a markerless dir at any OTHER version is a half-finished download,
-    left alone. Best-effort: a build in use / undeletable is left alone."""
+    left alone.
+
+    Defers entirely while any profile is running (see set_in_use_provider):
+    prune keeps the HIGHEST build, so a profile pinned to the PREVIOUS one when
+    a new build lands would otherwise have the tree it is executing from
+    deleted out from under it. POSIX does not refuse that unlink, so this check
+    — not the `except OSError` below — is what actually protects a live
+    session. Disk is reclaimed on the next prune once profiles have closed.
+
+    The check is made ONCE, before the loop, so a profile that launches between
+    it and an rmtree below is still exposed — this narrows the window, it does
+    not close it. Closing it needs per-session build provenance, which nothing
+    records today (the launcher keeps only the Popen per name); treat this as a
+    strong default, not a hard guarantee."""
+    if _engine_in_use(log=log):
+        if log:
+            log(
+                "Firefox engine: skipped pruning old builds — a profile is "
+                "running and may be executing from one"
+            )
+        return
     from ..engine.firefox import build_number
 
     try:
