@@ -17,19 +17,38 @@ from .proxy_parser import parse_proxy
 from .validation import PROXY_SCHEMES
 
 class _TooManyRotateRedirects(Exception):
-    """The SOCKS branch's counterpart of `aiohttp.TooManyRedirects`.
+    """The rotate chain outran its hop budget.
 
-    Exists so exhausting the hop budget is the SAME event on both transports.
-    Without it the two branches agreed on the verdict and disagreed on the
-    reason: aiohttp raised TooManyRedirects and the operator was told `too many
-    redirects`, while the SOCKS loop fell out still holding the last 3xx and
-    the operator was told `HTTP 302` — the same condition, reported two ways,
-    selected by transport. It is stdlib-only and therefore always defined, so
-    the SOCKS path keeps working with aiohttp absent.
+    Raised by _follow_rotate_chain, which is the ONLY redirect implementation
+    in this module — so this is transport-independent by construction rather
+    than by two branches agreeing to raise comparable things.
 
-    Deliberately NOT raised for a 3xx that could not be followed (no Location,
-    a refused scheme). That is a different fact about the endpoint and still
-    reports its real status code.
+    Deliberately NOT raised for a 3xx that could not be followed for lack of a
+    `Location`. That is a fact about the ENDPOINT (it redirected nowhere) and
+    still reports its real status code; this one is a fact about PERSONA (it
+    stopped following).
+    """
+
+
+class _RefusedRedirectScheme(Exception):
+    """A `Location:` pointed somewhere that is not http(s), so it was refused.
+
+    Its own exception, and its own operator-facing message, because it is a
+    fact about PERSONA's refusal rather than about the endpoint's answer — the
+    same distinction _TooManyRotateRedirects draws. Reporting the endpoint's
+    `HTTP 302` here described the wrong actor: the endpoint answered fine and
+    persona declined to follow it to `file:///etc/passwd`.
+
+    This is also the class that used to be aiohttp's to raise, and the reason
+    the library no longer follows redirects at all (see _follow_rotate_chain):
+    across the declared floor of `aiohttp>=3.9.0` the same condition surfaced
+    as THREE different operator-facing messages — `NonHttpUrlRedirectClientError`
+    (a ClientError subclass, so it was misreported as `connection failed`) on
+    newer versions, a bare `ValueError` on 3.9.0 (which has no such class at
+    all, so it fell through to the generic arm), and the SOCKS branch's
+    `HTTP 302`. Owning the hop ourselves makes the library's version-dependent
+    behaviour UNREACHABLE rather than merely matched, which is the only way to
+    settle a 3.9-vs-3.14 split without raising the dependency floor.
     """
 
 
@@ -43,25 +62,24 @@ if AIOHTTP_AVAILABLE:
         aiohttp.ClientProxyConnectionError,
     )
     _CLIENT_ERRORS: tuple[type[BaseException], ...] = (aiohttp.ClientError,)
-    # Listed separately and caught BEFORE _CLIENT_ERRORS: TooManyRedirects is a
-    # ClientError subclass, so without its own arm a redirect loop would be
-    # reported to the operator as "connection failed" — a wrong diagnosis for a
-    # proxy that answered perfectly well.
-    #
-    # _TooManyRotateRedirects rides in the SAME tuple because it is the SAME
-    # condition on the other transport. One membership, one message: the arm
-    # cannot report the exhausted budget two ways.
-    _REDIRECT_LIMIT_ERRORS: tuple[type[BaseException], ...] = (
-        aiohttp.TooManyRedirects,
-        _TooManyRotateRedirects,
-    )
 else:
     _PROXY_CONNECT_ERRORS = ()
     _CLIENT_ERRORS = ()
-    # Not empty in this branch: the SOCKS path is stdlib-only and raises this
-    # itself, so the hop budget must still be reported correctly with aiohttp
-    # absent.
-    _REDIRECT_LIMIT_ERRORS = (_TooManyRotateRedirects,)
+
+# The rotate path's two redirect outcomes. NEITHER is conditional on aiohttp
+# any more, and that is the point: the rotate fetch passes
+# `allow_redirects=False`, so the library never processes a `Location` and
+# cannot raise about one. Both conditions are decided in _follow_rotate_chain,
+# on one code path, for both transports.
+#
+# This replaced a tuple that paired `aiohttp.TooManyRedirects` with our own
+# exception so the two branches would report the same message. That worked for
+# the hop budget and failed for everything else, because matching a library's
+# behaviour case-by-case only ever covers the cases you thought of — three
+# rounds of review found three more. Not letting the library have the
+# behaviour is the version of this that cannot drift.
+_REDIRECT_LIMIT_ERRORS: tuple[type[BaseException], ...] = (_TooManyRotateRedirects,)
+_REFUSED_SCHEME_ERRORS: tuple[type[BaseException], ...] = (_RefusedRedirectScheme,)
 
 #: The socks schemes the validator accepts, derived from ITS tuple rather than
 #: retyped here — see PROXY_SCHEMES. Used for documentation and by the tests;
@@ -586,48 +604,100 @@ async def _geo_via_socks(
         await _close_stream(writer)
 
 
-async def _status_via_socks(proxy_config: dict, scheme: str, url: str) -> int:
-    """Status-only GET through a real SOCKS handshake, following redirects.
+async def _one_hop_via_socks(
+    proxy_config: dict, scheme: str, url: str
+) -> tuple[int, dict[str, str]]:
+    """ONE status-only GET through a real SOCKS handshake. Never follows.
 
     Stops at the status line — the body is never parsed — so a plain-text rotate
-    response is a success rather than a JSONDecodeError.
+    response is a success rather than a JSONDecodeError. The response headers
+    come back with it because `Location` is a header and the caller's redirect
+    loop needs it.
 
-    A 3xx IS FOLLOWED, up to _MAX_ROTATE_REDIRECTS hops. Returning it unfollowed
-    would hand the caller a status < 400, which reports `rotate endpoint OK
-    (HTTP 302)` to the operator for a rotation that never happened: the redirect
-    target — the request that would ACTUALLY have rotated the proxy — was never
-    fetched. The direct urlopen this path replaced followed redirects for free,
-    so not following them here is a regression against the code being replaced,
-    and a silent false success is worse than the honest failure this path is
-    otherwise built around.
-
-    Two rules the hops must keep:
-
-    * The http/https guard is RE-APPLIED to every target. The caller's guard
-      only ever sees the ORIGINAL url, so a `Location: file:///etc/passwd` or a
-      scheme downgrade must not ride through on a later hop.
-    * Each hop opens a FRESH tunnel through the same proxy, so the exit-side
-      resolution property holds for every request in the chain: no redirect
-      target is ever resolved on the operator's real resolver either.
+    A FRESH tunnel per hop is what keeps the exit-side resolution property true
+    for every request in a chain: the target host goes to the proxy as a domain
+    name and is never resolved on the operator's real resolver, on hop 1 and on
+    hop 5 alike.
     """
-    status = 0
+    reader, writer, target_host, path = await _open_socks_stream(
+        proxy_config, scheme, url
+    )
+    try:
+        return await _http_get_status(reader, writer, target_host, path)
+    finally:
+        await _close_stream(writer)
+
+
+async def _one_hop_via_aiohttp(session, proxy_url: str, url: str) -> tuple[int, dict[str, str]]:
+    """ONE status-only GET through an HTTP proxy. Never follows.
+
+    `allow_redirects=False` is the load-bearing argument in this function, and
+    it is what ended a whole class of review findings — see _follow_rotate_chain
+    and _RefusedRedirectScheme. aiohttp is reduced to exactly what the SOCKS
+    branch does: perform one request, hand back the status and the headers, make
+    no policy decision about a `Location`.
+
+    The body is never read, let alone parsed.
+    """
+    async with session.get(
+        url,
+        proxy=proxy_url,
+        allow_redirects=False,
+        headers={"User-Agent": _NEUTRAL_USER_AGENT, "Accept": "*/*"},
+    ) as response:
+        return response.status, {k.lower(): v for k, v in response.headers.items()}
+
+
+async def _follow_rotate_chain(do_hop, url: str) -> int:
+    """Follow the rotate endpoint's redirect chain. ONE implementation, both
+    transports.
+
+    `do_hop` performs a single request and returns (status, headers); it is the
+    ONLY part that differs between SOCKS and aiohttp. Every decision about a
+    redirect — whether to follow, where to, how many times, and what each
+    failure is called — is made HERE, once.
+
+    That structure is the fix for a defect class, not a style preference. This
+    policy used to be implemented twice: by this loop for SOCKS, and by aiohttp
+    for HTTP proxies. Three consecutive review rounds each found a fresh way
+    the two disagreed — follow vs. don't-follow, a hop-budget off-by-one
+    (`max_redirects=N` fails ON the N-th while `range(N + 1)` permits N
+    follows: the same bound in different units), two different messages for an
+    exhausted budget, and finally a refused non-http(s) `Location` reported
+    three ways across the declared `aiohttp>=3.9.0` range. Each was fixed by
+    making the library's behaviour match ours in one more case; the class kept
+    producing new instances because matching case-by-case only ever covers the
+    cases you thought of. With `allow_redirects=False` the library's redirect
+    behaviour is not matched, it is UNREACHABLE — including the parts of it
+    that vary by version, which no amount of matching could have fixed without
+    raising the dependency floor.
+
+    A 3xx IS followed. Returning it unfollowed would hand the caller a status
+    the old `< 400` verdict read as success, reporting `rotate endpoint OK
+    (HTTP 302)` for a rotation that never happened: the redirect target — the
+    request that would ACTUALLY have rotated the proxy — was never fetched. The
+    direct urlopen this path replaced followed redirects for free.
+
+    Three outcomes, deliberately distinct because they are facts about
+    different actors:
+
+    * a status that is not a followable 3xx -> returned as-is (the endpoint's
+      answer, including a 3xx that redirected NOWHERE for lack of a Location);
+    * _RefusedRedirectScheme -> persona refused a non-http(s) target;
+    * _TooManyRotateRedirects -> persona stopped following.
+
+    The http/https guard is RE-APPLIED per hop: the caller's guard only ever
+    sees the ORIGINAL url, so a `Location: file:///etc/passwd` or a scheme
+    downgrade must not ride through on a later hop.
+    """
     for _hop in range(_MAX_ROTATE_REDIRECTS + 1):
-        reader, writer, target_host, path = await _open_socks_stream(
-            proxy_config, scheme, url
-        )
-        try:
-            status, headers = await _http_get_status(
-                reader, writer, target_host, path
-            )
-        finally:
-            await _close_stream(writer)
+        status, headers = await do_hop(url)
 
         if status not in _REDIRECT_STATUSES:
             return status
 
-        # A 3xx that CANNOT be followed (no Location, a refused scheme) is a
-        # fact about the endpoint, not about the hop budget. Its real status is
-        # returned UNCHANGED so the operator sees the actual code; the caller's
+        # A 3xx with no Location redirected nowhere. That is the ENDPOINT's
+        # answer, so its real status is returned unchanged and the caller's
         # `status < 300` verdict is what makes it a failure.
         location = headers.get("location", "")
         if not location:
@@ -636,14 +706,13 @@ async def _status_via_socks(proxy_config: dict, scheme: str, url: str) -> int:
         # came from, which is the common provider shape.
         nxt = urllib.parse.urljoin(url, location)
         if urllib.parse.urlparse(nxt).scheme.lower() not in ("http", "https"):
-            return status
+            raise _RefusedRedirectScheme(
+                "rotate chain redirected to a non-http(s) target"
+            )
         url = nxt
 
     # The budget is spent and the chain was STILL going — a redirect loop or an
-    # over-long chain, which an unbounded follow would hang on. Raised rather
-    # than returned so it is the same event aiohttp reports for the same
-    # condition: both transports then tell the operator `too many redirects`
-    # instead of one saying that and the other reporting the last 3xx.
+    # over-long chain, which an unbounded follow would hang on.
     raise _TooManyRotateRedirects(
         f"rotate chain exceeded {_MAX_ROTATE_REDIRECTS} redirects"
     )
@@ -677,15 +746,15 @@ async def fetch_status_via_proxy(
     port-scan oracle; here the proxy is already stored and operator-configured,
     and loopback SOCKS endpoints (Tor, `ssh -D`) must keep working.
 
-    Redirects are FOLLOWED, on both transports, to the same
-    _MAX_ROTATE_REDIRECTS bound: each permits that many follows and fails on
-    the next one. The aiohttp branch is pinned to the shared constant rather
-    than left on its library default so the two cannot diverge — note the
-    deliberate `+ 1` at the call site, which exists because `max_redirects`
-    fails ON the N-th redirect while the SOCKS loop permits N follows; the
-    two arguments express the same bound in different units. A rotate endpoint
-    commonly sits behind a 301/302, and the direct urlopen this replaced
-    followed them for free.
+    Redirects are FOLLOWED, to the _MAX_ROTATE_REDIRECTS bound. Both transports
+    get that behaviour from the SAME loop (_follow_rotate_chain): each performs
+    a single hop and makes no policy decision about a `Location`, so the bound,
+    the per-hop scheme guard and every failure message are shared by
+    construction rather than by two implementations being kept in agreement.
+    aiohttp is called with `allow_redirects=False` precisely so its own
+    redirect handling — which varies across the declared `aiohttp>=3.9.0`
+    range — is never reached. A rotate endpoint commonly sits behind a 301/302,
+    and the direct urlopen this replaced followed them for free.
 
     Returns (status < 300, "HTTP <status>") — or (False, reason) if the request
     could not be sent through the proxy at all. It NEVER falls back to a direct
@@ -721,49 +790,45 @@ async def fetch_status_via_proxy(
 
     try:
         if is_socks:
-            status = await asyncio.wait_for(
-                _status_via_socks(proxy_config, scheme, url), timeout
-            )
+
+            async def do_hop(hop_url: str) -> tuple[int, dict[str, str]]:
+                return await _one_hop_via_socks(proxy_config, scheme, hop_url)
+
+            # ONE wait_for around the WHOLE chain, not per hop: `timeout` is the
+            # operator's budget for rotating the proxy, and a per-hop timeout
+            # would silently let a redirect chain take _MAX_ROTATE_REDIRECTS
+            # times longer than they asked for.
+            status = await asyncio.wait_for(_follow_rotate_chain(do_hop, url), timeout)
         else:
+            # ClientTimeout(total=) applied to a session whose redirects we now
+            # drive ourselves is PER REQUEST, so it is the same per-hop problem
+            # in aiohttp's units. The wait_for below is what actually bounds the
+            # chain, and it bounds both transports identically.
             timeout_obj = aiohttp.ClientTimeout(total=timeout)
             async with aiohttp.ClientSession(timeout=timeout_obj) as session:
-                async with session.get(
-                    url,
-                    proxy=proxy_url,
-                    # Pinned to the SAME bound the SOCKS branch enforces, rather
-                    # than left on aiohttp's default of 10. One function must
-                    # not have two redirect behaviours selected by transport —
-                    # and socks5 is persona's DEFAULT scheme, so the divergent
-                    # one would be what most operators actually get.
-                    #
-                    # THE `+ 1` IS LOAD-BEARING — do not "simplify" it away.
-                    # The two arguments do not mean the same thing: the SOCKS
-                    # loop runs one initial request plus _MAX_ROTATE_REDIRECTS
-                    # follows, while aiohttp's max_redirects fails ON the N-th
-                    # redirect, permitting only N-1 follows. Passing the bare
-                    # constant made a chain of exactly _MAX_ROTATE_REDIRECTS
-                    # hops succeed on socks5 and fail on http — the same
-                    # one-function-two-behaviours drift this comment claims to
-                    # prevent, an order of magnitude smaller. The `+ 1` makes
-                    # both transports permit _MAX_ROTATE_REDIRECTS follows and
-                    # fail on the next one.
-                    # test_both_transports_agree_at_every_chain_length pins it.
-                    allow_redirects=True,
-                    max_redirects=_MAX_ROTATE_REDIRECTS + 1,
-                    headers={
-                        "User-Agent": _NEUTRAL_USER_AGENT,
-                        "Accept": "*/*",
-                    },
-                ) as response:
-                    # Status only — the body is never read, let alone parsed.
-                    status = response.status
+
+                async def do_hop(hop_url: str) -> tuple[int, dict[str, str]]:
+                    return await _one_hop_via_aiohttp(session, proxy_url, hop_url)
+
+                status = await asyncio.wait_for(
+                    _follow_rotate_chain(do_hop, url), timeout
+                )
         return status < 300, f"HTTP {status}"
     except asyncio.TimeoutError:
         return False, "rotate request timed out"
     except _REDIRECT_LIMIT_ERRORS:
-        # Caught before _CLIENT_ERRORS, which it subclasses. The proxy and the
-        # endpoint both worked; the redirect chain was a loop or too long.
+        # The proxy and the endpoint both worked; the redirect chain was a loop
+        # or too long. Raised by _follow_rotate_chain for BOTH transports, so
+        # this message cannot depend on which one ran.
         return False, "rotate request failed: too many redirects"
+    except _REFUSED_SCHEME_ERRORS:
+        # PERSONA refused the target — the endpoint answered fine and the proxy
+        # carried it fine, so neither "HTTP 302" nor "connection failed"
+        # describes what happened. `Location: file:///etc/passwd` is the hostile
+        # case the per-hop guard exists for, and it is the one where the
+        # operator most deserves an accurate message rather than being sent to
+        # debug their proxy.
+        return False, "rotate request failed: redirect to a non-http(s) target refused"
     except _PROXY_CONNECT_ERRORS:
         return False, "rotate request failed: could not connect to proxy"
     except _CLIENT_ERRORS:
