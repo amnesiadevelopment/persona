@@ -5,7 +5,12 @@ uk-UA is an internal mismatch a scanner flags as masking. An init script pins
 navigator.language/languages to the SAME locale the header already carries, so JS
 matches the header.
 """
+import json
 import re
+import shutil
+import subprocess
+
+import pytest
 
 import src.services.browser.invisible_launch as il
 
@@ -89,3 +94,437 @@ def test_override_script_defines_both_getters():
     # balanced braces/parens — no obvious syntax garbage
     assert js.count("{") == js.count("}")
     assert js.count("(") == js.count(")")
+
+
+# --- native cloak -----------------------------------------------------------
+# native_ext.py is a Chromium MV3 extension and is loaded only from the Chromium
+# launch path, so the "wrappers must read as native" cloak could not reach
+# Firefox — which launches through invisible_launch.py with no persona extension
+# at all. A page read Intl.DateTimeFormat.name === "Wrapped" (real:
+# "DateTimeFormat"), Object.keys(Intl.DateTimeFormat) === ["wrapped",
+# "supportedLocalesOf"] (real: []), and Intl.DateTimeFormat.wrapped handed back
+# the REAL constructor — the host's true value one documented property read away.
+#
+# The native form is SPIDERMONKEY's, not the V8 one-liner native_ext.py emits.
+# Firefox prints three lines with a four-space indent, and a native ACCESSOR
+# stringifies WITHOUT the `get ` prefix its .name carries. Emitting V8's form here
+# would trade the `.name === "Wrapped"` tell for an equally cheap toString tell
+# over a wider surface — every override, since every override is cloaked. Both
+# divergences are captured from a clean Firefox 151 with no init scripts, and
+# test_cloak_matches_the_engines_own_native_shape re-derives them from the live
+# engine so this cannot drift back to a hard-coded string.
+
+_NATIVE_FORM = "() {\n    [native code]\n}"
+# what node's OWN natives print — V8, for the passthrough assertion only
+_V8_NATIVE_FORM = "() { [native code] }"
+
+# every function the two builders install: probe key -> (.name, name in SOURCE).
+# They differ exactly for accessors, which is the second SpiderMonkey divergence.
+_EXPECTED = {
+    "toString": ("toString", "toString"),
+    "DateTimeFormat": ("DateTimeFormat", "DateTimeFormat"),
+    "NumberFormat": ("NumberFormat", "NumberFormat"),
+    "Collator": ("Collator", "Collator"),
+    "supportedLocalesOf": ("supportedLocalesOf", "supportedLocalesOf"),
+    "resolvedOptions": ("resolvedOptions", "resolvedOptions"),
+    "toLocaleDateString": ("toLocaleDateString", "toLocaleDateString"),
+    "dateToString": ("toString", "toString"),
+    "toTimeString": ("toTimeString", "toTimeString"),
+    "numberToLocaleString": ("toLocaleString", "toLocaleString"),
+    "bigintToLocaleString": ("toLocaleString", "toLocaleString"),
+    "Worker": ("Worker", "Worker"),
+    "get language": ("get language", "language"),
+    "get languages": ("get languages", "languages"),
+    "get outerWidth": ("get outerWidth", "outerWidth"),
+    "get outerHeight": ("get outerHeight", "outerHeight"),
+}
+
+
+def test_cloak_prelude_is_double_quoted_and_single_line():
+    # the prelude is inlined verbatim into the single-quoted worker-payload
+    # literal, so a single quote or a newline in it would break that string
+    cloak = il._native_cloak_js()
+    assert "'" not in cloak
+    assert "\n" not in cloak
+    assert "\\" not in cloak
+    # and it must not disturb the balanced-count assertions above
+    assert cloak.count("{") == cloak.count("}")
+    assert cloak.count("(") == cloak.count(")")
+
+
+def test_cloak_patches_function_prototype_tostring_by_chaining():
+    cloak = il._native_cloak_js()
+    assert "Function.prototype.toString=__ts" in cloak
+    # chains onto whatever is already installed rather than guarding on a global
+    assert "var __pts=Function.prototype.toString;" in cloak
+    assert "__pts.apply(this,arguments)" in cloak
+    # the patch itself must read as native — a detector stringifies
+    # Function.prototype.toString to catch exactly this trick
+    assert '__cloak(__ts,"toString");' in cloak
+    # the registry is a closure WeakMap, not an own property on every wrapper
+    assert "new WeakMap()" in cloak
+    assert "__pnaName" not in cloak
+
+
+def test_cloak_emits_the_spidermonkey_native_form_not_v8s():
+    cloak = il._native_cloak_js()
+    # three lines, four-space indent — SpiderMonkey. NOT native_ext.py's V8
+    # one-liner, which is correct there only because it is a Chromium extension.
+    assert '"function "+(n||"")+"() {"+__nl+"    [native code]"+__nl+"}"' in cloak
+    assert '"() { [native code] }"' not in cloak
+    # the newline is built with fromCharCode, never written as an escape: a "\n"
+    # would be eaten by the OUTER literal when the prelude is inlined into the
+    # single-quoted worker payload, putting a raw newline inside a double-quoted
+    # string in the worker source — a SyntaxError.
+    assert "var __nl=String.fromCharCode(10);" in cloak
+    # __cloak takes the stringified name apart from the pinned .name, because a
+    # native accessor reports "get language" but stringifies as "function
+    # language()". Both accessor call sites must pass the bare property name.
+    assert "var __cloak=function(f,n,s){" in cloak
+    assert "__nm.set(f,s===undefined?n:s);" in cloak
+    both = il._language_override_script("en-US") + il._outer_size_override_script()
+    assert both.count("__cloak(()=>v,'get '+k,k)") == 2
+
+
+def test_override_scripts_carry_the_cloak_into_every_realm():
+    js = il._language_override_script("pl-PL")
+    # page realm + the re-blobbed worker payload each need their own copy: a
+    # worker is a separate realm with its own Function.prototype
+    assert js.count("[native code]") == 2
+    # the window-realm builder is separate and conditional — it needs one too
+    assert il._outer_size_override_script().count("[native code]") == 1
+
+
+def test_override_script_drops_the_wrapped_backdoor():
+    js = il._language_override_script("en-US")
+    assert ".wrapped" not in js
+    assert "Wrapped.wrapped" not in js
+    # the re-wrap guard the back-door existed to serve is replaced, not deleted
+    assert "__om.get(ctor)||ctor" in js
+    assert "__om.set(Wrapped,Orig)" in js
+
+
+def test_override_script_adds_no_enumerable_own_property():
+    js = il._language_override_script("en-US")
+    # supportedLocalesOf was a plain assignment, which creates an ENUMERABLE own
+    # property and is what put it into Object.keys(Intl.DateTimeFormat)
+    assert "W.supportedLocalesOf=" not in js
+    assert "Wrapped.supportedLocalesOf=" not in js
+    assert "{value:slo,writable:true,configurable:true}" in js
+    assert "{value:s,writable:true,configurable:true}" in js
+
+
+def test_override_scripts_cloak_every_installed_function():
+    js = il._language_override_script("en-US") + il._outer_size_override_script()
+    # navigator + window accessors carry the accessor's own "get <prop>" name,
+    # and stringify under the bare property name (SpiderMonkey drops the prefix)
+    assert js.count("__cloak(()=>v,'get '+k,k)") == 2
+    # Intl constructors, their supportedLocalesOf and resolvedOptions
+    assert "__cloak(Wrapped,Orig.name)" in js
+    assert "__cloak(Orig.supportedLocalesOf.bind(Orig)" in js
+    assert "ro.call(this);o.locale=L;return o;},ro.name)" in js
+    # Date.toLocale* / toString / toTimeString, Number/BigInt, Worker wrappers
+    assert "locales===undefined?L:locales,options);},orig.name)" in js
+    assert "oTS.name" in js and "oTTS.name" in js
+    assert "l===undefined?L:l,opt);},o.name)" in js
+    assert "return __cloak(W,Orig.name);" in js
+    # worker realm: Intl ctors, supportedLocalesOf, Number/BigInt
+    assert "__cloak(W,C.name);" in js
+    assert "__cloak(C.supportedLocalesOf.bind(C)" in js
+
+
+# --- behavioural: run the generated JS and read the observable surface -------
+
+_HARNESS = r"""
+const fs = require("fs"), vm = require("vm");
+globalThis.Navigator = function Navigator() {};
+globalThis.navigator = Object.create(Navigator.prototype);
+globalThis.self = globalThis;
+globalThis.window = globalThis;
+globalThis.innerWidth = 1200;
+globalThis.innerHeight = 800;
+let workerBody = null;
+globalThis.Blob = function (parts) { workerBody = parts[0]; };
+globalThis.URL = { createObjectURL: () => "blob:stub" };
+class StubWorker { constructor(u, o) {} }
+Object.defineProperty(StubWorker, "name", { value: "Worker" });
+globalThis.Worker = StubWorker;
+
+const globalsBefore = new Set(Object.getOwnPropertyNames(globalThis));
+eval(fs.readFileSync(process.argv[2], "utf8"));   // _language_override_script
+eval(fs.readFileSync(process.argv[3], "utf8"));   // _outer_size_override_script
+const newGlobals = Object.getOwnPropertyNames(globalThis)
+  .filter((k) => !globalsBefore.has(k));
+
+const T = Function.prototype.toString;
+const rec = (fn) => [fn.name, T.call(fn)];
+const get = (o, k) => Object.getOwnPropertyDescriptor(o, k).get;
+const page = {
+  "toString": rec(Function.prototype.toString),
+  "DateTimeFormat": rec(Intl.DateTimeFormat),
+  "NumberFormat": rec(Intl.NumberFormat),
+  "Collator": rec(Intl.Collator),
+  "supportedLocalesOf": rec(Intl.DateTimeFormat.supportedLocalesOf),
+  "resolvedOptions": rec(Intl.DateTimeFormat.prototype.resolvedOptions),
+  "toLocaleDateString": rec(Date.prototype.toLocaleDateString),
+  "dateToString": rec(Date.prototype.toString),
+  "toTimeString": rec(Date.prototype.toTimeString),
+  "numberToLocaleString": rec(Number.prototype.toLocaleString),
+  "bigintToLocaleString": rec(BigInt.prototype.toLocaleString),
+  "Worker": rec(self.Worker),
+  "get language": rec(get(Navigator.prototype, "language")),
+  "get languages": rec(get(Navigator.prototype, "languages")),
+  "get outerWidth": rec(get(window, "outerWidth")),
+  "get outerHeight": rec(get(window, "outerHeight")),
+};
+
+// the re-blobbed worker payload is a SEPARATE realm — run it in a fresh one
+new self.Worker("https://example.com/w.js");
+const body = workerBody.replace(/\ntry\{importScripts[\s\S]*$/, "");
+const ctx = vm.createContext({});
+vm.runInContext(body, ctx);
+const W = vm.runInContext(
+  "({T: Function.prototype.toString, Intl: Intl, Number: Number, BigInt: BigInt})",
+  ctx);
+const wrec = (fn) => [fn.name, W.T.call(fn)];
+const worker = {
+  "toString": wrec(W.T),
+  "NumberFormat": wrec(W.Intl.NumberFormat),
+  "DateTimeFormat": wrec(W.Intl.DateTimeFormat),
+  "supportedLocalesOf": wrec(W.Intl.NumberFormat.supportedLocalesOf),
+  "numberToLocaleString": wrec(W.Number.prototype.toLocaleString),
+  "bigintToLocaleString": wrec(W.BigInt.prototype.toLocaleString),
+};
+
+console.log(JSON.stringify({
+  page: page,
+  worker: worker,
+  wrapped: Intl.DateTimeFormat.wrapped === undefined ? "undefined" : "PRESENT",
+  keys: Object.keys(Intl.DateTimeFormat),
+  symbols: Object.getOwnPropertySymbols(Intl.DateTimeFormat).length,
+  workerKeys: vm.runInContext("Object.keys(Intl.NumberFormat)", ctx),
+  newGlobals: newGlobals,
+  values: {
+    language: navigator.language,
+    languages: navigator.languages,
+    locale: new Intl.DateTimeFormat().resolvedOptions().locale,
+    number: (1234.5).toLocaleString(),
+    instanceOf: new Intl.DateTimeFormat() instanceof Intl.DateTimeFormat,
+    supported: Intl.DateTimeFormat.supportedLocalesOf(["en-US"]),
+    outerWidth: window.outerWidth,
+    outerHeight: window.outerHeight,
+    workerLocale: vm.runInContext(
+      "new Intl.NumberFormat().resolvedOptions().locale", ctx),
+    workerNumber: vm.runInContext("(1234.5).toLocaleString()", ctx),
+  },
+  passthrough: {
+    userFn: T.call(function foo(a) { return a; }),
+    nativeFn: T.call(Array.prototype.map),
+  },
+}));
+"""
+
+
+@pytest.fixture(scope="module")
+def cloak_probe(tmp_path_factory):
+    """Run both generated init scripts and report what a page actually sees."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    d = tmp_path_factory.mktemp("cloak")
+    (d / "lang.js").write_text(il._language_override_script("pl-PL"), encoding="utf-8")
+    (d / "outer.js").write_text(il._outer_size_override_script(), encoding="utf-8")
+    (d / "harness.js").write_text(_HARNESS, encoding="utf-8")
+    out = subprocess.run(
+        [node, str(d / "harness.js"), str(d / "lang.js"), str(d / "outer.js")],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+@pytest.mark.parametrize("realm", ["page", "worker"])
+def test_every_override_reports_the_originals_name_and_native_form(cloak_probe, realm):
+    # criteria 1, 2 and 4: every function and accessor the builders install
+    # reports the ORIGINAL's name and stringifies as the native form — in the
+    # page realm AND inside the re-blobbed worker payload — including the
+    # Function.prototype.toString patch itself.
+    for key, (name, text) in cloak_probe[realm].items():
+        want_name, want_src = _EXPECTED[key]
+        assert name == want_name, f"{realm}.{key} reports .name {name!r}"
+        assert text == f"function {want_src}{_NATIVE_FORM}", f"{realm}.{key} -> {text!r}"
+
+
+def test_wrapped_backdoor_is_gone_and_nothing_is_enumerable(cloak_probe):
+    # criteria 3 and 5
+    assert cloak_probe["wrapped"] == "undefined"
+    assert cloak_probe["keys"] == []
+    assert cloak_probe["symbols"] == 0
+    assert cloak_probe["workerKeys"] == []
+    # ...and no new fixed global name for a detector to probe for: the whole
+    # registry is closure-scoped, unlike Chromium's __pnaToStringPatched flag
+    assert sorted(cloak_probe["newGlobals"]) == ["outerHeight", "outerWidth"]
+
+
+def test_reported_values_are_unchanged(cloak_probe):
+    # criterion 6: the cloak changes how the overrides READ, never what they report
+    v = cloak_probe["values"]
+    assert v["language"] == "pl-PL"
+    assert v["languages"] == ["pl-PL", "pl"]
+    assert v["locale"] == "pl-PL"
+    assert v["workerLocale"] == "pl-PL"
+    assert v["number"] == v["workerNumber"] != "1234.5"
+    assert v["instanceOf"] is True
+    assert v["supported"] == ["en-US"]
+    assert v["outerWidth"] == 1200 + 14
+    assert v["outerHeight"] == 800 + 91
+
+
+def test_tostring_passthrough_is_intact_for_everything_else(cloak_probe):
+    # an uncloaked function still stringifies to its real source, and a genuine
+    # built-in still stringifies natively — the patch only answers for its own
+    # WeakMap entries. This harness runs under node, so the untouched builtin
+    # prints V8's form; the cloak deliberately prints SpiderMonkey's, which is
+    # why the two constants differ here and must not be conflated.
+    p = cloak_probe["passthrough"]
+    assert "return a" in p["userFn"]
+    assert p["nativeFn"] == f"function map{_V8_NATIVE_FORM}"
+
+
+# --- the engine itself is the oracle ----------------------------------------
+# Everything above pins the native form to a string this file also spells out, so
+# the whole set stays green if the string is wrong for the target engine — which
+# is exactly how the V8 one-liner reached a Firefox-only path in the first place.
+# These tests never spell it out: they LEARN the shape from an untouched builtin
+# in the running engine and require every override to match it. They are the only
+# assertions here that can catch the template drifting to another engine's form.
+
+_FF_PROBE = r"""
+  const T = Function.prototype.toString;
+  // the engine's own native shape, with the name factored out
+  const norm = (s) => s.replace(/^function\s*[^(]*\(/, "function (");
+  const srcName = (s) => ((s.match(/^function\s*([^(]*)\(/) || [0, ""])[1]).trim();
+  const SHAPE = norm(T.call(Object.getPrototypeOf));
+  const rows = {};
+  const check = (label, fn, wantName, wantSrc) => {
+    const s = T.call(fn);
+    rows[label] = { name: fn.name, wantName: wantName, str: s,
+                    shape: norm(s), src: srcName(s), wantSrc: wantSrc };
+  };
+"""
+
+_FF_PAGE = "() => {" + _FF_PROBE + r"""
+  const g = (o, k) => (Object.getOwnPropertyDescriptor(o, k) || {}).get;
+  for (const k of ["Collator", "DateTimeFormat", "NumberFormat", "PluralRules",
+                   "ListFormat", "RelativeTimeFormat", "DisplayNames", "Segmenter"]) {
+    if (!Intl[k]) continue;
+    check("Intl." + k, Intl[k], k, k);
+    check("Intl." + k + ".supportedLocalesOf", Intl[k].supportedLocalesOf,
+          "supportedLocalesOf", "supportedLocalesOf");
+    check("Intl." + k + ".p.resolvedOptions", Intl[k].prototype.resolvedOptions,
+          "resolvedOptions", "resolvedOptions");
+  }
+  for (const k of ["toLocaleString", "toLocaleDateString", "toLocaleTimeString",
+                   "toString", "toTimeString"])
+    check("Date.p." + k, Date.prototype[k], k, k);
+  check("Number.p.toLocaleString", Number.prototype.toLocaleString,
+        "toLocaleString", "toLocaleString");
+  check("BigInt.p.toLocaleString", BigInt.prototype.toLocaleString,
+        "toLocaleString", "toLocaleString");
+  check("self.Worker", self.Worker, "Worker", "Worker");
+  check("F.p.toString", Function.prototype.toString, "toString", "toString");
+  for (const k of ["language", "languages"])
+    check("get navigator." + k, g(Navigator.prototype, k), "get " + k, k);
+  for (const k of ["outerWidth", "outerHeight"])
+    check("get window." + k, g(window, k), "get " + k, k);
+
+  // the sweep a scanner already runs: walk the realm, keep every function that
+  // claims [native code] but whose shape differs from the engine's own
+  const seen = new Set(); const tells = [];
+  const walk = (o, path, depth) => {
+    if (!o || seen.has(o) || depth > 2) return;
+    seen.add(o);
+    for (const k of Object.getOwnPropertyNames(o)) {
+      const d = Object.getOwnPropertyDescriptor(o, k);
+      if (!d) continue;
+      for (const fn of [d.value, d.get, d.set]) {
+        if (typeof fn !== "function") continue;
+        let s; try { s = T.call(fn); } catch (e) { continue; }
+        if (s.indexOf("[native code]") !== -1 && norm(s) !== SHAPE)
+          tells.push(path + "." + k + " -> " + JSON.stringify(s));
+      }
+      if (depth < 2 && d.value && (typeof d.value === "object" ||
+                                   typeof d.value === "function")) {
+        try { walk(d.value, path + "." + k, depth + 1); } catch (e) {}
+      }
+    }
+  };
+  walk(globalThis, "", 0);
+  return { shape: SHAPE, rows: rows, tells: tells };
+}"""
+
+_FF_WORKER = ("() => new Promise((res, rej) => {\n  const src = " + json.dumps(
+    _FF_PROBE + r"""
+  for (const k of ["Collator", "DateTimeFormat", "NumberFormat", "PluralRules",
+                   "ListFormat", "RelativeTimeFormat", "DisplayNames", "Segmenter"]) {
+    if (!Intl[k]) continue;
+    check("Intl." + k, Intl[k], k, k);
+    check("Intl." + k + ".supportedLocalesOf", Intl[k].supportedLocalesOf,
+          "supportedLocalesOf", "supportedLocalesOf");
+  }
+  check("Number.p.toLocaleString", Number.prototype.toLocaleString,
+        "toLocaleString", "toLocaleString");
+  check("BigInt.p.toLocaleString", BigInt.prototype.toLocaleString,
+        "toLocaleString", "toLocaleString");
+  check("F.p.toString", Function.prototype.toString, "toString", "toString");
+  postMessage(JSON.stringify({ shape: SHAPE, rows: rows, tells: [] }));
+""") + ";\n"
+    # built through the WRAPPED self.Worker, so this exercises the re-blob path
+    "  const w = new Worker(URL.createObjectURL("
+    "new Blob([src], {type: 'text/javascript'})));\n"
+    "  w.onmessage = (e) => res(JSON.parse(e.data));\n"
+    "  w.onerror = (e) => rej(new Error(e.message));\n})")
+
+
+@pytest.fixture(scope="module")
+def firefox_probe():
+    """Run both init scripts in a REAL Firefox, in the real registration order."""
+    sync_playwright = pytest.importorskip(
+        "playwright.sync_api", reason="playwright not installed").sync_playwright
+    try:
+        with sync_playwright() as p:
+            browser = p.firefox.launch()
+            try:
+                ctx = browser.new_context(locale="pl-PL")
+                # the order invisible_launch.py registers them in
+                ctx.add_init_script(il._outer_size_override_script())
+                ctx.add_init_script(il._language_override_script("pl-PL"))
+                page = ctx.new_page()
+                page.goto("data:text/html,<meta charset=utf-8><title>x</title>")
+                return {"page": page.evaluate(_FF_PAGE),
+                        "worker": page.evaluate(_FF_WORKER)}
+            finally:
+                browser.close()
+    except Exception as exc:  # browser binary absent, no sandbox, no display...
+        pytest.skip(f"firefox not runnable here: {exc}")
+
+
+@pytest.mark.parametrize("realm", ["page", "worker"])
+def test_cloak_matches_the_engines_own_native_shape(firefox_probe, realm):
+    # criterion 2, against the ONLY oracle that counts: SpiderMonkey itself.
+    # SHAPE is read off Object.getPrototypeOf at runtime, so a template written
+    # for another engine fails here no matter what this file believes.
+    probe = firefox_probe[realm]
+    shape = probe["shape"]
+    assert "[native code]" in shape
+    bad = {k: v for k, v in probe["rows"].items()
+           if v["shape"] != shape or v["src"] != v["wantSrc"]
+           or v["name"] != v["wantName"]}
+    assert not bad, json.dumps(bad, indent=1)
+    assert len(probe["rows"]) >= 19
+
+
+def test_no_function_in_the_realm_betrays_itself_by_shape(firefox_probe):
+    # the generic scanner sweep: on main this returned exactly the 31 persona
+    # overrides and nothing else — a 100%-precision detector list
+    assert firefox_probe["page"]["tells"] == []
