@@ -21,6 +21,7 @@ from .components import (
     build_profile_card,
     build_sidebar,
     build_top_bar,
+    build_trash_page,
     build_ui_refs,
     rebuild_bulk_bar,
 )
@@ -100,6 +101,7 @@ class App:
         self.ssh_store = c.ssh_host_store
         self.bstore = c.bookmark_store
         self.cert_store = c.cert_store
+        self.trash_service = c.trash_service
         self.state = AppState()
         self.page: ft.Page | None = None
         self._reconcile_started = False
@@ -615,8 +617,98 @@ class App:
                 on_edit=self._edit_certificate,
                 on_delete=self._delete_certificate,
             )
+        elif self._active_page == "trash":
+            self._page_host.content = build_trash_page(
+                self.trash_service.list(),
+                on_restore=self._restore_from_trash,
+                on_delete_permanently=self._delete_from_trash_permanently,
+                on_empty=self._empty_trash,
+            )
         else:
             self._page_host.content = self._build_profiles_page()
+
+    # --- Trash ---
+
+    def _restore_from_trash(self, entry_id: str) -> None:
+        entry = self.trash_service.get(entry_id)
+        ok, msg = self.trash_service.restore(entry_id)
+        if ok and entry is not None:
+            self._log(f"restored {entry.label}: {entry.name}")
+        elif not ok:
+            # A refused restore is explained, never silently turned into a
+            # rename: a profile's fingerprint derives from its name, so restoring
+            # under another name would hand back its cookies under a different
+            # identity.
+            self._log(f"restore failed: {msg}")
+            page = self.page
+            if page is not None:
+                open_confirm_dialog(
+                    page,
+                    "",
+                    lambda: None,
+                    title="Cannot restore",
+                    body=msg,
+                )
+        self._refresh_profiles()
+        self._render_active_page()
+        self._safe_update()
+
+    def _delete_from_trash_permanently(self, entry_id: str) -> None:
+        page = self.page
+        assert page is not None
+        entry = self.trash_service.get(entry_id)
+        if entry is None:
+            return
+
+        def do_delete() -> None:
+            ok, _ = self.trash_service.delete_permanently(entry_id)
+            if ok:
+                self._log(f"permanently deleted {entry.label}: {entry.name}")
+            self._render_active_page()
+            self._safe_update()
+
+        # This dialog DOES claim irreversibility, because this path really is
+        # irreversible — unlike the ordinary delete, which no longer claims it.
+        extra = (
+            " Its stored credentials are removed from disk."
+            if entry.holds_secret_material
+            else ""
+        )
+        open_confirm_dialog(
+            page,
+            entry.name,
+            do_delete,
+            title=f"Permanently delete {entry.label} '{entry.name}'?",
+            body=(
+                "This deletes it and its data for good. This action cannot be "
+                "undone." + extra
+            ),
+        )
+
+    def _empty_trash(self) -> None:
+        page = self.page
+        assert page is not None
+        count = len(self.trash_service.list())
+        if not count:
+            return
+
+        def do_empty() -> None:
+            deleted = self.trash_service.empty()
+            self._log(f"emptied trash ({deleted} item(s))")
+            self._render_active_page()
+            self._safe_update()
+
+        open_confirm_dialog(
+            page,
+            "",
+            do_empty,
+            title=f"Permanently delete {count} item{'s' if count != 1 else ''}?",
+            body=(
+                "Everything in the trash, and all its data — including stored "
+                "credentials and certificate key bundles — is deleted for good. "
+                "This action cannot be undone."
+            ),
+        )
 
     def _ssh_run(self, host_name: str, command: str) -> tuple[int, str, str]:
         from ..services.ssh import client as ssh

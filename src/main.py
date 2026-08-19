@@ -223,6 +223,18 @@ def main() -> None:
 
     container = Container()
 
+    # Enforce the trash retention window before the UI opens. An entry that has
+    # been in the trash longer than the window is gone after the app next starts,
+    # without the operator doing anything — the trash is a floor beneath a
+    # mis-click, not an archive. Best-effort: a failure here must never stop the
+    # app from starting, and the entries simply expire on a later run.
+    try:
+        purged = container.trash_service.purge_expired()
+        if purged:
+            logger.info("Purged %d expired trash entry/entries on start", purged)
+    except Exception:
+        logger.exception("Could not purge expired trash entries on start")
+
     # Build the API server lazily, in the background, once the UI is up — its
     # FastAPI/uvicorn import is the biggest chunk of pre-window startup and the
     # server is off until the user enables Claude control.

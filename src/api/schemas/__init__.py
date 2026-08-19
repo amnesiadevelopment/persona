@@ -11,6 +11,7 @@ from .profiles import (
     ProfileUpdate,
 )
 from .proxy import ProxyCheckRequest, ProxyCheckResponse
+from .trash import TrashEmptyResponse, TrashEntryResponse, TrashListResponse
 
 __all__ = [
     "BrowserStatusResponse",
@@ -27,4 +28,7 @@ __all__ = [
     "ProxyCheckResponse",
     "RunningBrowsersResponse",
     "SuccessResponse",
+    "TrashEmptyResponse",
+    "TrashEntryResponse",
+    "TrashListResponse",
 ]

@@ -6,6 +6,7 @@ from ...core.logging import get_logger
 from ...models.bookmark import Bookmark, Pool
 from ...utils.atomic import atomic_write_json
 from ...utils.store_guard import StoreGuardMixin
+from ...utils.trashable import TrashableMixin
 
 logger = get_logger("bookmark.store")
 
@@ -19,7 +20,7 @@ DEFAULT_BOOKMARKS = {
 }
 
 
-class BookmarkStore(StoreGuardMixin):
+class BookmarkStore(StoreGuardMixin, TrashableMixin):
     _guard_logger = logger
     _guard_noun_plural = "bookmarks"
     _guard_noun_singular = "bookmark"
@@ -157,15 +158,48 @@ class BookmarkStore(StoreGuardMixin):
         return True
 
     def delete(self, name: str) -> bool:
+        """Move a bookmark to the trash. It leaves the bookmark list and every
+        pool that held it, and comes back to both on restore."""
         if name not in self.bookmarks:
             return False
-        del self.bookmarks[name]
+        bookmark = self.bookmarks.pop(name)
+        # Which pools held it, so restore can put the membership back — the pools
+        # themselves are edited here, so the relationship is only recoverable if
+        # we record it.
+        pools = [
+            p.name for p in self.pools.values() if name in p.bookmark_names
+        ]
         for pool in self.pools.values():
             if name in pool.bookmark_names:
                 pool.bookmark_names = [n for n in pool.bookmark_names if n != name]
         self._save()
-        logger.info("Deleted bookmark: %s", name)
+        self._trash().add(
+            "bookmark",
+            name,
+            {"bookmark": bookmark.to_dict(), "pools": pools},
+        )
+        logger.info("Moved bookmark to trash: %s", name)
         return True
+
+    def restore_bookmark(self, entry) -> tuple[bool, str]:
+        """Put a trashed bookmark back, including its pool memberships."""
+        name = entry.name
+        if name in self.bookmarks:
+            return False, (
+                f"A bookmark named '{name}' already exists. Rename or delete it, "
+                "then restore again."
+            )
+        data = entry.payload.get("bookmark") or {}
+        self.bookmarks[name] = Bookmark(
+            name=data.get("name", name), url=data.get("url", "")
+        )
+        for pool_name in entry.payload.get("pools") or []:
+            pool = self.pools.get(pool_name)
+            if pool is not None and name not in pool.bookmark_names:
+                pool.bookmark_names.append(name)
+        self._save()
+        logger.info("Restored bookmark from trash: %s", name)
+        return True, ""
 
     # --- pools ---
 
@@ -202,12 +236,53 @@ class BookmarkStore(StoreGuardMixin):
         return True
 
     def delete_pool(self, name: str) -> bool:
+        """Move a pool to the trash. The bookmarks themselves are untouched;
+        restore brings the pool back with the same membership list."""
         if name not in self.pools:
             return False
-        del self.pools[name]
+        pool = self.pools.pop(name)
         self._save()
-        logger.info("Deleted pool: %s", name)
+        # Which profiles referenced this pool, so restore can re-point them. The
+        # caller clears the dangling reference (a lingering pool name made the
+        # profile launch with an empty toolbar), so it is only recoverable if we
+        # record it here first.
+        refs = []
+        pm = self._profile_manager
+        if pm is not None:
+            refs = [p.name for p in pm.list_profiles() if p.bookmark_pool == name]
+        self._trash().add(
+            "pool",
+            name,
+            {"pool": pool.to_dict(), "profiles": refs},
+        )
+        logger.info("Moved pool to trash: %s", name)
         return True
+
+    def restore_pool(self, entry) -> tuple[bool, str]:
+        """Put a trashed pool back, re-pointing the profiles that used it."""
+        name = entry.name
+        if name in self.pools:
+            return False, (
+                f"A pool named '{name}' already exists. Rename or delete it, "
+                "then restore again."
+            )
+        data = entry.payload.get("pool") or {}
+        # Skip members that no longer exist — add_pool/update_pool filter the
+        # same way, so a restored pool can't hold a name nothing resolves.
+        members = [
+            n for n in (data.get("bookmark_names") or []) if n in self.bookmarks
+        ]
+        self.pools[name] = Pool(name=data.get("name", name), bookmark_names=members)
+        self._save()
+        pm = self._profile_manager
+        if pm is not None:
+            for profile_name in entry.payload.get("profiles") or []:
+                profile = pm.profiles.get(profile_name)
+                if profile is not None and profile.bookmark_pool is None:
+                    profile.bookmark_pool = name
+            pm.save_profiles()
+        logger.info("Restored pool from trash: %s", name)
+        return True, ""
 
     # --- resolution ---
 
