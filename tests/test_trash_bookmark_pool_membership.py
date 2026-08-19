@@ -255,3 +255,176 @@ def test_restoring_is_still_refused_when_the_name_is_taken(env):
     assert env.trash.get(entry_id) is not None, (
         "a refused restore must leave the entry recoverable"
     )
+
+
+# --- MULTI-MEMBER position: the axis the first position fix was silent on ---
+#
+# Every test above deletes exactly ONE bookmark, which is the one case an
+# absolute integer index gets right. With a second member involved it broke, and
+# the safe restore order inverted with the DELETION order again — the same
+# unlearnable shape as the original QA defect, one layer down:
+#
+#   pool ['a','b','c']; delete 'a' then 'b'  ->  'b' recorded index 0, not 1,
+#   because 'a' had already been stripped from the list it was measured against.
+#   restore 'a' then 'b'  ->  ['b','a','c'].
+#
+#   pool deleted first, then 'a' and 'b'; restore pool first  ->  each absolute
+#   index lands in a partially-repopulated list  ->  ['a','c','b'].
+#
+# An absolute index is not a stable descriptor of position when an arbitrary
+# subset of peers is absent, so the descriptor is now the pool's ORDERING and a
+# member is placed after the last peer that preceded it and is currently present.
+# These tests pin that rule on both reproductions, in every restore order.
+
+
+@pytest.mark.parametrize(
+    "restore_order",
+    [("a", "b"), ("b", "a")],
+    ids=["restore-in-deletion-order", "restore-in-reverse-order"],
+)
+def test_two_members_deleted_from_a_live_pool_both_return_to_their_places(
+    env, restore_order
+):
+    # Reproduction A. Deleting two bookmarks one after the other is ordinary
+    # operator behaviour — two plain per-bookmark confirm dialogs — and the
+    # second delete must not record a position measured against a pool the first
+    # delete had already changed.
+    _setup_pool(env, members=("a", "b", "c"))
+    env.bstore.delete("a")
+    env.bstore.delete("b")
+
+    for name in restore_order:
+        ok, msg = env.svc.restore(_entry_id(env, "bookmark", name))
+        assert ok, f"restoring {name} failed: {msg}"
+
+    assert env.bstore.get_pool("work-pool").bookmark_names == ["a", "b", "c"], (
+        "both members must come back where they were, whichever order they are "
+        "restored in — a second deleted member must not shift the first"
+    )
+
+
+@pytest.mark.parametrize(
+    "restore_order",
+    [("a", "b"), ("b", "a")],
+    ids=["restore-in-deletion-order", "restore-in-reverse-order"],
+)
+def test_two_members_return_to_their_places_when_the_pool_was_deleted_first(
+    env, restore_order
+):
+    # Reproduction B. The pool comes back holding only the members that were
+    # never deleted, so each restored member lands in a list still missing its
+    # peers — the case an absolute index cannot survive and the clamp silently
+    # turned into "appended to the end".
+    _setup_pool(env, members=("a", "b", "c"))
+    env.bstore.delete_pool("work-pool")
+    env.bstore.delete("a")
+    env.bstore.delete("b")
+
+    ok, msg = env.svc.restore(_entry_id(env, "pool", "work-pool"))
+    assert ok, msg
+    assert env.bstore.get_pool("work-pool").bookmark_names == ["c"], (
+        "only the undeleted member is live yet; the other two are still trashed"
+    )
+
+    for name in restore_order:
+        ok, msg = env.svc.restore(_entry_id(env, "bookmark", name))
+        assert ok, f"restoring {name} failed: {msg}"
+
+    assert env.bstore.get_pool("work-pool").bookmark_names == ["a", "b", "c"]
+
+
+@pytest.mark.parametrize(
+    "restore_order",
+    [("a", "b"), ("b", "a")],
+    ids=["restore-in-deletion-order", "restore-in-reverse-order"],
+)
+def test_two_members_return_to_their_places_when_the_pool_is_restored_last(
+    env, restore_order
+):
+    # The mirror of the case above: both members come back while the pool is
+    # still trashed, so each edge is parked on the POOL's snapshot and the
+    # snapshot itself has to keep them in the right order relative to each other.
+    _setup_pool(env, members=("a", "b", "c"))
+    env.bstore.delete("a")
+    env.bstore.delete("b")
+    env.bstore.delete_pool("work-pool")
+
+    for name in restore_order:
+        ok, msg = env.svc.restore(_entry_id(env, "bookmark", name))
+        assert ok, f"restoring {name} failed: {msg}"
+    ok, msg = env.svc.restore(_entry_id(env, "pool", "work-pool"))
+    assert ok, msg
+
+    assert env.bstore.get_pool("work-pool").bookmark_names == ["a", "b", "c"]
+
+
+def test_the_toolbar_of_a_multi_member_restore_resolves_in_the_original_order(env):
+    # A pool's order IS the toolbar order, so assert what the operator actually
+    # sees rather than only the list the store holds.
+    _setup_pool(env, members=("a", "b", "c"))
+    env.bstore.delete("a")
+    env.bstore.delete("b")
+    env.svc.restore(_entry_id(env, "bookmark", "a"))
+    env.svc.restore(_entry_id(env, "bookmark", "b"))
+
+    toolbar = [b.name for b in env.bstore.resolve_selection("work-pool", None)]
+    assert toolbar == ["a", "b", "c"], (
+        "the restored toolbar must be the toolbar the operator had before"
+    )
+
+
+def test_a_permanently_deleted_peer_does_not_come_back_as_a_member(env):
+    # The ordering now folds in peers that are still trashed, so it must still
+    # refuse to carry one the operator DESTROYED. Deleting 'a' permanently and
+    # then trashing the pool must not smuggle 'a' back into its snapshot.
+    _setup_pool(env, members=("a", "b", "c"))
+    env.bstore.delete("a")
+    env.svc.delete_permanently(_entry_id(env, "bookmark", "a"))
+    env.bstore.delete_pool("work-pool")
+
+    ok, msg = env.svc.restore(_entry_id(env, "pool", "work-pool"))
+    assert ok, msg
+    assert env.bstore.get_pool("work-pool").bookmark_names == ["b", "c"]
+    assert "a" not in env.bstore.bookmarks, (
+        "reconstructing the ordering must not resurrect a permanently deleted "
+        "record — 'delete permanently' really cannot be undone"
+    )
+
+
+def test_three_members_deleted_and_restored_in_a_rotated_order(env):
+    # Three absent peers at once, restored in an order that matches neither the
+    # deletion order nor its reverse — the general case the anchor rule exists
+    # for, rather than the two orderings a pair happens to have.
+    _setup_pool(env, members=("a", "b", "c", "d"))
+    for name in ("c", "a", "b"):
+        env.bstore.delete(name)
+
+    for name in ("b", "c", "a"):
+        ok, msg = env.svc.restore(_entry_id(env, "bookmark", name))
+        assert ok, f"restoring {name} failed: {msg}"
+
+    assert env.bstore.get_pool("work-pool").bookmark_names == ["a", "b", "c", "d"]
+
+
+def test_a_legacy_entry_without_a_recorded_ordering_still_restores(env, tmp_path):
+    # Entries already sitting in a real operator's trash.json were written by the
+    # previous code: they carry the old absolute-index key and no ordering at
+    # all. Restoring one must still return the bookmark and its membership —
+    # degrading to "at the end", which is the honest best available answer when
+    # nothing recorded where it sat — rather than raising on the missing key.
+    _setup_pool(env, members=("a", "c"))
+    entry = env.trash.add(
+        "bookmark",
+        "b",
+        {
+            "bookmark": {"name": "b", "url": "https://b.example"},
+            "pools": ["work-pool"],
+            "pool_positions": {"work-pool": 1},
+        },
+    )
+
+    ok, msg = env.svc.restore(entry.id)
+
+    assert ok, msg
+    assert "b" in env.bstore.bookmarks
+    assert env.bstore.get_pool("work-pool").bookmark_names == ["a", "c", "b"]
