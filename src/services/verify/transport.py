@@ -201,7 +201,7 @@ def _chromium_transport(profile_name: str) -> Transport:
         raise TransportUnavailable(
             f"chromium profile {profile_name!r} has no debug port — it is "
             "either not running, or was launched without automation. Launch it "
-            "in automation mode (AI control) and try again. ({exc})"
+            f"in automation mode (AI control) and try again. ({exc})"
         ) from exc
     return _ChromiumTransport(profile_name, port)
 

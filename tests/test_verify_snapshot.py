@@ -554,3 +554,141 @@ def test_cli_list_prints_the_whole_inventory(capsys):
     out = capsys.readouterr().out
     for probe in probes.PROBES:
         assert probe.id in out
+
+
+# --- transport error messages -------------------------------------------
+# These RENDER the operator-facing strings. A careful reading of the raise
+# site proves its *shape*; only building the message proves what an operator
+# actually sees. A missing `f` prefix on one segment of an implicitly
+# concatenated literal is invisible to the former and obvious to the latter.
+
+
+@pytest.mark.parametrize(
+    "cause",
+    [
+        "DevToolsActivePort for 'acc' is stale (pre-launch)",
+        "no live CDP port for 'acc' (DevToolsActivePort unreadable)",
+    ],
+)
+def test_chromium_no_debug_port_message_renders_its_cause(monkeypatch, cause):
+    from src.services.browser import cdp
+    from src.services.verify import transport
+
+    monkeypatch.setattr(
+        cdp,
+        "read_cdp_port",
+        lambda name, **kw: (_ for _ in ()).throw(RuntimeError(cause)),
+    )
+    with pytest.raises(transport.TransportUnavailable) as err:
+        transport._chromium_transport("acc")
+
+    rendered = str(err.value)
+    # The message promises the cause in parentheses — it must deliver it.
+    assert cause in rendered
+    assert "acc" in rendered
+    # No unrendered template syntax survived into operator-facing output.
+    assert "{" not in rendered and "}" not in rendered
+
+
+def test_firefox_no_eval_hook_message_renders_cleanly(monkeypatch):
+    from src.services.browser import invisible_launch
+    from src.services.verify import transport
+
+    monkeypatch.setattr(invisible_launch, "get_ff_eval", lambda name: None)
+    with pytest.raises(transport.TransportUnavailable) as err:
+        transport._firefox_transport("acc")
+
+    rendered = str(err.value)
+    assert "acc" in rendered
+    assert "{" not in rendered and "}" not in rendered
+
+
+def test_no_implicit_concatenation_drops_an_interpolation():
+    """Guard the defect class, not just the one site that shipped it.
+
+    Python concatenates adjacent string literals, but the ``f`` prefix binds
+    per *segment*. So in a group where one segment interpolates, a segment
+    written WITHOUT the prefix but containing ``{name}`` is a dropped
+    interpolation — the braces reach the operator verbatim.
+
+    This reads source TOKENS rather than the AST on purpose: the AST decodes
+    an escaped ``{{`` in an f-string down to a bare ``{``, making a legitimate
+    literal brace (this package builds JS, which is full of them) and a real
+    defect indistinguishable. The prefix only survives in the token.
+    """
+    import io
+    import pathlib
+    import tokenize
+
+    # A brace wrapping an identifier-ish expression and nothing else:
+    # matches ``{exc}`` / ``{obj.attr}``, not JS like ``{return 'x';}``.
+    interpolation = re.compile(r"\{[A-Za-z_][A-Za-z0-9_.\[\]!:]*\}")
+
+    def groups(source):
+        """Yield runs of adjacent string segments (implicit concatenation).
+
+        Each segment is ``(prefix, text, lineno)``. Python 3.12 splits an
+        f-string into FSTRING_START/MIDDLE/END rather than emitting one STRING
+        token, so those are recombined here — otherwise the interpolating
+        segment vanishes from the group and the guard never fires.
+        """
+        fstring_start = getattr(tokenize, "FSTRING_START", -1)
+        fstring_middle = getattr(tokenize, "FSTRING_MIDDLE", -1)
+        fstring_end = getattr(tokenize, "FSTRING_END", -1)
+        skip = {
+            tokenize.NL,
+            tokenize.NEWLINE,
+            tokenize.COMMENT,
+            tokenize.INDENT,
+            tokenize.DEDENT,
+        }
+        run, depth, cur = [], 0, None
+        readline = io.StringIO(source).readline
+        for tok in tokenize.generate_tokens(readline):
+            if tok.type == fstring_start:
+                depth += 1
+                if depth == 1:
+                    cur = [tok.string.rstrip("\"'").lower(), "", tok.start[0]]
+            elif tok.type == fstring_middle:
+                if depth == 1:
+                    cur[1] += tok.string
+            elif tok.type == fstring_end:
+                depth -= 1
+                if depth == 0:
+                    run.append(tuple(cur))
+                    cur = None
+            elif depth:
+                continue  # tokens inside an f-string belong to that f-string
+            elif tok.type == tokenize.STRING:
+                body = tok.string.lstrip("bBfFrRuU")
+                prefix = tok.string[: len(tok.string) - len(body)].lower()
+                run.append((prefix, tok.string, tok.start[0]))
+            elif tok.type in skip:
+                continue
+            elif run:
+                yield run
+                run = []
+        if run:
+            yield run
+
+    package = pathlib.Path(probes.__file__).parent
+    offenders = []
+    checked = 0
+    for path in sorted(package.glob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        for run in groups(source):
+            if len(run) < 2 or not any("f" in p for p, _, _ in run):
+                continue  # single literal, or nothing here interpolates
+            checked += 1
+            for prefix, text, lineno in run:
+                if "f" in prefix:
+                    continue
+                if interpolation.search(text):
+                    offenders.append(f"{path.name}:{lineno}: {text}")
+    # Guard the guard: if the tokenizer shape ever changes again, this test
+    # must fail loudly rather than pass by finding nothing to inspect.
+    assert checked, "found no interpolating concatenation groups to check"
+    assert not offenders, (
+        "a segment of an interpolating string group is missing its `f` "
+        "prefix, so its braces render verbatim: " + "; ".join(offenders)
+    )
