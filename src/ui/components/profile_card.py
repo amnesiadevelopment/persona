@@ -85,7 +85,12 @@ def proxy_indicator_state(proxy: Proxy, now: float) -> str:
 
 
 def _proxy_age_label(proxy: Proxy, state: str, now: float) -> str:
-    """Human 'when was this last checked' phrase, shared by tooltip and meta."""
+    """Human 'when was this last checked' phrase for the card's meta line.
+
+    Deliberately NOT used in the indicator's tooltip: that string is an
+    exact-equality contract in test_indicator_click_checks_proxy, so the age
+    rides the meta line instead of being concatenated into it.
+    """
     if state == "failed":
         if proxy.checked_at:
             return f"check failed {humanize_since(proxy.checked_at, now)}"
@@ -255,9 +260,9 @@ def build_profile_card(
     # button; a "· running" suffix here would be redundant.
     meta = f"{os_label} · {proxy_label}"
     if proxy is not None:
-        # The age rides the meta line as well as the tooltip, so the operator
-        # reads it while scanning rather than only on hover. Same phrasing as
-        # the network page — one vocabulary for one fact.
+        # The age rides the meta line, so the operator reads it while
+        # scanning. Same phrasing as the network page — one vocabulary for
+        # one fact.
         meta += (
             f" · {_proxy_age_label(proxy, proxy_indicator_state(proxy, now), now)}"
         )
