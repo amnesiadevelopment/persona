@@ -58,16 +58,26 @@ def set_in_use_provider(fn) -> None:
     _in_use_provider = fn
 
 
-def _engine_in_use() -> bool:
+def _engine_in_use(log=None) -> bool:
     """True when the wired provider reports a running profile. A provider that
     raises is treated as 'not in use': a broken oracle must not permanently
-    wedge disk reclamation, and this restores exactly today's behaviour."""
+    wedge disk reclamation, and this restores exactly today's behaviour.
+
+    That fail-OPEN default is the one path where a fault degrades back into the
+    very deletion this guard exists to prevent, and it would otherwise do so
+    silently — so a raising provider is LOGGED. `log` is optional purely so the
+    predicate stays callable bare (`_engine_in_use()`)."""
     fn = _in_use_provider
     if fn is None:
         return False
     try:
         return bool(fn())
-    except Exception:
+    except Exception as e:
+        if log:
+            log(
+                f"Firefox engine: in-use check failed ({e!r}) — treating as "
+                "no profile running; pruning proceeds"
+            )
         return False
 
 
@@ -446,8 +456,14 @@ def _prune_old_engine_builds(keep: str, log=None) -> None:
     a new build lands would otherwise have the tree it is executing from
     deleted out from under it. POSIX does not refuse that unlink, so this check
     — not the `except OSError` below — is what actually protects a live
-    session. Disk is reclaimed on the next prune once profiles have closed."""
-    if _engine_in_use():
+    session. Disk is reclaimed on the next prune once profiles have closed.
+
+    The check is made ONCE, before the loop, so a profile that launches between
+    it and an rmtree below is still exposed — this narrows the window, it does
+    not close it. Closing it needs per-session build provenance, which nothing
+    records today (the launcher keeps only the Popen per name); treat this as a
+    strong default, not a hard guarantee."""
+    if _engine_in_use(log=log):
         if log:
             log(
                 "Firefox engine: skipped pruning old builds — a profile is "

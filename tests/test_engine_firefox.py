@@ -763,8 +763,14 @@ def test_prune_proceeds_when_the_provider_raises(monkeypatch, tmp_path):
         raise RuntimeError("launcher unavailable")
 
     monkeypatch.setattr(eng, "_in_use_provider", boom)
-    inv._prune_old_engine_builds(keep="firefox-16")
+    logs = []
+    inv._prune_old_engine_builds(keep="firefox-16", log=logs.append)
     assert not (tmp_path / "firefox-14").exists()
+    # Failing open degrades back into the exact deletion this guard exists to
+    # prevent, so it must not do so SILENTLY: the raise is diagnosable, and the
+    # message carries the cause rather than just noting a failure.
+    assert any("in-use check failed" in m for m in logs), logs
+    assert any("launcher unavailable" in m for m in logs), logs
 
 
 def test_set_in_use_provider_is_visible_to_the_prune_path(monkeypatch, tmp_path):

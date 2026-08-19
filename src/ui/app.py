@@ -104,7 +104,7 @@ class App:
         # sits below the launcher in the layering and cannot import it, so the
         # oracle is injected here, at construction — strictly before any prune
         # can run, which is what makes the otherwise-unguarded startup prune
-        # (_check_engine2_async → prune_superseded_builds) safe by construction.
+        # (_auto_update_engine2 → prune_superseded_builds) safe by construction.
         # running_profile_names() reaps dead sessions via poll() before
         # answering, so it is the already-trusted oracle the app updater uses.
         self._wire_engine_prune_guard()
