@@ -49,13 +49,6 @@ def _listener() -> tuple[socket.socket, int]:
     return srv, srv.getsockname()[1]
 
 
-def _allow_loopback(monkeypatch) -> None:
-    """The SSRF gate rightly refuses loopback proxies; the listener under test
-    IS loopback. Neutralise the gate HERE ONLY — the source-side rule and
-    tests/test_proxy_checker_ssrf.py stay untouched."""
-    monkeypatch.setattr(proxy_checker, "_is_blocked_proxy_host", lambda server: False)
-
-
 def _recv_exactly(conn: socket.socket, n: int) -> bytes:
     buf = b""
     while len(buf) < n:
@@ -87,10 +80,11 @@ def test_socks5_check_opens_with_a_socks_greeting_not_http_connect(monkeypatch):
 
     thread = threading.Thread(target=serve, daemon=True)
     thread.start()
-    _allow_loopback(monkeypatch)
     try:
         result = asyncio.run(
-            proxy_checker.check_proxy(f"socks5://user:pass@127.0.0.1:{port}", timeout=5)
+            proxy_checker.check_proxy(
+                f"socks5://user:pass@127.0.0.1:{port}", timeout=5, allow_loopback=True
+            )
         )
     finally:
         thread.join(15)
@@ -131,10 +125,11 @@ def test_http_scheme_still_uses_the_aiohttp_connect_path(monkeypatch):
 
     thread = threading.Thread(target=serve, daemon=True)
     thread.start()
-    _allow_loopback(monkeypatch)
     try:
         result = asyncio.run(
-            proxy_checker.check_proxy(f"http://user:pass@127.0.0.1:{port}", timeout=5)
+            proxy_checker.check_proxy(
+                f"http://user:pass@127.0.0.1:{port}", timeout=5, allow_loopback=True
+            )
         )
     finally:
         thread.join(15)
@@ -241,7 +236,6 @@ def test_reachable_socks5_proxy_returns_geo(tmp_path, monkeypatch):
 
     client_ctx = ssl.create_default_context(cafile=str(certfile))
     monkeypatch.setattr(proxy_checker, "_ssl_context", lambda: client_ctx)
-    _allow_loopback(monkeypatch)
     try:
         ok, message, code, country, ip, tz, lat, lon = (
             proxy_checker.check_proxy_detailed_sync(
@@ -310,7 +304,6 @@ def test_socks5_geo_is_dropped_when_the_endpoint_lies(tmp_path, monkeypatch):
 
     client_ctx = ssl.create_default_context(cafile=str(certfile))
     monkeypatch.setattr(proxy_checker, "_ssl_context", lambda: client_ctx)
-    _allow_loopback(monkeypatch)
     try:
         ok, _message, code, _country, _ip, tz, _lat, _lon = (
             proxy_checker.check_proxy_detailed_sync(f"socks5://127.0.0.1:{port}", timeout=10)
@@ -341,9 +334,12 @@ def test_every_socks_scheme_avoids_http_connect(scheme, monkeypatch):
 
     thread = threading.Thread(target=serve, daemon=True)
     thread.start()
-    _allow_loopback(monkeypatch)
     try:
-        asyncio.run(proxy_checker.check_proxy(f"{scheme}://127.0.0.1:{port}", timeout=5))
+        asyncio.run(
+            proxy_checker.check_proxy(
+                f"{scheme}://127.0.0.1:{port}", timeout=5, allow_loopback=True
+            )
+        )
     finally:
         thread.join(15)
         srv.close()
@@ -392,10 +388,11 @@ def test_socks4h_specifically_does_not_emit_http_connect(monkeypatch):
 
     thread = threading.Thread(target=serve, daemon=True)
     thread.start()
-    _allow_loopback(monkeypatch)
     try:
         result = asyncio.run(
-            proxy_checker.check_proxy(f"socks4h://127.0.0.1:{port}", timeout=5)
+            proxy_checker.check_proxy(
+                f"socks4h://127.0.0.1:{port}", timeout=5, allow_loopback=True
+            )
         )
     finally:
         thread.join(15)
@@ -468,7 +465,6 @@ def test_geo_body_without_content_length_is_read_to_eof(tmp_path, monkeypatch):
 
     client_ctx = ssl.create_default_context(cafile=str(certfile))
     monkeypatch.setattr(proxy_checker, "_ssl_context", lambda: client_ctx)
-    _allow_loopback(monkeypatch)
     try:
         ok, message, code, _country, _ip, tz, _lat, _lon = (
             proxy_checker.check_proxy_detailed_sync(
@@ -518,10 +514,11 @@ def test_socks_check_never_reports_success_without_a_proxy(monkeypatch):
     """The AIOHTTP_AVAILABLE rule generalised: no path may record ok=True
     without real geo, because that writes last_check_ok=True with empty fields
     and ERASES a proxy's known-good country/timezone."""
-    _allow_loopback(monkeypatch)
     srv, port = _listener()
     srv.close()  # nothing is listening -> connection refused
-    result = asyncio.run(proxy_checker.check_proxy(f"socks5://127.0.0.1:{port}", timeout=5))
+    result = asyncio.run(
+        proxy_checker.check_proxy(f"socks5://127.0.0.1:{port}", timeout=5, allow_loopback=True)
+    )
     assert result[0] is False
     assert result[2:6] == ("", "", "", "")
     assert "127.0.0.1" not in result[1] and str(port) not in result[1]
