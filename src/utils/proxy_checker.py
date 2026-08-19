@@ -39,6 +39,17 @@ SOCKS_SCHEMES = frozenset(s for s in PROXY_SCHEMES if s.startswith("socks"))
 # (hostile endpoint or a MITM on the exit), so an unbounded read is a memory DoS.
 _MAX_GEO_BODY = 256 * 1024
 
+#: User-Agent for requests that travel to a THIRD-PARTY endpoint on the
+#: operator's behalf (the provider rotate endpoint). Deliberately neutral: the
+#: rotate path used to send `User-Agent: persona`, which self-identified the
+#: tool to the proxy provider on every rotation. `persona-proxy-check/1.0`
+#: (below, on the geo probe) is a different case — it only ever reaches the geo
+#: endpoint we chose — so it is left alone.
+_NEUTRAL_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+
 
 def _is_socks_scheme(scheme: str) -> bool:
     """True for every scheme that must take a real SOCKS handshake.
@@ -346,19 +357,30 @@ async def _read_http_body(reader: asyncio.StreamReader, headers: dict) -> bytes:
     return bytes(out)
 
 
-async def _http_get_json(
+async def _http_get_head(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
     host: str,
     path: str,
-) -> tuple[int, dict | None]:
-    """Minimal HTTP/1.1 GET over an already-established (TLS) stream."""
+    user_agent: str,
+    accept: str,
+) -> tuple[int, dict[str, str]]:
+    """Write a minimal HTTP/1.1 GET over an already-established (TLS) stream and
+    parse the status line + response headers. The body is left unread on the
+    reader for the caller to consume (or discard).
+
+    Shared by both in-tunnel callers — the JSON geo probe and the status-only
+    rotate fetch — on purpose: this is the module whose entire existence is owed
+    to a hand-maintained scheme set drifting from its source of truth (see
+    _is_socks_scheme). Two hand-rolled copies of the request write and the head
+    parse would drift the same way.
+    """
     writer.write(
         (
             f"GET {path} HTTP/1.1\r\n"
             f"Host: {host}\r\n"
-            "User-Agent: persona-proxy-check/1.0\r\n"
-            "Accept: application/json\r\n"
+            f"User-Agent: {user_agent}\r\n"
+            f"Accept: {accept}\r\n"
             "Accept-Encoding: identity\r\n"
             "Connection: close\r\n"
             "\r\n"
@@ -374,10 +396,41 @@ async def _http_get_json(
         if ":" in line:
             key, value = line.split(":", 1)
             headers[key.strip().lower()] = value.strip()
+    return status, headers
+
+
+async def _http_get_json(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    host: str,
+    path: str,
+) -> tuple[int, dict | None]:
+    """Minimal HTTP/1.1 GET over an already-established (TLS) stream."""
+    status, headers = await _http_get_head(
+        reader, writer, host, path, "persona-proxy-check/1.0", "application/json"
+    )
     if status != 200:
         return status, None
     data = json.loads(await _read_http_body(reader, headers))
     return status, (data if isinstance(data, dict) else None)
+
+
+async def _http_get_status(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    host: str,
+    path: str,
+) -> int:
+    """Status-only GET: the response BODY IS NEVER PARSED.
+
+    A provider rotate endpoint commonly answers `200 OK` with plain text (or an
+    empty body). Reusing _http_get_json here would turn a perfectly successful
+    rotation into a JSONDecodeError, so the status line is all this reads.
+    """
+    status, _headers = await _http_get_head(
+        reader, writer, host, path, _NEUTRAL_USER_AGENT, "*/*"
+    )
+    return status
 
 
 async def _geo_via_socks(
@@ -439,6 +492,161 @@ async def _geo_via_socks(
             await writer.wait_closed()
         except (OSError, ssl.SSLError):
             pass
+
+
+async def _status_via_socks(proxy_config: dict, scheme: str, url: str) -> int:
+    """Status-only GET through a real SOCKS handshake. Body never parsed.
+
+    Structurally the same tunnel _geo_via_socks builds — the SOCKS client was
+    written generic and only ever called with one hardcoded URL — but it stops
+    at the status line so a plain-text rotate response is a success, not a
+    JSONDecodeError.
+    """
+    target = urllib.parse.urlparse(url)
+    target_host = target.hostname or ""
+    target_port = target.port or (443 if target.scheme == "https" else 80)
+    path = target.path or "/"
+    if target.query:
+        # A rotate endpoint's API key/session id lives in the query string —
+        # dropping it would turn every rotate into an unauthenticated request.
+        path = f"{path}?{target.query}"
+    upstream = urllib.parse.urlparse(proxy_config["server"])
+
+    loop = asyncio.get_running_loop()
+    sock = await _connect_socket(loop, upstream.hostname or "", upstream.port or 1080)
+    try:
+        if scheme.startswith("socks4"):
+            await _socks4_connect(
+                loop, sock, target_host, target_port, proxy_config.get("username", "")
+            )
+        else:
+            await _socks5_connect(
+                loop,
+                sock,
+                target_host,
+                target_port,
+                proxy_config.get("username", ""),
+                proxy_config.get("password", ""),
+            )
+        context = _ssl_context() if target.scheme == "https" else None
+        reader, writer = await asyncio.open_connection(
+            sock=sock,
+            ssl=context,
+            server_hostname=target_host if context else None,
+        )
+    except BaseException:
+        sock.close()
+        raise
+    try:
+        return await _http_get_status(reader, writer, target_host, path)
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except (OSError, ssl.SSLError):
+            pass
+
+
+async def fetch_status_via_proxy(
+    proxy_str: str, url: str, timeout: int = 10
+) -> tuple[bool, str]:
+    """GET `url` THROUGH `proxy_str`, reporting only whether it succeeded.
+
+    Written for the provider rotate endpoint, which used to be fetched with a
+    bare urlopen on the operator's REAL IP — disclosing, in one timestamped
+    request, that this real address controls that proxy account, plus a DNS
+    query from the operator's real resolver for the provider's hostname.
+
+    Two properties matter as much as the routing itself:
+
+    * The rotate target is resolved AT THE EXIT, never locally. The SOCKS path
+      sends the host as a domain name (atyp 0x03 / the SOCKS4a form) and the
+      aiohttp path hands the absolute URL to the proxy. That is the same rule
+      _socks4_connect already fails closed for, now applied here.
+    * It also REMOVES rather than adds SSRF exposure: the request no longer
+      originates from the operator's machine, so a crafted rotate_url can no
+      longer reach the local network or a cloud metadata endpoint from here.
+      (The caller's http/https-only scheme guard still stands — it blocks
+      file:// / data:// — but the local-network reach it was written against
+      is gone.)
+
+    _is_blocked_proxy_host is deliberately NOT applied to the transport proxy.
+    That gate guards check_proxy against a PASTED string being used as a
+    port-scan oracle; here the proxy is already stored and operator-configured,
+    and loopback SOCKS endpoints (Tor, `ssh -D`) must keep working.
+
+    Returns (status < 400, "HTTP <status>") — or (False, reason) if the request
+    could not be sent through the proxy at all. It NEVER falls back to a direct
+    send: no transport means no request.
+    """
+    proxy_config = parse_proxy(proxy_str)
+    if not proxy_config:
+        return False, "rotate request not sent: no proxy transport"
+
+    scheme = urllib.parse.urlparse(proxy_config["server"]).scheme.lower()
+    is_socks = _is_socks_scheme(scheme)
+
+    if not is_socks and not AIOHTTP_AVAILABLE:
+        # Fail closed, exactly as check_proxy does for the same branch: the only
+        # alternative to "not sent" here would be a direct send on the real IP,
+        # which is the leak this function exists to close.
+        return False, "rotate request not sent: aiohttp not installed"
+
+    proxy_url = proxy_config["server"]
+    if "username" in proxy_config:
+        url_scheme, rest = proxy_url.split("://", 1)
+        password = proxy_config.get("password", "")
+        proxy_url = f"{url_scheme}://{proxy_config['username']}:{password}@{rest}"
+
+    try:
+        if is_socks:
+            status = await asyncio.wait_for(
+                _status_via_socks(proxy_config, scheme, url), timeout
+            )
+        else:
+            timeout_obj = aiohttp.ClientTimeout(total=timeout)
+            async with aiohttp.ClientSession(timeout=timeout_obj) as session:
+                async with session.get(
+                    url,
+                    proxy=proxy_url,
+                    headers={
+                        "User-Agent": _NEUTRAL_USER_AGENT,
+                        "Accept": "*/*",
+                    },
+                ) as response:
+                    # Status only — the body is never read, let alone parsed.
+                    status = response.status
+        return status < 400, f"HTTP {status}"
+    except asyncio.TimeoutError:
+        return False, "rotate request timed out"
+    except _PROXY_CONNECT_ERRORS:
+        return False, "rotate request failed: could not connect to proxy"
+    except _CLIENT_ERRORS:
+        # Never echo the exception: its text embeds the proxy host:port, and
+        # this string reaches the disk-backed daily log and the Activity Log,
+        # which the app otherwise keeps free of the endpoint.
+        return False, "rotate request failed: connection failed"
+    except OSError:
+        return False, "rotate request failed: could not connect to proxy"
+    except Exception:
+        return False, "rotate request failed"
+
+
+def fetch_status_via_proxy_sync(
+    proxy_str: str, url: str, timeout: int = 10
+) -> tuple[bool, str]:
+    """Blocking wrapper — the rotate path runs on a background thread."""
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(
+                fetch_status_via_proxy(proxy_str, url, timeout)
+            )
+        finally:
+            loop.close()
+    except Exception:
+        return False, "rotate request failed"
 
 
 async def check_proxy(
