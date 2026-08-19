@@ -12,7 +12,7 @@ import pathlib
 import pytest
 
 import src.services.profile.manager as manager_mod
-from src.services.profile.manager import ProfileManager, TRASH_DIR_NAME
+from src.services.profile.manager import ProfileManager, trash_data_root
 from src.services.trash.store import TrashStore
 
 
@@ -103,13 +103,17 @@ def test_the_parked_dir_is_named_by_token_not_by_profile_name(mgr):
     assert os.path.basename(entry.material_path) == entry.id
 
 
-def test_the_parked_dir_stays_inside_the_data_dir(mgr, tmp_path):
+def test_the_parked_dir_stays_inside_the_park_area(mgr, tmp_path):
+    # The park area is a SIBLING of the data dir, never inside it: no profile
+    # name can address a directory outside DATA_DIR, so a trashed profile's
+    # cookies can never land inside a live, launchable profile's own data dir.
     _seed(mgr)
     mgr.delete_profile("alpha")
     entry = mgr._trash().list()[0]
+    park_root = os.path.realpath(trash_data_root())
     data_root = os.path.realpath(str(tmp_path / "data"))
-    assert os.path.realpath(entry.material_path).startswith(data_root + os.sep)
-    assert TRASH_DIR_NAME in entry.material_path
+    assert os.path.realpath(entry.material_path).startswith(park_root + os.sep)
+    assert not os.path.realpath(entry.material_path).startswith(data_root + os.sep)
 
 
 def test_delete_removes_the_desktop_entry_immediately(mgr, monkeypatch):
@@ -247,9 +251,9 @@ def test_destroy_trashed_material_removes_the_parked_dir(mgr):
     assert not os.path.exists(parked)
 
 
-def test_destroy_refuses_a_path_outside_the_data_dir(mgr, tmp_path):
-    # The trash must not become a path by which a delete escapes the data dir,
-    # whatever a hand-edited trash.json claims.
+def test_destroy_refuses_a_path_outside_the_park_area(mgr, tmp_path):
+    # The trash must not become a path by which a delete escapes into arbitrary
+    # filesystem locations, whatever a hand-edited trash.json claims.
     outside = tmp_path / "not-ours"
     outside.mkdir()
     (outside / "keep").write_text("x")
@@ -257,13 +261,20 @@ def test_destroy_refuses_a_path_outside_the_data_dir(mgr, tmp_path):
     assert (outside / "keep").exists()
 
 
+def test_destroy_refuses_a_live_profile_data_dir(mgr):
+    # The containment root is the PARK area, not the data dir: a trash.json
+    # pointing at a live profile's data dir must not let permanent deletion
+    # reach in and destroy a profile that was never trashed.
+    live = _seed(mgr, "beta")
+    mgr.destroy_trashed_material(live)
+    assert pathlib.Path(live, "Cookies").exists()
+
+
 def test_destroy_refuses_a_traversal_path(mgr, tmp_path):
     outside = tmp_path / "escaped"
     outside.mkdir()
     (outside / "keep").write_text("x")
-    traversal = os.path.join(
-        str(tmp_path / "data"), TRASH_DIR_NAME, "..", "..", "escaped"
-    )
+    traversal = os.path.join(trash_data_root(), "..", "..", "escaped")
     mgr.destroy_trashed_material(traversal)
     assert (outside / "keep").exists()
 
@@ -290,7 +301,10 @@ def test_a_non_token_trash_path_is_refused(mgr, token):
         mgr._trash_data_path(token)
 
 
-def test_a_valid_token_resolves_inside_the_data_dir(mgr, tmp_path):
+def test_a_valid_token_resolves_inside_the_park_area(mgr, tmp_path):
     path = mgr._trash_data_path("deadbeef")
+    park_root = os.path.realpath(trash_data_root())
     data_root = os.path.realpath(str(tmp_path / "data"))
-    assert os.path.realpath(path).startswith(data_root + os.sep)
+    assert os.path.realpath(path).startswith(park_root + os.sep)
+    # ...and NOT inside the data dir, where a profile name could address it.
+    assert not os.path.realpath(path).startswith(data_root + os.sep)

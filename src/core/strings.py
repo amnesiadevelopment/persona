@@ -34,6 +34,7 @@ STRINGS = {
     "update_failed": "Could not update profile (Name might exist)",
     "created_profile": "Created: {name}",
     "deleted_profile": "Deleted: {name}",
+    "delete_profile_failed": "Could not delete {name}: its data could not be moved to the trash. The profile is unchanged.",
     "updated_profile": "Updated: {old} -> {new}",
     "launching_profile": "Launching {name}...",
     "stopping_profile": "Stopping {name}...",

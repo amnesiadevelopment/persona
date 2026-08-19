@@ -16,8 +16,17 @@ def delete_profile(
     refresh: Callable[[], None],
 ) -> None:
     def do_delete() -> None:
-        pm.delete_profile(name)
-        log(get_string("deleted_profile", name=name))
+        # delete_profile returns False when the data dir could not be parked
+        # (disk full, permissions, cross-device): the profile is then left
+        # completely intact. Logging "Deleted" regardless told the operator an
+        # identity was gone while it was still on disk — the claim-outlives-the-
+        # code defect this ticket exists to close, on the safety-critical side.
+        ok = pm.delete_profile(name)
+        log(
+            get_string("deleted_profile", name=name)
+            if ok
+            else get_string("delete_profile_failed", name=name)
+        )
         refresh()
 
     open_confirm_dialog(page, name, do_delete)

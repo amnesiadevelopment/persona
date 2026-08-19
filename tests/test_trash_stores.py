@@ -28,7 +28,14 @@ def trash(tmp_path, monkeypatch):
 
 
 class _FakeProfileManager:
-    """Just enough profile manager for the reference-restoring paths."""
+    """Just enough profile manager for the reference-restoring paths.
+
+    clear_proxy / clear_bookmark_pool mirror the real manager's semantics
+    because the STORE calls them itself now: recording the referencing profiles
+    and clearing them is one operation owned by the store, so a test that stubs
+    the manager has to provide the clearing half or it isn't exercising the real
+    sequence at all.
+    """
 
     def __init__(self, *profiles: Profile) -> None:
         self.profiles = {p.name: p for p in profiles}
@@ -39,6 +46,22 @@ class _FakeProfileManager:
 
     def save_profiles(self):
         self.saved += 1
+
+    def clear_proxy(self, proxy_name: str) -> int:
+        changed = 0
+        for p in self.profiles.values():
+            if p.proxy == proxy_name:
+                p.proxy = None
+                changed += 1
+        return changed
+
+    def clear_bookmark_pool(self, pool_name: str) -> int:
+        changed = 0
+        for p in self.profiles.values():
+            if p.bookmark_pool == pool_name:
+                p.bookmark_pool = None
+                changed += 1
+        return changed
 
 
 # --- bookmarks ---
@@ -126,15 +149,19 @@ def test_a_restored_pool_skips_members_that_no_longer_exist(bstore, trash):
 
 
 def test_restoring_a_pool_repoints_the_profiles_that_used_it(bstore, trash):
-    # _delete_pool clears the dangling reference (a lingering pool name made the
-    # profile launch with an empty toolbar), so restore must put it back.
+    # delete_pool itself clears the dangling reference (a lingering pool name
+    # made the profile launch with an empty toolbar), so restore must put it
+    # back. This drives the REAL sequence: the store records the referencing
+    # profiles and clears them in one operation. The earlier version of this
+    # test cleared the reference by hand AFTER the delete, which is the reverse
+    # of what production did and hid a bug where nothing was recorded at all.
     profile = Profile(name="alpha", bookmark_pool="checks")
     pm = _FakeProfileManager(profile)
     bstore.set_profile_manager(pm)
     bstore.add("leaks", "https://a")
     bstore.add_pool("checks", ["leaks"])
     bstore.delete_pool("checks")
-    profile.bookmark_pool = None  # what the caller does after the delete
+    assert profile.bookmark_pool is None, "delete_pool must clear the reference"
     bstore.restore_pool(trash.list("pool")[0])
     assert profile.bookmark_pool == "checks"
 
@@ -211,12 +238,18 @@ def test_trashing_a_proxy_does_not_remove_its_secret_from_disk(
 
 
 def test_restoring_a_proxy_repoints_the_profiles_that_used_it(pstore, trash):
+    # delete() itself clears the dangling reference (a lingering proxy name
+    # stranded the profile page), so restore must put it back. This drives the
+    # REAL sequence: the store records the referencing profiles and clears them
+    # in one operation. The earlier version cleared the reference by hand AFTER
+    # the delete — the reverse of production — which hid a bug where the store
+    # recorded no referencing profiles at all.
     profile = Profile(name="alpha", proxy="exit-us")
     pm = _FakeProfileManager(profile)
     pstore.set_profile_manager(pm)
     pstore.add("exit-us", "socks5://1.2.3.4:1080")
     pstore.delete("exit-us")
-    profile.proxy = None  # what clear_proxy does after the delete
+    assert profile.proxy is None, "delete must clear the dangling reference"
     pstore.restore_proxy(trash.list("proxy")[0])
     assert profile.proxy == "exit-us"
 

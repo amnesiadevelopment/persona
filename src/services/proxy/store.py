@@ -227,19 +227,30 @@ class ProxyStore(StoreGuardMixin, TrashableMixin):
         """Move a proxy to the trash. Its credentials go with it — trash.json is
         written 0600 inside PERSONA_HOME, exactly like proxies.json — so trashing
         a proxy does NOT remove its secret material from disk. Permanent deletion
-        does; the interface says so rather than implying otherwise."""
+        does; the interface says so rather than implying otherwise.
+
+        This method owns the WHOLE operation, including dropping the proxy from
+        every profile that used it. That is deliberate: the reference has to be
+        RECORDED before it is cleared, and when the two halves lived in the
+        caller the UI did them in the opposite order (clear_proxy first), so the
+        store recorded no referencing profiles at all and a restore silently
+        returned a proxy nothing pointed at. Owning both here makes that
+        ordering impossible to get wrong from a new lane.
+        """
         with self._lock:
             if name not in self.proxies:
                 return False
             proxy = self.proxies.pop(name)
             self._save()
-        # Which profiles used it, so restore can re-point them. The caller drops
-        # the dangling reference from every profile (a lingering proxy name
-        # stranded the profile page), so it's only recoverable if recorded here.
+        # RECORD the referencing profiles first, then clear them — never the
+        # reverse. A deleted proxy left lingering as a name stranded the profile
+        # page, so the reference must go; recording it here is the only thing
+        # that makes restore able to put it back.
         refs = []
         pm = self._profile_manager
         if pm is not None:
             refs = [p.name for p in pm.list_profiles() if p.proxy == name]
+            pm.clear_proxy(name)
         self._trash().add(
             "proxy", name, {"proxy": proxy.to_dict(), "profiles": refs}
         )
