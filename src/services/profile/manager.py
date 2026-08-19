@@ -292,6 +292,14 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                     (new_name if k == original_name else k): v
                     for k, v in self.profiles.items()
                 }
+                # The desktop entry is keyed by NAME and embeds it in cleartext,
+                # but delete/wipe only ever remove the CURRENT name (audit6 LOW
+                # c). Drop the old name's entry here or it is stranded on the
+                # host forever, outside PERSONA_HOME and unreachable by both.
+                # Nothing is written back: the next launch rewrites it under the
+                # new name (process.py). Must come AFTER the dir rename, whose
+                # failure returns early and must leave everything untouched.
+                self._remove_window_entry(original_name)
 
             profile = self.profiles[new_name]
             profile.name = new_name
