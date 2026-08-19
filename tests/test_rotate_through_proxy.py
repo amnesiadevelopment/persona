@@ -85,54 +85,79 @@ def _self_signed(tmp_path, hostname: str = "rotate.example"):
     return certfile, keyfile
 
 
-def _rotate_through_socks5(tmp_path, monkeypatch, response: bytes):
+def _rotate_through_socks5_seq(tmp_path, monkeypatch, responses: list[bytes]):
     """Stand up a real SOCKS5 listener that terminates TLS as the rotate
-    endpoint, drive `_fetch_rotate_url` through it, and report what the wire saw.
+    endpoint, drive `_fetch_rotate_url` through it, and report what the wire saw
+    ON EVERY CONNECTION.
 
-    Returns (result, seen) where seen carries the SOCKS greeting, the credentials
-    from the handshake, the CONNECT target, the atyp byte and the raw HTTP
-    request that came out the far end of the tunnel.
+    Serves one scripted response per connection, in order; once the script is
+    exhausted the LAST response repeats, which is what makes a self-referential
+    redirect (the hostile case for a hop bound) expressible as a single entry.
+
+    Every redirect hop opens a FRESH tunnel — that is the property being
+    asserted, not an implementation detail: it is what keeps each hop's target
+    resolved at the exit rather than on the operator's resolver.
+
+    Returns (result, seen) where seen is one dict PER CONNECTION, each carrying
+    the SOCKS greeting, the handshake credentials, the CONNECT target, the atyp
+    byte and the raw HTTP request that came out the far end of that tunnel.
     """
     certfile, keyfile = _self_signed(tmp_path)
     server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     server_ctx.load_cert_chain(str(certfile), str(keyfile))
 
-    seen: dict[str, object] = {}
+    seen: list[dict[str, object]] = []
     srv, port = _listener()
+    srv.listen(8)
+    # Poll rather than block: the client stops connecting when it stops
+    # following, and the server cannot know in advance which hop was the last.
+    srv.settimeout(0.25)
+    stop = threading.Event()
 
     def serve() -> None:
-        conn, _ = srv.accept()
-        conn.settimeout(10)
-        try:
-            greeting = _recv_exactly(conn, 2)
-            seen["greeting"] = greeting
-            _recv_exactly(conn, greeting[1])          # the offered methods
-            conn.sendall(b"\x05\x02")                 # demand user/pass auth
-            _recv_exactly(conn, 1)                    # auth sub-negotiation ver
-            user = _recv_exactly(conn, _recv_exactly(conn, 1)[0])
-            password = _recv_exactly(conn, _recv_exactly(conn, 1)[0])
-            seen["auth"] = (user, password)
-            conn.sendall(b"\x01\x00")                 # auth ok
-            _ver, _cmd, _rsv, atyp = _recv_exactly(conn, 4)
-            seen["atyp"] = atyp
-            host = _recv_exactly(conn, _recv_exactly(conn, 1)[0])
-            tport = struct.unpack(">H", _recv_exactly(conn, 2))[0]
-            seen["target"] = (host.decode(), tport)
-            conn.sendall(b"\x05\x00\x00\x01" + b"\x00" * 4 + b"\x00\x00")
+        index = 0
+        while not stop.is_set():
+            try:
+                conn, _ = srv.accept()
+            except (socket.timeout, TimeoutError):
+                continue
+            except OSError:
+                return
+            record: dict[str, object] = {}
+            seen.append(record)
+            response = responses[min(index, len(responses) - 1)]
+            index += 1
+            conn.settimeout(10)
+            try:
+                greeting = _recv_exactly(conn, 2)
+                record["greeting"] = greeting
+                _recv_exactly(conn, greeting[1])          # the offered methods
+                conn.sendall(b"\x05\x02")                 # demand user/pass auth
+                _recv_exactly(conn, 1)                    # auth sub-negotiation ver
+                user = _recv_exactly(conn, _recv_exactly(conn, 1)[0])
+                password = _recv_exactly(conn, _recv_exactly(conn, 1)[0])
+                record["auth"] = (user, password)
+                conn.sendall(b"\x01\x00")                 # auth ok
+                _ver, _cmd, _rsv, atyp = _recv_exactly(conn, 4)
+                record["atyp"] = atyp
+                host = _recv_exactly(conn, _recv_exactly(conn, 1)[0])
+                tport = struct.unpack(">H", _recv_exactly(conn, 2))[0]
+                record["target"] = (host.decode(), tport)
+                conn.sendall(b"\x05\x00\x00\x01" + b"\x00" * 4 + b"\x00\x00")
 
-            tls = server_ctx.wrap_socket(conn, server_side=True)
-            request = b""
-            while b"\r\n\r\n" not in request:
-                chunk = tls.recv(4096)
-                if not chunk:
-                    break
-                request += chunk
-            seen["request"] = request
-            tls.sendall(response)
-            tls.close()
-        except Exception as exc:                       # surfaced via the asserts
-            seen["error"] = repr(exc)
-            conn.close()
+                tls = server_ctx.wrap_socket(conn, server_side=True)
+                request = b""
+                while b"\r\n\r\n" not in request:
+                    chunk = tls.recv(4096)
+                    if not chunk:
+                        break
+                    request += chunk
+                record["request"] = request
+                tls.sendall(response)
+                tls.close()
+            except Exception as exc:                       # surfaced via asserts
+                record["error"] = repr(exc)
+                conn.close()
 
     thread = threading.Thread(target=serve, daemon=True)
     thread.start()
@@ -144,9 +169,16 @@ def _rotate_through_socks5(tmp_path, monkeypatch, response: bytes):
             ROTATE_URL, f"socks5://user:pass@127.0.0.1:{port}", 10
         )
     finally:
+        stop.set()
         thread.join(20)
         srv.close()
     return result, seen
+
+
+def _rotate_through_socks5(tmp_path, monkeypatch, response: bytes):
+    """Single-response form: the first (and only) connection's record."""
+    result, seen = _rotate_through_socks5_seq(tmp_path, monkeypatch, [response])
+    return result, (seen[0] if seen else {})
 
 
 _PLAIN_TEXT_200 = (
@@ -208,7 +240,7 @@ def test_rotate_request_carries_no_persona_token(tmp_path, monkeypatch):
 
 
 def test_error_status_through_the_tunnel_fails(tmp_path, monkeypatch):
-    """The (status < 400, "HTTP <status>") contract the caller reports on."""
+    """The (status < 300, "HTTP <status>") contract the caller reports on."""
     (ok, detail), seen = _rotate_through_socks5(
         tmp_path,
         monkeypatch,
@@ -216,6 +248,127 @@ def test_error_status_through_the_tunnel_fails(tmp_path, monkeypatch):
         b"Connection: close\r\n\r\n",
     )
     assert (ok, detail) == (False, "HTTP 503"), f"server: {seen.get('error')}"
+
+
+# --------------------------------------------------------------------------
+# A 3xx must be FOLLOWED, or else reported as a failure. Never counted as a
+# success on the strength of `status < 400`.
+#
+# The direct urlopen this path replaced followed redirects for free. Dropping
+# that while keeping the `< 400` comparison meant an unfollowed 302 wrote
+# "rotate endpoint OK (HTTP 302)" to the operator's activity log for a rotation
+# that never happened: the redirect target — the request that would ACTUALLY
+# have rotated the proxy — was never fetched. A silent false success is worse
+# than the honest failure the rest of this path is built around.
+# --------------------------------------------------------------------------
+
+
+def _redirect(location: str, status: bytes = b"302 Found") -> bytes:
+    return (
+        b"HTTP/1.1 " + status + b"\r\n"
+        b"Location: " + location.encode() + b"\r\n"
+        b"Content-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+
+
+def test_redirected_rotate_is_followed_through_the_tunnel(tmp_path, monkeypatch):
+    """THE regression assertion for this rework.
+
+    A rotate endpoint behind a 302 must end up reporting the status of the
+    request that actually rotated the proxy — and the followed hop must travel
+    through the SAME tunnel, not leak onto the real IP once redirected.
+    """
+    (ok, detail), seen = _rotate_through_socks5_seq(
+        tmp_path,
+        monkeypatch,
+        [_redirect("https://rotate.example/final"), _PLAIN_TEXT_200],
+    )
+
+    assert (ok, detail) == (True, "HTTP 200"), f"server: {seen}"
+    # Two connections: each hop opens a FRESH tunnel through the proxy.
+    assert len(seen) == 2, f"expected the redirect to be followed: {seen}"
+    # The second request went to the redirect TARGET...
+    assert b"GET /final HTTP/1.1" in seen[1]["request"]
+    # ...and it too was carried as a domain name through the SOCKS proxy, so the
+    # redirect target was never resolved on the operator's real resolver either.
+    assert seen[1]["atyp"] == 0x03
+    assert seen[1]["target"] == ("rotate.example", 443)
+    assert seen[1]["auth"] == (b"user", b"pass")
+
+
+def test_relative_location_resolves_against_the_url_it_came_from(
+    tmp_path, monkeypatch
+):
+    """`Location: /final` is the common provider shape and is not a URL."""
+    (ok, detail), seen = _rotate_through_socks5_seq(
+        tmp_path, monkeypatch, [_redirect("/final"), _PLAIN_TEXT_200]
+    )
+
+    assert (ok, detail) == (True, "HTTP 200"), f"server: {seen}"
+    assert len(seen) == 2, f"expected the redirect to be followed: {seen}"
+    assert b"GET /final HTTP/1.1" in seen[1]["request"]
+    assert seen[1]["target"] == ("rotate.example", 443)
+
+
+def test_a_3xx_that_cannot_be_followed_is_not_a_success(tmp_path, monkeypatch):
+    """A 302 with no Location has nowhere to go, so nothing rotated.
+
+    This is why the verdict is `< 300` and not `< 400`: an unfollowable 3xx
+    still reaches the comparison, and under the old bound it would have been
+    reported to the operator as a successful rotation.
+    """
+    (ok, detail), seen = _rotate_through_socks5(
+        tmp_path,
+        monkeypatch,
+        b"HTTP/1.1 302 Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    )
+
+    assert (ok, detail) == (False, "HTTP 302"), f"server: {seen.get('error')}"
+
+
+def test_redirect_to_a_non_http_scheme_is_refused(tmp_path, monkeypatch):
+    """The caller's http(s) guard only ever sees the ORIGINAL url.
+
+    A `Location: file:///etc/passwd` (or a scheme downgrade) must not ride
+    through on the second hop, and the refusal must not read as success.
+    """
+    (ok, detail), seen = _rotate_through_socks5_seq(
+        tmp_path, monkeypatch, [_redirect("file:///etc/passwd")]
+    )
+
+    assert (ok, detail) == (False, "HTTP 302"), f"server: {seen}"
+    # It was never followed: the one connection is the original request.
+    assert len(seen) == 1, f"the refused target was fetched anyway: {seen}"
+
+
+def test_a_redirect_loop_is_bounded_and_fails(tmp_path, monkeypatch):
+    """A self-referential Location is the hostile case: unbounded, it hangs.
+
+    The chain is capped, and because the last status is still a 3xx the verdict
+    is a failure — the operator loses a rotate attempt and sees why.
+    """
+    (ok, detail), seen = _rotate_through_socks5_seq(
+        tmp_path, monkeypatch, [_redirect("https://rotate.example/loop")]
+    )
+
+    assert ok is False, f"a redirect loop reported success: {detail}"
+    assert detail == "HTTP 302"
+    # Bounded: the original request plus at most _MAX_ROTATE_REDIRECTS hops.
+    assert len(seen) == proxy_checker._MAX_ROTATE_REDIRECTS + 1, (
+        f"hop bound not enforced: {len(seen)} connections"
+    )
+
+
+def test_both_transports_state_the_same_redirect_bound():
+    """One function must not have two redirect behaviours chosen by transport.
+
+    socks5 is persona's DEFAULT scheme, so a divergent bound would leave most
+    operators on the weaker path — the drift this module exists to prevent.
+    The aiohttp branch must read the shared constant, not its library default.
+    """
+    source = inspect.getsource(proxy_checker.fetch_status_via_proxy)
+    assert "max_redirects=_MAX_ROTATE_REDIRECTS" in source
+    assert "allow_redirects=True" in source
 
 
 # --------------------------------------------------------------------------

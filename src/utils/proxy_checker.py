@@ -26,9 +26,17 @@ if AIOHTTP_AVAILABLE:
         aiohttp.ClientProxyConnectionError,
     )
     _CLIENT_ERRORS: tuple[type[BaseException], ...] = (aiohttp.ClientError,)
+    # Listed separately and caught BEFORE _CLIENT_ERRORS: TooManyRedirects is a
+    # ClientError subclass, so without its own arm a redirect loop would be
+    # reported to the operator as "connection failed" — a wrong diagnosis for a
+    # proxy that answered perfectly well.
+    _REDIRECT_LIMIT_ERRORS: tuple[type[BaseException], ...] = (
+        aiohttp.TooManyRedirects,
+    )
 else:
     _PROXY_CONNECT_ERRORS = ()
     _CLIENT_ERRORS = ()
+    _REDIRECT_LIMIT_ERRORS = ()
 
 #: The socks schemes the validator accepts, derived from ITS tuple rather than
 #: retyped here — see PROXY_SCHEMES. Used for documentation and by the tests;
@@ -49,6 +57,27 @@ _NEUTRAL_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
+
+#: Redirect hops the rotate fetch will follow, stated ONCE for both transports.
+#: A rotate endpoint commonly sits behind a 301/302 (vanity path -> API host,
+#: http->https canonicalisation, a provider URL migration), and the direct
+#: urlopen this path replaced followed those for free. Returning the 3xx
+#: unfollowed would report `rotate endpoint OK (HTTP 302)` to the operator for a
+#: rotation that NEVER HAPPENED — a silent false success, strictly worse than
+#: the honest failure the rest of this path is built around.
+#:
+#: Both branches are pinned to this same number on purpose. The aiohttp branch
+#: would otherwise inherit its library default (10) while the SOCKS branch
+#: hard-coded its own, leaving one function with two behaviours selected by
+#: transport — and socks5 is persona's DEFAULT scheme, so the divergent one
+#: would be what most operators actually get. That is the drift this module
+#: exists to prevent (see _is_socks_scheme, _http_get_head).
+_MAX_ROTATE_REDIRECTS = 5
+
+#: The 3xx codes that carry a `Location` worth following. 300 (Multiple Choices)
+#: and 304 (Not Modified) are deliberately absent: neither designates a single
+#: replacement request.
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
 
 def _is_socks_scheme(scheme: str) -> bool:
@@ -420,87 +449,45 @@ async def _http_get_status(
     writer: asyncio.StreamWriter,
     host: str,
     path: str,
-) -> int:
+) -> tuple[int, dict[str, str]]:
     """Status-only GET: the response BODY IS NEVER PARSED.
 
     A provider rotate endpoint commonly answers `200 OK` with plain text (or an
     empty body). Reusing _http_get_json here would turn a perfectly successful
     rotation into a JSONDecodeError, so the status line is all this reads.
+
+    The response HEADERS come back with it, because a 3xx has to be followed and
+    `Location` is a HEADER. "Never parse the body" was never a reason to ignore
+    the head — the two are different reads, and conflating them is what made an
+    unfollowed 302 report as a successful rotation.
     """
-    status, _headers = await _http_get_head(
-        reader, writer, host, path, _NEUTRAL_USER_AGENT, "*/*"
-    )
-    return status
+    return await _http_get_head(reader, writer, host, path, _NEUTRAL_USER_AGENT, "*/*")
 
 
-async def _geo_via_socks(
+async def _open_socks_stream(
     proxy_config: dict, scheme: str, url: str
-) -> tuple[int, dict | None]:
-    """Fetch the geo endpoint through a real SOCKS handshake.
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter, str, str]:
+    """Open a stream to `url`'s host THROUGH the SOCKS proxy, TLS included.
+
+    Returns (reader, writer, target_host, path) with the tunnel established and
+    — for an https target — TLS already negotiated INSIDE it. The caller owns
+    the writer and must close it.
 
     Uses plain asyncio + the stdlib only — the same approach the in-tree bridge
     (src/services/proxy/bridge.py) already takes — so this adds no dependency
     and cannot raise at import time in an environment where PySocks or
     aiohttp_socks happen not to be installed.
-    """
-    target = urllib.parse.urlparse(url)
-    target_host = target.hostname or ""
-    target_port = target.port or (443 if target.scheme == "https" else 80)
-    path = target.path or "/"
-    upstream = urllib.parse.urlparse(proxy_config["server"])
 
-    loop = asyncio.get_running_loop()
-    sock = await _connect_socket(loop, upstream.hostname or "", upstream.port or 1080)
-    try:
-        if scheme.startswith("socks4"):
-            await _socks4_connect(
-                loop, sock, target_host, target_port, proxy_config.get("username", "")
-            )
-        else:
-            await _socks5_connect(
-                loop,
-                sock,
-                target_host,
-                target_port,
-                proxy_config.get("username", ""),
-                proxy_config.get("password", ""),
-            )
-        # TLS is negotiated INSIDE the SOCKS tunnel, against the geo endpoint's
-        # own certificate: the proxy carries opaque bytes and can no more read
-        # or forge the response than it could before. (It also means the
-        # credentials went out in the SOCKS handshake, not as the cleartext
-        # pre-TLS `Proxy-Authorization: Basic` header aiohttp was emitting.)
-        context = _ssl_context() if target.scheme == "https" else None
-        reader, writer = await asyncio.open_connection(
-            sock=sock,
-            ssl=context,
-            server_hostname=target_host if context else None,
-        )
-    except BaseException:
-        sock.close()
-        raise
-    try:
-        return await _http_get_json(reader, writer, target_host, path)
-    finally:
-        writer.close()
-        # Await the close: on a TLS transport an un-awaited close defers the
-        # shutdown to GC, which surfaces as "Task was destroyed but it is
-        # pending" / unraised SSL errors in the app's disk-backed log. Errors
-        # here are about tearing down a connection whose answer we already have,
-        # so they must not turn a good check into a failure.
-        try:
-            await writer.wait_closed()
-        except (OSError, ssl.SSLError):
-            pass
+    Extracted so the SOCKS4-vs-5 dispatch, the in-tunnel TLS and the
+    connect-failure teardown exist ONCE rather than once per caller. Both
+    in-tunnel callers (the JSON geo probe and the status-only rotate fetch) are
+    the same tunnel differing only in what they read off it; two copies meant a
+    future fix to the handshake had two sites to find, which is the same drift
+    argument _is_socks_scheme and _http_get_head are already built on.
 
-
-async def _status_via_socks(proxy_config: dict, scheme: str, url: str) -> int:
-    """Status-only GET through a real SOCKS handshake. Body never parsed.
-
-    Structurally the same tunnel _geo_via_socks builds — the SOCKS client was
-    written generic and only ever called with one hardcoded URL — but it stops
-    at the status line so a plain-text rotate response is a success, not a
-    JSONDecodeError.
+    The target host is always handed to the proxy as a DOMAIN NAME (atyp 0x03 /
+    the SOCKS4a form) and never resolved here, so no DNS query for it ever
+    leaves the operator's real resolver.
     """
     target = urllib.parse.urlparse(url)
     target_host = target.hostname or ""
@@ -528,6 +515,11 @@ async def _status_via_socks(proxy_config: dict, scheme: str, url: str) -> int:
                 proxy_config.get("username", ""),
                 proxy_config.get("password", ""),
             )
+        # TLS is negotiated INSIDE the SOCKS tunnel, against the target's own
+        # certificate: the proxy carries opaque bytes and can no more read or
+        # forge the response than it could before. (It also means the
+        # credentials went out in the SOCKS handshake, not as the cleartext
+        # pre-TLS `Proxy-Authorization: Basic` header aiohttp was emitting.)
         context = _ssl_context() if target.scheme == "https" else None
         reader, writer = await asyncio.open_connection(
             sock=sock,
@@ -537,18 +529,97 @@ async def _status_via_socks(proxy_config: dict, scheme: str, url: str) -> int:
     except BaseException:
         sock.close()
         raise
+    return reader, writer, target_host, path
+
+
+async def _close_stream(writer: asyncio.StreamWriter) -> None:
+    """Tear a tunnel down without letting the teardown fail the result.
+
+    Await the close: on a TLS transport an un-awaited close defers the shutdown
+    to GC, which surfaces as "Task was destroyed but it is pending" / unraised
+    SSL errors in the app's disk-backed log. Errors here are about tearing down
+    a connection whose answer we already have, so they must not turn a good
+    check into a failure.
+    """
+    writer.close()
     try:
-        return await _http_get_status(reader, writer, target_host, path)
+        await writer.wait_closed()
+    except (OSError, ssl.SSLError):
+        pass
+
+
+async def _geo_via_socks(
+    proxy_config: dict, scheme: str, url: str
+) -> tuple[int, dict | None]:
+    """Fetch the geo endpoint through a real SOCKS handshake."""
+    reader, writer, target_host, path = await _open_socks_stream(
+        proxy_config, scheme, url
+    )
+    try:
+        return await _http_get_json(reader, writer, target_host, path)
     finally:
-        writer.close()
+        await _close_stream(writer)
+
+
+async def _status_via_socks(proxy_config: dict, scheme: str, url: str) -> int:
+    """Status-only GET through a real SOCKS handshake, following redirects.
+
+    Stops at the status line — the body is never parsed — so a plain-text rotate
+    response is a success rather than a JSONDecodeError.
+
+    A 3xx IS FOLLOWED, up to _MAX_ROTATE_REDIRECTS hops. Returning it unfollowed
+    would hand the caller a status < 400, which reports `rotate endpoint OK
+    (HTTP 302)` to the operator for a rotation that never happened: the redirect
+    target — the request that would ACTUALLY have rotated the proxy — was never
+    fetched. The direct urlopen this path replaced followed redirects for free,
+    so not following them here is a regression against the code being replaced,
+    and a silent false success is worse than the honest failure this path is
+    otherwise built around.
+
+    Two rules the hops must keep:
+
+    * The http/https guard is RE-APPLIED to every target. The caller's guard
+      only ever sees the ORIGINAL url, so a `Location: file:///etc/passwd` or a
+      scheme downgrade must not ride through on a later hop.
+    * Each hop opens a FRESH tunnel through the same proxy, so the exit-side
+      resolution property holds for every request in the chain: no redirect
+      target is ever resolved on the operator's real resolver either.
+    """
+    status = 0
+    for _hop in range(_MAX_ROTATE_REDIRECTS + 1):
+        reader, writer, target_host, path = await _open_socks_stream(
+            proxy_config, scheme, url
+        )
         try:
-            await writer.wait_closed()
-        except (OSError, ssl.SSLError):
-            pass
+            status, headers = await _http_get_status(
+                reader, writer, target_host, path
+            )
+        finally:
+            await _close_stream(writer)
+
+        if status not in _REDIRECT_STATUSES:
+            return status
+
+        location = headers.get("location", "")
+        if not location:
+            break
+        # urljoin so a relative Location ("/final") resolves against the URL it
+        # came from, which is the common provider shape.
+        nxt = urllib.parse.urljoin(url, location)
+        if urllib.parse.urlparse(nxt).scheme.lower() not in ("http", "https"):
+            break
+        url = nxt
+
+    # Fell out of the loop still holding a 3xx: the chain was unfollowable (no
+    # Location, a refused scheme) or longer than the hop budget — a
+    # misconfiguration or a redirect loop, which an unbounded chain would hang
+    # on. The status is returned UNCHANGED so the operator sees the real code;
+    # the caller's `status < 300` verdict is what makes it a failure.
+    return status
 
 
 async def fetch_status_via_proxy(
-    proxy_str: str, url: str, timeout: int = 10
+    proxy_str: str, url: str, timeout: int
 ) -> tuple[bool, str]:
     """GET `url` THROUGH `proxy_str`, reporting only whether it succeeded.
 
@@ -575,9 +646,24 @@ async def fetch_status_via_proxy(
     port-scan oracle; here the proxy is already stored and operator-configured,
     and loopback SOCKS endpoints (Tor, `ssh -D`) must keep working.
 
-    Returns (status < 400, "HTTP <status>") — or (False, reason) if the request
+    Redirects are FOLLOWED, on both transports, to the same
+    _MAX_ROTATE_REDIRECTS bound — the aiohttp branch is pinned to that constant
+    rather than left on its library default so the two cannot state different
+    numbers. A rotate endpoint commonly sits behind a 301/302, and the direct
+    urlopen this replaced followed them for free.
+
+    Returns (status < 300, "HTTP <status>") — or (False, reason) if the request
     could not be sent through the proxy at all. It NEVER falls back to a direct
     send: no transport means no request.
+
+    The verdict is `< 300`, NOT `< 400`, and the difference is the whole point:
+    a 3xx that reaches this line is one that could NOT be followed (no Location,
+    a non-http(s) Location, or a chain past the hop bound). Its redirect target
+    — the request that would actually have rotated the proxy — was never
+    fetched, so counting it as success would write `rotate endpoint OK (HTTP
+    302)` to the operator's activity log for a rotation that never happened.
+    A followed redirect never reaches here as a 3xx; it arrives as the final
+    status of the chain.
     """
     proxy_config = parse_proxy(proxy_str)
     if not proxy_config:
@@ -609,6 +695,13 @@ async def fetch_status_via_proxy(
                 async with session.get(
                     url,
                     proxy=proxy_url,
+                    # Pinned to the SAME bound the SOCKS branch enforces, rather
+                    # than left on aiohttp's default of 10. One function must
+                    # not have two redirect behaviours selected by transport —
+                    # and socks5 is persona's DEFAULT scheme, so the divergent
+                    # one would be what most operators actually get.
+                    allow_redirects=True,
+                    max_redirects=_MAX_ROTATE_REDIRECTS,
                     headers={
                         "User-Agent": _NEUTRAL_USER_AGENT,
                         "Accept": "*/*",
@@ -616,9 +709,13 @@ async def fetch_status_via_proxy(
                 ) as response:
                     # Status only — the body is never read, let alone parsed.
                     status = response.status
-        return status < 400, f"HTTP {status}"
+        return status < 300, f"HTTP {status}"
     except asyncio.TimeoutError:
         return False, "rotate request timed out"
+    except _REDIRECT_LIMIT_ERRORS:
+        # Caught before _CLIENT_ERRORS, which it subclasses. The proxy and the
+        # endpoint both worked; the redirect chain was a loop or too long.
+        return False, "rotate request failed: too many redirects"
     except _PROXY_CONNECT_ERRORS:
         return False, "rotate request failed: could not connect to proxy"
     except _CLIENT_ERRORS:
@@ -633,9 +730,15 @@ async def fetch_status_via_proxy(
 
 
 def fetch_status_via_proxy_sync(
-    proxy_str: str, url: str, timeout: int = 10
+    proxy_str: str, url: str, timeout: int
 ) -> tuple[bool, str]:
-    """Blocking wrapper — the rotate path runs on a background thread."""
+    """Blocking wrapper — the rotate path runs on a background thread.
+
+    `timeout` is explicit on both this and the async form, matching the reason
+    `_fetch_rotate_url` refuses a default for `proxy_url`: on a path whose whole
+    premise is that a caller must not silently get behaviour it did not ask for,
+    a defaulted argument is the mechanism by which that happens.
+    """
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
