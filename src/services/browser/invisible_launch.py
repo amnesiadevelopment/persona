@@ -950,6 +950,22 @@ def _init_places_db(
     `proxy_declared` says the profile HAS a proxy assigned, independently of
     whether a usable dict could be built for it — see the fail-closed guard
     below.
+
+    DELIBERATE ASYMMETRY with the visible launch's pref set: `_profile_prefs`
+    adds five `media.peerconnection.ice.*` guards for a proxied profile, and
+    this warm-up does NOT. That is a considered omission, not an oversight —
+    the warm-up loads no page and never constructs an RTCPeerConnection, so
+    there is nothing for those prefs to constrain, and the extra_prefs here are
+    deliberately the minimal quiet-startup set. The DNS half arrives anyway:
+    invisible_core's `configure_proxy` writes
+    `network.proxy.socks_remote_dns = True` itself for any SOCKS server. If
+    this run ever grows a real page load, revisit and take the full set.
+
+    The caller must install `_install_geo_shortcircuit()` BEFORE invoking this
+    with a proxy — see the call site in `_launch_and_watch`. The engine's
+    `__enter__` resolves session geo before it forks Firefox, and that lookup
+    goes over the proxy regardless of the concrete timezone, which collides
+    with the `enter_timeout` wedge detector below (#207/#208).
     """
     # Fail CLOSED: a profile that declares a proxy but handed us no usable dict
     # must not get an engine at all. The caller treats a failed seed as
@@ -2227,6 +2243,27 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     # which on a UI launch is the Flet session thread and would freeze the app.
     # A seed that didn't land after its bounded retries is reported, not
     # swallowed (#202) — but never blocks the launch itself.
+    # MUST be installed BEFORE the bookmark warm-up below, not just before the
+    # visible launch. The warm-up hands the engine a proxy, and the engine's
+    # __enter__ calls prepare_session_geo(timezone, proxy) BEFORE it forks
+    # Firefox. The egress-IP discovery in there is gated on the proxy being set
+    # and sits ABOVE the concrete-IANA early return, so timezone="UTC" prevents
+    # the RAISE but NOT the round-trips: ~12.5s on a cold/dead circuit. The
+    # warm-up's own wedge detector waits `enter_timeout` (8.0s) for a Firefox
+    # PROCESS to appear and, finding none (the geo lookup runs before the fork),
+    # treats a perfectly healthy enter as a wedged driver — kill + retry, three
+    # times, ending in BOOKMARK_SEED_FAILED for every proxied bookmarked
+    # profile. That is #207/#208 coming back through a different door.
+    #
+    # Unconditional (rather than the old `if cfg.get("timezone")`) because the
+    # warm-up hardcodes timezone="UTC" regardless of what cfg carries, so it
+    # needs the shortcircuit even for a cfg with no timezone of its own. Safe:
+    # the patch only short-circuits a CONCRETE zone and falls through to the
+    # engine's real resolver for "auto"/empty. Idempotent — the closure binds
+    # the pristine core function as a default arg, so re-installing can't
+    # recurse.
+    _install_geo_shortcircuit()
+
     # ONE construction of the proxy dict for this launch, built here because
     # the bookmark warm-up below needs it too — it starts a REAL Firefox on this
     # profile's own directory and fingerprint seed, so it must reach the network
@@ -2295,10 +2332,12 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
         _finish()  # close the pipe so the monitor's reader unblocks (no fd leak)
         return
 
-    # When persona already knows the timezone (it always passes a concrete
-    # one), skip invisible's per-launch egress-IP lookup over the proxy.
-    if cfg.get("timezone"):
-        _install_geo_shortcircuit()
+    # NOTE: the geo shortcircuit that used to be installed here (conditionally,
+    # on `cfg.get("timezone")`) now runs unconditionally further up, before the
+    # bookmark warm-up — the warm-up needs it too, and needs it regardless of
+    # cfg's timezone. See the comment there. Installing it again here would be
+    # harmless (it is idempotent) but says something false: that the visible
+    # launch is the first thing that needs it.
 
     # `proxy` was built once above (the bookmark warm-up needed the same value);
     # reuse it here rather than constructing a second dict from the same url.
