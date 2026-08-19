@@ -14,7 +14,6 @@ Windows only: macOS (.dmg) and Linux (.AppImage) updates are already fast and ar
 left untouched.
 """
 
-import hashlib
 import json
 import os
 import subprocess
@@ -22,6 +21,8 @@ import sys
 import tempfile
 
 from ...core import platform as _platform
+from ...utils.httpdl import curl_download, digest_ok, sha256_file
+from . import install_env, relaunch_bat
 
 MANIFEST_ASSET = "update-manifest.json"
 APP_ZIP_ASSET = "app.zip"
@@ -84,18 +85,6 @@ def install_app_zip_paths() -> "tuple[str | None, str | None]":
     return None, None
 
 
-def sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def sha256_file(path: str) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def _asset_url(assets: list, name: str) -> str:
     for a in assets:
         if a.get("name", "") == name:
@@ -122,112 +111,53 @@ def _write_appzip_swap_bat(exe: str, new_zip: str, new_hash: str,
     """A temp .bat that waits for THIS persona to exit, swaps the new app.zip +
     app.zip.hash into the install dir, and relaunches persona. flet re-extracts
     the new code on the next boot (its hash bookkeeping sees the changed
-    app.zip.hash). Mirrors the full-installer relauncher's discipline: swap only
-    after the holder is gone (errno-32 avoidance, #195), bounded polls, self-
-    delete."""
-    image = os.path.basename(exe)
-    # flet re-extracts app.zip into this dir on the next boot when app.zip.hash
-    # changes. If a straggler handle still holds the OLD extraction, that
-    # delete-and-reextract hits errno-32 and the new persona comes up white (#195).
-    # Purge it in the swap .bat AFTER every holder is gone — mirroring the
-    # full-installer relauncher (updater.py) which the fast path skipped.
-    flet_app = r"%APPDATA%\persona\persona\flet\app"
-    checks = ""
-    if old_pid:
-        checks += (
-            f'tasklist /FI "PID eq {old_pid}" 2>nul | find "{old_pid}" >nul\r\n'
-            "if not errorlevel 1 goto hold\r\n"
-        )
-    checks += (
-        f'tasklist /FI "IMAGENAME eq {image}" /FO CSV /NH 2>nul'
-        f' | find /I "{image}" >nul\r\n'
-        "if not errorlevel 1 goto hold\r\n"
+    app.zip.hash).
+
+    Only the WAIT set and the swap itself are this path's own; the wait loop,
+    the flet-extraction purge, the launch-and-confirm and the self-delete come
+    from the shared generator (relaunch_bat) that the full installer's
+    relauncher also uses. That sharing is the point: this emitter used to be a
+    hand-maintained near-clone, and #195 was fixed in the installer's copy while
+    "the fast path skipped" it.
+    """
+    checks = relaunch_bat.pid_check(old_pid) + relaunch_bat.image_check(
+        os.path.basename(exe)
     )
-    content = (
-        "@echo off\r\n"
-        'cd /d "%~dp0" >nul 2>&1\r\n'
-        "set tries=0\r\n"
-        "set boots=0\r\n"
-        "set purges=0\r\n"
-        ":wait\r\n"
-        + checks +
-        "goto swap\r\n"
-        ":hold\r\n"
-        "set /a tries+=1\r\n"
-        "if %tries% geq 900 goto launch\r\n"
-        "ping -n 1 127.0.0.1 >nul\r\n"
-        "goto wait\r\n"
-        ":swap\r\n"
+    content = relaunch_bat.build_bat(
+        exe,
+        wait_checks=checks,
+        stage_label="swap",
         # copy the new code + hash over the install-dir originals. /Y overwrites.
-        f'copy /Y "{new_zip}" "{dst_zip}" >nul 2>&1\r\n'
-        f'copy /Y "{new_hash}" "{dst_hash}" >nul 2>&1\r\n'
-        # Purge the stale flet extraction so the new persona re-extracts cleanly
-        # instead of racing a straggler handle on delete-and-reextract (#195).
-        ":purge\r\n"
-        f'if not exist "{flet_app}" goto launch\r\n'
-        f'rd /s /q "{flet_app}" >nul 2>&1\r\n'
-        f'if not exist "{flet_app}" goto launch\r\n'
-        "set /a purges+=1\r\n"
-        "if %purges% geq 60 goto launch\r\n"
-        "ping -n 1 127.0.0.1 >nul\r\n"
-        "goto purge\r\n"
-        ":launch\r\n"
-        f'start "" /D "{os.path.dirname(exe)}" "{exe}"\r\n'
-        # After start, the new persona re-extracts app.zip behind its boot
-        # screen before persona.exe registers in tasklist — several seconds. A
-        # near-instant recheck sees "not running yet" and re-launches, spawning a
-        # SECOND instance that races the extraction; one wins, the other dies →
-        # "reopened then closed again quickly" (#229). Wait a real ~3s beat
-        # BEFORE the confirm, use a SEPARATE bounded counter (not the wait loop's
-        # `tries`, which is already near its cap), and only re-launch a handful
-        # of times — a genuine failure shouldn't spam processes.
-        "ping -n 4 127.0.0.1 >nul\r\n"
-        f'tasklist /FI "IMAGENAME eq {image}" /FO CSV /NH 2>nul'
-        f' | find /I "{image}" >nul\r\n'
-        "if not errorlevel 1 goto done\r\n"
-        "set /a boots+=1\r\n"
-        "if %boots% lss 5 goto launch\r\n"
-        ":done\r\n"
-        '(goto) 2>nul & del "%~f0"\r\n'
+        # Only now that every holder is gone: replacing app.zip under a live flet
+        # is the errno-32 white screen (#195).
+        stage_body=(
+            f'copy /Y "{new_zip}" "{dst_zip}" >nul 2>&1\r\n'
+            f'copy /Y "{new_hash}" "{dst_hash}" >nul 2>&1\r\n'
+        ),
     )
-    fd, path = tempfile.mkstemp(prefix="persona-fastswap-", suffix=".bat")
-    try:
-        with os.fdopen(fd, "w", encoding="ascii", newline="") as f:
-            f.write(content)
-    except Exception:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-        raise
-    return path
+    return relaunch_bat.write_bat(content, prefix="persona-fastswap-")
 
 
 def _download_small(url: str, dst: str, attempts: int = 5) -> bool:
-    """Fetch a small asset (app.zip is ~1MB) to dst via curl, resumable across a
-    dropped connection. True once the file is on disk with non-zero size."""
+    """Fetch a small asset (app.zip is ~1MB) to dst via the shared curl
+    downloader, resumable across a dropped connection. True once the file is on
+    disk with non-zero size.
+
+    Starts from a clean file: this asset is small enough that a fresh fetch
+    costs nothing, and a leftover partial from an earlier attempt must never be
+    resumed onto. The caller verifies the sha256 before anything is swapped."""
     if not url:
         return False
     try:
         os.remove(dst)
     except OSError:
         pass
-    for _ in range(attempts):
-        cmd = [
-            "curl", "-fsSL",
-            "--connect-timeout", "15", "--max-time", "180",
-            "-C", "-", "-o", dst, url,
-        ]
-        try:
-            rc = subprocess.run(
-                cmd, capture_output=True, **_platform.no_window_kwargs()
-            ).returncode
-        except FileNotFoundError:
-            return False
-        have = os.path.getsize(dst) if os.path.exists(dst) else 0
-        if (rc == 0 or rc in (33, 36)) and have > 0:
-            return True
-    return os.path.exists(dst) and os.path.getsize(dst) > 0
+    return curl_download(
+        url,
+        dst,
+        timeout_args=["--connect-timeout", "15", "--max-time", "180"],
+        attempts=attempts,
+    )
 
 
 def apply_code_only_and_restart(app_zip_url: str, expected_sha256: str, log=None):
@@ -253,9 +183,7 @@ def apply_code_only_and_restart(app_zip_url: str, expected_sha256: str, log=None
     if not dst_zip or not dst_hash:
         say("Fast update: install layout not found; using the full installer.")
         return False
-    from .updater import _installed_windows_exe, _relaunch_env
-
-    exe = _installed_windows_exe()
+    exe = install_env.installed_windows_exe()
     if not exe:
         say("Fast update: couldn't locate persona.exe; using the full installer.")
         return False
@@ -271,7 +199,7 @@ def apply_code_only_and_restart(app_zip_url: str, expected_sha256: str, log=None
         actual = sha256_file(staged_zip)
     except OSError:
         pass
-    if not actual or actual != expected_sha256.lower():
+    if not digest_ok(actual, expected_sha256):
         say("Fast update: checksum mismatch; using the full installer.")
         try:
             os.remove(staged_zip)
@@ -299,7 +227,7 @@ def apply_code_only_and_restart(app_zip_url: str, expected_sha256: str, log=None
         subprocess.Popen(
             ["cmd", "/c", bat],
             close_fds=True,
-            env=_relaunch_env(),
+            env=install_env.relaunch_env(),
             cwd=tempfile.gettempdir(),
             creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             | getattr(subprocess, "CREATE_NO_WINDOW", 0),

@@ -41,6 +41,25 @@ def test_check_returns_none_when_repo_unconfigured(monkeypatch):
     assert au.check_for_update() == ("", "", 0)
 
 
+def _publish_checksum(monkeypatch, staged):
+    """Publish the REAL sha256 of a staged file, the way CI publishes one for
+    every released asset.
+
+    PS-6 made the missing-checksum policy fail-CLOSED, so an installer with no
+    published digest never runs. The tests below exercise machinery that sits
+    BEHIND that gate — the installer invocation, the relaunch .bat, the env
+    scrub, the AppImage swap — and none of them is about verification. They pass
+    a real, matching digest so the genuine verify runs and succeeds, rather than
+    stubbing verify_staged_installer out: that keeps the gate itself live in
+    these tests, so a regression that breaks verification still fails here.
+    """
+    import hashlib
+
+    digest = hashlib.sha256(staged.read_bytes()).hexdigest()
+    monkeypatch.setattr(au, "fetch_expected_sha256", lambda tag, **k: digest)
+    return digest
+
+
 def _force_os(monkeypatch, *, win=False, mac=False, linux=False):
     monkeypatch.setattr(au._platform, "IS_WINDOWS", win)
     monkeypatch.setattr(au._platform, "IS_MACOS", mac)
@@ -118,6 +137,7 @@ def test_apply_and_restart_windows_runs_installer_silently(monkeypatch, tmp_path
     _force_os(monkeypatch, win=True)
     staged = tmp_path / "persona-windows-setup.exe"
     staged.write_bytes(b"MZ")
+    _publish_checksum(monkeypatch, staged)
     exe = tmp_path / "persona.exe"
     exe.write_bytes(b"MZ")
     calls = []
@@ -170,6 +190,7 @@ def test_windows_relaunch_has_single_merged_creationflags(monkeypatch, tmp_path)
     monkeypatch.setattr(au.tempfile, "tempdir", str(tmp_path))
     staged = tmp_path / "persona-windows-setup.exe"
     staged.write_bytes(b"MZ")
+    _publish_checksum(monkeypatch, staged)
     exe = tmp_path / "persona.exe"
     exe.write_bytes(b"MZ")
     calls = []
@@ -212,6 +233,7 @@ def test_windows_relaunch_waits_for_installer_to_exit(monkeypatch, tmp_path):
     monkeypatch.setattr(au.tempfile, "tempdir", str(tmp_path))
     staged = tmp_path / "persona-windows-setup.exe"
     staged.write_bytes(b"MZ")
+    _publish_checksum(monkeypatch, staged)
     exe = tmp_path / "persona.exe"
     exe.write_bytes(b"MZ")
     calls = []
@@ -268,6 +290,7 @@ def test_windows_relaunch_waits_for_old_persona_to_die(monkeypatch, tmp_path):
     monkeypatch.setattr(au.tempfile, "tempdir", str(tmp_path))
     staged = tmp_path / "persona-windows-setup.exe"
     staged.write_bytes(b"MZ")
+    _publish_checksum(monkeypatch, staged)
     exe = tmp_path / "persona.exe"
     exe.write_bytes(b"MZ")
     calls = []
@@ -348,6 +371,7 @@ def test_windows_relaunch_uses_bat_even_without_installer_pid(
     monkeypatch.setattr(au.tempfile, "tempdir", str(tmp_path))
     staged = tmp_path / "persona-windows-setup.exe"
     staged.write_bytes(b"MZ")
+    _publish_checksum(monkeypatch, staged)
     exe = tmp_path / "persona.exe"
     exe.write_bytes(b"MZ")
     calls = []
@@ -533,6 +557,7 @@ def test_windows_relaunch_falls_back_to_fixed_wait_without_bat(
     )
     staged = tmp_path / "persona-windows-setup.exe"
     staged.write_bytes(b"MZ")
+    _publish_checksum(monkeypatch, staged)
     exe = tmp_path / "persona.exe"
     exe.write_bytes(b"MZ")
     calls = []
@@ -586,6 +611,7 @@ def test_windows_relaunch_env_is_scrubbed_of_runtime_vars(monkeypatch, tmp_path)
     monkeypatch.setattr(au.tempfile, "tempdir", str(tmp_path))
     staged = tmp_path / "persona-windows-setup.exe"
     staged.write_bytes(b"MZ")
+    _publish_checksum(monkeypatch, staged)
     exe = tmp_path / "persona.exe"
     exe.write_bytes(b"MZ")
     poisoned = {
@@ -635,6 +661,7 @@ def test_windows_relaunch_fallback_env_is_scrubbed_too(monkeypatch, tmp_path):
     monkeypatch.setattr(au._platform, "no_window_kwargs", lambda: {})
     staged = tmp_path / "persona-windows-setup.exe"
     staged.write_bytes(b"MZ")
+    _publish_checksum(monkeypatch, staged)
     exe = tmp_path / "persona.exe"
     exe.write_bytes(b"MZ")
     monkeypatch.setenv("FLET_SERVER_PORT", "54321")
@@ -687,6 +714,7 @@ def test_windows_update_children_get_cwd_outside_the_flet_extraction(
     monkeypatch.setattr(au.tempfile, "tempdir", str(tmp_path))
     staged = tmp_path / "persona-windows-setup.exe"
     staged.write_bytes(b"MZ")
+    _publish_checksum(monkeypatch, staged)
     exe = tmp_path / "persona.exe"
     exe.write_bytes(b"MZ")
     calls = []
@@ -724,6 +752,7 @@ def test_windows_relaunch_fallback_cwd_is_outside_the_extraction_too(
     monkeypatch.setattr(au._platform, "no_window_kwargs", lambda: {})
     staged = tmp_path / "persona-windows-setup.exe"
     staged.write_bytes(b"MZ")
+    _publish_checksum(monkeypatch, staged)
     exe = tmp_path / "persona.exe"
     exe.write_bytes(b"MZ")
     calls = []
@@ -891,6 +920,7 @@ def test_apply_and_restart_never_wipes_engines(monkeypatch, tmp_path):
     _force_os(monkeypatch, win=True)
     staged = tmp_path / "persona-windows-setup.exe"
     staged.write_bytes(b"MZ")
+    _publish_checksum(monkeypatch, staged)
     calls = []
 
     def fake_popen(args, **kw):
@@ -948,6 +978,7 @@ def test_linux_relaunch_scrubs_runtime_env(monkeypatch, tmp_path):
     target.write_bytes(b"old")
     staged = tmp_path / "staged.AppImage"
     staged.write_bytes(b"new")
+    _publish_checksum(monkeypatch, staged)
     monkeypatch.setattr(au, "installed_appimage_path", lambda: str(target))
     monkeypatch.setattr(au, "verify_appimage_runs", lambda p: True)
     # fsync on an O_RDONLY fd is EBADF on Windows, where this test also runs
@@ -1015,6 +1046,7 @@ def test_linux_swap_and_execv_wait_for_the_probe_to_be_reaped(
     target.write_bytes(b"old")
     staged = tmp_path / "staged.AppImage"
     staged.write_bytes(b"new")
+    _publish_checksum(monkeypatch, staged)
     monkeypatch.setattr(au, "installed_appimage_path", lambda: str(target))
     monkeypatch.setattr(au.os, "fsync", lambda fd: None)
     events = []
