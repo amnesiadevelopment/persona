@@ -251,6 +251,43 @@ class TrashStore(StoreGuardMixin):
             self.entries[entry.id] = entry
             self._save()
 
+    def find(self, kind: str, name: str) -> TrashEntry | None:
+        """The trashed entry of this kind under this name, or None.
+
+        Restoring one half of a relationship has to be able to see whether the
+        OTHER half is still in the trash — otherwise it writes only against the
+        live store and silently drops the edge (a bookmark restored before its
+        pool lost its membership for good). Names are unique per kind in every
+        live store, and restore refuses a name that is already taken, so at most
+        one entry can answer here; the most recently deleted wins if a legacy
+        trash.json somehow holds two.
+        """
+        with self._lock:
+            matches = [
+                e
+                for e in self.entries.values()
+                if e.kind == kind and e.name == name
+            ]
+        if not matches:
+            return None
+        return max(matches, key=lambda e: e.deleted_at)
+
+    def update_entry(self, entry_id: str, mutate) -> bool:
+        """Amend a still-trashed entry's payload in place, atomically.
+
+        Used when restoring one record has to record a relationship onto another
+        record that is still in the trash, so the edge survives until that one is
+        restored too. Held under the same lock and persisted the same way as any
+        other mutation — a parked edge is no less durable than the entry itself.
+        """
+        with self._lock:
+            entry = self.entries.get(entry_id)
+            if entry is None:
+                return False
+            mutate(entry)
+            self._save()
+            return True
+
     def clear(self) -> list[TrashEntry]:
         """Empty the trash, returning what was in it so the caller can destroy
         the on-disk material each entry owns. Used by "empty trash" and by the
