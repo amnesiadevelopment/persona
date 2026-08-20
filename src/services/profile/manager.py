@@ -160,6 +160,14 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                             "cookie_import_status": p_data.get(
                                 "cookie_import_status"
                             ),
+                            # This allow-list is hand-enumerated, so a field
+                            # missing HERE is silently dropped on reload even
+                            # though to_dict() saved it (see transfer.py:117 —
+                            # cookie_import_status was the last field to hit
+                            # this exact bug).
+                            "cert_trust_status": p_data.get(
+                                "cert_trust_status"
+                            ),
                             "tags": p_data.get("tags", []),
                             "notes": p_data.get("notes", ""),
                             "ai_control": p_data.get("ai_control", False),
@@ -321,7 +329,19 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
             if new_notes is not None:
                 profile.notes = new_notes
             if new_certificate is not None:
-                profile.certificate = new_certificate or None
+                _new_cert = new_certificate or None
+                if _new_cert != profile.certificate:
+                    # cert_trust_status records the outcome of the LAST CA trust
+                    # attempt, which was made for the certificate being replaced
+                    # here. Carried over it would render a verdict describing a
+                    # different CA — including a stale "trusted", an affirmative
+                    # clean bill of health for a certificate whose trust was
+                    # never attempted. None is the field's own "never attempted".
+                    # Conditional on purpose: update_profile runs on EVERY field
+                    # edit, so an unconditional clear would discard a real
+                    # verdict on a rename or a notes edit.
+                    profile.cert_trust_status = None
+                profile.certificate = _new_cert
             if new_ai_control is not None:
                 profile.ai_control = new_ai_control
 
@@ -334,6 +354,20 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
             if name not in self.profiles:
                 return False
             self.profiles[name].cookie_import_status = status
+            self.save_profiles()
+        return True
+
+    def set_cert_trust_status(self, name: str, status: str) -> bool:
+        """Record the outcome of the last mTLS CA trust attempt for a profile.
+
+        The Firefox CA import soft-fails (the launch proceeds untrusted), so
+        this is the only thing that survives the session to tell the operator
+        the assigned certificate is not actually trusted.
+        """
+        with self._lock:
+            if name not in self.profiles:
+                return False
+            self.profiles[name].cert_trust_status = status
             self.save_profiles()
         return True
 
