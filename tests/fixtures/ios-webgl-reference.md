@@ -108,6 +108,135 @@ that can run this code path takes the identical branch. The alternate branches
 (8192 texture, 60 components, 4 draw buffers) are reachable only on the
 Simulator and pre-A9 hardware.
 
+## Numeric limits (WebGL2-only / `WEBGL2_IOS`)
+
+Landed by PS-22. **Provenance: every row below is `[device]`** — read directly
+off the physical iPhone capture (iOS 18.7 Safari, browserleaks.com/webgl, the
+same capture this file's WebGL1 rows came from). They are not derived from
+source and not inferred.
+
+These reach **`WebGL2RenderingContext` only**, via the `V2` extraMap in
+`gpu_ext.py`. None of the 21 is reachable on a WebGL1 context — not as a core
+parameter and not through any extension this profile advertises — so a real
+browser answers `INVALID_ENUM` for every one of them there, and answering them
+would be a fresh impossibility rather than a fix. The fall-through on WebGL1 is
+correct and is asserted.
+
+> **Check that claim before adding a row.** "Core WebGL2" is *not* the same
+> question as "unreachable on WebGL1", and only the second one justifies a
+> V2-only entry. Three parameters that look like they belong here do **not** —
+> see [Reachable on both contexts](#reachable-on-both-contexts-common_ios)
+> below. Test the candidate enum against `IOS_GL1_EXTS`.
+
+Hex is given beside each decimal deliberately. A transposed enum is not
+self-catching: a wrong-but-**valid** enum still returns a value — just the wrong
+parameter's, e.g. `MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS` answering `128`
+instead of `4`, which is a *sharper* tell than the fall-through PS-22 fixed —
+while a wrong-and-**unused** enum never matches and fails silently, so the bug
+looks like success. An earlier revision of PS-22 shipped four such errors; they
+were caught by review, not by the code. Check the hex when editing this table.
+
+| Parameter | Hex | Enum | Value | Provenance |
+|---|---|---|---|---|
+| `MAX_3D_TEXTURE_SIZE` | 0x8073 | 32883 | 2048 | [device] |
+| `MAX_ARRAY_TEXTURE_LAYERS` | 0x88FF | 35071 | 2048 | [device] |
+| `MAX_TEXTURE_LOD_BIAS` | 0x84FD | 34045 | 15 | [device] |
+| `MAX_VERTEX_UNIFORM_COMPONENTS` | 0x8B4A | 35658 | 4096 | [device] |
+| `MAX_FRAGMENT_UNIFORM_COMPONENTS` | 0x8B49 | 35657 | 4096 | [device] |
+| `MAX_VARYING_COMPONENTS` | 0x8B4B | 35659 | 124 | [device] |
+| `MAX_VERTEX_OUTPUT_COMPONENTS` | 0x9122 | 37154 | 124 | [device] |
+| `MAX_FRAGMENT_INPUT_COMPONENTS` | 0x9125 | 37157 | 124 | [device] |
+| `MAX_VERTEX_UNIFORM_BLOCKS` | 0x8A2B | 35371 | 16 | [device] |
+| `MAX_FRAGMENT_UNIFORM_BLOCKS` | 0x8A2D | 35373 | 16 | [device] |
+| `MAX_COMBINED_UNIFORM_BLOCKS` | 0x8A2E | 35374 | 32 | [device] |
+| `MAX_UNIFORM_BUFFER_BINDINGS` | 0x8A2F | 35375 | 32 | [device] |
+| `MAX_UNIFORM_BLOCK_SIZE` | 0x8A30 | 35376 | 16384 | [device] |
+| `MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS` | 0x8A31 | 35377 | 69632 | [device] |
+| `MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS` | 0x8A33 | 35379 | 69632 | [device] |
+| `UNIFORM_BUFFER_OFFSET_ALIGNMENT` | 0x8A34 | 35380 | 16 | [device] |
+| `MIN_PROGRAM_TEXEL_OFFSET` | 0x8904 | 35076 | −8 | [device] |
+| `MAX_PROGRAM_TEXEL_OFFSET` | 0x8905 | 35077 | 7 | [device] |
+| `MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS` | 0x8C80 | 35968 | 4 | [device] |
+| `MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS` | 0x8C8A | 35978 | 128 | [device] |
+| `MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS` | 0x8C8B | 35979 | 4 | [device] |
+
+All 21 are **scalars** — WebGL2 returns them as plain numbers, not typed
+arrays. The `Float32Array` copy-on-return in `getParameter` applies to the
+WebGL1 range/vector parameters in `COMMON_IOS`, not to anything here.
+
+**`0x8A32` (35378) must never appear in this table or in `WEBGL2_IOS`.** The
+uniform-block run is contiguous from `0x8A2B`, so it is easy to land on by
+miscount — but it is `MAX_COMBINED_GEOMETRY_UNIFORM_COMPONENTS`, a
+geometry-stage parameter WebGL2 does not expose at all.
+
+**These values are not independent — do not parameterise or vary them per
+profile.** They are compile-time constants in ANGLE's Metal backend, identical
+on every iPhone, so per-profile variation is impossible on real hardware and
+would itself be the tell. The ties: `MAX_TEXTURE_LOD_BIAS =
+log2(MAX_TEXTURE_SIZE)+1 = 15`; both combined-uniform-component values equal
+`4096 + 16384*16/4 = 69632`; the three `124`s move together (and equal
+`MAX_VARYING_VECTORS` 31 × 4, agreeing with the WebGL1 table above).
+
+### Reachable on both contexts (`COMMON_IOS`)
+
+These three are core parameters in WebGL2, but they are **not** WebGL2-only, so
+they live in `COMMON_IOS` — which `getParameter` consults on **both** contexts —
+rather than in `WEBGL2_IOS`. On a WebGL1 context they are reachable at the same
+numeric enums through extensions **this profile already advertises** in
+`IOS_GL1_EXTS`:
+
+| Parameter | Hex | Enum | Value | Provenance | Reachable on WebGL1 via |
+|---|---|---|---|---|---|
+| `MAX_TEXTURE_MAX_ANISOTROPY_EXT` | 0x84FF | 34047 | 16 | [device] | `EXT_texture_filter_anisotropic` |
+| `MAX_DRAW_BUFFERS` | 0x8824 | 34852 | 8 | [device] | `WEBGL_draw_buffers` (as `MAX_DRAW_BUFFERS_WEBGL`) |
+| `MAX_COLOR_ATTACHMENTS` | 0x8CDF | 36063 | 8 | [device] | `WEBGL_draw_buffers` (as `MAX_COLOR_ATTACHMENTS_WEBGL`) |
+
+The values are identical on both contexts, so one entry in `COMMON_IOS` serves
+both. Note `MAX_TEXTURE_MAX_ANISOTROPY_EXT` is not core WebGL2 *either* — it is
+an extension parameter on **both** contexts, so "WebGL2-only" was wrong about it
+in both directions.
+
+**Why this has its own section.** The first revision to land these classified
+all three as WebGL2-only and pinned them to the `V2` extraMap. The result was a
+WebGL1 context that *advertised* `EXT_texture_filter_anisotropic` and
+`WEBGL_draw_buffers` and then answered the **host renderer's** real values for
+them — SwiftShader's, or the operator's actual GPU. That is precisely the
+cross-vector incoherence the WebGL2 block exists to close, reproduced on the
+other context: `gl2` says anisotropy 16, `gl1` says whatever the host says, same
+device, same page, one call apart. Against invariant #0 it is a live hardware
+leak, not a scoping quibble.
+
+The capture corroborates the split independently: under `## Textures` it reads
+`MAX_ANISOTROPY=16` with **no** `(WebGL2)` marker, while the genuinely WebGL2
+texture values on the next line *are* marked `(WebGL2)`.
+
+`WEBGL_draw_buffers` is correctly absent from `IOS_GL2_EXTS` — it is core on
+WebGL2 — which is itself the tell that the WebGL1 surface is expected to answer
+it.
+
+Both facts are asserted: the WebGL1 answers are pinned by
+`test_ios_dual_context_params_are_spoofed_on_webgl1_too` (which also asserts the
+premise that the extensions really are advertised), and membership is pinned by
+`test_ios_dual_context_params_live_in_common_not_the_webgl2_block`, so moving one
+back into `WEBGL2_IOS` breaks a named test instead of silently reopening the leak.
+
+### `MAX_SAMPLES` — deliberately **not** spoofed
+
+`MAX_SAMPLES` (0x8D57, 36183) is **absent from `WEBGL2_IOS` by decision, not by
+oversight.** Do not add it.
+
+It is the one genuinely runtime-queried value in the set: ANGLE derives it from
+`mFormatTable.getMaxSamples()` over `{2,4,8}`. **Source predicts 8; the physical
+device reported 4.** The discrepancy is unexplained and there is no second
+capture. It therefore falls through to the host renderer, which is honest —
+pinning an unexplained constant would be a guess wearing a citation, and this
+file's provenance discipline is exactly what surfaced the conflict.
+
+Note the capture *does* contain `MAX_SAMPLES=4` (see the Framebuffer section of
+the original capture). Its presence there is not permission to wire it. If a
+second independent iOS 18.x capture ever agrees on `4`, that is the evidence
+that would settle it — until then the omission stands and is asserted by a test.
+
 ## Version strings — no Chromium suffix
 
 | Context | `VERSION` (7938) | `SHADING_LANGUAGE_VERSION` (35724) |
@@ -225,9 +354,18 @@ These `getParameter` calls still fall through to the host's real renderer. The
 reference supplies the iOS values, but closing the gap touches all platforms and
 belongs in its own ticket.
 
-- **The WebGL2-only parameter block:** `MAX_3D_TEXTURE_SIZE`,
-  `MAX_ARRAY_TEXTURE_LAYERS`, uniform-buffer limits, transform-feedback limits,
-  texel offsets, `MAX_TEXTURE_LOD_BIAS`, anisotropy.
+- ~~**The WebGL2-only parameter block.**~~ **Closed for iOS by PS-22** — see
+  "Numeric limits (WebGL2-only / `WEBGL2_IOS`)" above, which now carries all 24
+  values with per-row `[device]` provenance. Two things remain open, and they
+  are deliberate rather than pending:
+  - **`MAX_SAMPLES` (0x8D57, 36183) still falls through, on purpose.** Source
+    predicts 8, the device reported 4, and the conflict is unexplained. See the
+    `MAX_SAMPLES` subsection above before touching it.
+  - **`windows`, `macos` and `android` still fall through entirely.** We hold no
+    measured WebGL2 capture for them, and PS-22 explicitly refused to
+    manufacture plausible-looking desktop constants — a fabricated value is a
+    fingerprint, not a defence. Each platform needs its own sourcing effort and
+    its own ticket; falling through is the honest state until then.
 - **Context attributes:** `stencil=false`, `antialias=true`,
   `premultipliedAlpha=true`, `depth=24`, `stencil bits=0`.
 - **The `webkit-3d` context alias.** Real iOS reports supported contexts
