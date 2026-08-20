@@ -45,6 +45,36 @@ def app_version() -> str:
         return "unknown"
 
 
+def engine_build(engine: str) -> str:
+    """The engine BUILD the observation was taken under (e.g. ``"firefox-20"``),
+    or ``"unknown"`` when it can't be resolved.
+
+    ``engine`` is the FAMILY the snapshot header already carries (``"firefox"``
+    / ``"chromium"``); an unrecognised family resolves to ``"unknown"``.
+
+    Imported lazily and guarded broadly, exactly like :func:`app_version`: the
+    firefox accessor reaches the engine package transitively, and this package
+    must stay importable — and this resolver must stay callable — in a bare
+    checkout. It NEVER raises: it runs inside document assembly, where an
+    exception would destroy a run that has already collected its readings.
+
+    An accessor answers ``""`` when its engine is not installed. That is mapped
+    to ``"unknown"`` so the document never carries an empty string that reads
+    like a value.
+    """
+    try:
+        if engine == "firefox":
+            from ..engine.firefox import current_version
+        elif engine == "chromium":
+            from ..engine.updater import current_version
+        else:
+            return "unknown"
+
+        return str(current_version()) or "unknown"
+    except Exception:
+        return "unknown"
+
+
 def canonicalise(value: Any, *, precision: int = FLOAT_PRECISION) -> Any:
     """Recursively normalise a probe value into stable, JSON-safe data."""
     # bool before int: bool IS an int in Python and must stay a JSON boolean.
@@ -93,6 +123,7 @@ def build_snapshot(
     profile: str,
     realms: "tuple[str, ...] | list[str] | None" = None,
     version: "str | None" = None,
+    build: "str | None" = None,
 ) -> dict:
     """Assemble a canonical snapshot document from a :func:`run_probes` result.
 
@@ -124,6 +155,7 @@ def build_snapshot(
         "engine": engine,
         "profile": profile,
         "app_version": version if version is not None else app_version(),
+        "engine_build": build if build is not None else engine_build(engine),
         "realms": list(realms),
         "probes": probes_out,
     }
@@ -164,6 +196,7 @@ __all__ = [
     "build_snapshot",
     "canonicalise",
     "dumps",
+    "engine_build",
     "load",
     "write",
 ]

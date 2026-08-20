@@ -14,6 +14,7 @@ instead of skipping them.
 
 import json
 import re
+import sys
 
 import pytest
 
@@ -478,6 +479,140 @@ def test_format_diff_renders_every_entry():
     text = diff.format_diff(entries)
     assert probes.PROBES[0].id in text
     assert "expected:" in text and "observed:" in text
+
+
+# --- the engine build in the header -----------------------------------------
+# The package's stated workflow (cli.py:1-13) is: record before.json, UPDATE
+# THE ENGINE, record after.json, diff. The one variable that workflow turns on
+# is which engine build — and `engine` is only the family, so firefox-19 and
+# firefox-20 produced byte-identical headers. An EMPTY diff then could not tell
+# "the identity survived the update" from "nothing was updated". These pin the
+# fact being recorded; they deliberately do not interpret what a change means.
+
+
+def _fx(monkeypatch, value):
+    """Force the firefox accessor to answer `value` (or raise, if it's an
+    exception). The resolver from-imports at CALL time, so patching the module
+    attribute is what it will actually see."""
+    from src.services.engine import firefox
+
+    def current_version():
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    monkeypatch.setattr(firefox, "current_version", current_version)
+
+
+def _built(engine="firefox", **kwargs):
+    """A snapshot whose engine_build comes from the RESOLVER, not an argument.
+    Everything else is fixed, so the build is the only variable."""
+    return snapshot.build_snapshot(
+        _run(), engine=engine, profile="acc",
+        realms=(probes.WINDOW, probes.WORKER), version="9.9.9", **kwargs
+    )
+
+
+def test_the_header_records_the_resolved_engine_build(monkeypatch):
+    _fx(monkeypatch, "firefox-20")
+    assert _built()["engine_build"] == "firefox-20"
+
+
+def test_an_injected_build_wins_over_the_resolver(monkeypatch):
+    # Mirrors how `version="9.9.9"` is injected: tests need no monkeypatching,
+    # and a caller that already knows the build can say so.
+    _fx(monkeypatch, "firefox-20")
+    assert _built(build="firefox-15")["engine_build"] == "firefox-15"
+
+
+def test_a_build_change_is_reported_as_exactly_one_meta_disagreement(monkeypatch):
+    # AC2. Built through the resolver on both sides, so this goes RED if
+    # build_snapshot ever stops resolving the field (see the counterfactual
+    # test below) rather than merely if the dict key is missing.
+    _fx(monkeypatch, "firefox-19")
+    before = _built()
+    _fx(monkeypatch, "firefox-20")
+    after = _built()
+
+    assert diff.diff_snapshots(before, after, include_meta=True) == [
+        {
+            "probe_id": "engine_build",
+            "realm": diff.META_REALM,
+            "status": diff.CHANGED,
+            "expected": "firefox-19",
+            "observed": "firefox-20",
+        }
+    ]
+
+
+def test_a_build_change_alone_is_not_a_probe_difference(monkeypatch):
+    # AC3 — the property that keeps AC2 honest: this field is PROVENANCE, not
+    # evidence. Every probe agrees, so the default differ must say so.
+    _fx(monkeypatch, "firefox-19")
+    before = _built()
+    _fx(monkeypatch, "firefox-20")
+    after = _built()
+
+    assert before["engine_build"] != after["engine_build"]
+    assert diff.diff_snapshots(before, after) == []
+
+
+def test_the_resolver_is_wired_into_build_snapshot_not_merely_defined(monkeypatch):
+    # AC4's counterfactual, as an assertion: prove the header field is
+    # RESOLVED rather than defaulted. A test that passed whether or not
+    # build_snapshot called the resolver would be testing nothing.
+    _fx(monkeypatch, "firefox-20")
+    assert _built()["engine_build"] == "firefox-20"
+    _fx(monkeypatch, "firefox-19")
+    assert _built()["engine_build"] == "firefox-19"
+
+
+def test_a_throwing_accessor_never_destroys_the_run(monkeypatch):
+    # AC4. The resolver runs inside document assembly, AFTER the readings have
+    # been collected — an exception here would throw away a completed run.
+    _fx(monkeypatch, RuntimeError("engine inventory exploded"))
+    snap = _built()
+    assert snap["engine_build"] == "unknown"
+    # and the document is intact, not truncated
+    assert snap["probes"][probes.WINDOW]
+    assert snap["realms"] == [probes.WINDOW, probes.WORKER]
+
+
+def test_the_build_resolves_to_unknown_when_the_engine_package_is_absent(monkeypatch):
+    # AC5. FORCED rather than ambient: `invisible_playwright` IS importable in
+    # this container today, so an env-dependent assertion here would be a flaky
+    # test in waiting. None in sys.modules makes the lazy import raise exactly
+    # as a bare checkout would.
+    monkeypatch.setitem(sys.modules, "src.services.engine.firefox", None)
+    assert snapshot.engine_build("firefox") == "unknown"
+    assert _built()["engine_build"] == "unknown"
+
+
+def test_an_uninstalled_engine_is_recorded_as_unknown_never_as_empty(monkeypatch):
+    # AC6. Both accessors answer "" when their engine isn't installed. An empty
+    # string in the document would read like a value.
+    _fx(monkeypatch, "")
+    assert snapshot.engine_build("firefox") == "unknown"
+    assert _built()["engine_build"] == "unknown"
+
+
+def test_an_unrecognised_engine_family_resolves_to_unknown():
+    assert snapshot.engine_build("safari") == "unknown"
+    assert snapshot.engine_build("") == "unknown"
+
+
+def test_the_engine_build_survives_a_file_round_trip(tmp_path, monkeypatch):
+    _fx(monkeypatch, "firefox-20")
+    path = tmp_path / "before.json"
+    snapshot.write(_built(), str(path))
+    assert snapshot.load(str(path))["engine_build"] == "firefox-20"
+
+
+def test_the_engine_build_is_a_static_string_not_a_clock(monkeypatch):
+    # The module's reason to exist is byte-stability (snapshot.py:1-18). A
+    # build tag is admissible precisely because it does not vary with time.
+    _fx(monkeypatch, "firefox-20")
+    assert snapshot.dumps(_built()) == snapshot.dumps(_built())
 
 
 # --- the environment trap ---------------------------------------------------
