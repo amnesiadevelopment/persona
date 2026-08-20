@@ -190,7 +190,26 @@ _CONTENT_SCRIPT = r"""
     34930: 16,                                  // MAX_TEXTURE_IMAGE_UNITS
     35661: 32,                                  // MAX_COMBINED_TEXTURE_IMAGE_UNITS
     33901: new Float32Array([1, 511]),          // ALIASED_POINT_SIZE_RANGE (not 1024)
-    33902: new Float32Array([1, 1])             // ALIASED_LINE_WIDTH_RANGE
+    33902: new Float32Array([1, 1]),            // ALIASED_LINE_WIDTH_RANGE
+    // The three below are reachable on BOTH contexts, which is why they live
+    // here rather than in WEBGL2_IOS. They are core parameters in WebGL2, but
+    // on a WebGL1 context they are also reachable through extensions THIS
+    // PROFILE ALREADY ADVERTISES in IOS_GL1_EXTS, at the same numeric enums:
+    //   34047 <- EXT_texture_filter_anisotropic (MAX_TEXTURE_MAX_ANISOTROPY_EXT)
+    //   34852 <- WEBGL_draw_buffers            (MAX_DRAW_BUFFERS_WEBGL)
+    //   36063 <- WEBGL_draw_buffers            (MAX_COLOR_ATTACHMENTS_WEBGL)
+    // Spoofing them on WebGL2 only meant the profile ADVERTISED both extensions
+    // on WebGL1 and then answered the HOST renderer's real values for them —
+    // the exact cross-vector incoherence WEBGL2_IOS exists to close, pointed at
+    // the other context. Same device, same page, one call apart.
+    // The values are identical on both contexts, so one entry serves both.
+    // (34047 is not core WebGL2 either — it is an extension parameter on BOTH
+    // contexts, so "WebGL2-only" was wrong about it in both directions. The
+    // device capture agrees: it lists MAX_ANISOTROPY unmarked, while the
+    // genuinely WebGL2 texture values on the next line carry a (WebGL2) marker.)
+    34047: 16,                                  // 0x84FF MAX_TEXTURE_MAX_ANISOTROPY_EXT
+    34852: 8,                                   // 0x8824 MAX_DRAW_BUFFERS
+    36063: 8                                    // 0x8CDF MAX_COLOR_ATTACHMENTS
   };
   var COMMON = (OS === "android") ? COMMON_ANDROID
              : (OS === "ios") ? COMMON_IOS
@@ -227,10 +246,21 @@ _CONTENT_SCRIPT = r"""
   // tests/fixtures/ios-webgl-reference.md — read that file, not this comment,
   // and do not re-derive them from either.
   //
-  // WHY THIS IS V2-ONLY: these pnames do not exist on a WebGL1 context, where a
-  // real browser answers INVALID_ENUM. Installed via the V2 extraMap so they
-  // reach WebGL2RenderingContext ONLY; answering them on a WebGL1 context would
-  // be a fresh impossibility, not a fix.
+  // WHY THIS IS V2-ONLY: none of the 21 pnames below is reachable on a WebGL1
+  // context — not as a core parameter and not through any extension this
+  // profile advertises — so a real browser answers INVALID_ENUM for every one
+  // of them there. Installed via the V2 extraMap so they reach
+  // WebGL2RenderingContext ONLY; answering them on a WebGL1 context would be a
+  // fresh impossibility, not a fix.
+  //
+  // That "not through any extension" clause is load-bearing, and getting it
+  // wrong once already shipped a leak: three parameters (34047 anisotropy,
+  // 34852 draw buffers, 36063 colour attachments) ARE reachable on WebGL1 via
+  // EXT_texture_filter_anisotropic / WEBGL_draw_buffers, both of which this
+  // profile advertises in IOS_GL1_EXTS. They now live in COMMON_IOS so both
+  // contexts answer them. Before adding a pname here, check it against
+  // IOS_GL1_EXTS — "core WebGL2" is NOT the same question as "unreachable on
+  // WebGL1", and only the second one justifies a V2-only entry.
   //
   // NOT independent — do NOT parameterise or vary any of these per profile.
   // They are compile-time constants in ANGLE's Metal backend, identical on every
@@ -254,16 +284,16 @@ _CONTENT_SCRIPT = r"""
   // never matches and fails silently. Neither is self-catching, so the tests
   // assert each pname against its own expected value.
   //
-  // All 24 are scalars: WebGL2 returns these as plain numbers (GLint/GLint64/
+  // All 21 are scalars: WebGL2 returns these as plain numbers (GLint/GLint64/
   // GLfloat), not as typed arrays. No Float32Array copy applies here — that
   // path exists for the WebGL1 range/vector parameters in COMMON.
   var WEBGL2_IOS = {
     32883: 2048,      // 0x8073 MAX_3D_TEXTURE_SIZE
     35071: 2048,      // 0x88FF MAX_ARRAY_TEXTURE_LAYERS
     34045: 15,        // 0x84FD MAX_TEXTURE_LOD_BIAS = log2(16384)+1
-    34047: 16,        // 0x84FF MAX_TEXTURE_MAX_ANISOTROPY_EXT
-    34852: 8,         // 0x8824 MAX_DRAW_BUFFERS
-    36063: 8,         // 0x8CDF MAX_COLOR_ATTACHMENTS
+    // 34047 / 34852 / 36063 (anisotropy, draw buffers, colour attachments) are
+    // NOT here: they are reachable on a WebGL1 context too, through extensions
+    // this profile advertises, so they live in COMMON_IOS. See the note there.
     35658: 4096,      // 0x8B4A MAX_VERTEX_UNIFORM_COMPONENTS (= 1024 vectors * 4)
     35657: 4096,      // 0x8B49 MAX_FRAGMENT_UNIFORM_COMPONENTS (= 1024 vectors * 4)
     35659: 124,       // 0x8B4B MAX_VARYING_COMPONENTS (= 31 vectors * 4)
@@ -510,7 +540,7 @@ _CONTENT_SCRIPT = r"""
     // PRECEDENCE, made deliberate rather than incidental: installOn's lookup is
     // extraMap BEFORE COMMON (see getParameter above), so anything in this map
     // wins over COMMON_IOS. The three key sets are disjoint by construction —
-    // GL2_IOS is {7938, 35724}, WEBGL2_IOS is the 24 WebGL2-only pnames, and
+    // GL2_IOS is {7938, 35724}, WEBGL2_IOS is the 21 WebGL2-only pnames, and
     // COMMON_IOS is the WebGL1 set — so no key is contested and the merge order
     // below changes nothing today. It is fixed anyway so that if a future key
     // ever does collide, the WebGL2 block loses to the version strings and the

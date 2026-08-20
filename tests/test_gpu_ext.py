@@ -268,6 +268,12 @@ console.log(JSON.stringify({
   // not exist there and a real browser answers INVALID_ENUM).
   webgl2_on_gl2: readWebgl2Params(gl2),
   webgl2_on_gl1: readWebgl2Params(gl1),
+  // The dual-context three (anisotropy / draw buffers / colour attachments).
+  // These must carry the reference values on BOTH contexts: WebGL1 reaches
+  // them through extensions this profile advertises, so falling through there
+  // leaks the host renderer.
+  dual_on_gl2: readDualParams(gl2),
+  dual_on_gl1: readDualParams(gl1),
   // Must BOTH fall through: MAX_SAMPLES is deliberately unspoofed, and 35378 is
   // the geometry-stage parameter WebGL2 does not expose.
   maxSamples_gl2: gl2.getParameter(36183),
@@ -289,9 +295,6 @@ _WEBGL2_IOS_REFERENCE = {
     32883: ("MAX_3D_TEXTURE_SIZE", 2048),
     35071: ("MAX_ARRAY_TEXTURE_LAYERS", 2048),
     34045: ("MAX_TEXTURE_LOD_BIAS", 15),
-    34047: ("MAX_TEXTURE_MAX_ANISOTROPY_EXT", 16),
-    34852: ("MAX_DRAW_BUFFERS", 8),
-    36063: ("MAX_COLOR_ATTACHMENTS", 8),
     35658: ("MAX_VERTEX_UNIFORM_COMPONENTS", 4096),
     35657: ("MAX_FRAGMENT_UNIFORM_COMPONENTS", 4096),
     35659: ("MAX_VARYING_COMPONENTS", 124),
@@ -312,6 +315,28 @@ _WEBGL2_IOS_REFERENCE = {
     35979: ("MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS", 4),
 }
 
+# The three parameters that are reachable on BOTH contexts, so they live in
+# COMMON_IOS rather than WEBGL2_IOS and must be answered on WebGL1 as well.
+#
+# They are core parameters in WebGL2, but on a WebGL1 context they are ALSO
+# reachable at the same numeric enums through extensions this profile already
+# advertises in IOS_GL1_EXTS:
+#   34047 <- EXT_texture_filter_anisotropic (MAX_TEXTURE_MAX_ANISOTROPY_EXT)
+#   34852 <- WEBGL_draw_buffers            (MAX_DRAW_BUFFERS_WEBGL)
+#   36063 <- WEBGL_draw_buffers            (MAX_COLOR_ATTACHMENTS_WEBGL)
+#
+# An earlier revision of PS-22 classified these as WebGL2-only and pinned them
+# to the V2 extraMap. The result was that a WebGL1 context ADVERTISED both
+# extensions and then answered the HOST renderer's real values for them — the
+# same cross-vector incoherence the WebGL2 block exists to close, pointed at
+# the other context. "Core WebGL2" is not the same question as "unreachable on
+# WebGL1"; only the second one justifies a V2-only entry.
+_DUAL_CONTEXT_IOS_REFERENCE = {
+    34047: ("MAX_TEXTURE_MAX_ANISOTROPY_EXT", 16),
+    34852: ("MAX_DRAW_BUFFERS", 8),
+    36063: ("MAX_COLOR_ATTACHMENTS", 8),
+}
+
 _GPU_PROBE = _GPU_PROBE.replace(
     "const num = (p) =>",
     "const readWebgl2Params = (ctx) => {\n"
@@ -319,7 +344,15 @@ _GPU_PROBE = _GPU_PROBE.replace(
     "  for (const p of %s) out[p] = ctx.getParameter(p);\n"
     "  return out;\n"
     "};\n"
-    "const num = (p) =>" % (sorted(_WEBGL2_IOS_REFERENCE),),
+    "const readDualParams = (ctx) => {\n"
+    "  const out = {};\n"
+    "  for (const p of %s) out[p] = ctx.getParameter(p);\n"
+    "  return out;\n"
+    "};\n"
+    "const num = (p) =>" % (
+        sorted(_WEBGL2_IOS_REFERENCE),
+        sorted(_DUAL_CONTEXT_IOS_REFERENCE),
+    ),
 )
 
 
@@ -563,10 +596,16 @@ def test_ios_webgl2_params_are_numbers_not_strings_or_arrays(tmp_path):
 
 
 def test_ios_webgl2_params_do_not_leak_onto_a_webgl1_context(tmp_path):
-    # These pnames do not exist on WebGL1, where a real browser answers
-    # INVALID_ENUM. Answering them there would be a FRESH impossibility, not a
-    # fix — so the WebGL1 context must still fall through to the host for every
-    # one of them. This is what pins the block to the V2 extraMap.
+    # None of these 21 is reachable on a WebGL1 context — not as a core
+    # parameter and not through any extension this profile advertises — so a
+    # real browser answers INVALID_ENUM for every one of them there. Answering
+    # them would be a FRESH impossibility, not a fix, so the WebGL1 context must
+    # still fall through. This is what pins the block to the V2 extraMap.
+    #
+    # The membership of _WEBGL2_IOS_REFERENCE is what makes this claim true: an
+    # earlier revision included three pnames that ARE WebGL1-reachable, and this
+    # assertion then DEFENDED the resulting host leak instead of catching it.
+    # Before adding a pname here, check it against IOS_GL1_EXTS.
     p = _probe(tmp_path, 1, "ios")
     leaked = {
         f"{_WEBGL2_IOS_REFERENCE[int(k)][0]} ({k})": v
@@ -574,6 +613,50 @@ def test_ios_webgl2_params_do_not_leak_onto_a_webgl1_context(tmp_path):
         if v != "HOST_VALUE_NOT_SPOOFED"
     }
     assert not leaked, f"WebGL2-only parameters answered on a WebGL1 context: {leaked}"
+
+
+def test_ios_dual_context_params_are_spoofed_on_webgl1_too(tmp_path):
+    # The counterpart of the leak test above, and the regression guard for the
+    # defect that failed review: anisotropy (34047), draw buffers (34852) and
+    # colour attachments (36063) are reachable on a WebGL1 context through
+    # EXT_texture_filter_anisotropic / WEBGL_draw_buffers, BOTH of which this
+    # profile advertises in IOS_GL1_EXTS. So WebGL1 must answer them with the
+    # reference values; falling through hands back the HOST renderer's real
+    # numbers while the same profile claims the extensions are supported —
+    # a value inconsistent with the value next to it, one call apart.
+    #
+    # Asserts per-pname against its OWN expected value, not "something came
+    # back", for the same reason the WebGL2 table does.
+    p = _probe(tmp_path, 1, "ios")
+
+    # The premise: the profile really does advertise both extensions on WebGL1.
+    # If this ever stops being true the parameters may legitimately move back to
+    # the V2 block, so the premise is asserted rather than assumed.
+    assert "EXT_texture_filter_anisotropic" in p["exts_gl1"]
+    assert "WEBGL_draw_buffers" in p["exts_gl1"]
+
+    wrong = {}
+    for pname, (name, expected) in sorted(_DUAL_CONTEXT_IOS_REFERENCE.items()):
+        for ctx in ("dual_on_gl1", "dual_on_gl2"):
+            actual = p[ctx][str(pname)]
+            if actual != expected:
+                wrong[f"{name} ({pname}) on {ctx}"] = {
+                    "expected": expected, "got": actual,
+                }
+    assert not wrong, f"dual-context parameters wrong or falling through: {wrong}"
+
+
+def test_ios_dual_context_params_live_in_common_not_the_webgl2_block(tmp_path):
+    # Structural counterpart of the behavioural test above. COMMON is consulted
+    # on both contexts while the V2 extraMap is not, so membership is what makes
+    # the WebGL1 answer possible — assert it directly, so moving one back into
+    # WEBGL2_IOS breaks a named test instead of silently reopening the leak.
+    block = _webgl2_ios_block_from_source()
+    for pname, (name, _) in sorted(_DUAL_CONTEXT_IOS_REFERENCE.items()):
+        assert pname not in block, (
+            f"{name} ({pname}) is reachable on WebGL1 via an advertised "
+            f"extension — it belongs in COMMON_IOS, not WEBGL2_IOS"
+        )
 
 
 def test_ios_webgl1_parameters_are_unchanged_by_the_webgl2_block(tmp_path):
@@ -629,22 +712,46 @@ def test_ios_webgl2_block_agrees_with_the_reference_fixture(tmp_path):
     in_code = _webgl2_ios_block_from_source()
 
     fixture = pathlib.Path(__file__).parent / "fixtures" / "ios-webgl-reference.md"
-    table = fixture.read_text(encoding="utf-8")
-    table = table.split("## Numeric limits (WebGL2-only")[1].split("### `MAX_SAMPLES`")[0]
-    in_doc = {}
-    for row in re.finditer(
-        r"^\|\s*`([A-Z0-9_]+)`\s*\|\s*(0x[0-9A-F]+)\s*\|\s*(\d+)\s*\|\s*(\u2212?-?\d+)\s*\|\s*\[device\]\s*\|",
-        table,
-        re.M,
-    ):
-        name, hexval, dec, value = row.groups()
-        assert int(hexval, 16) == int(dec), f"{name}: hex {hexval} != decimal {dec}"
-        in_doc[int(dec)] = int(value.replace("\u2212", "-"))
+    doc = fixture.read_text(encoding="utf-8")
 
+    def rows(section):
+        """Parse the [device] rows out of one section of the fixture."""
+        out = {}
+        for row in re.finditer(
+            r"^\|\s*`([A-Z0-9_]+)`\s*\|\s*(0x[0-9A-F]+)\s*\|\s*(\d+)\s*\|"
+            r"\s*(\u2212?-?\d+)\s*\|\s*\[device\]\s*\|",
+            section,
+            re.M,
+        ):
+            name, hexval, dec, value = row.groups()
+            assert int(hexval, 16) == int(dec), f"{name}: hex {hexval} != decimal {dec}"
+            out[int(dec)] = int(value.replace("\u2212", "-"))
+        return out
+
+    # The WebGL2-only table stops at the dual-context subsection, which sits
+    # between it and MAX_SAMPLES. Slicing to the wrong boundary would silently
+    # fold those three rows back in and re-assert the very defect they were
+    # split out to fix, so the boundary is asserted rather than assumed.
+    assert "### Reachable on both contexts" in doc
+    body = doc.split("## Numeric limits (WebGL2-only")[1]
+    webgl2_table = body.split("### Reachable on both contexts")[0]
+    dual_table = body.split("### Reachable on both contexts")[1].split("### `MAX_SAMPLES`")[0]
+
+    in_doc = rows(webgl2_table)
     assert in_doc, "no [device] WebGL2 rows parsed out of the reference fixture"
     assert in_code == in_doc, "gpu_ext.py and the reference fixture disagree"
     # ...and both must agree with the table this test file asserts against.
     assert in_code == {p: v for p, (_, v) in _WEBGL2_IOS_REFERENCE.items()}
+
+    # The dual-context three must ALSO be documented, and must not have leaked
+    # back into the WebGL2 table.
+    in_dual_doc = rows(dual_table)
+    assert in_dual_doc == {p: v for p, (_, v) in _DUAL_CONTEXT_IOS_REFERENCE.items()}, (
+        "the dual-context table in the fixture disagrees with the test reference"
+    )
+    assert not (in_doc.keys() & in_dual_doc.keys()), (
+        "a dual-context pname is also listed in the WebGL2-only table"
+    )
 
 
 @pytest.mark.parametrize("os_type", ["windows", "macos", "android"])
