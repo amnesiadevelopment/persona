@@ -421,9 +421,14 @@ def ensure_engine(
     cold start). Retry the whole fetch+download a few times so one blip doesn't
     leave the engine uninstalled — the same treatment the Firefox engine gets.
 
-    ``log`` (optional) receives operator-facing notes — today, the warning that a
-    first install had to take an untested engine. Absent, that note is dropped
-    but the behaviour is unchanged.
+    ``log`` (optional) receives every operator-facing note this path produces:
+    the warning that a first install had to take an untested engine, and the
+    reason for any failure. That wording lives HERE, in one place, because the
+    refuse/failed distinction is only correct if one owner draws it — the two
+    callers each got it wrong in a different way when they owned it (onboarding
+    discarded the reason entirely; the sidebar prefixed a governance refusal
+    with "Engine download failed:", blaming the network for a decision persona
+    made). Callers log the returned message verbatim or not at all.
     """
     if is_installed():
         return True, "engine present"
@@ -443,6 +448,16 @@ def ensure_engine(
         # an engine that does not work and no reason. Retrying cannot change the
         # answer, so return rather than burn the remaining attempts.
         if verdict == policy.KNOWN_BAD:
+            # Log HERE, not at the call sites. The reason has to reach the
+            # operator, and returning it in the tuple is not enough: the
+            # onboarding caller discards the message entirely (it only uses
+            # `ok`), and the sidebar caller renders it as "Engine download
+            # failed: ..." — the exact words this ticket exists to stop using
+            # for a decision persona made. Logging inside the branch fixes both
+            # call sites at once and keeps the refuse/failed distinction in one
+            # place, next to the code that draws it.
+            if log:
+                log(message)
             return False, message
         # ABOVE_CEILING means "persona has not been SHOWN to work against this"
         # — not that it is broken. On an UPDATE that is enough to decline: an
@@ -477,4 +492,12 @@ def ensure_engine(
             write_version(tag)
             return True, tag
         last = "download failed"
+    # The other operator-facing exit. Prefixed with "Engine download failed"
+    # BECAUSE THAT IS WHAT THIS ONE IS — a network/transfer failure, worth
+    # retrying. The KNOWN_BAD return above deliberately carries no such prefix:
+    # that is persona declining a build, and retrying cannot change it. Both
+    # lines are emitted from this function so the two can never again be worded
+    # by a caller that cannot tell them apart.
+    if log:
+        log(f"Engine download failed: {last}")
     return False, last
