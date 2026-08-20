@@ -38,19 +38,54 @@ class InlineThread:
 
 
 def _stub(**over):
-    """An App-shaped stub carrying only what the engine-update path touches."""
+    """An App-shaped stub carrying only what the engine-update path touches.
+
+    ``_refresh_engine_text`` RECORDS its calls into ``.renders`` rather than
+    being a no-op. That distinction is load-bearing: a no-op stub made
+    "_engine_status was assigned" assertable along a path where the value was
+    never painted, which is exactly how a refusal that left the row wedged on
+    "downloading..." passed a green suite. Assert the render, not the attribute.
+    """
+    renders: list = []
     base = dict(
         _engine_busy=False,
         _engine_latest="148.0.7778.215",
         _engine_status="",
         _engine_detail=SimpleNamespace(value=""),
         _engine_progress_start=lambda: None,
-        _refresh_engine_text=lambda *a: None,
+        _refresh_engine_text=lambda *a: renders.append(a[0] if a else ""),
         _log=lambda m: None,
         _engine_progress_cb=lambda d, t: None,
     )
     base.update(over)
-    return SimpleNamespace(**base)
+    stub = SimpleNamespace(**base)
+    stub.renders = renders
+    return stub
+
+
+def _render_stub(**over):
+    """A stub wired to the REAL ``_refresh_engine_text``, so what the operator
+    would actually see lands in ``.engine_text.value``.
+
+    Everything the render touches is present and inert: ``_ui`` runs the closure
+    inline instead of hopping to the UI thread, and there is no sidebar host to
+    rebuild. This is the only way to assert that a computed status was PAINTED
+    — the recording stub above proves the call happened, this proves the call
+    produced the right text.
+    """
+    base = dict(
+        engine_text=SimpleNamespace(value=""),
+        _ui=lambda fn: fn(),
+        _sidebar_host=None,
+        _safe_update=lambda: None,
+        _engine_update_available=lambda: False,
+    )
+    base.update(over)
+    stub = _stub(**base)
+    stub._refresh_engine_text = lambda status="": app_mod.App._refresh_engine_text(
+        stub, status
+    )
+    return stub
 
 
 # ---------------------------------------------------------------------------
@@ -232,13 +267,37 @@ def test_a_typo_in_the_ceiling_is_ignored_rather_than_obeyed(tmp_path, monkeypat
         assert policy.max_tested_major() == 148, bad
 
 
-def test_an_unparseable_tag_does_not_sail_through_the_ceiling(monkeypatch):
-    """major() returns -1 rather than 0 for junk, so a garbage tag is not
-    treated as major 0 and waved past every ceiling."""
+def test_major_reads_the_leading_number_and_reports_minus_one_for_junk():
+    """What major() ACTUALLY does — no more.
+
+    Renamed from "...does_not_sail_through_the_ceiling", which claimed a guard
+    the module does not have: the ceiling test is ``num > ceiling``, under which
+    -1 and 0 behave identically, so an unparseable tag IS installable. The old
+    name asserted only these return values while promising a refusal, which is
+    the failure mode this whole ticket exists to fix — a future reader trusting
+    a guard that isn't there.
+    """
     assert policy.major("148.0.7778.215") == 148
     assert policy.major("v149.0.1") == 149
     assert policy.major("nightly") == -1
     assert policy.major("") == -1
+
+
+def test_an_unparseable_tag_is_installable_and_that_is_deliberate():
+    """The behaviour the old test's NAME denied, pinned as intended.
+
+    -1 does not refuse, and must not silently start to: an unparseable tag can
+    never be OFFERED as an update anyway (is_newer parses it to () which
+    compares below every installed version), so the only path it reaches is a
+    FIRST install — where persona deliberately takes an untested build rather
+    than leave the app with no browser at all. Refusing here would contradict
+    the ABOVE_CEILING asymmetry rather than reinforce it.
+    """
+    assert policy.check("nightly") == (policy.OK, "")
+    assert policy.is_installable("nightly") is True
+    # ...and the reason that is safe, stated as an assertion rather than a claim
+    # in a comment: junk can never present itself as an update.
+    assert updater.is_newer("nightly", "148.0.7778.215") is False
 
 
 def test_an_empty_tag_is_not_a_governance_refusal(monkeypatch):
@@ -326,6 +385,97 @@ def test_a_refused_build_is_not_downloaded_and_says_why(monkeypatch):
     )
     # the row shows the same distinction the Firefox row shows
     assert stub._engine_status == "update persona for the newest engine"
+    # ...and it is RENDERED, not merely assigned. Asserting the attribute alone
+    # is what let the refusal path ship while leaving the row wedged on
+    # "downloading..." — the string was computed and never painted.
+    assert stub.renders and stub.renders[-1] == "", (
+        "the refusal path must end with a bare _refresh_engine_text() so the "
+        "row leaves 'downloading...' and shows the refusal"
+    )
+    assert stub._engine_detail.value == "", (
+        "and the progress detail must be cleared — a refusal that leaves "
+        "'189 MB of 189 MB' under the row is the leftover-progress bug again"
+    )
+
+
+def test_a_refusal_actually_paints_the_row_instead_of_wedging_on_downloading(
+    monkeypatch,
+):
+    """The blocking defect from the PR #25 review, asserted end-to-end.
+
+    The refusal returns from inside the ``try``; when the two render lines sat
+    AFTER the try/finally, that return skipped both. ``_refresh_engine_text`` is
+    the only thing that renders ``_engine_status``, so the operator kept looking
+    at "downloading..." forever — nothing recomputes the Chromium row the way
+    ``_build_sidebar`` recomputes the Firefox one, so it does not self-heal.
+
+    This drives the REAL ``_refresh_engine_text`` and asserts on the text a user
+    would read, which is the only assertion the no-op stub could not fake.
+    """
+    monkeypatch.setattr(
+        app_mod.engine,
+        "fetch_latest_checked",
+        lambda timeout=20: (
+            "149.0.8000.10", "", "", policy.ABOVE_CEILING,
+            "Chromium engine 149.0.8000.10 is newer than persona has been "
+            "tested against (Chromium 148) — update persona to get it.",
+        ),
+    )
+    monkeypatch.setattr(app_mod.engine, "download_engine", lambda *a, **k: True)
+    monkeypatch.setattr(app_mod.engine, "write_version", lambda t: None)
+    monkeypatch.setattr(app_mod.engine, "current_version", lambda: "148.0.7778.215")
+    monkeypatch.setattr(app_mod.threading, "Thread", InlineThread)
+
+    stub = _render_stub()
+    stub._engine_detail.value = "189 MB of 189 MB"
+    app_mod.App._update_engine_async(stub)
+
+    assert stub.engine_text.value == "update persona for the newest engine", (
+        f"the row must show the refusal; it read {stub.engine_text.value!r}"
+    )
+    assert stub.engine_text.value != "downloading...", "the row wedged on the spinner"
+    assert stub._engine_detail.value == ""
+
+
+def test_the_ordinary_update_path_still_paints_the_row(monkeypatch):
+    """The control for the test above: hoisting the render into `finally` must
+    not change what a SUCCESSFUL update leaves on screen."""
+    monkeypatch.setattr(
+        app_mod.engine,
+        "fetch_latest_checked",
+        lambda timeout=20: ("149.0.8000.10", "http://x/149", "sha256:n", policy.OK, ""),
+    )
+    monkeypatch.setattr(app_mod.engine, "download_engine", lambda *a, **k: True)
+    monkeypatch.setattr(app_mod.engine, "write_version", lambda t: None)
+    monkeypatch.setattr(app_mod.engine, "current_version", lambda: "149.0.8000.10")
+    monkeypatch.setattr(app_mod.threading, "Thread", InlineThread)
+
+    stub = _render_stub()
+    stub._engine_detail.value = "189 MB of 189 MB"
+    app_mod.App._update_engine_async(stub)
+
+    assert stub.engine_text.value == "149.0.8000.10", "settles on the installed version"
+    assert stub._engine_detail.value == ""
+
+
+def test_a_raising_update_still_paints_the_row(monkeypatch):
+    """The third exit from that try/finally. A raise must not wedge the row on
+    the spinner either — the `finally` is what guarantees this for ALL exits,
+    which is why the fix went there rather than duplicating two lines."""
+    def boom(timeout=20):
+        raise RuntimeError("network exploded")
+
+    monkeypatch.setattr(app_mod.engine, "fetch_latest_checked", boom)
+    monkeypatch.setattr(app_mod.engine, "current_version", lambda: "148.0.7778.215")
+    monkeypatch.setattr(app_mod.threading, "Thread", InlineThread)
+
+    logs = []
+    stub = _render_stub(_log=logs.append)
+    app_mod.App._update_engine_async(stub)
+
+    assert stub.engine_text.value == "148.0.7778.215"
+    assert stub._engine_busy is False
+    assert any("update failed" in m.lower() for m in logs)
 
 
 def test_a_known_bad_refusal_reads_differently_from_a_ceiling_refusal(monkeypatch):
@@ -487,11 +637,83 @@ def test_first_install_refuses_a_known_bad_build(monkeypatch):
         updater, "download_engine", lambda *a, **k: downloads.append(1) or True
     )
 
-    ok, msg = updater.ensure_engine(attempts=3)
+    logs = []
+    ok, msg = updater.ensure_engine(attempts=3, log=logs.append)
     assert ok is False
     assert downloads == []
     assert "known-bad" in msg
     assert msg != "download failed"
+    # THE OPERATOR-VISIBLE CHANNEL, not just the return value. This is the
+    # blocking finding from the PR #25 review: the reason travelled solely in
+    # the tuple, and the onboarding caller (app.py, `ok, _msg = ...`) discards
+    # it — so a known-bad build was refused in total silence on the one path
+    # where the operator has no engine and no explanation. Asserting `msg`
+    # alone passes either way, which is why it missed.
+    assert any("known-bad" in m for m in logs), (
+        "the refusal must reach the operator through `log`, not only through "
+        "the return value that one caller discards"
+    )
+    assert not any("download failed" in m.lower() for m in logs), (
+        "a governance refusal must never be worded as a failed download — "
+        "retrying cannot change persona's decision"
+    )
+
+
+def test_a_known_bad_first_install_is_not_silent_on_the_onboarding_path(monkeypatch):
+    """The exact call shape onboarding uses (``ok, _msg =`` — message
+    DISCARDED), driven through the real ``ensure_engine``.
+
+    This pins the fix at the level that matters: the reason has to be logged by
+    ``ensure_engine`` itself, because the only caller-side variable carrying it
+    is thrown away. If the logging moves back to the call sites, this goes red.
+    """
+    monkeypatch.setattr(updater, "is_installed", lambda: False)
+    monkeypatch.setattr(
+        updater, "fetch_latest_full",
+        lambda *a, **k: ("148.0.7778.215", "http://x/148", "sha256:a"),
+    )
+    monkeypatch.setattr(
+        updater.policy, "check",
+        lambda tag: (
+            policy.KNOWN_BAD,
+            "Chromium engine 148.0.7778.215 is on persona's known-bad list — "
+            "not installing it.",
+        ),
+    )
+    monkeypatch.setattr(updater, "download_engine", lambda *a, **k: True)
+
+    operator_sees = []
+    # onboarding discards the message — everything the user learns is via log
+    ok, _msg = updater.ensure_engine(attempts=1, log=operator_sees.append)
+
+    assert ok is False
+    assert operator_sees, "the operator was told nothing at all"
+    joined = " ".join(operator_sees)
+    assert "known-bad" in joined and "148.0.7778.215" in joined, (
+        "the refusal must name the build and the reason"
+    )
+
+
+def test_a_transient_failure_is_still_reported_as_a_download_failure(monkeypatch):
+    """The counterpart to the test above, and the reason the two are worded in
+    ONE place: a network failure genuinely IS a download failure and keeps that
+    prefix. Only persona's own refusals lose it."""
+    monkeypatch.setattr(updater, "is_installed", lambda: False)
+    monkeypatch.setattr(
+        updater, "fetch_latest_full",
+        lambda *a, **k: ("148.0.7778.215", "http://x/148", "sha256:a"),
+    )
+    monkeypatch.setattr(updater.policy, "check", lambda tag: (policy.OK, ""))
+    monkeypatch.setattr(updater, "download_engine", lambda *a, **k: False)
+
+    logs = []
+    ok, msg = updater.ensure_engine(attempts=1, log=logs.append)
+
+    assert ok is False
+    assert msg == "download failed"
+    assert any("Engine download failed" in m for m in logs), (
+        "a real transfer failure keeps the retryable wording"
+    )
 
 
 def test_first_install_takes_an_above_ceiling_build_but_says_so(monkeypatch):

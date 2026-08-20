@@ -2356,15 +2356,22 @@ class App:
         # Reset _engine_busy in finally so a raise in ensure_engine doesn't wedge
         # the flag True and dead-end every later launch/download this session.
         try:
-            ok, msg = engine.ensure_engine(
+            ok, _msg = engine.ensure_engine(
                 progress=self._engine_progress_cb, log=self._log
             )
             if ok:
                 self._engine_latest = engine.current_version()
                 self._log(f"Engine installed: {engine.current_version()}")
-            else:
-                self._log(f"Engine download failed: {msg}")
+            # No else, and the message is deliberately unused: ensure_engine has
+            # already logged the reason through the `log` callback, in the only
+            # words that can tell a refusal apart from a failure. Re-labelling it
+            # here is what turned "persona declined this build" into "Engine
+            # download failed: ..." — the wording the ticket exists to stop using
+            # for a decision persona made. The message stays in the return tuple
+            # for programmatic callers.
         except Exception as e:
+            # A RAISE, on the other hand, genuinely is a failure and never
+            # reached ensure_engine's own logging — so it is reported here.
             self._log(f"Engine download failed: {e}")
         finally:
             self._engine_busy = False
@@ -2500,9 +2507,19 @@ class App:
             except Exception as e:
                 self._log(f"Engine update failed: {e}")
             finally:
+                # In the FINALLY, not after it: the refusal path above returns
+                # from inside the try, and when these two lines sat after the
+                # try/finally that return skipped both. _refresh_engine_text()
+                # is the only thing that renders _engine_status, so a refusal
+                # computed the right message and then never painted it — the row
+                # stayed on "downloading..." with a stale byte count under it
+                # until the operator clicked it (nothing recomputes the Chromium
+                # row the way _build_sidebar recomputes the Firefox one). That is
+                # worse than no guard at all, and it is the same leftover-progress
+                # bug class the comment at _engine_progress_start warns about.
                 self._engine_busy = False
-            self._engine_detail.value = ""
-            self._refresh_engine_text()
+                self._engine_detail.value = ""
+                self._refresh_engine_text()
 
         threading.Thread(target=work, daemon=True).start()
 

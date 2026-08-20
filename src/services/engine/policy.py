@@ -111,9 +111,20 @@ ABOVE_CEILING = "above_ceiling"
 def major(tag: str) -> int:
     """The Chromium major from a release tag: '148.0.7778.215' → 148.
 
-    Returns -1 when there is no leading numeric component to read, so an
-    unparseable tag is never silently treated as major 0 (which would compare as
-    below every ceiling and sail through the cap).
+    Returns -1 when there is no leading numeric component to read. That is a
+    DISTINGUISHABLE "no major here" for callers to read — it is NOT a guard.
+    Be precise about this, because an earlier version of this docstring claimed
+    it was: the ceiling test is ``num > ceiling``, under which -1 and 0 behave
+    identically, so an unparseable tag is installable exactly as it would be at
+    major 0. ``check()`` does not refuse it.
+
+    That is deliberate, and it is safe for a reason outside this function: an
+    unparseable tag can never be OFFERED as an update, because ``is_newer()``
+    parses it to an empty tuple which compares below every installed version.
+    The only path it can reach is a FIRST install, where persona takes an
+    untested build rather than leave the app with no browser at all — the same
+    answer the ABOVE_CEILING asymmetry already gives. Refusing here would
+    contradict that decision, not reinforce it.
     """
     lead = (tag or "").strip().lstrip("v").split(".", 1)[0]
     digits = "".join(c for c in lead if c.isdigit())
