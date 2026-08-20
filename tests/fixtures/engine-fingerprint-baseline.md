@@ -33,7 +33,18 @@ xvfb-run -a python -m src.services.verify.baseline_cli check
 Exit `0` means every probe was read on both sides and none of them moved.
 Exit `1` means either a probe drifted (it is named, with expected vs observed,
 in both realms) or a probe could not be read at all. Exit `2` means the check
-could not run — most often no display.
+could not run — no display, or **no readable baseline to compare against**.
+
+That last distinction is the load-bearing one for anything automated. Exit `1`
+is the *drift* signal, so a baseline that is missing or corrupt must never
+produce it: nothing was compared, and a job that read non-zero as "the engine
+changed the identity" would report a leak that never happened. Whenever the
+check cannot run, the message says so in those words — it is not drift.
+
+A missing artifact is most often a **path** problem rather than a lost file:
+the default is repo-relative, so running the command from anywhere but the
+repository root cannot find it. Pass `--baseline` with a full path, or `cd` to
+the root.
 
 ## How the artifact was produced
 

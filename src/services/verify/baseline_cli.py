@@ -7,10 +7,23 @@
     xvfb-run -a python -m src.services.verify.baseline_cli record
 
 ``check`` exits 0 when every probe was read on both sides and none of them
-moved, and non-zero otherwise — either because a probe drifted, or because a
-probe could not be read at all. It prints which probe, in which realm, expected
-versus observed, so the decision "benign or leak?" can be made without opening
-the JSON.
+moved. It prints which probe, in which realm, expected versus observed, so the
+decision "benign or leak?" can be made without opening the JSON.
+
+The two non-zero codes mean DIFFERENT things and must not be collapsed into
+"non-zero":
+
+    1  the check RAN and disagreed — a probe drifted, or a probe could not be
+       read. This is the finding.
+    2  the check COULD NOT RUN — no display, or no readable baseline to compare
+       against. Nothing was compared.
+
+Exit 1 is the drift signal, so anything that prevents a comparison has to exit
+2 instead. A missing or corrupt baseline reported as 1 would tell a caller the
+engine changed the identity when in fact nothing was read at all — a false red
+on the most alarming signal this system has, and the inverse of the trap
+``BaselineResult.ok`` closes on the green side. Whenever the check cannot run
+it says so in those words: it is NOT drift.
 
 WHAT THIS DOES NOT DO — read this before trusting a green run
 -------------------------------------------------------------
@@ -70,19 +83,42 @@ def _cmd_record(args: argparse.Namespace) -> int:
         # holed baseline, which is the two-non-readings trap reintroduced
         # through the write path.
         rejected = f"{args.output}.rejected"
-        write(snapshot, rejected)
+        # The REFUSAL is the verdict here, and it stands whether or not the
+        # unusable reading can be parked for inspection. So a failed .rejected
+        # write degrades the message rather than replacing it with a traceback,
+        # and the exit code stays 1: probes genuinely could not be read, which
+        # is a real finding, NOT a "could not run".
+        try:
+            write(snapshot, rejected)
+            kept = f"Wrote the unusable reading to {rejected} for inspection; "
+        except OSError as exc:
+            kept = (
+                f"Could not even park the unusable reading at {rejected} "
+                f"({exc}), so it is lost — fix the path if you want to inspect "
+                "it. "
+            )
         print(
             f"REFUSING to treat this as a good baseline: {errors} probe(s) "
             "could not be read. A probe that errors here will compare EQUAL "
             "against the same error later and be reported as agreement. "
-            f"Wrote the unusable reading to {rejected} for inspection; "
+            f"{kept}"
             f"{args.output} is UNCHANGED. Investigate the errors, then "
             "re-record.",
             file=sys.stderr,
         )
         return 1
 
-    write(snapshot, args.output)
+    # A good reading that cannot be written is a run that did not happen, not a
+    # bad baseline: report it as "could not run" (exit 2), like every other
+    # missing precondition, instead of tracebacking.
+    try:
+        write(snapshot, args.output)
+    except OSError as exc:
+        raise BaselineUnavailable(
+            f"recorded a clean reading ({summary}) but could not write it to "
+            f"{args.output!r}: {exc}. Nothing was written; the previous "
+            "artifact, if any, is UNCHANGED. Fix the path or pass -o."
+        ) from exc
     print(f"wrote {args.output}: {summary}", file=sys.stderr)
     return 0
 

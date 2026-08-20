@@ -458,8 +458,42 @@ def check(
 ) -> BaselineResult:
     """Record the pinned profile now and compare it against the committed
     baseline. ``recorder`` is injectable so the comparison is testable without
-    a browser; it defaults to a real launched reading."""
-    baseline = load(baseline_path)
+    a browser; it defaults to a real launched reading.
+
+    Raises ``BaselineUnavailable`` — which the CLI reports as exit 2, "the
+    check could not run" — when there is nothing to compare against. That
+    separation is the whole point of the guard below: exit 1 is the DRIFT
+    signal, so a caller (and the CI job this is headed for) would otherwise
+    read a missing or corrupt artifact as an identity change that never
+    happened. It is the inverse of the trap ``BaselineResult.ok`` closes:
+    there, a green derived from two non-readings; here, a red derived from no
+    reading at all.
+    """
+    if not os.path.isfile(baseline_path):
+        raise BaselineUnavailable(
+            f"no baseline to compare against at {baseline_path!r}. Nothing was "
+            "compared, so this is NOT drift. "
+            f"{BASELINE_ARTIFACT} is repo-relative, so if you are running from "
+            "outside the repository root, pass --baseline with a full path. If "
+            "the artifact is genuinely absent, record one with:\n"
+            "    xvfb-run -a python -m src.services.verify.baseline_cli record"
+        )
+    try:
+        baseline = load(baseline_path)
+    except (OSError, ValueError) as exc:
+        # ValueError, NOT json.JSONDecodeError, and the width is deliberate: a
+        # baseline that is not valid UTF-8 raises UnicodeDecodeError, which is a
+        # ValueError but NOT a JSONDecodeError, so catching the narrower type
+        # would let a corrupt-bytes artifact traceback out to exit 1 — the drift
+        # signal — which is the exact confusion this guard exists to end.
+        # Verified: opening a non-UTF-8 file under json.load raises
+        # UnicodeDecodeError (isinstance ValueError=True, JSONDecodeError=False).
+        raise BaselineUnavailable(
+            f"the baseline at {baseline_path!r} could not be read: {exc}. "
+            "Nothing was compared, so this is NOT drift — the reference "
+            "itself is unusable. Restore it from git, or re-record it after "
+            "an ACCEPTED bump."
+        ) from exc
     observed = (recorder or record_snapshot)()
     return compare(baseline, observed)
 
