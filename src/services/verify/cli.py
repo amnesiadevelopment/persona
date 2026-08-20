@@ -10,9 +10,31 @@ into no app container, and needs no API server — so the continuity question
 ("did this identity survive an engine update?") is answerable today, by hand,
 before anything is automated on top of it.
 
+Exit codes for ``diff`` and ``realms`` — three outcomes, not two, because "the
+identity moved" and "we failed to read it" are different facts and a caller
+must be able to tell them apart from the exit code alone:
+
+    0   every probe was READ and agreed
+    1   at least one probe genuinely differs — a reading changed, a probe that
+        WAS readable is now unreadable, or a probe with an obtained reading
+        appeared or vanished. Reported even if some other probe was also
+        inconclusive, because a real difference is the louder fact
+    3   nothing was observed to differ, and at least one entry rests on no
+        reading at all — every side of it errored or was absent. NOT a pass:
+        an unobtainable reading is inconclusive, and inconclusive is never a
+        pass. Distinct from 1 so a future CI gate can treat "look again"
+        differently from "the identity drifted"
+
+Note which side of that line the asymmetric case falls on: a vector that read
+"Apple GPU" in the baseline and throws after an engine update exits **1**, not
+3. One side WAS read, so this is not a failure to look — it is the strongest
+continuity signal this subsystem can produce, and sorting it into the retry
+bucket would mute it.
+
 This closes no leak and gates no release. ``diff`` exits non-zero when the two
-snapshots disagree because that is what a differ does for an operator; wiring
-that exit code into CI is a later slice with its own approval.
+snapshots disagree, or when it could not obtain the evidence to say they agree,
+because that is what a differ owes an operator; wiring that exit code into CI
+is a later slice with its own approval.
 """
 
 from __future__ import annotations
@@ -20,7 +42,12 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .diff import diff_realms, diff_snapshots, format_diff
+from .diff import (
+    diff_realms,
+    diff_snapshots,
+    format_diff,
+    inconclusive_count,
+)
 from .probes import ALL_REALMS, PROBES, WINDOW, WORKER
 from .runner import run_probes
 from .snapshot import build_snapshot, dumps, load, write
@@ -75,18 +102,39 @@ def _cmd_record(args: argparse.Namespace) -> int:
     return 0
 
 
+def _exit_code(entries: "list[dict]") -> int:
+    """0 = read and agreed, 1 = something moved, 3 = something was never read.
+
+    A real difference outranks an inconclusive one: when both are present the
+    caller is told the identity moved, which is the louder fact. But a diff
+    carrying ONLY inconclusive entries must never return 0 — that would be a
+    claim of agreement resting on evidence nobody gathered.
+
+    "Inconclusive" here is the comparator's own definition: an entry NEITHER
+    side of which carries an obtained reading. An entry with a reading on one
+    side is a difference someone actually observed, so it takes the 1 — which
+    keeps this function's answer consistent with the contract documented at the
+    top of this module, rather than routing an observed difference into the
+    "look again" bucket.
+    """
+    if not entries:
+        return 0
+    unread = inconclusive_count(entries)
+    return 3 if unread == len(entries) else 1
+
+
 def _cmd_diff(args: argparse.Namespace) -> int:
     entries = diff_snapshots(
         load(args.expected), load(args.observed), include_meta=args.meta
     )
     print(format_diff(entries))
-    return 1 if entries else 0
+    return _exit_code(entries)
 
 
 def _cmd_realms(args: argparse.Namespace) -> int:
     entries = diff_realms(load(args.snapshot), args.left, args.right)
     print(format_diff(entries))
-    return 1 if entries else 0
+    return _exit_code(entries)
 
 
 def _cmd_list(args: argparse.Namespace) -> int:

@@ -481,6 +481,231 @@ def test_format_diff_renders_every_entry():
     assert "expected:" in text and "observed:" in text
 
 
+# --- an unobtained reading is INCONCLUSIVE, never agreement ------------------
+# The department's rule — an unobtainable reading is inconclusive, and
+# inconclusive is never a pass — is honoured at probe granularity by
+# runner/snapshot (a throwing probe is recorded as {"error": ...}, never
+# omitted, never coerced to a value) and was then LOST here: the comparator
+# compared entries verbatim, so {"error": "X"} == {"error": "X"} counted as
+# agreement. Two failed readings rendered as "no differences" and exited 0 —
+# a claim of safety resting on evidence nobody gathered.
+#
+# The rule these pin is ONE rule, not a special case, and it turns on whether a
+# reading was OBTAINED — not on whether an error is present anywhere:
+#
+#   * NEITHER side obtained (both errored, or both absent) — INCONCLUSIVE. No
+#     evidence was gathered, so there was no comparison to make, and identical
+#     errors are the same probe failing twice rather than two probes agreeing.
+#   * At least ONE side obtained — the ordinary comparison. In particular the
+#     ASYMMETRIC case (read before, throws now) is CHANGED, NOT inconclusive:
+#     one side WAS read, and a vector that stopped being readable is the
+#     loudest continuity signal here. Demoting it to "look again" is the bug —
+#     it also demotes the CLI exit code from 1 to 3. Pinned by
+#     ..._is_a_DIFFERENCE_not_a_retry (the status) and
+#     ..._still_exits_one_and_not_the_inconclusive_code (the exit code itself,
+#     which the status guard never reaches).
+#   * Present on ONE side only — status stays ADDED/REMOVED, because the
+#     inventory change is real information worth naming. But if no reading was
+#     obtained for it, `inconclusive_count` still counts it: the inventory
+#     moved, no reading did. The count keys off the readings an entry carries,
+#     not off its status label.
+
+
+def _errored(probe_ids, exc=None):
+    return {probe_id: exc or TypeError("probe unavailable") for probe_id in probe_ids}
+
+
+def _all_errored_snapshot():
+    """A snapshot in which every single reading failed."""
+    return _snapshot(
+        window_values=_errored(p.id for p in probes.probes_for_realm(probes.WINDOW)),
+        worker_values=_errored(p.id for p in probes.probes_for_realm(probes.WORKER)),
+    )
+
+
+def test_a_probe_errored_on_both_sides_is_inconclusive_not_agreement():
+    # The realistic case: 77 vectors read fine, ONE errored on both sides.
+    # Verbatim comparison called that agreement and told the operator the
+    # identity survived on the exact vector it failed to read.
+    target = probes.probes_for_realm(probes.WINDOW)[0].id
+    entries = diff.diff_snapshots(
+        _snapshot(window_values={target: TypeError("no webgl")}),
+        _snapshot(window_values={target: TypeError("no webgl")}),
+    )
+    assert len(entries) == 1, "an unread vector must not vanish into agreement"
+    assert entries[0]["probe_id"] == target
+    assert entries[0]["status"] == diff.INCONCLUSIVE
+    assert entries[0]["expected"] == {"error": "TypeError: no webgl"}
+    assert entries[0]["observed"] == {"error": "TypeError: no webgl"}
+
+
+def test_two_different_errors_are_inconclusive_not_a_reported_change():
+    # The same hole wearing different clothes: two FAILED readings that happen
+    # to differ are not evidence the identity moved — nothing was ever read.
+    # Reporting them as "changed" overclaims in the opposite direction.
+    target = probes.probes_for_realm(probes.WINDOW)[0].id
+    entries = diff.diff_snapshots(
+        _snapshot(window_values={target: TypeError("a")}),
+        _snapshot(window_values={target: ValueError("b")}),
+    )
+    assert [e["status"] for e in entries] == [diff.INCONCLUSIVE]
+
+
+def test_a_snapshot_of_nothing_but_errors_does_not_read_as_no_differences():
+    # The total-failure case: every reading failed, diffed against itself.
+    snap = _all_errored_snapshot()
+    entries = diff.diff_snapshots(snap, snap)
+    assert entries, "an all-errored snapshot must never diff clean"
+    assert {e["status"] for e in entries} == {diff.INCONCLUSIVE}
+    # Every recorded reading is accounted for, not just a sampled few.
+    assert len(entries) == sum(len(r) for r in snap["probes"].values())
+    text = diff.format_diff(entries)
+    assert "no differences" not in text
+
+
+def test_format_diff_names_the_inconclusive_count():
+    snap = _all_errored_snapshot()
+    total = sum(len(r) for r in snap["probes"].values())
+    text = diff.format_diff(diff.diff_snapshots(snap, snap))
+    assert str(total) in text and "inconclusive" in text.lower()
+
+
+def test_diff_realms_reports_a_probe_errored_in_both_realms():
+    # The sibling comparator: the window-vs-worker check read an unread vector
+    # as the two realms agreeing.
+    shared = [p for p in probes.PROBES if set(p.realms) == set(probes.ALL_REALMS)][0]
+    snap = _snapshot(
+        window_values={shared.id: TypeError("boom")},
+        worker_values={shared.id: TypeError("boom")},
+    )
+    entries = diff.diff_realms(snap, probes.WINDOW, probes.WORKER)
+    entry = next((e for e in entries if e["probe_id"] == shared.id), None)
+    assert entry is not None, "a vector unread in BOTH realms is not agreement"
+    assert entry["status"] == diff.INCONCLUSIVE
+
+
+def test_a_vector_that_was_readable_and_now_throws_is_a_DIFFERENCE_not_a_retry():
+    # The asymmetric case, and the line the whole classification turns on.
+    # One side WAS read: "Apple GPU" in the baseline, a throw after the engine
+    # update. That is not a failure to look — it is the strongest continuity
+    # signal this subsystem can produce, so it must stay CHANGED and must NOT
+    # be demoted into the "look again" bucket alongside a probe nobody read.
+    target = probes.probes_for_realm(probes.WINDOW)[0].id
+    entries = diff.diff_snapshots(
+        _snapshot(), _snapshot(window_values={target: RuntimeError("gone")})
+    )
+    assert len(entries) == 1
+    assert entries[0]["status"] == diff.CHANGED
+    assert entries[0]["observed"] == {"error": "RuntimeError: gone"}
+    # ...and it is not counted as an unobtained reading, because one was.
+    assert diff.inconclusive_count(entries) == 0
+
+
+def test_the_asymmetric_case_still_exits_one_and_not_the_inconclusive_code(tmp_path):
+    # The regression this pins: classification is not the operator-facing
+    # artifact — the EXIT CODE is. A previous round labelled the asymmetric
+    # case inconclusive, which propagated through _exit_code and demoted it
+    # from 1 to 3 while the guard above still passed, because that guard never
+    # reaches the exit code. Assert the code itself, on a real cli.main call.
+    from src.services.verify import cli
+
+    target = probes.probes_for_realm(probes.WINDOW)[0].id
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    snapshot.write(_snapshot(), str(a))
+    snapshot.write(_snapshot(window_values={target: RuntimeError("gone")}), str(b))
+    assert cli.main(["diff", str(a), str(b)]) == 1, (
+        "a vector that was readable and now throws is 'the identity moved', "
+        "not 'we failed to look'"
+    )
+
+
+def test_a_vector_read_in_one_realm_and_unreadable_in_the_other_is_a_difference():
+    # diff_realms' half of the same rule. A spoof that reached the window and
+    # threw in the worker is the historically load-bearing defect class; it is
+    # a disagreement BETWEEN the realms, not an unobtained reading.
+    shared = [p for p in probes.PROBES if set(p.realms) == set(probes.ALL_REALMS)][0]
+    snap = _snapshot(worker_values={shared.id: TypeError("boom")})
+    entry = next(
+        e
+        for e in diff.diff_realms(snap, probes.WINDOW, probes.WORKER)
+        if e["probe_id"] == shared.id
+    )
+    assert entry["status"] == diff.CHANGED
+    assert diff.inconclusive_count([entry]) == 0
+
+
+def test_the_inconclusive_status_is_exported_beside_the_others():
+    from src.services import verify
+
+    assert verify.INCONCLUSIVE == diff.INCONCLUSIVE
+    assert "INCONCLUSIVE" in diff.__all__ and "INCONCLUSIVE" in verify.__all__
+
+
+def test_cli_diff_does_not_exit_zero_when_readings_were_inconclusive(
+    tmp_path, capsys
+):
+    # The operator-facing consequence: exit 0 is a claim that every vector was
+    # read AND agreed. An unread vector must not buy that claim.
+    from src.services.verify import cli
+
+    snap = _all_errored_snapshot()
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    snapshot.write(snap, str(a))
+    snapshot.write(snap, str(b))
+    code = cli.main(["diff", str(a), str(b)])
+    assert code != 0
+    assert "no differences" not in capsys.readouterr().out
+
+
+def test_cli_diff_tells_failed_to_look_apart_from_moved(tmp_path, capsys):
+    # A caller must distinguish the two from the exit code ALONE: collapsing
+    # them would make "we never looked" indistinguishable from "it drifted".
+    from src.services.verify import cli
+
+    target = probes.probes_for_realm(probes.WINDOW)[0].id
+    unread = _snapshot(window_values={target: TypeError("no webgl")})
+    inc_a, inc_b = tmp_path / "ia.json", tmp_path / "ib.json"
+    snapshot.write(unread, str(inc_a))
+    snapshot.write(unread, str(inc_b))
+    inconclusive_code = cli.main(["diff", str(inc_a), str(inc_b)])
+
+    moved_a, moved_b = tmp_path / "ma.json", tmp_path / "mb.json"
+    snapshot.write(_snapshot(), str(moved_a))
+    snapshot.write(_snapshot(window_values={target: "drift"}), str(moved_b))
+    moved_code = cli.main(["diff", str(moved_a), str(moved_b)])
+
+    assert inconclusive_code != 0 and moved_code != 0
+    assert inconclusive_code != moved_code
+
+
+def test_cli_realms_does_not_exit_zero_when_readings_were_inconclusive(
+    tmp_path, capsys
+):
+    from src.services.verify import cli
+
+    path = tmp_path / "s.json"
+    snapshot.write(_all_errored_snapshot(), str(path))
+    assert cli.main(["realms", str(path)]) != 0
+
+
+def test_a_real_difference_still_outranks_an_inconclusive_one(tmp_path, capsys):
+    # When a vector MOVED and another was unread, the exit code must still say
+    # "moved" — the louder fact — while the report names both.
+    from src.services.verify import cli
+
+    window_probes = probes.probes_for_realm(probes.WINDOW)
+    moved, unread = window_probes[0].id, window_probes[1].id
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    snapshot.write(_snapshot(window_values={unread: TypeError("boom")}), str(a))
+    snapshot.write(
+        _snapshot(window_values={unread: TypeError("boom"), moved: "drift"}), str(b)
+    )
+    code = cli.main(["diff", str(a), str(b)])
+    out = capsys.readouterr().out
+    assert code == 1, "a moved vector must still report as moved"
+    assert moved in out and unread in out
+
+
 # --- the engine build in the header -----------------------------------------
 # The package's stated workflow (cli.py:1-13) is: record before.json, UPDATE
 # THE ENGINE, record after.json, diff. The one variable that workflow turns on
