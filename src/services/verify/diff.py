@@ -49,6 +49,15 @@ CHANGED = "changed"
 ADDED = "added"
 REMOVED = "removed"
 
+# Reported by ``compare_profiles`` when two DIFFERENT profiles produce the SAME
+# reading on a vector that is seed-derived and therefore must vary. This is the
+# inverted-polarity status: on the cross-profile axis agreement is the defect —
+# two identities a site can link on that vector — so this is a FINDING, not a
+# pass. Deliberately not named CHANGED/AGREED: it answers a different question
+# than the two continuity comparators, and sharing their vocabulary would
+# invite reading an agreement as a pass.
+COLLIDING = "colliding"
+
 # Reported when NEITHER side of the comparison carries an obtained reading —
 # both errored, or both absent. The comparison could not be made because the
 # evidence to make it was never gathered.
@@ -118,8 +127,26 @@ def _inconclusive(entry: "dict") -> bool:
 
 
 def inconclusive_count(entries: "list[dict]") -> int:
-    """How many of these entries rest on readings nobody obtained."""
-    return sum(1 for e in entries if _inconclusive(e))
+    """How many of these entries rest on readings nobody obtained.
+
+    An entry counts when NEITHER side carries an obtained reading, **or** when
+    the comparator that produced it already labelled it ``INCONCLUSIVE``. The
+    second clause is what lets the cross-profile comparator share this function
+    and ``cli._exit_code`` verbatim: it draws the "no evidence" line in a
+    different place (see :func:`compare_profiles`), and it says so in the
+    status rather than being second-guessed here.
+
+    It changes nothing for :func:`diff_snapshots` / :func:`diff_realms`, where
+    ``INCONCLUSIVE`` is only ever set when both sides are unread — so the
+    clause is already true of every entry it labels, and the count is
+    unchanged. An ``added``/``removed`` entry resting on no obtained reading is
+    still counted, exactly as before, via the first clause.
+    """
+    return sum(1 for e in entries if _inconclusive(e) or _status(e) == INCONCLUSIVE)
+
+
+def _status(entry: Any) -> Any:
+    return entry.get("status") if isinstance(entry, dict) else None
 
 
 def diff_snapshots(
@@ -240,6 +267,101 @@ def diff_realms(snapshot: dict, left: str, right: str) -> list[dict]:
     return out
 
 
+def compare_profiles(a: dict, b: dict) -> list[dict]:
+    """Compare two snapshots taken from two DIFFERENT profiles.
+
+    The third comparison mode, and the only one whose polarity is inverted.
+    ``diff_snapshots`` and ``diff_realms`` both ask "did these agree?" and treat
+    agreement as the pass. That is right for continuity (one profile, two times)
+    and for realm parity (one snapshot, two realms), and exactly WRONG for
+    mutual unlinkability: two DIFFERENT profiles agreeing on a seed-derived
+    vector is two identities a site can link, which is the defect. So here
+    **AGREEMENT is the finding** and difference is the silent pass.
+
+    Only probes classified :data:`probes.INDEPENDENT` are compared — the
+    vectors that are seed-derived and high-entropy, so that two distinct
+    profiles are REQUIRED to differ on them. Everything else is skipped, and
+    the skipping is the point rather than an omission:
+
+    * operator-chosen configuration (``os_type``, ``resolution``, ``engine``,
+      locale) is SUPPOSED to match across profiles — two Windows profiles both
+      reporting "Win32" is the operator's choice, not a leak;
+    * a :data:`probes.POOLED` vector is drawn from a small fixed set, so a
+      collision is ordinary pigeonhole. ``webgl.unmasked`` is the sharp case:
+      for an iOS profile the GPU pair is a single compile-time constant that
+      EVERY iOS device reports, and a seed-varied one would itself be the tell
+      (``gpu_ext.py:581-589``). Two iOS profiles must agree there;
+    * ``masking.*`` and ``realm.*`` observe the masking MECHANISM, not the
+      identity it produces, and should agree across profiles.
+
+    Returns entries ordered by ``(realm, probe_id)``, shaped like the other two
+    comparators so ``format_diff``/``inconclusive_count`` work unchanged::
+
+        {"probe_id": ..., "realm": ...,
+         "status": "colliding"|"inconclusive",
+         "expected": <a's entry>, "observed": <b's entry>,
+         "value": <the shared reading>}   # colliding entries only
+
+    ``value`` carries the reading the two profiles share, so an operator reads
+    WHICH value links them without decoding two entries.
+
+    An empty list is the pass: every compared vector was READ on both sides and
+    the two profiles differ on all of them.
+
+    **Where this draws the "no evidence" line, and why it is not where
+    ``diff_snapshots`` draws it.** That comparator treats an ASYMMETRIC reading
+    — obtained on one side, failed on the other — as CHANGED, because a vector
+    that read fine before and throws now is the loudest continuity signal there
+    is. Inverting the question inverts that too: holding profile A's digest and
+    NOT holding profile B's is not evidence the two differ, it is one reading
+    and one hole. Claiming distinctness from it would manufacture an
+    unlinkability pass out of a reading nobody obtained — the PS-29 defect
+    reintroduced on this axis. So a vector unread on EITHER side is
+    :data:`INCONCLUSIVE` here (``_unread(a) or _unread(b)``), where continuity
+    needs BOTH sides unread. Same rule — an unobtained reading is never a pass
+    — applied to a different question.
+
+    Two probes that both errored are likewise INCONCLUSIVE and never
+    "differing": that is the same failure twice, not two distinct identities.
+    """
+    from .probes import must_differ_ids
+
+    targets = must_differ_ids()
+    out: list[dict] = []
+
+    realms = sorted(set(_probes(a)) | set(_probes(b)))
+    for realm in realms:
+        a_entries = _realm(a, realm)
+        b_entries = _realm(b, realm)
+        for probe_id in sorted(set(a_entries) & set(b_entries)):
+            if probe_id not in targets:
+                continue
+            a_side, b_side = a_entries[probe_id], b_entries[probe_id]
+            # Checked BEFORE equality, exactly as the other two comparators do:
+            # a reading nobody obtained can neither agree nor differ. Note the
+            # OR — see the docstring: one side read and one side missing is not
+            # evidence of distinctness on THIS axis.
+            if _unread(a_side) or _unread(b_side):
+                status = INCONCLUSIVE
+            elif a_side == b_side:
+                status = COLLIDING
+            else:
+                # The pass: both READ, and they differ. Silent, like two
+                # agreeing snapshots are silent in diff_snapshots.
+                continue
+            entry = {
+                "probe_id": probe_id,
+                "realm": realm,
+                "status": status,
+                "expected": a_side,
+                "observed": b_side,
+            }
+            if status == COLLIDING:
+                entry["value"] = a_side.get("value") if isinstance(a_side, dict) else a_side
+            out.append(entry)
+    return out
+
+
 def format_diff(entries: "list[dict]") -> str:
     """Render a diff as plain text for an operator. Empty input renders as the
     explicit statement that the two snapshots agree, never as blank output.
@@ -269,6 +391,43 @@ def format_diff(entries: "list[dict]") -> str:
     return "\n".join(lines)
 
 
+def format_comparison(entries: "list[dict]") -> str:
+    """Render a cross-profile comparison for an operator.
+
+    Deliberately NOT ``format_diff``. That renderer's vocabulary is the
+    continuity axis' — an empty result is "no differences" and entries are
+    counted as "differing" — and every one of those words means the opposite
+    here. An empty cross-profile result is the PASS ("the two profiles differ
+    on every vector compared"), and a reported entry is a COLLISION. Rendering
+    a leak through a renderer that calls it "1 differing" would tell an
+    operator the good news in the exact words that describe the bad news.
+
+    Empty input renders as the explicit pass statement, never as blank output.
+    """
+    if not entries:
+        return "no collisions: the profiles differ on every vector compared"
+    lines: list[str] = []
+    for e in entries:
+        lines.append(f"{e['realm']}/{e['probe_id']}: {e['status']}")
+        if e["status"] == COLLIDING:
+            lines.append(f"  both profiles: {_render(e.get('value'))}")
+        else:
+            lines.append(f"  profile a: {_render(e['expected'])}")
+            lines.append(f"  profile b: {_render(e['observed'])}")
+
+    unread = inconclusive_count(entries)
+    colliding = len(entries) - unread
+    summary = f"{len(entries)} entr{'y' if len(entries) == 1 else 'ies'}: "
+    summary += f"{colliding} colliding, {unread} inconclusive"
+    if colliding:
+        summary += " — the profiles are LINKABLE on the colliding vector(s)"
+    if unread:
+        summary += " (readings that were never obtained — not distinctness)"
+    lines.append("")
+    lines.append(summary)
+    return "\n".join(lines)
+
+
 def _render(entry: Any, *, limit: int = 400) -> str:
     import json as _json
 
@@ -283,11 +442,14 @@ __all__ = [
     "ABSENT",
     "ADDED",
     "CHANGED",
+    "COLLIDING",
     "INCONCLUSIVE",
     "META_REALM",
     "REMOVED",
+    "compare_profiles",
     "diff_realms",
     "diff_snapshots",
+    "format_comparison",
     "format_diff",
     "inconclusive_count",
 ]
