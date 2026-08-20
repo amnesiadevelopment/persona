@@ -423,3 +423,134 @@ def test_terminator_refusal_is_the_mechanism_not_the_test(tmp_path, monkeypatch)
     finally:
         t.stop()
         _reap(other)
+
+
+# --------------------------------------------------------------------------
+# The mechanism switch itself
+#
+# The gate's verdict was tested above; whether the gate is ON was not. A
+# dependency floor one major version too low (`psutil>=5.9`) made
+# `Process.net_connections` — which only exists from psutil 6.0.0 — absent on a
+# perfectly legal resolution. The probe's bare `except` read that as "this
+# platform has no mechanism" and took the degrade-open branch, so both listeners
+# served any local caller while the control sat in the tree reporting itself as
+# installed. These tests pin the switch, not the verdict.
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def clean_probe():
+    """The mechanism probe is cached in a module global. Reset it around any
+    test that fakes psutil, or the fake leaks into every later test."""
+    peerauth._probe_result = None
+    yield
+    peerauth._probe_result = None
+
+
+class _ProcessWithoutNetConnections:
+    """psutil 5.9.x's Process: it has connections(), NOT net_connections()."""
+
+    def __init__(self, pid=None):
+        self.pid = pid or os.getpid()
+
+    def connections(self, kind="tcp"):  # the pre-6.0 spelling
+        return []
+
+    def children(self, recursive=False):
+        return []
+
+
+def _fake_psutil(process_cls, version="5.9.8"):
+    import types
+
+    return types.SimpleNamespace(Process=process_cls, __version__=version)
+
+
+def test_declared_psutil_floor_matches_the_api_the_code_calls():
+    """The floor and the called API must never drift apart again.
+
+    peerauth calls Process.net_connections(), which landed in psutil 6.0.0.
+    Any floor below that is satisfiable by a psutil where the method is missing,
+    which silently disables peer verification on both listeners.
+    """
+    import psutil
+
+    assert hasattr(psutil.Process, "net_connections"), (
+        f"the resolved psutil ({psutil.__version__}) has no "
+        "Process.net_connections — peer verification cannot be enforced"
+    )
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    declared = []
+    for rel in ("pyproject.toml", "requirements.txt"):
+        path = os.path.join(root, rel)
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                stripped = line.strip().strip('",')
+                if stripped.startswith("psutil"):
+                    declared.append((rel, stripped))
+
+    assert declared, "no psutil requirement declared anywhere"
+    for rel, spec in declared:
+        assert ">=" in spec, f"{rel}: expected a floor constraint, got {spec!r}"
+        floor = spec.split(">=", 1)[1].strip()
+        major = int(floor.split(".")[0])
+        assert major >= 6, (
+            f"{rel} declares {spec!r}, but Process.net_connections() requires "
+            "psutil >= 6.0. Below that floor the peer-authentication gate "
+            "degrades and both loopback listeners stop authenticating callers."
+        )
+
+
+def test_gate_refuses_when_psutil_is_too_old_to_enumerate(clean_probe, monkeypatch):
+    """A psutil without net_connections() must NOT become an allow-all.
+
+    This is the exact regression the review caught: the missing method raised,
+    the probe cached "no mechanism", and the gate served every stranger. The
+    platform here is fully capable — the fault is packaging — so the honest
+    answer is to refuse and name the remedy, not to degrade open.
+    """
+    monkeypatch.setattr(
+        peerauth, "_psutil", lambda: _fake_psutil(_ProcessWithoutNetConnections)
+    )
+
+    assert peerauth.mechanism_state() == peerauth.MECH_UNUSABLE
+    assert peerauth.mechanism_enforceable() is False
+
+    gate = PeerGate("test")
+    gate.set_listen_port(9999)
+    gate.bind_to_process(os.getpid())
+
+    assert gate.allows(("127.0.0.1", 65000)) is False, (
+        "a psutil too old to expose net_connections() silently disabled the "
+        "gate — the stranger was served on both listeners"
+    )
+
+
+def test_absent_psutil_still_degrades_open(clean_probe, monkeypatch):
+    """The deliberate exception must SURVIVE the fix above.
+
+    Where the mechanism is genuinely absent, refusing would reject the real
+    browser and break proxied browsing outright — a worse outcome than the
+    exposure on a platform we cannot measure. This is the documented position;
+    it is pinned so that tightening the too-old case never quietly removes it.
+    """
+    monkeypatch.setattr(peerauth, "_psutil", lambda: None)
+
+    assert peerauth.mechanism_state() == peerauth.MECH_ABSENT
+
+    gate = PeerGate("test")
+    gate.bind_to_process(os.getpid())
+    assert gate.allows(("127.0.0.1", 65000)) is True
+
+
+def test_degraded_gate_still_requires_a_claimed_listener(clean_probe, monkeypatch):
+    """Even with no mechanism at all, a listener nobody claimed serves nobody.
+
+    Defense in depth: it narrows the degraded window to the browser's actual
+    lifetime instead of leaving the listener open from the moment it binds.
+    """
+    monkeypatch.setattr(peerauth, "_psutil", lambda: None)
+    monkeypatch.setattr(peerauth, "_BIND_WAIT_SECONDS", 0.2)
+
+    gate = PeerGate("test")  # never bound to a process
+    assert gate.allows(("127.0.0.1", 65000)) is False

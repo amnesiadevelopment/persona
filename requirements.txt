@@ -11,5 +11,10 @@ PySocks>=1.7
 # terminator): resolves an accepted connection to the browser process tree
 # that owns it. Present today only as a TRANSITIVE dep of invisible_core, so
 # declare it directly — a bundle without it silently loses the check.
-psutil>=5.9
+# >=6.0 is a SECURITY floor, not a preference: core/peerauth.py calls
+# Process.net_connections(), which does not exist before 6.0.0 (5.9.x names it
+# Process.connections()). On an older resolution the peer-authentication gate
+# cannot enumerate sockets and both loopback listeners stop authenticating
+# their caller. Do not lower it.
+psutil>=6.0
 pywin32>=311; sys_platform == "win32"

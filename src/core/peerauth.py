@@ -51,14 +51,39 @@ The whole descendant TREE is authorized, not a single pid: neither browser
 connects from the pid we hold. Chromium proxies through its network-service
 child, and the Firefox engine's warm-up is a separate process under the launcher.
 
-Fail-closed, with one deliberate exception
-------------------------------------------
-An unverifiable peer is refused. The single exception is a platform where the
-mechanism is genuinely absent (``psutil`` missing from the bundle): there we log
-loudly, once, and allow — an honest, recorded absence rather than a claimed
-boundary that silently enforces nothing. A false refusal would break proxied
-browsing outright, which is a worse outcome than the exposure on a platform we
-cannot measure.
+Fail-closed, with one deliberate exception — and one deliberate NON-exception
+-----------------------------------------------------------------------------
+An unverifiable peer is refused. There are three mechanism states, and the
+difference between the last two is load-bearing:
+
+* ENFORCEABLE — verify every peer, refuse anything unresolved.
+* ABSENT — the platform genuinely cannot offer the primitive (``psutil`` is not
+  in the bundle, or cannot read even our OWN sockets). Here we log loudly, once,
+  and ALLOW: an honest, recorded absence rather than a claimed boundary that
+  silently enforces nothing. A false refusal would break proxied browsing
+  outright, which is a worse outcome than the exposure on a platform we cannot
+  measure.
+* UNUSABLE — ``psutil`` is present but too OLD to expose the API we call. This
+  gets the OPPOSITE treatment: refuse, and name the remedy.
+
+Why UNUSABLE must not share the ABSENT path
+-------------------------------------------
+``Process.net_connections()`` only exists from psutil 6.0.0; 5.9.x names it
+``Process.connections()``. A declared floor of ``psutil>=5.9`` was therefore
+satisfiable by a psutil where the method is missing — a lockfile, a
+distro-packaged psutil, an offline wheelhouse — and the probe's bare ``except``
+read the resulting ``AttributeError`` as "this platform has no mechanism". Both
+listeners then degraded OPEN on a machine that was perfectly capable of
+enforcing the boundary, with the control present in the tree and reporting
+itself as installed. That is the exact failure this module exists to prevent,
+arriving by packaging rather than by primitive.
+
+So the escape hatch is scoped to what it was argued for: a platform that cannot
+do this at all. A fixable dependency fault is not that, and it fails closed —
+an operator gets a broken browser they can diagnose from the log, rather than an
+exposure nobody can see. The floor is pinned at ``psutil>=6.0`` in both
+``pyproject.toml`` and ``requirements.txt``, and a test asserts the declared
+floor and the called API cannot drift apart again.
 """
 
 from __future__ import annotations
@@ -114,33 +139,73 @@ def verification_available() -> bool:
 
 
 _probe_lock = threading.Lock()
-_probe_result: bool | None = None
+_probe_result: str | None = None
+
+#: The mechanism works — verify every peer, refuse anything unresolved.
+MECH_ENFORCEABLE = "enforceable"
+#: The platform genuinely cannot offer the primitive (psutil is not in the
+#: bundle, or cannot read even our OWN sockets). Degrade OPEN: see the module
+#: docstring — refusing here would reject the real browser, not an impostor.
+MECH_ABSENT = "absent"
+#: psutil is present but too OLD to expose the API we call. This is a fixable
+#: packaging fault on a platform that is perfectly capable, not a platform
+#: limit, so it must NOT take the degrade-open path — that would turn a routine
+#: dependency resolution into a silently disabled security control on a machine
+#: where the boundary is fully enforceable. Fail CLOSED and name the remedy.
+MECH_UNUSABLE = "unusable"
 
 
-def mechanism_enforceable() -> bool:
-    """Whether peer verification can actually be ENFORCED here.
+def mechanism_state() -> str:
+    """Which of the three mechanism states this installation is in.
 
-    Probes our own process: if we cannot enumerate even our OWN sockets, the
-    primitive is unavailable on this installation (a sandboxed/locked-down
-    platform), and refusing on that basis would reject the real browser rather
-    than an impostor. Probed once and cached — the answer is a property of the
-    platform, not of the connection.
+    Probed once and cached — the answer is a property of the installation, not
+    of the connection.
+
+    The ABSENT/UNUSABLE split is the whole point of this function. Collapsing
+    them into one boolean is what let ``psutil>=5.9`` disable the gate on every
+    listener while still reporting itself as installed: ``Process.net_connections``
+    does not exist before psutil 6.0.0 (5.9.x names it ``Process.connections``),
+    so the probe raised ``AttributeError``, which read as "this platform has no
+    mechanism" and degraded open.
     """
     global _probe_result
     if _probe_result is not None:
         return _probe_result
     with _probe_lock:
         if _probe_result is None:
-            ps = _psutil()
-            if ps is None:
-                _probe_result = False
-            else:
-                try:
-                    ps.Process(os.getpid()).net_connections(kind="tcp")
-                    _probe_result = True
-                except Exception:
-                    _probe_result = False
+            _probe_result = _probe_mechanism()
     return _probe_result
+
+
+def _probe_mechanism() -> str:
+    ps = _psutil()
+    if ps is None:
+        return MECH_ABSENT
+    # Distinguish "the API is not there" from "the API is there and failed".
+    # Checked as an attribute rather than inferred from the raised exception so
+    # that an AttributeError from INSIDE a working net_connections() is not
+    # misread as a missing method.
+    if not hasattr(ps.Process, "net_connections"):
+        logger.error(
+            "peer verification is DISABLED: psutil %s is too old — "
+            "Process.net_connections() requires psutil >= 6.0. Local callers "
+            "are NOT authenticated until the dependency is upgraded; both "
+            "loopback listeners will refuse every connection until then",
+            getattr(ps, "__version__", "?"),
+        )
+        return MECH_UNUSABLE
+    try:
+        ps.Process(os.getpid()).net_connections(kind="tcp")
+    except Exception:
+        # We cannot enumerate even our OWN sockets: a sandboxed/locked-down
+        # platform, where refusing would reject the real browser.
+        return MECH_ABSENT
+    return MECH_ENFORCEABLE
+
+
+def mechanism_enforceable() -> bool:
+    """Whether peer verification can actually be ENFORCED here."""
+    return mechanism_state() == MECH_ENFORCEABLE
 
 
 def _tree_endpoints(root_pid: int) -> set[tuple[int, int]] | None:
@@ -258,7 +323,41 @@ class PeerGate:
             )
             return False
 
-        if not mechanism_enforceable():
+        state = mechanism_state()
+
+        if state == MECH_UNUSABLE:
+            # psutil is present but too old to expose the API we call. The
+            # platform is perfectly capable, so this is a fixable packaging
+            # fault and NOT the documented no-mechanism exception: degrading
+            # open here would turn a routine dependency resolution into a
+            # silently disabled control on a machine that can enforce it. Refuse
+            # and name the remedy, so an operator gets a broken browser they can
+            # diagnose rather than an exposure nobody can see.
+            with self._lock:
+                if not self._warned_no_mechanism:
+                    self._warned_no_mechanism = True
+                    logger.error(
+                        "%s: REFUSING every connection — peer verification needs "
+                        "psutil >= 6.0 (Process.net_connections) and the installed "
+                        "psutil is older. Upgrade psutil to restore this listener",
+                        self._label,
+                    )
+            return False
+
+        # The binding check runs BEFORE the degrade-open branch, so even an
+        # installation with no mechanism at all only serves callers during the
+        # browser's actual lifetime: a listener nobody ever claimed has no
+        # legitimate client on any platform. Cheap defense in depth.
+        if not self._wait_for_binding() or self._root_pid is None:
+            logger.warning(
+                "%s: refusing peer port %s — no browser process was ever "
+                "claimed for this listener",
+                self._label,
+                port,
+            )
+            return False
+
+        if state == MECH_ABSENT:
             # Documented, deliberate exception — see the module docstring. Log
             # once per listener so it is a recorded position, not a silent hole,
             # and never pretend the connection was verified.
@@ -272,15 +371,6 @@ class PeerGate:
                         self._label,
                     )
             return True
-
-        if not self._wait_for_binding() or self._root_pid is None:
-            logger.warning(
-                "%s: refusing peer port %s — no browser process was ever "
-                "claimed for this listener",
-                self._label,
-                port,
-            )
-            return False
 
         root_pid = self._root_pid
         for attempt in range(_SCAN_ATTEMPTS):
