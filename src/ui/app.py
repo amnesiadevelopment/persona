@@ -25,6 +25,7 @@ from .components import (
     build_ui_refs,
     rebuild_bulk_bar,
 )
+from ..services.engine import policy as engine_policy
 from ..services.engine import updater as engine
 from ..services.app_update import updater as app_update
 from ..core import platform as _platform
@@ -150,6 +151,11 @@ class App:
         # leftover download bar reading "189 MB of 189 MB" was wrong).
         self._engine_busy = False
         self._engine_checking = False
+        # Set when persona REFUSED the newest Chromium build (known-bad, or above
+        # the tested-major ceiling — see services/engine/policy.py). Shown in the
+        # engine row so the refusal is visible rather than looking like a stalled
+        # check. Mirrors _engine2_status on the Firefox row.
+        self._engine_status: str = ""
         self._engines_open = False
         # An onboarding/changelog dialog owns the screen at startup; a staged
         # update that lands while it's open is held here and offered once the
@@ -1317,7 +1323,50 @@ class App:
         return ft.Icon(ft.Icons.SYSTEM_UPDATE_ALT, size=15, color=COLORS["text_sub"])
 
     def _engine_update_available(self) -> bool:
-        return engine.is_newer(self._engine_latest, engine.current_version())
+        """True when a newer Chromium build exists AND persona is willing to
+        install it.
+
+        The policy gate is deliberately part of THIS predicate rather than only
+        of the download: it drives the sidebar dot, the row's "update → NN" text
+        and the click handler, so a build persona would refuse must not be
+        advertised as an available update — otherwise the operator clicks, the
+        download is refused, and the row goes back to offering it forever.
+        Mirrors _engine2_update_available's `not self._engine2_compatible` gate.
+        """
+        if not engine.is_newer(self._engine_latest, engine.current_version()):
+            return False
+        return engine_policy.is_installable(self._engine_latest)
+
+    def _record_engine_check(self, tag: str) -> str:
+        """Record the result of a Chromium version check and return the log line.
+
+        Every check path (panel open, hourly poll, explicit click, startup)
+        funnels through here so one policy decision is made in one place — four
+        copies of "is this installable?" is how the two engines drifted apart in
+        the first place. Sets _engine_latest and _engine_status; the caller logs
+        the returned line (empty when there is nothing worth saying).
+        """
+        if not tag:
+            return ""
+        self._engine_latest = tag
+        if self._engine_update_available():
+            self._engine_status = ""
+            return f"Chromium engine update available ({tag})"
+        # Not offered. Distinguish "persona refused this build" from the
+        # ordinary "already current" case, so a declined engine is never
+        # silently indistinguishable from being up to date.
+        verdict, message = engine_policy.check(tag)
+        if verdict != engine_policy.OK and engine.is_newer(
+            tag, engine.current_version()
+        ):
+            self._engine_status = (
+                "update persona for the newest engine"
+                if verdict == engine_policy.ABOVE_CEILING
+                else "engine update blocked"
+            )
+            return message
+        self._engine_status = ""
+        return ""
 
     def _engine_logo(self, engine_key: str, size: int = 18) -> ft.Control:
         from ..core.assets import asset_path
@@ -1514,9 +1563,9 @@ class App:
                 # fetch_latest() can't wedge the button on "checking..." forever.
                 try:
                     tag, _url = engine.fetch_latest()
-                    self._engine_latest = tag
-                    if self._engine_update_available():
-                        self._log(f"Chromium engine update available ({tag})")
+                    line = self._record_engine_check(tag)
+                    if line:
+                        self._log(line)
                 except Exception as e:
                     self._log(f"Chromium engine check failed: {e}")
                 finally:
@@ -1676,6 +1725,12 @@ class App:
                 self.engine_text.value = status
             elif self._engine_update_available():
                 self.engine_text.value = f"update → {self._engine_latest}"
+            elif self._engine_status:
+                # A build persona refused. Without this the row would fall
+                # through to the installed version and read as "up to date",
+                # hiding the fact that an upstream build exists and was declined
+                # — the same reason the Firefox row surfaces _engine2_status.
+                self.engine_text.value = self._engine_status
             else:
                 self.engine_text.value = cur
             if self._sidebar_host is not None:
@@ -1721,10 +1776,9 @@ class App:
                 try:
                     if not self._engine_busy:
                         tag, _url = engine.fetch_latest()
-                        if tag:
-                            self._engine_latest = tag
-                            if self._engine_update_available():
-                                self._log(f"Chromium engine update available ({tag})")
+                        line = self._record_engine_check(tag)
+                        if line:
+                            self._log(line)
                 except Exception:
                     pass
                 self._refresh_sidebar()
@@ -2085,7 +2139,7 @@ class App:
                 # engine download/launch this session.
                 ok = False
                 try:
-                    ok, _msg = engine.ensure_engine(progress=both)
+                    ok, _msg = engine.ensure_engine(progress=both, log=self._log)
                     if ok:
                         self._engine_latest = engine.current_version()
                 except Exception as e:
@@ -2183,9 +2237,9 @@ class App:
                 self._download_engine_fresh()
                 return
             tag, _url = engine.fetch_latest()
-            self._engine_latest = tag
-            if self._engine_update_available():
-                self._log(f"Chromium engine update available ({tag})")
+            line = self._record_engine_check(tag)
+            if line:
+                self._log(line)
             self._refresh_engine_text()
 
         threading.Thread(target=work, daemon=True).start()
@@ -2302,7 +2356,9 @@ class App:
         # Reset _engine_busy in finally so a raise in ensure_engine doesn't wedge
         # the flag True and dead-end every later launch/download this session.
         try:
-            ok, msg = engine.ensure_engine(progress=self._engine_progress_cb)
+            ok, msg = engine.ensure_engine(
+                progress=self._engine_progress_cb, log=self._log
+            )
             if ok:
                 self._engine_latest = engine.current_version()
                 self._log(f"Engine installed: {engine.current_version()}")
@@ -2331,11 +2387,11 @@ class App:
                 # fetch_latest() can't wedge the button on "checking..." forever.
                 try:
                     tag, _url = engine.fetch_latest()
-                    self._engine_latest = tag
                     # Match the Firefox line's shape: name the engine and its
                     # version so the log isn't a bare, ambiguous "up to date".
-                    if self._engine_update_available():
-                        self._log(f"Chromium engine update available ({tag})")
+                    line = self._record_engine_check(tag)
+                    if line:
+                        self._log(line)
                     else:
                         self._log(
                             f"Chromium engine is up to date ({engine.current_version()})"
@@ -2409,13 +2465,36 @@ class App:
             # Reset _engine_busy in finally so a raise in fetch/download can't
             # wedge it True and dead-end every later engine action this session.
             try:
-                _tag, url, digest = engine.fetch_latest_full()
+                tag, url, digest, verdict, message = engine.fetch_latest_checked()
+                if verdict != engine_policy.OK:
+                    # persona REFUSED this build (known-bad, or newer than the
+                    # Chromium major the masking layer is tested against). Say so
+                    # in those terms — "update failed" would blame the network for
+                    # a decision persona made, and the operator would retry
+                    # forever. Mirrors the Firefox row's incompatible handling so
+                    # the two engines report this situation the same way.
+                    self._engine_status = (
+                        "update persona for the newest engine"
+                        if verdict == engine_policy.ABOVE_CEILING
+                        else "engine update blocked"
+                    )
+                    self._log(message)
+                    return
                 ok = engine.download_engine(
                     url, digest=digest, progress=self._engine_progress_cb
                 )
                 if ok:
-                    engine.write_version(self._engine_latest)
-                    self._log(f"Engine updated to {self._engine_latest}")
+                    # Record the tag from the fetch that produced THESE BYTES,
+                    # not self._engine_latest — that one came from the earlier
+                    # background check and is stale if upstream published in
+                    # between. version.txt feeds current_version(), is_newer()
+                    # and every verification snapshot's engine_build header, so a
+                    # stale value there labels a snapshot with an engine build it
+                    # was not taken under, and can make the NEXT real update look
+                    # already-installed.
+                    engine.write_version(tag)
+                    self._engine_latest = tag
+                    self._log(f"Engine updated to {tag}")
                 else:
                     self._log("Engine update failed")
             except Exception as e:
