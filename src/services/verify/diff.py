@@ -42,6 +42,12 @@ from __future__ import annotations
 
 from typing import Any
 
+# Module scope, like the rest of this package's intra-package imports.
+# ``probes`` is pure data plus a dataclass — it pulls no heavy dependency (the
+# lazy-import pattern ``cli`` documents exists for ``transport``, which reaches
+# playwright) and it imports nothing from this module, so there is no cycle.
+from .probes import must_differ_probes
+
 # Sentinel recorded in place of a reading that does not exist on that side.
 ABSENT = {"absent": True}
 
@@ -80,6 +86,82 @@ _META_FIELDS = ("schema_version", "engine", "profile", "app_version", "engine_bu
 META_REALM = "__meta__"
 
 
+class ComparisonNotControlled(ValueError):
+    """Raised when the two snapshots cannot answer the unlinkability question.
+
+    Not a finding and not a pass — a refusal. ``compare_profiles`` reads the
+    two headers before it reads a single probe, because the cross-profile
+    question has a PREMISE that the continuity comparators do not: that these
+    are two DIFFERENT identities, observed under conditions that make a
+    difference between them attributable to the identities rather than to the
+    setup. Where that premise does not hold, both answers this mode can give
+    are wrong — a collision would be a false leak, and an empty list would be a
+    false certificate of unlinkability. Refusing is the only honest third
+    option, so it is raised rather than folded into an entry list that callers
+    read as a verdict.
+    """
+
+
+def _header(snapshot: dict, field: str) -> Any:
+    return snapshot.get(field) if isinstance(snapshot, dict) else None
+
+
+def _require_controlled(a: dict, b: dict, *, allow_cross_engine: bool) -> None:
+    """Refuse a comparison whose premise does not hold. See the exception.
+
+    Two guards, and they are deliberately NOT symmetrical in whether they can
+    be overridden:
+
+    * **Same (or unknown) profile — no override.** Two snapshots carrying the
+      same ``profile`` header are one identity recorded twice; every vector
+      will agree, and the mode would report a profile as linkable to itself.
+      The CLI header documents exactly that workflow for ``diff``
+      (``before.json``/``after.json``, one profile, two times), so an operator
+      reaching the wrong subcommand is the expected mistake, not an exotic one.
+      A MISSING header is refused on the same footing: this mode needs positive
+      evidence that the two identities differ, and "no name recorded" is not
+      it. No flag relaxes this, because no flag can make one profile two.
+
+    * **Different engines — overridable.** ``diff_snapshots`` already reasons
+      about this and says so (``a chromium snapshot vs a firefox one is not a
+      regression, it is a different question``), handing the operator
+      ``--meta``. The danger here is the PASS direction: two profiles whose
+      digest differs *because one ran on Firefox and one on Chromium* have not
+      demonstrated anything about their seeds, and silently exiting 0 would
+      certify unlinkability that was never measured. A COLLISION across engines
+      is still a real finding — agreeing despite different engines is if
+      anything stronger — so this one is an opt-in rather than a wall, and the
+      operator who passes the flag has accepted the caveat.
+    """
+    a_profile, b_profile = _header(a, "profile"), _header(b, "profile")
+    if not a_profile or not b_profile:
+        raise ComparisonNotControlled(
+            "cannot compare: both snapshots must name their profile in the "
+            f"header (got {a_profile!r} and {b_profile!r}). Unlinkability is a "
+            "question about TWO identities; a snapshot that does not say whose "
+            "identity it recorded cannot answer it."
+        )
+    if a_profile == b_profile:
+        raise ComparisonNotControlled(
+            f"cannot compare: both snapshots are profile {a_profile!r}. This "
+            "mode asks whether two DIFFERENT profiles are linkable; comparing "
+            "one profile with itself would report every vector as colliding "
+            "and call an identity linkable to itself. For two recordings of "
+            "ONE profile (before/after an update), use `diff`."
+        )
+    a_engine, b_engine = _header(a, "engine"), _header(b, "engine")
+    if a_engine != b_engine and not allow_cross_engine:
+        raise ComparisonNotControlled(
+            f"cannot compare: snapshots were taken on different engines "
+            f"({a_engine!r} vs {b_engine!r}), so a vector that differs may "
+            "differ because of the ENGINE rather than the seed — that is not "
+            "evidence the two profiles are unlinkable. Re-record both on one "
+            "engine, or pass --allow-cross-engine to compare anyway (a "
+            "collision across engines is still a real finding; an empty "
+            "result is not a certificate)."
+        )
+
+
 def _probes(snapshot: dict) -> dict:
     probes = snapshot.get("probes")
     return probes if isinstance(probes, dict) else {}
@@ -110,6 +192,10 @@ def _unread(side: Any) -> bool:
     if isinstance(side, dict):
         return "value" not in side
     return side is None
+
+
+def _status(entry: Any) -> "str | None":
+    return entry.get("status") if isinstance(entry, dict) else None
 
 
 def _inconclusive(entry: "dict") -> bool:
@@ -143,10 +229,6 @@ def inconclusive_count(entries: "list[dict]") -> int:
     still counted, exactly as before, via the first clause.
     """
     return sum(1 for e in entries if _inconclusive(e) or _status(e) == INCONCLUSIVE)
-
-
-def _status(entry: Any) -> Any:
-    return entry.get("status") if isinstance(entry, dict) else None
 
 
 def diff_snapshots(
@@ -267,7 +349,9 @@ def diff_realms(snapshot: dict, left: str, right: str) -> list[dict]:
     return out
 
 
-def compare_profiles(a: dict, b: dict) -> list[dict]:
+def compare_profiles(
+    a: dict, b: dict, *, allow_cross_engine: bool = False
+) -> list[dict]:
     """Compare two snapshots taken from two DIFFERENT profiles.
 
     The third comparison mode, and the only one whose polarity is inverted.
@@ -323,42 +407,75 @@ def compare_profiles(a: dict, b: dict) -> list[dict]:
 
     Two probes that both errored are likewise INCONCLUSIVE and never
     "differing": that is the same failure twice, not two distinct identities.
-    """
-    from .probes import must_differ_ids
 
-    targets = must_differ_ids()
+    **A vector absent from either snapshot is INCONCLUSIVE too, never skipped.**
+    The other two comparators iterate a UNION and report ``ADDED``/``REMOVED``,
+    honouring the module rule at the top of this file: "the probe vanished" and
+    "the probe agreed" must not look the same. An intersection would drop the
+    vector before ``_unread`` ever saw it, and on this axis that is the worst
+    possible failure — the must-differ set is legitimately small, so "the target
+    was never recorded" is a ROUTINE state (``record --realms worker`` alone
+    omits every window-only vector), and an empty entry list is the PASS. A
+    comparison of zero vectors would certify unlinkability nobody measured. So
+    the loop walks ``targets`` themselves and a side that lacks the probe gets
+    :data:`ABSENT`, which ``_unread`` already recognises. Statuses stay
+    ``colliding``/``inconclusive``: ADDED/REMOVED name an inventory change,
+    which is a continuity fact, and here the only fact that matters is that no
+    comparison could be made.
+
+    **The headers are read BEFORE any probe, and an uncontrolled comparison is
+    REFUSED** with :class:`ComparisonNotControlled` rather than answered. This
+    mode has a premise the continuity comparators do not — that these are two
+    DIFFERENT identities, observed under conditions that make a difference
+    between them attributable to the seeds. Two snapshots of the SAME profile
+    would report an identity as linkable to itself (a false leak), and two
+    taken on different ENGINES would exit 0 on a difference the engines
+    produced (a false certificate). Both directions are wrong, so neither is
+    returned. ``allow_cross_engine`` opts into the second one deliberately; no
+    flag relaxes the first. See :func:`_require_controlled`.
+    """
+    _require_controlled(a, b, allow_cross_engine=allow_cross_engine)
+
     out: list[dict] = []
 
-    realms = sorted(set(_probes(a)) | set(_probes(b)))
-    for realm in realms:
+    # Driven by the INVENTORY, not by the intersection of the two files. Every
+    # realm a target probe declares is walked, so a target the snapshot never
+    # recorded still produces an entry (ABSENT on that side -> _unread ->
+    # INCONCLUSIVE) instead of vanishing before the guard can see it. Sorted by
+    # (realm, probe_id) to match the ordering the other two comparators emit.
+    pairs = sorted(
+        (realm, probe.id)
+        for probe in must_differ_probes()
+        for realm in probe.realms
+    )
+    for realm, probe_id in pairs:
         a_entries = _realm(a, realm)
         b_entries = _realm(b, realm)
-        for probe_id in sorted(set(a_entries) & set(b_entries)):
-            if probe_id not in targets:
-                continue
-            a_side, b_side = a_entries[probe_id], b_entries[probe_id]
-            # Checked BEFORE equality, exactly as the other two comparators do:
-            # a reading nobody obtained can neither agree nor differ. Note the
-            # OR — see the docstring: one side read and one side missing is not
-            # evidence of distinctness on THIS axis.
-            if _unread(a_side) or _unread(b_side):
-                status = INCONCLUSIVE
-            elif a_side == b_side:
-                status = COLLIDING
-            else:
-                # The pass: both READ, and they differ. Silent, like two
-                # agreeing snapshots are silent in diff_snapshots.
-                continue
-            entry = {
-                "probe_id": probe_id,
-                "realm": realm,
-                "status": status,
-                "expected": a_side,
-                "observed": b_side,
-            }
-            if status == COLLIDING:
-                entry["value"] = a_side.get("value") if isinstance(a_side, dict) else a_side
-            out.append(entry)
+        a_side = a_entries[probe_id] if probe_id in a_entries else dict(ABSENT)
+        b_side = b_entries[probe_id] if probe_id in b_entries else dict(ABSENT)
+        # Checked BEFORE equality, exactly as the other two comparators do: a
+        # reading nobody obtained can neither agree nor differ. Note the OR —
+        # see the docstring: one side read and one side missing is not evidence
+        # of distinctness on THIS axis. ABSENT lands here too, which is the
+        # whole reason the loop walks targets rather than an intersection.
+        if _unread(a_side) or _unread(b_side):
+            status = INCONCLUSIVE
+        elif a_side == b_side:
+            status = COLLIDING
+        else:
+            # The pass: both READ, and they differ. Silent, like two agreeing
+            # snapshots are silent in diff_snapshots.
+            continue
+        entry = {
+            "probe_id": probe_id,
+            "realm": realm,
+            "status": status,
+            "expected": a_side,
+            "observed": b_side,
+        }
+        if status == COLLIDING:
+            entry["value"] = a_side.get("value") if isinstance(a_side, dict) else a_side
+        out.append(entry)
     return out
 
 
