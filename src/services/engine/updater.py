@@ -18,6 +18,7 @@ from ...core.config import ENGINE_DIR
 from ...core import platform as _platform
 from ...utils import httpdl
 from ...utils.httpdl import atomic_replace, range_opener, resumable_download
+from . import policy
 
 ENGINE_BINARY = os.path.join(ENGINE_DIR, _platform.fingerprint_chromium_filename())
 VERSION_FILE = os.path.join(ENGINE_DIR, "version.txt")
@@ -136,6 +137,11 @@ def appimage_url_for(tag: str) -> str:
 def fetch_latest_full(timeout: int = 20) -> tuple[str, str, str]:
     """Return (tag, asset_url, sha256_digest) of the latest release for THIS OS,
     or ('','','') on failure. Picks the per-OS asset.
+
+    This is the RAW fetch: it reports what upstream published and applies no
+    policy. Anything that INSTALLS should call fetch_latest_checked() instead,
+    which runs the same fetch through the known-bad list and the tested-major
+    ceiling (see engine/policy.py) and blanks the URL when a build is refused.
     """
     try:
         req = urllib.request.Request(
@@ -163,6 +169,35 @@ def fetch_latest(timeout: int = 20) -> tuple[str, str]:
     """Return (tag, asset_url) of the latest release, or ('','') on failure."""
     tag, url, _ = fetch_latest_full(timeout)
     return tag, url
+
+
+def fetch_latest_checked(timeout: int = 20) -> tuple[str, str, str, str, str]:
+    """The governed fetch: (tag, url, digest, verdict, message).
+
+    Same network call as fetch_latest_full(), then persona's own policy is
+    applied to the tag that came back (see engine/policy.py):
+
+    * ``verdict == policy.OK`` — installable; url/digest are the fetch's.
+    * ``policy.KNOWN_BAD`` — this exact build is on persona's known-bad list.
+    * ``policy.ABOVE_CEILING`` — newer than the Chromium major persona's masking
+      layer has been tested against; it needs a persona update, not a download.
+
+    On a refusal the URL and digest are BLANKED while the tag is preserved. That
+    shape is deliberate: a caller that ignores the verdict still cannot install
+    the build (download_engine("") returns False), and a caller that reads it can
+    still name the version in the message it shows. Fail-closed by construction
+    rather than by everyone remembering to check.
+
+    ``message`` is operator-facing and empty when OK. It exists so the UI can
+    distinguish "persona refused this" from "the download failed" — the Firefox
+    path already draws that line via its `compatible` flag, and the two engines
+    must not report the same situation differently.
+    """
+    tag, url, digest = fetch_latest_full(timeout)
+    verdict, message = policy.check(tag)
+    if verdict != policy.OK:
+        return tag, "", "", verdict, message
+    return tag, url, digest, verdict, message
 
 
 def write_version(tag: str) -> None:
@@ -376,7 +411,7 @@ def download_engine(
 
 
 def ensure_engine(
-    progress=None, timeout: int = 600, attempts: int = 3
+    progress=None, timeout: int = 600, attempts: int = 3, log=None
 ) -> tuple[bool, str]:
     """Make sure the engine is installed. If already present, no-op. Otherwise
     fetch the latest release and download it. Returns (ok, message).
@@ -385,12 +420,60 @@ def ensure_engine(
     transient network hiccup (a dropped connection, a flaky first request on a
     cold start). Retry the whole fetch+download a few times so one blip doesn't
     leave the engine uninstalled — the same treatment the Firefox engine gets.
+
+    ``log`` (optional) receives every operator-facing note this path produces:
+    the warning that a first install had to take an untested engine, and the
+    reason for any failure. That wording lives HERE, in one place, because the
+    refuse/failed distinction is only correct if one owner draws it — the two
+    callers each got it wrong in a different way when they owned it (onboarding
+    discarded the reason entirely; the sidebar prefixed a governance refusal
+    with "Engine download failed:", blaming the network for a decision persona
+    made). Callers log the returned message verbatim or not at all.
     """
     if is_installed():
         return True, "engine present"
     last = "could not reach GitHub releases"
     for _ in range(max(1, attempts)):
+        # The raw fetch, with policy applied HERE rather than via
+        # fetch_latest_checked(), because the first install answers the
+        # ABOVE_CEILING verdict differently from an update and so needs the URL
+        # the checked fetch deliberately blanks.
         tag, url, digest = fetch_latest_full()
+        verdict, message = policy.check(tag)
+        # THE FIRST INSTALL IS NOT AN UPDATE, and the two verdicts are not the
+        # same kind of claim — so this path treats them differently on purpose.
+        #
+        # KNOWN_BAD means "this exact build is broken". Installing it would
+        # produce a broken engine, so refuse: no engine and a clear reason beats
+        # an engine that does not work and no reason. Retrying cannot change the
+        # answer, so return rather than burn the remaining attempts.
+        if verdict == policy.KNOWN_BAD:
+            # Log HERE, not at the call sites. The reason has to reach the
+            # operator, and returning it in the tuple is not enough: the
+            # onboarding caller discards the message entirely (it only uses
+            # `ok`), and the sidebar caller renders it as "Engine download
+            # failed: ..." — the exact words this ticket exists to stop using
+            # for a decision persona made. Logging inside the branch fixes both
+            # call sites at once and keeps the refuse/failed distinction in one
+            # place, next to the code that draws it.
+            if log:
+                log(message)
+            return False, message
+        # ABOVE_CEILING means "persona has not been SHOWN to work against this"
+        # — not that it is broken. On an UPDATE that is enough to decline: an
+        # engine is already installed and working, so the cost of waiting is
+        # zero. Here there is no engine at all, and refusing would leave the app
+        # with no browser at all over a build that is most likely fine. So
+        # install it and make the untested state LOUD rather than silent — that
+        # is the visible consequence the guard is for. Chromium has no drivable
+        # older build to fall back to the way the Firefox path has its
+        # package-pinned one, and /releases/latest offers no second candidate.
+        if verdict == policy.ABOVE_CEILING and log:
+            log(
+                f"{message} Installing it anyway — persona needs an engine to "
+                "run, but this build is untested against persona's masking "
+                "layer; verify before trusting a fingerprint taken under it."
+            )
         if not url:
             last = "could not reach GitHub releases"
             continue
@@ -409,4 +492,12 @@ def ensure_engine(
             write_version(tag)
             return True, tag
         last = "download failed"
+    # The other operator-facing exit. Prefixed with "Engine download failed"
+    # BECAUSE THAT IS WHAT THIS ONE IS — a network/transfer failure, worth
+    # retrying. The KNOWN_BAD return above deliberately carries no such prefix:
+    # that is persona declining a build, and retrying cannot change it. Both
+    # lines are emitted from this function so the two can never again be worded
+    # by a caller that cannot tell them apart.
+    if log:
+        log(f"Engine download failed: {last}")
     return False, last
