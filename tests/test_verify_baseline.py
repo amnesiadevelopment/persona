@@ -14,6 +14,8 @@ launched browser cannot run here; it is recorded in
 """
 
 import json
+import os
+import time
 
 import pytest
 
@@ -85,6 +87,27 @@ def test_provenance_records_how_the_artifact_was_produced():
     assert prov["proxy"] == "none"
     assert prov["resolution"] == "1920x1080"
     assert prov["realms"] == ["window", "worker"]
+
+
+def test_provenance_names_the_host_dependent_probes():
+    """Pinning the profile pins everything the SEED derives, but not what the
+    GPU/driver and installed fonts report. Whoever reads a red diff needs to
+    know which lines can move between two machines on the SAME engine, and it
+    belongs in the artifact rather than only in the accompanying note."""
+    prov = baseline.provenance(baseline.baseline_profile())
+    assert "webgl.unmasked" in prov["env_sensitive_probes"]
+    assert "fonts.measureText" in prov["env_sensitive_probes"]
+
+
+def test_the_env_sensitivity_marker_carries_no_host_identifier():
+    """Deliberately NAMES only. Recording an actual GPU/driver string would
+    make the artifact's bytes depend on the machine that recorded it — the
+    opposite of what a byte-stable reference needs."""
+    prov = baseline.provenance(baseline.baseline_profile())
+    # Every entry is a probe id that the snapshot actually uses...
+    assert all(isinstance(p, str) for p in prov["env_sensitive_probes"])
+    # ...and the block is identical on every machine, because it is a constant.
+    assert prov["env_sensitive_probes"] == list(baseline.ENV_SENSITIVE_PROBES)
 
 
 # --- the verdict ------------------------------------------------------------
@@ -220,6 +243,93 @@ def test_a_differing_engine_build_alone_is_not_a_failure():
     assert "firefox-20" in report and "firefox-21" in report
 
 
+# --- the launch bound -------------------------------------------------------
+#
+# No browser here either: _await_started only needs an object with a .stdout
+# that behaves like the real pipe, so a real os.pipe stands in for the session.
+
+
+class _FakePipeProc:
+    """A proc whose stdout is a real pipe we control from the test side."""
+
+    def __init__(self):
+        r, w = os.pipe()
+        self._w = w
+        self.stdout = os.fdopen(r)
+
+    def say(self, line: str) -> None:
+        os.write(self._w, f"{line}\n".encode())
+
+    def close(self) -> None:
+        """Close the write end: the reader sees EOF."""
+        try:
+            os.close(self._w)
+        except OSError:
+            pass
+
+
+def test_a_session_that_never_says_anything_times_out_rather_than_hanging():
+    """The case that has teeth, and the one that was untested.
+
+    A session that starts and then goes silent is the WEDGE a launch timeout
+    exists to catch. A deadline tested only between reads cannot fire against
+    it, because the blocking read never returns to let the loop re-check — so
+    every test that drives this with output that arrives proves nothing about
+    the bound. This one holds the pipe open and writes nothing.
+
+    A hang here is worse than a failure: record_snapshot's `finally` teardown
+    never runs, so the session leaks, and on the in_process path the only stop
+    signal is unreachable from inside the blocking read.
+    """
+    proc = _FakePipeProc()  # opened, never written to, never closed
+    started = time.time()
+
+    with pytest.raises(baseline.BaselineUnavailable) as exc:
+        baseline._await_started(proc, timeout=0.5)
+
+    elapsed = time.time() - started
+    assert "did not start within" in str(exc.value)
+    # It must fire ON the bound, not merely eventually.
+    assert elapsed < 10, f"the timeout did not bound the wait ({elapsed:.1f}s)"
+    proc.close()
+
+
+def test_a_slow_but_chatty_session_still_starts():
+    """The bound must not become trigger-happy: noise before readiness is
+    normal, and only the total budget should end the wait."""
+    proc = _FakePipeProc()
+    proc.say("some startup noise")
+    proc.say("more noise")
+    proc.say("BROWSER_STARTED")
+
+    baseline._await_started(proc, timeout=10.0)  # returns, does not raise
+    proc.close()
+
+
+def test_a_session_that_ends_before_readiness_is_reported_as_such():
+    """EOF is a different failure from a timeout and must not be reported as
+    one — the operator needs to know the session DIED, not that it was slow."""
+    proc = _FakePipeProc()
+    proc.say("starting")
+    proc.close()  # EOF without ever reporting readiness
+
+    with pytest.raises(baseline.BaselineUnavailable) as exc:
+        baseline._await_started(proc, timeout=10.0)
+
+    assert "ended before it reported readiness" in str(exc.value)
+
+
+def test_a_session_reporting_closure_fails_immediately_and_names_the_signal():
+    proc = _FakePipeProc()
+    proc.say("BROWSER_CLOSED")
+
+    with pytest.raises(baseline.BaselineUnavailable) as exc:
+        baseline._await_started(proc, timeout=10.0)
+
+    assert "BROWSER_CLOSED" in str(exc.value)
+    proc.close()
+
+
 # --- the command wiring -----------------------------------------------------
 
 
@@ -274,7 +384,11 @@ def test_record_refuses_to_write_a_baseline_that_has_unread_probes(
     tmp_path, monkeypatch
 ):
     """A baseline with holes is not a baseline: every probe it could not read
-    will compare EQUAL against the same failure later and report agreement."""
+    will compare EQUAL against the same failure later and report agreement.
+
+    "Refuses to write" means the BLESSED PATH is not written. The failed
+    reading is still kept, but beside it, so it can be inspected.
+    """
     from src.services.verify import baseline_cli
 
     out = tmp_path / "out.json"
@@ -285,8 +399,44 @@ def test_record_refuses_to_write_a_baseline_that_has_unread_probes(
     )
 
     assert baseline_cli.main(["record", "-o", str(out)]) == 1
-    # It still writes the file so the errors can be inspected...
-    assert out.exists()
+    # The reference path was never written at all...
+    assert not out.exists()
+    # ...but the unusable reading is available for inspection beside it.
+    rejected = tmp_path / "out.json.rejected"
+    assert rejected.exists()
+    assert baseline.count_errors(json.loads(rejected.read_text(encoding="utf-8"))) == 1
+
+
+def test_a_refused_recording_leaves_an_existing_baseline_byte_identical(
+    tmp_path, monkeypatch
+):
+    """The assertion with teeth, and the one this ticket most depends on.
+
+    ``--output`` defaults to the COMMITTED artifact, and re-recording after an
+    accepted bump is the documented, encouraged workflow — so a write-then-
+    validate order destroys the reference exactly when the operator is doing
+    the right thing. The operator sees exit 1 and a refusal message, reasonably
+    concludes nothing was written, and the corruption surfaces later as a
+    ``check`` passing against a holed baseline.
+    """
+    from src.services.verify import baseline_cli
+
+    out = tmp_path / "baseline.json"
+    good = json.dumps(_snap(), indent=2)
+    out.write_text(good, encoding="utf-8")
+    before = out.read_bytes()
+
+    monkeypatch.setattr(
+        baseline_cli,
+        "record_snapshot",
+        lambda **kw: _snap(worker={"p": {"error": "TypeError: nope"}}),
+    )
+
+    assert baseline_cli.main(["record", "-o", str(out)]) == 1
+    # Not "still exists" — byte-for-byte the reference we started with.
+    assert out.read_bytes() == before
+    # And the recording that was refused is still recoverable for diagnosis.
+    assert (tmp_path / "baseline.json.rejected").exists()
 
 
 def test_record_accepts_a_clean_reading(tmp_path, monkeypatch):

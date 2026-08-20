@@ -50,26 +50,40 @@ from .snapshot import write
 def _cmd_record(args: argparse.Namespace) -> int:
     snapshot = record_snapshot(fresh=not args.reuse_profile)
     errors = count_errors(snapshot)
-    write(snapshot, args.output)
     total = sum(len(realm) for realm in snapshot["probes"].values())
-    print(
-        f"wrote {args.output}: {total} readings across "
-        f"{len(snapshot['realms'])} realm(s) on engine build "
-        f"{snapshot.get('engine_build')}, {errors} error(s)",
-        file=sys.stderr,
+    summary = (
+        f"{total} readings across {len(snapshot['realms'])} realm(s) on engine "
+        f"build {snapshot.get('engine_build')}, {errors} error(s)"
     )
+
     if errors:
         # A baseline with holes in it is not a baseline: every probe it could
         # not read is a probe that will compare "equal" against a future
-        # failure and report agreement. Refuse to bless it silently.
+        # failure and report agreement.
+        #
+        # VALIDATE BEFORE WRITING, and never write the rejected reading to the
+        # path being blessed. --output defaults to the COMMITTED artifact, so
+        # writing first would destroy the good reference and then print a
+        # message claiming it had been refused. That fires exactly when the
+        # operator is doing the right thing — re-recording after an accepted
+        # bump — and the damage surfaces later as a `check` passing against a
+        # holed baseline, which is the two-non-readings trap reintroduced
+        # through the write path.
+        rejected = f"{args.output}.rejected"
+        write(snapshot, rejected)
         print(
             f"REFUSING to treat this as a good baseline: {errors} probe(s) "
             "could not be read. A probe that errors here will compare EQUAL "
             "against the same error later and be reported as agreement. "
-            "Investigate the errors, then re-record.",
+            f"Wrote the unusable reading to {rejected} for inspection; "
+            f"{args.output} is UNCHANGED. Investigate the errors, then "
+            "re-record.",
             file=sys.stderr,
         )
         return 1
+
+    write(snapshot, args.output)
+    print(f"wrote {args.output}: {summary}", file=sys.stderr)
     return 0
 
 
