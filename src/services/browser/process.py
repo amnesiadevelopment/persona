@@ -12,7 +12,7 @@ from ...utils.proxy_parser import parse_proxy_server
 from ..bookmark.store import BookmarkStore
 from ..cert.store import CertStore
 from ..proxy.bridge import ProxyBridge
-from ..proxy.errors import ProxyUnresolvedError
+from ..proxy.errors import GeographyUnknownError, ProxyUnresolvedError
 from ..proxy.store import ProxyStore
 from .bookmarks_seed import seed_bookmarks
 from .audio_ext import build_audio_extension
@@ -115,6 +115,37 @@ def _require_proxy_resolved(profile: Profile, proxy_url: str | None) -> None:
         )
 
 
+def _profile_timezone(profile: Profile, proxy) -> str:
+    """The zone a profile declares — or a refusal, failing CLOSED like the guard
+    above.
+
+    No proxy: a US zone, which must AGREE with the forced en-US language (see
+    the call sites) rather than leak the host zone.
+
+    A proxy: the zone of its EXIT. If that proxy carries no geography (it has
+    never been checked successfully), there is no honest answer — the old
+    fallback declared the OPERATOR'S REAL TIMEZONE inside the tunnel, a
+    real-location disclosure on the very vector the proxy exists to close. A
+    security tool must fail closed: refuse the launch instead.
+
+    Re-raised here rather than in launch_policy so the operator gets the profile
+    and proxy by name, and is told what resolves it — one proxy check writes the
+    geo and the same profile then launches declaring the exit's zone.
+    """
+    if proxy is None:
+        return _timezone_for("US")
+    try:
+        return _proxy_timezone(proxy)
+    except GeographyUnknownError as e:
+        raise GeographyUnknownError(
+            f"Profile {profile.name!r} has proxy {profile.proxy!r} assigned but its "
+            "geography could not be established (the proxy has never been checked "
+            "successfully). Refusing to launch: deriving the timezone from the host "
+            "would declare the operator's real location inside the tunnel. "
+            "Check the proxy to resolve it."
+        ) from e
+
+
 def _spawn_invisible(profile: Profile, profile_dir: str):
     """Launch the invisible_playwright (patched Firefox 150) engine. SOCKS5
     proxy auth is handled natively (no bridge). Returns a Popen-compatible
@@ -139,7 +170,7 @@ def _spawn_invisible(profile: Profile, profile_dir: str):
     # a detector flags. Pin a US zone so the direct identity reads as one coherent
     # US-English user AND the host location stays hidden.
     lang = _locale_for(proxy.country_code) if proxy else "en-US"
-    tz = _proxy_timezone(proxy) if proxy else _timezone_for("US")
+    tz = _profile_timezone(profile, proxy)
 
     if _platform.supports_linux_desktop_integration():
         write_window_entry(profile.name, icon="firefox")
@@ -548,7 +579,7 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
         # the host zone — CreepJS on a Kyiv host showed en-US paired with Europe/Kyiv,
         # a language⊥timezone tell. A US zone keeps the direct identity coherent and
         # hides the host location (matches the Firefox path).
-        args.append(f"--timezone={_proxy_timezone(proxy) if proxy else _timezone_for('US')}")
+        args.append(f"--timezone={_profile_timezone(profile, proxy)}")
 
         if getattr(profile, "ai_control", False):
             # Port 0 makes the kernel assign an unpredictable ephemeral port instead
