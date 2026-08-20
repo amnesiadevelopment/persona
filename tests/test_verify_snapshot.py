@@ -568,16 +568,54 @@ def test_diff_realms_reports_a_probe_errored_in_both_realms():
     assert entry["status"] == diff.INCONCLUSIVE
 
 
-def test_an_unread_reading_is_inconclusive_whichever_side_failed():
-    # Pins the SAFETY property of the asymmetric case independently of its
-    # label: a baseline value against a failed re-read is still a reading
-    # nobody obtained, so it is never silently passed.
+def test_a_vector_that_was_readable_and_now_throws_is_a_DIFFERENCE_not_a_retry():
+    # The asymmetric case, and the line the whole classification turns on.
+    # One side WAS read: "Apple GPU" in the baseline, a throw after the engine
+    # update. That is not a failure to look — it is the strongest continuity
+    # signal this subsystem can produce, so it must stay CHANGED and must NOT
+    # be demoted into the "look again" bucket alongside a probe nobody read.
     target = probes.probes_for_realm(probes.WINDOW)[0].id
     entries = diff.diff_snapshots(
         _snapshot(), _snapshot(window_values={target: RuntimeError("gone")})
     )
     assert len(entries) == 1
-    assert entries[0]["status"] == diff.INCONCLUSIVE
+    assert entries[0]["status"] == diff.CHANGED
+    assert entries[0]["observed"] == {"error": "RuntimeError: gone"}
+    # ...and it is not counted as an unobtained reading, because one was.
+    assert diff.inconclusive_count(entries) == 0
+
+
+def test_the_asymmetric_case_still_exits_one_and_not_the_inconclusive_code(tmp_path):
+    # The regression this pins: classification is not the operator-facing
+    # artifact — the EXIT CODE is. A previous round labelled the asymmetric
+    # case inconclusive, which propagated through _exit_code and demoted it
+    # from 1 to 3 while the guard above still passed, because that guard never
+    # reaches the exit code. Assert the code itself, on a real cli.main call.
+    from src.services.verify import cli
+
+    target = probes.probes_for_realm(probes.WINDOW)[0].id
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    snapshot.write(_snapshot(), str(a))
+    snapshot.write(_snapshot(window_values={target: RuntimeError("gone")}), str(b))
+    assert cli.main(["diff", str(a), str(b)]) == 1, (
+        "a vector that was readable and now throws is 'the identity moved', "
+        "not 'we failed to look'"
+    )
+
+
+def test_a_vector_read_in_one_realm_and_unreadable_in_the_other_is_a_difference():
+    # diff_realms' half of the same rule. A spoof that reached the window and
+    # threw in the worker is the historically load-bearing defect class; it is
+    # a disagreement BETWEEN the realms, not an unobtained reading.
+    shared = [p for p in probes.PROBES if set(p.realms) == set(probes.ALL_REALMS)][0]
+    snap = _snapshot(worker_values={shared.id: TypeError("boom")})
+    entry = next(
+        e
+        for e in diff.diff_realms(snap, probes.WINDOW, probes.WORKER)
+        if e["probe_id"] == shared.id
+    )
+    assert entry["status"] == diff.CHANGED
+    assert diff.inconclusive_count([entry]) == 0
 
 
 def test_the_inconclusive_status_is_exported_beside_the_others():
