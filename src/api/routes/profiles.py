@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from ...core.config import DATA_DIR
 from ...core.logging import get_logger
+from ...services.profile.coherence import IncoherentProfile
 from ...utils.validation import validate_profile_name, validate_proxy_format
 from ..dependencies import (
     get_browser_launcher,
@@ -82,21 +83,32 @@ def create_profile(
     if body.proxy:
         _validate_proxy_ref(body.proxy, ps)
 
-    if not pm.add_profile(
-        body.name,
-        body.proxy or "",
-        body.os_type,
-        search_engine=body.search_engine,
-        bookmark_pool=body.bookmark_pool,
-        bookmarks=body.bookmarks,
-        tags=body.tags,
-        device_type=body.device_type,
-        notes=body.notes,
-        engine=body.engine,
-        resolution=body.resolution,
-        certificate=body.certificate,
-        ai_control=body.ai_control,
-    ):
+    # The os_type/engine coherence rules are enforced by the model (every door
+    # crosses them), so this route only has to TRANSLATE the refusal into HTTP.
+    # 400, not 409: the request describes a machine that cannot exist, which is
+    # a bad request, not a conflict with an existing record. The detail carries
+    # the model's reason verbatim so the caller learns which pair conflicts and
+    # how to resolve it.
+    try:
+        created = pm.add_profile(
+            body.name,
+            body.proxy or "",
+            body.os_type,
+            search_engine=body.search_engine,
+            bookmark_pool=body.bookmark_pool,
+            bookmarks=body.bookmarks,
+            tags=body.tags,
+            device_type=body.device_type,
+            notes=body.notes,
+            engine=body.engine,
+            resolution=body.resolution,
+            certificate=body.certificate,
+            ai_control=body.ai_control,
+        )
+    except IncoherentProfile as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    if not created:
         raise HTTPException(status_code=409, detail="Profile already exists")
 
     logger.info("API created profile: %s", body.name)
@@ -157,22 +169,32 @@ def update_profile(
     # profile's current value when the PATCH omits it (else it would be wiped).
     # Every other optional field is only applied when non-None, so an omitted
     # field passes None and stays untouched.
-    if not pm.update_profile(
-        name,
-        new_name,
-        new_proxy or "",
-        new_os,
-        new_search_engine=supplied.get("search_engine"),
-        new_bookmark_pool=supplied.get("bookmark_pool", profile.bookmark_pool),
-        new_bookmarks=supplied.get("bookmarks"),
-        new_tags=supplied.get("tags"),
-        new_ai_control=supplied.get("ai_control"),
-        new_device_type=supplied.get("device_type"),
-        new_notes=new_notes,
-        new_engine=supplied.get("engine"),
-        new_resolution=supplied.get("resolution"),
-        new_certificate=supplied.get("certificate"),
-    ):
+    #
+    # Coherence is enforced by the model, which sees the PATCH's fields AND the
+    # stored ones — so `PATCH {"os_type": "macos"}` on a profile already stored
+    # as firefox is judged on the pair it would RESULT IN, not on the one field
+    # supplied. This route only translates that refusal into a 400.
+    try:
+        updated = pm.update_profile(
+            name,
+            new_name,
+            new_proxy or "",
+            new_os,
+            new_search_engine=supplied.get("search_engine"),
+            new_bookmark_pool=supplied.get("bookmark_pool", profile.bookmark_pool),
+            new_bookmarks=supplied.get("bookmarks"),
+            new_tags=supplied.get("tags"),
+            new_ai_control=supplied.get("ai_control"),
+            new_device_type=supplied.get("device_type"),
+            new_notes=new_notes,
+            new_engine=supplied.get("engine"),
+            new_resolution=supplied.get("resolution"),
+            new_certificate=supplied.get("certificate"),
+        )
+    except IncoherentProfile as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    if not updated:
         raise HTTPException(status_code=409, detail="Update failed (name conflict?)")
 
     logger.info("API updated profile: %s -> %s", name, new_name)
