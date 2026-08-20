@@ -85,8 +85,8 @@ seconds.
   assign it to a profile to log into an admin site. The certificate is presented
   **only** to that site's address — never to any other site, so it can't become
   a fingerprint that identifies you elsewhere — and it stays inside persona, never
-  imported into the OS certificate store. Available on every OS with the Chromium
-  engine; Firefox certificates are Linux-only for now.
+  imported into the OS certificate store. Available on every OS, with either the
+  Chromium or the Firefox engine.
 - **Resolution decoupling & HiDPI** — a profile can report any screen resolution
   while the real window stays native and readable, with no window-size tell.
 - **Mobile personas** — Android/iOS profiles built from real device presets
