@@ -26,6 +26,12 @@ VERSION_FILE = os.path.join(ENGINE_DIR, "version.txt")
 # complete install from a half-extracted one (a Windows zip drops chrome.exe
 # and its DLLs as separate files — the binary can appear before its libraries).
 MARKER_FILE = os.path.join(ENGINE_DIR, ".engine-complete")
+# Written when an install STARTS and removed once it succeeds, so an install
+# that dies midway leaves a mark that outlives the process. This is what makes
+# the completeness gate work on an UPGRADE: clearing MARKER_FILE alone is inert
+# there, because version.txt (which nothing ever removes — deliberately, it's
+# the provenance record) keeps answering the gate on its own.
+INSTALLING_NAME = ".engine-installing"
 RELEASES_API = (
     "https://api.github.com/repos/adryfish/fingerprint-chromium/releases/latest"
 )
@@ -55,11 +61,30 @@ def _binary_root() -> str:
     return ENGINE_BINARY
 
 
+def _installing_file() -> str:
+    """Path of the in-progress sentinel, resolved against ENGINE_DIR at CALL
+    time rather than frozen at import. Everything else here is a module
+    constant, so this asymmetry is deliberate: a test (or any caller) that
+    repoints ENGINE_DIR must not be able to strand a sentinel in the operator's
+    REAL engine dir, where it would make a perfectly good engine read as
+    not-installed forever."""
+    return os.path.join(ENGINE_DIR, INSTALLING_NAME)
+
+
 def _install_complete() -> bool:
     """True when a whole engine finished installing. The completion marker is
     written last by download_engine; an engine installed before the marker
     existed has version.txt (also written last, by ensure_engine), so accept
-    that as the legacy completion signal rather than force a re-download."""
+    that as the legacy completion signal rather than force a re-download.
+
+    The in-progress sentinel VETOES both signals. Clearing MARKER_FILE alone
+    cannot express "an install is running" on an upgrade, because version.txt is
+    already there and nothing ever removes it — so the gate answered True over a
+    half-promoted tree (part old build, part new) on exactly the upgrade case it
+    was written for. The sentinel outlives a crashed install, so the failure
+    mode is a needless re-download, never a launch of a mixed engine."""
+    if os.path.exists(_installing_file()):
+        return False
     return os.path.exists(MARKER_FILE) or os.path.exists(VERSION_FILE)
 
 
@@ -394,6 +419,16 @@ def download_engine(
             os.remove(MARKER_FILE)
         except OSError:
             pass
+        # ...and state the in-progress fact POSITIVELY. The clear above is inert
+        # on an upgrade (version.txt is already there and nothing removes it), so
+        # the sentinel is what actually makes is_installed() False from here
+        # until the marker is written. Same lock as the marker, on purpose: the
+        # two must not split across it.
+        try:
+            with open(_installing_file(), "w", encoding="utf-8") as f:
+                f.write("installing")
+        except OSError:
+            pass
         if _platform.IS_WINDOWS:
             ok = _install_windows(asset_path)
         elif _platform.IS_MACOS:
@@ -407,6 +442,18 @@ def download_engine(
                     f.write("ok")
             except OSError:
                 pass
+            # Clear the in-progress sentinel only now the install succeeded.
+            # As forgiving as the marker write above: a swallowed OSError here
+            # costs a needless re-download next start, whereas raising would
+            # turn a SUCCESSFUL install into a reported failure.
+            try:
+                os.remove(_installing_file())
+            except OSError:
+                pass
+        # A FAILED install deliberately leaves the sentinel behind — that is the
+        # whole point: is_installed() stays False across the crash, so
+        # ensure_engine re-installs on next start instead of launching a tree
+        # that is part previous build, part new one.
         return ok
 
 

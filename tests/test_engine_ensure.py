@@ -68,6 +68,139 @@ def test_is_installed_false_when_empty(tmp_path, monkeypatch):
     assert updater.is_installed() is False
 
 
+# ---------------------------------------------------------------------------
+# the in-progress sentinel: an install that died must not read as finished
+# ---------------------------------------------------------------------------
+
+
+def _stage_prior_install(d, version="148.0.7778.215"):
+    """A working, COMPLETE prior install: binary + marker + version.txt. This is
+    the upgrade precondition — the only state in which a partial install lands
+    on top of something that was working."""
+    (d / "engine.bin").write_bytes(b"\x00" * 10)
+    (d / ".engine-complete").touch()
+    (d / "version.txt").write_text(version, encoding="utf-8")
+
+
+def test_sentinel_makes_is_installed_false_despite_marker_and_version(
+    tmp_path, monkeypatch
+):
+    # The sentinel VETOES both completion signals. Not "instead of" them: with
+    # BOTH the marker and version.txt present — the strongest possible "I am
+    # installed" the tree can say — an in-progress install still reads False.
+    d = _wire_engine_dir(monkeypatch, tmp_path)
+    _stage_prior_install(d)
+    assert updater.is_installed() is True  # precondition: reads ready
+
+    (d / ".engine-installing").touch()
+    assert updater.is_installed() is False
+
+
+def test_failed_upgrade_does_not_read_as_installed(tmp_path, monkeypatch):
+    """AC2 — the premise, red on main before the sentinel existed.
+
+    Drive the REAL download_engine over a working prior install, with the
+    install function failing midway. download_engine correctly returns False;
+    what this pins is that the ON-DISK READINESS STATE agrees with it, because
+    that is the thing a later is_installed() caller launches from. Before the
+    sentinel, clearing the marker was inert here (version.txt still answered the
+    gate) and this asserted True over a part-old/part-new tree.
+    """
+    d = _wire_engine_dir(monkeypatch, tmp_path)
+    _stage_prior_install(d)
+    assert updater.is_installed() is True
+    assert updater.current_version() == "148.0.7778.215"
+
+    monkeypatch.setattr(updater, "_download_to", lambda *a, **k: True)
+    # promotion dies midway: the old engine is already destroyed on the Windows
+    # and macOS paths, so what's on disk now is a mixed tree
+    monkeypatch.setattr(updater, "_install_linux", lambda p: False)
+
+    assert updater.download_engine("http://x/e", digest="sha256:aa") is False
+
+    assert updater.is_installed() is False
+    # ...and specifically NOT because we destroyed the provenance record: the
+    # version is still answerable, which is exactly when someone needs it
+    assert (d / "version.txt").exists()
+    assert updater.current_version() == "148.0.7778.215"
+
+
+def test_failed_upgrade_reads_installed_again_without_the_sentinel_check(
+    tmp_path, monkeypatch
+):
+    """AC7 — the falsification criterion, as an executable test.
+
+    Re-run the AC2 scenario against a _install_complete() whose sentinel arm has
+    been REMOVED (the pre-fix disjunction, verbatim). It must go back to
+    reporting True — proving the AC2 assertion above is carried by the gate
+    consulting in-progress state, and not by some incidental side effect of the
+    failed install. A test that passes either way would be testing nothing.
+    """
+    d = _wire_engine_dir(monkeypatch, tmp_path)
+    _stage_prior_install(d)
+
+    monkeypatch.setattr(updater, "_download_to", lambda *a, **k: True)
+    monkeypatch.setattr(updater, "_install_linux", lambda p: False)
+    assert updater.download_engine("http://x/e", digest="sha256:aa") is False
+
+    # the sentinel IS on disk — the install-side half of the fix is intact...
+    assert (d / ".engine-installing").exists()
+
+    # ...but with the gate no longer consulting it, the old bug is back
+    monkeypatch.setattr(
+        updater,
+        "_install_complete",
+        lambda: os.path.exists(updater.MARKER_FILE)
+        or os.path.exists(updater.VERSION_FILE),
+    )
+    assert updater.is_installed() is True
+
+
+def test_successful_install_leaves_no_sentinel(tmp_path, monkeypatch):
+    # AC3 — the sentinel is removed on success, so a good install reads ready
+    # and doesn't strand a file that would force a re-download every start.
+    d = _wire_engine_dir(monkeypatch, tmp_path)
+    _stage_prior_install(d)
+
+    monkeypatch.setattr(updater, "_download_to", lambda *a, **k: True)
+
+    def _install_ok(p):
+        (d / "engine.bin").write_bytes(b"\x01" * 20)  # the new build lands
+        return True
+
+    monkeypatch.setattr(updater, "_install_linux", _install_ok)
+
+    assert updater.download_engine("http://x/e", digest="sha256:aa") is True
+    assert not (d / ".engine-installing").exists()
+    assert (d / ".engine-complete").exists()
+    assert updater.is_installed() is True
+
+
+def test_a_successful_install_survives_an_unremovable_sentinel(tmp_path, monkeypatch):
+    # Sentinel removal must be as forgiving as the marker write beside it: it is
+    # the last thing a SUCCESSFUL install does, so it must never be the one
+    # thing that turns that success into a raised exception / reported failure.
+    d = _wire_engine_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(updater, "_download_to", lambda *a, **k: True)
+
+    def _install_ok(p):
+        (d / "engine.bin").write_bytes(b"\x01" * 20)
+        return True
+
+    monkeypatch.setattr(updater, "_install_linux", _install_ok)
+
+    real_remove = updater.os.remove
+
+    def _stubborn_remove(path):
+        if str(path).endswith(".engine-installing"):
+            raise OSError("held open by another process")
+        return real_remove(path)
+
+    monkeypatch.setattr(updater.os, "remove", _stubborn_remove)
+
+    assert updater.download_engine("http://x/e", digest="sha256:aa") is True
+
+
 def test_sha256_matches():
     data = b"hello world"
     digest = hashlib.sha256(data).hexdigest()
