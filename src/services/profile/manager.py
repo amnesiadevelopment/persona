@@ -329,7 +329,19 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
             if new_notes is not None:
                 profile.notes = new_notes
             if new_certificate is not None:
-                profile.certificate = new_certificate or None
+                _new_cert = new_certificate or None
+                if _new_cert != profile.certificate:
+                    # cert_trust_status records the outcome of the LAST CA trust
+                    # attempt, which was made for the certificate being replaced
+                    # here. Carried over it would render a verdict describing a
+                    # different CA — including a stale "trusted", an affirmative
+                    # clean bill of health for a certificate whose trust was
+                    # never attempted. None is the field's own "never attempted".
+                    # Conditional on purpose: update_profile runs on EVERY field
+                    # edit, so an unconditional clear would discard a real
+                    # verdict on a rename or a notes edit.
+                    profile.cert_trust_status = None
+                profile.certificate = _new_cert
             if new_ai_control is not None:
                 profile.ai_control = new_ai_control
 

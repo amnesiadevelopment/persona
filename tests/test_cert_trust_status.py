@@ -442,7 +442,7 @@ def _texts(control) -> list[str]:
     return out
 
 
-def _dialog_texts(profile):
+def _dialog_texts(profile, cert_names=("admin-cert",)):
     from src.ui.dialogs.profile import open_profile_dialog
 
     class _FakePage:
@@ -465,7 +465,7 @@ def _dialog_texts(profile):
         on_save=lambda *a, **k: None,
         profile=profile,
         proxy_names=[],
-        cert_names=["admin-cert"],
+        cert_names=list(cert_names),
     )
     return _texts(page.shown)
 
@@ -491,4 +491,107 @@ def test_profile_with_no_recorded_outcome_renders_no_status_line():
     """AC5 on the surface — a profile that never recorded an outcome shows no
     new text at all."""
     texts = _dialog_texts(Profile(name="plain"))
+    assert not any("last launch:" in t for t in texts)
+
+
+# --------------------------------------------------------------------------
+# The recorded outcome describes ONE certificate's CA. When the assigned
+# certificate changes, the verdict stops applying to what is on the profile.
+#
+# Left stale it does not merely go quiet — it makes an AFFIRMATIVE claim. A
+# profile whose cert A imported cleanly ("trusted"), then swapped to cert B and
+# never launched, renders "last launch: trusted" in the MUTED colour: a clean
+# bill of health for a CA whose trust was never attempted. That is the same
+# defect this ticket exists to close (a stored field rendered as a confident
+# state with no provenance), pointed the other way — the original bug hid a
+# failure, this one manufactures a reassurance.
+# --------------------------------------------------------------------------
+
+def test_swapping_the_certificate_clears_the_recorded_outcome(mgr):
+    """The verdict describes the OLD certificate's CA — it must not survive
+    onto a different one."""
+    mgr.add_profile("fox", "", "windows", engine="firefox", certificate="cert-a")
+    mgr.set_cert_trust_status("fox", "trusted")
+
+    assert mgr.update_profile("fox", "fox", "", "windows", new_certificate="cert-b") is True
+
+    assert mgr.profiles["fox"].certificate == "cert-b"
+    assert mgr.profiles["fox"].cert_trust_status is None, (
+        "the outcome recorded for cert-a is still on the profile after it was "
+        "reassigned to cert-b"
+    )
+
+
+def test_removing_the_certificate_clears_the_recorded_outcome(mgr):
+    """AC5 on the write path — a profile with NO certificate assigned carries
+    no outcome. The dialog maps the 'no certificate' choice to '', which
+    update_profile turns into None."""
+    mgr.add_profile("fox", "", "windows", engine="firefox", certificate="cert-a")
+    mgr.set_cert_trust_status("fox", "NOT TRUSTED: opening without certificate trust")
+
+    assert mgr.update_profile("fox", "fox", "", "windows", new_certificate="") is True
+
+    assert mgr.profiles["fox"].certificate is None
+    assert mgr.profiles["fox"].cert_trust_status is None
+
+
+def test_editing_an_unrelated_field_keeps_the_recorded_outcome(mgr):
+    """The clear must be conditional on the certificate ACTUALLY changing.
+    update_profile is called for every field edit, so an unconditional clear
+    would silently discard a real verdict on a rename or a notes edit — its own
+    bug, and the reason this test sits beside the two above."""
+    mgr.add_profile("fox", "", "windows", engine="firefox", certificate="cert-a")
+    mgr.set_cert_trust_status("fox", "NOT TRUSTED: opening without certificate trust")
+
+    assert mgr.update_profile(
+        "fox", "fox", "", "windows",
+        new_notes="unrelated edit",
+        new_certificate="cert-a",
+    ) is True
+
+    assert mgr.profiles["fox"].notes == "unrelated edit"
+    assert mgr.profiles["fox"].cert_trust_status == (
+        "NOT TRUSTED: opening without certificate trust"
+    ), "an unrelated edit discarded a real trust verdict"
+
+
+def test_a_stale_trusted_verdict_is_never_rendered_after_swapping_certificate(mgr):
+    """Case C regression guard — the serious one — end to end.
+
+    Cert A imports cleanly ("trusted"), the operator swaps to cert B and has
+    NEVER launched with it. Before the fix the dialog rendered "last launch:
+    trusted" in the MUTED colour: an affirmative clean bill of health for a CA
+    whose trust was never attempted.
+
+    This drives the REAL edit path (update_profile) and then renders the
+    resulting profile, because the clear is where the staleness is actually
+    resolvable. The render gate cannot decide this case on its own: Profile
+    records the verdict but NOT which certificate it describes, so at render
+    time `certificate="cert-b"` + "trusted" is indistinguishable from a genuine
+    verdict for cert-b. Binding this to the edit path is what makes it a real
+    guard rather than one that passes for the wrong reason.
+    """
+    mgr.add_profile("fox", "", "windows", engine="firefox", certificate="cert-a")
+    mgr.set_cert_trust_status("fox", "trusted")
+
+    mgr.update_profile("fox", "fox", "", "windows", new_certificate="cert-b")
+
+    texts = _dialog_texts(mgr.profiles["fox"], cert_names=("cert-a", "cert-b"))
+    assert not any("last launch:" in t for t in texts), (
+        "the dialog reports 'trusted' against cert-b, whose CA trust was never "
+        "attempted"
+    )
+
+
+def test_a_verdict_with_no_certificate_assigned_is_not_rendered():
+    """AC5 on the surface, for the removal case — certificate gone, leftover
+    status must not render."""
+    texts = _dialog_texts(
+        Profile(
+            name="fox",
+            engine="firefox",
+            certificate=None,
+            cert_trust_status="NOT TRUSTED: opening without certificate trust",
+        )
+    )
     assert not any("last launch:" in t for t in texts)
