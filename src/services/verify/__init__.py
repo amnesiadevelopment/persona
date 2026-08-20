@@ -26,7 +26,15 @@ package must stay importable in. Import it directly where you need it.
 from .diff import diff_realms, diff_snapshots, format_diff
 from .probes import ALL_REALMS, PROBES, WINDOW, WORKER, Probe, probes_for_realm
 from .runner import run_probes
-from .snapshot import SCHEMA_VERSION, build_snapshot, canonicalise, dumps, load, write
+from .snapshot import (
+    SCHEMA_VERSION,
+    build_snapshot,
+    canonicalise,
+    dumps,
+    engine_build,
+    load,
+    write,
+)
 
 __all__ = [
     "ALL_REALMS",
@@ -40,6 +48,7 @@ __all__ = [
     "diff_realms",
     "diff_snapshots",
     "dumps",
+    "engine_build",
     "format_diff",
     "load",
     "probes_for_realm",
