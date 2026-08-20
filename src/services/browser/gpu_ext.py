@@ -215,6 +215,79 @@ _CONTENT_SCRIPT = r"""
     35724: "WebGL GLSL ES 3.00"
   };
 
+  // The WebGL2-only parameter block for iOS. Without it every pname below falls
+  // through to the HOST renderer (SwiftShader in a GPU-less VM, or the
+  // operator's real GPU), so a profile presented a constructed identity on the
+  // WebGL1 parameters and the host's truth on these — inconsistent with the
+  // value next to it, one call apart. That cross-vector incoherence is the tell
+  // this block closes.
+  //
+  // Values: measured on a physical iPhone (iOS 18.7 Safari, browserleaks.com
+  // /webgl). Transcribed with per-value provenance into
+  // tests/fixtures/ios-webgl-reference.md — read that file, not this comment,
+  // and do not re-derive them from either.
+  //
+  // WHY THIS IS V2-ONLY: these pnames do not exist on a WebGL1 context, where a
+  // real browser answers INVALID_ENUM. Installed via the V2 extraMap so they
+  // reach WebGL2RenderingContext ONLY; answering them on a WebGL1 context would
+  // be a fresh impossibility, not a fix.
+  //
+  // NOT independent — do NOT parameterise or vary any of these per profile.
+  // They are compile-time constants in ANGLE's Metal backend, identical on every
+  // iPhone, so per-profile variation is impossible on real hardware and would
+  // itself be the tell. The arithmetic ties them together:
+  //   MAX_TEXTURE_LOD_BIAS = log2(MAX_TEXTURE_SIZE) + 1 = log2(16384) + 1 = 15
+  //   combined uniform components = 4096 + 16384*16/4 = 69632 (both stages)
+  //   the three 124s (varying / vertex-output / fragment-input) move together
+  //
+  // MAX_SAMPLES (0x8D57, 36183) IS DELIBERATELY ABSENT — do not add it. It is
+  // the one genuinely runtime-queried value in the set: ANGLE derives it from
+  // mFormatTable.getMaxSamples() over {2,4,8}. Source predicts 8; the physical
+  // device reported 4. The discrepancy is unexplained and there is no second
+  // capture, so it falls through to the host. Falling through is honest;
+  // pinning an unexplained constant is a guess wearing a citation.
+  //
+  // Hex is given beside each decimal so a transposed enum is visible on
+  // inspection. This matters more than a typo would: a wrong-but-valid enum
+  // still RETURNS a value — just the wrong parameter's — which is a sharper
+  // tell than the fall-through being fixed here, while a wrong-and-unused enum
+  // never matches and fails silently. Neither is self-catching, so the tests
+  // assert each pname against its own expected value.
+  //
+  // All 24 are scalars: WebGL2 returns these as plain numbers (GLint/GLint64/
+  // GLfloat), not as typed arrays. No Float32Array copy applies here — that
+  // path exists for the WebGL1 range/vector parameters in COMMON.
+  var WEBGL2_IOS = {
+    32883: 2048,      // 0x8073 MAX_3D_TEXTURE_SIZE
+    35071: 2048,      // 0x88FF MAX_ARRAY_TEXTURE_LAYERS
+    34045: 15,        // 0x84FD MAX_TEXTURE_LOD_BIAS = log2(16384)+1
+    34047: 16,        // 0x84FF MAX_TEXTURE_MAX_ANISOTROPY_EXT
+    34852: 8,         // 0x8824 MAX_DRAW_BUFFERS
+    36063: 8,         // 0x8CDF MAX_COLOR_ATTACHMENTS
+    35658: 4096,      // 0x8B4A MAX_VERTEX_UNIFORM_COMPONENTS (= 1024 vectors * 4)
+    35657: 4096,      // 0x8B49 MAX_FRAGMENT_UNIFORM_COMPONENTS (= 1024 vectors * 4)
+    35659: 124,       // 0x8B4B MAX_VARYING_COMPONENTS (= 31 vectors * 4)
+    37154: 124,       // 0x9122 MAX_VERTEX_OUTPUT_COMPONENTS
+    37157: 124,       // 0x9125 MAX_FRAGMENT_INPUT_COMPONENTS
+    35371: 16,        // 0x8A2B MAX_VERTEX_UNIFORM_BLOCKS
+    35373: 16,        // 0x8A2D MAX_FRAGMENT_UNIFORM_BLOCKS
+    35374: 32,        // 0x8A2E MAX_COMBINED_UNIFORM_BLOCKS
+    35375: 32,        // 0x8A2F MAX_UNIFORM_BUFFER_BINDINGS
+    35376: 16384,     // 0x8A30 MAX_UNIFORM_BLOCK_SIZE
+    // 0x8A32 (35378) is MAX_COMBINED_GEOMETRY_UNIFORM_COMPONENTS — a
+    // geometry-stage parameter WebGL2 does not expose at all. The uniform-block
+    // run is contiguous from 0x8A2B, so it is easy to land on by miscount; it
+    // must NOT appear here.
+    35377: 69632,     // 0x8A31 MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS
+    35379: 69632,     // 0x8A33 MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS
+    35380: 16,        // 0x8A34 UNIFORM_BUFFER_OFFSET_ALIGNMENT
+    35076: -8,        // 0x8904 MIN_PROGRAM_TEXEL_OFFSET
+    35077: 7,         // 0x8905 MAX_PROGRAM_TEXEL_OFFSET
+    35968: 4,         // 0x8C80 MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS
+    35978: 128,       // 0x8C8A MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS
+    35979: 4          // 0x8C8B MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS
+  };
+
   // getSupportedExtensions otherwise reflects the host GPU's real extension set
   // (e.g. a real RTX exposes extensions a claimed UHD 630 wouldn't). Return the
   // stable set real Chrome/Safari reports so it matches the claimed renderer.
@@ -428,7 +501,28 @@ _CONTENT_SCRIPT = r"""
   }
 
   var V1 = (OS === "ios") ? GL1_IOS : GL1;
-  var V2 = (OS === "ios") ? GL2_IOS : GL2;
+  var V2 = GL2;
+  if (OS === "ios") {
+    // iOS WebGL2 gets the version strings AND the WebGL2-only parameter block.
+    // Merged into ONE extraMap because installOn takes a single map; built here
+    // rather than as a literal so GL2_IOS stays the version-string pair.
+    //
+    // PRECEDENCE, made deliberate rather than incidental: installOn's lookup is
+    // extraMap BEFORE COMMON (see getParameter above), so anything in this map
+    // wins over COMMON_IOS. The three key sets are disjoint by construction —
+    // GL2_IOS is {7938, 35724}, WEBGL2_IOS is the 24 WebGL2-only pnames, and
+    // COMMON_IOS is the WebGL1 set — so no key is contested and the merge order
+    // below changes nothing today. It is fixed anyway so that if a future key
+    // ever does collide, the WebGL2 block loses to the version strings and the
+    // outcome is a stated rule instead of an accident of iteration order.
+    V2 = {};
+    for (var wk in WEBGL2_IOS) {
+      if (Object.prototype.hasOwnProperty.call(WEBGL2_IOS, wk)) V2[wk] = WEBGL2_IOS[wk];
+    }
+    for (var gk in GL2_IOS) {
+      if (Object.prototype.hasOwnProperty.call(GL2_IOS, gk)) V2[gk] = GL2_IOS[gk];
+    }
+  }
   try { installOn(G.WebGLRenderingContext, V1, EXTS_GL1); } catch (e) {}
   try { installOn(G.WebGL2RenderingContext, V2, EXTS_GL2); } catch (e) {}
    } catch (e) {}

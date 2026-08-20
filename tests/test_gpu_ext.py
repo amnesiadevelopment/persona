@@ -263,8 +263,64 @@ console.log(JSON.stringify({
   aliasedPointSizeRange: num(33901), aliasedLineWidthRange: num(33902),
   exts_gl1: gl1.getSupportedExtensions(),
   exts_gl2: gl2.getSupportedExtensions(),
+  // WebGL2-only block (PS-22). Read on BOTH contexts: on WebGL2 these must be
+  // the reference values, on WebGL1 they must still fall through (the pnames do
+  // not exist there and a real browser answers INVALID_ENUM).
+  webgl2_on_gl2: readWebgl2Params(gl2),
+  webgl2_on_gl1: readWebgl2Params(gl1),
+  // Must BOTH fall through: MAX_SAMPLES is deliberately unspoofed, and 35378 is
+  // the geometry-stage parameter WebGL2 does not expose.
+  maxSamples_gl2: gl2.getParameter(36183),
+  geometryStage35378_gl2: gl2.getParameter(35378),
 }));
 """
+
+# The WebGL2-only reference block, keyed by pname, with the spec name spelled
+# out. Source of record: tests/fixtures/ios-webgl-reference.md (all [device]).
+#
+# Written out per-parameter ON PURPOSE. An earlier revision of PS-22 shipped
+# four transposed enums, and neither shape is self-catching: a wrong-but-VALID
+# enum still returns a value (just the wrong parameter's — e.g. SEPARATE_ATTRIBS
+# answering 128 instead of 4, a sharper tell than the fall-through being fixed),
+# while a wrong-and-UNUSED enum never matches and falls through silently, so the
+# bug looks like success. A test that only checked "some value came back" would
+# have passed that revision. These assert value-for-value, per pname.
+_WEBGL2_IOS_REFERENCE = {
+    32883: ("MAX_3D_TEXTURE_SIZE", 2048),
+    35071: ("MAX_ARRAY_TEXTURE_LAYERS", 2048),
+    34045: ("MAX_TEXTURE_LOD_BIAS", 15),
+    34047: ("MAX_TEXTURE_MAX_ANISOTROPY_EXT", 16),
+    34852: ("MAX_DRAW_BUFFERS", 8),
+    36063: ("MAX_COLOR_ATTACHMENTS", 8),
+    35658: ("MAX_VERTEX_UNIFORM_COMPONENTS", 4096),
+    35657: ("MAX_FRAGMENT_UNIFORM_COMPONENTS", 4096),
+    35659: ("MAX_VARYING_COMPONENTS", 124),
+    37154: ("MAX_VERTEX_OUTPUT_COMPONENTS", 124),
+    37157: ("MAX_FRAGMENT_INPUT_COMPONENTS", 124),
+    35371: ("MAX_VERTEX_UNIFORM_BLOCKS", 16),
+    35373: ("MAX_FRAGMENT_UNIFORM_BLOCKS", 16),
+    35374: ("MAX_COMBINED_UNIFORM_BLOCKS", 32),
+    35375: ("MAX_UNIFORM_BUFFER_BINDINGS", 32),
+    35376: ("MAX_UNIFORM_BLOCK_SIZE", 16384),
+    35377: ("MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS", 69632),
+    35379: ("MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS", 69632),
+    35380: ("UNIFORM_BUFFER_OFFSET_ALIGNMENT", 16),
+    35076: ("MIN_PROGRAM_TEXEL_OFFSET", -8),
+    35077: ("MAX_PROGRAM_TEXEL_OFFSET", 7),
+    35968: ("MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS", 4),
+    35978: ("MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS", 128),
+    35979: ("MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS", 4),
+}
+
+_GPU_PROBE = _GPU_PROBE.replace(
+    "const num = (p) =>",
+    "const readWebgl2Params = (ctx) => {\n"
+    "  const out = {};\n"
+    "  for (const p of %s) out[p] = ctx.getParameter(p);\n"
+    "  return out;\n"
+    "};\n"
+    "const num = (p) =>" % (sorted(_WEBGL2_IOS_REFERENCE),),
+)
 
 
 def _probe(tmp_path, seed, os_type):
@@ -453,6 +509,142 @@ def test_two_ios_seeds_select_the_identical_vendor_renderer_pair(tmp_path):
     # the seed must not reach this value at all
     assert a["exts_gl2"] == b["exts_gl2"]
     assert a["maxViewportDims"] == b["maxViewportDims"]
+
+
+def _webgl2_ios_block_from_source():
+    """Parse the WEBGL2_IOS pname->value map out of gpu_ext.py.
+
+    Asserting on the parsed BLOCK rather than on raw file text matters here: the
+    surrounding comments deliberately mention the excluded enums (36183, 35378)
+    by number to explain why they are absent, so a substring check over the file
+    would report them as spoofed when they are not.
+    """
+    import re
+
+    from src.services.browser import gpu_ext
+
+    src = pathlib.Path(gpu_ext.__file__).read_text(encoding="utf-8")
+    block = re.search(r"var WEBGL2_IOS = \{(.*?)\n  \};", src, re.S)
+    assert block, "WEBGL2_IOS block not found in gpu_ext.py"
+    parsed = {}
+    for line in block.group(1).splitlines():
+        entry = re.match(r"\s*(\d+)\s*:\s*(-?\d+)\s*,?\s*$", re.sub(r"//.*", "", line))
+        if entry:
+            parsed[int(entry.group(1))] = int(entry.group(2))
+    return parsed
+
+
+def test_ios_webgl2_params_match_the_reference_value_for_value(tmp_path):
+    # PS-22. THE enum-correctness assertion. Each pname is checked against the
+    # value the reference assigns to THAT parameter, so a transposed constant
+    # fails loudly and names itself. A test asserting only "a value came back"
+    # would pass revision 1's four swapped enums — which is exactly how they
+    # reached review.
+    p = _probe(tmp_path, 1, "ios")
+    got = p["webgl2_on_gl2"]
+    wrong = {}
+    for pname, (name, expected) in sorted(_WEBGL2_IOS_REFERENCE.items()):
+        actual = got[str(pname)]
+        if actual != expected:
+            wrong[f"{name} ({pname})"] = {"expected": expected, "got": actual}
+    assert not wrong, f"WebGL2 parameters disagree with the reference: {wrong}"
+
+
+def test_ios_webgl2_params_are_numbers_not_strings_or_arrays(tmp_path):
+    # A detector reads the return TYPE, not just the value. All 24 are scalars
+    # in WebGL2 (GLint/GLint64/GLfloat) — a plain Array or a numeric string
+    # where the platform gives a number is itself the tell.
+    p = _probe(tmp_path, 1, "ios")
+    for pname, (name, _) in sorted(_WEBGL2_IOS_REFERENCE.items()):
+        actual = p["webgl2_on_gl2"][str(pname)]
+        assert isinstance(actual, int) and not isinstance(actual, bool), (
+            f"{name} ({pname}) came back as {type(actual).__name__}: {actual!r}"
+        )
+
+
+def test_ios_webgl2_params_do_not_leak_onto_a_webgl1_context(tmp_path):
+    # These pnames do not exist on WebGL1, where a real browser answers
+    # INVALID_ENUM. Answering them there would be a FRESH impossibility, not a
+    # fix — so the WebGL1 context must still fall through to the host for every
+    # one of them. This is what pins the block to the V2 extraMap.
+    p = _probe(tmp_path, 1, "ios")
+    leaked = {
+        f"{_WEBGL2_IOS_REFERENCE[int(k)][0]} ({k})": v
+        for k, v in p["webgl2_on_gl1"].items()
+        if v != "HOST_VALUE_NOT_SPOOFED"
+    }
+    assert not leaked, f"WebGL2-only parameters answered on a WebGL1 context: {leaked}"
+
+
+def test_ios_webgl1_parameters_are_unchanged_by_the_webgl2_block(tmp_path):
+    # The WebGL1 surface must read exactly as it did before PS-22 — the new
+    # block is additive, and extraMap wins over COMMON, so a colliding key would
+    # silently change a WebGL1 value. Spot-checks the three sharp discriminators
+    # plus the shared-context values.
+    p = _probe(tmp_path, 1, "ios")
+    assert p["maxViewportDims"] == [16384, 16384]
+    assert p["aliasedPointSizeRange"] == [1, 511]
+    assert p["maxVertexUniformVectors"] == 1024
+    assert p["maxVaryingVectors"] == 31
+    assert p["maxTextureSize"] == 16384
+    assert p["version_gl1"] == "WebGL 1.0"
+    assert p["slversion_gl1"] == "WebGL GLSL ES 1.00"
+    # The version strings must survive the V2 merge (they are merged in AFTER
+    # the parameter block, so a precedence regression would show up here).
+    assert p["version_gl2"] == "WebGL 2.0"
+    assert p["slversion_gl2"] == "WebGL GLSL ES 3.00"
+
+
+def test_ios_max_samples_is_deliberately_left_falling_through(tmp_path):
+    # MAX_SAMPLES (0x8D57, 36183) is the one genuinely runtime-queried value:
+    # source predicts 8, the physical device reported 4, and the conflict is
+    # unexplained with no second capture. Falling through is honest; pinning an
+    # unexplained constant is a guess wearing a citation. This test exists so
+    # that "adding" it is a deliberate act that breaks a named assertion rather
+    # than a tidy-up nobody notices.
+    p = _probe(tmp_path, 1, "ios")
+    assert p["maxSamples_gl2"] == "HOST_VALUE_NOT_SPOOFED"
+    assert 36183 not in _webgl2_ios_block_from_source(), (
+        "MAX_SAMPLES must stay unspoofed — see PS-22"
+    )
+
+
+def test_ios_does_not_spoof_the_geometry_stage_parameter(tmp_path):
+    # 0x8A32 (35378) is MAX_COMBINED_GEOMETRY_UNIFORM_COMPONENTS, which WebGL2
+    # does not expose at all. The uniform-block run is contiguous from 0x8A2B,
+    # so it is easy to land on by miscount — revision 1 of PS-22 put
+    # MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS (correctly 35377) there.
+    p = _probe(tmp_path, 1, "ios")
+    assert p["geometryStage35378_gl2"] == "HOST_VALUE_NOT_SPOOFED"
+    assert 35378 not in _webgl2_ios_block_from_source()
+
+
+def test_ios_webgl2_block_agrees_with_the_reference_fixture(tmp_path):
+    # The fixture is the source of record, so the code and the file must not
+    # drift. Parses the WebGL2 table out of the markdown and compares it to the
+    # block in gpu_ext.py — and re-derives every enum from its own hex column,
+    # which is the check that catches a transposition on inspection.
+    import re
+
+    in_code = _webgl2_ios_block_from_source()
+
+    fixture = pathlib.Path(__file__).parent / "fixtures" / "ios-webgl-reference.md"
+    table = fixture.read_text(encoding="utf-8")
+    table = table.split("## Numeric limits (WebGL2-only")[1].split("### `MAX_SAMPLES`")[0]
+    in_doc = {}
+    for row in re.finditer(
+        r"^\|\s*`([A-Z0-9_]+)`\s*\|\s*(0x[0-9A-F]+)\s*\|\s*(\d+)\s*\|\s*(\u2212?-?\d+)\s*\|\s*\[device\]\s*\|",
+        table,
+        re.M,
+    ):
+        name, hexval, dec, value = row.groups()
+        assert int(hexval, 16) == int(dec), f"{name}: hex {hexval} != decimal {dec}"
+        in_doc[int(dec)] = int(value.replace("\u2212", "-"))
+
+    assert in_doc, "no [device] WebGL2 rows parsed out of the reference fixture"
+    assert in_code == in_doc, "gpu_ext.py and the reference fixture disagree"
+    # ...and both must agree with the table this test file asserts against.
+    assert in_code == {p: v for p, (_, v) in _WEBGL2_IOS_REFERENCE.items()}
 
 
 @pytest.mark.parametrize("os_type", ["windows", "macos", "android"])
