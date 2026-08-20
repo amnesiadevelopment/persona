@@ -1,5 +1,8 @@
+import pytest
+
 import src.services.browser.launch_policy as launch_policy
 from src.services.browser.process import _locale_for, _proxy_timezone, _timezone_for
+from src.services.proxy.errors import GeographyUnknownError
 
 
 def test_locale_known():
@@ -34,9 +37,18 @@ def test_proxy_timezone_derives_from_country():
     assert _proxy_timezone(_Proxy(country_code="DE")) == "Europe/Berlin"
 
 
-def test_proxy_timezone_unchecked_falls_back_to_host_zone(monkeypatch):
+def test_proxy_timezone_refuses_when_the_proxy_has_no_geography(monkeypatch):
+    # Was test_proxy_timezone_unchecked_falls_back_to_host_zone, which asserted
+    # the host zone WAS the right answer here. That fallback declared the
+    # operator's real timezone inside the tunnel — a real-location disclosure on
+    # the very vector the proxy exists to close. When no geography is available
+    # the answer is STOP, not a host-derived value.
+    #
     # Patch on launch_policy, not process: _proxy_timezone lives there too and
     # resolves _host_timezone in its OWN namespace, so a patch on the process
-    # re-export alias is silently bypassed (real host zone would be read).
+    # re-export alias is silently bypassed (real host zone would be read). The
+    # distinctive value is what the assertion would catch if the removed branch
+    # were somehow still reached.
     monkeypatch.setattr(launch_policy, "_host_timezone", lambda: "Europe/Kyiv")
-    assert _proxy_timezone(_Proxy()) == "Europe/Kyiv"
+    with pytest.raises(GeographyUnknownError):
+        _proxy_timezone(_Proxy())
