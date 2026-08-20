@@ -559,6 +559,126 @@ def test_degraded_gate_still_requires_a_claimed_listener(clean_probe, monkeypatc
     assert gate.allows(("127.0.0.1", 65000)) is False
 
 
+def test_transiently_failed_probe_is_not_cached(clean_probe, monkeypatch):
+    """A probe that merely FAILED is not evidence about the installation.
+
+    ``net_connections()`` can raise transiently — fd pressure, a momentarily
+    unreadable ``/proc`` entry under load. Caching that answer burns
+    "no mechanism" in for the whole process lifetime, so a single blip at the
+    wrong moment silently downgrades BOTH listeners to degrade-open on a machine
+    that can enforce the boundary perfectly well, for as long as the app runs.
+
+    The distinction under test is between the two returns of ``_probe_mechanism``:
+    a failed probe answers for THIS connection only and must be re-probed, while
+    a settled property of the installation is cached. Collapsing them is
+    invisible on a green suite, which is why it is pinned here.
+    """
+    calls = {"n": 0}
+
+    class _FlakyProcess:
+        def __init__(self, pid=None):
+            self.pid = pid or os.getpid()
+
+        def net_connections(self, kind="tcp"):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError("transient: too many open files")
+            return []
+
+        def children(self, recursive=False):
+            return []
+
+    monkeypatch.setattr(
+        peerauth, "_psutil", lambda: _fake_psutil(_FlakyProcess, version="6.1.0")
+    )
+
+    # The blip: this connection degrades open rather than falsely refusing the
+    # real browser. That part is the endorsed behaviour and is not the defect.
+    assert peerauth.mechanism_state() == peerauth.MECH_ABSENT
+    assert peerauth._probe_result is None, (
+        "a transiently-failed probe was cached — one momentary failure now "
+        "disables peer verification on both listeners for the entire process "
+        "lifetime, on a machine that is fully capable of enforcing it"
+    )
+
+    # The blip passes. The very next question must be answered by a fresh probe.
+    assert peerauth.mechanism_state() == peerauth.MECH_ENFORCEABLE
+    assert peerauth.mechanism_enforceable() is True
+    assert peerauth._probe_result == peerauth.MECH_ENFORCEABLE, (
+        "the recovered, definitive answer was not cached"
+    )
+
+
+def test_gate_re_enforces_after_a_transient_probe_failure(clean_probe, monkeypatch):
+    """The CONSEQUENCE of the test above, asserted on the gate's verdict.
+
+    The caching distinction only matters because of what it does to callers: a
+    stranger served forever after one blip. So this asserts the security outcome
+    rather than the module global — after the transient failure clears, the
+    stranger is refused again.
+    """
+    calls = {"n": 0}
+
+    class _FlakyProcess:
+        def __init__(self, pid=None):
+            self.pid = pid or os.getpid()
+
+        def net_connections(self, kind="tcp"):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError("transient: too many open files")
+            return []  # resolvable, and the tree owns no socket to us
+
+        def children(self, recursive=False):
+            return []
+
+    monkeypatch.setattr(
+        peerauth, "_psutil", lambda: _fake_psutil(_FlakyProcess, version="6.1.0")
+    )
+    monkeypatch.setattr(peerauth, "_SCAN_ATTEMPTS", 2)
+    monkeypatch.setattr(peerauth, "_SCAN_BACKOFF_SECONDS", 0.0)
+
+    gate = PeerGate("test")
+    gate.set_listen_port(9999)
+    gate.bind_to_process(os.getpid())
+
+    # During the blip: degrade open, as endorsed — a false refusal here would
+    # break the real browser.
+    assert gate.allows(("127.0.0.1", 65000)) is True
+
+    # After it: the gate must be enforcing again. If the failed probe had been
+    # cached, this stranger would be served for the rest of the session.
+    assert gate.allows(("127.0.0.1", 65000)) is False, (
+        "the gate stayed degraded-open after a transient probe failure — a "
+        "single blip permanently disabled peer authentication on this listener"
+    )
+
+
+def test_definitive_probe_answers_are_cached_once(clean_probe, monkeypatch):
+    """The other half of the distinction: a settled answer is probed ONCE.
+
+    Without this, "never cache anything" would pass the tests above while
+    re-probing on every accepted connection. Pinned so the fix cannot be
+    satisfied by simply deleting the cache.
+    """
+    probes = {"n": 0}
+    real_probe = peerauth._probe_mechanism
+
+    def counting_probe():
+        probes["n"] += 1
+        return real_probe()
+
+    monkeypatch.setattr(peerauth, "_probe_mechanism", counting_probe)
+
+    first = peerauth.mechanism_state()
+    for _ in range(5):
+        assert peerauth.mechanism_state() == first
+    assert probes["n"] == 1, (
+        f"a definitive mechanism answer was re-probed {probes['n']} times — it "
+        "is a property of the installation, not of the connection"
+    )
+
+
 def test_degraded_gate_serves_its_own_browser_without_delay(clean_probe, monkeypatch):
     """A CLAIMED listener answers the degraded path immediately.
 
