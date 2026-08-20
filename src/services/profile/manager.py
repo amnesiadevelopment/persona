@@ -12,6 +12,7 @@ from ...utils.atomic import atomic_write_json
 from ...utils.store_guard import StoreGuardMixin
 from ...utils.trashable import TrashableMixin
 from ...utils.validation import validate_profile_name
+from .coherence import assert_coherent
 from .transfer import export_to_zip, import_from_zip, peek_profile_name
 
 logger = get_logger("profile.manager")
@@ -231,6 +232,15 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
         valid, _ = validate_profile_name(name)
         if not valid:
             return False
+        # The os_type/engine coherence rules live below every door (see
+        # coherence.py). They used to live only in the profile dialog, so the
+        # REST lane composed profiles the dialog exists to prevent — a macOS
+        # record on the Firefox engine, which launches presenting Windows.
+        # Raised rather than returned False: False here means "already exists"
+        # (409), while an incoherent pair is a different refusal with a reason
+        # the caller can act on, and a door that forgets to handle it fails
+        # loudly instead of silently storing a lie.
+        assert_coherent(os_type, engine)
         # Hold the lock across the check-then-insert so two concurrent adds of
         # the same name can't both pass the `name in self.profiles` check and one
         # silently overwrite the other (RLock: save_profiles below re-enters it).
@@ -280,6 +290,32 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
 
             if new_name != original_name and new_name in self.profiles:
                 return False
+
+            # Coherence (see coherence.py) is checked on the pair this edit would
+            # RESULT IN, not on the fields it happens to supply: a PATCH carrying
+            # only os_type must be judged against the engine already stored, or
+            # `PATCH {"os_type": "macos"}` would sail through on a profile that is
+            # already firefox. Both values are in hand here and only here, which
+            # is the second reason the rule belongs in the model rather than at a
+            # route.
+            #
+            # Refused only when the edit INTRODUCES the incoherence. A record
+            # written before these rules existed (or through the unguarded REST
+            # lane) stays editable: blocking it would make an ordinary edit to a
+            # note or a tag fail on a conflict that edit did not create, and
+            # leave the profile permanently uneditable — including the edit that
+            # would FIX the pair.
+            _current = self.profiles[original_name]
+            _resulting_engine = (
+                new_engine if new_engine is not None
+                else getattr(_current, "engine", "chromium")
+            )
+            _pair_changed = (
+                new_os != _current.os_type
+                or _resulting_engine != getattr(_current, "engine", "chromium")
+            )
+            if _pair_changed:
+                assert_coherent(new_os, _resulting_engine)
 
             # Rename the data dir BEFORE touching any in-memory field, so a
             # locked/failed dir-rename (routine on Windows when the browser is

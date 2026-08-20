@@ -198,16 +198,28 @@ def _spawn_invisible(profile: Profile, profile_dir: str):
 def effective_engine(profile: Profile) -> str:
     """The engine actually launched for a profile — readiness monitoring and
     install checks must follow this, not the stored engine."""
-    # A mobile profile always launches on chromium: the Firefox engine has no
-    # mobile mode, and only chromium carries the device preset that makes an
-    # android/ios profile coherent. Fall back even if an old profile stored
-    # engine=firefox with a mobile OS.
-    if is_mobile_os(profile.os_type):
-        return "chromium"
-    engine = getattr(profile, "engine", "chromium")
-    # "camoufox" is the retired engine name; treat any leftover as the Firefox
-    # engine so an old profile keeps launching.
-    return "firefox" if engine == "camoufox" else engine
+    # Delegates to the model's coherence rules (services/profile/coherence.py),
+    # which every door that WRITES a profile also crosses, so the launch and the
+    # record cannot answer the same question differently.
+    #
+    # A profile stored before those rules existed (or through the once-unguarded
+    # REST lane) can still carry an impossible pair. Both are reconciled toward
+    # chromium: it has the device presets a mobile profile needs, and — unlike
+    # stealth-Firefox, which reports Windows regardless (#211) — it HONORS
+    # os_type, so a stored macos/linux profile actually presents the OS its
+    # record claims instead of contradicting it. "camoufox", the retired Firefox
+    # engine name, is mapped forward so an old profile keeps launching.
+    #
+    # Imported inside the function on purpose: services.profile imports
+    # browser.device_presets, and reaching it runs browser/__init__ →
+    # launcher → process, so a module-level import here closes a cycle that
+    # fails at import time. Every other consumer of effective_engine imports it
+    # function-locally for the same reason.
+    from ..profile.coherence import coherent_engine
+
+    return coherent_engine(
+        profile.os_type, getattr(profile, "engine", "chromium")
+    )
 
 
 def spawn_browser(profile: Profile) -> subprocess.Popen:
