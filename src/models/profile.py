@@ -26,6 +26,12 @@ class Profile:
     # sites this profile visits. None = no certificate assigned.
     certificate: str | None = None
     cookie_import_status: str | None = None
+    # Outcome of the last attempt to trust the mTLS certificate's CA in this
+    # profile (Firefox engine). The CA import soft-fails by design — the launch
+    # proceeds untrusted — so without this the profile is indistinguishable from
+    # one whose trust imported cleanly. None = never attempted (no certificate
+    # assigned, or never launched since the field was added).
+    cert_trust_status: str | None = None
     tags: list[str] = field(default_factory=list)
     notes: str = ""
     ai_control: bool = False

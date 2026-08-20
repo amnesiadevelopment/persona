@@ -135,6 +135,32 @@ def open_profile_dialog(
         text_style=ft.TextStyle(font_family=MONO),
     )
 
+    # The Firefox CA import soft-fails: the launch proceeds with the certificate
+    # UNTRUSTED. Without this line the dropdown showing a certificate selected is
+    # the only thing the operator sees, and it reads as a confident state with no
+    # provenance. Render-only — this reports the LAST recorded outcome, it never
+    # probes (see the socket-spy test).
+    # Gated on the CERTIFICATE as well as the status: the recorded outcome
+    # describes one certificate's CA, so it must never be rendered against a
+    # different one (or against none). update_profile clears it on reassignment;
+    # this is the second line of defence, so no other write path can resurrect
+    # a stale verdict here.
+    _cert_trust = (
+        profile.cert_trust_status
+        if profile is not None and profile.certificate and profile.cert_trust_status
+        else ""
+    )
+    cert_trust_text = ft.Text(
+        f"last launch: {_cert_trust}" if _cert_trust else "",
+        size=11,
+        color=(
+            COLORS["error"]
+            if _cert_trust and not _cert_trust.startswith("trusted")
+            else COLORS["text_sub"]
+        ),
+        font_family=MONO,
+    )
+
     def go_add_proxy(_: ft.ControlEvent) -> None:
         page.pop_dialog()
         if on_add_proxy is not None:
@@ -753,6 +779,7 @@ def open_profile_dialog(
                     labeled(
                         "Certificate (mTLS)",
                         cert_dropdown,
+                        hint=cert_trust_text if _cert_trust else None,
                         icon=ft.Icons.DESCRIPTION_OUTLINED,
                     ),
                     # ---- ENGINE ----
