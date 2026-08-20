@@ -12,6 +12,7 @@ recorded rather than dropped, and that the differ reports added/removed probes
 instead of skipping them.
 """
 
+import copy
 import json
 import re
 import sys
@@ -1065,3 +1066,535 @@ def test_no_implicit_concatenation_drops_an_interpolation():
         "a segment of an interpolating string group is missing its `f` "
         "prefix, so its braces render verbatim: " + "; ".join(offenders)
     )
+
+
+# --- cross-profile comparison: AGREEMENT is the finding ---------------------
+# The third comparison mode, and the only one whose polarity is inverted.
+#
+# `diff_snapshots` (one profile, two times) and `diff_realms` (one snapshot,
+# two realms) both ask "did these agree?" and treat agreement as the pass. For
+# Level 2 — mutual unlinkability — that is exactly backwards: two DIFFERENT
+# profiles agreeing on a seed-derived vector is two identities a site can link.
+# The comparator reported that as "no differences", exit 0.
+#
+# Two rules these pin, both of which are easy to get wrong in the tempting
+# direction:
+#
+#   * Only vectors that MUST vary are compared. Two profiles agreeing on
+#     operator-chosen configuration (os_type, resolution, engine, locale) is the
+#     operator's own choice; a POOLED vector colliding is pigeonhole; and the
+#     masking.*/realm.* probes observe the MECHANISM, not the identity. The iOS
+#     GPU pair is the sharp case — one compile-time constant for every iOS
+#     device, so two iOS profiles MUST agree there (gpu_ext.py:581-589).
+#   * The "no evidence" line moves. `diff_snapshots` calls the ASYMMETRIC case
+#     (read on one side, errored on the other) CHANGED, because a vector that
+#     stopped being readable is the loudest continuity signal there is. Here it
+#     is INCONCLUSIVE: holding profile A's digest and not holding profile B's is
+#     one reading and one hole, not evidence they differ. Claiming distinctness
+#     from it would manufacture an unlinkability pass out of a reading nobody
+#     obtained — the PS-29 defect, reintroduced on this axis.
+
+
+def _profile_snapshot(profile, *, engine="chromium", **kwargs):
+    """A snapshot with a nameable profile, otherwise identical to `_snapshot`."""
+    return snapshot.build_snapshot(
+        _run(**kwargs),
+        engine=engine,
+        profile=profile,
+        realms=(probes.WINDOW, probes.WORKER),
+        version="9.9.9",
+    )
+
+
+def _must_differ_probe():
+    """One INDEPENDENT probe, taken from the inventory rather than hard-coded."""
+    targets = probes.must_differ_ids()
+    assert targets, "the inventory classifies no vector as must-differ"
+    return sorted(targets)[0]
+
+
+# --- the classification -----------------------------------------------------
+
+
+def test_every_probe_declares_a_known_variance():
+    for probe in probes.PROBES:
+        assert probe.variance in probes.VARIANCE_KINDS, probe.id
+
+
+def test_an_unknown_variance_is_rejected_at_construction():
+    with pytest.raises(ValueError, match="unknown variance"):
+        probes.Probe("p", probes.BOTH, "1", variance="sometimes")
+
+
+def test_variance_defaults_to_shared_so_a_new_probe_is_never_must_differ():
+    # The safe default matters: an unclassified vector must produce silence,
+    # not a false leak report, the day somebody adds a probe and forgets this
+    # axis exists.
+    assert probes.Probe("p", probes.BOTH, "1").variance == probes.SHARED
+
+
+def test_the_ios_gpu_pair_is_not_in_the_must_differ_set():
+    # THE trap. gpu_ext.py:107 pins ONE vendor/renderer pair for every iOS
+    # profile on earth, deliberately not seed-varied, because a diversified one
+    # "would itself be the tell" (gpu_ext.py:581-589). Two iOS profiles MUST
+    # agree here — requiring difference would flag persona's most deliberately
+    # correct behaviour as a leak.
+    assert "webgl.unmasked" not in probes.must_differ_ids()
+
+
+def test_masking_and_realm_probes_are_not_in_the_must_differ_set():
+    # These observe the MECHANISM (what a page reads off a spoofed function,
+    # whether the realm registry booted), not the identity it produces. They
+    # SHOULD agree across profiles; requiring them to differ is backwards.
+    targets = probes.must_differ_ids()
+    observed = {
+        p.id
+        for p in probes.PROBES
+        if p.id.startswith(("masking.", "realm."))
+    }
+    assert observed, "inventory carries no masking./realm. probes to check"
+    assert not (observed & targets)
+
+
+def test_operator_chosen_configuration_is_not_in_the_must_differ_set():
+    # os_type / resolution / engine / search_engine are operator-set fields
+    # (profile.py:6-36), so two profiles may LEGITIMATELY agree on the vectors
+    # they drive. Demanding otherwise produces constant false findings.
+    targets = probes.must_differ_ids()
+    assert "navigator.platform" not in targets
+    assert "screen.geometry" not in targets
+
+
+def test_pooled_vectors_are_excluded_because_a_collision_is_pigeonhole():
+    # Seed-derived, but drawn from a small fixed set — hardwareConcurrency and
+    # deviceMemory come from a SIX-entry pool (device_ext.py:218), so a
+    # collision is ordinary chance rather than a linkable identity.
+    targets = probes.must_differ_ids()
+    for probe in probes.probes_with_variance(probes.POOLED):
+        assert probe.id not in targets
+
+
+def test_must_differ_ids_are_derived_from_the_inventory():
+    # Classifying a probe must mean editing its record and nothing else
+    # (probes.py:8) — a comparator holding its own id list would keep answering
+    # after the inventory moved.
+    assert probes.must_differ_ids() == frozenset(
+        p.id for p in probes.PROBES if p.variance == probes.INDEPENDENT
+    )
+
+
+# --- the comparator ---------------------------------------------------------
+
+
+def test_two_profiles_agreeing_on_a_seed_derived_vector_is_the_finding():
+    # AC1/AC2. THE premise, and the whole point of the mode: two snapshots
+    # differing ONLY in the profile header, with a byte-identical observed
+    # identity — the worst possible Level 2 failure. The continuity comparator
+    # calls this "no differences" and exits 0.
+    a = _profile_snapshot("alice")
+    b = _profile_snapshot("bob")
+    assert a["probes"] == b["probes"], "the premise is a byte-identical identity"
+
+    # The old question, unchanged: these two "agree".
+    assert diff.diff_snapshots(a, b) == []
+
+    # The new one: they agree, and that is the defect.
+    entries = diff.compare_profiles(a, b)
+    assert entries, "two linkable profiles must not compare clean"
+    target = _must_differ_probe()
+    entry = next(e for e in entries if e["probe_id"] == target)
+    assert entry["status"] == diff.COLLIDING
+    # AC1: the entry carries the probe id, its realm, and the SHARED value.
+    assert entry["realm"] in probes.ALL_REALMS
+    assert entry["value"] == f"window:{target}"
+
+
+def test_profiles_that_differ_on_every_must_differ_vector_compare_clean():
+    # AC3: the pass, and the guard against a mode that cries leak constantly.
+    a = _profile_snapshot("alice")
+    b = _profile_snapshot(
+        "bob",
+        window_values={pid: f"bob:{pid}" for pid in probes.must_differ_ids()},
+    )
+    assert diff.compare_profiles(a, b) == []
+    assert "no collisions" in diff.format_comparison([])
+
+
+def test_configuration_the_profiles_share_is_not_reported_as_a_collision():
+    # Two profiles on the same OS report the same navigator.platform. That is
+    # the operator's choice, not a leak, and must stay silent even though the
+    # two snapshots agree on it byte for byte.
+    a = _profile_snapshot("alice")
+    b = _profile_snapshot(
+        "bob",
+        window_values={pid: f"bob:{pid}" for pid in probes.must_differ_ids()},
+    )
+    assert a["probes"][probes.WINDOW]["navigator.platform"] == (
+        b["probes"][probes.WINDOW]["navigator.platform"]
+    )
+    assert diff.compare_profiles(a, b) == []
+
+
+def test_a_vector_errored_on_both_sides_is_inconclusive_never_distinctness():
+    # AC4, and the PS-29 rule carried onto this axis: two probes that BOTH
+    # errored are the same failure twice, not two profiles differing. Calling
+    # that distinctness would manufacture an unlinkability PASS out of evidence
+    # nobody obtained.
+    target = _must_differ_probe()
+    a = _profile_snapshot("alice", window_values={target: TypeError("no audio")})
+    b = _profile_snapshot("bob", window_values={target: TypeError("no audio")})
+    entries = diff.compare_profiles(a, b)
+    assert [e["status"] for e in entries] == [diff.INCONCLUSIVE]
+    assert diff.inconclusive_count(entries) == len(entries)
+
+
+def test_a_vector_read_for_one_profile_only_is_inconclusive_not_a_pass():
+    # The asymmetric case, and the line this axis draws DIFFERENTLY from the
+    # continuity comparator. There, one side read + one side thrown is CHANGED
+    # (the loudest continuity signal there is). Here it is no evidence at all:
+    # holding alice's digest and not holding bob's says nothing about whether
+    # the two identities differ, so it must never read as distinctness.
+    target = _must_differ_probe()
+    a = _profile_snapshot("alice")
+    b = _profile_snapshot("bob", window_values={target: TypeError("no audio")})
+    entries = diff.compare_profiles(a, b)
+    assert [e["status"] for e in entries] == [diff.INCONCLUSIVE]
+
+
+def test_a_missing_probe_is_not_reported_as_the_profiles_differing():
+    # A vector absent from one snapshot is not two profiles differing on it —
+    # and, just as sharply, it is not the profiles being UNLINKABLE either. An
+    # empty entry list is this mode's PASS, so skipping the vector (as an
+    # intersection-driven loop does) certifies distinctness nobody measured.
+    # ABSENT is one of the three cases `_unread` names; the comparator must
+    # reach it, which means walking the INVENTORY rather than the intersection.
+    target = _must_differ_probe()
+    a = _profile_snapshot("alice")
+    b = _profile_snapshot("bob")
+    del b["probes"][probes.WINDOW][target]
+    entries = diff.compare_profiles(a, b)
+    assert [e["status"] for e in entries] == [diff.INCONCLUSIVE]
+    assert entries[0]["probe_id"] == target
+    assert entries[0]["observed"] == diff.ABSENT
+    assert diff.inconclusive_count(entries) == len(entries)
+
+
+def test_a_target_recorded_in_NEITHER_snapshot_never_reads_as_a_pass(tmp_path):
+    # The reviewer's case, and the one an operator hits by accident: `record
+    # --realms worker` is a documented option (cli.py), and every must-differ
+    # vector on this inventory is WINDOW_ONLY. An intersection-driven loop
+    # compares ZERO vectors, returns [], and exits 0 — "the profiles differ on
+    # every vector compared" when nothing was compared and nothing was read.
+    # That is the PS-29 defect on the unlinkability axis: an unlinkability pass
+    # manufactured out of evidence nobody obtained.
+    from src.services.verify import cli
+
+    target = _must_differ_probe()
+    a = _profile_snapshot("alice")
+    b = _profile_snapshot("bob")
+    for snap in (a, b):
+        del snap["probes"][probes.WINDOW][target]
+
+    entries = diff.compare_profiles(a, b)
+    assert [e["status"] for e in entries] == [diff.INCONCLUSIVE], (
+        "a vector absent from BOTH snapshots is no evidence, not a clean bill"
+    )
+
+    a_path, b_path = tmp_path / "a.json", tmp_path / "b.json"
+    snapshot.write(a, str(a_path))
+    snapshot.write(b, str(b_path))
+    assert cli.main(["compare", str(a_path), str(b_path)]) == 3, (
+        "a comparison of zero READ vectors must exit 3, never 0"
+    )
+
+
+def test_comparison_entries_are_ordered_by_realm_then_probe_id():
+    a = _profile_snapshot("alice")
+    b = _profile_snapshot("bob")
+    entries = diff.compare_profiles(a, b)
+    keys = [(e["realm"], e["probe_id"]) for e in entries]
+    assert keys == sorted(keys)
+
+
+def test_the_comparison_reports_no_score_only_which_vectors_collide():
+    # The charter forbids turning the bar into a number, and a cross-profile
+    # comparator is the single most tempting place in the codebase to produce
+    # one. Every entry names a vector; none carries a similarity percentage.
+    entries = diff.compare_profiles(_profile_snapshot("alice"), _profile_snapshot("bob"))
+    assert entries
+    for entry in entries:
+        assert set(entry) <= {"probe_id", "realm", "status", "expected", "observed", "value"}
+    text = diff.format_comparison(entries)
+    assert "%" not in text
+    assert "score" not in text.lower()
+
+
+def test_format_comparison_does_not_call_a_collision_no_differences():
+    # The renderer's vocabulary is inverted too. Rendering a leak through
+    # `format_diff` would report it as "1 differing" — telling an operator the
+    # bad news in the words that describe the good news.
+    entries = diff.compare_profiles(_profile_snapshot("alice"), _profile_snapshot("bob"))
+    text = diff.format_comparison(entries)
+    assert "no differences" not in text
+    assert "colliding" in text and "LINKABLE" in text
+
+
+# --- the CLI ----------------------------------------------------------------
+
+
+def test_cli_compare_inverts_the_exit_code_of_the_premise(tmp_path):
+    # AC2 at the operator-facing artifact, which is the EXIT CODE, not the
+    # classification: the SAME pair that exits 0 through `diff` must exit
+    # non-zero through `compare`. Asserted on a real cli.main call, because
+    # that is what a caller actually reads.
+    from src.services.verify import cli
+
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    snapshot.write(_profile_snapshot("alice"), str(a))
+    snapshot.write(_profile_snapshot("bob"), str(b))
+
+    assert cli.main(["diff", str(a), str(b)]) == 0, (
+        "the premise: today two byte-identical identities read as agreement"
+    )
+    assert cli.main(["compare", str(a), str(b)]) == 1, (
+        "two profiles agreeing on a seed-derived vector are LINKABLE — the "
+        "comparison must not exit 0"
+    )
+
+
+def test_cli_compare_exits_zero_when_the_profiles_are_distinct(tmp_path):
+    from src.services.verify import cli
+
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    snapshot.write(_profile_snapshot("alice"), str(a))
+    snapshot.write(
+        _profile_snapshot(
+            "bob",
+            window_values={pid: f"bob:{pid}" for pid in probes.must_differ_ids()},
+        ),
+        str(b),
+    )
+    assert cli.main(["compare", str(a), str(b)]) == 0
+
+
+def test_cli_compare_exits_three_when_nothing_was_read(tmp_path):
+    # AC4's exit-code half: a comparison resting only on unobtained readings
+    # exits 3, never 0. The status guard above never reaches the exit code —
+    # that gap is exactly how a previous round shipped a demotion nobody saw.
+    from src.services.verify import cli
+
+    target = _must_differ_probe()
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    snapshot.write(
+        _profile_snapshot("alice", window_values={target: TypeError("x")}), str(a)
+    )
+    snapshot.write(
+        _profile_snapshot("bob", window_values={target: TypeError("x")}), str(b)
+    )
+    assert cli.main(["compare", str(a), str(b)]) == 3
+
+
+# --- the premise: is this comparison CONTROLLED at all? ----------------------
+# The cross-profile question carries a premise the two continuity comparators
+# do not: that these are two DIFFERENT identities, observed under conditions
+# that make a difference between them attributable to the SEEDS rather than to
+# the setup. `compare_profiles` reads only `probes`, so it was blind to both
+# ways that premise fails — and the two failures point in OPPOSITE directions,
+# which is why neither can be left to the operator to notice:
+#
+#   * same profile both sides -> every vector agrees -> a loud, confident FALSE
+#     LEAK, telling an operator a profile is linkable to ITSELF. Not exotic:
+#     the CLI header documents `before.json`/`after.json` (one profile, twice)
+#     for `diff`, so reaching for the wrong subcommand is the expected mistake.
+#   * different engines -> a vector may differ BECAUSE of the engine -> exit 0,
+#     a FALSE CERTIFICATE of unlinkability that was never demonstrated. This is
+#     the dangerous direction, and `diff_snapshots` already reasons about
+#     exactly this ("a chromium snapshot vs a firefox one is not a regression,
+#     it is a different question").
+#
+# Both are REFUSED rather than answered, because both available verdicts are
+# wrong. The refusal is exit 2 — never 1 — since a refusal is not a finding.
+
+
+def test_comparing_a_profile_with_itself_is_refused_not_reported_as_a_leak():
+    # The false-leak direction. Two snapshots of ONE profile agree on every
+    # vector by construction; reporting that as a collision would tell an
+    # operator an identity is linkable to itself.
+    a = _profile_snapshot("acc")
+    b = _profile_snapshot("acc")
+    with pytest.raises(diff.ComparisonNotControlled, match="both snapshots are profile"):
+        diff.compare_profiles(a, b)
+
+
+def test_the_before_after_workflow_through_compare_refuses_instead_of_crying_leak(
+    tmp_path, capsys
+):
+    # The mistake as an operator actually makes it: the CLI header's own
+    # documented before/after recording, put through the wrong subcommand. It
+    # must not answer, and it must not answer with a 1 that a future gate would
+    # read as a leak.
+    from src.services.verify import cli
+
+    before, after = tmp_path / "before.json", tmp_path / "after.json"
+    snapshot.write(_profile_snapshot("acc"), str(before))
+    snapshot.write(_profile_snapshot("acc"), str(after))
+
+    # The RIGHT subcommand for this pair still works exactly as before.
+    assert cli.main(["diff", str(before), str(after)]) == 0
+
+    code = cli.main(["compare", str(before), str(after)])
+    assert code == 2, "a refusal is not a finding — it must not be 1"
+    err = capsys.readouterr().err
+    assert "use `diff`" in err, "the refusal must name the subcommand that fits"
+
+
+def test_a_snapshot_that_does_not_name_its_profile_cannot_answer_the_question():
+    # This mode needs positive evidence that the two identities DIFFER. "No
+    # name recorded" is not that evidence, so it is refused on the same footing
+    # as two identical names rather than being optimistically compared.
+    a = _profile_snapshot("alice")
+    b = _profile_snapshot("bob")
+    del b["profile"]
+    with pytest.raises(diff.ComparisonNotControlled, match="name their profile"):
+        diff.compare_profiles(a, b)
+
+
+def test_two_engines_are_refused_because_a_difference_may_be_the_ENGINE():
+    # The false-CERTIFICATE direction, and the dangerous one: these two differ
+    # on the must-differ vector, so the mode would have exited 0 — certifying
+    # unlinkability on a difference the ENGINE could account for.
+    a = _profile_snapshot("alice", engine="chromium")
+    b = _profile_snapshot(
+        "bob",
+        engine="firefox",
+        window_values={pid: f"bob:{pid}" for pid in probes.must_differ_ids()},
+    )
+    with pytest.raises(diff.ComparisonNotControlled, match="different engines"):
+        diff.compare_profiles(a, b)
+
+    # And the opt-in genuinely opts in, rather than merely existing.
+    assert diff.compare_profiles(a, b, allow_cross_engine=True) == []
+
+
+def test_a_snapshot_that_does_not_name_its_engine_cannot_answer_the_question():
+    # The other half of the engine guard, and the same false-CERTIFICATE
+    # direction as the test above — reached not by two engines DIFFERING but by
+    # neither being recorded. `None != None` is False, so an equality-only
+    # guard reads "no idea what these ran on" as "same engine" and exits 0.
+    #
+    # Guarded on PRESENCE as well as equality for the reason the profile field
+    # already is: this mode needs positive evidence that a differing vector is
+    # attributable to the SEEDS, and an unrecorded engine is not that evidence.
+    a = _profile_snapshot("alice")
+    b = _profile_snapshot(
+        "bob",
+        window_values={pid: f"bob:{pid}" for pid in probes.must_differ_ids()},
+    )
+    # These differ on every must-differ vector, so the mode WOULD have exited 0.
+    assert diff.compare_profiles(a, b) == []
+
+    for drop in ("a", "b", "both"):
+        x, y = copy.deepcopy(a), copy.deepcopy(b)
+        if drop in ("a", "both"):
+            del x["engine"]
+        if drop in ("b", "both"):
+            del y["engine"]
+        with pytest.raises(diff.ComparisonNotControlled, match="name their engine"):
+            diff.compare_profiles(x, y)
+
+
+def test_allow_cross_engine_does_not_relax_an_UNRECORDED_engine(tmp_path, capsys):
+    # The judgement call, pinned as behaviour so it cannot be softened by
+    # accident. `--allow-cross-engine` opts in to a KNOWN, NAMED difference
+    # whose caveat the operator has weighed; an unrecorded engine gives them
+    # nothing to weigh, so the flag must NOT buy a pass here the way it does
+    # for chromium-vs-firefox.
+    from src.services.verify import cli
+
+    a = _profile_snapshot("alice")
+    b = _profile_snapshot(
+        "bob",
+        window_values={pid: f"bob:{pid}" for pid in probes.must_differ_ids()},
+    )
+    del a["engine"], b["engine"]
+    pa, pb = tmp_path / "a.json", tmp_path / "b.json"
+    snapshot.write(a, str(pa))
+    snapshot.write(b, str(pb))
+
+    assert cli.main(["compare", str(pa), str(pb)]) == 2
+    code = cli.main(["compare", str(pa), str(pb), "--allow-cross-engine"])
+    assert code == 2, "an unrecorded engine is not an opted-into engine difference"
+    assert "name their engine" in capsys.readouterr().err
+
+
+def test_cli_compare_refuses_cross_engine_by_default_and_allows_it_on_request(
+    tmp_path, capsys
+):
+    from src.services.verify import cli
+
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    snapshot.write(_profile_snapshot("alice", engine="chromium"), str(a))
+    snapshot.write(
+        _profile_snapshot(
+            "bob",
+            engine="firefox",
+            window_values={pid: f"bob:{pid}" for pid in probes.must_differ_ids()},
+        ),
+        str(b),
+    )
+    assert cli.main(["compare", str(a), str(b)]) == 2
+    assert "--allow-cross-engine" in capsys.readouterr().err
+    assert cli.main(["compare", str(a), str(b), "--allow-cross-engine"]) == 0
+
+
+def test_a_cross_engine_COLLISION_is_still_a_finding_once_allowed():
+    # Why cross-engine is an opt-in rather than a wall: the flag suppresses a
+    # false PASS, it must not suppress a real finding. Two profiles agreeing on
+    # a seed-derived digest DESPITE running on different engines is if anything
+    # a stronger signal, so it must still report.
+    a = _profile_snapshot("alice", engine="chromium")
+    b = _profile_snapshot("bob", engine="firefox")
+    entries = diff.compare_profiles(a, b, allow_cross_engine=True)
+    assert [e["status"] for e in entries] == [diff.COLLIDING]
+
+
+def test_the_refusal_is_raised_before_any_probe_is_read():
+    # Stated as behaviour rather than trusted from reading order: a pair whose
+    # premise fails is refused even when the probe data is missing entirely, so
+    # the guard cannot be reached only on some paths through the comparator.
+    a = {"profile": "acc", "engine": "chromium"}
+    b = {"profile": "acc", "engine": "chromium"}
+    with pytest.raises(diff.ComparisonNotControlled):
+        diff.compare_profiles(a, b)
+
+
+def test_the_two_continuity_comparators_gained_no_such_guard():
+    # AC6, stated as behaviour. `diff` and `realms` are SUPPOSED to compare one
+    # profile with itself — that is their entire job — so the premise guard
+    # must not have leaked into them.
+    a = _profile_snapshot("acc")
+    b = _profile_snapshot("acc")
+    assert diff.diff_snapshots(a, b) == []
+    assert diff.diff_realms(a, probes.WINDOW, probes.WORKER)
+
+
+# --- the new metadata must not leak into the artifact -----------------------
+
+
+def test_probe_variance_never_reaches_a_snapshot():
+    # AC7: `variance` is operator-facing metadata like `note` — it describes how
+    # to READ a reading, it is not a reading. A snapshot recorded before this
+    # field existed must stay loadable and comparable.
+    text = snapshot.dumps(_snapshot())
+    assert "variance" not in text
+    for kind in probes.VARIANCE_KINDS:
+        assert f'"{kind}"' not in text
+
+
+def test_a_snapshot_recorded_before_variance_existed_still_compares():
+    # The compatibility claim, stated as behaviour: nothing in the comparison
+    # path reads a field off the snapshot that an older file would lack.
+    a = _profile_snapshot("alice")
+    b = _profile_snapshot("bob")
+    assert diff.compare_profiles(a, b), "an existing-shape snapshot must compare"
+    assert diff.diff_snapshots(a, b) == []

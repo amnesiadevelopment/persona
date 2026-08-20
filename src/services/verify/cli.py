@@ -35,6 +35,18 @@ This closes no leak and gates no release. ``diff`` exits non-zero when the two
 snapshots disagree, or when it could not obtain the evidence to say they agree,
 because that is what a differ owes an operator; wiring that exit code into CI
 is a later slice with its own approval.
+
+``compare`` (cross-profile unlinkability) reuses those three codes with the
+polarity inverted — 0 is "the profiles DIFFER on every compared vector", 1 is
+"they agree somewhere, so they are linkable there", 3 is "the comparison rested
+only on readings nobody obtained". It adds a FOURTH outcome the other two
+subcommands cannot produce:
+
+    2   refused. The two snapshots cannot answer the question at all — the same
+        profile compared with itself, or two different engines compared as if
+        they were one. Both verdicts would be wrong (a false leak and a false
+        certificate respectively), so neither is given. Deliberately not 1: a
+        refusal is not a finding
 """
 
 from __future__ import annotations
@@ -43,8 +55,11 @@ import argparse
 import sys
 
 from .diff import (
+    ComparisonNotControlled,
+    compare_profiles,
     diff_realms,
     diff_snapshots,
+    format_comparison,
     format_diff,
     inconclusive_count,
 )
@@ -137,6 +152,36 @@ def _cmd_realms(args: argparse.Namespace) -> int:
     return _exit_code(entries)
 
 
+def _cmd_compare(args: argparse.Namespace) -> int:
+    """Cross-profile comparison — the one subcommand whose polarity is inverted.
+
+    ``diff`` and ``realms`` ask "did these agree?" and exit 0 on agreement.
+    This asks "are these two profiles distinguishable?", where agreement on a
+    seed-derived vector is the DEFECT. ``_exit_code`` is reused verbatim and
+    its three outcomes still mean what the module header says — an empty list
+    is the pass, a reported entry is a finding, and an entry resting on no
+    obtained reading is never a pass — but what produces each one is inverted:
+    here the pass is the two profiles DIFFERING on every compared vector.
+
+    A FOURTH outcome is possible here and only here: exit 2, the refusal. When
+    the two snapshots cannot answer the unlinkability question at all — one
+    profile compared with itself, or two engines compared as if they were one —
+    both verdicts this mode can give would be wrong, so it gives neither. 2 is
+    reused from ``record``'s "could not do the thing you asked" rather than
+    minted fresh, and it is deliberately NOT 1: a refusal is not a finding, and
+    a future gate must not read it as a leak.
+    """
+    try:
+        entries = compare_profiles(
+            load(args.a), load(args.b), allow_cross_engine=args.allow_cross_engine
+        )
+    except ComparisonNotControlled as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(format_comparison(entries))
+    return _exit_code(entries)
+
+
 def _cmd_list(args: argparse.Namespace) -> int:
     for probe in PROBES:
         print(f"{probe.id}\t{','.join(probe.realms)}")
@@ -190,6 +235,33 @@ def build_parser() -> argparse.ArgumentParser:
     rlm.add_argument("--left", default=WINDOW)
     rlm.add_argument("--right", default=WORKER)
     rlm.set_defaults(func=_cmd_realms)
+
+    cmp_ = sub.add_parser(
+        "compare",
+        help=(
+            "compare two DIFFERENT profiles' snapshots — reports vectors they "
+            "AGREE on (the profiles are linkable there)"
+        ),
+        description=(
+            "Cross-profile comparison (unlinkability). Inverted polarity: only "
+            "vectors that are seed-derived and must vary are compared, and "
+            "AGREEMENT is the finding. Exits 0 when the two profiles differ on "
+            "every compared vector, 1 when any vector collides, 3 when the "
+            "comparison rests only on readings nobody obtained."
+        ),
+    )
+    cmp_.add_argument("a", help="snapshot of the first profile")
+    cmp_.add_argument("b", help="snapshot of the second profile")
+    cmp_.add_argument(
+        "--allow-cross-engine",
+        action="store_true",
+        help=(
+            "compare snapshots taken on DIFFERENT engines (refused by default: "
+            "a vector may differ because of the engine rather than the seed, "
+            "so an empty result would not be evidence of unlinkability)"
+        ),
+    )
+    cmp_.set_defaults(func=_cmd_compare)
 
     lst = sub.add_parser("list", help="print the probe inventory")
     lst.set_defaults(func=_cmd_list)
