@@ -20,6 +20,7 @@ from .device_ext import build_device_extension
 from .resolution import parse_resolution, resolve_resolution
 from .device_presets import is_mobile_os, pick_preset
 from .gpu_ext import build_gpu_extension
+from .canvas_ctx_ext import build_canvas_ctx_extension
 from .measuretext_ext import build_measuretext_extension
 from .mobile_ext import build_mobile_extension
 from .webgl_ext import build_webgl_extension
@@ -364,6 +365,16 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
                 profile.fingerprint_seed,
                 profile.os_type,
                 os.path.join(profile_dir, ".persona-gpu-ext"),
+            )
+        )
+        # Safari's legacy webkit-3d context alias. iOS-only, and the extension
+        # enforces that itself from the baked OS — a non-iOS profile's copy
+        # returns before touching getContext, so it is built unconditionally
+        # like the others rather than gated here.
+        extensions.append(
+            build_canvas_ctx_extension(
+                profile.os_type,
+                os.path.join(profile_dir, ".persona-canvas-ctx-ext"),
             )
         )
         if proxy:
