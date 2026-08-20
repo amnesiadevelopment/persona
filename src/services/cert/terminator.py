@@ -37,6 +37,7 @@ from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.x509.oid import NameOID
 
 from ...core.logging import get_logger
+from ...core.peerauth import PeerGate
 
 logger = get_logger("cert.terminator")
 
@@ -201,6 +202,20 @@ class Terminator:
         self._stop = threading.Event()
         self._leaf_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         self._leaf_ctx.load_cert_chain(leaf.cert_path, leaf.key_path)
+        # Only the browser this terminator was started for may reach it. Anyone
+        # else who connects and speaks TLS for the admin host would otherwise get
+        # the mutual-TLS handshake performed on their behalf with the operator's
+        # client certificate. The listener binds before that browser exists (its
+        # port goes on the command line / into the proxy config), so the gate
+        # starts unclaimed and the launcher claims it after spawn.
+        self._gate = PeerGate("mTLS terminator")
+
+    def bind_to_process(self, pid: int | None) -> None:
+        """Declare the browser process allowed to use this terminator.
+
+        Until this is called the terminator serves nobody: an unclaimed listener
+        has no legitimate client."""
+        self._gate.bind_to_process(pid)
 
     def start(self) -> int:
         self._srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -208,6 +223,7 @@ class Terminator:
         self._srv.bind(("127.0.0.1", 0))
         self._srv.listen(50)
         self.port = self._srv.getsockname()[1]
+        self._gate.set_listen_port(self.port)
         self._thread = threading.Thread(target=self._accept_loop, daemon=True)
         self._thread.start()
         return self.port
@@ -226,6 +242,18 @@ class Terminator:
     def _handle(self, conn: socket.socket) -> None:
         try:
             conn.settimeout(60)
+            # FIRST, before the TLS handshake and before the client certificate
+            # is touched: is the caller the browser this terminator was started
+            # for? A refusal closes the socket without reading a byte, so no
+            # handshake is performed with the operator's certificate, no upstream
+            # connection is made, and the caller learns nothing about what sits
+            # here — not the admin host, not that a certificate exists at all.
+            if not self._gate.allows(conn.getpeername()):
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+                return
             # Chromium reaches us as a DIRECT TLS connection (via host-resolver
             # MAP + proxy-bypass): its --ignore-certificate-errors-spki-list only
             # trusts our leaf on a direct connection, NOT on one tunnelled through

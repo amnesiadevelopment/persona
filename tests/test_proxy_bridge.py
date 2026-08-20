@@ -1,3 +1,4 @@
+import os
 import socket
 import struct
 import threading
@@ -7,8 +8,21 @@ import src.services.proxy.bridge as bridge_mod
 from src.services.proxy.bridge import ProxyBridge
 
 
+def _claim(bridge: ProxyBridge) -> ProxyBridge:
+    """Authorize THIS process to use the bridge.
+
+    The bridge now serves only the browser process tree it was started for, so a
+    test that connects from the pytest process must say so. This is the same
+    call the launcher makes after spawning the browser, and the same shape the
+    Firefox non-fork path uses (where the engine really does run in-process).
+    """
+    bridge.bind_to_process(os.getpid())
+    return bridge
+
+
+
 def test_bridge_starts_and_listens():
-    bridge = ProxyBridge("socks5://user:pass@1.2.3.4:1080")
+    bridge = _claim(ProxyBridge("socks5://user:pass@1.2.3.4:1080"))
     port = bridge.start()
     try:
         assert port > 0
@@ -152,7 +166,7 @@ def _run_bridge_case(
 ) -> tuple[FakeUpstream, bytes, socket.socket, ProxyBridge]:
     upstream = FakeUpstream(behavior)
     upstream.start()
-    bridge = ProxyBridge(upstream.url)
+    bridge = _claim(ProxyBridge(upstream.url))
     bridge.start()
     try:
         client, reply = _socks5_request(bridge.port)
@@ -251,6 +265,7 @@ def test_upstream_connect_retries_a_transient_failure(monkeypatch):
         return r, _StubWriter()
 
     monkeypatch.setattr(bridge, "_open_upstream", flaky_open)
+    _claim(bridge)
     port = bridge.start()
     try:
         client, reply = _socks5_request(port)
@@ -374,7 +389,7 @@ def test_reader_buffers_are_large_enough_for_multiplexed_streams():
     # busy stream can't starve the others.
     upstream = FakeUpstream("ok")
     upstream.start()
-    bridge = ProxyBridge(upstream.url)
+    bridge = _claim(ProxyBridge(upstream.url))
     bridge.start()
     try:
         _socks5_request(bridge.port)
@@ -443,7 +458,7 @@ def test_non_ascii_credentials_are_byte_length_prefixed():
     upstream = FakeUpstream("ok")
     upstream.start()
     # Cyrillic user + password: 'юзер' is 4 chars / 8 UTF-8 bytes.
-    bridge = ProxyBridge(f"socks5://юзер:парол@127.0.0.1:{upstream.port}")
+    bridge = _claim(ProxyBridge(f"socks5://юзер:парол@127.0.0.1:{upstream.port}"))
     bridge.start()
     try:
         client, reply = _socks5_request(bridge.port)
