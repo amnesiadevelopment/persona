@@ -23,7 +23,7 @@ REMOVED = "removed"
 # Snapshot header fields whose disagreement changes how the probe diff should
 # be read (a chromium snapshot vs a firefox one is not a regression, it is a
 # different question). Reported as entries with realm "__meta__".
-_META_FIELDS = ("schema_version", "engine", "profile", "app_version")
+_META_FIELDS = ("schema_version", "engine", "profile", "app_version", "engine_build")
 
 META_REALM = "__meta__"
 
@@ -53,9 +53,10 @@ def diff_snapshots(
     either of them recorded.
 
     ``include_meta`` additionally reports header disagreements (engine,
-    profile, schema_version, app_version) under realm ``"__meta__"``. Off by
-    default so the common "did this profile survive a restart?" question is
-    answered by probe evidence alone.
+    engine_build, profile, schema_version, app_version) under realm
+    ``"__meta__"``. Off by default so the common "did this profile survive a
+    restart?" question is answered by probe evidence alone — an engine BUILD
+    change is provenance, not a probe difference.
     """
     out: list[dict] = []
 
