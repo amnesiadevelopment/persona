@@ -130,22 +130,54 @@ _CONTENT_SCRIPT = r"""
 
     var replacement = function () {
       // Delegate EVERYTHING to the original. The only change is the first
-      // argument, and only when it is exactly the alias.
-      try {
-        if (arguments.length > 0 && String(arguments[0]) === ALIAS) {
-          // Rebuild the argument list rather than mutating `arguments`, and
-          // forward every remaining argument untouched so the context-creation
-          // options object still reaches the engine.
-          var args = [TARGET];
-          for (var i = 1; i < arguments.length; i++) args.push(arguments[i]);
-          // The engine caches one context per canvas, so a canvas already
-          // holding a 'webgl' context returns that SAME object here — which is
-          // what makes getContext('webkit-3d') and getContext('webgl') agree on
-          // one canvas, in both orders, without any bookkeeping of our own.
-          return orig.apply(this, args);
-        }
-      } catch (e) {}
-      return orig.apply(this, arguments);
+      // argument, and only when it converts to exactly the alias.
+      //
+      // TWO RULES GOVERN THIS FUNCTION, and both are about being invisible to a
+      // probe that instruments what it hands us rather than one that passes a
+      // plain string literal:
+      //
+      //   1. CONVERT THE contextId EXACTLY ONCE. WebIDL performs the DOMString
+      //      conversion once, so a contextId carrying a counting `toString`
+      //      must see exactly one call. Reading String(arguments[0]) to make
+      //      the decision and then forwarding the ORIGINAL `arguments` makes
+      //      the engine convert a second time — and that fires on the NON-alias
+      //      path too, i.e. on getContext('2d') and every other canvas call on
+      //      the profile. That would invert this module's whole cost argument:
+      //      the missing alias only matters to a script that probes for it,
+      //      whereas a double conversion is present on every call, on iOS, the
+      //      one profile whose story we are protecting. So convert once and
+      //      pass the resulting PRIMITIVE through — the engine re-converting a
+      //      string primitive is idempotent and therefore invisible.
+      //
+      //   2. NEVER SWALLOW AND RETRY. The delegation stays OUTSIDE any
+      //      try/catch. A catch around it turns an engine throw into a return
+      //      of the unaliased call, which for 'webkit-3d' is null — the exact
+      //      answer the UNPATCHED profile gives, handing a detector the pre-fix
+      //      tell back, plus a new one (a context name that answers on a clean
+      //      call but null on a throwing one is not a shape any engine
+      //      produces). It also enters the engine twice, running any side
+      //      effect of context creation a second time. Errors propagate here
+      //      exactly as the engine's own would.
+      if (arguments.length === 0) return orig.apply(this, arguments);
+
+      // A Symbol is the one input where String() and WebIDL DISAGREE: String()
+      // yields "Symbol(...)" while the DOMString conversion throws a TypeError.
+      // Converting it ourselves would swap that TypeError for a null. Forward
+      // untouched and let the engine throw as it would on a real device — a
+      // Symbol can never convert to the alias, so nothing is missed.
+      if (typeof arguments[0] === "symbol") return orig.apply(this, arguments);
+
+      var args = [];
+      for (var i = 0; i < arguments.length; i++) args.push(arguments[i]);
+      // THE one conversion. If a hostile toString throws, it propagates — which
+      // is what the engine's own conversion would do.
+      var id = String(args[0]);
+      args[0] = (id === ALIAS) ? TARGET : id;
+      // The engine caches one context per canvas, so a canvas already holding a
+      // 'webgl' context returns that SAME object here — which is what makes
+      // getContext('webkit-3d') and getContext('webgl') agree on one canvas, in
+      // both orders, without any bookkeeping of our own.
+      return orig.apply(this, args);
     };
 
     try {

@@ -114,9 +114,14 @@ console.log(JSON.stringify({ result: result }));
 """
 
 
-def _run(tmp_path, os_type, probe, *, with_gpu=False, tag=""):
+def _run(tmp_path, os_type, probe, *, with_gpu=False, tag="", stubs=None):
     """Build the extension(s) for `os_type`, run them in a node realm, evaluate
-    `probe` there and return its value."""
+    `probe` there and return its value.
+
+    `stubs` overrides the canvas realm, which is how a test can hand the patch a
+    NATIVE getContext that misbehaves (throws, or counts what it was given) —
+    the plain-string-literal probes elsewhere in this file cannot see either.
+    """
     node = shutil.which("node")
     if not node:
         pytest.skip("node not available")
@@ -136,7 +141,7 @@ def _run(tmp_path, os_type, probe, *, with_gpu=False, tag=""):
     harness.write_text(_HARNESS, encoding="utf-8")
     cfg = work / "cfg.json"
     cfg.write_text(
-        json.dumps({"stubs": _CANVAS_STUBS, "scripts": scripts, "probe": probe}),
+        json.dumps({"stubs": stubs or _CANVAS_STUBS, "scripts": scripts, "probe": probe}),
         encoding="utf-8",
     )
     out = subprocess.run(
@@ -399,6 +404,162 @@ def test_options_argument_is_forwarded_through_the_alias(tmp_path):
         "y.__optionsSeen&&y.__optionsSeen.alpha===false].join('|');})()",
     )
     assert got == "true|true|true"
+
+
+# ---------------------------------------------------------------------------
+# The wrapper must be invisible to a probe that INSTRUMENTS what it is given
+#
+# Every other probe in this file passes plain string literals, and a literal
+# survives a second String() unchanged — so a double conversion, or a swallowed
+# throw followed by a retry, is invisible to all of them. These two hand the
+# patch objects that COUNT their own conversions and an engine that THROWS,
+# which is the only way to see either.
+# ---------------------------------------------------------------------------
+
+
+def test_contextid_is_converted_to_a_string_exactly_once(tmp_path):
+    # WebIDL converts a DOMString argument EXACTLY ONCE. A wrapper that reads
+    # String(arguments[0]) to make its decision and then forwards the ORIGINAL
+    # arguments makes the engine convert a second time, so a contextId carrying
+    # a counting toString distinguishes the profile for free.
+    #
+    # Note WHERE that fires: on the non-alias path too, i.e. on getContext('2d')
+    # and every other canvas call on the profile — not only on a probe for the
+    # alias. That inverts the ticket's own cost argument (the missing alias
+    # "only matters to a script that specifically probes for it"), and puts the
+    # divergence on iOS, the one profile whose story this ticket protects.
+    got = _run(
+        tmp_path, "ios",
+        "(function(){"
+        "function count(name){var n=0;"
+        " var id={toString:function(){n++;return name;}};"
+        " new HTMLCanvasElement().getContext(id);"
+        " return n;}"
+        # the alias itself, an ordinary context type, and an unknown name
+        "return [count('webkit-3d'),count('2d'),count('nope')].join('|');})()",
+    )
+    assert got == "1|1|1"
+
+
+def test_contextid_conversion_count_matches_a_non_ios_profile(tmp_path):
+    # The same probe on a profile whose leaf returns before touching getContext
+    # is the unpatched baseline. iOS diverging from it IS the tell — stated as a
+    # comparison so the test names the actual anomaly, not just a magic number.
+    ios = _run(
+        tmp_path, "ios",
+        "(function(){var n=0;var id={toString:function(){n++;return '2d';}};"
+        "new HTMLCanvasElement().getContext(id);return n;})()",
+        tag="cmpios",
+    )
+    baseline = _run(
+        tmp_path, "windows",
+        "(function(){var n=0;var id={toString:function(){n++;return '2d';}};"
+        "new HTMLCanvasElement().getContext(id);return n;})()",
+        tag="cmpwin",
+    )
+    assert baseline == 1
+    assert ios == baseline
+
+
+def test_an_engine_throw_propagates_and_is_not_retried(tmp_path):
+    # A real device performs the context-attributes dictionary conversion once
+    # and lets the TypeError escape. A wrapper that wraps its DELEGATION in a
+    # try/catch turns that throw into a return of the unaliased call — which for
+    # 'webkit-3d' is null, i.e. THE EXACT ANSWER THE UNPATCHED PROFILE GIVES.
+    # A detector probing the alias with a throwing attributes object would get
+    # the pre-fix tell back, plus a new one: a context name that answers on a
+    # clean call and null on a throwing one is not a shape any engine produces.
+    #
+    # It also proves the engine is entered ONCE. A swallow-and-retry logs
+    # ["webgl","webkit-3d"] for a single page-level call, so any engine-side
+    # side effect of context creation happens twice on the failure path.
+    stubs = _CANVAS_STUBS + r"""
+globalThis.__calls = [];
+const __nativeGetContext = HTMLCanvasElement.prototype.getContext;
+HTMLCanvasElement.prototype.getContext = function getContext(contextId, options) {
+  globalThis.__calls.push(String(contextId));
+  // Model the engine's own dictionary conversion of the attributes argument:
+  // reading a member whose getter throws propagates out of getContext.
+  if (options) { void options.alpha; }
+  return __nativeGetContext.apply(this, arguments);
+};
+"""
+    got = _run(
+        tmp_path, "ios",
+        "(function(){"
+        "var opts={get alpha(){throw new TypeError('bad attrs');}};"
+        "var outcome;"
+        "try{ new HTMLCanvasElement().getContext('webkit-3d',opts);"
+        "     outcome='returned'; }"
+        "catch(e){ outcome='threw:'+e.constructor.name; }"
+        "return outcome+'|'+self.__calls.join(',');})()",
+        stubs=stubs,
+    )
+    # The TypeError escapes, exactly as it would on a real device, and the
+    # engine saw ONE call — the aliased one — not a second unaliased retry.
+    assert got == "threw:TypeError|webgl"
+
+
+def test_a_throwing_contextid_propagates_rather_than_becoming_null(tmp_path):
+    # The same swallow also caught String(arguments[0]) throwing. A contextId
+    # whose toString throws must surface that error, not be quietly converted
+    # into a null (or into a second engine call with the original object).
+    #
+    # HONEST NOTE: unlike its three neighbours, this one was already GREEN
+    # before the fix — but for the wrong reason. The pre-fix wrapper swallowed
+    # the throw and retried, and the retry's own String() conversion threw
+    # again, so the error reached the caller by accident on the second attempt
+    # (having entered the engine twice and run the hostile toString twice).
+    # After the fix it is green because the single conversion propagates. The
+    # assertion is the same; what it witnesses is not. Kept because it pins the
+    # invariant, not offered as evidence the fix was needed — the counting and
+    # throwing-engine probes above are that evidence.
+    got = _run(
+        tmp_path, "ios",
+        "(function(){"
+        "var id={toString:function(){throw new TypeError('nope');}};"
+        "try{ var r=new HTMLCanvasElement().getContext(id);"
+        "     return r===null?'null':'ctx'; }"
+        "catch(e){ return 'threw:'+e.constructor.name; }})()",
+    )
+    assert got == "threw:TypeError"
+
+
+def test_a_symbol_contextid_throws_rather_than_being_converted(tmp_path):
+    # A Symbol is the ONE input where String() and WebIDL disagree: String(sym)
+    # yields "Symbol(...)" while the DOMString conversion throws a TypeError. A
+    # wrapper that converts it itself would hand the engine that string and turn
+    # the engine's TypeError into a null — a divergence from every other browser
+    # on a completely ordinary argument type. The wrapper must forward a Symbol
+    # untouched and let the engine throw as a real device does. (Nothing is
+    # missed by skipping the alias check: a Symbol can never equal 'webkit-3d'.)
+    #
+    # HONEST NOTE, same as the throwing-contextId probe above: this was already
+    # green against the pre-fix wrapper, because that wrapper's String(Symbol)
+    # threw, got swallowed, and the retry forwarded the untouched Symbol so the
+    # engine threw on the second attempt. The observable outcome matched for the
+    # wrong reason. It is kept to PIN the explicit symbol arm the fix added —
+    # without that arm the post-fix single conversion would call String() on the
+    # Symbol and hand the engine "Symbol(webgl)", turning a TypeError into null.
+    stubs = _CANVAS_STUBS + r"""
+const __nativeGetContext = HTMLCanvasElement.prototype.getContext;
+HTMLCanvasElement.prototype.getContext = function getContext(contextId, options) {
+  // Model WebIDL's DOMString conversion, which rejects a Symbol.
+  if (typeof contextId === 'symbol') {
+    throw new TypeError("Cannot convert a Symbol value to a string");
+  }
+  return __nativeGetContext.apply(this, arguments);
+};
+"""
+    got = _run(
+        tmp_path, "ios",
+        "(function(){"
+        "try{ var r=new HTMLCanvasElement().getContext(Symbol('webgl'));"
+        "     return r===null?'null':'ctx'; }"
+        "catch(e){ return 'threw:'+e.constructor.name; }})()",
+        stubs=stubs,
+    )
+    assert got == "threw:TypeError"
 
 
 def test_a_2d_canvas_still_refuses_a_webgl_context(tmp_path):
