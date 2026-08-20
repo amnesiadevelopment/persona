@@ -173,14 +173,25 @@ def mechanism_state() -> str:
         return _probe_result
     with _probe_lock:
         if _probe_result is None:
-            _probe_result = _probe_mechanism()
+            state, definitive = _probe_mechanism()
+            # Only a DEFINITIVE answer is cached. A probe that merely FAILED is
+            # not evidence about the platform: under load the call can raise
+            # transiently (fd pressure, a momentarily unreadable /proc entry),
+            # and caching that would disable verification for the entire
+            # process lifetime on a machine that can enforce it perfectly well.
+            # Re-probe instead — the cost is one syscall on the next connection.
+            if definitive:
+                _probe_result = state
+            return state
     return _probe_result
 
 
-def _probe_mechanism() -> str:
+def _probe_mechanism() -> tuple[str, bool]:
+    """``(state, definitive)``. ``definitive`` is False when the answer reflects
+    a failed probe rather than a settled property of the installation."""
     ps = _psutil()
     if ps is None:
-        return MECH_ABSENT
+        return MECH_ABSENT, True
     # Distinguish "the API is not there" from "the API is there and failed".
     # Checked as an attribute rather than inferred from the raised exception so
     # that an AttributeError from INSIDE a working net_connections() is not
@@ -193,14 +204,18 @@ def _probe_mechanism() -> str:
             "loopback listeners will refuse every connection until then",
             getattr(ps, "__version__", "?"),
         )
-        return MECH_UNUSABLE
+        # Definitive: the installed psutil either has the method or it does not.
+        return MECH_UNUSABLE, True
     try:
         ps.Process(os.getpid()).net_connections(kind="tcp")
     except Exception:
-        # We cannot enumerate even our OWN sockets: a sandboxed/locked-down
-        # platform, where refusing would reject the real browser.
-        return MECH_ABSENT
-    return MECH_ENFORCEABLE
+        # We cannot enumerate even our OWN sockets. This is NOT definitive: the
+        # call can fail transiently under load, and a locked-down platform is
+        # indistinguishable from a momentary failure at this instant. Answer
+        # ABSENT for THIS connection (degrade open rather than falsely refuse
+        # the real browser) but do not burn it into the cache.
+        return MECH_ABSENT, False
+    return MECH_ENFORCEABLE, True
 
 
 def mechanism_enforceable() -> bool:
@@ -344,10 +359,6 @@ class PeerGate:
                     )
             return False
 
-        # The binding check runs BEFORE the degrade-open branch, so even an
-        # installation with no mechanism at all only serves callers during the
-        # browser's actual lifetime: a listener nobody ever claimed has no
-        # legitimate client on any platform. Cheap defense in depth.
         if not self._wait_for_binding() or self._root_pid is None:
             logger.warning(
                 "%s: refusing peer port %s — no browser process was ever "
@@ -361,6 +372,10 @@ class PeerGate:
             # Documented, deliberate exception — see the module docstring. Log
             # once per listener so it is a recorded position, not a silent hole,
             # and never pretend the connection was verified.
+            #
+            # Returned AFTER the binding check (the review's defense-in-depth
+            # suggestion), so even a no-mechanism install only serves callers
+            # during the browser's actual lifetime.
             with self._lock:
                 if not self._warned_no_mechanism:
                     self._warned_no_mechanism = True

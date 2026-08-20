@@ -548,9 +548,35 @@ def test_degraded_gate_still_requires_a_claimed_listener(clean_probe, monkeypatc
 
     Defense in depth: it narrows the degraded window to the browser's actual
     lifetime instead of leaving the listener open from the moment it binds.
+
+    The bind wait is shortened here rather than paid in full: the refusal is the
+    behaviour under test, not the duration.
     """
     monkeypatch.setattr(peerauth, "_psutil", lambda: None)
     monkeypatch.setattr(peerauth, "_BIND_WAIT_SECONDS", 0.2)
 
     gate = PeerGate("test")  # never bound to a process
     assert gate.allows(("127.0.0.1", 65000)) is False
+
+
+def test_degraded_gate_serves_its_own_browser_without_delay(clean_probe, monkeypatch):
+    """A CLAIMED listener answers the degraded path immediately.
+
+    The bind wait only applies to a listener nobody claimed, so the legitimate
+    client never pays it. Pinned because the cost of getting this wrong is a
+    20s stall in front of the real browser rather than a visible failure.
+    """
+    monkeypatch.setattr(peerauth, "_psutil", lambda: None)
+
+    gate = PeerGate("test")
+    gate.bind_to_process(os.getpid())
+
+    started = time.monotonic()
+    verdict = gate.allows(("127.0.0.1", 65000))
+    elapsed = time.monotonic() - started
+
+    assert verdict is True
+    assert elapsed < 1.0, (
+        f"the claimed degraded path blocked for {elapsed:.1f}s — the real "
+        "browser should never wait on the bind grace period"
+    )
