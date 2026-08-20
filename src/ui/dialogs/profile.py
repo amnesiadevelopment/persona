@@ -140,9 +140,14 @@ def open_profile_dialog(
     # the only thing the operator sees, and it reads as a confident state with no
     # provenance. Render-only — this reports the LAST recorded outcome, it never
     # probes (see the socket-spy test).
+    # Gated on the CERTIFICATE as well as the status: the recorded outcome
+    # describes one certificate's CA, so it must never be rendered against a
+    # different one (or against none). update_profile clears it on reassignment;
+    # this is the second line of defence, so no other write path can resurrect
+    # a stale verdict here.
     _cert_trust = (
         profile.cert_trust_status
-        if profile is not None and profile.cert_trust_status
+        if profile is not None and profile.certificate and profile.cert_trust_status
         else ""
     )
     cert_trust_text = ft.Text(
