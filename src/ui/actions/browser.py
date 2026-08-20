@@ -68,10 +68,18 @@ def launch_or_stop(
         state.set_loading(name, False)
         state.schedule_refresh()
 
+    def _on_cert_trust(status: str) -> None:
+        # The Firefox CA import soft-fails and the launch proceeds untrusted, so
+        # this outcome is announced exactly once. Persist it or the profile stays
+        # indistinguishable from one whose trust imported cleanly.
+        pm.set_cert_trust_status(name, status)
+        state.schedule_refresh()
+
     bl.start_thread(
         profile,
         log,
         None,
         on_ready=_on_ready,
         on_stop=_on_stop,
+        on_cert_trust=_on_cert_trust,
     )
