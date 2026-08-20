@@ -380,6 +380,99 @@ def test_the_cli_reports_a_missing_precondition_rather_than_crashing(
     assert baseline_cli.main(["check", "--baseline", str(artifact)]) == 2
 
 
+def test_a_missing_baseline_exits_2_not_1_so_it_is_not_read_as_drift(
+    tmp_path, monkeypatch
+):
+    """Exit 1 is the DRIFT signal. A baseline that isn't there was never
+    compared, so reporting it as 1 would tell a caller the identity moved when
+    nothing was read at all — a false red on the most alarming signal we have.
+    """
+    from src.services.verify import baseline_cli
+
+    # The recorder must NOT be what fails: this is about the reference side.
+    monkeypatch.setattr(baseline, "record_snapshot", lambda **kw: _snap())
+
+    missing = tmp_path / "definitely-not-here.json"
+    assert not missing.exists()
+
+    assert baseline_cli.main(["check", "--baseline", str(missing)]) == 2
+
+
+@pytest.mark.parametrize(
+    "name, contents",
+    [
+        ("malformed.json", b"{not valid json"),
+        ("truncated.json", b'{"engine_build": "firefox-20", "probes":'),
+        # Not valid UTF-8: raises UnicodeDecodeError, which is a ValueError but
+        # NOT a json.JSONDecodeError. Pinned because catching only the narrower
+        # type would let this one traceback out as exit 1.
+        ("binary.json", b"\xff\xfe\x00garbage"),
+    ],
+)
+def test_an_unreadable_baseline_exits_2_not_1(tmp_path, monkeypatch, name, contents):
+    """A corrupt reference is "the check could not run", never "the identity
+    moved". Same contract as the missing case, different failure mode."""
+    from src.services.verify import baseline_cli
+
+    monkeypatch.setattr(baseline, "record_snapshot", lambda **kw: _snap())
+
+    artifact = tmp_path / name
+    artifact.write_bytes(contents)
+
+    assert baseline_cli.main(["check", "--baseline", str(artifact)]) == 2
+
+
+def test_the_reason_a_check_could_not_run_says_it_is_not_drift(tmp_path, capsys):
+    """The exit code carries the contract, but a human reads the message. It
+    has to say plainly that nothing was compared, or the operator seeing red
+    still concludes the engine changed the identity."""
+    from src.services.verify import baseline_cli
+
+    missing = tmp_path / "gone.json"
+    assert baseline_cli.main(["check", "--baseline", str(missing)]) == 2
+    message = capsys.readouterr().err
+
+    assert "NOT drift" in message
+    # And it has to say what to do about it, not just what went wrong.
+    assert "record" in message
+    assert str(missing) in message
+
+
+def test_a_clean_reading_that_cannot_be_written_is_could_not_run_not_a_verdict(
+    tmp_path, monkeypatch
+):
+    """Recording a good reading and failing to persist it is a run that did not
+    happen (exit 2), not a bad baseline (exit 1) — and never a traceback."""
+    from src.services.verify import baseline_cli
+
+    monkeypatch.setattr(baseline_cli, "record_snapshot", lambda **kw: _snap())
+
+    unwritable = tmp_path / "no-such-dir" / "out.json"
+    assert baseline_cli.main(["record", "-o", str(unwritable)]) == 2
+
+
+def test_a_refusal_still_refuses_when_the_rejected_copy_cannot_be_parked(
+    tmp_path, monkeypatch, capsys
+):
+    """The refusal is the verdict and it stands on its own. Failing to park the
+    unusable reading downgrades the message, but must not turn the refusal into
+    a traceback — and must stay exit 1, because probes really were unread."""
+    from src.services.verify import baseline_cli
+
+    monkeypatch.setattr(
+        baseline_cli,
+        "record_snapshot",
+        lambda **kw: _snap(worker={"p": {"error": "TypeError: nope"}}),
+    )
+
+    unwritable = tmp_path / "no-such-dir" / "out.json"
+    assert baseline_cli.main(["record", "-o", str(unwritable)]) == 1
+
+    message = capsys.readouterr().err
+    assert "REFUSING" in message
+    assert "is UNCHANGED" in message
+
+
 def test_record_refuses_to_write_a_baseline_that_has_unread_probes(
     tmp_path, monkeypatch
 ):
