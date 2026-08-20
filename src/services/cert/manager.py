@@ -27,6 +27,14 @@ class CertSession:
     admin_port: int     # the admin URL's port (default 443)
     _term: "term.Terminator"
 
+    def bind_to_process(self, pid: int | None) -> None:
+        """Declare the browser process allowed to use this terminator.
+
+        The terminator binds before the browser exists (the engine needs its port
+        on the command line / in its proxy config), so the launcher claims it
+        once the process is up. Until then the listener serves nobody."""
+        self._term.bind_to_process(pid)
+
     def stop(self) -> None:
         self._term.stop()
 

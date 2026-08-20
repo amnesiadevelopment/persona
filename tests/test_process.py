@@ -1,3 +1,4 @@
+import os
 import src.services.browser.invisible_launch as il
 import src.services.browser.launch_policy as launch_policy
 import src.services.browser.process as process
@@ -73,6 +74,11 @@ def test_ff_cert_starts_terminator_sets_proxy_and_ca(monkeypatch, tmp_path):
         ca_path = "/work/term_ca.crt"
         spki_b64 = "SPKI=="
 
+        def bind_to_process(self, pid):
+            # The launcher claims the terminator for the spawned browser; the
+            # real CertSession forwards this to the peer gate.
+            self.bound_pid = pid
+
         def stop(self):
             pass
 
@@ -144,6 +150,7 @@ def test_chromium_unchecked_proxy_ships_host_zone_not_utc(monkeypatch, tmp_path)
     class _FakePopen:
         def __init__(self, args, **kwargs):
             captured["args"] = args
+            self.pid = os.getpid()
 
     monkeypatch.setattr(process, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(process, "ProxyStore", _StoreWithGeolessProxy)
@@ -170,6 +177,7 @@ def test_chromium_keeps_window_visible_so_overlays_render(monkeypatch, tmp_path)
     class _FakePopen:
         def __init__(self, args, **kwargs):
             captured["args"] = args
+            self.pid = os.getpid()
 
     monkeypatch.setattr(process, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(process, "ProxyStore", _Store)
@@ -196,6 +204,7 @@ def test_linux_chromium_env_keeps_system_fontconfig(monkeypatch, tmp_path):
     class _FakePopen:
         def __init__(self, args, **kwargs):
             captured["env"] = kwargs.get("env")
+            self.pid = os.getpid()
 
     monkeypatch.setattr(process, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(process, "ProxyStore", _Store)
@@ -219,6 +228,7 @@ def _spawn_chromium_args(monkeypatch, tmp_path, profile, linux=False, store=_Sto
         def __init__(self, args, **kwargs):
             captured["args"] = args
             captured["env"] = kwargs.get("env")
+            self.pid = os.getpid()
 
     monkeypatch.setattr(process, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(process, "ProxyStore", store)
@@ -373,6 +383,11 @@ def test_proxied_chromium_bridge_uses_socks5(monkeypatch, tmp_path):
         def start(self):
             return 40555
 
+        def bind_to_process(self, pid):
+            # The launcher claims the bridge for the spawned browser; the real
+            # ProxyBridge forwards this to the peer gate.
+            self.bound_pid = pid
+
         def stop(self):
             pass
 
@@ -405,6 +420,9 @@ def test_failed_launch_stops_bridge_no_orphan(monkeypatch, tmp_path):
 
         def start(self):
             return 40555
+
+        def bind_to_process(self, pid):
+            self.bound_pid = pid
 
         def stop(self):
             stopped.append(True)
@@ -531,6 +549,7 @@ def test_chromium_no_proxy_timezone_matches_en_us_language(monkeypatch, tmp_path
     class _FakePopen:
         def __init__(self, args, **kwargs):
             captured["args"] = args
+            self.pid = os.getpid()
 
     monkeypatch.setattr(process, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(process, "ProxyStore", _Store)

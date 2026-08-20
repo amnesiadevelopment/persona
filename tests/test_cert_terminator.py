@@ -5,6 +5,7 @@ can't leak to any other site.
 import base64
 import datetime
 import hashlib
+import os
 import socket
 import ssl
 import threading
@@ -12,6 +13,18 @@ import threading
 import pytest
 
 from src.services.cert import terminator as term
+
+
+def _claim(t: term.Terminator) -> term.Terminator:
+    """Authorize THIS process to use the terminator.
+
+    The terminator now serves only the browser process tree it was started for,
+    so a test that connects from the pytest process must say so. This is the
+    same call the launcher makes after spawning the browser.
+    """
+    t.bind_to_process(os.getpid())
+    return t
+
 
 
 # ---------- helpers: build a real mTLS origin ----------
@@ -199,9 +212,9 @@ def test_terminator_presents_cert_to_admin_host(tmp_path):
     try:
         leaf = term.make_leaf("localhost", tmp_path)
         pem = term.client_pem_from_p12(p12, pw, tmp_path)
-        t = term.Terminator(
+        t = _claim(term.Terminator(
             "localhost", leaf, pem, verify_upstream=False
-        )
+        ))
         pport = t.start()
         try:
             resp = _connect_via_proxy(pport, "localhost", port, leaf.ca_path)
@@ -220,7 +233,7 @@ def test_terminator_does_not_present_cert_to_other_host(tmp_path):
     try:
         leaf = term.make_leaf("admin.example.com", tmp_path)  # admin != localhost
         pem = term.client_pem_from_p12(p12, pw, tmp_path)
-        t = term.Terminator("admin.example.com", leaf, pem, verify_upstream=False)
+        t = _claim(term.Terminator("admin.example.com", leaf, pem, verify_upstream=False))
         pport = t.start()
         try:
             raw = socket.create_connection(("127.0.0.1", pport), timeout=8)
@@ -317,11 +330,11 @@ def test_terminator_routes_upstream_through_socks(tmp_path):
     try:
         leaf = term.make_leaf("localhost", tmp_path)
         pem = term.client_pem_from_p12(p12, pw, tmp_path)
-        t = term.Terminator(
+        t = _claim(term.Terminator(
             "localhost", leaf, pem,
             upstream_socks=f"socks5://127.0.0.1:{socks_port}",
             verify_upstream=False,
-        )
+        ))
         pport = t.start()
         try:
             resp = _connect_via_proxy(pport, "localhost", port, leaf.ca_path)

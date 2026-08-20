@@ -22,6 +22,7 @@ def test_session_exposes_proxy_spki_and_ca(tmp_path):
 def test_session_end_to_end(tmp_path):
     # build a real p12 + mTLS origin, run a full session, and confirm the browser
     # side (trusting only the leaf CA) reaches the origin through the terminator.
+    import os
     import socket
     import threading
     import datetime
@@ -111,6 +112,9 @@ def test_session_end_to_end(tmp_path):
             cert, None, str(tmp_path), verify_upstream=False
         )
         assert sess is not None
+        # Authorize this process: the terminator serves only the browser tree it
+        # was started for, and here the test IS the client.
+        sess.bind_to_process(os.getpid())
         assert sess.proxy_url.startswith("http://127.0.0.1:")
         assert sess.spki_b64 and sess.ca_path
         try:
