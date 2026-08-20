@@ -23,7 +23,13 @@ the profile store, neither of which is available in every environment this
 package must stay importable in. Import it directly where you need it.
 """
 
-from .diff import diff_realms, diff_snapshots, format_diff
+from .diff import (
+    INCONCLUSIVE,
+    diff_realms,
+    diff_snapshots,
+    format_diff,
+    inconclusive_count,
+)
 from .probes import ALL_REALMS, PROBES, WINDOW, WORKER, Probe, probes_for_realm
 from .runner import run_probes
 from .snapshot import (
@@ -38,6 +44,7 @@ from .snapshot import (
 
 __all__ = [
     "ALL_REALMS",
+    "INCONCLUSIVE",
     "PROBES",
     "SCHEMA_VERSION",
     "WINDOW",
@@ -50,6 +57,7 @@ __all__ = [
     "dumps",
     "engine_build",
     "format_diff",
+    "inconclusive_count",
     "load",
     "probes_for_realm",
     "run_probes",

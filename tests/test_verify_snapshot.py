@@ -481,6 +481,177 @@ def test_format_diff_renders_every_entry():
     assert "expected:" in text and "observed:" in text
 
 
+# --- an unobtained reading is INCONCLUSIVE, never agreement ------------------
+# The department's rule — an unobtainable reading is inconclusive, and
+# inconclusive is never a pass — is honoured at probe granularity by
+# runner/snapshot (a throwing probe is recorded as {"error": ...}, never
+# omitted, never coerced to a value) and was then LOST here: the comparator
+# compared entries verbatim, so {"error": "X"} == {"error": "X"} counted as
+# agreement. Two failed readings rendered as "no differences" and exited 0 —
+# a claim of safety resting on evidence nobody gathered.
+#
+# The rule these pin is ONE rule, not a special case: if EITHER side of a
+# comparison carries an error, the comparison is inconclusive, because the
+# evidence needed to make it was never obtained.
+
+
+def _errored(probe_ids, exc=None):
+    return {probe_id: exc or TypeError("probe unavailable") for probe_id in probe_ids}
+
+
+def _all_errored_snapshot():
+    """A snapshot in which every single reading failed."""
+    return _snapshot(
+        window_values=_errored(p.id for p in probes.probes_for_realm(probes.WINDOW)),
+        worker_values=_errored(p.id for p in probes.probes_for_realm(probes.WORKER)),
+    )
+
+
+def test_a_probe_errored_on_both_sides_is_inconclusive_not_agreement():
+    # The realistic case: 77 vectors read fine, ONE errored on both sides.
+    # Verbatim comparison called that agreement and told the operator the
+    # identity survived on the exact vector it failed to read.
+    target = probes.probes_for_realm(probes.WINDOW)[0].id
+    entries = diff.diff_snapshots(
+        _snapshot(window_values={target: TypeError("no webgl")}),
+        _snapshot(window_values={target: TypeError("no webgl")}),
+    )
+    assert len(entries) == 1, "an unread vector must not vanish into agreement"
+    assert entries[0]["probe_id"] == target
+    assert entries[0]["status"] == diff.INCONCLUSIVE
+    assert entries[0]["expected"] == {"error": "TypeError: no webgl"}
+    assert entries[0]["observed"] == {"error": "TypeError: no webgl"}
+
+
+def test_two_different_errors_are_inconclusive_not_a_reported_change():
+    # The same hole wearing different clothes: two FAILED readings that happen
+    # to differ are not evidence the identity moved — nothing was ever read.
+    # Reporting them as "changed" overclaims in the opposite direction.
+    target = probes.probes_for_realm(probes.WINDOW)[0].id
+    entries = diff.diff_snapshots(
+        _snapshot(window_values={target: TypeError("a")}),
+        _snapshot(window_values={target: ValueError("b")}),
+    )
+    assert [e["status"] for e in entries] == [diff.INCONCLUSIVE]
+
+
+def test_a_snapshot_of_nothing_but_errors_does_not_read_as_no_differences():
+    # The total-failure case: every reading failed, diffed against itself.
+    snap = _all_errored_snapshot()
+    entries = diff.diff_snapshots(snap, snap)
+    assert entries, "an all-errored snapshot must never diff clean"
+    assert {e["status"] for e in entries} == {diff.INCONCLUSIVE}
+    # Every recorded reading is accounted for, not just a sampled few.
+    assert len(entries) == sum(len(r) for r in snap["probes"].values())
+    text = diff.format_diff(entries)
+    assert "no differences" not in text
+
+
+def test_format_diff_names_the_inconclusive_count():
+    snap = _all_errored_snapshot()
+    total = sum(len(r) for r in snap["probes"].values())
+    text = diff.format_diff(diff.diff_snapshots(snap, snap))
+    assert str(total) in text and "inconclusive" in text.lower()
+
+
+def test_diff_realms_reports_a_probe_errored_in_both_realms():
+    # The sibling comparator: the window-vs-worker check read an unread vector
+    # as the two realms agreeing.
+    shared = [p for p in probes.PROBES if set(p.realms) == set(probes.ALL_REALMS)][0]
+    snap = _snapshot(
+        window_values={shared.id: TypeError("boom")},
+        worker_values={shared.id: TypeError("boom")},
+    )
+    entries = diff.diff_realms(snap, probes.WINDOW, probes.WORKER)
+    entry = next((e for e in entries if e["probe_id"] == shared.id), None)
+    assert entry is not None, "a vector unread in BOTH realms is not agreement"
+    assert entry["status"] == diff.INCONCLUSIVE
+
+
+def test_an_unread_reading_is_inconclusive_whichever_side_failed():
+    # Pins the SAFETY property of the asymmetric case independently of its
+    # label: a baseline value against a failed re-read is still a reading
+    # nobody obtained, so it is never silently passed.
+    target = probes.probes_for_realm(probes.WINDOW)[0].id
+    entries = diff.diff_snapshots(
+        _snapshot(), _snapshot(window_values={target: RuntimeError("gone")})
+    )
+    assert len(entries) == 1
+    assert entries[0]["status"] == diff.INCONCLUSIVE
+
+
+def test_the_inconclusive_status_is_exported_beside_the_others():
+    from src.services import verify
+
+    assert verify.INCONCLUSIVE == diff.INCONCLUSIVE
+    assert "INCONCLUSIVE" in diff.__all__ and "INCONCLUSIVE" in verify.__all__
+
+
+def test_cli_diff_does_not_exit_zero_when_readings_were_inconclusive(
+    tmp_path, capsys
+):
+    # The operator-facing consequence: exit 0 is a claim that every vector was
+    # read AND agreed. An unread vector must not buy that claim.
+    from src.services.verify import cli
+
+    snap = _all_errored_snapshot()
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    snapshot.write(snap, str(a))
+    snapshot.write(snap, str(b))
+    code = cli.main(["diff", str(a), str(b)])
+    assert code != 0
+    assert "no differences" not in capsys.readouterr().out
+
+
+def test_cli_diff_tells_failed_to_look_apart_from_moved(tmp_path, capsys):
+    # A caller must distinguish the two from the exit code ALONE: collapsing
+    # them would make "we never looked" indistinguishable from "it drifted".
+    from src.services.verify import cli
+
+    target = probes.probes_for_realm(probes.WINDOW)[0].id
+    unread = _snapshot(window_values={target: TypeError("no webgl")})
+    inc_a, inc_b = tmp_path / "ia.json", tmp_path / "ib.json"
+    snapshot.write(unread, str(inc_a))
+    snapshot.write(unread, str(inc_b))
+    inconclusive_code = cli.main(["diff", str(inc_a), str(inc_b)])
+
+    moved_a, moved_b = tmp_path / "ma.json", tmp_path / "mb.json"
+    snapshot.write(_snapshot(), str(moved_a))
+    snapshot.write(_snapshot(window_values={target: "drift"}), str(moved_b))
+    moved_code = cli.main(["diff", str(moved_a), str(moved_b)])
+
+    assert inconclusive_code != 0 and moved_code != 0
+    assert inconclusive_code != moved_code
+
+
+def test_cli_realms_does_not_exit_zero_when_readings_were_inconclusive(
+    tmp_path, capsys
+):
+    from src.services.verify import cli
+
+    path = tmp_path / "s.json"
+    snapshot.write(_all_errored_snapshot(), str(path))
+    assert cli.main(["realms", str(path)]) != 0
+
+
+def test_a_real_difference_still_outranks_an_inconclusive_one(tmp_path, capsys):
+    # When a vector MOVED and another was unread, the exit code must still say
+    # "moved" — the louder fact — while the report names both.
+    from src.services.verify import cli
+
+    window_probes = probes.probes_for_realm(probes.WINDOW)
+    moved, unread = window_probes[0].id, window_probes[1].id
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    snapshot.write(_snapshot(window_values={unread: TypeError("boom")}), str(a))
+    snapshot.write(
+        _snapshot(window_values={unread: TypeError("boom"), moved: "drift"}), str(b)
+    )
+    code = cli.main(["diff", str(a), str(b)])
+    out = capsys.readouterr().out
+    assert code == 1, "a moved vector must still report as moved"
+    assert moved in out and unread in out
+
+
 # --- the engine build in the header -----------------------------------------
 # The package's stated workflow (cli.py:1-13) is: record before.json, UPDATE
 # THE ENGINE, record after.json, diff. The one variable that workflow turns on
