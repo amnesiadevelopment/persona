@@ -5,6 +5,10 @@ persona exposes a local REST API (default http://127.0.0.1:8000, enable the
 to get a CDP endpoint, then attach any CDP client (Playwright/Puppeteer) or
 Selenium (via the host:port debugger address).
 
+The profile must have AI control enabled (the "AI control" toggle on the
+profile) — an automation launch opens a remote-debugging port, so the API
+refuses with 409 "profile is not AI-enabled" when the profile has it off.
+
 Run:  python examples/drive_profile.py <profile-name>
 """
 
