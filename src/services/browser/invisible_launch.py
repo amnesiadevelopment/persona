@@ -2530,20 +2530,20 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
         except Exception:
             return None
 
-    # Prefix every tab/window title with the profile name so the taskbar button
-    # identifies which persona owns the window. An init script runs in every page
-    # the context opens, including tabs the user opens by hand.
-    _prefix = f"[{name}] " if name else None
-    if name:
-        on_ctx(lambda: ctx.add_init_script(
-            "(()=>{const P=" + json.dumps(_prefix) + ";"
-            "const f=()=>{if(document.title&&!document.title.startsWith(P))"
-            "document.title=P+document.title;};f();"
-            "document.addEventListener('DOMContentLoaded',f);"
-            "const h=document.head||document.documentElement;"
-            "if(h)new MutationObserver(f).observe(h,"
-            "{subtree:true,childList:true,characterData:true});})();"
-        ))
+    # NO TITLE PREFIX (PS-30). This used to prefix every tab/window title with
+    # the profile name so the taskbar button identified the persona. That wrote
+    # the operator's own profile label into document.title in every page, where
+    # any script lifted it with one regex — and since the label is the crc32
+    # PREIMAGE of `Profile.fingerprint_seed`, reading it recovered the whole
+    # presented machine. Invariant #0 does not weigh that against taskbar
+    # legibility. Profile identity is carried host-side instead, by the app_id
+    # (MOZ_APP_REMOTINGNAME above / --class on Chromium) matched against the
+    # .desktop StartupWMClass — a surface no page can read.
+    #
+    # Deliberately no replacement tag: a page that clears its title must read
+    # back empty, so ANY title mutation (even an opaque per-profile token) keeps
+    # the observer-rewrites-my-title tell that announced the masking regardless
+    # of what the label said.
 
     # Keep outerWidth/outerHeight tied to the real window (inner + chrome) so a
     # small window on a big spoofed screen doesn't leak the screen size through
