@@ -3669,14 +3669,23 @@ def _child_main() -> None:
 
 
 class InvisibleProcess:
-    """Popen-compatible handle around the invisible_playwright child."""
+    """Popen-compatible handle around the invisible_playwright child.
 
-    def __init__(self, cfg: dict) -> None:
+    ``in_process`` forces the THREAD path even on Linux (where the default is
+    fork). The only caller that needs it is an observer that must reach the
+    session's eval hook: :func:`register_ff_eval` writes to an in-memory,
+    per-process dict, so a FORKED session publishes its hook in the child and
+    the parent can never see it. Running the session in a thread of the calling
+    process is what makes "launch this profile, then read what it exposes" a
+    single-process operation. It changes nothing else about the launch.
+    """
+
+    def __init__(self, cfg: dict, *, in_process: bool = False) -> None:
         # No blocking work here: this runs on the caller's thread (the Flet
         # session thread on a UI launch). Bookmark seeding — which can do a
         # one-time headless engine init taking tens of seconds — happens in
         # _child, off this thread, before the visible window opens.
-        self._fork = _platform.needs_fork_launch()
+        self._fork = _platform.needs_fork_launch() and not in_process
         if self._fork:
             ctx = mp.get_context("fork")
             r, w = os.pipe()
@@ -3751,5 +3760,5 @@ class InvisibleProcess:
             self._stop_event.set()
 
 
-def spawn(cfg: dict) -> InvisibleProcess:
-    return InvisibleProcess(cfg)
+def spawn(cfg: dict, *, in_process: bool = False) -> InvisibleProcess:
+    return InvisibleProcess(cfg, in_process=in_process)

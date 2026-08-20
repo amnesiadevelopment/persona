@@ -35,7 +35,9 @@ def _launch_cfg(monkeypatch, tmp_path, calls):
     captured = []
     monkeypatch.setattr(il, "ensure_invisible_installed", _ensure)
     monkeypatch.setattr(il, "is_invisible_installed", _is_installed)
-    monkeypatch.setattr(il, "spawn", lambda cfg: captured.append(cfg) or _Spawned())
+    monkeypatch.setattr(
+        il, "spawn", lambda cfg, **kw: captured.append(cfg) or _Spawned()
+    )
     monkeypatch.setattr(process, "ProxyStore", _Store)
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
     profile = Profile(name="seed-check", engine="firefox")
@@ -91,7 +93,9 @@ def test_ff_cert_starts_terminator_sets_proxy_and_ca(monkeypatch, tmp_path):
 
     captured = []
     monkeypatch.setattr(il, "is_invisible_installed", lambda: True)
-    monkeypatch.setattr(il, "spawn", lambda cfg: captured.append(cfg) or _Spawned())
+    monkeypatch.setattr(
+        il, "spawn", lambda cfg, **kw: captured.append(cfg) or _Spawned()
+    )
     monkeypatch.setattr(process, "ProxyStore", _Store)
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
     monkeypatch.setattr(process, "CertStore", _CertStore)
@@ -164,7 +168,11 @@ def test_firefox_refuses_when_the_proxy_has_no_geography(monkeypatch, tmp_path):
 
     spawned = []
     monkeypatch.setattr(il, "is_invisible_installed", lambda: True)
-    monkeypatch.setattr(il, "spawn", lambda cfg: spawned.append(cfg) or _Spawned())
+    # **kw so this stub tolerates the in_process keyword the baseline recorder
+    # passes; the variable is `spawned`, which is what this test declares.
+    monkeypatch.setattr(
+        il, "spawn", lambda cfg, **kw: spawned.append(cfg) or _Spawned()
+    )
     monkeypatch.setattr(process, "ProxyStore", _StoreWithGeolessProxy)
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
     # Patch on launch_policy, not process: _proxy_timezone lives there too and
