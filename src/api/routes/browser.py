@@ -90,9 +90,31 @@ async def launch_browser(
             detail="Firefox engine not installed yet — download it from the app first",
         )
 
-    # API launches default to automation mode: force remote debugging on so an
-    # external script can attach, without mutating the persisted ai_control
-    # flag (a manual open from the UI stays CDP-free, which is less detectable).
+    # An automation launch opens a remote-debugging port that chromium — not
+    # FastAPI — serves, so the API bearer token does not protect it and any
+    # same-user process can find it (see services/browser/cdp.py). That channel
+    # is exactly what the operator's ai_control flag governs, so this lane
+    # refuses rather than composing ai_control=True over a stored False. The
+    # MCP lane already refuses in the same words (api/mcp_server.py:164).
+    #
+    # Only engines that actually open that port are gated: the Firefox engine
+    # never reads ai_control (services/browser/invisible_launch.py) and is
+    # driven through its eval-hook registry behind the API's own auth, so there
+    # is no unauthenticated channel to gate and refusing would only remove
+    # working automation. If Firefox ever grows a remote-debugging transport,
+    # extend this condition instead of leaving it silently under-covering.
+    # `engine` is the *effective* engine (resolved above), not profile.engine:
+    # a mobile profile storing engine="firefox" launches chromium and so must
+    # be gated.
+    if automation and engine != "firefox" and not profile.ai_control:
+        raise HTTPException(
+            status_code=409,
+            detail="profile is not AI-enabled (enable AI control first)",
+        )
+
+    # Automation mode needs remote debugging on for an external script to
+    # attach. The profile already permits it (guarded above); replace rather
+    # than mutate so the persisted ai_control flag is never written here.
     launch_profile = (
         dataclasses.replace(profile, ai_control=True) if automation else profile
     )
