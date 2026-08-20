@@ -911,6 +911,8 @@ def _init_places_db(
     enter_timeout: float = 8.0,
     stop_event=None,
     log=None,
+    proxy: dict | None = None,
+    proxy_declared: bool = False,
 ) -> bool:
     """Launch the engine once headless so it creates a valid places.sqlite.
 
@@ -934,7 +936,57 @@ def _init_places_db(
     at times; the settle below kills the leftovers anyway), and `stop_event`
     cancels between polls so a STOP doesn't have to wait the init out.
     Returns True once the roots exist.
+
+    `proxy` is the profile's assigned proxy, already resolved by the SAME
+    `_proxy_dict` the visible launch uses. This is a REAL Firefox on the
+    profile's own directory and its own fingerprint seed, so it must reach the
+    network exactly the way the visible launch does. The run is engineered to
+    be quiet (`_NO_STARTUP_FETCH`, plus the concrete timezone/locale that
+    short-circuit the engine's geo lookups), so on a good day it costs nothing
+    — but if it emits anything at all (OCSP/CRL, an engine-internal probe,
+    whatever a future engine bump adds), that traffic would otherwise leave on
+    the operator's real address correlated with this profile's identity.
+
+    `proxy_declared` says the profile HAS a proxy assigned, independently of
+    whether a usable dict could be built for it — see the fail-closed guard
+    below.
+
+    DELIBERATE ASYMMETRY with the visible launch's pref set: `_profile_prefs`
+    adds five `media.peerconnection.ice.*` guards for a proxied profile, and
+    this warm-up does NOT. That is a considered omission, not an oversight —
+    the warm-up loads no page and never constructs an RTCPeerConnection, so
+    there is nothing for those prefs to constrain, and the extra_prefs here are
+    deliberately the minimal quiet-startup set. The DNS half arrives anyway:
+    invisible_core's `configure_proxy` writes
+    `network.proxy.socks_remote_dns = True` itself for any SOCKS server. If
+    this run ever grows a real page load, revisit and take the full set.
+
+    The caller must install `_install_geo_shortcircuit()` BEFORE invoking this
+    with a proxy — see the call site in `_launch_and_watch`. The engine's
+    `__enter__` resolves session geo before it forks Firefox, and that lookup
+    goes over the proxy regardless of the concrete timezone, which collides
+    with the `enter_timeout` wedge detector below (#207/#208).
     """
+    # Fail CLOSED: a profile that declares a proxy but handed us no usable dict
+    # must not get an engine at all. The caller treats a failed seed as
+    # BOOKMARK_SEED_FAILED and opens without bookmarks (see the call site in
+    # _launch_and_watch), so the cost is a lost bookmark seed — the correct
+    # price. A direct Firefox against a proxied profile's identity is not.
+    #
+    # UNREACHABLE TODAY BY CONSTRUCTION — do not read this as a live path.
+    # _spawn_invisible gates on _require_proxy_resolved (process.py) in the
+    # PARENT and raises before cfg is built, and cfg carries only `proxy_url`,
+    # which _proxy_dict maps to None only when falsy — indistinguishable in the
+    # child from "no proxy assigned". Kept as defense in depth because the
+    # failure it prevents is precisely the one this code exists to avoid.
+    if proxy_declared and not proxy:
+        if log:
+            log(
+                "PLACES_INIT refusing to start: this profile has a proxy "
+                "assigned but no usable proxy could be resolved — a direct "
+                "warm-up would expose the real address"
+            )
+        return False
     try:
         from invisible_playwright import InvisiblePlaywright
     except Exception:
@@ -1067,6 +1119,13 @@ def _init_places_db(
                         # with the bookmarks toolbar shown (#242).
                         **(_WARMUP_CHROME_PREFS if warmup_visible else {}),
                     },
+                    # Route this run through the profile's assigned proxy, so a
+                    # real Firefox on the profile's own identity never reaches
+                    # the network on the operator's real address. Spread rather
+                    # than passed as proxy=None, so a DIRECT profile's engine
+                    # call is byte-identical to what it was before this existed
+                    # and the engine's own default is left untouched.
+                    **({"proxy": proxy} if proxy else {}),
                 ):
                     entered.set()
                     while (
@@ -1584,7 +1643,8 @@ def _write_persona_bookmark_urls(profile_dir: str, urls) -> None:
 
 def _seed_firefox_bookmarks(
     profile_dir: str, bookmarks: list, seed: int, stop_event=None,
-    attempts: int = 2, log=None,
+    attempts: int = 2, log=None, proxy: dict | None = None,
+    proxy_declared: bool = False,
 ) -> bool:
     """Reconcile persona's OWN Firefox toolbar bookmarks via places.sqlite —
     runs before every launch, so edits in the profile editor take effect on the
@@ -1653,7 +1713,10 @@ def _seed_firefox_bookmarks(
                             pass
                 if not places_ready(places):
                     if not _init_places_db(
-                        profile_dir, seed, stop_event=stop_event, log=log
+                        profile_dir, seed, stop_event=stop_event, log=log,
+                        # The warm-up is a real Firefox on this profile's own
+                        # identity, so it goes over this profile's proxy.
+                        proxy=proxy, proxy_declared=proxy_declared,
                     ):
                         continue
 
@@ -2180,8 +2243,36 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     # which on a UI launch is the Flet session thread and would freeze the app.
     # A seed that didn't land after its bounded retries is reported, not
     # swallowed (#202) — but never blocks the launch itself.
+    # MUST be installed BEFORE the bookmark warm-up below, not just before the
+    # visible launch. The warm-up hands the engine a proxy, and the engine's
+    # __enter__ calls prepare_session_geo(timezone, proxy) BEFORE it forks
+    # Firefox. The egress-IP discovery in there is gated on the proxy being set
+    # and sits ABOVE the concrete-IANA early return, so timezone="UTC" prevents
+    # the RAISE but NOT the round-trips: ~12.5s on a cold/dead circuit. The
+    # warm-up's own wedge detector waits `enter_timeout` (8.0s) for a Firefox
+    # PROCESS to appear and, finding none (the geo lookup runs before the fork),
+    # treats a perfectly healthy enter as a wedged driver — kill + retry, three
+    # times, ending in BOOKMARK_SEED_FAILED for every proxied bookmarked
+    # profile. That is #207/#208 coming back through a different door.
+    #
+    # Unconditional (rather than the old `if cfg.get("timezone")`) because the
+    # warm-up hardcodes timezone="UTC" regardless of what cfg carries, so it
+    # needs the shortcircuit even for a cfg with no timezone of its own. Safe:
+    # the patch only short-circuits a CONCRETE zone and falls through to the
+    # engine's real resolver for "auto"/empty. Idempotent — the closure binds
+    # the pristine core function as a default arg, so re-installing can't
+    # recurse.
+    _install_geo_shortcircuit()
+
+    # ONE construction of the proxy dict for this launch, built here because
+    # the bookmark warm-up below needs it too — it starts a REAL Firefox on this
+    # profile's own directory and fingerprint seed, so it must reach the network
+    # over the same proxy the visible launch does, never on the operator's real
+    # address. The visible launch reuses this exact value further down.
+    proxy = _proxy_dict(cfg.get("proxy_url", ""))
     if not _seed_firefox_bookmarks(
-        profile_dir, cfg.get("bookmarks", []), seed, stop_event, log=emit
+        profile_dir, cfg.get("bookmarks", []), seed, stop_event, log=emit,
+        proxy=proxy, proxy_declared=bool(cfg.get("proxy_url")),
     ) and cfg.get("bookmarks"):
         emit("BOOKMARK_SEED_FAILED: opening without the profile's bookmarks")
     # The headless init above persists the engine's window-hiding pref into
@@ -2241,12 +2332,15 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
         _finish()  # close the pipe so the monitor's reader unblocks (no fd leak)
         return
 
-    # When persona already knows the timezone (it always passes a concrete
-    # one), skip invisible's per-launch egress-IP lookup over the proxy.
-    if cfg.get("timezone"):
-        _install_geo_shortcircuit()
+    # NOTE: the geo shortcircuit that used to be installed here (conditionally,
+    # on `cfg.get("timezone")`) now runs unconditionally further up, before the
+    # bookmark warm-up — the warm-up needs it too, and needs it regardless of
+    # cfg's timezone. See the comment there. Installing it again here would be
+    # harmless (it is idempotent) but says something false: that the visible
+    # launch is the first thing that needs it.
 
-    proxy = _proxy_dict(cfg.get("proxy_url", ""))
+    # `proxy` was built once above (the bookmark warm-up needed the same value);
+    # reuse it here rather than constructing a second dict from the same url.
     kwargs = {"seed": seed, "headless": False, "extra_prefs": _profile_prefs(cfg)}
     # When a downloaded build newer than the package's pinned one is active,
     # point the engine at it — its own ensure_binary() only knows the pinned
