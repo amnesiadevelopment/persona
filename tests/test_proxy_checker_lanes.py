@@ -34,6 +34,7 @@ import pytest
 from src.models.proxy import Proxy
 from src.services.browser import launch_policy
 from src.services.browser.launch_policy import _proxy_timezone
+from src.services.proxy.errors import GeographyUnknownError
 from src.services.proxy.store import ProxyStore
 from src.utils import proxy_checker
 
@@ -303,12 +304,24 @@ def test_checked_loopback_proxy_declares_the_exit_zone_not_the_host_zone(
     assert _proxy_timezone(proxy) == "Europe/Warsaw"
 
 
-def test_unchecked_loopback_proxy_still_shows_the_leak_this_slice_closes(monkeypatch):
-    """The baseline the test above is measured against: with geo still empty —
-    which is every loopback proxy's permanent state before this fix — the host
-    zone IS what gets declared. Kept explicit so the pair reads as a real
-    before/after rather than a single assertion that could pass vacuously."""
+def test_unchecked_loopback_proxy_is_refused_rather_than_given_the_host_zone(
+    monkeypatch,
+):
+    """The baseline the test above is measured against, kept explicit so the pair
+    reads as a real before/after rather than a single assertion that could pass
+    vacuously.
+
+    Was test_unchecked_loopback_proxy_still_shows_the_leak_this_slice_closes,
+    which asserted the host zone IS what gets declared when geo is empty. That
+    was the honest reading at the time: this slice made the loopback check
+    *possible*, but a proxy the operator had not yet checked still fell through
+    to the host zone. A later slice closed that remaining hole — with no
+    geography there is now no answer at all, so the launch is REFUSED instead of
+    answered from the host.
+
+    The old name recorded the old trade ("still shows the leak"), so it goes
+    with the old behaviour: the leak it named is exactly what is now closed.
+    """
     monkeypatch.setattr(launch_policy, "_host_timezone", lambda: "America/Chicago")
-    assert _proxy_timezone(Proxy(name="tor", url="socks5://127.0.0.1:9050")) == (
-        "America/Chicago"
-    )
+    with pytest.raises(GeographyUnknownError):
+        _proxy_timezone(Proxy(name="tor", url="socks5://127.0.0.1:9050"))

@@ -121,6 +121,21 @@ class _GeolessProxy:
     lon = None
 
 
+class _CheckedProxy:
+    """A proxy that HAS been checked successfully, so it carries geography.
+
+    Most proxied tests below are about something else entirely (QUIC, DoH,
+    VA-API, SOCKS5 form, bridge cleanup) and just need *a* proxy. They must use
+    this one: a proxy with no geography now REFUSES to launch, so a geoless
+    stand-in would fail them for a reason unrelated to what they assert.
+    """
+
+    timezone = "Europe/Warsaw"
+    country_code = "PL"
+    lat = None
+    lon = None
+
+
 class _StoreWithGeolessProxy:
     def resolve(self, name):
         return "socks5://1.2.3.4:1080"
@@ -129,10 +144,27 @@ class _StoreWithGeolessProxy:
         return _GeolessProxy()
 
 
-def test_firefox_unchecked_proxy_ships_host_zone_not_utc(monkeypatch, tmp_path):
-    captured = []
+class _StoreWithCheckedProxy:
+    def resolve(self, name):
+        return "socks5://1.2.3.4:1080"
+
+    def get(self, name):
+        return _CheckedProxy()
+
+
+def test_firefox_refuses_when_the_proxy_has_no_geography(monkeypatch, tmp_path):
+    # Was test_firefox_unchecked_proxy_ships_host_zone_not_utc, which pinned the
+    # host zone as the CORRECT value to ship here. It is not: that declared the
+    # operator's real timezone inside the tunnel. No geography => refuse the
+    # launch. The old name recorded the old trade, so it goes with the old
+    # behaviour.
+    import pytest
+
+    from src.services.proxy.errors import GeographyUnknownError
+
+    spawned = []
     monkeypatch.setattr(il, "is_invisible_installed", lambda: True)
-    monkeypatch.setattr(il, "spawn", lambda cfg: captured.append(cfg) or _Spawned())
+    monkeypatch.setattr(il, "spawn", lambda cfg: spawned.append(cfg) or _Spawned())
     monkeypatch.setattr(process, "ProxyStore", _StoreWithGeolessProxy)
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
     # Patch on launch_policy, not process: _proxy_timezone lives there too and
@@ -140,30 +172,40 @@ def test_firefox_unchecked_proxy_ships_host_zone_not_utc(monkeypatch, tmp_path):
     # re-export alias is silently bypassed (real host zone would be read).
     monkeypatch.setattr(launch_policy, "_host_timezone", lambda: "Europe/Kyiv")
     profile = Profile(name="tz-firefox", engine="firefox", proxy="p1")
-    process._spawn_invisible(profile, str(tmp_path))
-    assert captured[0]["timezone"] == "Europe/Kyiv"
+    with pytest.raises(GeographyUnknownError):
+        process._spawn_invisible(profile, str(tmp_path))
+    assert spawned == [], "must NOT spawn when the proxy's geography is unknown"
 
 
-def test_chromium_unchecked_proxy_ships_host_zone_not_utc(monkeypatch, tmp_path):
-    captured = {}
+def test_chromium_refuses_when_the_proxy_has_no_geography(monkeypatch, tmp_path):
+    # Was test_chromium_unchecked_proxy_ships_host_zone_not_utc — same inversion
+    # as the Firefox case above, asserted through the chromium arg builder so
+    # both engines are pinned separately. A fix covering one engine is not a fix.
+    import pytest
+
+    from src.services.proxy.errors import GeographyUnknownError
+
+    spawned = []
 
     class _FakePopen:
         def __init__(self, args, **kwargs):
-            captured["args"] = args
+            spawned.append(args)
             self.pid = os.getpid()
 
     monkeypatch.setattr(process, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(process, "ProxyStore", _StoreWithGeolessProxy)
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
+    monkeypatch.setattr(process, "write_window_entry", lambda name: None)
+    monkeypatch.setattr(process._platform, "IS_LINUX", False)
     # Patch on launch_policy, not process: _proxy_timezone lives there too and
     # resolves _host_timezone in its OWN namespace, so a patch on the process
     # re-export alias is silently bypassed (real host zone would be read).
     monkeypatch.setattr(launch_policy, "_host_timezone", lambda: "Europe/Kyiv")
     monkeypatch.setattr(process.subprocess, "Popen", _FakePopen)
     profile = Profile(name="tz-chromium", proxy="p1")
-    process.spawn_browser(profile)
-    assert "--timezone=Europe/Kyiv" in captured["args"]
-    assert "--timezone=UTC" not in captured["args"]
+    with pytest.raises(GeographyUnknownError):
+        process.spawn_browser(profile)
+    assert spawned == [], "must NOT spawn when the proxy's geography is unknown"
 
 
 def test_chromium_keeps_window_visible_so_overlays_render(monkeypatch, tmp_path):
@@ -296,7 +338,7 @@ def test_proxied_linux_chromium_keeps_vaapi_suppression(monkeypatch, tmp_path):
         tmp_path,
         Profile(name="vaapi-proxy", proxy="p1"),
         linux=True,
-        store=_StoreWithGeolessProxy,
+        store=_StoreWithCheckedProxy,
     )
     values = _disable_features_values(captured["args"])
     assert len(values) == 1
@@ -311,7 +353,7 @@ def test_proxied_non_linux_chromium_disables_doh_and_quic(monkeypatch, tmp_path)
         monkeypatch,
         tmp_path,
         Profile(name="doh-win", proxy="p1"),
-        store=_StoreWithGeolessProxy,
+        store=_StoreWithCheckedProxy,
     )
     values = _disable_features_values(captured["args"])
     assert len(values) == 1
@@ -331,7 +373,7 @@ def test_proxied_chromium_disables_quic(monkeypatch, tmp_path):
         monkeypatch,
         tmp_path,
         Profile(name="quic-proxy", proxy="p1"),
-        store=_StoreWithGeolessProxy,
+        store=_StoreWithCheckedProxy,
     )
     assert "--disable-quic" in captured["args"]
     assert "EnableQuic" in _disable_features_values(captured["args"])[0].split(",")
@@ -361,7 +403,7 @@ def test_proxied_chromium_uses_socks5_not_socks5h(monkeypatch, tmp_path):
         monkeypatch,
         tmp_path,
         Profile(name="dns-noauth", proxy="p1"),
-        store=_StoreWithGeolessProxy,  # socks5://1.2.3.4:1080 (no creds)
+        store=_StoreWithCheckedProxy,  # socks5://1.2.3.4:1080 (no creds)
     )
     assert _proxy_server_value(captured["args"]) == "socks5://1.2.3.4:1080"
 
@@ -374,7 +416,7 @@ def test_proxied_chromium_bridge_uses_socks5(monkeypatch, tmp_path):
             return "socks5://user:pass@1.2.3.4:1080"
 
         def get(self, name):
-            return _GeolessProxy()
+            return _CheckedProxy()
 
     class _FakeBridge:
         def __init__(self, url):
@@ -412,7 +454,7 @@ def test_failed_launch_stops_bridge_no_orphan(monkeypatch, tmp_path):
             return "socks5://user:pass@1.2.3.4:1080"
 
         def get(self, name):
-            return _GeolessProxy()
+            return _CheckedProxy()
 
     class _FakeBridge:
         def __init__(self, url):
