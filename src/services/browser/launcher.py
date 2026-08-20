@@ -15,6 +15,38 @@ logger = get_logger("browser.launcher")
 
 _CLOSE_REASON = re.compile(r"LIFECYCLE close=(\S+)")
 
+# The Firefox mTLS CA import SOFT-FAILS by design: the launch proceeds with the
+# certificate untrusted and the engine announces the outcome once on stdout.
+# Without capturing it here the announcement degrades to a scrolling log line
+# and nothing survives the session, so a profile launched untrusted is
+# indistinguishable from one whose trust imported cleanly.
+#
+# These are the engine's emit strings (invisible_launch.py) — matched, never
+# restated. Changing them here without changing them there silently stops the
+# capture, which is why the mapping is a named function with its own test.
+_MTLS_TRUSTED = "MTLS_CA_TRUSTED"
+_MTLS_UNSUPPORTED = "MTLS_UNSUPPORTED:"
+_MTLS_IMPORT_FAILED = "MTLS_CA_IMPORT_FAILED:"
+
+
+def cert_trust_status_from(msg: str) -> str | None:
+    """Map an engine mTLS message onto a status to persist on the profile.
+
+    Returns None for every other line, so the caller can tell "not an mTLS
+    message" from a real outcome.
+    """
+    if msg == _MTLS_TRUSTED:
+        return "trusted"
+    if msg.startswith(_MTLS_UNSUPPORTED):
+        detail = msg[len(_MTLS_UNSUPPORTED):].strip()
+        return f"not trusted (unsupported): {detail}" if detail else (
+            "not trusted (unsupported)"
+        )
+    if msg.startswith(_MTLS_IMPORT_FAILED):
+        detail = msg[len(_MTLS_IMPORT_FAILED):].strip()
+        return f"NOT TRUSTED: {detail}" if detail else "NOT TRUSTED"
+    return None
+
 # Close reasons that need no extra diagnostics in the log: the user ended the
 # session (stop/X-close), the browser exited on its own and said so, or the
 # failure was already reported loudly (LAUNCH_FAILED). Anything else — the
@@ -164,6 +196,8 @@ class BrowserLauncher:
         on_start: Callable[[], None] | None = None,
         on_ready: Callable[[], None] | None = None,
         on_stop: Callable[[], None] | None = None,
+        *,
+        on_cert_trust: Callable[[str], None] | None = None,
     ) -> None:
         with self._lock:
             if profile.name in self._active_sessions or profile.name in self._starting:
@@ -263,6 +297,7 @@ class BrowserLauncher:
                     target=self._monitor_process,
                     args=(proc, profile.name, log_callback, on_ready,
                           notify_stopped, close_reason, last_output),
+                    kwargs={"on_cert_trust": on_cert_trust},
                     daemon=True,
                 ).start()
                 threading.Thread(
@@ -372,6 +407,7 @@ class BrowserLauncher:
         notify_stopped: Callable[[], None],
         close_reason: "list[str | None]",
         last_output: "deque[str]",
+        on_cert_trust: Callable[[str], None] | None = None,
     ) -> None:
         # The process being up is what makes the profile stoppable: report
         # ready NOW so the card shows a killable [stop] while the engine is
@@ -407,6 +443,25 @@ class BrowserLauncher:
                     notify_stopped()
                     terminate(proc, name, timeout=1)
                     break
+                _trust = cert_trust_status_from(msg)
+                if _trust is not None:
+                    # Announced once by the engine and, before this, consumed by
+                    # nobody. Record it so the outcome outlives the session; the
+                    # message still falls through to the log below so the
+                    # Activity Log reads exactly as it did.
+                    if on_cert_trust is not None:
+                        try:
+                            on_cert_trust(_trust)
+                        except Exception:
+                            # Persisting the status must never take down the
+                            # monitor thread — losing the monitor would leave a
+                            # live browser unreaped.
+                            logger.exception(
+                                "Failed to record cert trust status for %s", name
+                            )
+                    logger.info(
+                        "mTLS CA trust outcome for profile %s: %s", name, _trust
+                    )
                 if is_engine_noise(msg):
                     logger.debug("[%s] %s", name, msg)
                     continue
