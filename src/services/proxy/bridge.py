@@ -1,10 +1,17 @@
 """Local credential-stripping SOCKS5 bridge.
 
 Chromium's --proxy-server cannot carry SOCKS5 username/password. This bridge
-listens on 127.0.0.1 with no auth, and forwards every connection to an
-upstream SOCKS5 proxy, performing username/password auth on the way out.
-The browser is pointed at the local listener; credentials never touch the
-browser command line.
+listens on 127.0.0.1 and forwards every connection to an upstream SOCKS5 proxy,
+performing username/password auth on the way out. The browser is pointed at the
+local listener; credentials never touch the browser command line.
+
+The local side speaks SOCKS5 "no auth" because the browser it serves CANNOT send
+a credential - that inability is the whole reason this bridge exists. So the
+caller is VERIFIED rather than challenged: a connection is served only when the
+process on the other end is the browser this bridge was started for (see
+``core.peerauth``). Without that check any local process got free authenticated
+egress through the operator's paid exit - traffic billed to their account and
+appearing at their exit IP.
 """
 
 import asyncio
@@ -14,6 +21,8 @@ import struct
 import threading
 import time
 from urllib.parse import unquote, urlparse
+
+from ...core.peerauth import PeerGate, allows_async
 
 # Time budget for ONE upstream CONNECT attempt (TCP to the proxy + SOCKS5
 # greeting/auth/CONNECT). Over Tor the proxy leg double-hops, so a single attempt
@@ -173,10 +182,23 @@ class ProxyBridge:
         self._thread: threading.Thread | None = None
         self._server: asyncio.AbstractServer | None = None
         self._ready = threading.Event()
+        # Only the browser this bridge was started for may use it. The listener
+        # binds before that browser exists (its port goes on the command line),
+        # so the gate starts unclaimed and the launcher calls bind_to_process
+        # once the process is up.
+        self._gate = PeerGate("proxy bridge")
 
     @property
     def port(self) -> int:
         return self._port
+
+    def bind_to_process(self, pid: int | None) -> None:
+        """Declare the browser process allowed to use this bridge.
+
+        Until this is called the bridge serves nobody: an unclaimed listener has
+        no legitimate client, so a connection that arrives before the browser is
+        spawned waits briefly and is then refused."""
+        self._gate.bind_to_process(pid)
 
     def start(self) -> int:
         """Start the listener in a background thread; return the local port.
@@ -218,6 +240,7 @@ class ProxyBridge:
             self._handle_client, "127.0.0.1", 0, limit=_STREAM_LIMIT
         )
         self._port = self._server.sockets[0].getsockname()[1]
+        self._gate.set_listen_port(self._port)
         self._ready.set()
 
     async def _handle_client(
@@ -231,6 +254,16 @@ class ProxyBridge:
         host = "?"
         t0 = time.monotonic()
         try:
+            # FIRST, before anything else: is the caller the browser this bridge
+            # was started for? Refuse here and the connection costs an attacker
+            # nothing and tells them nothing — no SOCKS5 greeting is answered, so
+            # the listener is not even confirmed to BE a SOCKS5 proxy, and above
+            # all no upstream tunnel is opened, so the operator's proxy
+            # credentials are never spent on a caller we did not authorize.
+            peer = writer.get_extra_info("peername")
+            if not await allows_async(self._gate, peer):
+                _trace(f"conn={cid} REJECT unauthorized-peer")
+                return
             target = await _read_local_handshake(reader, writer)
             if target is None:
                 _trace(f"conn={cid} REJECT no-handshake")

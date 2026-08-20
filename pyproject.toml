@@ -24,6 +24,19 @@ dependencies = [
     # services/ssh/client.py; only in requirements.txt would miss the built app.
     "paramiko>=3.4",
     "PySocks>=1.7",
+    # Peer verification for the two loopback listeners (proxy bridge + mTLS
+    # terminator). It resolves an accepted loopback connection to the browser
+    # process tree that owns it, so a local caller that is not the browser gets
+    # neither authenticated egress nor an mTLS handshake with the operator's
+    # client certificate. Present today only as a TRANSITIVE dep of
+    # invisible_core; declared here because flet build resolves deps from
+    # pyproject, and a bundle without it degrades to "no verification".
+    # >=6.0 is a SECURITY floor, not a preference: core/peerauth.py calls
+    # Process.net_connections(), which does not exist before 6.0.0 (5.9.x names
+    # it Process.connections()). On an older resolution the peer-authentication
+    # gate cannot enumerate sockets and both loopback listeners stop
+    # authenticating their caller. Do not lower it.
+    "psutil>=6.0",
     # 2nd browser engine (patched Firefox 150). MUST be here, not just in
     # requirements.txt — flet build bundles deps from pyproject, so a package
     # that's only in requirements.txt is missing from the built app (that's
