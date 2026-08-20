@@ -356,3 +356,194 @@ def test_stop_wipes_client_and_leaf_keys(tmp_path):
     assert not os.path.exists(client_pem), "client key PEM must be wiped on stop"
     assert not os.path.exists(leaf.key_path), "leaf key must be wiped on stop"
     assert not os.path.exists(leaf.cert_path), "leaf cert must be wiped on stop"
+
+
+# ---------- PS-21: the decrypted key's lifetime belongs to the DIRECTORY ----------
+#
+# stop() wipes three paths hanging off ONE terminator instance, so it only ever
+# runs on the graceful path and can never reach a PREVIOUS session's orphan (the
+# client PEM is mkstemp-named, so nothing in the tree knows its name). These
+# tests assert on WHAT IS ACTUALLY IN THE DIRECTORY — never on whether a helper
+# was called — so an inert implementation cannot pass them. See _orphans() for
+# why that has to be measured by filename rather than by content.
+
+def _key_files(d):
+    """Every file directly under ``d`` whose bytes contain a PEM private key."""
+    import os
+
+    out = []
+    if not os.path.isdir(d):
+        return out
+    for name in sorted(os.listdir(d)):
+        p = os.path.join(d, name)
+        if not os.path.isfile(p):
+            continue
+        try:
+            with open(p, "rb") as f:
+                if b"PRIVATE KEY" in f.read():
+                    out.append(p)
+        except OSError:
+            pass
+    return out
+
+
+def _orphans(d):
+    """The mkstemp-named client PEMs under ``d``.
+
+    Identity here must be the FILENAME, not the bytes and not the path alone:
+      * ``term_leaf.*`` is fixed-name, so a surviving path proves nothing — the
+        next session legitimately overwrites it in place;
+      * the client PEM's CONTENTS are byte-identical across sessions (both
+        decrypt the same .p12), so a matching digest proves nothing either.
+    What makes an orphan an orphan is that it is a uniquely-named file the next
+    session neither knows about nor reuses — so it is the name that identifies
+    it, and the accumulation of names that is the defect.
+    """
+    import os
+
+    if not os.path.isdir(d):
+        return set()
+    return {n for n in os.listdir(d) if n.startswith("persona-mtls-")}
+
+
+def _cert_for(p12, pw, port):
+    from src.services.cert.store import Certificate
+
+    return Certificate(
+        name="admin", p12_path=p12, password=pw,
+        url=f"https://localhost:{port}/login",
+    )
+
+
+def _abandon(session):
+    """End a session the way a crash does: drop it WITHOUT calling stop().
+
+    Closes the listening socket only (so the suite doesn't leak fds) — that is
+    not the wipe, and it deliberately leaves the key material exactly as an
+    unclean exit would.
+    """
+    if session is None:
+        return
+    srv = session._term._srv
+    if srv is not None:
+        try:
+            srv.close()
+        except OSError:
+            pass
+
+
+def test_session_start_sweeps_previous_sessions_key_material(tmp_path):
+    # AC1. A session that never reaches stop() leaves the operator's decrypted
+    # client key on disk. Starting the NEXT session against the same work_dir
+    # must leave nothing of the previous one behind.
+    from src.services.cert import manager as cm
+
+    port, _, p12, pw, _, stop = _mtls_origin(tmp_path)
+    # work_dir is a SEPARATE subdir: _mtls_origin writes srv.pem (a private key)
+    # into tmp_path itself, which would otherwise poison the scan.
+    work = str(tmp_path / "profile" / ".persona-mtls")
+    try:
+        cert = _cert_for(p12, pw, port)
+
+        s1 = cm.start_cert_session(cert, None, work, verify_upstream=False)
+        assert s1 is not None
+        stale = _orphans(work)
+        assert stale, "precondition: session 1 must write a client key PEM"
+        _abandon(s1)          # <- no stop(): the key is still on disk
+        assert _orphans(work) == stale, (
+            "precondition: abandoning a session must NOT wipe anything — "
+            "if it does, this test is no longer measuring the sweep"
+        )
+
+        s2 = cm.start_cert_session(cert, None, work, verify_upstream=False)
+        assert s2 is not None
+        try:
+            survivors = stale & _orphans(work)
+            assert not survivors, (
+                "previous session's decrypted client key survived the next "
+                f"session start: {sorted(survivors)} still in {work}"
+            )
+            # ...and the surviving material is the CURRENT session's only.
+            assert len(_orphans(work)) == 1, sorted(_orphans(work))
+        finally:
+            s2.stop()
+    finally:
+        stop()
+
+
+def test_repeated_unclean_sessions_do_not_accumulate_key_material(tmp_path):
+    # AC2. The client PEM is mkstemp-named, so without a sweep each unclean
+    # session adds one more orphaned copy of the operator's key, forever.
+    from src.services.cert import manager as cm
+
+    port, _, p12, pw, _, stop = _mtls_origin(tmp_path)
+    work = str(tmp_path / "profile" / ".persona-mtls")
+    try:
+        cert = _cert_for(p12, pw, port)
+
+        first_round = None
+        for _ in range(4):
+            s = cm.start_cert_session(cert, None, work, verify_upstream=False)
+            assert s is not None
+            if first_round is None:
+                first_round = len(_orphans(work))
+                assert first_round == 1, "precondition: one client PEM per session"
+            _abandon(s)       # <- never a clean stop()
+
+        # One session's worth of key material, not four. Without the sweep this
+        # is 4 and grows without bound, one orphan per session, forever.
+        assert len(_orphans(work)) <= first_round, (
+            "decrypted client keys accumulated across unclean sessions: "
+            f"{sorted(_orphans(work))}"
+        )
+        # And the total private-key footprint stays bounded too.
+        assert len(_key_files(work)) <= 2, sorted(_key_files(work))
+    finally:
+        stop()
+
+
+def test_failed_terminator_construction_leaves_no_key_on_disk(tmp_path, monkeypatch):
+    # AC3. make_leaf + client_pem_from_p12 are guarded, but the Terminator is
+    # built OUTSIDE that try — and its __init__ calls load_cert_chain, which
+    # raises on an unreadable leaf. The exception escapes before a session
+    # object exists, so process.py's handler has nothing to stop.
+    from src.services.cert import manager as cm
+
+    port, _, p12, pw, _, stop = _mtls_origin(tmp_path)
+    work = str(tmp_path / "profile" / ".persona-mtls")
+    try:
+        real_make_leaf = term.make_leaf
+
+        def corrupt_leaf(host, out_dir):
+            # A real leaf is written (so the client PEM is written too), then
+            # corrupted: load_cert_chain raises for real, no mock of the failure.
+            leaf = real_make_leaf(host, out_dir)
+            with open(leaf.cert_path, "wb") as f:
+                f.write(b"-----BEGIN CERTIFICATE-----\nnope\n"
+                        b"-----END CERTIFICATE-----\n")
+            return leaf
+
+        monkeypatch.setattr(term, "make_leaf", corrupt_leaf)
+
+        cert = _cert_for(p12, pw, port)
+        session = cm.start_cert_session(cert, None, work, verify_upstream=False)
+
+        assert session is None, "a terminator that cannot start must yield no session"
+        assert not _key_files(work), (
+            f"key material left behind after a failed start: {_key_files(work)}"
+        )
+    finally:
+        stop()
+
+
+def test_no_certificate_creates_no_directory(tmp_path):
+    # AC6. A profile with no certificate must be byte-identical to today:
+    # start_cert_session returns before touching any path — in particular the
+    # sweep must not be what brings .persona-mtls into existence.
+    import os
+
+    from src.services.cert import manager as cm
+
+    work = str(tmp_path / "profile" / ".persona-mtls")
+    assert cm.start_cert_session(None, None, work) is None
+    assert not os.path.exists(work), "no certificate must create no directory"
