@@ -54,23 +54,38 @@ def start_cert_session(
         logger.error("certificate %r: unparseable admin URL %r", cert.name, cert.url)
         return None
 
+    # The decrypted client key is written UNENCRYPTED, under an mkstemp-unique
+    # name, and is only wiped by Terminator.stop(). Any session that doesn't
+    # reach stop() therefore leaves the operator's real key on disk with nothing
+    # that will ever remove it. Sweep the directory before writing to it so the
+    # key's lifetime belongs to the directory rather than to one object's happy
+    # path: reaching here means a new session is starting, and the previous one
+    # is over (work_dir is per-profile, and a second launch for the same profile
+    # can't get here while the first is live — src/ui/actions/browser.py:21-29).
+    term.sweep_key_material(work_dir)
+
     try:
         leaf = term.make_leaf(host, work_dir)
         client_pem = term.client_pem_from_p12(
             cert.p12_path, cert.password, work_dir
         )
+        # Terminator() loads the leaf chain and can raise (a corrupt/unreadable
+        # leaf), as can start(). That happens AFTER the key is on disk but
+        # BEFORE a session object exists, so the caller's cleanup — keyed to the
+        # returned session — would have nothing to stop. Guard it here and wipe.
+        t = term.Terminator(
+            host, leaf, client_pem,
+            upstream_socks=upstream_socks,
+            verify_upstream=verify_upstream,
+            admin_port=port_,
+        )
+        port = t.start()
     except Exception as e:
         logger.exception("certificate %r: could not prepare terminator: %s",
                          cert.name, e)
+        term.sweep_key_material(work_dir)
         return None
 
-    t = term.Terminator(
-        host, leaf, client_pem,
-        upstream_socks=upstream_socks,
-        verify_upstream=verify_upstream,
-        admin_port=port_,
-    )
-    port = t.start()
     # Log only the cert name + loopback port; the admin host:port is internal
     # infra that shouldn't land in the persistent / Activity log.
     logger.info("mTLS terminator for %r on 127.0.0.1:%s", cert.name, port)

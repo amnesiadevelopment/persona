@@ -302,6 +302,40 @@ class Terminator:
             _secure_delete(path)
 
 
+def sweep_key_material(out_dir) -> None:
+    """Securely delete every piece of terminator key material in ``out_dir``.
+
+    ``stop()`` can only wipe the three paths hanging off ONE live terminator, so
+    it never runs when a session ends without it and can never reach a PREVIOUS
+    session's leftovers — the client PEM is mkstemp-named, so nothing in the
+    tree knows what to look for. This binds the decrypted key's lifetime to the
+    DIRECTORY instead: a new session sweeps the directory before writing to it,
+    so at most one session's key material is ever on disk.
+
+    Never creates ``out_dir`` — a profile with no certificate must not bring a
+    .persona-mtls directory into existence.
+
+    This is TOTAL: it never raises. Deciding whether a launch may proceed is
+    not this function's call — ``start_cert_session`` degrades to "no mTLS"
+    rather than failing (see its docstring), and a directory that merely can't
+    be enumerated must not turn that graceful degradation into an aborted
+    launch. Nothing here is swept in that case, which is the honest outcome:
+    unreadable is not clean.
+    """
+    d = str(out_dir)
+    if not os.path.isdir(d):
+        return
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return
+    for name in names:
+        if name.startswith("persona-mtls-") or name in (
+            "term_leaf.key", "term_leaf.crt", "term_ca.crt"
+        ):
+            _secure_delete(os.path.join(d, name))
+
+
 def _secure_delete(path: str | None) -> None:
     """Best-effort secure delete: overwrite the file with zeros, then unlink.
     (On SSDs/COW filesystems overwrite isn't a guarantee, but it beats leaving a
