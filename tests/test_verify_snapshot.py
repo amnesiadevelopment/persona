@@ -596,6 +596,19 @@ def test_an_uninstalled_engine_is_recorded_as_unknown_never_as_empty(monkeypatch
     assert _built()["engine_build"] == "unknown"
 
 
+def test_a_non_string_falsy_reading_is_unknown_not_the_word_None(monkeypatch):
+    # Defensive, and NOT reachable through either accessor today (both are
+    # annotated `-> str` and answer "" on their failure paths). Pinned because
+    # `str(x) or "unknown"` stringifies BEFORE the `or`, so a None reading
+    # would bake the literal "None" into a byte-stable artifact -- a non-value
+    # that reads like a value, which is the exact failure AC6 exists to
+    # prevent. The resolver is guarded everywhere else; this closes the one
+    # line that trusted a return type.
+    _fx(monkeypatch, None)
+    assert snapshot.engine_build("firefox") == "unknown"
+    assert _built()["engine_build"] == "unknown"
+
+
 def test_an_unrecognised_engine_family_resolves_to_unknown():
     assert snapshot.engine_build("safari") == "unknown"
     assert snapshot.engine_build("") == "unknown"

@@ -48,6 +48,7 @@ __all__ = [
     "diff_realms",
     "diff_snapshots",
     "dumps",
+    "engine_build",
     "format_diff",
     "load",
     "probes_for_realm",

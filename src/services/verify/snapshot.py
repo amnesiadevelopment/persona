@@ -70,7 +70,8 @@ def engine_build(engine: str) -> str:
         else:
             return "unknown"
 
-        return str(current_version()) or "unknown"
+        resolved = current_version()
+        return str(resolved) if resolved else "unknown"
     except Exception:
         return "unknown"
 
