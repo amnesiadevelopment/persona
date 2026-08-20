@@ -12,7 +12,12 @@ from ...utils.atomic import atomic_write_json
 from ...utils.store_guard import StoreGuardMixin
 from ...utils.trashable import TrashableMixin
 from ...utils.validation import validate_profile_name
-from .coherence import assert_coherent
+from .coherence import (
+    assert_coherent,
+    coherence_error,
+    coherent_engine,
+    normalize_engine,
+)
 from .transfer import export_to_zip, import_from_zip, peek_profile_name
 
 logger = get_logger("profile.manager")
@@ -602,6 +607,12 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                 except OSError as e:
                     return False, f"Could not restore the profile's data: {e}"
             try:
+                # Intentionally EXEMPT from the coherence rules (coherence.py).
+                # Restore replays a record that already existed, so it cannot
+                # introduce incoherence — and refusing (or rewriting) here would
+                # strand a trashed profile behind a conflict it did not create,
+                # which is exactly what the "already-stored records are not
+                # stranded" policy forbids. Do not "fix" this into a guard.
                 self.profiles[name] = Profile(**entry.payload)
             except Exception as e:
                 # Put the data dir back in the trash area so a failed restore
@@ -731,6 +742,34 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                 return False, result
 
             profile = result
+            # Import is a door into the model, so it crosses the coherence rules
+            # (coherence.py) like every other one — but it crosses them by
+            # NORMALISING, not by refusing.
+            #
+            # The choice, stated deliberately: an archive is closer to an
+            # already-stored legacy record than to a fresh REST request. It was
+            # written by an older build, possibly before these rules existed, and
+            # the operator importing it is recovering a profile rather than
+            # composing one. Refusing would make those archives permanently
+            # unimportable — the stranding the ticket forbids — and it would
+            # refuse at the one moment the operator has no way to edit the record
+            # into shape. So the incoherent pair is reconciled the same way a
+            # stored one is at launch: fall back to the engine that HONORS
+            # os_type, which makes the imported record match the machine it will
+            # actually present. The record lands coherent; nothing is lost but a
+            # claim that was never true.
+            resolved = coherent_engine(profile.os_type, profile.engine)
+            if resolved != normalize_engine(profile.engine):
+                logger.warning(
+                    "Imported profile %r carried an incoherent os_type/engine "
+                    "pair (%s/%s); stored as %s. Reason: %s",
+                    profile.name,
+                    profile.os_type,
+                    profile.engine,
+                    resolved,
+                    coherence_error(profile.os_type, profile.engine),
+                )
+            profile.engine = resolved
             self.profiles[profile.name] = profile
             self.save_profiles()
         logger.info("Registered imported profile: %s", profile.name)
