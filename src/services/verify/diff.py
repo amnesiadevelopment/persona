@@ -42,12 +42,27 @@ from __future__ import annotations
 
 from typing import Any
 
+# Module scope, like the rest of this package's intra-package imports.
+# ``probes`` is pure data plus a dataclass — it pulls no heavy dependency (the
+# lazy-import pattern ``cli`` documents exists for ``transport``, which reaches
+# playwright) and it imports nothing from this module, so there is no cycle.
+from .probes import must_differ_probes
+
 # Sentinel recorded in place of a reading that does not exist on that side.
 ABSENT = {"absent": True}
 
 CHANGED = "changed"
 ADDED = "added"
 REMOVED = "removed"
+
+# Reported by ``compare_profiles`` when two DIFFERENT profiles produce the SAME
+# reading on a vector that is seed-derived and therefore must vary. This is the
+# inverted-polarity status: on the cross-profile axis agreement is the defect —
+# two identities a site can link on that vector — so this is a FINDING, not a
+# pass. Deliberately not named CHANGED/AGREED: it answers a different question
+# than the two continuity comparators, and sharing their vocabulary would
+# invite reading an agreement as a pass.
+COLLIDING = "colliding"
 
 # Reported when NEITHER side of the comparison carries an obtained reading —
 # both errored, or both absent. The comparison could not be made because the
@@ -69,6 +84,108 @@ INCONCLUSIVE = "inconclusive"
 _META_FIELDS = ("schema_version", "engine", "profile", "app_version", "engine_build")
 
 META_REALM = "__meta__"
+
+
+class ComparisonNotControlled(ValueError):
+    """Raised when the two snapshots cannot answer the unlinkability question.
+
+    Not a finding and not a pass — a refusal. ``compare_profiles`` reads the
+    two headers before it reads a single probe, because the cross-profile
+    question has a PREMISE that the continuity comparators do not: that these
+    are two DIFFERENT identities, observed under conditions that make a
+    difference between them attributable to the identities rather than to the
+    setup. Where that premise does not hold, both answers this mode can give
+    are wrong — a collision would be a false leak, and an empty list would be a
+    false certificate of unlinkability. Refusing is the only honest third
+    option, so it is raised rather than folded into an entry list that callers
+    read as a verdict.
+    """
+
+
+def _header(snapshot: dict, field: str) -> Any:
+    return snapshot.get(field) if isinstance(snapshot, dict) else None
+
+
+def _require_controlled(a: dict, b: dict, *, allow_cross_engine: bool) -> None:
+    """Refuse a comparison whose premise does not hold. See the exception.
+
+    Two guards, and they are deliberately NOT symmetrical in whether they can
+    be overridden:
+
+    * **Same (or unknown) profile — no override.** Two snapshots carrying the
+      same ``profile`` header are one identity recorded twice; every vector
+      will agree, and the mode would report a profile as linkable to itself.
+      The CLI header documents exactly that workflow for ``diff``
+      (``before.json``/``after.json``, one profile, two times), so an operator
+      reaching the wrong subcommand is the expected mistake, not an exotic one.
+      A MISSING header is refused on the same footing: this mode needs positive
+      evidence that the two identities differ, and "no name recorded" is not
+      it. No flag relaxes this, because no flag can make one profile two.
+
+    * **Unknown engine — no override.** Same premise as the missing profile
+      above, one field over: a vector that differs is evidence about the SEEDS
+      only if the two observations were taken under comparable conditions, and
+      "no engine recorded" is not evidence that they were. Two snapshots that
+      both omit the header must NOT slip through on ``None == None`` — that
+      reads as "same engine" while being "no idea", and it exits 0, issuing a
+      certificate of unlinkability on a comparison never established as
+      controlled. Deliberately NOT relaxed by ``--allow-cross-engine``: that
+      flag opts in to a KNOWN, NAMED engine difference whose caveat the
+      operator has weighed (see the bullet below), and an unrecorded engine
+      gives them nothing to weigh. ``build_snapshot`` always writes the field,
+      but ``snapshot.load`` is a bare ``json.load`` with no validation and this
+      subsystem's whole purpose is an on-disk artifact other slices consume, so
+      "our own writer is careful" is not the guarantee.
+
+    * **Different, NAMED engines — overridable.** ``diff_snapshots`` already reasons
+      about this and says so (``a chromium snapshot vs a firefox one is not a
+      regression, it is a different question``), handing the operator
+      ``--meta``. The danger here is the PASS direction: two profiles whose
+      digest differs *because one ran on Firefox and one on Chromium* have not
+      demonstrated anything about their seeds, and silently exiting 0 would
+      certify unlinkability that was never measured. A COLLISION across engines
+      is still a real finding — agreeing despite different engines is if
+      anything stronger — so this one is an opt-in rather than a wall, and the
+      operator who passes the flag has accepted the caveat.
+    """
+    a_profile, b_profile = _header(a, "profile"), _header(b, "profile")
+    if not a_profile or not b_profile:
+        raise ComparisonNotControlled(
+            "cannot compare: both snapshots must name their profile in the "
+            f"header (got {a_profile!r} and {b_profile!r}). Unlinkability is a "
+            "question about TWO identities; a snapshot that does not say whose "
+            "identity it recorded cannot answer it."
+        )
+    if a_profile == b_profile:
+        raise ComparisonNotControlled(
+            f"cannot compare: both snapshots are profile {a_profile!r}. This "
+            "mode asks whether two DIFFERENT profiles are linkable; comparing "
+            "one profile with itself would report every vector as colliding "
+            "and call an identity linkable to itself. For two recordings of "
+            "ONE profile (before/after an update), use `diff`."
+        )
+    a_engine, b_engine = _header(a, "engine"), _header(b, "engine")
+    if not a_engine or not b_engine:
+        raise ComparisonNotControlled(
+            "cannot compare: both snapshots must name their engine in the "
+            f"header (got {a_engine!r} and {b_engine!r}). A vector that differs "
+            "is only evidence about the SEEDS if the two observations were "
+            "taken under comparable conditions, and 'no engine recorded' is "
+            "not evidence that they were. Re-record with an engine header. "
+            "--allow-cross-engine does NOT relax this: it opts in to a KNOWN, "
+            "NAMED engine difference whose caveat the operator has weighed, "
+            "and an unrecorded engine gives them nothing to weigh."
+        )
+    if a_engine != b_engine and not allow_cross_engine:
+        raise ComparisonNotControlled(
+            f"cannot compare: snapshots were taken on different engines "
+            f"({a_engine!r} vs {b_engine!r}), so a vector that differs may "
+            "differ because of the ENGINE rather than the seed — that is not "
+            "evidence the two profiles are unlinkable. Re-record both on one "
+            "engine, or pass --allow-cross-engine to compare anyway (a "
+            "collision across engines is still a real finding; an empty "
+            "result is not a certificate)."
+        )
 
 
 def _probes(snapshot: dict) -> dict:
@@ -103,6 +220,10 @@ def _unread(side: Any) -> bool:
     return side is None
 
 
+def _status(entry: Any) -> "str | None":
+    return entry.get("status") if isinstance(entry, dict) else None
+
+
 def _inconclusive(entry: "dict") -> bool:
     """True when NEITHER side of this entry carries an obtained reading.
 
@@ -118,8 +239,22 @@ def _inconclusive(entry: "dict") -> bool:
 
 
 def inconclusive_count(entries: "list[dict]") -> int:
-    """How many of these entries rest on readings nobody obtained."""
-    return sum(1 for e in entries if _inconclusive(e))
+    """How many of these entries rest on readings nobody obtained.
+
+    An entry counts when NEITHER side carries an obtained reading, **or** when
+    the comparator that produced it already labelled it ``INCONCLUSIVE``. The
+    second clause is what lets the cross-profile comparator share this function
+    and ``cli._exit_code`` verbatim: it draws the "no evidence" line in a
+    different place (see :func:`compare_profiles`), and it says so in the
+    status rather than being second-guessed here.
+
+    It changes nothing for :func:`diff_snapshots` / :func:`diff_realms`, where
+    ``INCONCLUSIVE`` is only ever set when both sides are unread — so the
+    clause is already true of every entry it labels, and the count is
+    unchanged. An ``added``/``removed`` entry resting on no obtained reading is
+    still counted, exactly as before, via the first clause.
+    """
+    return sum(1 for e in entries if _inconclusive(e) or _status(e) == INCONCLUSIVE)
 
 
 def diff_snapshots(
@@ -240,6 +375,136 @@ def diff_realms(snapshot: dict, left: str, right: str) -> list[dict]:
     return out
 
 
+def compare_profiles(
+    a: dict, b: dict, *, allow_cross_engine: bool = False
+) -> list[dict]:
+    """Compare two snapshots taken from two DIFFERENT profiles.
+
+    The third comparison mode, and the only one whose polarity is inverted.
+    ``diff_snapshots`` and ``diff_realms`` both ask "did these agree?" and treat
+    agreement as the pass. That is right for continuity (one profile, two times)
+    and for realm parity (one snapshot, two realms), and exactly WRONG for
+    mutual unlinkability: two DIFFERENT profiles agreeing on a seed-derived
+    vector is two identities a site can link, which is the defect. So here
+    **AGREEMENT is the finding** and difference is the silent pass.
+
+    Only probes classified :data:`probes.INDEPENDENT` are compared — the
+    vectors that are seed-derived and high-entropy, so that two distinct
+    profiles are REQUIRED to differ on them. Everything else is skipped, and
+    the skipping is the point rather than an omission:
+
+    * operator-chosen configuration (``os_type``, ``resolution``, ``engine``,
+      locale) is SUPPOSED to match across profiles — two Windows profiles both
+      reporting "Win32" is the operator's choice, not a leak;
+    * a :data:`probes.POOLED` vector is drawn from a small fixed set, so a
+      collision is ordinary pigeonhole. ``webgl.unmasked`` is the sharp case:
+      for an iOS profile the GPU pair is a single compile-time constant that
+      EVERY iOS device reports, and a seed-varied one would itself be the tell
+      (``gpu_ext.py:581-589``). Two iOS profiles must agree there;
+    * ``masking.*`` and ``realm.*`` observe the masking MECHANISM, not the
+      identity it produces, and should agree across profiles.
+
+    Returns entries ordered by ``(realm, probe_id)``, shaped like the other two
+    comparators so ``format_diff``/``inconclusive_count`` work unchanged::
+
+        {"probe_id": ..., "realm": ...,
+         "status": "colliding"|"inconclusive",
+         "expected": <a's entry>, "observed": <b's entry>,
+         "value": <the shared reading>}   # colliding entries only
+
+    ``value`` carries the reading the two profiles share, so an operator reads
+    WHICH value links them without decoding two entries.
+
+    An empty list is the pass: every compared vector was READ on both sides and
+    the two profiles differ on all of them.
+
+    **Where this draws the "no evidence" line, and why it is not where
+    ``diff_snapshots`` draws it.** That comparator treats an ASYMMETRIC reading
+    — obtained on one side, failed on the other — as CHANGED, because a vector
+    that read fine before and throws now is the loudest continuity signal there
+    is. Inverting the question inverts that too: holding profile A's digest and
+    NOT holding profile B's is not evidence the two differ, it is one reading
+    and one hole. Claiming distinctness from it would manufacture an
+    unlinkability pass out of a reading nobody obtained — the PS-29 defect
+    reintroduced on this axis. So a vector unread on EITHER side is
+    :data:`INCONCLUSIVE` here (``_unread(a) or _unread(b)``), where continuity
+    needs BOTH sides unread. Same rule — an unobtained reading is never a pass
+    — applied to a different question.
+
+    Two probes that both errored are likewise INCONCLUSIVE and never
+    "differing": that is the same failure twice, not two distinct identities.
+
+    **A vector absent from either snapshot is INCONCLUSIVE too, never skipped.**
+    The other two comparators iterate a UNION and report ``ADDED``/``REMOVED``,
+    honouring the module rule at the top of this file: "the probe vanished" and
+    "the probe agreed" must not look the same. An intersection would drop the
+    vector before ``_unread`` ever saw it, and on this axis that is the worst
+    possible failure — the must-differ set is legitimately small, so "the target
+    was never recorded" is a ROUTINE state (``record --realms worker`` alone
+    omits every window-only vector), and an empty entry list is the PASS. A
+    comparison of zero vectors would certify unlinkability nobody measured. So
+    the loop walks ``targets`` themselves and a side that lacks the probe gets
+    :data:`ABSENT`, which ``_unread`` already recognises. Statuses stay
+    ``colliding``/``inconclusive``: ADDED/REMOVED name an inventory change,
+    which is a continuity fact, and here the only fact that matters is that no
+    comparison could be made.
+
+    **The headers are read BEFORE any probe, and an uncontrolled comparison is
+    REFUSED** with :class:`ComparisonNotControlled` rather than answered. This
+    mode has a premise the continuity comparators do not — that these are two
+    DIFFERENT identities, observed under conditions that make a difference
+    between them attributable to the seeds. Two snapshots of the SAME profile
+    would report an identity as linkable to itself (a false leak), and two
+    taken on different ENGINES would exit 0 on a difference the engines
+    produced (a false certificate). Both directions are wrong, so neither is
+    returned. ``allow_cross_engine`` opts into the second one deliberately; no
+    flag relaxes the first. See :func:`_require_controlled`.
+    """
+    _require_controlled(a, b, allow_cross_engine=allow_cross_engine)
+
+    out: list[dict] = []
+
+    # Driven by the INVENTORY, not by the intersection of the two files. Every
+    # realm a target probe declares is walked, so a target the snapshot never
+    # recorded still produces an entry (ABSENT on that side -> _unread ->
+    # INCONCLUSIVE) instead of vanishing before the guard can see it. Sorted by
+    # (realm, probe_id) to match the ordering the other two comparators emit.
+    pairs = sorted(
+        (realm, probe.id)
+        for probe in must_differ_probes()
+        for realm in probe.realms
+    )
+    for realm, probe_id in pairs:
+        a_entries = _realm(a, realm)
+        b_entries = _realm(b, realm)
+        a_side = a_entries[probe_id] if probe_id in a_entries else dict(ABSENT)
+        b_side = b_entries[probe_id] if probe_id in b_entries else dict(ABSENT)
+        # Checked BEFORE equality, exactly as the other two comparators do: a
+        # reading nobody obtained can neither agree nor differ. Note the OR —
+        # see the docstring: one side read and one side missing is not evidence
+        # of distinctness on THIS axis. ABSENT lands here too, which is the
+        # whole reason the loop walks targets rather than an intersection.
+        if _unread(a_side) or _unread(b_side):
+            status = INCONCLUSIVE
+        elif a_side == b_side:
+            status = COLLIDING
+        else:
+            # The pass: both READ, and they differ. Silent, like two agreeing
+            # snapshots are silent in diff_snapshots.
+            continue
+        entry = {
+            "probe_id": probe_id,
+            "realm": realm,
+            "status": status,
+            "expected": a_side,
+            "observed": b_side,
+        }
+        if status == COLLIDING:
+            entry["value"] = a_side.get("value") if isinstance(a_side, dict) else a_side
+        out.append(entry)
+    return out
+
+
 def format_diff(entries: "list[dict]") -> str:
     """Render a diff as plain text for an operator. Empty input renders as the
     explicit statement that the two snapshots agree, never as blank output.
@@ -269,6 +534,43 @@ def format_diff(entries: "list[dict]") -> str:
     return "\n".join(lines)
 
 
+def format_comparison(entries: "list[dict]") -> str:
+    """Render a cross-profile comparison for an operator.
+
+    Deliberately NOT ``format_diff``. That renderer's vocabulary is the
+    continuity axis' — an empty result is "no differences" and entries are
+    counted as "differing" — and every one of those words means the opposite
+    here. An empty cross-profile result is the PASS ("the two profiles differ
+    on every vector compared"), and a reported entry is a COLLISION. Rendering
+    a leak through a renderer that calls it "1 differing" would tell an
+    operator the good news in the exact words that describe the bad news.
+
+    Empty input renders as the explicit pass statement, never as blank output.
+    """
+    if not entries:
+        return "no collisions: the profiles differ on every vector compared"
+    lines: list[str] = []
+    for e in entries:
+        lines.append(f"{e['realm']}/{e['probe_id']}: {e['status']}")
+        if e["status"] == COLLIDING:
+            lines.append(f"  both profiles: {_render(e.get('value'))}")
+        else:
+            lines.append(f"  profile a: {_render(e['expected'])}")
+            lines.append(f"  profile b: {_render(e['observed'])}")
+
+    unread = inconclusive_count(entries)
+    colliding = len(entries) - unread
+    summary = f"{len(entries)} entr{'y' if len(entries) == 1 else 'ies'}: "
+    summary += f"{colliding} colliding, {unread} inconclusive"
+    if colliding:
+        summary += " — the profiles are LINKABLE on the colliding vector(s)"
+    if unread:
+        summary += " (readings that were never obtained — not distinctness)"
+    lines.append("")
+    lines.append(summary)
+    return "\n".join(lines)
+
+
 def _render(entry: Any, *, limit: int = 400) -> str:
     import json as _json
 
@@ -283,11 +585,14 @@ __all__ = [
     "ABSENT",
     "ADDED",
     "CHANGED",
+    "COLLIDING",
     "INCONCLUSIVE",
     "META_REALM",
     "REMOVED",
+    "compare_profiles",
     "diff_realms",
     "diff_snapshots",
+    "format_comparison",
     "format_diff",
     "inconclusive_count",
 ]
