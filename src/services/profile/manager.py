@@ -12,6 +12,12 @@ from ...utils.atomic import atomic_write_json
 from ...utils.store_guard import StoreGuardMixin
 from ...utils.trashable import TrashableMixin
 from ...utils.validation import validate_profile_name
+from .coherence import (
+    assert_coherent,
+    coherence_error,
+    coherent_engine,
+    normalize_engine,
+)
 from .transfer import export_to_zip, import_from_zip, peek_profile_name
 
 logger = get_logger("profile.manager")
@@ -231,6 +237,15 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
         valid, _ = validate_profile_name(name)
         if not valid:
             return False
+        # The os_type/engine coherence rules live below every door (see
+        # coherence.py). They used to live only in the profile dialog, so the
+        # REST lane composed profiles the dialog exists to prevent — a macOS
+        # record on the Firefox engine, which launches presenting Windows.
+        # Raised rather than returned False: False here means "already exists"
+        # (409), while an incoherent pair is a different refusal with a reason
+        # the caller can act on, and a door that forgets to handle it fails
+        # loudly instead of silently storing a lie.
+        assert_coherent(os_type, engine)
         # Hold the lock across the check-then-insert so two concurrent adds of
         # the same name can't both pass the `name in self.profiles` check and one
         # silently overwrite the other (RLock: save_profiles below re-enters it).
@@ -280,6 +295,32 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
 
             if new_name != original_name and new_name in self.profiles:
                 return False
+
+            # Coherence (see coherence.py) is checked on the pair this edit would
+            # RESULT IN, not on the fields it happens to supply: a PATCH carrying
+            # only os_type must be judged against the engine already stored, or
+            # `PATCH {"os_type": "macos"}` would sail through on a profile that is
+            # already firefox. Both values are in hand here and only here, which
+            # is the second reason the rule belongs in the model rather than at a
+            # route.
+            #
+            # Refused only when the edit INTRODUCES the incoherence. A record
+            # written before these rules existed (or through the unguarded REST
+            # lane) stays editable: blocking it would make an ordinary edit to a
+            # note or a tag fail on a conflict that edit did not create, and
+            # leave the profile permanently uneditable — including the edit that
+            # would FIX the pair.
+            _current = self.profiles[original_name]
+            _resulting_engine = (
+                new_engine if new_engine is not None
+                else getattr(_current, "engine", "chromium")
+            )
+            _pair_changed = (
+                new_os != _current.os_type
+                or _resulting_engine != getattr(_current, "engine", "chromium")
+            )
+            if _pair_changed:
+                assert_coherent(new_os, _resulting_engine)
 
             # Rename the data dir BEFORE touching any in-memory field, so a
             # locked/failed dir-rename (routine on Windows when the browser is
@@ -566,6 +607,12 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                 except OSError as e:
                     return False, f"Could not restore the profile's data: {e}"
             try:
+                # Intentionally EXEMPT from the coherence rules (coherence.py).
+                # Restore replays a record that already existed, so it cannot
+                # introduce incoherence — and refusing (or rewriting) here would
+                # strand a trashed profile behind a conflict it did not create,
+                # which is exactly what the "already-stored records are not
+                # stranded" policy forbids. Do not "fix" this into a guard.
                 self.profiles[name] = Profile(**entry.payload)
             except Exception as e:
                 # Put the data dir back in the trash area so a failed restore
@@ -695,6 +742,34 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                 return False, result
 
             profile = result
+            # Import is a door into the model, so it crosses the coherence rules
+            # (coherence.py) like every other one — but it crosses them by
+            # NORMALISING, not by refusing.
+            #
+            # The choice, stated deliberately: an archive is closer to an
+            # already-stored legacy record than to a fresh REST request. It was
+            # written by an older build, possibly before these rules existed, and
+            # the operator importing it is recovering a profile rather than
+            # composing one. Refusing would make those archives permanently
+            # unimportable — the stranding the ticket forbids — and it would
+            # refuse at the one moment the operator has no way to edit the record
+            # into shape. So the incoherent pair is reconciled the same way a
+            # stored one is at launch: fall back to the engine that HONORS
+            # os_type, which makes the imported record match the machine it will
+            # actually present. The record lands coherent; nothing is lost but a
+            # claim that was never true.
+            resolved = coherent_engine(profile.os_type, profile.engine)
+            if resolved != normalize_engine(profile.engine):
+                logger.warning(
+                    "Imported profile %r carried an incoherent os_type/engine "
+                    "pair (%s/%s); stored as %s. Reason: %s",
+                    profile.name,
+                    profile.os_type,
+                    profile.engine,
+                    resolved,
+                    coherence_error(profile.os_type, profile.engine),
+                )
+            profile.engine = resolved
             self.profiles[profile.name] = profile
             self.save_profiles()
         logger.info("Registered imported profile: %s", profile.name)

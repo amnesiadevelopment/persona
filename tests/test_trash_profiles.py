@@ -182,17 +182,28 @@ def test_a_restored_profile_keeps_the_same_fingerprint_seed(mgr):
 
 
 def test_a_restored_profile_keeps_its_settings_and_assignments(mgr):
+    # Every asserted field carries a NON-DEFAULT value, or the round-trip would
+    # pass on a restore that silently dropped it. os_type and engine can no
+    # longer BOTH be non-default on one profile — the Firefox engine pins the OS
+    # to windows (PS-28 coherence rules) — so the pair is covered across two
+    # profiles: "beta" holds the non-default engine, "gamma" the non-default OS.
     mgr.add_profile(
-        "beta", "exit-us", "macos",
+        "beta", "exit-us", "windows",
         search_engine="google", tags=["work"], notes="prod login",
         engine="firefox", resolution="1920x1080", certificate="admin",
     )
+    mgr.add_profile("gamma", "exit-eu", "macos")
     mgr.delete_profile("beta")
-    mgr.restore_profile(mgr._trash().list()[0])
+    mgr.delete_profile("gamma")
+    for entry in list(mgr._trash().list()):
+        mgr.restore_profile(entry)
     p = mgr.profiles["beta"]
-    assert (p.proxy, p.os_type, p.engine) == ("exit-us", "macos", "firefox")
+    assert (p.proxy, p.os_type, p.engine) == ("exit-us", "windows", "firefox")
     assert (p.resolution, p.search_engine) == ("1920x1080", "google")
     assert (p.tags, p.notes, p.certificate) == (["work"], "prod login", "admin")
+    assert (mgr.profiles["gamma"].os_type, mgr.profiles["gamma"].proxy) == (
+        "macos", "exit-eu",
+    )
 
 
 def test_a_restored_profile_survives_a_reload_from_disk(mgr):
