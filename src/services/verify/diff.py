@@ -49,10 +49,18 @@ CHANGED = "changed"
 ADDED = "added"
 REMOVED = "removed"
 
-# Reported when a reading on either side carries an error: the comparison could
-# not be made because the evidence was never obtained. Distinct from CHANGED on
-# purpose — "the identity moved" and "we failed to look" are different facts,
-# and only one of them is about the identity.
+# Reported when NEITHER side of the comparison carries an obtained reading —
+# both errored, or both absent. The comparison could not be made because the
+# evidence to make it was never gathered.
+#
+# Note which side of the line the ASYMMETRIC case falls on: a reading obtained
+# on one side and a failure on the other is CHANGED, not inconclusive. One side
+# WAS read, and a vector that read fine before and throws now is the loudest
+# continuity signal this subsystem can produce — demoting it to "look again"
+# is the bug, not the fix.
+#
+# Distinct from CHANGED on purpose: "the identity moved" and "we failed to
+# look" are different facts, and only one of them is about the identity.
 INCONCLUSIVE = "inconclusive"
 
 # Snapshot header fields whose disagreement changes how the probe diff should

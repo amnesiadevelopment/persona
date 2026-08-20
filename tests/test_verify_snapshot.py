@@ -490,9 +490,25 @@ def test_format_diff_renders_every_entry():
 # agreement. Two failed readings rendered as "no differences" and exited 0 —
 # a claim of safety resting on evidence nobody gathered.
 #
-# The rule these pin is ONE rule, not a special case: if EITHER side of a
-# comparison carries an error, the comparison is inconclusive, because the
-# evidence needed to make it was never obtained.
+# The rule these pin is ONE rule, not a special case, and it turns on whether a
+# reading was OBTAINED — not on whether an error is present anywhere:
+#
+#   * NEITHER side obtained (both errored, or both absent) — INCONCLUSIVE. No
+#     evidence was gathered, so there was no comparison to make, and identical
+#     errors are the same probe failing twice rather than two probes agreeing.
+#   * At least ONE side obtained — the ordinary comparison. In particular the
+#     ASYMMETRIC case (read before, throws now) is CHANGED, NOT inconclusive:
+#     one side WAS read, and a vector that stopped being readable is the
+#     loudest continuity signal here. Demoting it to "look again" is the bug —
+#     it also demotes the CLI exit code from 1 to 3. Pinned by
+#     ..._is_a_DIFFERENCE_not_a_retry (the status) and
+#     ..._still_exits_one_and_not_the_inconclusive_code (the exit code itself,
+#     which the status guard never reaches).
+#   * Present on ONE side only — status stays ADDED/REMOVED, because the
+#     inventory change is real information worth naming. But if no reading was
+#     obtained for it, `inconclusive_count` still counts it: the inventory
+#     moved, no reading did. The count keys off the readings an entry carries,
+#     not off its status label.
 
 
 def _errored(probe_ids, exc=None):
