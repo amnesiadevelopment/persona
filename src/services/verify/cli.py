@@ -43,8 +43,10 @@ import argparse
 import sys
 
 from .diff import (
+    compare_profiles,
     diff_realms,
     diff_snapshots,
+    format_comparison,
     format_diff,
     inconclusive_count,
 )
@@ -137,6 +139,22 @@ def _cmd_realms(args: argparse.Namespace) -> int:
     return _exit_code(entries)
 
 
+def _cmd_compare(args: argparse.Namespace) -> int:
+    """Cross-profile comparison — the one subcommand whose polarity is inverted.
+
+    ``diff`` and ``realms`` ask "did these agree?" and exit 0 on agreement.
+    This asks "are these two profiles distinguishable?", where agreement on a
+    seed-derived vector is the DEFECT. ``_exit_code`` is reused verbatim and
+    its three outcomes still mean what the module header says — an empty list
+    is the pass, a reported entry is a finding, and an entry resting on no
+    obtained reading is never a pass — but what produces each one is inverted:
+    here the pass is the two profiles DIFFERING on every compared vector.
+    """
+    entries = compare_profiles(load(args.a), load(args.b))
+    print(format_comparison(entries))
+    return _exit_code(entries)
+
+
 def _cmd_list(args: argparse.Namespace) -> int:
     for probe in PROBES:
         print(f"{probe.id}\t{','.join(probe.realms)}")
@@ -190,6 +208,24 @@ def build_parser() -> argparse.ArgumentParser:
     rlm.add_argument("--left", default=WINDOW)
     rlm.add_argument("--right", default=WORKER)
     rlm.set_defaults(func=_cmd_realms)
+
+    cmp_ = sub.add_parser(
+        "compare",
+        help=(
+            "compare two DIFFERENT profiles' snapshots — reports vectors they "
+            "AGREE on (the profiles are linkable there)"
+        ),
+        description=(
+            "Cross-profile comparison (unlinkability). Inverted polarity: only "
+            "vectors that are seed-derived and must vary are compared, and "
+            "AGREEMENT is the finding. Exits 0 when the two profiles differ on "
+            "every compared vector, 1 when any vector collides, 3 when the "
+            "comparison rests only on readings nobody obtained."
+        ),
+    )
+    cmp_.add_argument("a", help="snapshot of the first profile")
+    cmp_.add_argument("b", help="snapshot of the second profile")
+    cmp_.set_defaults(func=_cmd_compare)
 
     lst = sub.add_parser("list", help="print the probe inventory")
     lst.set_defaults(func=_cmd_list)

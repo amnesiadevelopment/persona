@@ -28,6 +28,38 @@ ALL_REALMS = (WINDOW, WORKER)
 BOTH = (WINDOW, WORKER)
 WINDOW_ONLY = (WINDOW,)
 
+# --- how a vector is expected to behave ACROSS TWO PROFILES -----------------
+#
+# Orthogonal to everything else in this file. The rest of the inventory serves
+# the continuity question ("is this ONE profile still itself?"), where every
+# probe is equally interesting. This axis serves the unlinkability question
+# ("are these TWO profiles the same identity?"), where they are emphatically
+# not: two profiles agreeing on `navigator.platform` is the operator's own
+# choice, while two profiles agreeing on a seed-derived digest is a defect.
+#
+# The classification lives HERE, as data on the record, rather than as a list
+# inside the comparator, because ``probes.py:8`` requires that adding a vector
+# means adding a record to PROBES and nothing else. A comparator holding its
+# own id list would silently keep answering after the inventory moved.
+
+# Seed-derived and high-entropy: two DISTINCT profiles must not produce the
+# same reading. Agreement here is a linkable identity — the Level 2 finding.
+INDEPENDENT = "independent"
+
+# Seed-derived but drawn from a SMALL fixed pool. Varies across profiles by
+# design, yet two profiles colliding is ordinary pigeonhole, not a leak — with
+# a six-entry pool, agreement is expected roughly one time in six. Reporting a
+# collision here would be a false finding, so this axis never does.
+POOLED = "pooled"
+
+# Not seed-derived at all: operator-chosen configuration (os_type, resolution,
+# engine, locale), a real-hardware constant, or an observation of persona's
+# masking MECHANISM rather than of the identity it produces. Two profiles are
+# SUPPOSED to agree; demanding otherwise would flag correct behaviour.
+SHARED = "shared"
+
+VARIANCE_KINDS = (INDEPENDENT, POOLED, SHARED)
+
 
 @dataclass(frozen=True)
 class Probe:
@@ -36,12 +68,24 @@ class Probe:
     ``expr`` is evaluated as a JS expression in each of ``realms``. It must be
     side-effect free and must return a JSON-serialisable value or a Promise of
     one. ``note`` is operator-facing only; it never reaches a snapshot.
+
+    ``variance`` says how this vector is expected to behave across two DIFFERENT
+    profiles — see the constants above. Like ``note`` it is operator-facing
+    metadata that never reaches a snapshot: it describes how to READ a reading,
+    it is not itself a reading, and a snapshot recorded before this field
+    existed must stay loadable and comparable.
+
+    It defaults to :data:`SHARED`, which is the side that reports nothing. A
+    probe added to the inventory tomorrow is therefore never treated as
+    must-differ until somebody deliberately classifies it — an unclassified
+    vector produces silence rather than a false leak report.
     """
 
     id: str
     realms: tuple[str, ...]
     expr: str
     note: str = ""
+    variance: str = SHARED
 
     def __post_init__(self) -> None:
         if not self.id:
@@ -53,6 +97,11 @@ class Probe:
         unknown = set(self.realms) - set(ALL_REALMS)
         if unknown:
             raise ValueError(f"probe {self.id!r} declares unknown realm(s): {sorted(unknown)}")
+        if self.variance not in VARIANCE_KINDS:
+            raise ValueError(
+                f"probe {self.id!r} declares unknown variance {self.variance!r}; "
+                f"valid kinds are {list(VARIANCE_KINDS)}"
+            )
 
 
 # --- shared JS snippets -----------------------------------------------------
@@ -116,8 +165,23 @@ PROBES: tuple[Probe, ...] = (
     # --- navigator ----------------------------------------------------------
     Probe("navigator.userAgent", BOTH, "navigator.userAgent"),
     Probe("navigator.platform", BOTH, "navigator.platform"),
-    Probe("navigator.hardwareConcurrency", BOTH, "navigator.hardwareConcurrency"),
-    Probe("navigator.deviceMemory", BOTH, "(navigator.deviceMemory===undefined?null:navigator.deviceMemory)"),
+    Probe(
+        "navigator.hardwareConcurrency",
+        BOTH,
+        "navigator.hardwareConcurrency",
+        # device_ext.py:218 picks the (cores, GB) pair from a SIX-entry pool.
+        # Seed-derived, so it does vary — but two profiles colliding is one
+        # chance in six, which is pigeonhole, not a linkable identity.
+        variance=POOLED,
+    ),
+    Probe(
+        "navigator.deviceMemory",
+        BOTH,
+        "(navigator.deviceMemory===undefined?null:navigator.deviceMemory)",
+        # Same six-entry pool, then capped at 8 (device_ext.py:222), which
+        # collapses it further: agreement is close to expected.
+        variance=POOLED,
+    ),
     Probe("navigator.languages", BOTH, "Array.prototype.slice.call(navigator.languages||[])"),
     Probe("navigator.language", BOTH, "navigator.language"),
     Probe(
@@ -155,8 +219,22 @@ PROBES: tuple[Probe, ...] = (
         "({width:screen.width,height:screen.height,"
         "availWidth:screen.availWidth,availHeight:screen.availHeight,"
         "colorDepth:screen.colorDepth,pixelDepth:screen.pixelDepth})",
+        # `resolution` is an OPERATOR-SET field (profile.py:15-16). An explicit
+        # "WIDTHxHEIGHT" is honoured verbatim for every profile that names it
+        # (resolution.py:45-52), so two profiles agreeing here is very often
+        # the operator's own choice; only "auto" consults the seed, and then
+        # from a small preset list.
+        variance=POOLED,
     ),
-    Probe("screen.devicePixelRatio", WINDOW_ONLY, "Math.round(devicePixelRatio*1e6)/1e6"),
+    Probe(
+        "screen.devicePixelRatio",
+        WINDOW_ONLY,
+        "Math.round(devicePixelRatio*1e6)/1e6",
+        # Effectively a two-value vector in practice (1 on Windows, 2 on the
+        # macOS Retina preset, device_ext.py:277-279) and selected by os_type,
+        # which is operator-set.
+        variance=POOLED,
+    ),
     Probe(
         "screen.orientation.type",
         WINDOW_ONLY,
@@ -211,6 +289,14 @@ PROBES: tuple[Probe, ...] = (
         "return {vendor:gl.getParameter(d.UNMASKED_VENDOR_WEBGL),"
         "renderer:gl.getParameter(d.UNMASKED_RENDERER_WEBGL)};"
         "})",
+        # NOT must-differ, and this is the trap worth naming. gpu_ext.py:110-114
+        # picks the vendor/renderer pair from a per-OS POOL, so a collision is
+        # ordinary pigeonhole — but iOS does not even do that: gpu_ext.py:107
+        # pins ONE constant pair for every iOS profile on earth, because
+        # "a seed-varied one would itself be the tell" (gpu_ext.py:581-589).
+        # Two iOS profiles MUST agree here. Demanding difference would flag
+        # persona's most deliberately correct behaviour as a leak.
+        variance=POOLED,
     ),
     Probe(
         "webgl.extensions",
@@ -242,6 +328,9 @@ PROBES: tuple[Probe, ...] = (
         "if(!C)return null;"
         "var c=new C(1,1024,44100);"
         "return Math.round(c.sampleRate*1e6)/1e6;})()",
+        # The context's nominal rate, requested as 44100 by this very probe.
+        # A constant, not an identity: every profile must report it.
+        variance=SHARED,
     ),
     Probe(
         "audio.digest",
@@ -266,6 +355,13 @@ PROBES: tuple[Probe, ...] = (
         "return {sum:Math.round(s*1e6)/1e6,length:buf.length,"
         "rate:Math.round(buf.sampleRate*1e6)/1e6};});"
         "})()",
+        # THE must-differ vector, and on this inventory the only one. audio_ext
+        # adds a per-(seed, index) delta to the float readback (audio_ext.py:10,
+        # :124-133) with a ~1e-5 relative magnitude, and this probe reduces 500
+        # perturbed samples to a 6dp sum — continuous, not drawn from a pool, so
+        # two DISTINCT seeds colliding is not pigeonhole. Two profiles agreeing
+        # on this digest are linkable on it.
+        variance=INDEPENDENT,
     ),
     # --- fonts --------------------------------------------------------------
     Probe(
@@ -461,6 +557,23 @@ def probe_ids() -> tuple[str, ...]:
 def probes_for_realm(realm: str) -> tuple[Probe, ...]:
     """Every probe that declares ``realm``, in inventory order."""
     return tuple(p for p in PROBES if realm in p.realms)
+
+
+def probes_with_variance(kind: str) -> tuple[Probe, ...]:
+    """Every probe classified ``kind``, in inventory order."""
+    if kind not in VARIANCE_KINDS:
+        raise ValueError(f"unknown variance {kind!r}; valid kinds are {list(VARIANCE_KINDS)}")
+    return tuple(p for p in PROBES if p.variance == kind)
+
+
+def must_differ_ids() -> frozenset[str]:
+    """Ids of the vectors two DISTINCT profiles must not agree on.
+
+    Derived from the inventory rather than listed anywhere, so classifying a
+    probe is done by editing its record — ``probes.py:8`` — and the
+    cross-profile comparator cannot drift out of step with the inventory.
+    """
+    return frozenset(p.id for p in probes_with_variance(INDEPENDENT))
 
 
 def _check_unique() -> None:
