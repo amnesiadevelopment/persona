@@ -566,6 +566,21 @@ def probes_with_variance(kind: str) -> tuple[Probe, ...]:
     return tuple(p for p in PROBES if p.variance == kind)
 
 
+def must_differ_probes() -> tuple[Probe, ...]:
+    """The probe RECORDS two distinct profiles must not agree on.
+
+    Returns records rather than ids because the comparator needs each probe's
+    declared ``realms`` as well as its id: it walks the inventory's realms for
+    a target instead of intersecting whatever realms two files happen to carry,
+    so a vector MISSING from a snapshot is still compared (and reported
+    inconclusive) rather than silently skipped. Driving that off ``realms``
+    keeps a window-only vector from being reported absent in the worker realm,
+    where the inventory never asked for it — the same rule ``diff_realms``
+    states for realm parity.
+    """
+    return probes_with_variance(INDEPENDENT)
+
+
 def must_differ_ids() -> frozenset[str]:
     """Ids of the vectors two DISTINCT profiles must not agree on.
 
@@ -573,7 +588,7 @@ def must_differ_ids() -> frozenset[str]:
     probe is done by editing its record — ``probes.py:8`` — and the
     cross-profile comparator cannot drift out of step with the inventory.
     """
-    return frozenset(p.id for p in probes_with_variance(INDEPENDENT))
+    return frozenset(p.id for p in must_differ_probes())
 
 
 def _check_unique() -> None:
@@ -596,4 +611,11 @@ __all__ = [
     "WORKER",
     "probe_ids",
     "probes_for_realm",
+    "probes_with_variance",
+    "must_differ_ids",
+    "must_differ_probes",
+    "INDEPENDENT",
+    "POOLED",
+    "SHARED",
+    "VARIANCE_KINDS",
 ]
