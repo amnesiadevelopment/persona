@@ -12,6 +12,7 @@ recorded rather than dropped, and that the differ reports added/removed probes
 instead of skipping them.
 """
 
+import copy
 import json
 import re
 import sys
@@ -1473,6 +1474,57 @@ def test_two_engines_are_refused_because_a_difference_may_be_the_ENGINE():
 
     # And the opt-in genuinely opts in, rather than merely existing.
     assert diff.compare_profiles(a, b, allow_cross_engine=True) == []
+
+
+def test_a_snapshot_that_does_not_name_its_engine_cannot_answer_the_question():
+    # The other half of the engine guard, and the same false-CERTIFICATE
+    # direction as the test above — reached not by two engines DIFFERING but by
+    # neither being recorded. `None != None` is False, so an equality-only
+    # guard reads "no idea what these ran on" as "same engine" and exits 0.
+    #
+    # Guarded on PRESENCE as well as equality for the reason the profile field
+    # already is: this mode needs positive evidence that a differing vector is
+    # attributable to the SEEDS, and an unrecorded engine is not that evidence.
+    a = _profile_snapshot("alice")
+    b = _profile_snapshot(
+        "bob",
+        window_values={pid: f"bob:{pid}" for pid in probes.must_differ_ids()},
+    )
+    # These differ on every must-differ vector, so the mode WOULD have exited 0.
+    assert diff.compare_profiles(a, b) == []
+
+    for drop in ("a", "b", "both"):
+        x, y = copy.deepcopy(a), copy.deepcopy(b)
+        if drop in ("a", "both"):
+            del x["engine"]
+        if drop in ("b", "both"):
+            del y["engine"]
+        with pytest.raises(diff.ComparisonNotControlled, match="name their engine"):
+            diff.compare_profiles(x, y)
+
+
+def test_allow_cross_engine_does_not_relax_an_UNRECORDED_engine(tmp_path, capsys):
+    # The judgement call, pinned as behaviour so it cannot be softened by
+    # accident. `--allow-cross-engine` opts in to a KNOWN, NAMED difference
+    # whose caveat the operator has weighed; an unrecorded engine gives them
+    # nothing to weigh, so the flag must NOT buy a pass here the way it does
+    # for chromium-vs-firefox.
+    from src.services.verify import cli
+
+    a = _profile_snapshot("alice")
+    b = _profile_snapshot(
+        "bob",
+        window_values={pid: f"bob:{pid}" for pid in probes.must_differ_ids()},
+    )
+    del a["engine"], b["engine"]
+    pa, pb = tmp_path / "a.json", tmp_path / "b.json"
+    snapshot.write(a, str(pa))
+    snapshot.write(b, str(pb))
+
+    assert cli.main(["compare", str(pa), str(pb)]) == 2
+    code = cli.main(["compare", str(pa), str(pb), "--allow-cross-engine"])
+    assert code == 2, "an unrecorded engine is not an opted-into engine difference"
+    assert "name their engine" in capsys.readouterr().err
 
 
 def test_cli_compare_refuses_cross_engine_by_default_and_allows_it_on_request(

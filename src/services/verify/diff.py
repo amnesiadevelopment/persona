@@ -122,7 +122,22 @@ def _require_controlled(a: dict, b: dict, *, allow_cross_engine: bool) -> None:
       evidence that the two identities differ, and "no name recorded" is not
       it. No flag relaxes this, because no flag can make one profile two.
 
-    * **Different engines — overridable.** ``diff_snapshots`` already reasons
+    * **Unknown engine — no override.** Same premise as the missing profile
+      above, one field over: a vector that differs is evidence about the SEEDS
+      only if the two observations were taken under comparable conditions, and
+      "no engine recorded" is not evidence that they were. Two snapshots that
+      both omit the header must NOT slip through on ``None == None`` — that
+      reads as "same engine" while being "no idea", and it exits 0, issuing a
+      certificate of unlinkability on a comparison never established as
+      controlled. Deliberately NOT relaxed by ``--allow-cross-engine``: that
+      flag opts in to a KNOWN, NAMED engine difference whose caveat the
+      operator has weighed (see the bullet below), and an unrecorded engine
+      gives them nothing to weigh. ``build_snapshot`` always writes the field,
+      but ``snapshot.load`` is a bare ``json.load`` with no validation and this
+      subsystem's whole purpose is an on-disk artifact other slices consume, so
+      "our own writer is careful" is not the guarantee.
+
+    * **Different, NAMED engines — overridable.** ``diff_snapshots`` already reasons
       about this and says so (``a chromium snapshot vs a firefox one is not a
       regression, it is a different question``), handing the operator
       ``--meta``. The danger here is the PASS direction: two profiles whose
@@ -150,6 +165,17 @@ def _require_controlled(a: dict, b: dict, *, allow_cross_engine: bool) -> None:
             "ONE profile (before/after an update), use `diff`."
         )
     a_engine, b_engine = _header(a, "engine"), _header(b, "engine")
+    if not a_engine or not b_engine:
+        raise ComparisonNotControlled(
+            "cannot compare: both snapshots must name their engine in the "
+            f"header (got {a_engine!r} and {b_engine!r}). A vector that differs "
+            "is only evidence about the SEEDS if the two observations were "
+            "taken under comparable conditions, and 'no engine recorded' is "
+            "not evidence that they were. Re-record with an engine header. "
+            "--allow-cross-engine does NOT relax this: it opts in to a KNOWN, "
+            "NAMED engine difference whose caveat the operator has weighed, "
+            "and an unrecorded engine gives them nothing to weigh."
+        )
     if a_engine != b_engine and not allow_cross_engine:
         raise ComparisonNotControlled(
             f"cannot compare: snapshots were taken on different engines "
