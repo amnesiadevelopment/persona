@@ -181,6 +181,13 @@ def _spawn_invisible(profile: Profile, profile_dir: str):
             "_needs_fetch": not is_invisible_installed(),
         }
         proc = spawn(cfg)
+        # Claim the terminator for this browser now that it exists (it had to
+        # bind first — the engine gets its port in the proxy config). The handle
+        # reports pid 0 on the non-fork path, where the engine runs on a thread
+        # of THIS process rather than as a child; the gate treats that as "our
+        # own tree", which is exactly right there.
+        if cert_session is not None:
+            cert_session.bind_to_process(getattr(proc, "pid", 0))
         # Stop the terminator when the FF session ends (same hook the chromium path
         # uses; None when no certificate is assigned).
         proc._cert_session = cert_session  # type: ignore[attr-defined]
@@ -647,6 +654,15 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
             bufsize=1,
             **_platform.no_window_kwargs(),
         )
+        # Claim both loopback listeners for THIS browser, now that it exists.
+        # They had to bind first (their ports go on the command line above), so
+        # until this point they serve nobody. Chromium does not connect from this
+        # pid — its network service is a child — so the gate authorizes the whole
+        # descendant tree, not a single process.
+        if bridge is not None:
+            bridge.bind_to_process(proc.pid)
+        if cert_session is not None:
+            cert_session.bind_to_process(proc.pid)
         proc._proxy_bridge = bridge  # type: ignore[attr-defined]
         proc._cert_session = cert_session  # type: ignore[attr-defined]
         return proc

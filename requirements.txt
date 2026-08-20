@@ -7,4 +7,9 @@ cryptography>=42.0.0
 mcp>=1.28.0,<2
 paramiko>=3.4
 PySocks>=1.7
+# Peer verification for the two loopback listeners (proxy bridge + mTLS
+# terminator): resolves an accepted connection to the browser process tree
+# that owns it. Present today only as a TRANSITIVE dep of invisible_core, so
+# declare it directly — a bundle without it silently loses the check.
+psutil>=5.9
 pywin32>=311; sys_platform == "win32"
