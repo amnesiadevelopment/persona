@@ -15,13 +15,21 @@ identity moved" and "we failed to read it" are different facts and a caller
 must be able to tell them apart from the exit code alone:
 
     0   every probe was READ and agreed
-    1   at least one probe genuinely differs (a reading changed, appeared or
-        vanished) — reported even if some other probe was also inconclusive,
-        because a real difference is the louder fact
-    3   nothing differs, but at least one reading was never obtained. NOT a
-        pass: an unobtainable reading is inconclusive, and inconclusive is
-        never a pass. Distinct from 1 so a future CI gate can treat "look
-        again" differently from "the identity drifted".
+    1   at least one probe genuinely differs — a reading changed, a probe that
+        WAS readable is now unreadable, or a probe with an obtained reading
+        appeared or vanished. Reported even if some other probe was also
+        inconclusive, because a real difference is the louder fact
+    3   nothing was observed to differ, and at least one entry rests on no
+        reading at all — every side of it errored or was absent. NOT a pass:
+        an unobtainable reading is inconclusive, and inconclusive is never a
+        pass. Distinct from 1 so a future CI gate can treat "look again"
+        differently from "the identity drifted"
+
+Note which side of that line the asymmetric case falls on: a vector that read
+"Apple GPU" in the baseline and throws after an engine update exits **1**, not
+3. One side WAS read, so this is not a failure to look — it is the strongest
+continuity signal this subsystem can produce, and sorting it into the retry
+bucket would mute it.
 
 This closes no leak and gates no release. ``diff`` exits non-zero when the two
 snapshots disagree, or when it could not obtain the evidence to say they agree,
@@ -101,6 +109,13 @@ def _exit_code(entries: "list[dict]") -> int:
     caller is told the identity moved, which is the louder fact. But a diff
     carrying ONLY inconclusive entries must never return 0 — that would be a
     claim of agreement resting on evidence nobody gathered.
+
+    "Inconclusive" here is the comparator's own definition: an entry NEITHER
+    side of which carries an obtained reading. An entry with a reading on one
+    side is a difference someone actually observed, so it takes the 1 — which
+    keeps this function's answer consistent with the contract documented at the
+    top of this module, rather than routing an observed difference into the
+    "look again" bucket.
     """
     if not entries:
         return 0

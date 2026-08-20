@@ -13,9 +13,29 @@ unobtainable reading as ``{"error": ...}`` — never omitted, never coerced to a
 value — because an unobtainable reading is inconclusive, and inconclusive is
 never a pass. Comparing entries verbatim would throw that away at the last
 step: ``{"error": "X"} == {"error": "X"}`` is not two probes agreeing, it is
-the same probe failing twice. So an entry carrying ``error`` on EITHER side is
-reported as INCONCLUSIVE, even when the two sides are byte-identical. A
-comparison nobody had the evidence to make is not agreement.
+the same probe failing twice.
+
+So the comparator asks one question of every entry it reports: **was a reading
+actually OBTAINED on either side?** An error is not a reading, and neither is
+an absence.
+
+* Both sides present and NEITHER obtained — status INCONCLUSIVE, reported even
+  when the two sides are byte-identical. A comparison nobody had the evidence
+  to make is not agreement.
+* Both sides present and at least one obtained — the ordinary comparison. Equal
+  readings agree and are skipped; unequal ones are CHANGED. A vector that read
+  fine before and throws now IS a difference — one side was read, and the fact
+  that it stopped being readable is the loudest continuity signal this
+  subsystem can produce, so it must not be demoted to "look again".
+* Present on one side only — ADDED/REMOVED, because the inventory change is
+  real information worth naming. But if no reading was ever obtained for it,
+  it is still COUNTED as inconclusive (see ``inconclusive_count``): the
+  inventory moved, no reading did, and calling it an observed difference would
+  assert evidence nobody gathered.
+
+``inconclusive_count`` therefore keys off the readings an entry carries, not
+off its status label — so the count is the same whichever branch produced the
+entry.
 """
 
 from __future__ import annotations
@@ -53,19 +73,45 @@ def _realm(snapshot: dict, realm: str) -> dict:
     return entries if isinstance(entries, dict) else {}
 
 
-def _unread(entry: Any) -> bool:
-    """True when this entry records a reading that was never obtained.
+def _unread(side: Any) -> bool:
+    """True when this side of a comparison carries no reading that was OBTAINED.
 
-    ``runner``/``snapshot`` record every failure this way — a throwing probe, a
-    worker harness that never answered, a probe the runner dropped — so this
-    one predicate covers every route by which evidence went missing.
+    Three ways evidence can be missing, and this one predicate covers all of
+    them, because downstream nothing cares which one happened:
+
+    * ``{"error": ...}`` — ``runner``/``snapshot`` record every failure this
+      way (a throwing probe, a worker harness that never answered, a probe the
+      runner dropped), never omitted and never coerced to a value.
+    * ``ABSENT`` — the probe is not in this snapshot at all.
+    * anything else malformed — a probe reading is obtained only if it actually
+      carries ``value``. The safe default in this subsystem is to treat what we
+      cannot recognise as evidence we do not have.
+
+    Header (``__meta__``) sides are bare scalars rather than reading dicts;
+    a present scalar IS the reading, and ``None`` is its absence.
     """
-    return isinstance(entry, dict) and "error" in entry
+    if isinstance(side, dict):
+        return "value" not in side
+    return side is None
+
+
+def _inconclusive(entry: "dict") -> bool:
+    """True when NEITHER side of this entry carries an obtained reading.
+
+    Keyed off the readings, not off the status label, so the answer is the same
+    whichever branch of the comparator produced the entry. An ADDED probe whose
+    only reading errored is an inventory change with no evidence behind it: it
+    is still worth REPORTING as added, but it must not be counted as a
+    difference anyone observed.
+    """
+    if not isinstance(entry, dict):
+        return True
+    return _unread(entry.get("expected")) and _unread(entry.get("observed"))
 
 
 def inconclusive_count(entries: "list[dict]") -> int:
-    """How many of these entries are readings nobody obtained."""
-    return sum(1 for e in entries if e.get("status") == INCONCLUSIVE)
+    """How many of these entries rest on readings nobody obtained."""
+    return sum(1 for e in entries if _inconclusive(e))
 
 
 def diff_snapshots(
@@ -75,12 +121,18 @@ def diff_snapshots(
 
     Returns entries ordered by ``(realm, probe_id)``, each shaped::
 
-        {"probe_id": ..., "realm": ..., "status": "changed"|"added"|"removed",
+        {"probe_id": ..., "realm": ...,
+         "status": "changed"|"added"|"removed"|"inconclusive",
          "expected": <entry or ABSENT>, "observed": <entry or ABSENT>}
 
     ``expected`` is the baseline (the "before"), ``observed`` the new reading.
     An empty list means the two snapshots agree on every probe in every realm
-    either of them recorded.
+    either of them recorded — and, since a reading nobody obtained is reported
+    rather than skipped, it also means every one of those probes was READ.
+
+    ``inconclusive`` is reported when NEITHER side carries an obtained reading.
+    An ``added``/``removed`` entry can also rest on no obtained reading; it
+    keeps its inventory status, and ``inconclusive_count`` counts it.
 
     ``include_meta`` additionally reports header disagreements (engine,
     engine_build, profile, schema_version, app_version) under realm
@@ -114,11 +166,13 @@ def diff_snapshots(
             if in_a and in_b:
                 # Checked BEFORE equality: two identical errors are the same
                 # probe failing twice, not two probes agreeing.
-                if _unread(a_entries[probe_id]) or _unread(b_entries[probe_id]):
+                if _unread(a_entries[probe_id]) and _unread(b_entries[probe_id]):
                     status = INCONCLUSIVE
                 elif a_entries[probe_id] == b_entries[probe_id]:
                     continue
                 else:
+                    # One side WAS read. A vector that read fine before and
+                    # throws now is a difference, not a request to look again.
                     status = CHANGED
             else:
                 status = ADDED if in_b else REMOVED
@@ -145,14 +199,22 @@ def diff_realms(snapshot: dict, left: str, right: str) -> list[dict]:
     Only probes that declare both realms are compared: a window-only probe
     being absent from the worker realm is the inventory working as designed,
     not a finding.
+
+    Entries carry the same statuses ``diff_snapshots`` uses: ``changed`` when
+    the two realms disagree, ``inconclusive`` when NEITHER realm yielded an
+    obtained reading. A vector read in one realm and unreadable in the other is
+    ``changed`` — that asymmetry is the defect class this function exists to
+    catch, not a request to look again.
     """
     a_entries = _realm(snapshot, left)
     b_entries = _realm(snapshot, right)
     out: list[dict] = []
     for probe_id in sorted(set(a_entries) & set(b_entries)):
         # Same rule as diff_snapshots: a vector nobody could read in either
-        # realm is not the two realms agreeing about it.
-        if _unread(a_entries[probe_id]) or _unread(b_entries[probe_id]):
+        # realm is not the two realms agreeing about it. But a vector read in
+        # ONE realm and unreadable in the other IS a disagreement between the
+        # realms — that is the load-bearing defect class, not a retry request.
+        if _unread(a_entries[probe_id]) and _unread(b_entries[probe_id]):
             status = INCONCLUSIVE
         elif a_entries[probe_id] == b_entries[probe_id]:
             continue
