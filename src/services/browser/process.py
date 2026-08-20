@@ -31,7 +31,6 @@ from .native_ext import build_native_extension
 from .stealth_ext import build_stealth_extension
 from .profile_seed import seed_profile_prefs
 from .search_ext import build_search_extension
-from .title_ext import build_title_extension
 from .window_entry import app_id_for, write_window_entry
 
 # The locale / timezone / display-scale policy lives in launch_policy.py so both
@@ -243,9 +242,6 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
     seed_bookmarks(profile_dir, chosen)
     if _platform.supports_linux_desktop_integration():
         write_window_entry(profile.name)
-    title_ext = build_title_extension(
-        profile.name, os.path.join(profile_dir, ".persona-title-ext")
-    )
 
     store = ProxyStore()
     proxy = store.get(profile.proxy) if profile.proxy else None
@@ -281,7 +277,7 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
             pick_preset(profile.fingerprint_seed, mobile_os) if is_mobile else None
         )
 
-        extensions = [title_ext]
+        extensions = []
         # native_ext patches Function.prototype.toString so persona's wrapped
         # built-ins (Intl/matchMedia/getVoices/Worker/…) stringify as native code,
         # hiding the JS-override tell a masking detector reports.
