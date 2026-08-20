@@ -14,6 +14,26 @@ So the rules live HERE, below every door, and the manager applies them on the
 paths that write a profile. A guard added at a route would cover that route
 only; a rule the model enforces covers the doors nobody has written yet.
 
+How each writing path applies them — the list is exhaustive on purpose, because
+a vague claim that "the model handles it" is what tells the next engineer they
+need not look:
+
+* ``ProfileManager.add_profile`` — REFUSES (``assert_coherent``). A create
+  composes a new machine, so an impossible one is a caller error. This covers
+  REST create, the automation/MCP lane and ``bulk_create``, all of which reach
+  the model through it.
+* ``ProfileManager.update_profile`` — REFUSES, judging the pair the edit RESULTS
+  in (stored value + supplied value), but only when the edit INTRODUCES the
+  incoherence. See below.
+* ``ProfileManager.import_profile`` — NORMALISES via ``coherent_engine``, and
+  logs it. An archive is closer to an already-stored legacy record than to a
+  fresh request: it was written by an older build, and refusing would make it
+  permanently unimportable at the one moment the operator cannot edit it into
+  shape. The record therefore lands coherent instead of being rejected.
+* ``ProfileManager.restore_profile`` — intentionally EXEMPT. Restore replays a
+  record that already existed, so it introduces nothing; guarding it would
+  strand a trashed profile behind a conflict it did not create.
+
 The two rules
 -------------
 
@@ -85,6 +105,14 @@ def coherence_error(os_type: str, engine: str | None) -> str | None:
 
     The message is written for the caller to act on: it names both fields, the
     conflict, and which way to resolve it.
+
+    The mobile branch is read first purely to SELECT THE REASON, not because the
+    two rules interact: both forbid exactly ``firefox`` + non-Windows, and a
+    mobile os_type is already non-Windows, so the verdict is identical either
+    way. The order only decides whether the caller is told "the Firefox engine
+    has no mobile mode" (the actionable reason for android/ios) or "Firefox
+    reports Windows regardless of os_type". Reordering changes the wording, not
+    the correctness.
     """
     if normalize_engine(engine) != "firefox":
         # chromium honors os_type, mobile included — nothing to refuse.

@@ -29,6 +29,7 @@ from src.services.profile.coherence import (
     is_coherent,
 )
 from src.services.profile.manager import ProfileManager
+from src.services.profile.transfer import export_to_zip
 
 # The two pairs the rules forbid: a mobile OS cannot run the desktop-only
 # Firefox engine (Rule 1), and the Firefox engine reports Windows regardless of
@@ -307,3 +308,103 @@ def test_coherence_error_explains_which_way_to_resolve_the_conflict():
 def test_coherence_error_is_none_for_a_possible_machine():
     assert coherence_error("windows", "firefox") is None
     assert coherence_error("android", "chromium") is None
+
+
+# ---------------------------------------------------------------------------
+# The import door — normalises rather than refusing, deliberately
+# ---------------------------------------------------------------------------
+
+
+def _incoherent_archive(tmp_path, name="imported", os_type="macos", engine="firefox"):
+    """A profile zip carrying a pair the model says cannot exist.
+
+    Built through the real exporter, so this is exactly the archive an older
+    build (or a once-unguarded REST create) would have produced and handed to an
+    operator to import.
+    """
+    ok, zip_path = export_to_zip(
+        Profile(name=name, os_type=os_type, engine=engine),
+        str(tmp_path / f"{name}-nodata"),
+        str(tmp_path),
+        include_data=False,
+    )
+    assert ok, zip_path
+    return zip_path
+
+
+@pytest.mark.parametrize("os_type,engine", INCOHERENT_PAIRS)
+def test_the_import_door_crosses_the_same_rule(mgr, tmp_path, os_type, engine):
+    """import_profile writes the record directly, so it is a door of its own.
+
+    It crosses the rule by NORMALISING, not refusing: an archive is closer to an
+    already-stored legacy record than to a fresh request, and refusing would make
+    an old archive permanently unimportable at the one moment the operator cannot
+    edit it into shape. What must NOT survive is the impossible pair landing in
+    the store verbatim.
+    """
+    zp = _incoherent_archive(tmp_path, name="imp", os_type=os_type, engine=engine)
+
+    ok, result = mgr.import_profile(zp)
+    assert ok, result
+
+    stored = mgr.profiles["imp"]
+    # the record the model holds describes a machine that could exist
+    assert is_coherent(stored.os_type, stored.engine), (
+        stored.os_type, stored.engine
+    )
+    # and it was reconciled toward the engine that HONORS os_type, so the record
+    # keeps its claim and the launched machine matches it
+    assert (stored.os_type, stored.engine) == (os_type, "chromium")
+    assert effective_engine(stored) == "chromium"
+
+
+def test_importing_over_a_coherent_profile_cannot_make_it_incoherent(mgr, tmp_path):
+    """The sharper case: overwrite=True is an EDIT of an existing record.
+
+    This is the same defect the ticket describes for REST update — 'an existing
+    coherent profile can be edited into an incoherent one' — reachable through
+    the import door instead.
+    """
+    assert mgr.add_profile("shared", "", "windows", engine="chromium")
+    assert is_coherent(*(mgr.profiles["shared"].os_type, mgr.profiles["shared"].engine))
+
+    zp = _incoherent_archive(tmp_path, name="shared", os_type="macos", engine="firefox")
+    ok, result = mgr.import_profile(zp, overwrite=True)
+    assert ok, result
+
+    after = mgr.profiles["shared"]
+    assert is_coherent(after.os_type, after.engine), (after.os_type, after.engine)
+    assert (after.os_type, after.engine) == ("macos", "chromium")
+
+
+def test_importing_a_coherent_archive_is_untouched(mgr, tmp_path):
+    # Normalisation must only fire on the impossible pair — a legitimate Windows
+    # Firefox archive must import as Firefox, not be quietly downgraded.
+    zp = _incoherent_archive(tmp_path, name="goodimp", os_type="windows", engine="firefox")
+    ok, result = mgr.import_profile(zp)
+    assert ok, result
+    assert (mgr.profiles["goodimp"].os_type, mgr.profiles["goodimp"].engine) == (
+        "windows", "firefox",
+    )
+
+
+def test_restore_is_intentionally_exempt_and_does_not_strand_a_record(mgr):
+    """Restore replays a record that already existed, so it introduces nothing.
+
+    Guarding it would strand a trashed profile behind a conflict it did not
+    create — which the 'already-stored records are not stranded' policy forbids.
+    Pin the exemption so a future reader does not 'fix' it into a stranding bug.
+    """
+    mgr.profiles["oldfox"] = Profile(name="oldfox", os_type="macos", engine="firefox")
+    assert mgr.delete_profile("oldfox")
+    assert "oldfox" not in mgr.profiles
+
+    entry = mgr._trash().list()[0]
+    ok, err = mgr.restore_profile(entry)
+    assert ok, err
+
+    # restored verbatim — the incoherent record is recoverable, not refused
+    restored = mgr.profiles["oldfox"]
+    assert (restored.os_type, restored.engine) == ("macos", "firefox")
+    # and it still opens, presenting the macOS its record claims
+    assert effective_engine(restored) == "chromium"
