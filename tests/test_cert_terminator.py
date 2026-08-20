@@ -424,6 +424,19 @@ def _abandon(session):
     """
     if session is None:
         return
+    # End the accept loop BEFORE closing the socket, and note carefully that
+    # this is _stop.set() and deliberately NOT stop(): stop() also WIPES
+    # (terminator.py:290-302), which would destroy the very premise these tests
+    # measure — the key material an unclean exit leaves behind. _stop.set() on
+    # its own deletes nothing. Do not "simplify" this into stop().
+    #
+    # It is required, not tidiness: _accept_loop is `while not _stop.is_set()`
+    # with `except OSError: continue`, and accept() on a CLOSED socket raises
+    # OSError immediately and forever — so closing without setting the flag
+    # turns a daemon thread into a tight spin with no exit condition, burning a
+    # core for the rest of the pytest process (and this suite has a known
+    # timing-sensitive test).
+    session._term._stop.set()
     srv = session._term._srv
     if srv is not None:
         try:
@@ -533,6 +546,43 @@ def test_failed_terminator_construction_leaves_no_key_on_disk(tmp_path, monkeypa
             f"key material left behind after a failed start: {_key_files(work)}"
         )
     finally:
+        stop()
+
+
+def test_unlistable_work_dir_does_not_abort_the_launch(tmp_path):
+    # The sweep runs BEFORE the guarded block, so anything it raises escapes
+    # start_cert_session entirely — through _cert_session_for (process.py:77)
+    # and out of the Firefox path (process.py:157), whose BaseException handler
+    # re-raises after stopping a cert_session that is still None. The launch
+    # dies. That is a fail-closed policy change, which this ticket puts
+    # explicitly OUT of scope: it changes how long a secret lives, not what the
+    # product permits. start_cert_session's contract (manager.py:40-42) is to
+    # degrade to "no mTLS", so an existing-but-unlistable .persona-mtls must
+    # return None exactly as it does on main — never raise.
+    import os
+
+    from src.services.cert import manager as cm
+
+    if os.geteuid() == 0:
+        pytest.skip("root bypasses directory permissions; can't make a dir unlistable")
+
+    port, _, p12, pw, _, stop = _mtls_origin(tmp_path)
+    work = str(tmp_path / "profile" / ".persona-mtls")
+    os.makedirs(work)
+    # Pre-existing key material we will NOT be able to enumerate.
+    with open(os.path.join(work, "term_leaf.key"), "w") as f:
+        f.write("-----BEGIN PRIVATE KEY-----\nstale\n-----END PRIVATE KEY-----\n")
+    os.chmod(work, 0o000)
+    try:
+        cert = _cert_for(p12, pw, port)
+        # The assertion is the ABSENCE of a raise: pytest fails the test if
+        # start_cert_session propagates, which is precisely the regression.
+        session = cm.start_cert_session(cert, None, work, verify_upstream=False)
+        assert session is None, (
+            "an unreadable work dir must degrade to no-mTLS, not abort the launch"
+        )
+    finally:
+        os.chmod(work, 0o700)
         stop()
 
 

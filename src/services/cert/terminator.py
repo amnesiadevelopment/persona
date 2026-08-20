@@ -314,11 +314,22 @@ def sweep_key_material(out_dir) -> None:
 
     Never creates ``out_dir`` — a profile with no certificate must not bring a
     .persona-mtls directory into existence.
+
+    This is TOTAL: it never raises. Deciding whether a launch may proceed is
+    not this function's call — ``start_cert_session`` degrades to "no mTLS"
+    rather than failing (see its docstring), and a directory that merely can't
+    be enumerated must not turn that graceful degradation into an aborted
+    launch. Nothing here is swept in that case, which is the honest outcome:
+    unreadable is not clean.
     """
     d = str(out_dir)
     if not os.path.isdir(d):
         return
-    for name in os.listdir(d):
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return
+    for name in names:
         if name.startswith("persona-mtls-") or name in (
             "term_leaf.key", "term_leaf.crt", "term_ca.crt"
         ):
