@@ -37,7 +37,7 @@ Matrix pinned below, for ONE proxied profile:
 from src.models.profile import Profile
 from src.services.browser.invisible_launch import _profile_prefs
 from tests.test_process import (
-    _StoreWithGeolessProxy,
+    _StoreWithCheckedProxy,
     _disable_features_values,
     _spawn_chromium_args,
 )
@@ -56,7 +56,7 @@ def _chromium_proxied(monkeypatch, tmp_path):
         monkeypatch,
         tmp_path,
         Profile(name="antileak-matrix", proxy="p1"),
-        store=_StoreWithGeolessProxy,
+        store=_StoreWithCheckedProxy,
     )
     return captured["args"]
 

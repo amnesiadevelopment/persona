@@ -14,6 +14,7 @@ instead of rediscovering them one engine at a time.
 import os
 
 from ...core import platform as _platform
+from ..proxy.errors import GeographyUnknownError
 
 # Map a proxy's country to a sensible browser locale, so Accept-Language
 # matches the exit IP. Falls back to en-US when the country is unknown.
@@ -142,10 +143,29 @@ def _offset_zone() -> str:
 
 
 def _host_timezone() -> str:
-    """The host's IANA timezone, for a direct (no-proxy) profile. Resolving to a
-    concrete zone keeps invisible from doing a ~40s egress lookup at launch and
-    makes Firefox's clock match the exit IP. Falls back to an offset zone, then
-    UTC, when the host zone can't be resolved."""
+    """The host's IANA timezone. Reads the operator's REAL location.
+
+    NOT USED ON ANY LAUNCH PATH, deliberately. It has no caller in ``src/`` —
+    ``git grep -n "_host_timezone" -- src/`` returns only this definition and
+    the re-export in ``process.py``. Its one live call site was
+    ``_proxy_timezone``'s removed third branch, which declared this value inside
+    a proxied profile.
+
+    It is KEPT rather than deleted because the test that proves a direct profile
+    does NOT leak the host zone patches this name
+    (``test_chromium_no_proxy_timezone_matches_en_us_language``), and
+    ``monkeypatch.setattr`` raises ``AttributeError`` on a missing attribute —
+    so deleting it would break the very test that guards the adjacent leak.
+    A distinctive patched value is how that test proves the host zone never
+    reaches an engine.
+
+    Do not reintroduce a call to this from any path that decides what a profile
+    CLAIMS about its location. Both a direct profile (a US zone, agreeing with
+    the forced en-US language) and a proxied one (the exit's zone) are answered
+    without it; a proxy with no geography is REFUSED, not answered from here.
+
+    Falls back to an offset zone, then UTC, when the host zone can't be resolved.
+    """
     if _platform.IS_WINDOWS:
         key = _windows_timezone_key()
         if key and key in _WINDOWS_TZ_TO_IANA:
@@ -220,12 +240,39 @@ def _host_display_scale() -> float:
 
 
 def _proxy_timezone(proxy) -> str:
-    """The timezone for a proxied profile. An unchecked proxy (no geo data yet)
-    falls back to the host zone — UTC against a non-UTC exit IP is a louder
-    fingerprint tell than the host zone, and matches direct-profile behavior."""
+    """The timezone for a proxied profile — or a REFUSAL when there isn't one.
+
+    Two branches answer honestly: the zone the check recorded, else the zone
+    implied by the checked country. Both describe the EXIT, which is the only
+    location a proxied persona may claim.
+
+    An unchecked proxy (no geo at all) has no third answer. It used to fall back
+    to the host zone, on the reasoning that UTC against a non-UTC exit IP is a
+    louder fingerprint tell. That trade is off the table: the "quieter" value was
+    the OPERATOR'S REAL TIMEZONE, declared inside the tunnel — a real-location
+    disclosure on precisely the vector the proxy exists to close. Trading a
+    fingerprint tell against deanonymization is not a trade worth making.
+
+    So when no geography is available the answer is STOP: not a host-derived
+    value, not a coarser value, not a quieter value. This raises rather than
+    returning a sentinel so the unknown is UNREPRESENTABLE as a zone string and
+    no caller can ship it to an engine by accident. A persona that will not
+    launch has disclosed nothing.
+
+    The refusal is escapable and the remedy is one click: check the proxy, which
+    writes country_code + timezone (ProxyStore.mark_checked), and the profile
+    then launches through the first or second branch declaring the exit's zone.
+
+    Raises:
+        GeographyUnknownError: the proxy carries neither timezone nor country.
+    """
     if proxy.timezone:
         return proxy.timezone
     if proxy.country_code:
         return _timezone_for(proxy.country_code)
-    return _host_timezone()
+    raise GeographyUnknownError(
+        "proxy has no geography (never successfully checked): refusing to "
+        "derive a timezone from the host, which would disclose the operator's "
+        "real location inside the tunnel"
+    )
 
