@@ -83,6 +83,34 @@ For the record, the recording also demonstrates the masking is real rather than
 inherited: the host has 8 cores and reports Linux, while the recorded profile
 reports 12 cores, `Win32`, and Firefox 151 on Windows.
 
+## Some readings depend on the HOST, not only on the engine
+
+Pinning the profile pins everything the seed derives, but not what the GPU and
+driver stack or the installed font metrics report. A handful of probes read
+through host facilities and can therefore differ between two machines running
+the **same** engine:
+
+- `webgl.unmasked` — reports the renderer string of whatever GPU/driver is
+  present (this recording carries an ANGLE/NVIDIA string from the machine below)
+- `webgl.parameters`, `webgl.extensions`, `masking.webglGetParameter`
+- `fonts.measureText` — host-specific text metrics
+
+This list is embedded in the artifact itself under
+`provenance.env_sensitive_probes`, so whoever is reading a red diff sees the
+caveat in the same file as the values it applies to, without having to find this
+note. It is recorded as probe **names only** — deliberately, because putting an
+actual GPU or driver string in the artifact would make its bytes depend on the
+machine that recorded it, which is the opposite of what a byte-stable reference
+needs.
+
+**What this means in practice:** a `check` run on different hardware from the
+recording may report drift on these probes that is *host variance rather than
+engine drift*. That is a real limitation of the current artifact, not a defect
+in the comparison — the honest reading is that the check is at its strongest
+when run on the machine the baseline was recorded on, and that a red run on
+these specific probes is the first thing to attribute before treating it as an
+engine change.
+
 ## ⚠️ What this does NOT do
 
 **This check does not fire on the automatic engine bump.** Both workflows run on
@@ -128,6 +156,26 @@ reviewer should be looking at.
 `record` refuses to write a baseline that has any unreadable probe, because a
 probe that errors here would compare equal against the same error later and be
 reported as agreement.
+
+The refusal is checked **before** anything is written, and that ordering
+matters: `--output` defaults to the committed artifact above, so validating
+after the write would destroy the good reference and then print a message
+saying it had been refused. Because re-recording is the *encouraged* workflow
+after an accepted bump, that would fire exactly when the operator is doing the
+right thing.
+
+So on a failed reading the reference path is left **byte-identical**, and the
+unusable recording is written beside it as `<output>.rejected` — kept, because
+the errors are what you need to diagnose, but never at the path being blessed:
+
+```
+$ python -m src.services.verify.baseline_cli record
+REFUSING to treat this as a good baseline: 1 probe(s) could not be read. ...
+Wrote the unusable reading to tests/fixtures/engine-fingerprint-baseline.firefox.json.rejected
+for inspection; tests/fixtures/engine-fingerprint-baseline.firefox.json is UNCHANGED.
+$ echo $?
+1
+```
 
 ## A trap worth knowing about
 

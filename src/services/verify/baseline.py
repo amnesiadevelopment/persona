@@ -94,6 +94,24 @@ BASELINE_RESOLUTION = "1920x1080"
 BASELINE_SEARCH_ENGINE = "duckduckgo"
 BASELINE_REALMS: tuple[str, ...] = (WINDOW, WORKER)
 
+# Probes whose value reads through a HOST facility (GPU/driver stack, installed
+# font metrics) rather than being derived from the seed. Pinning the profile
+# pins everything else; these can still differ between two machines running the
+# SAME engine, so a red run on unfamiliar hardware may be host variance rather
+# than engine drift.
+#
+# Recorded as NAMES only, and deliberately so: the point is to tell whoever is
+# reading a diff which lines to distrust, and an actual host identifier (GPU
+# string, driver version) would make the artifact's bytes depend on the machine
+# that recorded it — the opposite of what a byte-stable reference needs.
+ENV_SENSITIVE_PROBES: tuple[str, ...] = (
+    "fonts.measureText",
+    "masking.webglGetParameter",
+    "webgl.extensions",
+    "webgl.parameters",
+    "webgl.unmasked",
+)
+
 # Repo-relative location of the committed artifact. Beside the iOS WebGL
 # reference (PS-12), so "what we expect a profile to look like" has one home.
 BASELINE_ARTIFACT = os.path.join(
@@ -154,6 +172,10 @@ def provenance(profile: Profile) -> dict:
         "bookmarks": "none (explicitly cleared)",
         "certificate": "none",
         "realms": list(BASELINE_REALMS),
+        # Which readings are host-dependent, stated IN the artifact rather than
+        # only in the accompanying note — so whoever is looking at a red diff
+        # sees the caveat in the same file as the values it applies to.
+        "env_sensitive_probes": list(ENV_SENSITIVE_PROBES),
     }
 
 
@@ -181,17 +203,74 @@ def _require_display() -> None:
 
 
 def _await_started(proc: Any, timeout: float) -> None:
-    """Block until the session reports BROWSER_STARTED, or fail saying why."""
+    """Block until the session reports BROWSER_STARTED, or fail saying why.
+
+    The read is on a pump THREAD rather than inline, and that is the whole
+    point: ``proc.stdout.readline()`` blocks unboundedly, so a deadline tested
+    only *between* reads can never fire against a session that starts and then
+    says nothing — which is precisely the wedge a launch timeout exists to
+    catch. Draining into a queue and waiting with the remaining budget makes the
+    bound real: the deadline is enforced while we are waiting, not only after a
+    line happens to arrive.
+
+    A hang here is worse than a failure. The ``finally: _teardown(...)`` in
+    :func:`record_snapshot` never runs while we are parked, so the session leaks
+    and the eval-hook registry keeps a stale entry; and on the ``in_process``
+    path the session is a daemon thread of THIS process whose only stop signal
+    is ``proc.terminate()``, unreachable from inside a blocking read. This is
+    also destined for CI, where a hang burns the job's wall clock and gets
+    misdiagnosed as flaky infrastructure, while a failure is a red build
+    somebody reads.
+
+    A thread plus ``queue.Queue.get(timeout=...)`` rather than ``select``:
+    ``select`` on pipes is not available on Windows, and ``InvisibleProcess``
+    explicitly supports a Windows/macOS path.
+    """
+    import queue
+    import threading
+
+    lines: "queue.Queue[str | None]" = queue.Queue()
+
+    def _pump() -> None:
+        # readline(), not `for raw in proc.stdout`: iterating a file object
+        # reads ahead into an internal buffer and can withhold a complete line
+        # until the buffer fills, which on a pipe means BROWSER_STARTED can sit
+        # unseen. readline returns each line as it lands.
+        try:
+            while True:
+                raw = proc.stdout.readline()
+                if not raw:
+                    break
+                lines.put(raw)
+        except Exception:
+            pass
+        finally:
+            lines.put(None)  # EOF sentinel
+
+    # Daemon: if we abandon this read on timeout, the pump must never keep the
+    # interpreter alive waiting on a pipe nobody will write to again.
+    threading.Thread(target=_pump, daemon=True).start()
+
     deadline = time.time() + timeout
     tail: list[str] = []
-    while time.time() < deadline:
-        line = proc.stdout.readline()
-        if not line:
+    while True:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            raise BaselineUnavailable(
+                f"the browser did not start within {timeout:.0f}s; last output: "
+                f"{tail[-5:] or 'none'}"
+            )
+        try:
+            raw = lines.get(timeout=remaining)
+        except queue.Empty:
+            # Nothing arrived inside the budget; loop re-checks and raises.
+            continue
+        if raw is None:
             raise BaselineUnavailable(
                 "the browser session ended before it reported readiness; last "
                 f"output: {tail[-5:] or 'none'}"
             )
-        line = line.strip()
+        line = raw.strip()
         if line:
             tail.append(line)
         if line == "BROWSER_STARTED":
@@ -201,23 +280,35 @@ def _await_started(proc: Any, timeout: float) -> None:
                 f"the browser session reported {line} instead of starting; "
                 f"last output: {tail[-5:]}"
             )
-    raise BaselineUnavailable(
-        f"the browser did not start within {timeout:.0f}s; last output: "
-        f"{tail[-5:] or 'none'}"
-    )
 
 
 def _teardown(proc: Any, name: str) -> None:
+    """Stop the session and drop its eval hook, never raising.
+
+    Teardown runs from a ``finally`` and must not mask the real error that sent
+    us here, so every step is swallowed — but not SILENTLY. On the in_process
+    path ``terminate()`` only sets a stop event, so a session that ignores it
+    leaves a live browser thread behind while the registry entry is wiped. A
+    leaked session should be diagnosable rather than invisible, so say so.
+    """
+    import sys
+
     from ..browser.invisible_launch import unregister_ff_eval
 
     try:
         proc.terminate()
-    except Exception:
-        pass
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"warning: could not terminate the session: {exc}", file=sys.stderr)
     try:
-        proc.wait(timeout=30)
-    except Exception:
-        pass
+        if proc.wait(timeout=30) is None:
+            print(
+                f"warning: the browser session for {name!r} did not stop within "
+                "30s and may still be running; its eval hook is being dropped "
+                "regardless.",
+                file=sys.stderr,
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"warning: could not wait for the session to stop: {exc}", file=sys.stderr)
     unregister_ff_eval(name)
 
 

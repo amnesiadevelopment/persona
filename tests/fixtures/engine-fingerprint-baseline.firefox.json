@@ -568,6 +568,13 @@
     "certificate": "none",
     "device_type": "desktop",
     "engine": "firefox",
+    "env_sensitive_probes": [
+      "fonts.measureText",
+      "masking.webglGetParameter",
+      "webgl.extensions",
+      "webgl.parameters",
+      "webgl.unmasked"
+    ],
     "fingerprint_seed": 1042768975,
     "os_type": "windows",
     "profile_name": "persona-fingerprint-baseline",
