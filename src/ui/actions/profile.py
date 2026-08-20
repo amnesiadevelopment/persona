@@ -5,6 +5,7 @@ import flet as ft
 from ...core.strings import get_string
 from ...interfaces.protocols import IBrowserLauncher, IProfileManager, IProxyService
 from ...models.bookmark import Bookmark
+from ...services.profile.coherence import IncoherentProfile
 from ..dialogs import open_bulk_dialog, open_confirm_dialog, open_profile_dialog
 
 
@@ -68,12 +69,22 @@ def edit_profile(
     ) -> str | None:
         if new_name != original and bl.is_running(original):
             return "Stop the browser before renaming"
-        if not pm.update_profile(
-            original, new_name, new_proxy, new_os, new_search, new_pool,
-            new_bookmarks, new_tags,
-            new_notes=new_notes, new_engine=new_engine,
-            new_resolution=new_resolution, new_certificate=new_certificate,
-        ):
+        # The dialog narrows its dropdowns so an incoherent os_type/engine pair
+        # cannot be picked, so this should be unreachable from the UI. It is
+        # caught anyway because the rule now lives in the model and RAISES:
+        # surfacing the reason in the dialog's own error channel beats an
+        # unhandled exception escaping into the Flet event loop if the
+        # narrowing is ever bypassed or regressed.
+        try:
+            saved = pm.update_profile(
+                original, new_name, new_proxy, new_os, new_search, new_pool,
+                new_bookmarks, new_tags,
+                new_notes=new_notes, new_engine=new_engine,
+                new_resolution=new_resolution, new_certificate=new_certificate,
+            )
+        except IncoherentProfile as e:
+            return str(e)
+        if not saved:
             return get_string("update_failed")
         log(get_string("updated_profile", old=original, new=new_name))
         refresh()
@@ -128,11 +139,18 @@ def add_profile(
         resolution: str = "auto",
         certificate: str = "",
     ) -> str | None:
-        if not pm.add_profile(
-            name, proxy, os_type, search, pool, bookmarks, tags,
-            notes=notes, engine=engine, resolution=resolution,
-            certificate=certificate,
-        ):
+        # Unreachable from the dialog (its dropdowns are narrowed), but the model
+        # RAISES now — catch it so a bypassed/regressed narrowing surfaces the
+        # reason in the dialog instead of escaping into the Flet event loop.
+        try:
+            created = pm.add_profile(
+                name, proxy, os_type, search, pool, bookmarks, tags,
+                notes=notes, engine=engine, resolution=resolution,
+                certificate=certificate,
+            )
+        except IncoherentProfile as e:
+            return str(e)
+        if not created:
             return get_string("profile_exists")
         log(get_string("created_profile", name=name))
         refresh()

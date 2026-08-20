@@ -202,14 +202,20 @@ def test_create_profile_honours_all_fields(client):
     # created via REST was always chromium/auto/desktop/no-bookmarks regardless of
     # the body. engine/resolution/device_type/bookmarks/search_engine must be
     # stored, and the response must reflect them.
+    #
+    # Every asserted value stays NON-DEFAULT, or the test would pass against the
+    # very bug it was written for. Since PS-28 the Firefox engine pins the OS to
+    # windows, so the non-default engine and the non-default mobile OS/device
+    # cannot ride on one profile: they are split across two, and both halves keep
+    # asserting a value the #402 bug would have dropped.
     c, token = client
     h = _auth(token)
     body = {
         "name": "fullprofile",
-        "os_type": "android",
+        "os_type": "windows",
         "engine": "firefox",
         "resolution": "1280x720",
-        "device_type": "mobile",
+        "device_type": "desktop",
         "search_engine": "google",
         "bookmarks": ["https://a.example", "https://b.example"],
         "notes": "hi",
@@ -219,13 +225,30 @@ def test_create_profile_honours_all_fields(client):
     j = r.json()
     assert j["engine"] == "firefox"
     assert j["resolution"] == "1280x720"
-    assert j["device_type"] == "mobile"
     assert j["search_engine"] == "google"
     assert j["bookmarks"] == ["https://a.example", "https://b.example"]
     # and the manager actually persisted them
     prof = c.app.state.container.profile_manager.profiles["fullprofile"]
     assert prof.engine == "firefox" and prof.resolution == "1280x720"
-    assert prof.device_type == "mobile" and prof.bookmarks == body["bookmarks"]
+    assert prof.bookmarks == body["bookmarks"]
+
+    # the mobile half: device_type/os_type are honoured too (chromium is the
+    # only coherent engine for a mobile OS, and is asserted as such).
+    r = c.post(
+        "/api/v1/profiles",
+        json={
+            "name": "mobileprofile",
+            "os_type": "android",
+            "device_type": "mobile",
+            "engine": "chromium",
+        },
+        headers=h,
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["device_type"] == "mobile"
+    assert r.json()["os_type"] == "android"
+    mprof = c.app.state.container.profile_manager.profiles["mobileprofile"]
+    assert mprof.device_type == "mobile" and mprof.os_type == "android"
 
 
 def test_update_profile_changes_engine_and_resolution(client):
