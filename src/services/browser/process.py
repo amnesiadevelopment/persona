@@ -12,7 +12,11 @@ from ...utils.proxy_parser import parse_proxy_server
 from ..bookmark.store import BookmarkStore
 from ..cert.store import CertStore
 from ..proxy.bridge import ProxyBridge
-from ..proxy.errors import GeographyUnknownError, ProxyUnresolvedError
+from ..proxy.errors import (
+    GeographyDisprovenError,
+    GeographyUnknownError,
+    ProxyUnresolvedError,
+)
 from ..proxy.store import ProxyStore
 from .bookmarks_seed import seed_bookmarks
 from .audio_ext import build_audio_extension
@@ -136,6 +140,19 @@ def _profile_timezone(profile: Profile, proxy) -> str:
         return _timezone_for("US")
     try:
         return _proxy_timezone(proxy)
+    except GeographyDisprovenError as e:
+        # Named apart from the branch below on purpose (AC4): telling an
+        # operator the proxy was "never checked" when it WAS checked and the
+        # check FAILED sends them looking for the wrong thing. Same remedy, but
+        # the cause has to be stated truthfully.
+        raise GeographyDisprovenError(
+            f"Profile {profile.name!r} has proxy {profile.proxy!r} assigned, but that "
+            "proxy's LAST CHECK FAILED — the geography still on file is disproven by "
+            "the most recent evidence. Refusing to launch: declaring a location the "
+            "product's own latest check contradicts would be incoherent, and the "
+            "stored zone is no longer known to describe the exit. "
+            "Re-check the proxy to resolve it."
+        ) from e
     except GeographyUnknownError as e:
         raise GeographyUnknownError(
             f"Profile {profile.name!r} has proxy {profile.proxy!r} assigned but its "
