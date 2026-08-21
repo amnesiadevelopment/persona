@@ -400,7 +400,8 @@ def compare_profiles(
       collision is ordinary pigeonhole. ``webgl.unmasked`` is the sharp case:
       for an iOS profile the GPU pair is a single compile-time constant that
       EVERY iOS device reports, and a seed-varied one would itself be the tell
-      (``gpu_ext.py:581-589``). Two iOS profiles must agree there;
+      (``gpu_ext.py``'s ``var IOS_GPU =`` constant, and the reasoning in the
+      ``build_gpu_extension`` docstring). Two iOS profiles must agree there;
     * ``masking.*`` and ``realm.*`` observe the masking MECHANISM, not the
       identity it produces, and should agree across profiles.
 

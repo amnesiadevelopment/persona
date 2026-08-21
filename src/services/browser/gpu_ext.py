@@ -93,6 +93,75 @@ _CONTENT_SCRIPT = r"""
       unmaskedRenderer: "ANGLE (ARM, Mali-G710 MC10, OpenGL ES 3.2)" }
   ];
 
+  // Linux Chrome runs WebGL through ANGLE-over-desktop-GL on top of Mesa. A
+  // D3D11 string here is impossible for the same reason it is on a phone UA:
+  // Direct3D is a Windows-only API. Before this arm existed, `linux` fell
+  // through os_norm's else and was served WIN_GPUS — an impossible value, while
+  // voice_ext in the same launch served eSpeak (Linux) voices.
+  //
+  // Values: harvested from upstream Mesa issue reports (each row names the
+  // issue that pasted it) and then put through the two transforms ANGLE applies
+  // before a page sees the string. Transcribed with per-value provenance into
+  // tests/fixtures/linux-webgl-reference.md — read that file, not this comment,
+  // and do not re-derive them from either.
+  //
+  // The two transforms are why these are NOT the strings glxinfo prints:
+  //   1. SanitizeRendererString (ANGLE DisplayGL.cpp:36-52) truncates the
+  //      renderer at the first ", DRM " and re-closes the paren. Gated on
+  //      feature sanitizeAMDGPURendererString, condition IsLinux() && hasAMD
+  //      (renderergl_utils.cpp:2552), on by default. Chromium added it because
+  //      the kernel + DRM version were a privacy leak (crbug.com/1181193).
+  //      So the DRM version and the uname() kernel release in Mesa's five-term
+  //      radeonsi composition (si_get.c:106-110) never reach the page.
+  //   2. Context::initRendererString (Context.cpp:3684-3701) composes
+  //      "ANGLE (" + vendor + ", " + renderer + ", " + version + ")" and ERASES
+  //      EVERY COMMA from each element first — which is why the surviving
+  //      "(radeonsi navi21 ACO)" is space-separated here but comma-separated in
+  //      the raw driver string. Non-obvious; do not "fix" it back.
+  //
+  // The vendor element is the driver's GL_VENDOR literal — "AMD" (si_get.c:13-16)
+  // or "Intel" (iris_screen.c:80-84) — and UNMASKED_VENDOR is EGL's
+  // "Google Inc. (<GL_VENDOR>)" (Display.cpp:2478-2486), the same convention
+  // WIN_GPUS already uses.
+  //
+  // The version element is "OpenGL 4.6", NOT "OpenGL ES 3.2": ANGLE's Linux
+  // backend is ANGLE-over-desktop-GL (kDefaultANGLEVulkan is
+  // FEATURE_DISABLED_BY_DEFAULT, gl_switches.cc:299-301). Confirmed against a
+  // real chrome://gpu capture in mesa#6144, which shows ANGLE composing
+  // "..., OpenGL 4.6 (Core Profile) Mesa 22.1.0-develgit-". WebGL truncates that
+  // tail: Context.cpp:3697 passes getBackendVersionString(!isWebGL()), so
+  // includeFullVersion is false and SanitizeVersionString (DisplayGL.cpp:56-83)
+  // keeps only the first token -> "OpenGL 4.6". No Mesa build version is ever
+  // page-visible, so none is baked in below.
+  //
+  // Each tuple is kept EXACTLY as harvested. The ASIC codename and the compiler
+  // term (ACO vs LLVM <ver>) are coherent with the marketing name — navi21
+  // belongs to RX 6800 and to nothing else. Do not recombine terms across rows:
+  // that is the one remaining way to build a well-formed string that never
+  // shipped, which is a novel tell and worse than the bug this arm fixes.
+  //
+  // NVIDIA's proprietary driver is deliberately absent: real strings exist, but
+  // its GL_VENDOR literal is "NVIDIA Corporation" rather than "NVIDIA" and that
+  // was not confirmed from the closed-source driver. Two vendors is enough.
+  var LINUX_GPUS = [
+    { unmaskedVendor: "Google Inc. (AMD)",
+      unmaskedRenderer: "ANGLE (AMD, AMD Radeon RX 6800 (radeonsi navi21 ACO), OpenGL 4.6)" },
+    { unmaskedVendor: "Google Inc. (AMD)",
+      unmaskedRenderer: "ANGLE (AMD, AMD Radeon RX 7900 XTX (radeonsi navi31 ACO), OpenGL 4.6)" },
+    { unmaskedVendor: "Google Inc. (AMD)",
+      unmaskedRenderer: "ANGLE (AMD, AMD Radeon RX 7600 (radeonsi navi33 ACO), OpenGL 4.6)" },
+    { unmaskedVendor: "Google Inc. (AMD)",
+      unmaskedRenderer: "ANGLE (AMD, AMD Radeon RX 6600 (radeonsi navi23 LLVM 18.1.6), OpenGL 4.6)" },
+    { unmaskedVendor: "Google Inc. (Intel)",
+      unmaskedRenderer: "ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)" },
+    { unmaskedVendor: "Google Inc. (Intel)",
+      unmaskedRenderer: "ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)" },
+    { unmaskedVendor: "Google Inc. (Intel)",
+      unmaskedRenderer: "ANGLE (Intel, Mesa Intel(R) HD Graphics 530 (SKL GT2), OpenGL 4.6)" },
+    { unmaskedVendor: "Google Inc. (Intel)",
+      unmaskedRenderer: "ANGLE (Intel, Mesa Intel(R) UHD Graphics 770 (ADL-S GT1), OpenGL 4.6)" }
+  ];
+
   // iOS Safari does NOT report a GPU. WebKit returns four compile-time string
   // literals from WebGLRenderingContextBase.cpp before any hardware is
   // consulted — no platform/model/chip branching — after bug 191393 (commit
@@ -108,6 +177,7 @@ _CONTENT_SCRIPT = r"""
 
   var POOL = (OS === "macos") ? MAC_GPUS
            : (OS === "android") ? ANDROID_GPUS
+           : (OS === "linux") ? LINUX_GPUS
            : WIN_GPUS;
   // Do not route iOS through pick(): there is no pool to pick from, and the
   // seed must not reach this value.
@@ -583,10 +653,16 @@ def build_gpu_extension(seed: int, os_type: str, base_dir: str) -> str:
     signature deterministically per profile seed, constrained to the profile's
     spoofed OS.
 
-    Four arms: macos -> Apple/Metal pool, android -> Adreno/Mali ANGLE-over-GLES
-    pool, windows (default) -> ANGLE/D3D11 pool, and ios -> the single WebKit
-    compile-time vendor/renderer pair (no pool: real iOS reports one constant
-    value for every device, so a seed-varied one would itself be the tell).
+    Five arms: macos -> Apple/Metal pool, android -> Adreno/Mali ANGLE-over-GLES
+    pool, linux -> Mesa radeonsi/iris ANGLE-over-desktop-GL pool, windows
+    (default) -> ANGLE/D3D11 pool, and ios -> the single WebKit compile-time
+    vendor/renderer pair (no pool: real iOS reports one constant value for every
+    device, so a seed-varied one would itself be the tell).
+
+    linux needs its own arm for the same reason android did: every WIN_GPUS
+    entry is a literal Direct3D11 string, and Direct3D is a Windows-only API, so
+    serving one to a --fingerprint-platform=linux profile is an impossible value
+    rather than merely an implausible one.
     Returns its directory.
     """
     ext_dir = pathlib.Path(base_dir)
@@ -596,6 +672,7 @@ def build_gpu_extension(seed: int, os_type: str, base_dir: str) -> str:
         "ios" if ot in ("ios", "iphone", "ipad", "ipados")
         else "macos" if ot in ("macos", "mac", "darwin")
         else "android" if ot in ("android",)
+        else "linux" if ot in ("linux",)
         else "windows"
     )
     script = (
