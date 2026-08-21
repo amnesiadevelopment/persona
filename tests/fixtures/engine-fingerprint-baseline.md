@@ -33,13 +33,32 @@ xvfb-run -a python -m src.services.verify.baseline_cli check
 Exit `0` means every probe was read on both sides and none of them moved.
 Exit `1` means either a probe drifted (it is named, with expected vs observed,
 in both realms) or a probe could not be read at all. Exit `2` means the check
-could not run — no display, or **no readable baseline to compare against**.
+could not run — no display, or **nothing usable to compare against**.
 
 That last distinction is the load-bearing one for anything automated. Exit `1`
-is the *drift* signal, so a baseline that is missing or corrupt must never
+is the *drift* signal, so a baseline that cannot serve as a reference must never
 produce it: nothing was compared, and a job that read non-zero as "the engine
 changed the identity" would report a leak that never happened. Whenever the
 check cannot run, the message says so in those words — it is not drift.
+
+"Nothing usable" is a wider set than "unreadable", and the difference matters
+because the extra cases do not look like malfunctions. Exit `2` covers all of:
+
+- the artifact is **missing**, or the path is a directory;
+- it is **corrupt** — malformed JSON, truncated, or not valid UTF-8;
+- it **parses cleanly but is not a snapshot** — a JSON list, a bare `null`, or
+  some other object in the tree (`--baseline site/package.json` is a plausible
+  typo);
+- it **is** a snapshot but carries **no probe readings at all**, which is what a
+  refused or truncated recording leaves behind.
+
+The last two are the ones worth stating explicitly. Reading bytes off disk is
+not the same question as *being a baseline*, and a wrong-but-readable artifact
+has nothing to compare against — so every observed probe would diff as `added`
+and the tool would print a confident `DRIFT: 78 probe(s)` / `FAIL`. That is the
+maximum-alarm output of this system, produced by a comparison that never
+happened, and because it carries no traceback it looks like a real answer. It is
+refused instead.
 
 A missing artifact is most often a **path** problem rather than a lost file:
 the default is repo-relative, so running the command from anywhere but the

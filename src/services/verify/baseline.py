@@ -494,6 +494,46 @@ def check(
             "itself is unusable. Restore it from git, or re-record it after "
             "an ACCEPTED bump."
         ) from exc
+    # PARSING IS NOT THE SAME QUESTION AS BEING A BASELINE, and the two guards
+    # above only answer the first. Everything below here is about a file that
+    # read back perfectly well and simply is not a snapshot — a JSON list, a
+    # bare `null`, or some other object in the tree (`--baseline site/package.json`
+    # is a one-character-plausible typo). Without this check those reach
+    # `compare` and fail in two different ways, BOTH of them exit 1:
+    #
+    #   * a non-dict raises AttributeError out of diff.py — an uncaught
+    #     traceback surfacing on the DRIFT code;
+    #   * a dict with no probes compares cleanly against nothing and reports
+    #     every observed probe as "added" — `DRIFT: 78 probe(s)`, a confident
+    #     maximum-alarm FAIL produced by a reading that never happened. That
+    #     one is the more dangerous of the two precisely because it does not
+    #     look like a malfunction, so it gets believed.
+    #
+    # Both are the same defect as a corrupt file and get the same answer: the
+    # comparison did not happen, so it cannot be drift. Exit 2.
+    if not isinstance(baseline, dict) or not isinstance(baseline.get("probes"), dict):
+        raise BaselineUnavailable(
+            f"the file at {baseline_path!r} parsed as JSON but is not a "
+            "baseline snapshot — it has no 'probes' object. Nothing was "
+            "compared, so this is NOT drift. --baseline must point at an "
+            "artifact produced by `record` (the committed one is "
+            f"{BASELINE_ARTIFACT})."
+        )
+    if not any(
+        isinstance(realm, dict) and realm for realm in baseline["probes"].values()
+    ):
+        # A structurally valid snapshot carrying ZERO readings is the same
+        # false red by a narrower door: every observed probe diffs as "added".
+        # Separated from the check above so the message can name the real
+        # cause — this shape is what a REFUSED or truncated recording leaves
+        # behind, not a typo'd path.
+        raise BaselineUnavailable(
+            f"the baseline at {baseline_path!r} is a snapshot but contains no "
+            "probe readings at all, so there is nothing to compare against — "
+            "this is NOT drift. Every probe would be reported as 'added'. "
+            "Re-record it, and check that the recording was not refused for "
+            "unread probes."
+        )
     observed = (recorder or record_snapshot)()
     return compare(baseline, observed)
 

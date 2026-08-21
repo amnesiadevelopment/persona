@@ -422,6 +422,79 @@ def test_an_unreadable_baseline_exits_2_not_1(tmp_path, monkeypatch, name, conte
     assert baseline_cli.main(["check", "--baseline", str(artifact)]) == 2
 
 
+@pytest.mark.parametrize(
+    "name, contents",
+    [
+        # Parses fine, is not a mapping at all: these reached diff.py and died
+        # with an uncaught AttributeError — a traceback surfacing on the DRIFT
+        # code, which is the same defect as the corrupt cases above arriving
+        # through a later door.
+        ("a_list.json", b"[1, 2, 3]"),
+        ("null.json", b"null"),
+        ("a_string.json", b'"not a snapshot"'),
+        # A mapping with no probes is the WORSE one: it compares cleanly
+        # against nothing, so every observed probe reads as "added" and the
+        # tool prints a confident maximum-alarm FAIL for a comparison that
+        # never happened. No traceback to give it away.
+        ("empty_object.json", b"{}"),
+        # The same shape reached by a realistic typo: a real, tracked JSON file
+        # in this repository that is not a snapshot.
+        ("looks_like_package_json.json", b'{"name": "site", "version": "1.0.0"}'),
+        # Structurally a snapshot, but carrying zero readings — what a refused
+        # or truncated recording leaves behind. Also all-"added", also a false
+        # red.
+        (
+            "no_readings.json",
+            b'{"engine_build": "firefox-20", "probes": {"window": {}, "worker": {}}}',
+        ),
+    ],
+)
+def test_a_valid_json_non_snapshot_exits_2_not_1(tmp_path, monkeypatch, name, contents):
+    """Parsing is not the same question as BEING a baseline.
+
+    A file can read back perfectly and still be nothing to compare against. The
+    contract is about whether a comparison HAPPENED, not about whether bytes
+    came off disk — so a wrong-but-readable artifact is "could not run" (2),
+    never the drift signal (1).
+    """
+    from src.services.verify import baseline_cli
+
+    # The reference side is what's under test; the reading must not be what
+    # fails, or the exit code would prove nothing about the guard.
+    monkeypatch.setattr(baseline, "record_snapshot", lambda **kw: _snap())
+
+    artifact = tmp_path / name
+    artifact.write_bytes(contents)
+
+    assert baseline_cli.main(["check", "--baseline", str(artifact)]) == 2
+
+
+def test_a_non_snapshot_baseline_never_claims_drift(tmp_path, monkeypatch, capsys):
+    """The exit code is for callers; the operator reads the screen.
+
+    A baseline with no probes used to print "DRIFT: N probe(s)" — the most
+    alarming output this system has, produced by a reading that never happened.
+    Because it carries no traceback it looks like a real answer, so it gets
+    believed. The message must refuse instead of accusing.
+    """
+    from src.services.verify import baseline_cli
+
+    monkeypatch.setattr(baseline, "record_snapshot", lambda **kw: _snap())
+
+    artifact = tmp_path / "not-a-baseline.json"
+    artifact.write_bytes(b"{}")
+
+    assert baseline_cli.main(["check", "--baseline", str(artifact)]) == 2
+
+    captured = capsys.readouterr()
+    assert "DRIFT" not in captured.out
+    assert "FAIL" not in captured.out
+    # And it must name the cause and the way out, not merely decline.
+    assert "NOT drift" in captured.err
+    assert "probes" in captured.err
+    assert "record" in captured.err
+
+
 def test_the_reason_a_check_could_not_run_says_it_is_not_drift(tmp_path, capsys):
     """The exit code carries the contract, but a human reads the message. It
     has to say plainly that nothing was compared, or the operator seeing red

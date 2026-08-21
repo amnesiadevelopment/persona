@@ -15,15 +15,25 @@ The two non-zero codes mean DIFFERENT things and must not be collapsed into
 
     1  the check RAN and disagreed — a probe drifted, or a probe could not be
        read. This is the finding.
-    2  the check COULD NOT RUN — no display, or no readable baseline to compare
+    2  the check COULD NOT RUN — no display, or nothing usable to compare
        against. Nothing was compared.
 
 Exit 1 is the drift signal, so anything that prevents a comparison has to exit
-2 instead. A missing or corrupt baseline reported as 1 would tell a caller the
-engine changed the identity when in fact nothing was read at all — a false red
-on the most alarming signal this system has, and the inverse of the trap
-``BaselineResult.ok`` closes on the green side. Whenever the check cannot run
-it says so in those words: it is NOT drift.
+2 instead. A baseline reported as 1 when nothing was read at all would tell a
+caller the engine changed the identity — a false red on the most alarming
+signal this system has, and the inverse of the trap ``BaselineResult.ok``
+closes on the green side. Whenever the check cannot run it says so in those
+words: it is NOT drift.
+
+"Nothing usable" is deliberately wider than "unreadable": it covers a baseline
+that is missing or corrupt, AND one that parses perfectly well but is not a
+snapshot (a list, a bare null, some other JSON file reached by a typo) or is a
+snapshot carrying no readings. Getting bytes off disk is not the same question
+as having something to compare against — and those last shapes are the
+dangerous ones, because with no probes on the reference side every observed
+probe diffs as "added" and the tool prints a confident maximum-alarm DRIFT/FAIL
+for a comparison that never happened. No traceback, so it reads as a real
+answer. All of it exits 2.
 
 WHAT THIS DOES NOT DO — read this before trusting a green run
 -------------------------------------------------------------
