@@ -78,4 +78,8 @@ def test_carries_audio_noise_into_workers(tmp_path):
 def test_carries_audio_noise_into_iframes(tmp_path):
     js = (pathlib.Path(build_audio_extension(1, str(tmp_path / "ext"))) / "audio.js").read_text()
     assert "contentWindow" in js and "HTMLIFrameElement" in js
-    assert "__pnaBoot(w)" in js
+    # routed through the shared realm bootstrap, which chains the iframe
+    # accessors and re-runs the installer in the child (recursively). The
+    # behavioural proof lives in tests/test_worker_wrap.py.
+    assert "__pnaInstall(SELF, applyAudioPatch)" in js
+    assert "__pnaInstall(w, LEAF)" in js

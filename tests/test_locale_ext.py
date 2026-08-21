@@ -45,14 +45,14 @@ def test_locale_on_shared_recursive_registry(tmp_path):
     d = build_locale_extension("pl-PL", str(tmp_path / "ext"))
     js = (pathlib.Path(d) / "locale.js").read_text()
     assert "applyLocalePatch" in js
-    assert "__pnaBoots.push(applyLocalePatch)" in js
+    assert "__pnaInstall(SELF, applyLocalePatch)" in js
     # the shared bootstrap supplies the worker/iframe carry; it re-blobs
     # blob:/data: workers under the same scheme and recurses iframes.
     assert "XMLHttpRequest" in js
     assert "G.Worker" in js and "G.SharedWorker" in js
     assert "HTMLIFrameElement" in js
     # LOCALE lives INSIDE applyLocalePatch so .toString() carries it per realm
-    body = js.split("function applyLocalePatch(G)", 1)[1].split("__pnaBoot", 1)[0]
+    body = js.split("function applyLocalePatch(G)", 1)[1].split("__pnaInstall", 1)[0]
     assert '"pl-PL"' in body
 
 

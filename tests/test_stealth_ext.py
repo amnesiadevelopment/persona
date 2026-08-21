@@ -34,7 +34,7 @@ def test_stealth_on_shared_recursive_registry(tmp_path):
     d = build_stealth_extension(str(tmp_path / "ext"))
     js = (pathlib.Path(d) / "stealth.js").read_text()
     assert "applyStealthPatch" in js
-    assert "__pnaBoots.push(applyStealthPatch)" in js
+    assert "__pnaInstall(SELF, applyStealthPatch)" in js
     assert "G.Worker" in js and "HTMLIFrameElement" in js
 
 
