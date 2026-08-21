@@ -633,12 +633,25 @@ async def _close_stream(writer: asyncio.StreamWriter) -> None:
 async def _geo_via_socks(
     proxy_config: dict, scheme: str, url: str
 ) -> tuple[int, dict | None]:
-    """Fetch the geo endpoint through a real SOCKS handshake."""
+    """Fetch the geo endpoint through a real SOCKS handshake.
+
+    NARROWED BACK TO `dict | None` AT THIS CALL SITE, deliberately. The shared
+    _http_get_json widened to `dict | list | None` for the release-metadata
+    caller, which legitimately receives a top-level JSON array. The geo probe
+    does not: check_proxy's 200-handler treats a non-object body as the
+    specific "Proxy geo lookup failed", and that arm is reached only via None.
+    Letting a list through here would sail past the None check and trip
+    `.get()` into the blanket handler's generic "Proxy check failed" instead —
+    so the narrowing is what keeps that documented behaviour, and this
+    signature, true. Narrow here rather than in the shared helper: the other
+    caller needs the list.
+    """
     reader, writer, target_host, path = await _open_socks_stream(
         proxy_config, scheme, url
     )
     try:
-        return await _http_get_json(reader, writer, target_host, path)
+        status, data = await _http_get_json(reader, writer, target_host, path)
+        return status, (data if isinstance(data, dict) else None)
     finally:
         await _close_stream(writer)
 
