@@ -40,28 +40,53 @@ Deliberately NOT ``engine-baseline.txt``. That file is Firefox's floor, enforced
 by a numeric ``firefox-NN`` compare in ``release.yml``; putting a second engine's
 versioning in it would break that guard's simplicity.
 
-THE CEILING IS A CLAIM ABOUT TESTING — KEEP IT HONEST
------------------------------------------------------
+THE CEILING USED TO BE A HAND-MAINTAINED CLAIM — IT IS NOT ANYMORE
+------------------------------------------------------------------
 Firefox's cap is a mechanical fact: a newer ``firefox-NN`` speaks a juggler
 contract the shipped driver cannot drive, so the bound is derivable from the
-package itself and cannot drift. **Chromium's ceiling has no such backing.**
-``MAX_TESTED_MAJOR`` is a record of the newest Chromium major persona's masking
-layer has actually been exercised against — a human claim, not a computed one.
-Nothing in the code can detect that it has gone stale, so it will rot unless it
-is maintained deliberately:
+package itself and cannot drift. Chromium's ceiling had no such backing.
+``MAX_TESTED_MAJOR`` was a record of the newest Chromium major persona's masking
+layer had been exercised against — a human claim, not a computed one — and it
+existed because the Chromium major was DUPLICATED into the masking layer by
+hand (the mobile extension's Client Hints brands, and every Android preset's
+``Chrome/NNN.0.0.0`` user agent). If the engine moved ahead of those constants,
+a profile would tell a site "I am Chrome 148" while the engine underneath
+behaved as 149 — exactly the mismatch a checker notices. The ceiling prevented
+that by preventing the engine from ever getting ahead.
 
-* **When a new Chromium major is verified** — run the anti-leak/checker matrix
-  against an engine of that major, and if the masking layer holds, raise
-  ``MAX_TESTED_MAJOR`` to it IN THE SAME COMMIT as the evidence. Raising it
-  because an update was inconvenient is how the guard becomes decoration.
-* **When a major is found to break a spoof** — leave the ceiling where it is and
-  add the specific build to ``KNOWN_BAD_VERSIONS`` if it is a point release.
-* The ceiling is a CEILING, not a floor: it never blocks anything at or below
-  the tested major, so routine updating within a known-good major is untouched.
+**That duplication is gone.** ``browser/engine_version.py`` now DERIVES the
+advertised version from the engine that is actually installed, and every
+advertised shape — the user agent, the brand list's bare major, and the
+full-version list — is a projection of that one reading. An engine bump moves
+all of them together because there is only one of them. There is consequently
+no constant left for the engine to get ahead OF, and no committed ceiling here:
+a routine engine update no longer needs a person to authorise it.
 
-Being above the ceiling is NOT the same as being broken. It means "persona has
-not been shown to work against this" — which is why the operator is told a
-persona update is needed rather than being told the download failed.
+WHAT STILL REFUSES A BUILD
+--------------------------
+Removing the ceiling is not the same as removing the governance. Two guards
+remain, and they are the two that were never claims about a constant:
+
+* ``KNOWN_BAD_VERSIONS`` — a build persona knows to be broken is still refused
+  BY NAME, and an operator can add one locally without waiting for a release.
+* ``max_tested_major()`` — the operator's local policy file can still impose a
+  ceiling. It is now OPT-IN: absent an override there is no ceiling at all.
+  An operator who wants to pin their engine below some major (a checker
+  regression they are waiting out, say) still can.
+
+The ABOVE_CEILING verdict therefore survives, because an operator who sets a
+ceiling deliberately must still be told "persona declined this" rather than
+"the download failed" — a decision persona made must never read as a network
+error. It is simply no longer reachable unless an operator asks for it.
+
+WHAT WOULD MAKE A CEILING NECESSARY AGAIN
+-----------------------------------------
+If a future change reintroduces a hardcoded Chromium version anywhere in the
+masking layer, this reasoning collapses and the ceiling has to come back with
+it. The guard against that is not vigilance — it is that
+``engine_version.installed_chromium_version()`` has no default to fall back to:
+a profile that cannot read the engine's version refuses to launch rather than
+advertising a guess. Keep it that way.
 """
 
 import json
@@ -84,15 +109,18 @@ from ...core.config import PERSONA_HOME
 # the next person can tell a real known-bad from a stale one.
 KNOWN_BAD_VERSIONS: frozenset[str] = frozenset()
 
-# The newest Chromium MAJOR persona's masking layer has been shown to work
-# against. See the module docstring: this is a claim about testing, not a
-# mechanical fact, and it is maintained by hand.
+# NO COMMITTED CEILING. See the module docstring: the Chromium major is no
+# longer duplicated into the masking layer, so there is no constant for an
+# engine to get ahead of, and a routine engine update needs no human to
+# authorise it. ``browser/engine_version.py`` derives the advertised version
+# from the engine that is installed.
 #
-# 148 — the major the shipped masking layer is written against: the Chrome-brand
-# UA client hints in browser/mobile_ext.py (brand versions "148") and the mobile
-# device presets' Chrome/148.0.0.0 user agents. An engine whose real major
-# diverges from those values is exactly the mismatch a checker notices.
-MAX_TESTED_MAJOR = 148
+# A ceiling is still EXPRESSIBLE — an operator can set ``max_tested_major`` in
+# their local policy file to pin their engine below some major — but persona
+# ships without one. ``NO_CEILING`` is the sentinel for "no ceiling in force";
+# every major compares at or below it, so the ceiling test can stay a plain
+# numeric compare instead of growing a None branch at each call site.
+NO_CEILING = float("inf")
 
 # Operator override, read at call time (not import time) so an edit takes effect
 # without restarting the app.
@@ -159,24 +187,30 @@ def known_bad_versions() -> frozenset[str]:
     return KNOWN_BAD_VERSIONS | {str(t).strip() for t in extra if str(t).strip()}
 
 
-def max_tested_major() -> int:
-    """The effective ceiling: the operator's value when they set one, else the
-    committed ``MAX_TESTED_MAJOR``.
+def max_tested_major() -> float:
+    """The effective ceiling: the operator's value when they set one, else
+    ``NO_CEILING``.
 
-    An operator MAY raise this — the point of the guard is that taking an
-    untested engine is a visible decision, not that it is impossible. Editing a
-    file on their own machine is exactly that decision, made explicitly. A
+    persona ships WITHOUT a ceiling. The advertised Chromium version is derived
+    from the installed engine (see the module docstring), so there is no
+    constant a newer engine can get ahead of, and a routine update needs no
+    human in the loop.
+
+    An operator MAY still impose one — pinning their engine below some major
+    while they wait out a regression, say — by setting ``max_tested_major`` in
+    their local policy file. That is an explicit decision on a machine they
+    control, which is exactly the kind of refusal this module keeps. A
     non-integer or negative override is ignored rather than obeyed, so a typo
-    cannot accidentally block every update.
+    cannot accidentally block every update; it falls back to no ceiling.
     """
     val = _local_policy().get("max_tested_major")
     if isinstance(val, bool) or not isinstance(val, (int, str)):
-        return MAX_TESTED_MAJOR
+        return NO_CEILING
     try:
         num = int(val)
     except (TypeError, ValueError):
-        return MAX_TESTED_MAJOR
-    return num if num >= 0 else MAX_TESTED_MAJOR
+        return NO_CEILING
+    return num if num >= 0 else NO_CEILING
 
 
 def check(tag: str) -> tuple[str, str]:
@@ -186,6 +220,11 @@ def check(tag: str) -> tuple[str, str]:
     and explains the refusal (empty when OK). An empty or unparseable tag is OK
     here — "no tag" is a fetch failure, which the caller already reports, and
     turning it into a governance refusal would mislabel a network problem.
+
+    ABOVE_CEILING is unreachable unless the OPERATOR set a ceiling in their
+    local policy file — persona ships without one — so its message names their
+    own setting rather than telling them to update persona, which would be an
+    instruction they cannot act on for a limit they themselves imposed.
     """
     tag = (tag or "").strip()
     if not tag:
@@ -200,14 +239,15 @@ def check(tag: str) -> tuple[str, str]:
     if num > ceiling:
         return (
             ABOVE_CEILING,
-            f"Chromium engine {tag} is newer than persona has been tested against "
-            f"(Chromium {ceiling}) — update persona to get it.",
+            f"Chromium engine {tag} is above the maximum Chromium major set in "
+            f"your engine policy file (Chromium {ceiling:g}) — raise or remove "
+            f"max_tested_major in {POLICY_FILE} to install it.",
         )
     return OK, ""
 
 
 def is_installable(tag: str) -> bool:
-    """True when ``tag`` passes both the known-bad list and the ceiling."""
+    """True when ``tag`` passes both the known-bad list and any operator ceiling."""
     kind, _ = check(tag)
     return kind == OK
 
@@ -216,7 +256,7 @@ __all__ = [
     "ABOVE_CEILING",
     "KNOWN_BAD",
     "KNOWN_BAD_VERSIONS",
-    "MAX_TESTED_MAJOR",
+    "NO_CEILING",
     "OK",
     "POLICY_FILE",
     "check",

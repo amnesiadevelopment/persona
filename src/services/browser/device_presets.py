@@ -5,9 +5,20 @@ persona layer from one of these presets: user-agent, screen geometry, device
 pixel ratio, deviceMemory, hardwareConcurrency and the touch/Client-Hints shape
 all come from a real device. A profile picks one preset deterministically from
 its fingerprint seed and the chosen OS family.
+
+A preset carries the DEVICE facts — model, geometry, memory, core count — and
+deliberately NOT the Chromium version. That one comes from the engine that is
+actually installed (see ``engine_version.py``): it used to be duplicated into
+every Android user agent here as ``Chrome/148.0.0.0``, which meant a routine
+engine bump left these strings claiming a version the engine underneath no
+longer was. The Android user agents below are TEMPLATES with a ``{chrome}``
+slot, filled at launch. iOS presets have no slot — Safari advertises no Chromium
+version at all — so ``user_agent_for`` is an identity for them.
 """
 
 from dataclasses import dataclass
+
+from .engine_version import ChromiumVersion
 
 
 @dataclass(frozen=True)
@@ -15,7 +26,9 @@ class DevicePreset:
     key: str
     os_type: str          # "android" | "ios"
     label: str
-    user_agent: str
+    # A '{chrome}' slot on Android (filled with the installed engine's REDUCED
+    # version, e.g. '149.0.0.0'); a literal string on iOS.
+    user_agent_template: str
     # CSS pixels (layout viewport) and device pixel ratio
     width: int
     height: int
@@ -24,8 +37,28 @@ class DevicePreset:
     hardware_concurrency: int
     # Client Hints
     platform: str         # navigator.userAgentData platform, e.g. "Android"
-    ua_full_version: str
     model: str            # Sec-CH-UA model, e.g. "Pixel 7"
+
+    def user_agent_for(self, version: "ChromiumVersion | None") -> str:
+        """This device's user agent as launched, on the installed engine.
+
+        Uses the REDUCED form (``149.0.0.0``): Chrome froze the UA's
+        minor/build/patch, so a real device never shows its true build here.
+        The true build travels in ``uaFullVersion``/``fullVersionList`` instead.
+
+        ``version`` may be None ONLY for a template with no ``{chrome}`` slot —
+        i.e. iOS, whose Safari UA carries no Chromium version at all. An Android
+        template with no version is a programming error and raises, rather than
+        emitting a placeholder UA into a live launch.
+        """
+        if version is None:
+            if "{chrome}" in self.user_agent_template:
+                raise ValueError(
+                    f"device preset {self.key!r} advertises a Chromium version "
+                    f"and cannot build a user agent without one"
+                )
+            return self.user_agent_template
+        return self.user_agent_template.format(chrome=version.reduced)
 
 
 # A small set of common, current real devices. Physical pixel resolution =
@@ -33,33 +66,33 @@ class DevicePreset:
 ANDROID_PRESETS = [
     DevicePreset(
         key="pixel-7", os_type="android", label="Pixel 7",
-        user_agent=(
+        user_agent_template=(
             "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/148.0.0.0 Mobile Safari/537.36"
+            "(KHTML, like Gecko) Chrome/{chrome} Mobile Safari/537.36"
         ),
         width=412, height=915, dpr=2.625,
         device_memory=8, hardware_concurrency=8,
-        platform="Android", ua_full_version="148.0.0.0", model="Pixel 7",
+        platform="Android", model="Pixel 7",
     ),
     DevicePreset(
         key="galaxy-s23", os_type="android", label="Samsung Galaxy S23",
-        user_agent=(
+        user_agent_template=(
             "Mozilla/5.0 (Linux; Android 14; SM-S911B) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/148.0.0.0 Mobile Safari/537.36"
+            "(KHTML, like Gecko) Chrome/{chrome} Mobile Safari/537.36"
         ),
         width=360, height=780, dpr=3.0,
         device_memory=8, hardware_concurrency=8,
-        platform="Android", ua_full_version="148.0.0.0", model="SM-S911B",
+        platform="Android", model="SM-S911B",
     ),
     DevicePreset(
         key="xiaomi-13", os_type="android", label="Xiaomi 13",
-        user_agent=(
+        user_agent_template=(
             "Mozilla/5.0 (Linux; Android 14; 2211133G) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/148.0.0.0 Mobile Safari/537.36"
+            "(KHTML, like Gecko) Chrome/{chrome} Mobile Safari/537.36"
         ),
         width=393, height=873, dpr=2.75,
         device_memory=12, hardware_concurrency=8,
-        platform="Android", ua_full_version="148.0.0.0", model="2211133G",
+        platform="Android", model="2211133G",
     ),
 ]
 
@@ -83,25 +116,25 @@ ANDROID_PRESETS = [
 IOS_PRESETS = [
     DevicePreset(
         key="iphone-15", os_type="ios", label="iPhone 15",
-        user_agent=(
+        user_agent_template=(
             "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "
             "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 "
             "Mobile/15E148 Safari/604.1"
         ),
         width=393, height=852, dpr=3.0,
         device_memory=4, hardware_concurrency=6,
-        platform="iPhone", ua_full_version="", model="iPhone",
+        platform="iPhone", model="iPhone",
     ),
     DevicePreset(
         key="iphone-14", os_type="ios", label="iPhone 14",
-        user_agent=(
+        user_agent_template=(
             "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "
             "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 "
             "Mobile/15E148 Safari/604.1"
         ),
         width=390, height=844, dpr=3.0,
         device_memory=4, hardware_concurrency=6,
-        platform="iPhone", ua_full_version="", model="iPhone",
+        platform="iPhone", model="iPhone",
     ),
 ]
 
