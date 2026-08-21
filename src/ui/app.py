@@ -982,6 +982,98 @@ class App:
             return f"update → {self._engine2_latest}"
         return self._engine2_version_text()
 
+    def _engine2_rollback_row(self) -> ft.Control:
+        """The undo gesture for a bad engine update, and its way back.
+
+        Three states, and only one is ever shown:
+          * PINNED — the operator already went back. Offer "resume updates",
+            because a pin holds the automatic update off and there must be a
+            way out of that state from the same place they entered it.
+          * a retained build exists — offer "go back to <build>".
+          * nothing retained — render nothing at all. A revert with no retained
+            build cannot work, and a button that cannot work is worse than no
+            button: it promises the machine can undo something it cannot.
+        """
+        from ..services.browser import invisible_launch as inv
+
+        try:
+            pin = inv.pinned_build()
+            target = "" if pin else inv.rollback_target()
+        except Exception:
+            # The panel must render even if the engine cache is unreadable.
+            return ft.Container(height=0)
+
+        if pin:
+            label, tip, action = (
+                f"resume updates (pinned to {pin})",
+                "Clear the pin and let the Firefox engine update again",
+                self._on_engine2_resume,
+            )
+        elif target:
+            label, tip, action = (
+                f"go back to {target}",
+                f"Return to the retained {target} build — no download needed",
+                self._on_engine2_rollback,
+            )
+        else:
+            return ft.Container(height=0)
+
+        return ft.Container(
+            padding=ft.Padding.only(left=36, right=10, top=4, bottom=2),
+            on_click=lambda _: action(),
+            ink=True,
+            tooltip=tip,
+            content=ft.Row(
+                spacing=6,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Icon(
+                        ft.Icons.HISTORY if not pin else ft.Icons.PLAY_ARROW,
+                        size=13,
+                        color=COLORS["text_dim"],
+                    ),
+                    ft.Text(
+                        label, size=10, color=COLORS["text_dim"],
+                        font_family="monospace",
+                    ),
+                ],
+            ),
+        )
+
+    def _on_engine2_rollback(self) -> None:
+        """Go back to the retained previous build. Instant: both builds are
+        already on disk, so nothing is downloaded and there is no progress bar
+        to show. Refused (with a log line saying why) when a profile is running
+        or nothing is retained — the service call owns that decision."""
+        if self._engine2_busy or self._engine2_checking:
+            return
+        from ..services.browser import invisible_launch as inv
+
+        try:
+            went = inv.revert_to_previous_build(log=self._log)
+        except Exception as e:
+            self._log(f"Firefox engine: going back failed ({e})")
+            return
+        if went:
+            self._engine2_status = ""
+        self._refresh_engine_text()
+        self._refresh_sidebar()
+
+    def _on_engine2_resume(self) -> None:
+        """Clear the pin and resume automatic updates."""
+        if self._engine2_busy or self._engine2_checking:
+            return
+        from ..services.browser import invisible_launch as inv
+
+        try:
+            inv.resume_engine_updates(log=self._log)
+        except Exception as e:
+            self._log(f"Firefox engine: couldn't resume updates ({e})")
+            return
+        self._engine2_status = ""
+        self._refresh_engine_text()
+        self._refresh_sidebar()
+
     def _assign_tag(self, names: list[str], tag: str) -> None:
         n = self.pm.assign_tag(names, tag)
         if n:
@@ -1541,6 +1633,12 @@ class App:
             )
             if self._engine2_busy:
                 body.append(_bar_block(self._engine2_bar, self._engine2_detail))
+            # Going BACK. Offered only when there is a retained build to go back
+            # to (rollback_target) — a revert with nothing retained is a button
+            # that cannot work, and showing it would promise an undo the machine
+            # cannot perform. While pinned, the same slot becomes "resume", so
+            # the operator always has the way out of the state they are in.
+            body.append(self._engine2_rollback_row())
             body.append(ft.Container(height=6))
 
         return ft.Container(
@@ -1697,6 +1795,25 @@ class App:
         from ..services.engine import firefox as ff_engine
 
         if self._engine2_busy or not inv.is_invisible_installed():
+            return
+        # An operator who deliberately went BACK to an older build has said, in
+        # the only way the product offers, that the newer one is bad for them.
+        # Updating anyway would walk them straight back onto it unattended —
+        # the revert would last until this check ran and no longer, which is a
+        # nominal undo, not a real one. So a pin holds the automatic update off
+        # entirely; clearing the pin is the operator saying "go forward again".
+        #
+        # Deliberately BEFORE the prune too: the prune spares the pinned build
+        # by itself, but returning here keeps the whole pinned state inert
+        # rather than resting that on a second guard.
+        pin = inv.pinned_build()
+        if pin:
+            self._engine2_status = f"pinned to {pin}"
+            self._log(
+                f"Firefox engine is pinned to {pin} — automatic updates are "
+                "paused until you resume them"
+            )
+            self._refresh_engine_text()
             return
         # Reclaim any engine build a past update left stale (e.g. the ~600MB
         # pinned firefox-15 an upgrade to firefox-16 kept around) before the
