@@ -39,6 +39,7 @@ opener and report byte-level progress. Both resume, and both now share this
 module's verify + completion + atomic-replace logic.
 """
 
+import errno
 import hashlib
 import os
 import shutil
@@ -235,6 +236,126 @@ def atomic_replace(
         except OSError:
             pass
     return True
+
+
+# --- move-aside backup, for artifacts a copy must not duplicate --------------
+#
+# atomic_replace's .bak above is a shutil.copy2, which is file-only and pays for
+# a whole second copy. Neither is acceptable for an engine tree:
+#
+#   * a Chromium build is ~300-600MB, so copying doubles peak disk on the very
+#     path whose failure mode is a disk-full;
+#   * copy2 drops the code signature / resource forks / permissions a macOS
+#     .app needs (that is exactly why the installer shells out to `ditto`), so a
+#     copied backup restores a bundle Gatekeeper refuses to launch — and a
+#     rollback that produces a broken engine is not a rollback;
+#   * a recursive copy is a second half-state to reason about, where a rename is
+#     atomic.
+#
+# So the backup here is a RENAME: O(1), no extra disk, and byte-for-byte
+# faithful because nothing is rewritten. The caller must place the backup on the
+# same filesystem as the artifact (beside it is the easy way to guarantee that).
+
+
+def discard_aside(path: str) -> None:
+    """Best-effort delete of `path`, file or directory. Never raises.
+
+    Used to drop a backup once the new artifact is in place, and to clear the
+    way before a rename — os.replace refuses to overwrite a non-empty directory.
+    """
+    try:
+        if os.path.isdir(path) and not os.path.islink(path):
+            shutil.rmtree(path, ignore_errors=True)
+        elif os.path.exists(path) or os.path.islink(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
+def _dst_is_in_the_way(e: OSError) -> bool:
+    """True when `e` from an os.replace says the DESTINATION is what refused
+    the rename, rather than something about the source or the filesystem.
+
+    os.replace overwrites a file, a symlink or an empty directory atomically on
+    its own. It refuses two destination shapes: a non-empty directory
+    (ENOTEMPTY/EEXIST), and a kind mismatch — replacing a directory with a file
+    (ENOTDIR) or a file with a directory (EISDIR). Only those justify clearing
+    the destination and retrying.
+
+    Everything else — a lock (EACCES / Windows' ERROR_SHARING_VIOLATION=32), a
+    full disk (ENOSPC), a cross-device rename (EXDEV) — is a failure the
+    destination cannot fix. Clearing it there would destroy the live artifact
+    for a rename that is going to fail anyway, which is exactly how a failed
+    restore turns into no artifact at all.
+    """
+    return e.errno in (
+        errno.ENOTEMPTY,
+        errno.EEXIST,
+        errno.ENOTDIR,
+        errno.EISDIR,
+    )
+
+
+def move_aside(path: str, backup: str) -> bool:
+    """Rename `path` out of the way to `backup`, so a failed install can put it
+    back. The directory-capable counterpart to atomic_replace's .bak.
+
+    Returns True when something was moved, False when `path` did not exist —
+    a first install has no previous artifact to preserve, which is not an error.
+    Raises OSError if the rename itself fails, so a caller that cannot take a
+    backup finds out BEFORE it destroys the working build.
+    """
+    if not os.path.exists(path) and not os.path.islink(path):
+        return False
+    discard_aside(backup)  # a stale backup would make the rename fail
+    os.replace(path, backup)
+    return True
+
+
+def restore_aside(backup: str, path: str) -> bool:
+    """Move `backup` back onto `path`, undoing move_aside. Returns True only
+    when the previous artifact is genuinely back at `path`.
+
+    Best-effort and NEVER raises: this runs on a failure path that is already
+    reporting an error, and a failed restore must not escalate a reported
+    install failure into a crash.
+
+    THE RETURN VALUE IS LOAD-BEARING, AND SO IS THE ORDER OF OPERATIONS.
+    Whatever sits at `path` now is the half-promoted new artifact and has to go,
+    but clearing it FIRST would turn a survivable failure into an unrecoverable
+    one: if the rename then fails (an antivirus holding a freshly-written .exe
+    raises PermissionError on Windows, and that is the canonical case), the
+    destination is already destroyed and the backup is the only copy left. So
+    the rename is ATTEMPTED first — os.replace overwrites a file, a symlink or
+    an empty directory atomically on its own — and `path` is only cleared when
+    it is provably what is blocking the rename (a non-empty directory, or a
+    file/directory kind mismatch), as a second attempt.
+
+    A False return means the backup was NOT put back and is STILL THERE. The
+    caller must not delete it: it is the last surviving copy of the working
+    artifact, and an operator can recover it by hand. Deleting it is the
+    difference between "the upgrade failed" and "there is no engine at all".
+    """
+    try:
+        if not os.path.exists(backup) and not os.path.islink(backup):
+            return False
+        try:
+            os.replace(backup, path)
+            return True
+        except OSError as e:
+            # Only clear `path` when it is PROVABLY what blocks the rename —
+            # os.replace refuses a non-empty directory, and refuses to cross the
+            # file/directory kind boundary. Any other error (a lock, a
+            # permission, a full disk) says nothing about `path`, and clearing
+            # it there would destroy the destination for a rename that was
+            # never going to succeed anyway.
+            if not _dst_is_in_the_way(e):
+                return False
+        discard_aside(path)
+        os.replace(backup, path)
+        return True
+    except Exception:
+        return False
 
 
 # --- download: completion rule shared by both transports ---------------------
