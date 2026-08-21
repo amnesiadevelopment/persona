@@ -396,7 +396,6 @@ def test_the_seed_survives_a_save_load_round_trip_after_a_rename(mgr, tmp_path):
     assert on_disk["work1"]["fingerprint_seed_value"] == seed_before
 
 
-
 def test_the_cookie_jar_and_the_identity_travel_together(mgr, tmp_path):
     # AC5: the data dir still moves — the fix is not "stop renaming the dir".
     # The point is that the jar and the machine now arrive at the new name
@@ -449,3 +448,291 @@ def test_a_new_profiles_seed_is_the_one_it_would_have_derived(mgr):
 
     assert mgr.profiles["shop1"].fingerprint_seed == _crc32("shop1")
     assert mgr.profiles["shop1"].fingerprint_seed_value == _crc32("shop1")
+
+
+# --- the OTHER half of the seed invariant: distinct live profiles, distinct
+# --- machines. Freezing the seed is what put this at risk: a name is REUSABLE,
+# --- so crc32(name) alone would hand a recreated name the seed its renamed
+# --- predecessor is still holding. Every test below asserts on the DERIVED
+# --- identity, not on "a field exists", so it fails against an implementation
+# --- that merely stores a seed without keeping it unique.
+
+
+@pytest.fixture
+def trash_mgr(tmp_path, monkeypatch):
+    """A manager whose TRASH is redirected into tmp_path as well.
+
+    The plain `mgr` fixture above isolates PROFILES_FILE and DATA_DIR but NOT
+    the trash store, which resolves PERSONA_TRASH_FILE / PERSONA_HOME at call
+    time — so a test that trashes a profile through `mgr` writes into the
+    developer's real ~/.persona/trash.json. Same pattern as
+    tests/test_trash_profiles.py.
+    """
+    import src.core.config as cfg
+    import src.services.profile.manager as mod
+    from src.services.trash.store import TrashStore
+
+    pf, dd = tmp_path / "profiles.json", tmp_path / "data"
+    for m in (cfg, mod):
+        monkeypatch.setattr(m, "PROFILES_FILE", str(pf), raising=False)
+        monkeypatch.setattr(m, "DATA_DIR", str(dd), raising=False)
+    monkeypatch.setenv("PERSONA_TRASH_FILE", str(tmp_path / "trash.json"))
+    monkeypatch.setenv("PERSONA_HOME", str(tmp_path))
+    m = ProfileManager()
+    m.set_trash(TrashStore())
+    return m
+
+
+def _seeds_are_unique(mgr):
+    seeds = [p.fingerprint_seed for p in mgr.profiles.values()]
+    return len(seeds) == len(set(seeds))
+
+
+def test_recreating_a_freed_name_does_not_reuse_the_renamed_profiles_machine(mgr):
+    # COLLISION PATH A — the most ordinary sequence this feature creates:
+    # "archive last quarter's account, start a fresh one under the same label".
+    # Before the uniqueness rule both profiles landed on crc32('acme-bank').
+    mgr.add_profile("acme-bank", "", "windows")
+    mgr.update_profile("acme-bank", "acme-bank-old", "", "windows")
+    mgr.add_profile("acme-bank", "", "windows")
+
+    old = _identity(mgr.profiles["acme-bank-old"])
+    new = _identity(mgr.profiles["acme-bank"])
+
+    # the renamed profile kept its machine (the stability half, still true)
+    assert old["seed"] == _crc32("acme-bank")
+    # and the recreated name did NOT inherit it (the isolation half)
+    assert new["seed"] != old["seed"]
+    assert new != old
+    assert _seeds_are_unique(mgr)
+
+
+def test_a_restored_profile_and_a_recreated_name_present_different_machines(
+    trash_mgr,
+):
+    # COLLISION PATH C — following the codebase's OWN documented remedy.
+    # restore_profile refuses a rename-on-restore and tells the operator to
+    # "Free the name and restore again"; doing exactly that used to manufacture
+    # a collision. The restored profile must come back on its ORIGINAL seed
+    # (re-rolling it is the very linkage restore refuses), so the seed has to be
+    # reserved while it sits in the trash.
+    mgr = trash_mgr
+    mgr.add_profile("alpha", "", "windows")
+    original = _identity(mgr.profiles["alpha"])
+
+    assert mgr.delete_profile("alpha") is True
+    entry = mgr._trash().list("profile")[0]
+
+    # free the name, exactly as the refusal message instructs
+    mgr.add_profile("alpha", "", "windows")
+    mgr.update_profile("alpha", "alpha-2", "", "windows")
+
+    ok, msg = mgr.restore_profile(entry)
+    assert ok is True, msg
+
+    # the restored profile is byte-identical to what it was before trashing
+    assert _identity(mgr.profiles["alpha"]) == original
+    # and the profile that borrowed its name in the meantime is a DIFFERENT
+    # machine, not a second copy of it
+    assert _identity(mgr.profiles["alpha-2"]) != original
+    assert _seeds_are_unique(mgr)
+
+
+def test_reimporting_an_export_of_a_since_renamed_profile_does_not_collide(
+    mgr, tmp_path
+):
+    # COLLISION PATH B — export 'client-alpha', rename it away, re-import the
+    # archive. Both records claim crc32('client-alpha'); the import must land on
+    # a machine of its own rather than a duplicate of the renamed original's.
+    mgr.add_profile("client-alpha", "", "windows")
+    original = _identity(mgr.profiles["client-alpha"])
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    ok, archive = mgr.export_profile("client-alpha", str(outdir))
+    assert ok is True, archive
+
+    mgr.update_profile("client-alpha", "client-alpha-old", "", "windows")
+    ok, name = mgr.import_profile(archive)
+    assert ok is True, name
+
+    assert _identity(mgr.profiles["client-alpha-old"]) == original
+    assert _identity(mgr.profiles["client-alpha"]) != original
+    assert _seeds_are_unique(mgr)
+
+
+def test_an_import_onto_a_machine_with_no_conflict_keeps_its_own_seed(
+    mgr, tmp_path, monkeypatch
+):
+    # The uniqueness rule must fire ONLY on a real clash. Moving a profile to
+    # another machine is the whole point of exporting one, and it has to arrive
+    # presenting the same machine — otherwise the fix would re-roll identities
+    # on every import, which is the failure mode this ticket exists to prevent.
+    import src.core.config as cfg
+    import src.services.profile.manager as mod
+
+    mgr.add_profile("client-alpha", "", "windows")
+    original = _identity(mgr.profiles["client-alpha"])
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    ok, archive = mgr.export_profile("client-alpha", str(outdir))
+    assert ok is True, archive
+
+    # a second, empty "machine"
+    other = tmp_path / "machine2"
+    other.mkdir()
+    for m in (cfg, mod):
+        monkeypatch.setattr(
+            m, "PROFILES_FILE", str(other / "profiles.json"), raising=False
+        )
+        monkeypatch.setattr(m, "DATA_DIR", str(other / "data"), raising=False)
+    fresh = ProfileManager()
+    ok, name = fresh.import_profile(archive)
+    assert ok is True, name
+
+    assert _identity(fresh.profiles["client-alpha"]) == original
+
+
+def _archive_with_seed(tmp_path, name, seed, filename=None):
+    """A hand-authored profile archive — i.e. UNTRUSTED input, which is what a
+    shared profile is. Written by hand rather than via export_profile precisely
+    because the point is a value no honest export would produce."""
+    import zipfile
+
+    payload = {
+        "name": name,
+        "os_type": "windows",
+        "engine": "chromium",
+        "device_type": "desktop",
+        "resolution": "auto",
+    }
+    if seed is not _NO_SEED:
+        payload["fingerprint_seed_value"] = seed
+    path = tmp_path / (filename or f"{name}.zip")
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("profile.json", _json.dumps(payload))
+    return str(path)
+
+
+_NO_SEED = object()
+
+
+def test_an_archive_cannot_pin_an_import_onto_an_existing_profiles_machine(
+    mgr, tmp_path
+):
+    # A shared archive is untrusted input (the name is already validated against
+    # exactly this class of hostile edit). A hand-set seed matching a LOCAL
+    # profile's would make the imported profile present that profile's exact
+    # machine — deliberate cross-profile linkage, chosen by whoever authored the
+    # archive rather than by the operator importing it.
+    mgr.add_profile("victim", "", "windows")
+    victim = _identity(mgr.profiles["victim"])
+
+    archive = _archive_with_seed(tmp_path, "attacker", victim["seed"])
+    ok, name = mgr.import_profile(archive)
+    assert ok is True, name
+
+    assert _identity(mgr.profiles["attacker"]) != victim
+    assert mgr.profiles["attacker"].fingerprint_seed != victim["seed"]
+    assert _identity(mgr.profiles["victim"]) == victim  # victim unmoved
+    assert _seeds_are_unique(mgr)
+
+
+@pytest.mark.parametrize(
+    "bogus",
+    [
+        "not-an-int",       # stored verbatim, then crashed the launch path
+        True,               # bool is an int subclass — would become seed 1
+        -1,                 # outside crc32 range
+        2**32,              # outside crc32 range
+        1.5,
+        [123],
+        {"a": 1},
+    ],
+)
+def test_an_archive_with_a_non_crc32_seed_is_dropped_not_stored(
+    mgr, tmp_path, bogus
+):
+    # The seed is arithmetic input to every consumer (touch_points does
+    # `seed % 2`, --fingerprint= formats it). A non-integer sailed in and
+    # hard-crashed the launch path with "not all arguments converted during
+    # string formatting" — a shared archive that bricks a profile. Drop the bad
+    # value rather than refuse the archive: the profile lands on the crc32(name)
+    # fallback, and an operator recovering an old export is not punished for a
+    # field their build never wrote.
+    archive = _archive_with_seed(tmp_path, "imported", bogus)
+    ok, name = mgr.import_profile(archive)
+    assert ok is True, name
+
+    imported = mgr.profiles["imported"]
+    assert imported.fingerprint_seed_value is None
+    assert imported.fingerprint_seed == _crc32("imported")
+    # and the derived identity computes rather than raising
+    assert _identity(imported)["touch_points"] in (5, 10)
+
+
+def test_an_archive_without_a_seed_still_imports_on_the_name_fallback(
+    mgr, tmp_path
+):
+    # An archive exported by a build that predates the field. It must import,
+    # and it must land on the same fallback an old local record does.
+    archive = _archive_with_seed(tmp_path, "old-export", _NO_SEED)
+    ok, name = mgr.import_profile(archive)
+    assert ok is True, name
+
+    assert mgr.profiles["old-export"].fingerprint_seed_value is None
+    assert mgr.profiles["old-export"].fingerprint_seed == _crc32("old-export")
+
+
+def test_reimporting_over_a_profile_does_not_re_roll_its_own_seed(
+    mgr, tmp_path
+):
+    # overwrite=True re-imports over the profile's OWN record, so the archive's
+    # seed "collides" with the very profile it is replacing. That is not a
+    # clash, and treating it as one would re-roll the machine of a profile the
+    # operator was merely refreshing.
+    mgr.add_profile("client-alpha", "", "windows")
+    original = _identity(mgr.profiles["client-alpha"])
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    ok, archive = mgr.export_profile("client-alpha", str(outdir))
+    assert ok is True, archive
+
+    ok, name = mgr.import_profile(archive, overwrite=True)
+    assert ok is True, name
+
+    assert _identity(mgr.profiles["client-alpha"]) == original
+
+
+def test_the_mint_walks_to_the_next_free_seed_deterministically():
+    # The mint is pure and deterministic — no RNG — so a given (name, taken)
+    # always produces the same seed. It returns crc32(name) whenever that is
+    # free, which is what keeps every non-colliding create presenting exactly
+    # what it always would have.
+    from src.models.profile import mint_fingerprint_seed
+
+    plain = _crc32("acme-bank")
+    assert mint_fingerprint_seed("acme-bank") == plain
+    assert mint_fingerprint_seed("acme-bank", set()) == plain
+
+    first = mint_fingerprint_seed("acme-bank", {plain})
+    assert first == _crc32("acme-bank:1")
+    assert first != plain
+    assert mint_fingerprint_seed("acme-bank", {plain}) == first  # deterministic
+
+    second = mint_fingerprint_seed("acme-bank", {plain, first})
+    assert second == _crc32("acme-bank:2")
+    assert second not in (plain, first)
+
+
+def test_a_trashed_profiles_seed_is_not_handed_to_a_new_profile(trash_mgr):
+    # The reservation must cover the trash, not just the live list. A trashed
+    # profile can come BACK on its stored seed, so handing that value out now
+    # schedules a collision for whenever the operator restores.
+    mgr = trash_mgr
+    mgr.add_profile("alpha", "", "windows")
+    trashed_seed = mgr.profiles["alpha"].fingerprint_seed
+    assert mgr.delete_profile("alpha") is True
+
+    mgr.add_profile("alpha", "", "windows")
+
+    assert mgr.profiles["alpha"].fingerprint_seed != trashed_seed
