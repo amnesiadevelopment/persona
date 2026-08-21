@@ -1,0 +1,416 @@
+{
+  "counts": {
+    "absent": 3,
+    "read": 17,
+    "total": 48,
+    "unobtainable": 28
+  },
+  "engine": "invisible_playwright/firefox-20",
+  "environment": "linux-x86_64 (agent sandbox)",
+  "exit": {
+    "city": "Warsaw",
+    "country": "PL",
+    "ip": "217.119.73.138",
+    "org": "AS9141 P4 Sp. z o.o.",
+    "region": "Mazovia",
+    "timezone": "Europe/Warsaw"
+  },
+  "notes": [
+    "Read from the agent sandbox: no GPU, so WebGL renders in software while the engine declares a discrete card. That pair is impossible on real hardware and is a KNOWN-ENVIRONMENTAL host-fact leak, recorded with its reason and never counted as a pass.",
+    "The exit is a rotating mobile address. Rotation WITHIN Poland is the design, not a fault: an exit-driven reading is expected to move between runs, and a FINGERPRINT-driven reading that moves when only the address moved is a coupling worth its own ticket."
+  ],
+  "observed_at": "2026-08-21T23:40:14Z",
+  "readings": [
+    {
+      "adverse": false,
+      "checker": "amiunique.org",
+      "item": "(whole checker)",
+      "reason": "Click-gated: the verdict is behind a user gesture.",
+      "sort": "",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": true,
+      "checker": "bot-detector.rebrowser.net",
+      "item": "detected",
+      "reason": "Error: Page.goto: NS_ERROR_CONNECTION_REFUSED\nCall log:\n  - navigating to \"https://bot-detector.rebrowser.net/\", waiting until \"domcontentloaded\"\n — Answered NS_ERROR_CONNECTION_REFUSED through the mobile exit on 2026-08-21, same as deviceandbrowserinfo.com. Recorded as unobtainable per run, not dropped.",
+      "sort": "fingerprint",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": true,
+      "checker": "bot.sannysoft.com",
+      "item": "phantom_js",
+      "pattern": "phantom\\s+js\\b",
+      "reason": "the pattern did not match",
+      "sort": "fingerprint",
+      "state": "absent"
+    },
+    {
+      "adverse": false,
+      "checker": "bot.sannysoft.com",
+      "item": "webdriver_advanced_passed",
+      "matched_text": "WebDriver Advanced\tpassed",
+      "pattern": "webdriver advanced\\s*passed",
+      "sort": "fingerprint",
+      "state": "read",
+      "value": true
+    },
+    {
+      "adverse": false,
+      "checker": "bot.sannysoft.com",
+      "item": "webdriver_missing_passed",
+      "matched_text": "WebDriver\n(New)\n\tmissing (passed)",
+      "pattern": "webdriver\\s*(?:\\(new\\)\\s*)?missing \\(passed\\)",
+      "sort": "fingerprint",
+      "state": "read",
+      "value": true
+    },
+    {
+      "adverse": true,
+      "checker": "bot.sannysoft.com",
+      "item": "webdriver_present",
+      "pattern": "webdriver\\s*(?:\\(new\\)\\s*)?\\bpresent\\b",
+      "reason": "the pattern did not match",
+      "sort": "fingerprint",
+      "state": "absent"
+    },
+    {
+      "adverse": false,
+      "checker": "browserscan.net",
+      "item": "(whole checker)",
+      "reason": "Text-only verdict with no stable ids, and its internal API requires signed params (returns 401). Carried as unreadable rather than matched loosely against unanchored prose.",
+      "sort": "",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": false,
+      "checker": "coveryourtracks.eff.org",
+      "item": "(whole checker)",
+      "reason": "Click-gated, and observed returning HTTP 500.",
+      "sort": "",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": false,
+      "checker": "creepjs",
+      "item": "chromium_claim",
+      "reason": "Error: Page.goto: NS_ERROR_UNKNOWN_HOST\nCall log:\n  - navigating to \"https://abrahamjuliot.github.io/creepjs\", waiting until \"domcontentloaded\"\n",
+      "sort": "fingerprint",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": false,
+      "checker": "creepjs",
+      "item": "gpu_renderer",
+      "reason": "Error: Page.goto: NS_ERROR_UNKNOWN_HOST\nCall log:\n  - navigating to \"https://abrahamjuliot.github.io/creepjs\", waiting until \"domcontentloaded\"\n",
+      "sort": "host",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": true,
+      "checker": "creepjs",
+      "item": "headless_rating",
+      "reason": "Error: Page.goto: NS_ERROR_UNKNOWN_HOST\nCall log:\n  - navigating to \"https://abrahamjuliot.github.io/creepjs\", waiting until \"domcontentloaded\"\n",
+      "sort": "fingerprint",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": true,
+      "checker": "creepjs",
+      "item": "like_headless_rating",
+      "reason": "Error: Page.goto: NS_ERROR_UNKNOWN_HOST\nCall log:\n  - navigating to \"https://abrahamjuliot.github.io/creepjs\", waiting until \"domcontentloaded\"\n",
+      "sort": "fingerprint",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": true,
+      "checker": "creepjs",
+      "item": "stealth_rating",
+      "reason": "Error: Page.goto: NS_ERROR_UNKNOWN_HOST\nCall log:\n  - navigating to \"https://abrahamjuliot.github.io/creepjs\", waiting until \"domcontentloaded\"\n",
+      "sort": "fingerprint",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": false,
+      "checker": "deviceandbrowserinfo.com",
+      "item": "bot_verdict_negative",
+      "reason": "Error: Page.goto: NS_ERROR_CONNECTION_REFUSED\nCall log:\n  - navigating to \"https://deviceandbrowserinfo.com/are_you_a_bot\", waiting until \"domcontentloaded\"\n — Answered NS_ERROR_CONNECTION_REFUSED through the mobile exit on 2026-08-21 — reachable on a datacenter address, refused from this carrier. Kept in the matrix and recorded as UNOBTAINABLE per run rather than dropped: 'this checker did not answer us' is a reading, and deleting the row would silently shrink the matrix.",
+      "sort": "fingerprint",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": true,
+      "checker": "deviceandbrowserinfo.com",
+      "item": "bot_verdict_positive",
+      "reason": "Error: Page.goto: NS_ERROR_CONNECTION_REFUSED\nCall log:\n  - navigating to \"https://deviceandbrowserinfo.com/are_you_a_bot\", waiting until \"domcontentloaded\"\n — Answered NS_ERROR_CONNECTION_REFUSED through the mobile exit on 2026-08-21 — reachable on a datacenter address, refused from this carrier. Kept in the matrix and recorded as UNOBTAINABLE per run rather than dropped: 'this checker did not answer us' is a reading, and deleting the row would silently shrink the matrix.",
+      "sort": "fingerprint",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": false,
+      "checker": "fv.pro",
+      "item": "(whole checker)",
+      "reason": "The fields worth reading are paywalled.",
+      "sort": "",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": false,
+      "checker": "iphey.com",
+      "item": "hardware_fine",
+      "reason": "Error: Page.goto: NS_ERROR_UNKNOWN_HOST\nCall log:\n  - navigating to \"https://iphey.com/\", waiting until \"domcontentloaded\"\n",
+      "sort": "host",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": true,
+      "checker": "iphey.com",
+      "item": "not_trustworthy",
+      "reason": "Error: Page.goto: NS_ERROR_UNKNOWN_HOST\nCall log:\n  - navigating to \"https://iphey.com/\", waiting until \"domcontentloaded\"\n",
+      "sort": "fingerprint",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": false,
+      "checker": "iphey.com",
+      "item": "software_fine",
+      "reason": "Error: Page.goto: NS_ERROR_UNKNOWN_HOST\nCall log:\n  - navigating to \"https://iphey.com/\", waiting until \"domcontentloaded\"\n",
+      "sort": "fingerprint",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": false,
+      "checker": "iphey.com",
+      "item": "trustworthy",
+      "reason": "Error: Page.goto: NS_ERROR_UNKNOWN_HOST\nCall log:\n  - navigating to \"https://iphey.com/\", waiting until \"domcontentloaded\"\n",
+      "sort": "fingerprint",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": false,
+      "checker": "ipleak.net",
+      "item": "as_number",
+      "sort": "exit",
+      "state": "read",
+      "value": 9141
+    },
+    {
+      "adverse": false,
+      "checker": "ipleak.net",
+      "item": "city_name",
+      "sort": "exit",
+      "state": "read",
+      "value": "Warsaw"
+    },
+    {
+      "adverse": false,
+      "checker": "ipleak.net",
+      "item": "country_code",
+      "sort": "exit",
+      "state": "read",
+      "value": "PL"
+    },
+    {
+      "adverse": false,
+      "checker": "ipleak.net",
+      "item": "isp_name",
+      "sort": "exit",
+      "state": "read",
+      "value": "Play"
+    },
+    {
+      "adverse": false,
+      "checker": "ipleak.net",
+      "item": "observed_ip",
+      "sort": "exit",
+      "state": "read",
+      "value": "2a02:a31a:c1d1:6a00:27d:3bff:fe89:ed9f"
+    },
+    {
+      "adverse": false,
+      "checker": "ipleak.net",
+      "item": "time_zone",
+      "sort": "exit",
+      "state": "read",
+      "value": "Europe/Warsaw"
+    },
+    {
+      "adverse": true,
+      "checker": "pixelscan.net",
+      "item": "automation_detected",
+      "reason": "Error: Page.goto: NS_ERROR_UNKNOWN_HOST\nCall log:\n  - navigating to \"https://pixelscan.net/fingerprint-check\", waiting until \"domcontentloaded\"\n",
+      "sort": "fingerprint",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": false,
+      "checker": "pixelscan.net",
+      "item": "fingerprint_consistent",
+      "reason": "Error: Page.goto: NS_ERROR_UNKNOWN_HOST\nCall log:\n  - navigating to \"https://pixelscan.net/fingerprint-check\", waiting until \"domcontentloaded\"\n",
+      "sort": "fingerprint",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": true,
+      "checker": "pixelscan.net",
+      "item": "fingerprint_inconsistent",
+      "reason": "Error: Page.goto: NS_ERROR_UNKNOWN_HOST\nCall log:\n  - navigating to \"https://pixelscan.net/fingerprint-check\", waiting until \"domcontentloaded\"\n",
+      "sort": "fingerprint",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": false,
+      "checker": "pixelscan.net",
+      "item": "geo_poland",
+      "reason": "Error: Page.goto: NS_ERROR_UNKNOWN_HOST\nCall log:\n  - navigating to \"https://pixelscan.net/fingerprint-check\", waiting until \"domcontentloaded\"\n",
+      "sort": "exit",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": true,
+      "checker": "pixelscan.net",
+      "item": "masking_detected",
+      "reason": "Error: Page.goto: NS_ERROR_UNKNOWN_HOST\nCall log:\n  - navigating to \"https://pixelscan.net/fingerprint-check\", waiting until \"domcontentloaded\"\n",
+      "sort": "fingerprint",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": true,
+      "checker": "pixelscan.net",
+      "item": "proxy_detected",
+      "reason": "Error: Page.goto: NS_ERROR_UNKNOWN_HOST\nCall log:\n  - navigating to \"https://pixelscan.net/fingerprint-check\", waiting until \"domcontentloaded\"\n",
+      "sort": "exit",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": false,
+      "checker": "pixelscan.net",
+      "item": "timezone_from_js",
+      "reason": "Error: Page.goto: NS_ERROR_UNKNOWN_HOST\nCall log:\n  - navigating to \"https://pixelscan.net/fingerprint-check\", waiting until \"domcontentloaded\"\n",
+      "sort": "exit",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": true,
+      "checker": "pixelscan.net",
+      "item": "timezone_spoofed",
+      "reason": "Error: Page.goto: NS_ERROR_UNKNOWN_HOST\nCall log:\n  - navigating to \"https://pixelscan.net/fingerprint-check\", waiting until \"domcontentloaded\"\n",
+      "sort": "exit",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": false,
+      "checker": "pixelscan.net",
+      "item": "webgl_renderer",
+      "reason": "Error: Page.goto: NS_ERROR_UNKNOWN_HOST\nCall log:\n  - navigating to \"https://pixelscan.net/fingerprint-check\", waiting until \"domcontentloaded\"\n",
+      "sort": "host",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": false,
+      "checker": "tls.browserleaks.com",
+      "item": "akamai_hash",
+      "sort": "harness",
+      "state": "read",
+      "value": ""
+    },
+    {
+      "adverse": false,
+      "checker": "tls.browserleaks.com",
+      "item": "ja3n_hash",
+      "sort": "harness",
+      "state": "read",
+      "value": "c10fd3671baaf8a4479e88d2214f11a9"
+    },
+    {
+      "adverse": false,
+      "checker": "tls.browserleaks.com",
+      "item": "ja4",
+      "sort": "harness",
+      "state": "read",
+      "value": "t13d171200_ab0a1bf427ad_ecd0401ec68b"
+    },
+    {
+      "adverse": false,
+      "checker": "tls.browserleaks.com",
+      "item": "user_agent",
+      "sort": "harness",
+      "state": "read",
+      "value": "curl/8.14.1"
+    },
+    {
+      "adverse": false,
+      "checker": "tls.peet.ws",
+      "item": "akamai_fingerprint",
+      "reason": "the response carries no http2.akamai_fingerprint",
+      "sort": "harness",
+      "state": "absent"
+    },
+    {
+      "adverse": false,
+      "checker": "tls.peet.ws",
+      "item": "http_version",
+      "sort": "harness",
+      "state": "read",
+      "value": "HTTP/1.1"
+    },
+    {
+      "adverse": false,
+      "checker": "tls.peet.ws",
+      "item": "ja4",
+      "sort": "harness",
+      "state": "read",
+      "value": "t13d1712_ab0a1bf427ad_ecd0401ec68b"
+    },
+    {
+      "adverse": false,
+      "checker": "tls.peet.ws",
+      "item": "observed_ip",
+      "sort": "exit",
+      "state": "read",
+      "value": "217.119.73.138:43228"
+    },
+    {
+      "adverse": false,
+      "checker": "tls.peet.ws",
+      "item": "peetprint_hash",
+      "sort": "harness",
+      "state": "read",
+      "value": "0d1922bf480c74e7dc5b78c827cb3e6a"
+    },
+    {
+      "adverse": false,
+      "checker": "tls.peet.ws",
+      "item": "user_agent",
+      "sort": "harness",
+      "state": "read",
+      "value": "curl/8.14.1"
+    },
+    {
+      "adverse": false,
+      "checker": "tools.scrapfly.io",
+      "item": "akamai_hash",
+      "reason": "FetchFailed: GeneralProxyError: Socket error: 0x02: Connection not allowed by ruleset",
+      "sort": "harness",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": false,
+      "checker": "tools.scrapfly.io",
+      "item": "ja4",
+      "reason": "FetchFailed: GeneralProxyError: Socket error: 0x02: Connection not allowed by ruleset",
+      "sort": "harness",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": false,
+      "checker": "whoer.net",
+      "item": "(whole checker)",
+      "reason": "Cloudflare challenge. Defeating it is out of scope by charter — that is a different product.",
+      "sort": "",
+      "state": "unobtainable"
+    }
+  ],
+  "schema_version": 1
+}
