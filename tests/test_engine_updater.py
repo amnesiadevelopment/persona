@@ -1,3 +1,7 @@
+import os
+
+import pytest
+
 import src.core.platform as _platform
 from src.services.engine import updater
 from src.services.engine.updater import (
@@ -523,3 +527,194 @@ def test_a_rolled_back_promotion_removes_files_only_the_new_build_had(
     # ...and the new build's own file did NOT survive the rollback
     assert not (engine_dir / "newlib.dll").exists()
     assert not (engine_dir / updater.BACKUP_NAME).exists()
+
+
+# --- PS-43: an unattended install must not replace a tree in use -------------
+#
+# These drive the REAL download_engine. The app-level check in
+# _auto_update_engine is only an early exit — it answers minutes before the
+# bytes are ready — so the guard that actually protects a live session has to
+# be tested HERE, at the point of replacement, with nothing stubbed between the
+# oracle and the os.replace it is guarding.
+
+
+def _digest_of(data: bytes) -> str:
+    import hashlib
+
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def _engine_at(monkeypatch, tmp_path, old: bytes = b"OLD-ENGINE"):
+    """An installed Linux engine whose binary holds `old`, ready to be upgraded."""
+    engine_dir = tmp_path / "engine"
+    engine_dir.mkdir()
+    binary = engine_dir / "chrome"
+    binary.write_bytes(old)
+    monkeypatch.setattr(updater, "ENGINE_DIR", str(engine_dir))
+    monkeypatch.setattr(updater, "ENGINE_BINARY", str(binary))
+    monkeypatch.setattr(updater, "MARKER_FILE", str(engine_dir / ".engine-complete"))
+    monkeypatch.setattr(updater, "VERSION_FILE", str(engine_dir / "version.txt"))
+    (engine_dir / ".engine-complete").write_text("ok")
+    _force_os(monkeypatch, linux=True)
+    return engine_dir, binary
+
+
+def test_a_profile_launched_during_the_download_stops_the_install(monkeypatch, tmp_path):
+    """THE regression this guard exists for, and the one a decision-time check
+    cannot catch: idle when the fetch is decided, running by the time the bytes
+    land. A Chromium asset takes minutes to download, so this is not exotic.
+
+    The oracle flips DURING the download — exactly what a profile launching
+    mid-fetch looks like — so a guard consulted only beforehand would sail
+    straight into replacing the tree that session is executing from."""
+    engine_dir, binary = _engine_at(monkeypatch, tmp_path)
+    new = b"NEW-ENGINE"
+
+    running = {"yes": False}
+
+    def download_and_launch_a_profile(path, url, timeout, digest, progress,
+                                      allow_missing=False):
+        # the bytes arrive...
+        with open(path, "wb") as f:
+            f.write(new)
+        # ...and while they were arriving, the operator launched a profile.
+        running["yes"] = True
+        return True
+
+    monkeypatch.setattr(updater, "_download_to", download_and_launch_a_profile)
+    updater.set_in_use_provider(lambda: running["yes"])
+    monkeypatch.setattr(updater, "_in_use_provider", lambda: running["yes"])
+
+    with pytest.raises(updater.InstallDeferred):
+        updater.download_engine(
+            "http://x/e", digest=_digest_of(new), defer_if_in_use=True
+        )
+
+    # The live session's binary is untouched — this is the whole point.
+    assert binary.read_bytes() == b"OLD-ENGINE"
+
+
+def test_a_deferred_install_leaves_the_engine_launchable(monkeypatch, tmp_path):
+    """A deferral must be INERT. The marker/sentinel are what make
+    is_installed() answer, and launch_or_stop gates on it — so writing them and
+    then bailing would report a perfectly good engine as missing and block the
+    very launches the deferral is protecting."""
+    engine_dir, binary = _engine_at(monkeypatch, tmp_path)
+    new = b"NEW-ENGINE"
+    monkeypatch.setattr(
+        updater, "_download_to",
+        lambda path, *a, **k: (open(path, "wb").write(new), True)[1],
+    )
+    monkeypatch.setattr(updater, "_in_use_provider", lambda: True)
+
+    with pytest.raises(updater.InstallDeferred):
+        updater.download_engine(
+            "http://x/e", digest=_digest_of(new), defer_if_in_use=True
+        )
+
+    assert updater.is_installed() is True
+    assert not os.path.exists(updater._installing_file()), (
+        "a deferral must not leave the in-progress sentinel behind"
+    )
+
+
+def test_the_deferred_bytes_are_reused_not_downloaded_again(monkeypatch, tmp_path):
+    """Deferring has to be CHEAP or it is the wrong answer: the hourly poll
+    retries, and re-fetching a ~300MB asset every hour while a profile stays
+    open would be worse than the stall this ticket removes. The verified asset
+    stays on disk and the retry installs from it."""
+    engine_dir, binary = _engine_at(monkeypatch, tmp_path)
+    new = b"NEW-ENGINE"
+    digest = _digest_of(new)
+    downloads = []
+
+    def counted_download(path, *a, **k):
+        downloads.append(1)
+        with open(path, "wb") as f:
+            f.write(new)
+        return True
+
+    monkeypatch.setattr(updater, "_download_to", counted_download)
+
+    # First pass: a profile is running, so the install defers.
+    monkeypatch.setattr(updater, "_in_use_provider", lambda: True)
+    with pytest.raises(updater.InstallDeferred):
+        updater.download_engine("http://x/e", digest=digest, defer_if_in_use=True)
+    assert downloads == [1]
+
+    # Later: profiles closed. The retry installs WITHOUT downloading again.
+    monkeypatch.setattr(updater, "_in_use_provider", lambda: False)
+    assert updater.download_engine(
+        "http://x/e", digest=digest, defer_if_in_use=True
+    ) is True
+
+    assert downloads == [1], "the deferred asset must be reused, not re-fetched"
+    assert binary.read_bytes() == new
+    assert updater.is_installed() is True
+
+
+def test_a_corrupt_leftover_asset_is_re_downloaded_not_installed(monkeypatch, tmp_path):
+    """The reuse path re-verifies rather than trusting the file's presence: a
+    leftover that was truncated or tampered with on disk must not be promoted
+    into the engine tree just because it has the right name."""
+    engine_dir, binary = _engine_at(monkeypatch, tmp_path)
+    new = b"NEW-ENGINE"
+    (engine_dir / "e").write_bytes(b"TAMPERED")  # right name, wrong bytes
+
+    downloads = []
+
+    def counted_download(path, *a, **k):
+        downloads.append(1)
+        with open(path, "wb") as f:
+            f.write(new)
+        return True
+
+    monkeypatch.setattr(updater, "_download_to", counted_download)
+    monkeypatch.setattr(updater, "_in_use_provider", lambda: False)
+
+    assert updater.download_engine(
+        "http://x/e", digest=_digest_of(new), defer_if_in_use=True
+    ) is True
+
+    assert downloads == [1], "an unverifiable leftover must be re-downloaded"
+    assert binary.read_bytes() == new
+
+
+def test_the_operators_click_installs_even_while_a_profile_runs(monkeypatch, tmp_path):
+    """Only the UNATTENDED path defers. The operator asked for this one, and a
+    silent no-op would look exactly like the stall this ticket exists to
+    remove — so defer_if_in_use is off by default and the click keeps today's
+    behaviour."""
+    engine_dir, binary = _engine_at(monkeypatch, tmp_path)
+    new = b"NEW-ENGINE"
+    monkeypatch.setattr(
+        updater, "_download_to",
+        lambda path, *a, **k: (open(path, "wb").write(new), True)[1],
+    )
+    monkeypatch.setattr(updater, "_in_use_provider", lambda: True)
+
+    assert updater.download_engine("http://x/e", digest=_digest_of(new)) is True
+    assert binary.read_bytes() == new
+
+
+def test_an_unwired_or_broken_oracle_defers(monkeypatch, tmp_path):
+    """Fails CLOSED, opposite of the prune guard's fail-open default: the cost
+    of a false 'idle' here is a binary swapped under a running browser, whereas
+    the cost of a false 'in use' is waiting for the next check."""
+    engine_dir, binary = _engine_at(monkeypatch, tmp_path)
+    new = b"NEW-ENGINE"
+    monkeypatch.setattr(
+        updater, "_download_to",
+        lambda path, *a, **k: (open(path, "wb").write(new), True)[1],
+    )
+
+    def boom():
+        raise RuntimeError("launcher unavailable")
+
+    for provider in (None, boom):
+        monkeypatch.setattr(updater, "_in_use_provider", provider)
+        with pytest.raises(updater.InstallDeferred):
+            updater.download_engine(
+                "http://x/e", digest=_digest_of(new), defer_if_in_use=True
+            )
+        assert binary.read_bytes() == b"OLD-ENGINE"

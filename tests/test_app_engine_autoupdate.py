@@ -38,12 +38,23 @@ def _stub(**over):
         _engine_checking=False,
         _engine_latest="",
         _engine_status="",
+        # Tracks the build whose deferral has already been announced, so the
+        # hourly retry doesn't repeat the same line forever.
+        _engine_deferred_tag="",
         logs=[],
         updated=[],
         bl=SimpleNamespace(running_profile_names=lambda: set()),
     )
     stub._log = stub.logs.append
-    stub._update_engine_async = lambda: stub.updated.append(stub._engine_latest)
+    # `unattended` is recorded separately from the tag: that flag is what arms
+    # the in-lock deferral inside download_engine, so a trigger that dropped it
+    # would install over a live session while every decision test still passed.
+    def _update(unattended=False):
+        stub.updated.append(stub._engine_latest)
+        stub.unattended_flags.append(unattended)
+
+    stub.unattended_flags = []
+    stub._update_engine_async = _update
     stub._engine_update_available = lambda: app_mod.App._engine_update_available(stub)
     stub._engine_tree_in_use = lambda: app_mod.App._engine_tree_in_use(stub)
     for k, v in over.items():
@@ -230,3 +241,45 @@ def test_the_hourly_poll_retries_the_unattended_fetch(monkeypatch, installed_v10
         app_mod.App._check_engines_periodic(stub)
 
     assert calls == ["101"], "the hourly poll must retry the unattended fetch"
+
+
+def test_the_unattended_trigger_arms_the_install_time_guard(installed_v100):
+    """The decision-time check above is only an early exit — it answers minutes
+    before the bytes are ready, and a profile can launch inside that window.
+    What actually protects a live session is the re-check inside
+    download_engine, and `unattended=True` is the ONLY thing that arms it.
+
+    Worth a test of its own because dropping that flag is silent: every other
+    test here stubs _update_engine_async, so an unarmed trigger would keep them
+    all green while installing straight over a running profile."""
+    stub = _stub(_engine_latest="101")
+
+    app_mod.App._auto_update_engine(stub)
+
+    assert stub.updated == ["101"]
+    assert stub.unattended_flags == [True], (
+        "the background fetch must arm the install-time in-use guard"
+    )
+
+
+def test_the_hourly_retry_does_not_repeat_the_deferral_every_hour(installed_v100):
+    """The poll retries hourly, so an operator who keeps a profile open all day
+    would otherwise get the identical 'waiting for running profiles' line eight
+    times over. Announce the deferral once per build, not once per tick."""
+    stub = _stub(
+        _engine_latest="101",
+        bl=SimpleNamespace(running_profile_names=lambda: {"work"}),
+    )
+
+    for _ in range(5):
+        app_mod.App._auto_update_engine(stub)
+
+    waits = [m for m in stub.logs if "waiting for running profiles" in m]
+    assert len(waits) == 1, f"expected one deferral note, got {len(waits)}"
+
+    # ...but a NEWER build is a new fact, and must speak up again.
+    stub._engine_latest = "102"
+    app_mod.App._auto_update_engine(stub)
+
+    waits = [m for m in stub.logs if "waiting for running profiles" in m]
+    assert len(waits) == 2, "a newer build's deferral must not be swallowed"
