@@ -5,6 +5,7 @@ import flet as ft
 
 from ...models.profile import Profile
 from ...models.proxy import Proxy
+from ...services.proxy.freshness import PROXY_STALE_AFTER_S, proxy_indicator_state
 from ...utils.timefmt import humanize_since
 from ..flags import flag_path
 from ..theme.colors import COLORS
@@ -18,13 +19,13 @@ _OS_LABELS = {"windows": "windows", "macos": "macos", "linux": "linux"}
 _IND_W = 30
 _IND_H = 20
 
-# How long a successful proxy check stays good enough to be drawn as a flag.
-# Past this, the indicator reports "last known, and it is old" instead of
-# continuing to assert a country: the exit behind a rotating/backconnect URL
-# moves without any event reaching us, so an ageless flag would keep growing in
-# confidence while its evidence rots. Render-only — crossing this threshold
-# never triggers a re-check, it only changes what the operator is told.
-PROXY_STALE_AFTER_S = 24 * 60 * 60
+# PROXY_STALE_AFTER_S and proxy_indicator_state are imported above from
+# services.proxy.freshness, where they now live as ONE authority: the same
+# question ("how much do we still believe this proxy's recorded geography?")
+# governs both the glyph drawn here and whether a profile may LAUNCH declaring
+# that geography, and src/services/ cannot import from src/ui/. They are
+# re-exported by name because this module is where both were first published —
+# callers and tests that import them from here keep working unchanged.
 
 
 def _tag_chips(tags: list[str]) -> ft.Control:
@@ -57,31 +58,6 @@ def _indicator_box(content: ft.Control, border: bool = True) -> ft.Container:
         alignment=ft.Alignment(0, 0),
         content=content,
     )
-
-
-def proxy_indicator_state(proxy: Proxy, now: float) -> str:
-    """Which indicator state a proxy is in, as a function of age AND outcome.
-
-    Pure and render-only: it reads the stored `checked_at` / `last_check_ok`
-    and nothing else — it never probes, so calling it cannot open a socket.
-
-    - "failed"      -> the last check failed. A failure does not age into
-                       something softer; it stays a failure at any age.
-    - "unverified"  -> no successful check is on record (`checked_at == 0.0`),
-                       whatever else is stored. A country code written to disk
-                       at an unrecorded past moment is not evidence.
-    - "stale"       -> verified, but longer than PROXY_STALE_AFTER_S ago.
-    - "verified"    -> verified within the threshold.
-    """
-    if proxy.last_check_ok is False:
-        return "failed"
-    # A stored country_code alone never produces a verified state: without a
-    # timestamp there is no moment at which anything was confirmed.
-    if not proxy.checked_at or not proxy.last_check_ok:
-        return "unverified"
-    if (now - proxy.checked_at) > PROXY_STALE_AFTER_S:
-        return "stale"
-    return "verified"
 
 
 def _proxy_age_label(proxy: Proxy, state: str, now: float) -> str:

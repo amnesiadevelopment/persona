@@ -32,3 +32,28 @@ class GeographyUnknownError(RuntimeError):
     UNREPRESENTABLE as a zone, so no caller can accidentally ship it to an
     engine as if it were a real timezone.
     """
+
+
+class GeographyDisprovenError(GeographyUnknownError):
+    """A profile's proxy carries geography, but the most recent check FAILED —
+    so the product's own latest evidence says that geography is untrue.
+
+    Distinct from its parent in CAUSE, not in consequence. The parent means "we
+    never learned where this exits"; this means "we looked, and what we stored
+    is contradicted". Both refuse the launch, because a profile that declares a
+    location its owner's own evidence disproves is incoherent: the zone shipped
+    is the exit's LAST-RECORDED zone, which the failed check gives us no reason
+    to believe is still the exit.
+
+    A SUBCLASS on purpose. Every existing handler and test says
+    `except GeographyUnknownError` / `pytest.raises(GeographyUnknownError)` —
+    the launcher's report path, process.py's re-raise, PS-31's refusal suite —
+    and all of them must keep catching this without being touched. Subclassing
+    buys the distinction where it matters (the operator-facing message can say
+    "the check failed" instead of "never checked") while the fail-closed
+    plumbing stays exactly as PS-31 left it.
+
+    The remedy is the same one click: re-check the proxy. A passing check writes
+    fresh geo and `last_check_ok=True` (ProxyStore.mark_checked) and the profile
+    launches again, declaring the exit's zone.
+    """
