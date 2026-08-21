@@ -657,24 +657,36 @@ async def _geo_via_socks(
 
 
 async def _json_via_socks(
-    proxy_config: dict, scheme: str, url: str, user_agent: str, max_body: int
+    proxy_config: dict,
+    scheme: str,
+    url: str,
+    user_agent: str,
+    max_body: int,
+    accept: str = "application/json",
 ) -> tuple[int, dict | list | None]:
     """ONE JSON GET through a real SOCKS handshake.
 
     The same tunnel _geo_via_socks opens, differing only in what it sends as
-    its User-Agent and how much body it will buffer — which is precisely why
-    _open_socks_stream and _http_get_json are shared rather than copied. In
-    particular the target host reaches the proxy as a DOMAIN NAME (atyp 0x03)
-    and is never resolved here, so routing persona's own release-metadata fetch
-    through a proxy does not emit a DNS query for api.github.com from the
-    operator's real resolver.
+    its User-Agent, what representation it asks for, and how much body it will
+    buffer — which is precisely why _open_socks_stream and _http_get_json are
+    shared rather than copied. In particular the target host reaches the proxy
+    as a DOMAIN NAME (atyp 0x03) and is never resolved here, so routing
+    persona's own release-metadata fetch through a proxy does not emit a DNS
+    query for api.github.com from the operator's real resolver.
+
+    `accept` is a PARAMETER for the same reason `user_agent` is, and the two
+    must be threaded together: the caller above this one decides what to ask
+    for, and a header honoured on the direct branch but silently replaced here
+    would mean turning the egress policy ON changes the request on the wire.
+    Its default is the geo probe's value, so every pre-existing caller stays
+    byte-identical.
     """
     reader, writer, target_host, path = await _open_socks_stream(
         proxy_config, scheme, url
     )
     try:
         return await _http_get_json(
-            reader, writer, target_host, path, user_agent, "application/json", max_body
+            reader, writer, target_host, path, user_agent, accept, max_body
         )
     finally:
         await _close_stream(writer)
@@ -947,6 +959,7 @@ async def fetch_json_via_proxy(
     timeout: int,
     user_agent: str = _NEUTRAL_USER_AGENT,
     max_body: int = _MAX_RELEASE_BODY,
+    accept: str = "application/json",
 ) -> dict | list:
     """GET `url` THROUGH `proxy_str` and return the parsed JSON document.
 
@@ -974,6 +987,17 @@ async def fetch_json_via_proxy(
     silently freeze the update path. `user_agent` defaults to the NEUTRAL one
     because this reaches a THIRD PARTY (api.github.com): the geo probe's
     `persona-proxy-check/1.0` would self-identify the tool on every poll.
+
+    `accept` is threaded for the same reason and MUST stay beside it: the
+    policy's whole claim is that one authority decides how persona's requests
+    leave, so the request this branch puts on the wire has to be the one the
+    caller asked for — a header honoured on egress.py's direct branch and
+    replaced with a hardcoded value here would mean switching the policy on
+    silently changes what is sent, which is the disagreement-with-itself the
+    single authority exists to prevent. It reaches BOTH sub-branches below
+    (SOCKS and aiohttp), because a header threaded through only one of them
+    would just relocate the same drift. The default is the geo probe's value,
+    so callers that do not pass one are byte-identical.
     """
     proxy_config = parse_proxy(proxy_str)
     if not proxy_config:
@@ -983,7 +1007,7 @@ async def fetch_json_via_proxy(
 
     if _is_socks_scheme(scheme):
         status, data = await asyncio.wait_for(
-            _json_via_socks(proxy_config, scheme, url, user_agent, max_body),
+            _json_via_socks(proxy_config, scheme, url, user_agent, max_body, accept),
             timeout,
         )
     else:
@@ -1002,7 +1026,7 @@ async def fetch_json_via_proxy(
             async with session.get(
                 url,
                 proxy=proxy_url,
-                headers={"User-Agent": user_agent, "Accept": "application/json"},
+                headers={"User-Agent": user_agent, "Accept": accept},
             ) as response:
                 status = response.status
                 if status != 200:
@@ -1040,6 +1064,7 @@ def fetch_json_via_proxy_sync(
     timeout: int,
     user_agent: str = _NEUTRAL_USER_AGENT,
     max_body: int = _MAX_RELEASE_BODY,
+    accept: str = "application/json",
 ) -> dict | list:
     """Blocking wrapper — both metadata fetches run on background threads.
 
@@ -1048,12 +1073,17 @@ def fetch_json_via_proxy_sync(
     report, while this one returns a document, and the only honest way to say
     "there is no document" is to raise. Swallowing here would hand the update
     checker an empty result that reads as "no new release".
+
+    Every parameter is forwarded unchanged — this wrapper's only job is the
+    event loop. `accept` in particular must reach the transport: this is the
+    function egress.py's PROXIED branch calls, so dropping it here would be
+    exactly the direct-vs-proxied header drift the threading exists to close.
     """
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
         return loop.run_until_complete(
-            fetch_json_via_proxy(proxy_str, url, timeout, user_agent, max_body)
+            fetch_json_via_proxy(proxy_str, url, timeout, user_agent, max_body, accept)
         )
     finally:
         loop.close()
