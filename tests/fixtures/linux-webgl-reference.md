@@ -95,9 +95,24 @@ That is ANGLE composing over **desktop GL**, not GLES. — **[upstream]**
 The `(Core Profile) Mesa 22.1.0-develgit-` tail is then dropped in a WebGL
 context: `Context.cpp:3697` passes `getBackendVersionString(!isWebGL())`, so
 `includeFullVersion` is `false`, and `SanitizeVersionString`
-(`DisplayGL.cpp:56-83`) keeps only the token up to the first space. Executing
-that function's logic against the captured string yields exactly `OpenGL 4.6`.
-— **[source]**
+(`DisplayGL.cpp:56-83`) reduces the string to its version number alone.
+
+Be precise about *how*, because the tempting one-line gloss — "it keeps the
+token up to the first space" — is wrong: read literally it yields `OpenGL`, not
+`OpenGL 4.6`. The function never slices the input from position 0. It
+*re-emits* a literal prefix (`"OpenGL "`, plus `"ES "` when `isES`) and then
+appends the token that follows that prefix in the input:
+
+```
+openGLESPos = find("OpenGL ")            // 0 here; 0 if absent
+openGLESPos += len("OpenGL ") (+ len("ES ") if isES)   // -> 7
+result = "OpenGL " + versionString.substr(7, find(" ", 7) - 7)
+```
+
+So the "first space" it stops at is the one *after* the version number, not the
+one after the word `OpenGL`. Traced against the captured string: `find(" ", 7)`
+is `10`, `substr(7, 3)` is `4.6`, giving exactly `OpenGL 4.6`. The mesa#6144
+`chrome://gpu` capture confirms the same value empirically. — **[source]**
 
 **No Mesa build version is page-visible, and none is baked into any value
 below.** A string carrying one would be impossible in a real browser.

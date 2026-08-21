@@ -1085,7 +1085,8 @@ def test_no_implicit_concatenation_drops_an_interpolation():
 #     operator's own choice; a POOLED vector colliding is pigeonhole; and the
 #     masking.*/realm.* probes observe the MECHANISM, not the identity. The iOS
 #     GPU pair is the sharp case — one compile-time constant for every iOS
-#     device, so two iOS profiles MUST agree there (gpu_ext.py:581-589).
+#     device, so two iOS profiles MUST agree there (gpu_ext.py's `var IOS_GPU =`
+#     constant; the reasoning is in the `build_gpu_extension` docstring).
 #   * The "no evidence" line moves. `diff_snapshots` calls the ASYMMETRIC case
 #     (read on one side, errored on the other) CHANGED, because a vector that
 #     stopped being readable is the loudest continuity signal there is. Here it
@@ -1134,11 +1135,11 @@ def test_variance_defaults_to_shared_so_a_new_probe_is_never_must_differ():
 
 
 def test_the_ios_gpu_pair_is_not_in_the_must_differ_set():
-    # THE trap. gpu_ext.py:107 pins ONE vendor/renderer pair for every iOS
-    # profile on earth, deliberately not seed-varied, because a diversified one
-    # "would itself be the tell" (gpu_ext.py:581-589). Two iOS profiles MUST
-    # agree here — requiring difference would flag persona's most deliberately
-    # correct behaviour as a leak.
+    # THE trap. gpu_ext.py's `var IOS_GPU =` constant pins ONE vendor/renderer
+    # pair for every iOS profile on earth, deliberately not seed-varied, because
+    # a diversified one "would itself be the tell" (the `build_gpu_extension`
+    # docstring). Two iOS profiles MUST agree here — requiring difference would
+    # flag persona's most deliberately correct behaviour as a leak.
     assert "webgl.unmasked" not in probes.must_differ_ids()
 
 
