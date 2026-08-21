@@ -10,9 +10,10 @@ into no app container, and needs no API server — so the continuity question
 ("did this identity survive an engine update?") is answerable today, by hand,
 before anything is automated on top of it.
 
-Exit codes for ``diff`` and ``realms`` — three outcomes, not two, because "the
+Exit codes for ``diff`` and ``realms`` — three VERDICTS, not two, because "the
 identity moved" and "we failed to read it" are different facts and a caller
-must be able to tell them apart from the exit code alone:
+must be able to tell them apart from the exit code alone; plus a fourth code
+that is not a verdict at all, the refusal:
 
     0   every probe was READ and agreed
     1   at least one probe genuinely differs — a reading changed, a probe that
@@ -31,6 +32,15 @@ must be able to tell them apart from the exit code alone:
         prints "no differences" and exits 0 — the tool at its most confident
         with the least evidence. Never 1 either, for the reason ``compare``
         already gives below: a refusal is not a finding
+
+That refusal covers a file that PARSED but is not a snapshot. Two input
+failures are still NOT covered and remain as they were before it existed: a
+path that does not exist, and a file that is not valid JSON, both still exit
+**1** with a traceback rather than a refusal. 1 is the DRIFT code, so those
+two read as "the identity moved" — which is precisely the confusion 2 exists
+to end, and a typo'd path is the likeliest way into them. Verified identical
+with the guard absent, so this is pre-existing and not a regression of it;
+closing it is a separate slice. ``baseline.py`` already guards both.
 
 Note which side of that line the asymmetric case falls on: a vector that read
 "Apple GPU" in the baseline and throws after an engine update exits **1**, not
@@ -203,13 +213,15 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     obtained reading is never a pass — but what produces each one is inverted:
     here the pass is the two profiles DIFFERING on every compared vector.
 
-    A FOURTH outcome is possible here and only here: exit 2, the refusal. When
-    the two snapshots cannot answer the unlinkability question at all — one
-    profile compared with itself, or two engines compared as if they were one —
-    both verdicts this mode can give would be wrong, so it gives neither. 2 is
-    reused from ``record``'s "could not do the thing you asked" rather than
-    minted fresh, and it is deliberately NOT 1: a refusal is not a finding, and
-    a future gate must not read it as a leak.
+    Exit 2, the refusal, is reachable here on a premise specific to this mode:
+    when the two snapshots cannot answer the unlinkability question at all —
+    one profile compared with itself, or two engines compared as if they were
+    one — both verdicts this mode can give would be wrong, so it gives neither.
+    ``diff`` and ``realms`` also refuse with 2, on their own premise (the input
+    was not a snapshot); what is specific to this mode is the premise, not the
+    code. 2 is reused from ``record``'s "could not do the thing you asked"
+    rather than minted fresh, and it is deliberately NOT 1: a refusal is not a
+    finding, and a future gate must not read it as a leak.
     """
     try:
         entries = compare_profiles(

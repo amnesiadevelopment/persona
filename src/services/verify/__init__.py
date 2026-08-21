@@ -25,6 +25,7 @@ package must stay importable in. Import it directly where you need it.
 
 from .diff import (
     INCONCLUSIVE,
+    NotASnapshot,
     diff_realms,
     diff_snapshots,
     format_diff,
@@ -49,6 +50,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "WINDOW",
     "WORKER",
+    "NotASnapshot",
     "Probe",
     "build_snapshot",
     "canonicalise",
