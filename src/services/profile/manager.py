@@ -235,6 +235,54 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
         except Exception as e:
             logger.exception("Error saving profiles: %s", e)
 
+    def _reserved_seeds(self) -> set[int]:
+        """Every fingerprint seed a live OR trashed profile is holding.
+
+        The isolation half of the seed invariant is enforced against this set:
+        a new or imported profile must not be minted onto a seed another
+        profile is already presenting, or the two share a resolution, a device
+        preset, touch points and a --fingerprint= — i.e. they are linkable to
+        each other, which is the one thing this whole area exists to prevent.
+
+        Reads `fingerprint_seed` (the property), not `fingerprint_seed_value`
+        (the field), deliberately: a profile that predates the field still
+        PRESENTS a seed — its crc32(name) fallback — and a collision with that
+        is just as linkable as a collision with a frozen one. Comparing raw
+        fields would see None for every old profile and miss all of them.
+
+        TRASHED profiles are counted, and that is load-bearing rather than
+        cautious. A trashed profile can come BACK, and restore_profile rebuilds
+        it verbatim from its stored payload — it must, since re-rolling a
+        restored profile's seed would hand its cookie jar back under a changed
+        machine, the very thing that path refuses in writing. So a trashed
+        seed cannot be re-minted later; it has to be held aside NOW. Otherwise
+        the codebase's own documented remedy ("Free the name and restore
+        again") manufactures the collision: trash 'alpha', recreate 'alpha',
+        rename it to 'alpha-2', restore — and both sit on crc32('alpha').
+        Reserving here is what lets restore stay verbatim.
+
+        A trash store that cannot be read is treated as reserving nothing: a
+        create must not fail because trash.json is unreadable, and the live
+        half of the set is still enforced.
+
+        Call under `self._lock`. It is a snapshot, so a caller that mints from
+        it after releasing the lock can still race another create.
+        """
+        seeds = {p.fingerprint_seed for p in self.profiles.values()}
+        try:
+            for entry in self._trash().list("profile"):
+                payload = entry.payload or {}
+                value = payload.get("fingerprint_seed_value")
+                if isinstance(value, int) and not isinstance(value, bool):
+                    seeds.add(value)
+                elif payload.get("name"):
+                    # Pre-field trashed record: it would restore onto the
+                    # crc32(name) fallback, so that is the value to reserve.
+                    seeds.add(mint_fingerprint_seed(str(payload["name"])))
+        except Exception:
+            logger.exception("Could not read trashed seeds; reserving live only")
+        return seeds
+
     def add_profile(
         self,
         name: str,
@@ -292,7 +340,19 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                 # rename moves the name and the data dir while the presented
                 # machine stays put. Mint only on CREATE: writing this on any
                 # edit path would re-roll the very thing it exists to pin.
-                fingerprint_seed_value=mint_fingerprint_seed(name),
+                #
+                # `taken` is what keeps the OTHER half of the invariant alive.
+                # Freezing the seed made the name reusable-with-consequences:
+                # rename 'acme-bank' away and create it again, and plain
+                # crc32(name) hands the new profile the seed its predecessor is
+                # still holding — two live profiles, one presented machine.
+                # Passing the live seeds makes the mint skip a value already in
+                # use. Read INSIDE the same `with self._lock` as the
+                # check-then-insert above, so two concurrent adds cannot both
+                # see a stale set and mint the same seed.
+                fingerprint_seed_value=mint_fingerprint_seed(
+                    name, self._reserved_seeds()
+                ),
             )
             self.save_profiles()
             pathlib.Path(self._data_path(name)).mkdir(exist_ok=True, parents=True)
@@ -797,6 +857,42 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                     coherence_error(profile.os_type, profile.engine),
                 )
             profile.engine = resolved
+
+            # The archive chose this profile's fingerprint seed. import_from_zip
+            # has already thrown out anything that is not a real crc32 integer,
+            # but a WELL-FORMED value can still be the wrong one: it may be the
+            # exact seed a profile already on this machine is presenting. That
+            # happens innocently (export 'client-alpha', rename it to
+            # 'client-alpha-old', re-import the archive — both now claim
+            # crc32('client-alpha')) and deliberately (a shared archive
+            # hand-edited to a victim profile's seed, pinning the import onto
+            # its resolution, device preset, touch points and --fingerprint=).
+            # Either way the result is two profiles presenting one machine.
+            #
+            # Re-mint rather than refuse, matching the normalise-don't-refuse
+            # choice made for the coherence pair just above: an operator
+            # recovering a profile should not be stranded by a clash they cannot
+            # see or edit. The archive's seed is KEPT whenever it is free, so the
+            # ordinary "move my profile to another machine" import carries its
+            # identity across untouched — which is the whole point of exporting
+            # one. `overwrite` re-imports over the profile's own record, so its
+            # seed is excluded from the reserved set; otherwise a profile would
+            # collide with itself and get needlessly re-rolled.
+            reserved = self._reserved_seeds()
+            if overwrite and peeked in self.profiles:
+                reserved.discard(self.profiles[peeked].fingerprint_seed)
+            if profile.fingerprint_seed in reserved:
+                previous = profile.fingerprint_seed
+                profile.fingerprint_seed_value = mint_fingerprint_seed(
+                    profile.name, reserved
+                )
+                logger.warning(
+                    "Imported profile %r carried a fingerprint seed (%s) already "
+                    "held by another profile; minted %s instead so the two do "
+                    "not present the same machine.",
+                    profile.name, previous, profile.fingerprint_seed_value,
+                )
+
             self.profiles[profile.name] = profile
             self.save_profiles()
         logger.info("Registered imported profile: %s", profile.name)

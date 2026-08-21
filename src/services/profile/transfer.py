@@ -126,6 +126,46 @@ def import_from_zip(
                 k: v for k, v in profile_data.items()
                 if k in field_names and k != "name"
             }
+
+            # That automatic round-trip is a feature, but it means an UNTRUSTED
+            # archive also gets to choose the profile's fingerprint seed — the
+            # integer the whole presented machine derives from. Two consequences,
+            # both reachable with a hand-edited profile.json:
+            #
+            #  * a non-integer sails in and is stored verbatim, then hard-crashes
+            #    the launch path the first time something does arithmetic on it
+            #    (touch_points in process.py: "not all arguments converted during
+            #    string formatting");
+            #  * an attacker-chosen value pins the imported profile onto ANOTHER
+            #    profile's exact seed, i.e. deliberate cross-profile linkage.
+            #
+            # So the seed is validated here exactly like the name above: keep it
+            # only if it is a genuine in-range crc32 integer, else DROP the key.
+            # Dropping is the right failure — it lands the profile on the
+            # crc32(name) fallback rather than refusing an otherwise-importable
+            # archive, and an operator recovering an old export is not punished
+            # for a field their build never wrote. bool is excluded on purpose:
+            # it is an int subclass, and True would silently become seed 1.
+            #
+            # This is the TYPE half only. Whether the (now valid) seed collides
+            # with a profile already on this machine is the REGISTRY's question,
+            # and import_profile answers it — this function has no view of the
+            # live profiles.
+            if "fingerprint_seed_value" in known:
+                seed = known["fingerprint_seed_value"]
+                if seed is not None and not (
+                    isinstance(seed, int)
+                    and not isinstance(seed, bool)
+                    and 0 <= seed <= 0xFFFFFFFF
+                ):
+                    logger.warning(
+                        "Profile archive %r carried an invalid fingerprint seed "
+                        "(%r); dropping it, the profile will derive one from its "
+                        "name.",
+                        name, seed,
+                    )
+                    known.pop("fingerprint_seed_value")
+
             profile = Profile(name=name, **known)
 
             data_files = [f for f in zipf.namelist() if f.startswith("data/")]
