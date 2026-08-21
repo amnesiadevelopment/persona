@@ -317,9 +317,14 @@ def test_allow_missing_does_not_cover_a_present_but_unusable_digest():
     for flattens in ("sha256:", ":", "sha256: ", "   ", "\t\n"):
         assert httpdl.normalize_digest(flattens) == "", flattens
 
-    # Only a genuinely absent digest keeps the opt-in — and "absent" must mean
-    # exactly what the one gate that grants the opt-in means by it
-    # (engine/updater.py: `allow_unverified = not digest and IS_LINUX`).
+    # Only a genuinely absent digest keeps the opt-in. No caller in persona
+    # passes allow_missing=True any more — PS-49 removed the one gate that did
+    # (engine/updater.py's `allow_unverified = not digest and IS_LINUX`), so the
+    # engine path now refuses an undigested asset on every OS. The distinction
+    # is still pinned here because `digest_missing` is now the predicate the
+    # engine REFUSAL itself is written in: the same one word decides whether an
+    # operator is told "no digest was published" or an unusable digest is simply
+    # rejected.
     for blank in ("", None):
         assert httpdl.digest_missing(blank) is True, blank
         assert httpdl.verify_bytes(b"anything", blank) is False, blank

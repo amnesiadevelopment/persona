@@ -176,9 +176,18 @@ def is_installed() -> bool:
 def sha256_ok(data: bytes, digest: str | None, allow_missing: bool = False) -> bool:
     """Verify data against a sha256 digest. An absent digest fails closed: an
     unverifiable asset could be a MITM swap, so we refuse it — UNLESS the caller
-    opts in with allow_missing (the Linux predictable-URL fallback, where the
-    asset lives outside the API that carries the digest, has no other source).
-    A present-but-wrong digest is always rejected.
+    opts in with allow_missing. A present-but-wrong digest is always rejected.
+
+    NOTHING IN persona PASSES allow_missing=True ANY MORE (PS-49). The one
+    caller that did was the engine download's Linux predictable-URL fallback,
+    and it turned out not to need it: upstream publishes a sha256 for every
+    asset persona matches, so the engine path now verifies on every OS with no
+    platform carved out. The parameter survives because it is httpdl's
+    project-wide vocabulary — `digest_missing` vs "a digest arrived and is
+    unusable" is a distinction worth keeping expressible and tested — not
+    because any path is entitled to it. If you find yourself reaching for it,
+    the question to answer first is why a digest cannot be had, because last
+    time the answer was "it can".
 
     This is the project-wide missing-checksum policy, and it now lives in one
     place (utils.httpdl) that the app updater shares — the app path used to fail
@@ -553,14 +562,21 @@ def download_engine(
     timeout: int = 600,
     digest: str | None = None,
     progress=None,
-    allow_unverified: bool = False,
     defer_if_in_use: bool = False,
     log=None,
 ) -> bool:
     """Download the per-OS engine asset and install it so the launcher finds the
     runnable binary at ENGINE_BINARY. `progress(done, total)` is called as bytes
-    arrive. A missing digest fails closed unless allow_unverified is set (the
-    Linux predictable-URL fallback, whose asset carries no digest).
+    arrive. A missing digest ALWAYS fails closed, on every OS.
+
+    There is deliberately no `allow_unverified` opt-in any more (PS-49). One
+    existed, one caller set it (`not digest and IS_LINUX`), and it forwarded to
+    a gate that returns it verbatim WITHOUT EVER HASHING — so Linux installed
+    engine binaries whose bytes nothing had checked while Windows and macOS
+    refused the identical asset. Removed rather than merely left unset: an
+    unused escape hatch is one edit away from being used again, and the caller
+    that wanted it turned out not to need it (upstream publishes a digest for
+    every asset persona matches — see ensure_engine).
 
     `defer_if_in_use` is for the UNATTENDED caller, and it is the whole reason
     the in-use oracle lives in this module rather than at the decision site.
@@ -597,27 +613,29 @@ def download_engine(
     # disk, and this is the same fail-closed digest gate the download itself
     # applies, so a truncated or tampered leftover is discarded, not installed.
     #
-    # NOTE the deliberate absence of `allow_missing=allow_unverified` here, which
-    # is what makes that promise true. `allow_missing` is an opt-in to accept
-    # bytes THIS RUN JUST FETCHED from the source when no digest was published —
-    # a weak provenance, but a provenance. A leftover has none: verify_file
-    # short-circuits on a missing digest and returns allow_missing WITHOUT EVER
-    # HASHING, so passing it through would make have_asset True for any file that
-    # happens to hold this name, and promote it into the engine tree unread. So
-    # the reuse path asks the stricter question — is there a digest, and does the
-    # file match it — and re-downloads whenever it cannot verify.
+    # NOTE the deliberate absence of any `allow_missing=` here, which is what
+    # makes that promise true. Before PS-49 this line forwarded the caller's
+    # `allow_unverified`, and the asymmetry was load-bearing: `allow_missing`
+    # was an opt-in to accept bytes THIS RUN JUST FETCHED from the source when
+    # no digest was published — a weak provenance, but a provenance. A leftover
+    # has none: verify_file short-circuits on a missing digest and returns
+    # allow_missing WITHOUT EVER HASHING, so passing it through would make
+    # have_asset True for any file that happens to hold this name, and promote
+    # it into the engine tree unread.
     #
-    # This costs the optimisation nothing: the deferral that motivated reuse
-    # always carries the digest its first pass verified against, and the one
-    # caller that sets allow_unverified (ensure_engine's Linux predictable-URL
-    # fallback, `not digest and IS_LINUX`) has no digest to reuse against anyway.
+    # PS-49 removed the opt-in entirely, so both halves now ask the same
+    # stricter question — is there a digest, and does the file match it — and
+    # the download re-runs whenever it cannot verify. This paragraph survives
+    # the parameter it was written about because the reasoning is what stops
+    # someone re-introducing a hatch on the reuse side: the two look identical
+    # at the call site and have opposite security properties.
     have_asset = (
         not httpdl.digest_missing(digest)
         and os.path.isfile(asset_path)
         and httpdl.verify_file(asset_path, digest)
     )
     if not have_asset and not _download_to(
-        asset_path, url, timeout, digest, progress, allow_missing=allow_unverified
+        asset_path, url, timeout, digest, progress
     ):
         return False
     # Serialise the extract/move + marker: two concurrent installs into the
@@ -770,17 +788,83 @@ def ensure_engine(
         if not url:
             last = "could not reach GitHub releases"
             continue
-        # A missing digest is only expected on the Linux predictable-URL
-        # fallback (the asset lives outside the API that carries the digest).
-        # Everywhere else a missing digest means an unverifiable asset — don't
-        # allow it.
-        allow_unverified = not digest and _platform.IS_LINUX
+        # THE FOURTH REFUSAL, AND NO PLATFORM IS CARVED OUT OF IT (PS-49).
+        #
+        # This used to read `allow_unverified = not digest and IS_LINUX` and
+        # hand that permission to download_engine, which forwarded it as
+        # `allow_missing` to a gate that returns it VERBATIM without ever
+        # hashing. Windows and macOS refused a digest-less asset; Linux
+        # installed one. So on that path persona installed — and then launched —
+        # a browser binary whose bytes nothing had checked, fetched from a URL
+        # built by string-formatting a tag. Anything able to answer that request
+        # chose the engine that executes untrusted remote code on the operator's
+        # machine. install.sh calls itself "the initial-install trust root that
+        # every later in-app update check builds on" and refuses what it cannot
+        # verify; this is one of those later updates and it did the opposite.
+        #
+        # The exemption existed for the Linux predictable-URL fallback, whose
+        # asset was believed to carry no digest. MEASURED AGAINST UPSTREAM
+        # (2026-08-21, adryfish/fingerprint-chromium) BOTH HALVES OF THAT
+        # BELIEF ARE FALSE:
+        #
+        #   * The digest is not unobtainable — it is already in hand. Every
+        #     asset of every release that publishes an AppImage (148, 144, 142,
+        #     139) carries `digest: "sha256:…"` in the very asset list this
+        #     function already reads, the AppImage included, and _asset_matches
+        #     matches it. The release body publishes no checksums file, so the
+        #     API field is THE source, and we were already holding it.
+        #   * The fallback never bought the availability it cost integrity for.
+        #     It fires on `tag and not url and IS_LINUX` — i.e. only when the
+        #     matcher found nothing — and on every such release (138 and older,
+        #     which ship `_linux.tar.xz` and no AppImage at all) the URL it
+        #     formats 404s. It rescued no real release; it only ever widened
+        #     what persona would install without looking.
+        #
+        # So this removes a carve-out rather than converting one: on today's
+        # releases the digest is present and the refusal below is unreachable.
+        # It is still written, and still worded, because a digest-less release
+        # is historically real — 135 and older carry no digest on ANY asset —
+        # and that is exactly the shape a substitution would take.
+        #
+        # STATED AS ITS OWN MESSAGE, not folded into "Engine download failed".
+        # There are already three distinct situations with three distinct
+        # wordings (known-bad build, above the operator's ceiling, transfer
+        # failure). An unverifiable asset is a fourth, and it is not a transfer
+        # failure: the transfer would succeed perfectly. An operator told
+        # "download failed" retries forever against a condition retrying cannot
+        # change — the precise confusion the refuse/failed vocabulary exists to
+        # prevent. Returned rather than `continue`d for the same reason
+        # KNOWN_BAD returns: what upstream published will not differ across the
+        # remaining attempts.
+        #
+        # AND THIS BINDS ON THE FIRST INSTALL TOO, deliberately. The adjacent
+        # ABOVE_CEILING branch above once installed anyway on a first install
+        # because an app with no browser is worse than one with an untested
+        # browser (PS-42 has since inverted even that). That reasoning does not
+        # carry over here: untested is a bounded risk about a build's behaviour,
+        # unverified is an unbounded one about whether these are that build's
+        # bytes at all — and a first install is precisely when the operator has
+        # no previous engine and no way to notice a substitution.
+        if httpdl.digest_missing(digest):
+            asset = url.rsplit("/", 1)[-1] or "the engine asset"
+            message = (
+                f"Engine {tag} not installed: no sha256 digest was published "
+                f"for {asset}, so its contents cannot be verified. persona does "
+                "not install an unverified browser engine. This is not a "
+                "download failure and retrying will not change it."
+            )
+            # Logged HERE, for the reason the two branches above are: the
+            # onboarding caller reads only `ok` and discards this message, and
+            # the sidebar caller would render it behind "Engine download
+            # failed:" — blaming the network for a refusal persona made.
+            if log:
+                log(message)
+            return False, message
         if download_engine(
             url,
             timeout=timeout,
             digest=digest,
             progress=progress,
-            allow_unverified=allow_unverified,
         ):
             write_version(tag)
             return True, tag

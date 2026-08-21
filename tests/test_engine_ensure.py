@@ -259,7 +259,13 @@ def test_download_to_refuses_missing_digest(tmp_path, monkeypatch):
 
 
 def test_download_to_allows_missing_digest_when_opted_in(tmp_path, monkeypatch):
-    # Linux fallback path: allow_missing=True lets an un-digested asset install
+    # The PRIMITIVE still honours an explicit opt-in — but NOTHING IN persona
+    # passes one any more (PS-49 removed the Linux predictable-URL carve-out
+    # that was its only caller, so the engine verifies on every OS). Kept
+    # because the opt-in's semantics stay tested vocabulary: this is what
+    # distinguishes "nothing was published" from "a digest arrived and is
+    # unusable", which the engine refusal is now written in terms of. It is not
+    # a live install path — see the ensure_engine refusal tests.
     path = tmp_path / "engine.bin"
     payload = b"engine-bytes"
 
