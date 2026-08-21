@@ -436,3 +436,174 @@ def test_auto_update_resumes_once_the_pin_is_cleared(monkeypatch):
     app._auto_update_engine2()
 
     assert downloaded == ["firefox-20"]
+
+
+# --- the update AFFORDANCE must know about the pin too ----------------------
+#
+# The auto-update guard above stops the UNATTENDED path. But "is there an
+# update to offer?" is a second, separate decision, and it drives the row's
+# text, its update dot and the click that starts a download. Left on the
+# pre-revert assumption that "newest installed" and "what launches" are the
+# same thing — the very assumption retention breaks — the panel advertises an
+# update the operator just rejected, and clicking it re-downloads a build that
+# is ALREADY UNPACKED ON DISK (the pin is what kept it there) only to leave the
+# pin, and so the launched build, unchanged.
+
+
+def _engine2_row_app(monkeypatch, *, current, latest, pin, fetched=None):
+    """An App stub for the ROW decisions (offer / click / status), as opposed to
+    _engine2_app above which drives the unattended startup path."""
+    from src.services.browser import invisible_launch as inv
+    from src.services.engine import firefox as ff
+    from tests.test_app_ui import make_app
+
+    monkeypatch.setattr(inv, "is_invisible_installed", lambda: True)
+    monkeypatch.setattr(inv, "pinned_build", lambda: pin)
+    monkeypatch.setattr(ff, "current_version", lambda: current)
+    monkeypatch.setattr(ff, "fetch_latest", lambda: (fetched or latest, True))
+
+    app = make_app(None)
+    app._engine2_busy = False
+    app._engine2_checking = False
+    app._engine2_latest = latest
+    app._engine2_compatible = True
+    app._engine2_status = ""
+    app._log = lambda *a, **k: None
+    app._refresh_engine_text = lambda *a, **k: None
+    routed = []
+    app._update_engine2_async = lambda: routed.append("DOWNLOAD")
+    app._check_engine2_async = lambda: routed.append("CHECK")
+    app._ensure_engine2_async = lambda: routed.append("ENSURE")
+    return app, routed
+
+
+def test_a_pinned_engine_is_not_advertised_as_updatable(monkeypatch):
+    # THE AFFORDANCE/OUTCOME SPLIT. Operator reverted to firefox-19 because
+    # firefox-20 was bad for them; firefox-20 is still retained on disk. The
+    # row must not tell them they are out of date, must not show the update
+    # dot, and clicking must not start a ~320-600MB download over Tor that
+    # ends with the pin — and the launched build — exactly as it was.
+    app, routed = _engine2_row_app(
+        monkeypatch, current="firefox-19", latest="firefox-20", pin="firefox-19"
+    )
+
+    assert app._engine2_update_available() is False, (
+        "a pinned engine must not be advertised as updatable — the build "
+        "being offered is the one the operator deliberately went back from"
+    )
+    assert not app._engine2_status_text().startswith("update →"), (
+        app._engine2_status_text()
+    )
+
+    app._on_engine2_click()
+
+    assert "DOWNLOAD" not in routed, (
+        "clicking while pinned must not re-download a build already on disk; "
+        f"routed={routed}"
+    )
+
+
+def test_clearing_the_pin_restores_the_update_offer(monkeypatch):
+    # The pin must be the ONLY thing suppressing the offer: "resume updates"
+    # has to lead somewhere, or the operator is stranded on the old build with
+    # no way to move forward again.
+    app, routed = _engine2_row_app(
+        monkeypatch, current="firefox-19", latest="firefox-20", pin=""
+    )
+
+    assert app._engine2_update_available() is True
+    assert app._engine2_status_text() == "update → firefox-20"
+
+    app._on_engine2_click()
+
+    assert routed == ["DOWNLOAD"], routed
+
+
+def test_a_check_while_pinned_keeps_saying_why_it_is_not_updating(monkeypatch):
+    # While pinned there is no update to offer, so a click falls through to the
+    # re-check — which means this is the branch the operator actually reaches.
+    # It must HOLD the "pinned to <build>" line: clearing the status would drop
+    # the one sentence telling them a revert is in force, leaving the row on a
+    # bare version number with no explanation of why it never updates.
+    import src.ui.app as app_mod
+
+    app, _ = _engine2_row_app(
+        monkeypatch, current="firefox-19", latest="", pin="firefox-19",
+        fetched="firefox-20",
+    )
+    monkeypatch.setattr(app_mod.threading, "Thread", _InlineThread)
+
+    # NOT app._check_engine2_async() — the stub helper replaces that name with
+    # a click router. Drive the real method against the stub instance.
+    app_mod.App._check_engine2_async(app)
+
+    assert app._engine2_status == "pinned to firefox-19", app._engine2_status
+    assert app._engine2_status_text() == "pinned to firefox-19"
+
+
+class _InlineThread:
+    """Run the check body synchronously so the assertion is not a race."""
+
+    def __init__(self, target=None, daemon=None):
+        self._target = target
+
+    def start(self):
+        self._target()
+
+
+# --- a refused revert must be VISIBLE, not just logged ----------------------
+
+
+def _rollback_app(monkeypatch, *, went, retained):
+    """An App stub for the rollback CLICK, with the service decision stubbed."""
+    from src.services.browser import invisible_launch as inv
+    from tests.test_app_ui import make_app
+
+    monkeypatch.setattr(inv, "revert_to_previous_build", lambda **k: went)
+    monkeypatch.setattr(inv, "rollback_target", lambda: retained)
+
+    app = make_app(None)
+    app._engine2_busy = False
+    app._engine2_checking = False
+    app._engine2_status = ""
+    app._log = lambda *a, **k: None
+    app._refresh_engine_text = lambda *a, **k: None
+    app._refresh_sidebar = lambda *a, **k: None
+    return app
+
+
+def test_a_refused_revert_says_so_on_the_row(monkeypatch):
+    # The gesture has no progress bar and finishes in milliseconds, so a
+    # refusal that only reaches the log is indistinguishable from a dead
+    # button: the operator clicks "go back to firefox-19" and nothing moves.
+    # The running-profile case is the one they can act on, so the row must say
+    # what to DO about it.
+    app = _rollback_app(monkeypatch, went="", retained="firefox-19")
+
+    app._on_engine2_rollback()
+
+    assert app._engine2_status == "close your profiles to go back", (
+        app._engine2_status
+    )
+
+
+def test_a_revert_with_nothing_retained_says_that_instead(monkeypatch):
+    # The two refusals are not interchangeable: telling someone to close
+    # profiles when there is simply no retained build sends them to do
+    # something that cannot help.
+    app = _rollback_app(monkeypatch, went="", retained="")
+
+    app._on_engine2_rollback()
+
+    assert app._engine2_status == "nothing to go back to", app._engine2_status
+
+
+def test_a_successful_revert_leaves_the_row_clean(monkeypatch):
+    # No refusal to explain — the status must not keep a stale complaint from
+    # an earlier failed attempt.
+    app = _rollback_app(monkeypatch, went="firefox-19", retained="firefox-19")
+    app._engine2_status = "close your profiles to go back"
+
+    app._on_engine2_rollback()
+
+    assert app._engine2_status == ""

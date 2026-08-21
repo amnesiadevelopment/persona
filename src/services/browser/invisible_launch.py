@@ -1348,11 +1348,17 @@ def _firefox_build_of(path: str) -> str:
 
 
 def _build_number_of(path_or_tag: str) -> int:
-    """The NN in a firefox-NN dir name or tag, or -1. Shares the tag grammar
-    with engine.firefox.build_number, applied to whatever _firefox_build_of
-    canonicalised out of a path."""
-    m = re.match(r"^firefox-(\d+)$", _firefox_build_of(path_or_tag) or "")
-    return int(m.group(1)) if m else -1
+    """The NN in a firefox-NN dir name or tag, or -1.
+
+    Delegates the tag grammar to engine.firefox.build_number rather than
+    re-implementing it: two parsers for one tag format drift, and that format
+    has already grown once (the package now appends the upstream version and a
+    timestamp, firefox-18_151.0_20260724001829 — #234). This function's own job
+    is the PATH part, which build_number does not do: _firefox_build_of strips
+    a full filesystem path down to the bare tag first."""
+    from ..engine.firefox import build_number
+
+    return build_number(_firefox_build_of(path_or_tag) or "")
 
 
 def _clear_downgrade_guard(profile_dir: str) -> bool:
@@ -1386,7 +1392,19 @@ def _clear_downgrade_guard(profile_dir: str) -> bool:
     try:
         os.remove(path)
         return True
+    except FileNotFoundError:
+        # No file, nothing to guard against — the ordinary case for a profile
+        # Firefox has never opened. Not a failure.
+        return False
     except OSError:
+        # The file IS there and could not be removed. This is NOT the benign
+        # case above and must not read as one: the downgrade guard survives,
+        # so the launch about to happen meets the "older version of Firefox"
+        # modal with nobody to click it and hangs instead of coming up. Say so
+        # loudly — matching what _reset_prefs_on_engine_build_change does on
+        # its own remove failure — because the symptom is otherwise a silent
+        # launch that never paints.
+        logger.exception("could not clear downgrade guard: %s", path)
         return False
 
 
