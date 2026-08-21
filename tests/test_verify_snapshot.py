@@ -1655,3 +1655,197 @@ def test_a_snapshot_recorded_before_variance_existed_still_compares():
     b = _profile_snapshot("bob")
     assert diff.compare_profiles(a, b), "an existing-shape snapshot must compare"
     assert diff.diff_snapshots(a, b) == []
+
+
+# --- a comparison of zero probes is not agreement (PS-41) -------------------
+#
+# The rule this module states at the top — an unobtainable reading is
+# inconclusive, and inconclusive is never a pass — enforced one rung ABOVE the
+# entries, on whether the file handed in is a snapshot at all.
+#
+# The defect these pin, executed at `0da857f` before the guard existed:
+#
+#   cli diff site/package.json site/package.json   ->  "no differences", exit 0
+#   cli realms site/package.json                   ->  "no differences", exit 0
+#   cli diff [1,2,3] ...                           ->  AttributeError,   exit 1
+#
+# `_probes` coerced a missing `probes` to `{}`, so zero probes compared, the
+# comparator returned `[]`, and an empty list IS the agreement signal. Note the
+# asymmetry, which is the whole argument: a non-snapshot on ONE side was
+# already caught (the real side's probes all read `removed`, exit 1); a
+# non-snapshot on BOTH sides was a clean pass. The tool was at its most
+# confident exactly when it held the least evidence.
+
+
+def _not_a_snapshot_files(tmp_path):
+    """Valid JSON that is not a snapshot, in the shapes an operator produces.
+
+    `object` is the typo case — a real file, wrong file. The other three are
+    valid JSON that is not even an object; they used to reach `_probes` as an
+    AttributeError traceback on the DRIFT exit code.
+    """
+    cases = {
+        "object": {"name": "persona-site", "version": "1.0.0"},
+        "list": [1, 2, 3],
+        "null": None,
+        "string": "hello",
+    }
+    out = {}
+    for label, payload in cases.items():
+        path = tmp_path / f"{label}.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        out[label] = path
+    return out
+
+
+def test_diff_refuses_two_non_snapshots_instead_of_reporting_agreement(tmp_path):
+    # AC1. The false GREEN, and the reason this is worse than the false red the
+    # same hole produces on the baseline path: a red gets investigated, and
+    # "no differences" gets believed.
+    from src.services.verify import cli
+
+    for label, path in _not_a_snapshot_files(tmp_path).items():
+        code = cli.main(["diff", str(path), str(path)])
+        assert code == 2, (
+            f"{label}: a comparison of zero probes is not agreement — it must "
+            "not exit 0, and a refusal is not a finding so it must not be 1"
+        )
+
+
+def test_realms_refuses_a_non_snapshot_instead_of_reporting_agreement(tmp_path):
+    # AC2. Same hole, the other entry point: two empty realms agree about
+    # everything, so this returned [] and rendered "no differences" too.
+    from src.services.verify import cli
+
+    for label, path in _not_a_snapshot_files(tmp_path).items():
+        code = cli.main(["realms", str(path)])
+        assert code == 2, f"{label}: zero realms compared is not agreement"
+
+
+def test_a_refusal_never_renders_as_no_differences(tmp_path, capsys):
+    # AC4, as behaviour rather than as an exit code: the OUTPUT must not say
+    # anything about differences either. "no differences" over a file that was
+    # never compared is the sentence this ticket exists to delete.
+    from src.services.verify import cli
+
+    path = _not_a_snapshot_files(tmp_path)["object"]
+    assert cli.main(["diff", str(path), str(path)]) == 2
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+
+    assert "differen" not in combined.lower(), (
+        "the refusal must not use the language of a comparison verdict"
+    )
+    assert "NOT agreement" in combined, "it must say plainly what did NOT happen"
+    assert str(path) in combined, "it must name the file the operator typed"
+    assert "record" in combined, "it must point at the command that makes one"
+
+
+def test_valid_json_that_is_not_an_object_refuses_without_a_traceback(tmp_path):
+    # AC3. These parsed fine and died in `_probes` with `'list' object has no
+    # attribute 'get'` — an uncaught traceback surfacing on exit 1, the DRIFT
+    # code. A traceback is not a diff verdict.
+    from src.services.verify import cli
+
+    files = _not_a_snapshot_files(tmp_path)
+    for label in ("list", "null", "string"):
+        path = files[label]
+        # No `pytest.raises`: the point is that nothing propagates.
+        assert cli.main(["diff", str(path), str(path)]) == 2, label
+        assert cli.main(["realms", str(path)]) == 2, label
+
+
+def test_the_comparators_themselves_refuse_not_merely_the_cli(tmp_path):
+    # The guard must live in the comparator, not only at the CLI boundary, so
+    # `baseline.py` and any future caller inherit it rather than each having to
+    # remember. Asserted on the real functions, not on a helper being called.
+    bad = {"name": "persona-site", "version": "1.0.0"}
+    good = _snapshot()
+
+    with pytest.raises(diff.NotASnapshot, match="no 'probes' object"):
+        diff.diff_snapshots(bad, bad)
+    with pytest.raises(diff.NotASnapshot):
+        diff.diff_realms(bad, probes.WINDOW, probes.WORKER)
+
+    # A non-snapshot on ONE side was already loud (exit 1, everything
+    # `removed`), but it is still not a comparison — refuse both orders.
+    with pytest.raises(diff.NotASnapshot):
+        diff.diff_snapshots(good, bad)
+    with pytest.raises(diff.NotASnapshot):
+        diff.diff_snapshots(bad, good)
+
+
+def test_a_snapshot_carrying_an_EMPTY_probes_object_still_compares(tmp_path):
+    # The boundary, pinned deliberately so the guard is not quietly widened
+    # later. `probes: {}` is a structurally valid snapshot that `record` can
+    # legitimately produce, and this slice answers only "is this a snapshot at
+    # all" — validating probe CONTENTS is the named successor slice, not this
+    # one. It must NOT be refused here.
+    empty = dict(_snapshot())
+    empty["probes"] = {}
+    assert diff.diff_snapshots(empty, empty) == []
+    assert diff.require_snapshot(empty) is empty
+
+
+# --- AC5: the regression guard. These describe the UNCHANGED behaviour ------
+
+
+def test_a_real_snapshot_pair_still_agrees_and_still_says_no_differences(tmp_path):
+    # AC5. The control that makes every assertion above evidence rather than
+    # noise: the guard must refuse non-snapshots WITHOUT touching what a real
+    # pair does. An all-value identical pair still exits 0 and still renders
+    # the exact string.
+    from src.services.verify import cli
+
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    snapshot.write(_snapshot(), str(a))
+    snapshot.write(_snapshot(), str(b))
+
+    assert cli.main(["diff", str(a), str(b)]) == 0
+    assert diff.format_diff(diff.diff_snapshots(_snapshot(), _snapshot())) == (
+        "no differences"
+    )
+
+
+def test_a_real_snapshot_read_on_neither_side_still_exits_three(tmp_path):
+    # AC5's other half, and the one that proves the guard did not swallow the
+    # inconclusive path PS-29 shipped: every reading unobtained is still 3 —
+    # NOT 0 (that would be the old false green) and NOT 2 (this IS a snapshot,
+    # so it was not refused; it was compared and found to rest on nothing).
+    from src.services.verify import cli
+
+    target = _must_differ_probe()
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    snapshot.write(
+        _profile_snapshot("acc", window_values={target: TypeError("x")}), str(a)
+    )
+    snapshot.write(
+        _profile_snapshot("acc", window_values={target: TypeError("x")}), str(b)
+    )
+
+    entries = diff.diff_snapshots(
+        snapshot.load(str(a)), snapshot.load(str(b))
+    )
+    assert entries, "an unread probe must be REPORTED, not skipped"
+    assert all(e["status"] == diff.INCONCLUSIVE for e in entries)
+    assert cli.main(["diff", str(a), str(b)]) == 3
+
+
+def test_compares_refusal_is_untouched_and_still_distinguishable(tmp_path):
+    # AC5. PS-35's `compare` refusal shares the exit code with the new one, so
+    # pin that BOTH still fire and still raise their OWN exception type — a
+    # guard that swallowed the other would be invisible from the exit code
+    # alone, since both are 2.
+    from src.services.verify import cli
+
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    snapshot.write(_profile_snapshot("acc"), str(a))
+    snapshot.write(_profile_snapshot("acc"), str(b))
+
+    assert cli.main(["compare", str(a), str(b)]) == 2
+    with pytest.raises(diff.ComparisonNotControlled):
+        diff.compare_profiles(_profile_snapshot("acc"), _profile_snapshot("acc"))
+
+    # And the two refusals are not the same exception wearing two names.
+    assert not issubclass(diff.NotASnapshot, diff.ComparisonNotControlled)
+    assert not issubclass(diff.ComparisonNotControlled, diff.NotASnapshot)
