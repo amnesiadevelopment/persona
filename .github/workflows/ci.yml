@@ -104,13 +104,18 @@ jobs:
         #
         # WHAT WAS MEASURED, AND WHERE
         #
-        #   ON THIS RUNNER (ubuntu-24.04, run 32531702342, before the Node pin):
+        #   ON THIS RUNNER (ubuntu-24.04, run 32531702342, BEFORE the Node pin):
         #     1 failed, 2454 passed, 14 skipped, 107s
         #     The single failure was tests/test_ff_language_override.py::
         #     test_reported_values_are_unchanged, and it was NOT caused by the
-        #     change under test — see the Node note below. It is fixed at
-        #     source in this same change, so the expected floor on this job is
-        #     now ZERO.
+        #     change under test — see the Node note below.
+        #
+        #   ON THIS RUNNER (ubuntu-24.04, run 32534655026, AFTER the Node pin):
+        #     0 failed, 2463 passed, 14 skipped, 106.59s   <- THE FLOOR
+        #     Same job, same image, with node pinned to 24 (the log confirms
+        #     `node-version: 24` -> v24.19.0) and the harness fixed at source.
+        #     This is the figure to compare against: it was taken on the runner
+        #     this job actually runs on, not somewhere else.
         #
         #   IN A DEV CONTAINER (python 3.13 via uv, node pinned to 24 by hand):
         #     bare interpreter, deps NOT installed : 42 failed, 2321 passed
