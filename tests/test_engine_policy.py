@@ -302,9 +302,19 @@ def test_an_unparseable_tag_is_installable_and_that_is_deliberate():
     -1 does not refuse, and must not silently start to: an unparseable tag can
     never be OFFERED as an update anyway (is_newer parses it to () which
     compares below every installed version), so the only path it reaches is a
-    FIRST install — where persona deliberately takes an untested build rather
-    than leave the app with no browser at all. Refusing here would contradict
-    the ABOVE_CEILING asymmetry rather than reinforce it.
+    FIRST install. Refusing it HERE would mislabel a malformed upstream release
+    tag as a governance decision — persona has no opinion about a build it
+    cannot even name.
+
+    This is NOT the old ABOVE_CEILING asymmetry, which PS-42 removed: a first
+    install now refuses an operator-pinned build exactly as an update does (see
+    test_first_install_refuses_a_build_the_operator_pinned_below). The two cases
+    differ in kind — an operator ceiling is an instruction persona must obey, an
+    unreadable tag is an upstream oddity persona has no basis to refuse.
+
+    What stops such a build being ADVERTISED wrongly lives downstream, in
+    browser/engine_version.parse(), which refuses any tag it cannot read a full
+    version from. The guard sits where the version is claimed, not here.
     """
     assert policy.check("nightly") == (policy.OK, "")
     assert policy.is_installable("nightly") is True
@@ -731,21 +741,89 @@ def test_a_transient_failure_is_still_reported_as_a_download_failure(monkeypatch
     )
 
 
-def test_first_install_takes_an_above_ceiling_build_but_says_so(monkeypatch):
-    """Deliberately NOT symmetric with the update path. On an update, declining
-    costs nothing — a working engine is already installed. On a FIRST install
-    refusing would leave the app with no browser at all over a build that is
-    merely untested, and Chromium has no drivable older build to fall back to
-    the way Firefox has its package-pinned one. So: install, loudly."""
+def test_first_install_refuses_a_build_the_operator_pinned_below(monkeypatch):
+    """PS-42 INVERTED this path, so this test asserts the opposite of what it
+    used to. It also stubs the REAL policy.check message rather than inventing
+    one: the previous version stubbed "newer than persona has been tested
+    against", wording check() no longer produces, which is precisely what let an
+    incoherent operator-facing string survive unnoticed.
+
+    Before PS-42 ABOVE_CEILING was persona's own soft "not tested against this"
+    claim, which an operator could not lift without a persona release — so a
+    first install took the build anyway rather than strand them with no browser.
+    Now the verdict is reachable ONLY because the operator pinned max_tested_major
+    in their own file. Installing anyway would override an explicit instruction,
+    and refusing is recoverable in one local edit, so this refuses exactly as
+    KNOWN_BAD does."""
     monkeypatch.setattr(updater, "is_installed", lambda: False)
     monkeypatch.setattr(
         updater, "fetch_latest_full",
         lambda *a, **k: ("149.0.8000.10", "http://x/149", "sha256:n"),
     )
+    # The operator's own ceiling, exercised through the REAL policy code.
+    monkeypatch.setattr(policy, "_local_policy", lambda: {"max_tested_major": 148})
+    downloaded = []
     monkeypatch.setattr(
-        updater.policy, "check",
-        lambda tag: (policy.ABOVE_CEILING, "newer than persona has been tested against"),
+        updater, "download_engine", lambda *a, **k: downloaded.append(a) or True
     )
+    written = []
+    monkeypatch.setattr(updater, "write_version", written.append)
+
+    logs = []
+    ok, msg = updater.ensure_engine(attempts=3, log=logs.append)
+
+    assert ok is False, "persona must not install above a ceiling the operator set"
+    assert downloaded == [], "nothing may be downloaded past an operator's pin"
+    assert written == [], "and nothing may be recorded as installed"
+
+    joined = " ".join(logs)
+    assert joined, "the operator was told nothing at all"
+    # The refusal must name the build, their setting, and their file — that is
+    # what makes it recoverable in one edit rather than a dead end.
+    assert "149.0.8000.10" in joined
+    assert "max_tested_major" in joined
+    assert policy.POLICY_FILE in joined
+    # It must NOT read as a network problem: this is a decision, not a failure.
+    assert "download failed" not in joined.lower()
+    # And it must not contradict itself. The old branch concatenated "raise or
+    # remove max_tested_major to install it" with "Installing it anyway", which
+    # told the operator both things in one breath.
+    assert "anyway" not in joined.lower(), "persona claimed to refuse and install at once"
+    assert "untested" not in joined.lower(), (
+        "the reason is the operator's pin, not persona's testing claim"
+    )
+
+
+def test_an_operator_ceiling_refusal_does_not_burn_the_retry_attempts(monkeypatch):
+    """A verdict that comes from a local file cannot change on a retry, so the
+    refusal returns immediately instead of re-fetching — the same shape the
+    KNOWN_BAD branch uses."""
+    monkeypatch.setattr(updater, "is_installed", lambda: False)
+    fetches = []
+    monkeypatch.setattr(
+        updater, "fetch_latest_full",
+        lambda *a, **k: fetches.append(1) or ("149.0.8000.10", "http://x/149", "s"),
+    )
+    monkeypatch.setattr(policy, "_local_policy", lambda: {"max_tested_major": 148})
+    monkeypatch.setattr(updater, "download_engine", lambda *a, **k: True)
+    monkeypatch.setattr(updater, "write_version", lambda t: None)
+
+    ok, _msg = updater.ensure_engine(attempts=3, log=lambda m: None)
+
+    assert ok is False
+    assert len(fetches) == 1, "a local-file verdict was re-fetched as if it could change"
+
+
+def test_first_install_is_unaffected_when_the_operator_set_no_ceiling(monkeypatch):
+    """The default install path: persona ships no ceiling, so a brand-new major
+    installs with no human in the loop. This is the case PS-42 exists to make
+    routine, and it must not be caught by the refusal above."""
+    monkeypatch.setattr(updater, "is_installed", lambda: False)
+    monkeypatch.setattr(
+        updater, "fetch_latest_full",
+        lambda *a, **k: ("203.0.1.9", "http://x/203", "sha256:n"),
+    )
+    monkeypatch.setattr(policy, "_local_policy", dict)  # no operator overrides
     monkeypatch.setattr(updater, "download_engine", lambda *a, **k: True)
     written = []
     monkeypatch.setattr(updater, "write_version", written.append)
@@ -753,11 +831,9 @@ def test_first_install_takes_an_above_ceiling_build_but_says_so(monkeypatch):
     logs = []
     ok, msg = updater.ensure_engine(attempts=1, log=logs.append)
 
-    assert ok is True
-    assert written == ["149.0.8000.10"]
-    joined = " ".join(logs).lower()
-    assert "untested" in joined, "the untested state must be LOUD, not silent"
-    assert "tested against" in joined
+    assert (ok, msg) == (True, "203.0.1.9")
+    assert written == ["203.0.1.9"]
+    assert logs == [], "an ordinary install must stay silent"
 
 
 def test_first_install_of_a_good_build_is_unchanged_and_silent(monkeypatch):

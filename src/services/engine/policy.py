@@ -149,10 +149,18 @@ def major(tag: str) -> int:
     That is deliberate, and it is safe for a reason outside this function: an
     unparseable tag can never be OFFERED as an update, because ``is_newer()``
     parses it to an empty tuple which compares below every installed version.
-    The only path it can reach is a FIRST install, where persona takes an
-    untested build rather than leave the app with no browser at all — the same
-    answer the ABOVE_CEILING asymmetry already gives. Refusing here would
-    contradict that decision, not reinforce it.
+    The only path it can reach is a FIRST install, and refusing it HERE would
+    mislabel a malformed release tag as a governance decision — persona has no
+    opinion about a build it cannot name. Note this is not the ABOVE_CEILING
+    asymmetry, which no longer exists: since PS-42 a first install refuses an
+    operator-pinned build exactly as an update does. The two are different
+    cases. An operator ceiling is an instruction persona must obey; a tag with
+    no readable major is an upstream oddity persona has no basis to refuse.
+
+    What stops such a build being ADVERTISED wrongly is downstream and
+    unconditional: ``browser/engine_version.parse()`` refuses any tag it cannot
+    read a full version from, so a mobile profile fails closed rather than
+    guessing. The guard lives where the version is claimed, not here.
     """
     lead = (tag or "").strip().lstrip("v").split(".", 1)[0]
     digits = "".join(c for c in lead if c.isdigit())
