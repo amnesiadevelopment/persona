@@ -18,6 +18,13 @@ from .coherence import (
     coherent_engine,
     normalize_engine,
 )
+from .proxy_assignment import (
+    PROXY_NONE,
+    PROXY_UNCHANGED,
+    ProxyDirective,
+    proxy_for_new_profile,
+    resolve_proxy_assignment,
+)
 from .transfer import export_to_zip, import_from_zip, peek_profile_name
 
 logger = get_logger("profile.manager")
@@ -219,7 +226,7 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
     def add_profile(
         self,
         name: str,
-        proxy: str,
+        proxy: str | ProxyDirective | None,
         os_type: str,
         search_engine: str = "duckduckgo",
         bookmark_pool: str | None = None,
@@ -254,7 +261,10 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                 return False
             self.profiles[name] = Profile(
                 name=name,
-                proxy=proxy or None,
+                # Creation has nothing to preserve, so both directives mean "no
+                # proxy" here. Routed through the helper so a directive object
+                # can never be stored as if it were a proxy name.
+                proxy=proxy_for_new_profile(proxy),
                 os_type=os_type,
                 device_type=device_type,
                 engine=engine,
@@ -276,8 +286,8 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
         self,
         original_name: str,
         new_name: str,
-        new_proxy: str,
-        new_os: str,
+        new_proxy: str | ProxyDirective | None = PROXY_UNCHANGED,
+        new_os: str | None = None,
         new_search_engine: str | None = None,
         new_bookmark_pool: str | None = None,
         new_bookmarks: list[str] | None = None,
@@ -289,6 +299,21 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
         new_resolution: str | None = None,
         new_certificate: str | None = None,
     ) -> bool:
+        """Apply an edit to a profile.
+
+        ``new_proxy`` takes a proxy name, or one of the two directives in
+        ``proxy_assignment.py``: ``PROXY_UNCHANGED`` (the default — leave the
+        stored assignment alone) or ``PROXY_NONE`` (clear it, the operator chose
+        DIRECT). An empty value reads as UNCHANGED, never as a clear: clearing a
+        proxy is something a caller has to SAY. See that module for why absence
+        used to mean "clear" and what that cost.
+
+        ``new_os`` defaults to None = leave unchanged, for the same reason and
+        because Python cannot have a required argument follow a defaulted one.
+        Coherence is still judged on the pair the edit RESULTS IN, so an omitted
+        os_type is checked against the stored one exactly as an omitted engine
+        already was.
+        """
         with self._lock:
             if original_name not in self.profiles:
                 return False
@@ -315,12 +340,13 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                 new_engine if new_engine is not None
                 else getattr(_current, "engine", "chromium")
             )
+            _resulting_os = new_os if new_os is not None else _current.os_type
             _pair_changed = (
-                new_os != _current.os_type
+                _resulting_os != _current.os_type
                 or _resulting_engine != getattr(_current, "engine", "chromium")
             )
             if _pair_changed:
-                assert_coherent(new_os, _resulting_engine)
+                assert_coherent(_resulting_os, _resulting_engine)
 
             # Rename the data dir BEFORE touching any in-memory field, so a
             # locked/failed dir-rename (routine on Windows when the browser is
@@ -352,8 +378,17 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
 
             profile = self.profiles[new_name]
             profile.name = new_name
-            profile.proxy = new_proxy or None
-            profile.os_type = new_os
+            # The whole point of this ticket. `profile.proxy = new_proxy or None`
+            # made absence and emptiness both CLEAR the assignment, so an edit
+            # made for an unrelated reason (a rename, a note, a device type)
+            # silently un-assigned the proxy and the profile launched DIRECT on
+            # the operator's real IP. The launch guard could not object: it keys
+            # on the assignment being present, and there was no longer one to
+            # guard. Clearing is now something a caller SAYS (PROXY_NONE), never
+            # something it does by omitting a value.
+            profile.proxy = resolve_proxy_assignment(new_proxy, profile.proxy)
+            if new_os is not None:
+                profile.os_type = new_os
             if new_device_type is not None:
                 profile.device_type = new_device_type
             if new_engine is not None:
