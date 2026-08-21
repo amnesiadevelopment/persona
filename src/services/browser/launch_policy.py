@@ -12,9 +12,11 @@ instead of rediscovering them one engine at a time.
 """
 
 import os
+import time
 
 from ...core import platform as _platform
-from ..proxy.errors import GeographyUnknownError
+from ..proxy.errors import GeographyDisprovenError, GeographyUnknownError
+from ..proxy.freshness import proxy_indicator_state
 
 # Map a proxy's country to a sensible browser locale, so Accept-Language
 # matches the exit IP. Falls back to en-US when the country is unknown.
@@ -244,7 +246,10 @@ def _proxy_timezone(proxy) -> str:
 
     Two branches answer honestly: the zone the check recorded, else the zone
     implied by the checked country. Both describe the EXIT, which is the only
-    location a proxied persona may claim.
+    location a proxied persona may claim — but only while the product still
+    believes them. A stored zone whose most recent check FAILED is geography the
+    product's own latest evidence disproves, so it is refused BEFORE either
+    branch is consulted (see the guard below).
 
     An unchecked proxy (no geo at all) has no third answer. It used to fall back
     to the host zone, on the reasoning that UTC against a non-UTC exit IP is a
@@ -263,9 +268,72 @@ def _proxy_timezone(proxy) -> str:
     writes country_code + timezone (ProxyStore.mark_checked), and the profile
     then launches through the first or second branch declaring the exit's zone.
 
+    WHICH freshness states refuse, and why only these:
+
+    - "failed"     -> REFUSED. The check ran and did not pass, so the stored
+                      zone is contradicted by the product's own most recent
+                      evidence. A failure does not age into something softer.
+    - "unverified" -> refused ONLY when it also carries no geography, which is
+                      PS-31's existing no-geo branch below. A record with geo
+                      but no successful check on file is left launching here;
+                      see the note under the guard.
+    - "stale"      -> LAUNCHES. Verified, just old. Deliberately not merged with
+                      "failed": PROXY_STALE_AFTER_S was calibrated for a RENDER
+                      ("should this flag look confident?"), which does not
+                      transfer to a REFUSAL ("may this profile launch at all?").
+                      Rotating/backconnect proxies are the product's stated
+                      target configuration, so staleness is their steady state
+                      and a launch-time age limit would lock operators out of
+                      their own profiles between checks. A fabricated threshold
+                      is worse than a stale zone.
+    - "verified"   -> LAUNCHES, unchanged.
+
+    Reads stored state only — proxy_indicator_state never probes, so consulting
+    it here opens no socket. This function does not re-check the proxy, by
+    design: live verification is legitimate only as an explicit operator act.
+
     Raises:
+        GeographyDisprovenError: the last recorded check FAILED, so the stored
+            geography is disproven. A subclass of GeographyUnknownError, so
+            every existing fail-closed handler catches it unchanged.
         GeographyUnknownError: the proxy carries neither timezone nor country.
     """
+    # BEFORE the branches, not after: branch 1 would otherwise keep returning a
+    # stale zone forever, which is exactly the defect. `time.time()` only feeds
+    # the stale/verified split, which this guard does not act on — a failed
+    # check reads "failed" at any age, so the answer here is time-independent.
+    #
+    # GATED ON GEOGRAPHY BEING ON FILE, and that conjunct is load-bearing rather
+    # than defensive. "failed" is a verdict about the CHECK, not about the
+    # record: a brand-new proxy whose FIRST check fails (app.py's
+    # on_check_failed -> ProxyStore.mark_check_failed) reads "failed" with
+    # tz='' country='' — it never had geography for anything to disprove. Both
+    # states refuse either way, so this changes no launch outcome; it decides
+    # which SENTENCE the operator is told, and "the geography still on file is
+    # disproven" asserts a record that does not exist. Without the conjunct that
+    # case falls in here and gets a false explanation, replacing PS-31's true
+    # "never successfully checked" — the inverse of the error AC4 forbids, on
+    # the state a new operator is most likely to reach first. With it, a failed
+    # check carrying no geo falls through to PS-31's raise below, which
+    # describes it accurately.
+    if (proxy.timezone or proxy.country_code) and proxy_indicator_state(
+        proxy, time.time()
+    ) == "failed":
+        raise GeographyDisprovenError(
+            "the proxy's last check FAILED, so its recorded geography is "
+            "disproven: refusing to declare a location the most recent "
+            "evidence contradicts. Re-check the proxy to resolve it"
+        )
+    # NOTE — the tri-state row (`last_check_ok is None` WITH geography on file,
+    # e.g. a legacy/hand-edited proxies.json, which loads via store.py:62 as
+    # None) reads "unverified" and is deliberately left LAUNCHING by this slice.
+    # Refusing it is defensible on the shipped rule that a country code without
+    # a timestamp is not evidence, but it is a strictly wider behaviour change
+    # than the disproven case this ticket is scoped to, and it cannot be made
+    # here without editing assertions the ticket requires to pass untouched
+    # (the duck-typed proxy stand-ins in test_tz.py / test_geo_unknown_refusal.py
+    # / test_process.py carry geography but no check bookkeeping, so they all
+    # read "unverified"). Called out in the PR rather than decided silently.
     if proxy.timezone:
         return proxy.timezone
     if proxy.country_code:
