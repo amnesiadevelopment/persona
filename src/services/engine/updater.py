@@ -273,8 +273,12 @@ def fetch_latest_checked(timeout: int = 20) -> tuple[str, str, str, str, str]:
 
     * ``verdict == policy.OK`` — installable; url/digest are the fetch's.
     * ``policy.KNOWN_BAD`` — this exact build is on persona's known-bad list.
-    * ``policy.ABOVE_CEILING`` — newer than the Chromium major persona's masking
-      layer has been tested against; it needs a persona update, not a download.
+    * ``policy.ABOVE_CEILING`` — above a ceiling the OPERATOR set in their own
+      engine policy file. persona ships no Chromium ceiling since PS-42 (the
+      advertised version is derived from the installed engine, so there is no
+      constant for an engine to get ahead of), so this verdict is unreachable
+      unless someone asked for it. It needs an edit to THEIR file — not a
+      persona update, which would not lift a limit persona did not impose.
 
     On a refusal the URL and digest are BLANKED while the tag is preserved. That
     shape is deliberate: a caller that ignores the verdict still cannot install
@@ -691,8 +695,8 @@ def ensure_engine(
     leave the engine uninstalled — the same treatment the Firefox engine gets.
 
     ``log`` (optional) receives every operator-facing note this path produces:
-    the warning that a first install had to take an untested engine, and the
-    reason for any failure. That wording lives HERE, in one place, because the
+    the reason for a refusal (persona declining a build) and the reason for any
+    failure (the network). That wording lives HERE, in one place, because the
     refuse/failed distinction is only correct if one owner draws it — the two
     callers each got it wrong in a different way when they owned it (onboarding
     discarded the reason entirely; the sidebar prefixed a governance refusal
@@ -728,21 +732,41 @@ def ensure_engine(
             if log:
                 log(message)
             return False, message
-        # ABOVE_CEILING means "persona has not been SHOWN to work against this"
-        # — not that it is broken. On an UPDATE that is enough to decline: an
-        # engine is already installed and working, so the cost of waiting is
-        # zero. Here there is no engine at all, and refusing would leave the app
-        # with no browser at all over a build that is most likely fine. So
-        # install it and make the untested state LOUD rather than silent — that
-        # is the visible consequence the guard is for. Chromium has no drivable
-        # older build to fall back to the way the Firefox path has its
-        # package-pinned one, and /releases/latest offers no second candidate.
-        if verdict == policy.ABOVE_CEILING and log:
-            log(
-                f"{message} Installing it anyway — persona needs an engine to "
-                "run, but this build is untested against persona's masking "
-                "layer; verify before trusting a fingerprint taken under it."
-            )
+        # ABOVE_CEILING is now an OPERATOR instruction, and that inverted this
+        # branch's answer (PS-42). It used to mean "persona has not been SHOWN
+        # to work against this" — persona's own soft self-assessment, recorded
+        # in a shipped constant. Overriding a soft claim to avoid leaving the
+        # app with no browser at all was a defensible trade, because the
+        # operator could not lift that limit without a persona release: refusing
+        # would have stranded them with no engine and no local remedy.
+        #
+        # persona ships no ceiling now. The only way to reach this verdict is an
+        # operator who set max_tested_major in their own policy file, so the two
+        # halves of the old trade both flipped:
+        #
+        #   - Installing anyway does not override a self-assessment any more, it
+        #     overrides an EXPLICIT INSTRUCTION. They said "do not install above
+        #     major N"; persona is not entitled to do it anyway because it would
+        #     prefer to have a browser.
+        #   - The refusal is no longer a dead end. policy.check()'s message names
+        #     their file and the one-line edit that lifts it, so an operator who
+        #     did not mean to pin themselves out of an engine is one edit away
+        #     from an install — recoverable locally, without a persona release.
+        #
+        # So this now answers exactly as KNOWN_BAD does, and for the same
+        # reason: persona declining a build, said in those words, beats persona
+        # substituting its own judgement for the operator's. Retrying cannot
+        # change a verdict that comes from a local file, so return rather than
+        # burn the remaining attempts.
+        if verdict == policy.ABOVE_CEILING:
+            # Logged HERE for the same reason KNOWN_BAD is: the onboarding
+            # caller discards the returned message and the sidebar would prefix
+            # it with "Engine download failed:", blaming the network for a
+            # decision the OPERATOR made. The message already names their file
+            # and the edit; do not dress it up as an engine problem.
+            if log:
+                log(message)
+            return False, message
         if not url:
             last = "could not reach GitHub releases"
             continue
