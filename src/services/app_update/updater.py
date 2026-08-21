@@ -561,9 +561,11 @@ def verify_staged_installer(staged: str, tag: str = "", log=None) -> bool:
     no reachable release is blocked by this.
 
     There is no allow_missing opt-in here, on purpose: every app-update asset
-    has a digest source. The one call site in the project that genuinely has
-    none is the engine's Linux predictable-URL fallback, which opts in
-    explicitly at its own call.
+    has a digest source. Nor is there one anywhere else in persona any more —
+    the engine's Linux predictable-URL fallback used to opt in at its own call,
+    and PS-49 removed that carve-out after measuring that the asset it covered
+    carries a digest upstream all along. The primitive still accepts the flag;
+    nothing passes it.
     """
 
     def say(msg: str) -> None:

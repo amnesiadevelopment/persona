@@ -99,9 +99,25 @@ def test_fetch_latest_full_selects_per_os_asset(monkeypatch):
     assert url == "http://x/linux"
 
 
-def test_download_engine_forwards_digest_verification(monkeypatch, tmp_path):
-    # download_engine must pass the digest down; an un-digested asset is refused
-    # (allow_missing stays False by default), a digested one verifies as normal.
+def test_download_engine_refuses_an_undigested_asset_with_no_way_to_opt_out(
+    monkeypatch, tmp_path
+):
+    """download_engine passes the digest down, and an un-digested asset is
+    REFUSED AT THE TRANSFER ITSELF with no caller-supplied escape (PS-49).
+
+    The refusal lives here, not at a caller, and that is the point of this test
+    (PS-49 round 2): download_engine is the one thing BOTH entry points reach —
+    ensure_engine on first install, _update_engine_async on the sidebar update.
+    A refusal written at either caller covers one of them, which is exactly how
+    the update path kept saying "Engine update failed" for a condition retrying
+    cannot change.
+
+    Asserts the raise happens BEFORE any bytes move: the transfer is never
+    entered at all, so this is not merely a download that fails closed.
+
+    The TypeError assertion pins the seam where the permission used to enter —
+    `allow_unverified` is gone from the signature, so a caller cannot re-open
+    the hole by passing it."""
     calls = []
 
     def fake_download_to(path, url, timeout, digest, progress, allow_missing=False):
@@ -116,36 +132,84 @@ def test_download_engine_forwards_digest_verification(monkeypatch, tmp_path):
 
     # digested asset installs
     assert updater.download_engine("http://x/linux", digest="sha256:aa") is True
-    # un-digested asset is refused by default (fail-closed)
-    assert updater.download_engine("http://x/linux", digest="") is False
-    assert calls[-1] == ("", False)
-    # ...unless the caller explicitly allows it (Linux predictable-URL fallback)
-    assert (
-        updater.download_engine("http://x/linux", digest="", allow_unverified=True)
-        is True
+    assert calls[-1] == ("sha256:aa", False)
+
+    # un-digested asset is REFUSED — on Linux, the OS that used to be exempt —
+    # and refused by RAISING, not by returning False. False is the transfer-
+    # failed answer and both callers render it as "download failed"; this is a
+    # refusal, and must be distinguishable from a network problem.
+    before = len(calls)
+    with pytest.raises(updater.EngineUnverifiable) as excinfo:
+        updater.download_engine("http://x/e.AppImage", digest="", tag="148.0")
+    assert len(calls) == before, "no bytes may move for an asset we would refuse"
+
+    msg = str(excinfo.value)
+    assert "no sha256 digest" in msg
+    assert "e.AppImage" in msg, "the refusal must name what could not be verified"
+    assert "148.0" in msg
+    assert "download failure" in msg, "must say it is NOT a transfer failure"
+
+    # a digest that ARRIVED and is unusable is NOT this refusal — it is an
+    # ordinary mismatch for the verify gate to reject. Collapsing the two would
+    # describe a malformed digest to the operator as an upstream omission.
+    # Asserted as "reaches the transfer instead of raising": _download_to is
+    # stubbed here, so this test cannot (and must not claim to) show what the
+    # real verify gate does with "   " — only that this refusal declines to own
+    # it. test_engine_ensure.py covers the gate's own answer.
+    before = len(calls)
+    updater.download_engine("http://x/linux", digest="   ")
+    assert calls[before:] == [("   ", False)], (
+        "an unusable-but-present digest belongs to the verify gate, not to the "
+        "no-digest-was-published refusal"
     )
-    assert calls[-1] == ("", True)
+
+    # the opt-in no longer exists to be passed
+    with pytest.raises(TypeError):
+        updater.download_engine("http://x/linux", digest="", allow_unverified=True)
 
 
-def test_ensure_engine_allows_unverified_only_for_linux_fallback(monkeypatch):
-    # When fetch_latest_full returns a url but NO digest, that only happens on
-    # the Linux predictable-URL fallback — ensure_engine must allow it there.
+def test_ensure_engine_refuses_an_undigested_asset_on_linux_too(monkeypatch):
+    """The carve-out this ticket removes (PS-49): Linux used to install an
+    un-digested asset that Windows and macOS refused.
+
+    Measured against upstream on 2026-08-21, the exemption's premise was false
+    twice over — every asset persona matches carries a sha256, and the
+    predictable-URL fallback the exemption existed for 404s on every release
+    where it actually fires. So Linux now refuses like everyone else.
+
+    The refusal is RAISED BY download_engine (round 2), not owned here, so this
+    asserts ensure_engine translates it into its (ok, message) contract and gets
+    the reason to the operator — the onboarding caller reads only `ok` and
+    discards the message, so logging is the only way it is ever seen.
+
+    Asserts the REFUSAL REACHED THE OPERATOR IN ITS OWN WORDS, not just that
+    ok is False: an unverifiable asset is a fourth situation beside known-bad,
+    above-ceiling and a failed transfer, and 'download failed' would send an
+    operator retrying forever against something retrying cannot change."""
     _force_os(monkeypatch, linux=True)
     monkeypatch.setattr(updater, "is_installed", lambda: False)
     monkeypatch.setattr(
-        updater, "fetch_latest_full", lambda *a, **k: ("148.0", "http://x/linux", "")
+        updater, "fetch_latest_full", lambda *a, **k: ("148.0", "http://x/e.AppImage", "")
     )
     monkeypatch.setattr(updater, "write_version", lambda tag: None)
-    seen = {}
 
-    def fake_download(url, timeout=600, digest=None, progress=None, allow_unverified=False):
-        seen["allow_unverified"] = allow_unverified
-        return True
+    # NOT stubbed: the real download_engine must be the thing that refuses, so
+    # this test fails if the guard is ever moved back up to the caller. The
+    # transfer beneath it IS stubbed, and asserts it is never reached.
+    moved = []
+    monkeypatch.setattr(
+        updater, "_download_to", lambda *a, **k: moved.append(1) or True
+    )
+    logged = []
+    ok, msg = updater.ensure_engine(attempts=1, log=logged.append)
 
-    monkeypatch.setattr(updater, "download_engine", fake_download)
-    ok, msg = updater.ensure_engine(attempts=1)
-    assert ok is True
-    assert seen["allow_unverified"] is True
+    assert ok is False
+    assert moved == [], "an unverified asset must not be downloaded at all"
+    # the fourth message, distinguishable from a transfer failure
+    assert "download failed" not in msg.lower()
+    assert "no sha256 digest" in msg
+    assert "e.AppImage" in msg, "the refusal must name what could not be verified"
+    assert logged and logged[-1] == msg, "the reason must reach the operator"
 
 
 def _make_windows_zip(path, members):
@@ -250,25 +314,32 @@ def test_download_engine_serialized_by_lock(monkeypatch, tmp_path):
     assert overlap["max"] == 1
 
 
-def test_ensure_engine_refuses_unverified_off_linux(monkeypatch):
-    # On Windows/macOS a missing digest is NOT expected (assets always carry one)
-    # -> ensure_engine must NOT allow unverified there.
+def test_ensure_engine_refuses_an_undigested_asset_off_linux_as_it_always_did(
+    monkeypatch,
+):
+    """The half that was already correct, kept as a regression: Windows/macOS
+    refuse an un-digested asset. After PS-49 this is no longer a per-OS rule but
+    the same single rule, so this test and its Linux sibling above now assert
+    identical behaviour on purpose — that identity IS the fix."""
     _force_os(monkeypatch, win=True)
     monkeypatch.setattr(updater, "is_installed", lambda: False)
     monkeypatch.setattr(
-        updater, "fetch_latest_full", lambda *a, **k: ("148.0", "http://x/win", "")
+        updater, "fetch_latest_full", lambda *a, **k: ("148.0", "http://x/e.zip", "")
     )
     monkeypatch.setattr(updater, "write_version", lambda tag: None)
-    seen = {}
 
-    def fake_download(url, timeout=600, digest=None, progress=None, allow_unverified=False):
-        seen["allow_unverified"] = allow_unverified
-        return allow_unverified  # would only succeed if (wrongly) allowed
+    # Stubbed at the TRANSFER, not at download_engine: the refusal lives inside
+    # download_engine now (round 2), so stubbing that out would stub out the
+    # very behaviour under test and pass against a restored carve-out.
+    moved = []
+    monkeypatch.setattr(
+        updater, "_download_to", lambda *a, **k: moved.append(1) or True
+    )
+    ok, msg = updater.ensure_engine(attempts=1)
 
-    monkeypatch.setattr(updater, "download_engine", fake_download)
-    ok, _msg = updater.ensure_engine(attempts=1)
-    assert seen["allow_unverified"] is False
     assert ok is False
+    assert moved == [], "an unverified asset must not be downloaded at all"
+    assert "no sha256 digest" in msg
 
 
 # --- PS-38: a FAILED Chromium upgrade must leave the working build behind -----
@@ -680,22 +751,27 @@ def test_a_corrupt_leftover_asset_is_re_downloaded_not_installed(monkeypatch, tm
     assert binary.read_bytes() == new
 
 
-def test_an_unverifiable_leftover_is_re_downloaded_not_installed(monkeypatch, tmp_path):
+def test_an_unverifiable_leftover_is_refused_outright_not_reused(monkeypatch, tmp_path):
     """The case with NO digest to check against — where reuse is not merely
-    unverified but unverifiABLE, and must therefore not happen at all.
+    unverified but unverifiABLE.
 
     Distinct from the corrupt-leftover test above, which supplies a real digest
     and so exercises the hash comparison. Here there is nothing to compare to:
     verify_file short-circuits on a missing digest and answers `allow_missing`
-    WITHOUT READING THE FILE, so a reuse gate that forwards allow_unverified
+    WITHOUT READING THE FILE, so a reuse gate that forwarded such a permission
     would accept any bytes holding this name and promote them into the engine
-    tree unread. `allow_missing` licenses accepting what this run just fetched
-    from the source; a leftover has no such provenance.
+    tree unread.
 
-    Not hypothetical: ensure_engine derives exactly this pair for the Linux
-    predictable-URL fallback (`allow_unverified = not digest and IS_LINUX`)."""
+    THE ANSWER GOT STRICTER IN ROUND 2, and this test now pins the stricter one.
+    It used to assert the leftover was discarded and RE-DOWNLOADED — true while
+    a missing digest only disqualified the leftover. Now a missing digest is
+    refused at the top of download_engine, so there is no re-fetch either: bytes
+    we could never verify are not worth spending a download on, and installing
+    the result would be the very hole PS-49 closed.
+
+    The two properties that matter are unchanged and asserted below: the
+    unverifiable leftover is NOT installed, and it is not silently accepted."""
     engine_dir, binary = _engine_at(monkeypatch, tmp_path)
-    new = b"NEW-ENGINE"
     (engine_dir / "e").write_bytes(b"TRUNCATED-GARBAGE")  # right name, unverifiable
 
     downloads = []
@@ -703,18 +779,19 @@ def test_an_unverifiable_leftover_is_re_downloaded_not_installed(monkeypatch, tm
     def counted_download(path, *a, **k):
         downloads.append(1)
         with open(path, "wb") as f:
-            f.write(new)
+            f.write(b"NEW-ENGINE")
         return True
 
     monkeypatch.setattr(updater, "_download_to", counted_download)
     monkeypatch.setattr(updater, "_in_use_provider", lambda: False)
 
-    assert updater.download_engine(
-        "http://x/e", digest=None, allow_unverified=True
-    ) is True
+    with pytest.raises(updater.EngineUnverifiable):
+        updater.download_engine("http://x/e", digest=None)
 
-    assert downloads == [1], "a leftover with no digest to check must be re-fetched"
-    assert binary.read_bytes() == new, "the unverifiable leftover must not be installed"
+    assert downloads == [], "nothing to verify against means nothing worth fetching"
+    assert binary.read_bytes() == b"OLD-ENGINE", (
+        "the unverifiable leftover must not be promoted into the engine tree"
+    )
 
 
 def test_the_operators_click_installs_even_while_a_profile_runs(monkeypatch, tmp_path):

@@ -164,6 +164,32 @@ class App:
         # forever at an operator who keeps a profile open all day. Holds the tag
         # rather than a bool so a NEWER build supersedes it and speaks up again.
         self._engine_deferred_tag: str = ""
+        # The build persona REFUSED because upstream published no sha256 for it
+        # (PS-49). Distinct from _engine_deferred_tag above because the two
+        # resolve differently: a deferral ends when the operator closes their
+        # profiles, so retrying it hourly is the mechanism that lands it. This
+        # does not resolve until UPSTREAM publishes a digest, so retrying it is
+        # pure noise — the same fetch, the same refusal, every hour, forever.
+        #
+        # Consulted by _engine_update_available, which is the single predicate
+        # behind the row's "update → NN" text, the sidebar dot, the click
+        # handler AND the unattended hourly fetch. Keying the suppression there
+        # rather than at the four call sites is what makes the refusal actually
+        # stick: that docstring already promises a build persona would refuse is
+        # never advertised as available, and before this the fourth refusal was
+        # the one case that broke the promise — policy says OK, so nothing else
+        # suppressed the offer.
+        #
+        # Holds the TAG, not a bool, for the same reason the deferral does: a
+        # NEWER build is a new fact that upstream may well have published a
+        # digest for, so it supersedes this and is offered normally.
+        self._engine_unverifiable_tag: str = ""
+        # The refusal's own words, kept so the click path can REPLAY them rather
+        # than paraphrase them. _unverifiable_message is deliberately the single
+        # source of this wording (it names the specific asset that could not be
+        # verified); re-typing a shorter version here would be a fifth wording
+        # for a situation that already has exactly one, free to drift from it.
+        self._engine_unverifiable_msg: str = ""
         self._engines_open = False
         # An onboarding/changelog dialog owns the screen at startup; a staged
         # update that lands while it's open is held here and offered once the
@@ -1340,8 +1366,22 @@ class App:
         advertised as an available update — otherwise the operator clicks, the
         download is refused, and the row goes back to offering it forever.
         Mirrors _engine2_update_available's `not self._engine2_compatible` gate.
+
+        THE UNVERIFIABLE REFUSAL IS FOLDED IN HERE FOR EXACTLY THAT REASON
+        (PS-49). It is the one refusal the policy gate below cannot express:
+        KNOWN_BAD and ABOVE_CEILING both make is_installable False, which
+        suppresses the offer on their own. A digest-less release is policy-OK —
+        `policy.check` returns ('ok', '') for it — so without this clause the
+        row goes on advertising "update → NN" for a build persona has already
+        declined, the refusal message computed for the row is outranked and
+        never painted, and _auto_update_engine (which gates on this same
+        predicate and nothing else) re-fetches and re-refuses it every hour
+        forever. That is precisely the failure this docstring warns about two
+        paragraphs up.
         """
         if not engine.is_newer(self._engine_latest, engine.current_version()):
+            return False
+        if self._engine_unverifiable_tag == self._engine_latest:
             return False
         return engine_policy.is_installable(self._engine_latest)
 
@@ -1360,6 +1400,16 @@ class App:
         if self._engine_update_available():
             self._engine_status = ""
             return f"Chromium engine update available ({tag})"
+        # A build refused as unverifiable keeps its refusal on the row (PS-49).
+        # Checked BEFORE engine_policy.check below, because that call answers OK
+        # for a digest-less build — so the bottom of this method would fall
+        # through to `self._engine_status = ""` and erase the refusal on the very
+        # next hourly check, one tick after the operator was told about it. The
+        # three policy verdicts don't hit this because a refused verdict is
+        # never OK; the fourth refusal is decided at the transfer, not by the
+        # policy module, so it has to be re-asserted here.
+        if self._engine_unverifiable_tag == tag:
+            return ""
         # Not offered. Distinguish "persona refused this build" from the
         # ordinary "already current" case, so a declined engine is never
         # silently indistinguishable from being up to date.
@@ -2550,6 +2600,27 @@ class App:
                     line = self._record_engine_check(tag)
                     if line:
                         self._log(line)
+                    elif self._engine_unverifiable_tag == tag:
+                        # NOT "up to date" — a refused build is newer than what
+                        # is installed, and saying otherwise would be a plain
+                        # lie to an operator who just asked (PS-49 round 3).
+                        # Suppressing the offer is what routes a click here at
+                        # all, so this branch is a consequence of that gate and
+                        # has to answer for it.
+                        #
+                        # Answered on the CLICK but not on the hourly tick, on
+                        # purpose: this is an explicit gesture, and a question
+                        # asked deserves an answer every time. _record_engine_check
+                        # stays silent for the automatic path precisely so the
+                        # same sentence doesn't accumulate once an hour forever.
+                        #
+                        # REPLAYS the refusal's own words rather than
+                        # paraphrasing them: _unverifiable_message is the single
+                        # source of this wording and names the specific asset
+                        # that could not be verified. A second wording here
+                        # would be a fifth message for a situation that already
+                        # has exactly one, free to drift from it.
+                        self._log(self._engine_unverifiable_msg)
                     else:
                         self._log(
                             f"Chromium engine is up to date ({engine.current_version()})"
@@ -2658,6 +2729,7 @@ class App:
                     progress=self._engine_progress_cb,
                     defer_if_in_use=unattended,
                     log=self._log,
+                    tag=tag,
                 )
                 if ok:
                     # Record the tag from the fetch that produced THESE BYTES,
@@ -2674,9 +2746,48 @@ class App:
                     # build's deferral is announced instead of being mistaken
                     # for this one and silently swallowed.
                     self._engine_deferred_tag = ""
+                    # Same for a refusal, for the same reason (PS-49). Bytes
+                    # that verified are the direct contradiction of "this build
+                    # cannot be verified", so the suppression must not outlive
+                    # them: left set, it would go on hiding a build that just
+                    # installed successfully.
+                    self._engine_unverifiable_tag = ""
+                    self._engine_unverifiable_msg = ""
                     self._log(f"Engine updated to {tag}")
                 else:
                     self._log("Engine update failed")
+            except engine.EngineUnverifiable as e:
+                # A REFUSAL, NOT A FAILURE — and this is the path an EXISTING
+                # operator actually hits (PS-49 round 2). The first-install path
+                # goes through ensure_engine, which logs its own refusal; this
+                # one calls download_engine directly, so before the refusal was
+                # raised from inside the transfer this branch fell to the `else`
+                # above and said "Engine update failed". That blames the network
+                # for a decision persona made, about a condition retrying cannot
+                # change — so the operator retries forever. The message names
+                # the asset that could not be verified and says so explicitly.
+                #
+                # RECORDING THE TAG IS WHAT MAKES THE REFUSAL STICK (PS-49
+                # round 3). Setting _engine_status alone was inert: the row's
+                # renderer tests _engine_update_available() FIRST, and a
+                # digest-less release is policy-OK (`policy.check` -> ('ok',
+                # '')) while the refusal never calls write_version — so
+                # current_version stays old, _engine_latest stays new, the
+                # predicate stayed True and painted "update → NN" straight over
+                # this message. The status was computed and never rendered.
+                #
+                # The tag also puts a lid on the repeat. _auto_update_engine
+                # gates on that same predicate and nothing else, so the hourly
+                # tick re-fetched and re-refused this build every hour, logging
+                # the full refusal each time — forever, because unlike the
+                # deferral below it does not resolve when the operator closes a
+                # profile. Keyed by tag, so a NEWER build (which upstream may
+                # well have published a digest for) supersedes it and is
+                # offered normally.
+                self._engine_unverifiable_tag = tag or self._engine_latest
+                self._engine_unverifiable_msg = str(e)
+                self._engine_status = "engine could not be verified"
+                self._log(str(e))
             except engine.InstallDeferred:
                 # NOT a failure, and must not be reported as one: the network
                 # worked, the bytes are verified and on disk, and a profile was

@@ -41,6 +41,11 @@ def _stub(**over):
         # Tracks the build whose deferral has already been announced, so the
         # hourly retry doesn't repeat the same line forever.
         _engine_deferred_tag="",
+        # Same shape for the build refused as unverifiable (PS-49). Empty here
+        # because these tests are about the DEFERRAL axis — but the field has to
+        # exist, since _engine_update_available consults it and these stubs run
+        # the real method.
+        _engine_unverifiable_tag="",
         logs=[],
         updated=[],
         bl=SimpleNamespace(running_profile_names=lambda: set()),
