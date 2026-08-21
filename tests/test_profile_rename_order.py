@@ -736,3 +736,191 @@ def test_a_trashed_profiles_seed_is_not_handed_to_a_new_profile(trash_mgr):
     mgr.add_profile("alpha", "", "windows")
 
     assert mgr.profiles["alpha"].fingerprint_seed != trashed_seed
+
+
+# --- the rename path is the THIRD place a seed can change, and the one the
+# --- uniqueness rule did not reach. add_profile and import_profile MINT a seed
+# --- and consult the reserved set; update_profile does not mint at all, but a
+# --- PRE-FIELD profile derives its seed from its name on every read, so
+# --- renaming it moves its seed onto whatever the new name hashes to. Every
+# --- test below asserts on the DERIVED identity, never on "a field exists".
+
+
+@pytest.fixture
+def legacy_trash_mgr(tmp_path, monkeypatch):
+    """A manager whose profiles.json holds ONE PRE-FIELD record.
+
+    That is not a synthetic case: the absent-field fallback is deliberately the
+    whole migration, so on upgrade EVERY profile on disk is a derived-seed
+    profile and stays one until it is recreated. The record is written to disk
+    and loaded through the normal path rather than having the field poked to
+    None in memory, so the load allow-list is exercised too.
+
+    Trash is redirected as well (same reason as `trash_mgr`): the rename path
+    has to be checked against reserved TRASHED seeds, and `_reserved_seeds()`
+    reaches the real ~/.persona/trash.json otherwise.
+    """
+    import src.core.config as cfg
+    import src.services.profile.manager as mod
+    from src.services.trash.store import TrashStore
+
+    pf, dd = tmp_path / "profiles.json", tmp_path / "data"
+    pf.write_text(
+        _json.dumps(
+            {"legacy-acct": {"name": "legacy-acct", "os_type": "windows"}}
+        ),
+        encoding="utf-8",
+    )
+    for m in (cfg, mod):
+        monkeypatch.setattr(m, "PROFILES_FILE", str(pf), raising=False)
+        monkeypatch.setattr(m, "DATA_DIR", str(dd), raising=False)
+    monkeypatch.setenv("PERSONA_TRASH_FILE", str(tmp_path / "trash.json"))
+    monkeypatch.setenv("PERSONA_HOME", str(tmp_path))
+    # The legacy profile gets a real data dir, because a profile installed on a
+    # real machine has one — that is the cookie jar this whole ticket is about
+    # keeping married to its fingerprint. It also makes the dir rename actually
+    # HAPPEN: update_profile skips the rename when the dir is absent, so a
+    # fixture without one would let the failed-rename test below pass VACUOUSLY
+    # (no rename attempted, so nothing for the patched OSError to fire on)
+    # rather than exercising the path it names.
+    (dd / "legacy-acct").mkdir(parents=True)
+    m = ProfileManager()
+    m.set_trash(TrashStore())
+    return m
+
+
+def test_renaming_a_legacy_profile_does_not_land_on_a_live_profiles_machine(
+    legacy_trash_mgr,
+):
+    # COLLISION PATH D — the rename door, reached with a pre-field profile.
+    # 'acme-bank' is created and renamed away, FREEZING crc32('acme-bank') and
+    # freeing the name; the legacy profile is then renamed INTO that freed name
+    # and its still-derived seed lands straight on the frozen one. Two live
+    # profiles, one presented machine — the same invariant-#0 failure as the
+    # create door, which the uniqueness rule did not reach because
+    # update_profile mints nothing and consults no reserved set.
+    mgr = legacy_trash_mgr
+    assert mgr.profiles["legacy-acct"].fingerprint_seed_value is None
+
+    mgr.add_profile("acme-bank", "", "windows")
+    assert mgr.update_profile("acme-bank", "acme-bank-old", "", "windows") is True
+    frozen = _identity(mgr.profiles["acme-bank-old"])
+    # the name is genuinely free and its crc32 is genuinely the frozen value —
+    # otherwise this test would pass without ever setting up the collision
+    assert "acme-bank" not in mgr.profiles
+    assert frozen["seed"] == _crc32("acme-bank")
+
+    assert mgr.update_profile("legacy-acct", "acme-bank", "", "windows") is True
+
+    assert _identity(mgr.profiles["acme-bank"]) != frozen
+    assert mgr.profiles["acme-bank"].fingerprint_seed != _crc32("acme-bank")
+    assert _seeds_are_unique(mgr)
+
+
+def test_renaming_a_legacy_profile_does_not_land_on_a_trashed_profiles_seed(
+    legacy_trash_mgr,
+):
+    # The nastier half: the reservation added so a restore can stay verbatim is
+    # bypassed entirely by the rename door. A trashed seed cannot be re-minted
+    # later — restore_profile rebuilds the record verbatim — so a live profile
+    # renamed onto it schedules a collision for whenever the operator restores.
+    mgr = legacy_trash_mgr
+    mgr.add_profile("zeta", "", "windows")
+    trashed_seed = mgr.profiles["zeta"].fingerprint_seed
+    assert mgr.delete_profile("zeta") is True
+    assert trashed_seed in mgr._reserved_seeds()  # reserved, and must stay so
+
+    assert mgr.update_profile("legacy-acct", "zeta", "", "windows") is True
+
+    assert mgr.profiles["zeta"].fingerprint_seed != trashed_seed
+    # the reservation still holds afterwards — the point is that the rename
+    # stopped walking onto the reserved value, NOT that the value got released
+    assert trashed_seed in mgr._reserved_seeds()
+    assert _seeds_are_unique(mgr)
+
+
+def test_renaming_a_legacy_profile_keeps_the_machine_it_already_presented(
+    legacy_trash_mgr,
+):
+    # The stability half, now extended to legacy profiles. On HEAD a pre-field
+    # profile still re-rolls its whole machine on every rename — AC1 only ever
+    # held for profiles created since the field existed. Freezing to the value
+    # it is ALREADY presenting is what makes the collision fix safe (the set of
+    # presented seeds is unchanged by the write), and this is that property
+    # asserted directly: same seed, same resolution, same touch points, same
+    # --fingerprint=, across a rename.
+    mgr = legacy_trash_mgr
+    before = _identity(mgr.profiles["legacy-acct"])
+    assert before["seed"] == _crc32("legacy-acct")  # genuinely the fallback
+
+    assert mgr.update_profile("legacy-acct", "legacy-acct-2", "", "windows") is True
+
+    after = _identity(mgr.profiles["legacy-acct-2"])
+    assert after == before, (
+        f"renaming a pre-field profile moved its machine: {before} -> {after}"
+    )
+    assert after["seed"] != _crc32("legacy-acct-2")
+
+
+def test_a_legacy_profiles_frozen_seed_survives_a_save_load_round_trip(
+    legacy_trash_mgr, tmp_path
+):
+    # AC4 for the rename path. The freeze is written on a field the load
+    # allow-list must carry; if it were dropped there the reloaded profile would
+    # fall back to crc32(NEW name) — re-rolling the machine at the next restart
+    # and re-opening the collision — while every in-memory assertion above
+    # still passed.
+    mgr = legacy_trash_mgr
+    before = _identity(mgr.profiles["legacy-acct"])
+
+    assert mgr.update_profile("legacy-acct", "legacy-acct-2", "", "windows") is True
+
+    fresh = ProfileManager()
+    reloaded = fresh.profiles["legacy-acct-2"]
+
+    assert _identity(reloaded) == before
+    assert reloaded.fingerprint_seed_value == before["seed"]
+    assert reloaded.fingerprint_seed != _crc32("legacy-acct-2")
+    on_disk = _json.loads((tmp_path / "profiles.json").read_text(encoding="utf-8"))
+    assert on_disk["legacy-acct-2"]["fingerprint_seed_value"] == before["seed"]
+
+
+def test_a_failed_rename_does_not_freeze_a_legacy_profiles_seed(
+    legacy_trash_mgr, monkeypatch
+):
+    # AC7 for the new write. The freeze sits after the dir-rename success check,
+    # so a rename that returned False must leave the profile exactly as it was —
+    # still deriving from its name, with NO value written. A freeze on the False
+    # path would pin the profile to a seed the operator never asked for and the
+    # return value denies.
+    import pathlib
+
+    mgr = legacy_trash_mgr
+    before = _identity(mgr.profiles["legacy-acct"])
+
+    def boom(self, target):
+        raise OSError("dir locked")
+
+    monkeypatch.setattr(pathlib.Path, "rename", boom)
+    assert mgr.update_profile("legacy-acct", "legacy-acct-2", "", "windows") is False
+
+    assert mgr.profiles["legacy-acct"].fingerprint_seed_value is None
+    assert _identity(mgr.profiles["legacy-acct"]) == before
+
+
+def test_an_edit_that_is_not_a_rename_does_not_freeze_a_legacy_profiles_seed(
+    legacy_trash_mgr,
+):
+    # The freeze is scoped to an actual rename. Editing a note or a proxy must
+    # not quietly pin a legacy profile's seed: that would make the profile's
+    # behaviour depend on whether an unrelated edit had happened since, which is
+    # the same class of hidden state the load path deliberately avoids.
+    mgr = legacy_trash_mgr
+    before = _identity(mgr.profiles["legacy-acct"])
+
+    assert mgr.update_profile(
+        "legacy-acct", "legacy-acct", "", "windows", new_notes="edited"
+    ) is True
+
+    assert mgr.profiles["legacy-acct"].fingerprint_seed_value is None
+    assert _identity(mgr.profiles["legacy-acct"]) == before

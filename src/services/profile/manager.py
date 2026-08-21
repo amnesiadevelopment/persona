@@ -437,6 +437,52 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                 # failure returns early and must leave everything untouched.
                 self._remove_window_entry(original_name)
 
+                # Freeze a PRE-FIELD profile's seed to what it presents RIGHT
+                # NOW, before the new name can re-derive it.
+                #
+                # A profile created since the seed became a field carries its
+                # own frozen value and a rename cannot move it. A profile that
+                # predates the field has `fingerprint_seed_value = None`, so its
+                # seed is crc32(self.name) recomputed on EVERY read — and the
+                # line below reassigns `name`. That makes the rename path a
+                # third place a seed can change, and unlike add_profile and
+                # import_profile it consults no reserved set, so the new name's
+                # crc32 can land straight on a seed another profile is already
+                # holding: two live profiles, one presented machine. That is
+                # reachable on 100% of the installed base, since the absent-field
+                # fallback is deliberately the whole migration, so every profile
+                # on disk at upgrade is a derived-seed profile until recreated.
+                #
+                # Freezing it to the value this profile is ALREADY presenting
+                # is what makes this safe, and the choice is load-bearing
+                # rather than incidental: it CANNOT introduce a collision,
+                # because the set of presented seeds is unchanged by the write.
+                # Every profile still presents exactly what it did a moment
+                # ago, so no reserved-set consult is needed on this path at
+                # all, and no fingerprint moves at rest (AC3). Do NOT "improve"
+                # this into minting from the NEW name — that re-rolls the
+                # machine under a live cookie jar, which is the entire defect
+                # this ticket exists to fix.
+                #
+                # Read via the `fingerprint_seed` PROPERTY rather than
+                # recomputing crc32 here, which keeps one owner for the
+                # fallback formula. ORDERING IS LOAD-BEARING: the dict
+                # comprehension above only re-KEYS the mapping, so
+                # `_renamed.name` is still the ORIGINAL name at this point and
+                # the property returns the old derived value. The assignment
+                # that moves it is `profile.name = new_name` below. This block
+                # must stay ABOVE that line — moving it below silently starts
+                # freezing the NEW name's seed, which is the defect, not the
+                # fix. The tests pin the value, so that mistake fails loudly.
+                #
+                # Sits INSIDE the `new_name != original_name` block and AFTER
+                # the dir-rename success check on purpose: a rename that
+                # returned False must leave the profile completely unchanged, a
+                # seed mint included (AC7).
+                _renamed = self.profiles[new_name]
+                if _renamed.fingerprint_seed_value is None:
+                    _renamed.fingerprint_seed_value = _renamed.fingerprint_seed
+
             profile = self.profiles[new_name]
             profile.name = new_name
             profile.proxy = new_proxy or None
