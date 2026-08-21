@@ -289,11 +289,12 @@ PROBES: tuple[Probe, ...] = (
         "return {vendor:gl.getParameter(d.UNMASKED_VENDOR_WEBGL),"
         "renderer:gl.getParameter(d.UNMASKED_RENDERER_WEBGL)};"
         "})",
-        # NOT must-differ, and this is the trap worth naming. gpu_ext.py:110-114
-        # picks the vendor/renderer pair from a per-OS POOL, so a collision is
-        # ordinary pigeonhole — but iOS does not even do that: gpu_ext.py:107
-        # pins ONE constant pair for every iOS profile on earth, because
-        # "a seed-varied one would itself be the tell" (gpu_ext.py:581-589).
+        # NOT must-differ, and this is the trap worth naming. gpu_ext.py's
+        # `var POOL =` gate picks the vendor/renderer pair from a per-OS pool,
+        # so a collision is ordinary pigeonhole — but iOS does not even do
+        # that: its `var IOS_GPU =` constant pins ONE pair for every iOS
+        # profile on earth, because "a seed-varied one would itself be the
+        # tell" (the `build_gpu_extension` docstring).
         # Two iOS profiles MUST agree here. Demanding difference would flag
         # persona's most deliberately correct behaviour as a leak.
         variance=POOLED,

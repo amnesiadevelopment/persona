@@ -202,8 +202,10 @@ def test_linux_emits_no_kernel_drm_or_mesa_build_version(tmp_path):
 
 def test_linux_limits_and_extensions_are_the_desktop_defaults(tmp_path):
     # AC 3. The expected outcome is explicitly "verify, no change": linux is a
-    # desktop, so COMMON_DESKTOP (gpu_ext.py:214-215) and DESKTOP_EXTS
-    # (:445-446) are already correct for it. Pinned as a test so a future edit
+    # desktop, so COMMON_DESKTOP (selected by the `var COMMON =` gate in
+    # gpu_ext.py) and DESKTOP_EXTS (the `var STABLE_EXTS =` gate) are already
+    # correct for it. Neither gate routes linux the way `var POOL =` does: both
+    # fall through to their desktop default. Pinned as a test so a future edit
     # that gratuitously forks a "Linux variant" of the desktop limits — i.e.
     # invents unsourced values — fails loudly.
     lin = _probe(tmp_path / "l", 42, "linux")
