@@ -151,8 +151,10 @@ class App:
         # leftover download bar reading "189 MB of 189 MB" was wrong).
         self._engine_busy = False
         self._engine_checking = False
-        # Set when persona REFUSED the newest Chromium build (known-bad, or above
-        # the tested-major ceiling — see services/engine/policy.py). Shown in the
+        # Set when persona REFUSED the newest Chromium build (known-bad by name,
+        # or above a ceiling the OPERATOR set in their own engine policy file —
+        # see services/engine/policy.py). persona itself ships no Chromium
+        # ceiling since PS-42, so this is never "persona is behind". Shown in the
         # engine row so the refusal is visible rather than looking like a stalled
         # check. Mirrors _engine2_status on the Firefox row.
         self._engine_status: str = ""
