@@ -94,11 +94,167 @@ def test_real_macos_strings(tmp_path):
     assert "Google Inc. (Apple)" in js
 
 
+# --- linux arm (PS-36) -------------------------------------------------------
+#
+# Reference values and their per-value provenance live in
+# tests/fixtures/linux-webgl-reference.md. Read that file before changing any
+# string here; do NOT re-derive them from this test or from gpu_ext.py.
+#
+# The eight page-visible strings, kept as whole tuples. The ASIC codename and
+# the compiler term are coherent with the marketing name (navi21 belongs to
+# RX 6800 and to nothing else), so these are compared as complete strings and
+# must never be recombined term-by-term across rows.
+_LINUX_RENDERERS = {
+    "Google Inc. (AMD)": [
+        "ANGLE (AMD, AMD Radeon RX 6800 (radeonsi navi21 ACO), OpenGL 4.6)",
+        "ANGLE (AMD, AMD Radeon RX 7900 XTX (radeonsi navi31 ACO), OpenGL 4.6)",
+        "ANGLE (AMD, AMD Radeon RX 7600 (radeonsi navi33 ACO), OpenGL 4.6)",
+        "ANGLE (AMD, AMD Radeon RX 6600 (radeonsi navi23 LLVM 18.1.6), OpenGL 4.6)",
+    ],
+    "Google Inc. (Intel)": [
+        "ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)",
+        "ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)",
+        "ANGLE (Intel, Mesa Intel(R) HD Graphics 530 (SKL GT2), OpenGL 4.6)",
+        "ANGLE (Intel, Mesa Intel(R) UHD Graphics 770 (ADL-S GT1), OpenGL 4.6)",
+    ],
+}
+
+
+def test_real_linux_strings(tmp_path):
+    # AC 7 — mirrors test_real_windows_strings / test_real_macos_strings.
+    js = _read(build_gpu_extension(1, "linux", str(tmp_path / "g")), "gpu.js")
+    for vendor, renderers in _LINUX_RENDERERS.items():
+        assert vendor in js
+        for r in renderers:
+            assert r in js, f"missing harvested linux renderer: {r}"
+
+
+def test_linux_resolves_to_its_own_os_marker_not_windows(tmp_path):
+    # os_norm's else-branch used to swallow linux into "windows", which is what
+    # made every downstream selection serve a Windows D3D11 GPU.
+    js = _read(build_gpu_extension(1, "linux", str(tmp_path / "l")), "gpu.js")
+    assert 'var OS = "linux";' in js
+    assert 'var OS = "windows";' not in js
+
+
+def test_linux_page_reads_a_mesa_gpu_and_never_direct3d(tmp_path):
+    # AC 1. THE point of this arm. Assert on what the page RECEIVES, not on the
+    # file: every pool is a literal in every emitted file (the OS marker selects
+    # at runtime), so a substring check against gpu.js would prove nothing here
+    # — gpu.js legitimately still contains WIN_GPUS' D3D11 strings.
+    p = _probe(tmp_path, 1, "linux")
+    served = (p["unmaskedVendor"] or "") + " " + (p["unmaskedRenderer"] or "")
+
+    # Direct3D is a Windows-only API — on Linux it is impossible, not merely
+    # implausible. This is the assertion the whole ticket exists for.
+    for impossible in ("Direct3D", "D3D11", "vs_5_0", "ps_5_0"):
+        assert impossible not in served, f"linux profile served a Windows-only value: {served}"
+    # Nor may it serve any other platform's pool.
+    for impossible in ("Metal Renderer", "Apple GPU", "Adreno", "Mali", "SwiftShader"):
+        assert impossible not in served, f"linux profile served a foreign value: {served}"
+
+    # It must serve one of the harvested tuples, whole.
+    assert p["unmaskedVendor"] in _LINUX_RENDERERS, p["unmaskedVendor"]
+    assert p["unmaskedRenderer"] in _LINUX_RENDERERS[p["unmaskedVendor"]], (
+        "served a renderer that is not a harvested tuple, or one recombined "
+        f"across rows: {p['unmaskedRenderer']}"
+    )
+
+
+def test_linux_and_windows_no_longer_emit_the_same_renderer(tmp_path):
+    # AC 2 — premise inversion. BEFORE this arm these two were byte-identical
+    # (linux fell through os_norm's else to "windows"); if this ever passes
+    # trivially again, the arm has regressed.
+    for seed in (1, 42, 0xABCDEF, 7):
+        lin = _probe(tmp_path / f"l{seed}", seed, "linux")
+        win = _probe(tmp_path / f"w{seed}", seed, "windows")
+        assert lin["unmaskedRenderer"] != win["unmaskedRenderer"], (
+            f"seed {seed}: linux still emits the windows renderer"
+        )
+        assert "Direct3D11" in win["unmaskedRenderer"], (
+            "windows must keep its D3D11 string — this is the control that "
+            "proves the probe observes a real difference rather than a no-op"
+        )
+
+
+def test_linux_emits_no_kernel_drm_or_mesa_build_version(tmp_path):
+    # AC 5. ANGLE strips these before a page sees them, so emitting one would be
+    # a value that cannot occur in a real browser:
+    #   - SanitizeRendererString (DisplayGL.cpp:36-52) truncates at ", DRM "
+    #     under feature sanitizeAMDGPURendererString / IsLinux() && hasAMD
+    #     (renderergl_utils.cpp:2552) — crbug.com/1181193.
+    #   - Context.cpp:3697 passes getBackendVersionString(!isWebGL()), so
+    #     SanitizeVersionString keeps only the first version token.
+    import re
+
+    p = _probe(tmp_path, 1, "linux")
+    served = p["unmaskedRenderer"]
+    assert ", DRM " not in served and " (DRM " not in served
+    # a kernel release (e.g. 6.17.7-ba28.fc43.x86_64 / 6.12.74-1-lts)
+    assert not re.search(r"\d+\.\d+\.\d+-", served), f"kernel release leaked: {served}"
+    # a Mesa build version (e.g. "Mesa 22.1.0-develgit-"); the bare vendor
+    # prefix "Mesa Intel(R) ..." is correct and must NOT trip this.
+    assert not re.search(r"Mesa \d", served), f"Mesa build version leaked: {served}"
+    # The version element is the truncated first token, never the full string.
+    assert "OpenGL 4.6" in served
+    assert "Core Profile" not in served
+
+
+def test_linux_limits_and_extensions_are_the_desktop_defaults(tmp_path):
+    # AC 3. The expected outcome is explicitly "verify, no change": linux is a
+    # desktop, so COMMON_DESKTOP (gpu_ext.py:214-215) and DESKTOP_EXTS
+    # (:445-446) are already correct for it. Pinned as a test so a future edit
+    # that gratuitously forks a "Linux variant" of the desktop limits — i.e.
+    # invents unsourced values — fails loudly.
+    lin = _probe(tmp_path / "l", 42, "linux")
+    win = _probe(tmp_path / "w", 42, "windows")
+    for k in ("maxTextureSize", "maxCubeMapTextureSize", "maxRenderbufferSize",
+              "maxViewportDims", "maxVertexAttribs", "maxVaryingVectors",
+              "maxCombinedTextureImageUnits"):
+        assert lin[k] == win[k], f"linux forked the desktop limit {k}"
+    assert lin["maxViewportDims"] == [32767, 32767], (
+        "a desktop viewport is required for coherence with a desktop renderer"
+    )
+    assert lin["exts_gl1"] == win["exts_gl1"]
+    assert lin["exts_gl2"] == win["exts_gl2"]
+    # The BC/DXT family stays advertised: rgtc/bptc are DONE for all relevant
+    # Mesa drivers and S3TC has been unconditional since Mesa 17.3, so both
+    # radeonsi and iris expose them (see the fixture's "Limits and extension
+    # sets" section).
+    for ext in ("WEBGL_compressed_texture_s3tc", "WEBGL_compressed_texture_s3tc_srgb",
+                "EXT_texture_compression_bptc", "EXT_texture_compression_rgtc"):
+        assert ext in lin["exts_gl1"], f"{ext} vanished from the linux set"
+
+
+def test_linux_vendor_agrees_with_the_renderer_it_is_paired_with(tmp_path):
+    # UNMASKED_VENDOR is EGL's "Google Inc. (<GL_VENDOR>)" (Display.cpp:2478-2486)
+    # and GL_VENDOR is the driver literal — "AMD" (si_get.c:13-16) or "Intel"
+    # (iris_screen.c:80-84). A radeonsi renderer under an (Intel) vendor is a
+    # cross-field contradiction a detector reads in one call.
+    for seed in (1, 42, 7, 0xABCDEF, 99, 12345):
+        p = _probe(tmp_path / f"s{seed}", seed, "linux")
+        vendor, renderer = p["unmaskedVendor"], p["unmaskedRenderer"]
+        if vendor == "Google Inc. (AMD)":
+            assert "radeonsi" in renderer and "ANGLE (AMD," in renderer
+        elif vendor == "Google Inc. (Intel)":
+            assert "Mesa Intel(R)" in renderer and "ANGLE (Intel," in renderer
+        else:
+            raise AssertionError(f"unexpected linux vendor {vendor!r}")
+
+
+def test_deterministic_linux_build(tmp_path):
+    a = _read(build_gpu_extension(42, "linux", str(tmp_path / "a")), "gpu.js")
+    b = _read(build_gpu_extension(42, "linux", str(tmp_path / "b")), "gpu.js")
+    assert a == b
+
+
 def test_os_gate_present(tmp_path):
     js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g")), "gpu.js")
-    # 3-way pool gate: macOS→Apple/Metal, android→Adreno/Mali, else Windows/D3D11
+    # 4-way pool gate: macOS→Apple/Metal, android→Adreno/Mali, linux→Mesa/GL,
+    # else Windows/D3D11. (iOS bypasses the pool entirely — see IOS_GPU.)
     assert '(OS === "macos") ? MAC_GPUS' in js
     assert '(OS === "android") ? ANDROID_GPUS' in js
+    assert '(OS === "linux") ? LINUX_GPUS' in js
     assert "WIN_GPUS" in js
 
 
@@ -809,7 +965,7 @@ def test_emitted_script_is_syntactically_valid_for_every_os(tmp_path):
     node = shutil.which("node")
     if not node:
         pytest.skip("node not available")
-    for os_type in ("windows", "macos", "android", "ios"):
+    for os_type in ("windows", "macos", "android", "ios", "linux"):
         d = build_gpu_extension(1, os_type, str(tmp_path / f"s{os_type}"))
         out = subprocess.run(
             [node, "--check", str(pathlib.Path(d) / "gpu.js")],
