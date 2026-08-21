@@ -353,6 +353,41 @@ def test_falsification_a_record_derived_indicator_fails_ac3(monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# The accessor is reachable through the TYPE the wiring uses, not just the
+# concrete class.
+# --------------------------------------------------------------------------
+
+def test_the_protocol_declares_the_accessor_the_card_render_calls():
+    """``app.py`` types ``self.bl`` as ``IBrowserLauncher`` and calls
+    ``cdp_channel_open`` on it to build the card, so the accessor must be
+    declared on the protocol and not only on the concrete launcher.
+
+    This is the same rule ``test_cert_trust_status.py`` states for
+    ``start_thread``; that test compares one known signature, so it cannot
+    catch a *newly added* method. The REST/MCP lanes take
+    ``bl: IBrowserLauncher`` via ``Depends``, so an implementation that
+    satisfied the protocol while missing this method would type-check and then
+    raise on the render path.
+
+    Scoped deliberately to the accessor this slice adds: ``shutdown_all`` is
+    also absent from the protocol, but that predates this branch and widening
+    the assertion would fail on unrelated debt.
+    """
+    import inspect
+
+    from src.interfaces.protocols import IBrowserLauncher
+
+    assert hasattr(IBrowserLauncher, "cdp_channel_open"), (
+        "IBrowserLauncher does not declare cdp_channel_open, but app.py calls "
+        "it on a value typed as that protocol"
+    )
+    assert (
+        inspect.signature(IBrowserLauncher.cdp_channel_open).parameters.keys()
+        == inspect.signature(BrowserLauncher.cdp_channel_open).parameters.keys()
+    )
+
+
+# --------------------------------------------------------------------------
 # AC9 — the render path stays IO-free.
 # --------------------------------------------------------------------------
 

@@ -63,6 +63,8 @@ class IBrowserLauncher(Protocol):
 
     def started_at(self, profile_name: str) -> float | None: ...
 
+    def cdp_channel_open(self, profile_name: str) -> bool: ...
+
 
 class IProxyService(Protocol):
     def check_proxy_sync(
