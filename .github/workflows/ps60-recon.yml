@@ -8,6 +8,11 @@ name: ps60-recon
 #   4. whether a real Firefox launches headless with NO display server
 on:
   workflow_dispatch:
+  # workflow_dispatch only works once the file is on the default branch, which
+  # this throwaway never reaches. A branch push trigger is how it actually runs.
+  push:
+    branches:
+      - "feature/PS-60-*"
 
 permissions:
   contents: read
