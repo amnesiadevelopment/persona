@@ -1359,8 +1359,15 @@ class App:
         if verdict != engine_policy.OK and engine.is_newer(
             tag, engine.current_version()
         ):
+            # ABOVE_CEILING no longer means "persona is behind" — persona ships
+            # no Chromium ceiling now that the advertised version is derived
+            # from the installed engine (PS-42). The only way to reach it is an
+            # operator who set max_tested_major themselves, so point at THEIR
+            # policy file rather than telling them to update persona, which
+            # would not lift a limit they imposed. The Firefox row keeps the
+            # "update persona" wording because its cap really is shipped.
             self._engine_status = (
-                "update persona for the newest engine"
+                "engine pinned by your policy file"
                 if verdict == engine_policy.ABOVE_CEILING
                 else "engine update blocked"
             )
@@ -2474,14 +2481,15 @@ class App:
             try:
                 tag, url, digest, verdict, message = engine.fetch_latest_checked()
                 if verdict != engine_policy.OK:
-                    # persona REFUSED this build (known-bad, or newer than the
-                    # Chromium major the masking layer is tested against). Say so
-                    # in those terms — "update failed" would blame the network for
-                    # a decision persona made, and the operator would retry
-                    # forever. Mirrors the Firefox row's incompatible handling so
-                    # the two engines report this situation the same way.
+                    # persona REFUSED this build (known-bad, or above a ceiling
+                    # the OPERATOR set in their policy file). Say so in those
+                    # terms — "update failed" would blame the network for a
+                    # decision persona made, and the operator would retry
+                    # forever. persona itself ships no Chromium ceiling since
+                    # PS-42, so ABOVE_CEILING points at the operator's own
+                    # setting rather than at a persona update.
                     self._engine_status = (
-                        "update persona for the newest engine"
+                        "engine pinned by your policy file"
                         if verdict == engine_policy.ABOVE_CEILING
                         else "engine update blocked"
                     )

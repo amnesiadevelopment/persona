@@ -24,6 +24,11 @@ from .device_ext import build_device_extension
 from .env_policy import scrub_operator_identity
 from .resolution import parse_resolution, resolve_resolution
 from .device_presets import is_mobile_os, pick_preset
+from .engine_version import (
+    ChromiumVersion,
+    EngineVersionUnreadableError,
+    installed_chromium_version,
+)
 from .gpu_ext import build_gpu_extension
 from .canvas_ctx_ext import build_canvas_ctx_extension
 from .measuretext_ext import build_measuretext_extension
@@ -118,6 +123,36 @@ def _require_proxy_resolved(profile: Profile, proxy_url: str | None) -> None:
             f"Profile {profile.name!r} has proxy {profile.proxy!r} assigned but it "
             "could not be resolved (deleted/renamed?). Refusing to launch DIRECT."
         )
+
+
+def _mobile_chromium_version(profile: Profile, preset) -> "ChromiumVersion | None":
+    """The Chromium version an Android profile will advertise — or a refusal.
+
+    Fails CLOSED, in the same spirit as ``_require_proxy_resolved`` above. An
+    Android profile advertises a Chromium version in three places (the UA, the
+    Client Hints brands, the full-version list), and every one of them must be
+    the version of the engine ACTUALLY INSTALLED. When that version cannot be
+    read, the alternative to refusing is advertising a guessed one — which is
+    precisely the engine/masking-layer mismatch a checker notices, shipped
+    silently. A refused launch says so and is fixable by an engine check; a
+    launched profile with a wrong version is not fixable after the fact,
+    because the pages that saw it already saw it.
+
+    iOS profiles return None: real Safari ships no UA-CH and its UA carries no
+    Chromium version, so there is nothing to derive and nothing to refuse.
+    """
+    if preset is None or preset.os_type == "ios":
+        return None
+    try:
+        return installed_chromium_version()
+    except EngineVersionUnreadableError as e:
+        raise EngineVersionUnreadableError(
+            f"Profile {profile.name!r} is an Android profile, which must advertise "
+            f"the installed engine's Chromium version, but that version could not "
+            f"be read ({e}). Refusing to launch rather than advertise a guessed "
+            f"version the engine underneath does not match — run an engine check "
+            f"to record it."
+        ) from e
 
 
 def _profile_timezone(profile: Profile, proxy) -> str:
@@ -342,6 +377,12 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
         preset = (
             pick_preset(profile.fingerprint_seed, mobile_os) if is_mobile else None
         )
+        # The Chromium version this profile advertises, READ from the installed
+        # engine rather than stored as a constant, so a routine engine bump
+        # cannot leave the profile claiming a version the engine is not. None
+        # for desktop (no --user-agent is passed at all, so the engine's own
+        # reported version is what the page sees) and for iOS (no UA-CH).
+        chromium_version = _mobile_chromium_version(profile, preset)
 
         extensions = []
         # native_ext patches Function.prototype.toString so persona's wrapped
@@ -410,7 +451,7 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
                     is_ios=(preset.os_type == "ios"),
                     platform=preset.platform,
                     model=preset.model,
-                    ua_full_version=preset.ua_full_version,
+                    chromium_version=chromium_version,
                     css_width=preset.width,
                     css_height=preset.height,
                     dpr=preset.dpr,
@@ -589,7 +630,11 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
             # Drive the real device's UA and a window sized to its CSS viewport, so
             # the browser presents the device's screen and layout. The mobile
             # extension fills the JS-visible touch/Client-Hints/screen signals.
-            args.append(f"--user-agent={preset.user_agent}")
+            #
+            # On Android the UA carries the INSTALLED engine's version (reduced
+            # form) so it agrees with the Client Hints the extension emits; on
+            # iOS the template has no version slot at all.
+            args.append(f"--user-agent={preset.user_agent_for(chromium_version)}")
             args.append(f"--window-size={preset.width},{preset.height}")
 
         # Render scale is decoupled from the fingerprint: the device/mobile
