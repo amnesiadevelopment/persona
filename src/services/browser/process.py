@@ -21,6 +21,7 @@ from ..proxy.store import ProxyStore
 from .bookmarks_seed import seed_bookmarks
 from .audio_ext import build_audio_extension
 from .device_ext import build_device_extension
+from .env_policy import scrub_operator_identity
 from .resolution import parse_resolution, resolve_resolution
 from .device_presets import is_mobile_os, pick_preset
 from .gpu_ext import build_gpu_extension
@@ -688,6 +689,12 @@ def spawn_browser(profile: Profile) -> subprocess.Popen:
         # than trust the inherited environment.
         for var in ("FONTCONFIG_FILE", "FONTCONFIG_PATH", "FONTCONFIG_SYSROOT"):
             env.pop(var, None)
+        # The browser executes untrusted remote code, so it inherits none of the
+        # operator's identity — above all SSH_AUTH_SOCK, which is a live handle
+        # onto their ssh-agent rather than a passive label. `env` is a COPY, so
+        # this cannot touch persona's own environment. See env_policy.py for
+        # what is on the list and what is deliberately left off it.
+        scrub_operator_identity(env)
         if _platform.IS_LINUX:
             env.setdefault("DISPLAY", ":0")
 
