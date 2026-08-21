@@ -428,3 +428,181 @@ def test_falsification_parent_first_ordering_goes_red():
         buggy_kind = "geography_disproven"
     assert buggy_kind == "geography_unknown"
     assert classify_refusal(exc, 1.0).kind != buggy_kind
+
+
+# --------------------------------------------------------------------------
+# The verdict outlives the SESSION, never the SUBJECT.
+#
+# `_last_refusal` is keyed by profile NAME, and in this codebase a name is not a
+# stable identity: ProfileManager deletes them, wipes them, re-keys them on
+# rename, and overwrites them on import, after which the SAME STRING can name a
+# different profile. The survival property the tests above pin is deliberate and
+# correct for a TEARDOWN — but applied to a destroyed identity it inverts into
+# the exact dishonesty this ticket exists to prevent: a brand-new profile that
+# has never been clicked rendering a red "refused" chip which, because the age is
+# re-derived against the current clock, reads "just now".
+#
+# It also points the operator at a proxy check for a proxy that may be perfectly
+# healthy — the wasted trip the disproven/unknown wording split exists to avoid.
+# --------------------------------------------------------------------------
+
+def _manager(tmp_path, monkeypatch):
+    """A real ProfileManager on a temp store, wired to a real launcher exactly
+    as src/ui/app.py wires them."""
+    import src.core.config as cfg
+    import src.services.profile.manager as mod
+
+    pf, dd = tmp_path / "profiles.json", tmp_path / "data"
+    for m in (cfg, mod):
+        monkeypatch.setattr(m, "PROFILES_FILE", str(pf), raising=False)
+        monkeypatch.setattr(m, "DATA_DIR", str(dd), raising=False)
+    from src.services.profile.manager import ProfileManager
+
+    pm = ProfileManager()
+    bl = BrowserLauncher()
+    # The production wiring (src/ui/app.py) — both hooks, so this test cannot
+    # pass against a wiring the app does not actually perform.
+    pm.set_stop_hook(bl.stop_profile)
+    pm.set_forget_identity_hook(bl.forget_refusal)
+    return pm, bl
+
+
+def test_a_deleted_profile_does_not_hand_its_refusal_to_its_replacement(
+    tmp_path, monkeypatch
+):
+    """THE defect: delete a refused profile, recreate the name, and the new card
+    must be clean.
+
+    Name reuse after a delete is ordinary operator behaviour, not an exotic
+    path. Left unfixed, a profile that has never been launched renders a red
+    refusal chip claiming a guard fired on it, and the tooltip explains that
+    "the profile was not opened, so nothing was disclosed" about a launch that
+    never happened.
+    """
+    pm, bl = _manager(tmp_path, monkeypatch)
+    pm.add_profile("acme", "", "windows")
+    _refuse(bl, monkeypatch, "acme", GeographyUnknownError("no geography"))
+    assert bl.last_refusal("acme") is not None, "precondition: the refusal landed"
+
+    assert pm.delete_profile("acme") is True
+    pm.add_profile("acme", "", "windows")
+
+    assert bl.last_refusal("acme") is None, (
+        "the verdict outlived the profile it described and was inherited by a "
+        "different profile of the same name"
+    )
+    card = _card(pm.profiles["acme"], refusal=bl.last_refusal("acme"))
+    assert not _reports_refusal(card), (
+        "a never-clicked profile renders a refusal chip — and the age is "
+        "re-derived from the clock, so it reads 'just now'"
+    )
+
+
+def test_a_wipe_leaves_no_verdict_for_a_recreated_name(tmp_path, monkeypatch):
+    """The wipe frees every name at once, so it is the delete case multiplied.
+    Its 'this cannot be undone' has to be true of the markers too."""
+    pm, bl = _manager(tmp_path, monkeypatch)
+    pm.add_profile("acme", "", "windows")
+    pm.add_profile("beta", "", "windows")
+    _refuse(bl, monkeypatch, "acme", GeographyUnknownError("no geography"))
+    _refuse(bl, monkeypatch, "beta", ProxyUnresolvedError("unresolved"))
+
+    assert pm.wipe_all_profiles() == 2
+    for name in ("acme", "beta"):
+        assert bl.last_refusal(name) is None, f"{name}'s verdict survived a wipe"
+
+
+def test_a_rename_does_not_orphan_the_verdict_under_the_freed_name(
+    tmp_path, monkeypatch
+):
+    """A rename re-keys `self.profiles` and used to leave the launcher holding a
+    verdict under the ORIGINAL name: invisible to the operator (the card now
+    looks under the new name) while sitting on a key another profile can take.
+
+    Dropped rather than moved to the new key on purpose — `detail` is the
+    settled sentence composed in process.py with the profile NAMED inside it, so
+    re-keying would render a chip whose full text names a profile that no longer
+    exists. "No verdict yet" is a state the card renders honestly.
+    """
+    pm, bl = _manager(tmp_path, monkeypatch)
+    pm.add_profile("acme", "", "windows")
+    _refuse(bl, monkeypatch, "acme", GeographyUnknownError("no geography"))
+
+    assert pm.update_profile("acme", "acme-eu") is True
+    assert bl.last_refusal("acme") is None, (
+        "the verdict was orphaned under the freed name, where a future profile "
+        "taking that name would inherit it"
+    )
+
+    # And the freed name is safe to re-take.
+    pm.add_profile("acme", "", "windows")
+    card = _card(pm.profiles["acme"], refusal=bl.last_refusal("acme"))
+    assert not _reports_refusal(card)
+
+
+def test_an_overwriting_import_does_not_pass_the_verdict_to_the_new_record(
+    tmp_path, monkeypatch
+):
+    """An overwrite REPLACES the record holding the name — the same
+    identity-is-gone event as a delete, reached by a different door."""
+    pm, bl = _manager(tmp_path, monkeypatch)
+    pm.add_profile("acme", "", "windows")
+    _refuse(bl, monkeypatch, "acme", GeographyDisprovenError("check failed"))
+
+    # export_profile takes a DIRECTORY and mints the archive name itself.
+    outdir = tmp_path / "exports"
+    outdir.mkdir()
+    ok, archive = pm.export_profile("acme", str(outdir), include_data=False)
+    assert ok, f"precondition: the export succeeded ({archive})"
+
+    ok, _ = pm.import_profile(archive, overwrite=True)
+    assert ok, "precondition: the overwriting import succeeded"
+    assert bl.last_refusal("acme") is None, (
+        "the replaced profile's verdict was inherited by the imported record"
+    )
+
+
+def test_the_marker_still_survives_a_teardown_of_a_LIVE_profile(
+    tmp_path, monkeypatch
+):
+    """The counterweight to the four tests above, and the reason the disposal is
+    a separate hook instead of a line in `_forget_session_facts`.
+
+    Stopping a browser must NOT clear the verdict — that is the survival
+    property the whole ticket is about. Only destroying the identity may. A fix
+    that made the tests above pass by folding the drop into the session teardown
+    would break this one.
+    """
+    pm, bl = _manager(tmp_path, monkeypatch)
+    pm.add_profile("acme", "", "windows")
+    _refuse(bl, monkeypatch, "acme", GeographyDisprovenError("check failed"))
+
+    bl.stop_profile("acme")
+    bl.shutdown_all()
+    assert bl.last_refusal("acme") is not None, (
+        "a session teardown cleared the verdict — the disposal was wired to the "
+        "wrong event"
+    )
+
+
+def test_falsification_no_disposal_hands_the_verdict_to_the_replacement(
+    tmp_path, monkeypatch
+):
+    """Simulates the pre-fix wiring (delete stops the browser but never tells the
+    launcher the identity is gone) and asserts the defect is REAL — so the tests
+    above are pinning a mechanism rather than a tautology.
+    """
+    pm, bl = _manager(tmp_path, monkeypatch)
+    # Un-wire only the identity hook; the stop hook stays, exactly as before.
+    pm.set_forget_identity_hook(None)
+    pm.add_profile("acme", "", "windows")
+    _refuse(bl, monkeypatch, "acme", GeographyUnknownError("no geography"))
+    pm.delete_profile("acme")
+    pm.add_profile("acme", "", "windows")
+
+    assert bl.last_refusal("acme") is not None
+    card = _card(pm.profiles["acme"], refusal=bl.last_refusal("acme"))
+    assert _reports_refusal(card), (
+        "the un-wired build must show the false chip, or these tests prove "
+        "nothing"
+    )

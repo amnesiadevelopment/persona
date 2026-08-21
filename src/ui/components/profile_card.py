@@ -5,8 +5,8 @@ import flet as ft
 
 from ...models.profile import Profile
 from ...models.proxy import Proxy
-from ...services.proxy.freshness import PROXY_STALE_AFTER_S, proxy_indicator_state
 from ...services.browser.refusal import Refusal
+from ...services.proxy.freshness import PROXY_STALE_AFTER_S, proxy_indicator_state
 from ...utils.timefmt import humanize_since
 from ..flags import flag_path
 from ..theme.colors import COLORS
@@ -307,10 +307,20 @@ def build_profile_card(
                             #
                             # Gated on NOT running as a render-side belt. The
                             # launcher already drops the verdict when a new
-                            # attempt starts, so a running profile cannot carry
-                            # one; the two conditions are independent, and a
-                            # refusal badge over a live browser would be the
-                            # exact stale dishonesty this design avoids.
+                            # attempt starts, and a refusal badge over a live
+                            # browser would be the exact stale dishonesty this
+                            # design avoids.
+                            #
+                            # NOT a second independent guard, and the comment
+                            # said so before: `is_running` returns True while a
+                            # name sits in `_starting`, and the launcher's pop
+                            # happens in the SAME critical section that adds it
+                            # there — so this condition is strictly implied by
+                            # the launcher's, never true when the launcher's is
+                            # false. It is defence in depth (cheap, and it keeps
+                            # the render honest if that ordering ever moves),
+                            # not a condition covering a case the launcher
+                            # leaves open. Read it as a belt, not as braces.
                             *(
                                 _refusal_chip(refusal, now)
                                 if not is_running
