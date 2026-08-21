@@ -1763,10 +1763,20 @@ class App:
 
     def _check_engines_periodic(self) -> None:
         """Quietly poll the chromium engine for an upstream update once an hour
-        so the sidebar dot lights up on its own. This only refreshes the
-        'latest' version (no spinner, no auto-download) — installing stays a
-        click. The Firefox engine is auto-updated once at startup
-        (_auto_update_engine2_async) rather than polled hourly."""
+        (no spinner), then fetch an acceptable build unattended.
+
+        This poll used to ONLY refresh the 'latest' version — installing stayed
+        a click, which is exactly how an operator who never read the row kept an
+        old engine forever (PS-43). It now ends at _auto_update_engine, so the
+        hourly tick is both the discovery of a new build AND the retry that
+        eventually installs one: a build deferred because a profile was running
+        is picked up by a later tick, once the profiles have closed, with no
+        extra timer of its own.
+
+        The Firefox engine is auto-updated once at startup
+        (_auto_update_engine2_async) rather than polled hourly — it can install
+        under a live session safely, because each of its builds lands in its own
+        versioned dir instead of replacing one shared tree."""
         import threading
         import time
 
@@ -1779,6 +1789,7 @@ class App:
                         line = self._record_engine_check(tag)
                         if line:
                             self._log(line)
+                        self._auto_update_engine()
                 except Exception:
                     pass
                 self._refresh_sidebar()
@@ -2231,6 +2242,85 @@ class App:
         # unrelated controls flicker).
         self._safe_update()
 
+    def _engine_tree_in_use(self) -> bool:
+        """True while any profile is running — i.e. while a Chromium install
+        would be replacing the tree a live session is executing FROM.
+
+        Chromium keeps ONE un-versioned tree: a launch runs
+        ENGINE_DIR/<binary> directly (services/browser/process.py's
+        FINGERPRINT_CHROMIUM, passed as argv[0]), and every install path
+        replaces entries of that same dir in place — os.replace onto the Linux
+        AppImage, per-entry os.replace in _promote_staging on Windows,
+        os.replace onto Chromium.app on macOS. None of them consults a
+        running-profile oracle. So this check is what keeps an unattended fetch
+        off a live session; see the PR for the full reasoning.
+
+        Fails CLOSED (a broken oracle reports "in use"), which is deliberately
+        the OPPOSITE of engine_install._engine_in_use's fail-open default. The
+        two are protecting different things at different costs: there, a raising
+        provider must not permanently wedge DISK RECLAMATION, and the cost of
+        proceeding is bounded. Here, the only cost of a false "in use" is that
+        an unattended update waits for the next hourly check — while the cost of
+        a false "idle" is swapping the binary under a running browser.
+        """
+        try:
+            return len(self.bl.running_profile_names()) > 0
+        except Exception:
+            logger.exception(
+                "Could not tell whether a profile is running; "
+                "treating the engine tree as in use"
+            )
+            return True
+
+    def _auto_update_engine(self) -> None:
+        """Fetch an acceptable newer Chromium build without being asked.
+
+        The check paths only ever RECORDED a verdict (_record_engine_check) and
+        the fetch routine had exactly one caller: the click handler on the
+        engine row. So an operator who never read that row kept an old engine
+        forever — nothing errored, nothing degraded, it just silently stalled.
+        This is the missing unattended caller, shaped after the Firefox startup
+        path (_auto_update_engine2): decide in the background, act when the
+        answer is yes, surface instead of fetching when it is no.
+
+        It adds no policy of its own. _engine_update_available() already folds
+        in engine_policy.is_installable, and the refusal messages ("update
+        persona for the newest engine" / "engine update blocked" / the network's
+        "Engine update failed") are the ones the check and _update_engine_async
+        already produce — a refused build is skipped here and stays visible in
+        the row, rather than getting a second vocabulary for the same outcomes.
+
+        Runs on the CALLER's thread: _update_engine_async claims _engine_busy
+        synchronously before spawning its worker, so a click landing during an
+        in-flight background fetch is refused by that same flag (#234) rather
+        than starting a second download.
+
+        Deliberately NOT the cold-start path: an app with no engine at all is
+        worse than one with an untested engine, so a missing engine keeps its
+        own unattended download (_download_engine_fresh) with its own refusal
+        handling. Hence the is_installed() guard — this only ever UPGRADES.
+        """
+        if self._engine_busy or not engine.is_installed():
+            return
+        if not self._engine_update_available():
+            # Nothing to do, or persona refused this build. Either way the
+            # check has already recorded the state and said so in the log.
+            return
+        if self._engine_tree_in_use():
+            # Wait for a safe moment rather than replacing the tree a running
+            # profile is executing from. The hourly check retries, so this
+            # resolves on its own once profiles have closed.
+            self._log(
+                f"Chromium engine {self._engine_latest} ready — waiting for "
+                "running profiles to close before updating"
+            )
+            return
+        self._log(
+            f"Chromium engine {engine.current_version() or 'unknown'} is out of "
+            f"date — fetching {self._engine_latest}"
+        )
+        self._update_engine_async()
+
     def _check_engine_async(self) -> None:
         def work() -> None:
             if not engine.is_installed():
@@ -2241,6 +2331,7 @@ class App:
             if line:
                 self._log(line)
             self._refresh_engine_text()
+            self._auto_update_engine()
 
         threading.Thread(target=work, daemon=True).start()
 
