@@ -680,6 +680,43 @@ def test_a_corrupt_leftover_asset_is_re_downloaded_not_installed(monkeypatch, tm
     assert binary.read_bytes() == new
 
 
+def test_an_unverifiable_leftover_is_re_downloaded_not_installed(monkeypatch, tmp_path):
+    """The case with NO digest to check against — where reuse is not merely
+    unverified but unverifiABLE, and must therefore not happen at all.
+
+    Distinct from the corrupt-leftover test above, which supplies a real digest
+    and so exercises the hash comparison. Here there is nothing to compare to:
+    verify_file short-circuits on a missing digest and answers `allow_missing`
+    WITHOUT READING THE FILE, so a reuse gate that forwards allow_unverified
+    would accept any bytes holding this name and promote them into the engine
+    tree unread. `allow_missing` licenses accepting what this run just fetched
+    from the source; a leftover has no such provenance.
+
+    Not hypothetical: ensure_engine derives exactly this pair for the Linux
+    predictable-URL fallback (`allow_unverified = not digest and IS_LINUX`)."""
+    engine_dir, binary = _engine_at(monkeypatch, tmp_path)
+    new = b"NEW-ENGINE"
+    (engine_dir / "e").write_bytes(b"TRUNCATED-GARBAGE")  # right name, unverifiable
+
+    downloads = []
+
+    def counted_download(path, *a, **k):
+        downloads.append(1)
+        with open(path, "wb") as f:
+            f.write(new)
+        return True
+
+    monkeypatch.setattr(updater, "_download_to", counted_download)
+    monkeypatch.setattr(updater, "_in_use_provider", lambda: False)
+
+    assert updater.download_engine(
+        "http://x/e", digest=None, allow_unverified=True
+    ) is True
+
+    assert downloads == [1], "a leftover with no digest to check must be re-fetched"
+    assert binary.read_bytes() == new, "the unverifiable leftover must not be installed"
+
+
 def test_the_operators_click_installs_even_while_a_profile_runs(monkeypatch, tmp_path):
     """Only the UNATTENDED path defers. The operator asked for this one, and a
     silent no-op would look exactly like the stall this ticket exists to
