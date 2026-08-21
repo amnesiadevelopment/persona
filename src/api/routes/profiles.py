@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from ...core.config import DATA_DIR
 from ...core.logging import get_logger
 from ...services.profile.coherence import IncoherentProfile
+from ...services.profile.proxy_assignment import PROXY_NONE, PROXY_UNCHANGED
 from ...utils.validation import validate_profile_name, validate_proxy_format
 from ..dependencies import (
     get_browser_launcher,
@@ -148,8 +149,21 @@ def update_profile(
     profile = pm.profiles[name]
 
     new_name = supplied.get("name", name)
-    new_proxy = supplied.get("proxy", profile.proxy)
-    new_os = supplied.get("os_type", profile.os_type)
+    # The one distinction only a route can draw: an OMITTED `proxy` key vs a
+    # SUPPLIED empty one. The model now refuses to read absence as a clear (see
+    # services/profile/proxy_assignment.py), so this lane says which it meant
+    # instead of reading the stored proxy and passing it back in. That old
+    # read-back was correct but was the door protecting the model; the model now
+    # protects itself and a caller that omits the key is safe by default.
+    if "proxy" not in supplied:
+        new_proxy = PROXY_UNCHANGED
+    elif supplied["proxy"]:
+        new_proxy = supplied["proxy"]
+    else:
+        # Explicitly supplied as null/"" — the caller is deliberately choosing
+        # DIRECT, which stays expressible.
+        new_proxy = PROXY_NONE
+    new_os = supplied.get("os_type")
     new_notes = supplied.get("notes")
 
     if "name" in supplied:
@@ -162,7 +176,7 @@ def update_profile(
                 detail="Stop the browser before renaming",
             )
 
-    if "proxy" in supplied and new_proxy:
+    if isinstance(new_proxy, str):
         _validate_proxy_ref(new_proxy, ps)
 
     # bookmark_pool is assigned unconditionally by update_profile, so pass the
@@ -178,7 +192,7 @@ def update_profile(
         updated = pm.update_profile(
             name,
             new_name,
-            new_proxy or "",
+            new_proxy,
             new_os,
             new_search_engine=supplied.get("search_engine"),
             new_bookmark_pool=supplied.get("bookmark_pool", profile.bookmark_pool),
