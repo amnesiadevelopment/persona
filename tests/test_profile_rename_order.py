@@ -201,3 +201,251 @@ def test_failed_dir_rename_keeps_the_old_entry(mgr, monkeypatch):
 
     assert ok is False
     assert [fn for fn, _ in _mentions("alpha")] == ["persona-alpha.desktop"]
+
+
+# --- PS-45: a rename must not re-roll the profile's presented machine -------
+#
+# A profile's whole presented machine (auto resolution, mobile device preset,
+# touch points, --fingerprint=) derives from Profile.fingerprint_seed, which
+# used to be crc32(name) computed on every read. update_profile renames the
+# DATA DIR — the cookie jar, storage and sessions — and then assigns the new
+# name, so before this fix every rename handed a site the SAME cookies under a
+# DIFFERENT machine. That is the exact linkage event restore_profile refuses in
+# writing ("restoring under a different name would hand back the cookie jar
+# attached to a DIFFERENT fingerprint"): stated as a rule on one path, and
+# performed on every rename one method away.
+#
+# The seed is now frozen at creation. A record with no seed (every profile that
+# existed before this change) still falls back to crc32(name), so nothing that
+# exists today moves by a single bit.
+#
+# These tests bind to the SEED and the DERIVED IDENTITY, never to "the
+# dataclass has a field" — an implementation that carries the attribute but
+# re-derives from the name on load would pass the latter and fail the point.
+
+import json as _json
+import zlib as _zlib
+
+from src.models.profile import Profile
+from src.services.browser.device_presets import pick_preset
+from src.services.browser.resolution import resolve_resolution
+
+# Validated rename pairs (validate_profile_name accepts every one), each of
+# which moves the auto resolution on the pre-fix code.
+RENAME_PAIRS = [
+    ("acme-bank-jdoe", "acme-bank-jdoe-2"),
+    ("work", "work1"),
+    ("acct-a", "acct-b"),
+    ("client-alpha", "client-alpha-old"),
+    ("shop1", "shop2"),
+    ("jdoe", "jdoe-2"),
+]
+
+
+def _crc32(s):
+    """crc32(name) — what the seed USED to be, computed independently here so a
+    test can assert the seed is no longer following the name."""
+    return _zlib.crc32(s.encode("utf-8"))
+
+
+def _identity(profile):
+    """The presented machine, as the values a page actually observes.
+
+    Deliberately not the seed alone: the seed is the input, and asserting only
+    the input would not catch a consumer reading the name directly. Deliberately
+    not the resolution alone either — two seeds can collide onto the same pool
+    entry, so a resolution that happens not to move is not evidence of a stable
+    identity. Seed AND derived values, together.
+    """
+    seed = profile.fingerprint_seed
+    return {
+        "seed": seed,
+        "resolution": resolve_resolution(
+            getattr(profile, "resolution", "auto"), seed
+        ),
+        "touch_points": (5, 10)[seed % 2],
+        "fingerprint_arg": f"--fingerprint={seed}",
+    }
+
+
+@pytest.mark.parametrize("old,new", RENAME_PAIRS)
+def test_rename_preserves_the_presented_machine(mgr, old, new):
+    # AC1: same cookie jar, same machine. All six pairs move the resolution on
+    # the pre-fix code, so this is the defect stated as an assertion.
+    mgr.add_profile(old, "", "windows")
+    before = _identity(mgr.profiles[old])
+
+    assert mgr.update_profile(old, new, "", "windows") is True
+
+    after = _identity(mgr.profiles[new])
+    assert after == before, (
+        f"renaming {old!r} -> {new!r} moved the presented machine: "
+        f"{before} -> {after}"
+    )
+
+
+@pytest.mark.parametrize("old,new", RENAME_PAIRS)
+def test_rename_keeps_the_seed_though_the_names_differ(mgr, old, new):
+    # AC2, the premise inversion: crc32(old) != crc32(new) is precisely WHY the
+    # identity moved before. That inequality is still true of the names; what
+    # must no longer be true is that the seed follows it.
+    assert _crc32(old) != _crc32(new)
+
+    mgr.add_profile(old, "", "windows")
+    seed_before = mgr.profiles[old].fingerprint_seed
+    mgr.update_profile(old, new, "", "windows")
+
+    renamed = mgr.profiles[new]
+    assert renamed.name == new  # the label really did change
+    assert renamed.fingerprint_seed == seed_before
+    # ...and it is emphatically NOT the new name's crc32, which is the value
+    # the pre-fix code served here.
+    assert renamed.fingerprint_seed != _crc32(new)
+
+
+def test_rename_preserves_the_mobile_device_preset(mgr):
+    # AC1, mobile arm: on a mobile profile the seed picks a real device preset,
+    # so the pre-fix rename swapped the handset out from under the session.
+    # 'acme-bank-jdoe' -> 'acme-bank-jdoe-2' moves iPhone 14 -> iPhone 15.
+    mgr.add_profile(
+        "acme-bank-jdoe", "", "ios", device_type="mobile", engine="chromium"
+    )
+    before = pick_preset(mgr.profiles["acme-bank-jdoe"].fingerprint_seed, "ios")
+
+    mgr.update_profile(
+        "acme-bank-jdoe",
+        "acme-bank-jdoe-2",
+        "",
+        "ios",
+        new_device_type="mobile",
+        new_engine="chromium",
+    )
+
+    after = pick_preset(
+        mgr.profiles["acme-bank-jdoe-2"].fingerprint_seed, "ios"
+    )
+    assert after.key == before.key
+    assert (after.width, after.height) == (before.width, before.height)
+
+
+def test_a_profile_saved_without_a_seed_still_derives_it_from_its_name():
+    # AC3, the blast-radius bound: this is today's profiles.json — a record with
+    # NO seed key at all. It must keep presenting exactly what it always has.
+    # The expected values are pinned literals computed against origin/main, not
+    # recomputed from the implementation under test, so this cannot pass by
+    # agreeing with a bug.
+    legacy = Profile(**{"name": "acme-bank-jdoe", "os_type": "windows"})
+
+    assert legacy.fingerprint_seed_value is None  # nothing to fall back FROM
+    assert legacy.fingerprint_seed == 1951056451
+    assert resolve_resolution("auto", legacy.fingerprint_seed) == (1440, 900)
+    assert pick_preset(legacy.fingerprint_seed, "ios").key == "iphone-14"
+
+
+def test_a_pre_seed_record_on_disk_loads_with_the_name_derived_seed(
+    mgr, tmp_path, monkeypatch
+):
+    # AC3 through the LOAD path specifically: the allow-list must map an absent
+    # key to None (the fallback) and must not helpfully default it to
+    # crc32(name) — freezing a derived value at load time would make a later
+    # rename of an OLD profile behave differently depending on whether it had
+    # been reloaded since, which is a worse bug than the one being fixed.
+    import src.services.profile.manager as mod
+
+    pathlib_file = tmp_path / "profiles.json"
+    pathlib_file.write_text(
+        _json.dumps(
+            {"legacy-profile": {"name": "legacy-profile", "os_type": "windows"}}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mod, "PROFILES_FILE", str(pathlib_file), raising=False)
+
+    fresh = ProfileManager()
+    loaded = fresh.profiles["legacy-profile"]
+
+    assert loaded.fingerprint_seed_value is None
+    assert loaded.fingerprint_seed == 2974223098  # crc32('legacy-profile')
+    assert resolve_resolution("auto", loaded.fingerprint_seed) == (1440, 900)
+
+
+def test_the_seed_survives_a_save_load_round_trip_after_a_rename(mgr, tmp_path):
+    # AC4 — the criterion most likely to fail, and the one an in-memory
+    # assertion cannot stand in for. The load allow-list is hand-enumerated, so
+    # a field the dataclass has and to_dict() saves is still silently DROPPED on
+    # reload unless it is listed there too (cookie_import_status was the last
+    # field to hit this). If that happened here the reloaded profile would fall
+    # back to crc32(NEW name) and the freeze would evaporate at the next restart
+    # while every test above still passed.
+    mgr.add_profile("work", "", "windows")
+    seed_before = mgr.profiles["work"].fingerprint_seed
+    mgr.update_profile("work", "work1", "", "windows")
+
+    # a brand-new manager reading the same file back off disk
+    fresh = ProfileManager()
+    reloaded = fresh.profiles["work1"]
+
+    assert reloaded.fingerprint_seed == seed_before
+    # the load did not silently drop the field and re-derive from the name
+    assert reloaded.fingerprint_seed_value == seed_before
+    assert reloaded.fingerprint_seed != _crc32("work1")
+    # and the file itself really carries it
+    on_disk = _json.loads(
+        (tmp_path / "profiles.json").read_text(encoding="utf-8")
+    )
+    assert on_disk["work1"]["fingerprint_seed_value"] == seed_before
+
+
+
+def test_the_cookie_jar_and_the_identity_travel_together(mgr, tmp_path):
+    # AC5: the data dir still moves — the fix is not "stop renaming the dir".
+    # The point is that the jar and the machine now arrive at the new name
+    # TOGETHER, instead of the jar moving while the machine was re-rolled.
+    mgr.add_profile("acct-a", "", "windows")
+    data_root = tmp_path / "data"
+    (data_root / "acct-a" / "Default").mkdir(parents=True, exist_ok=True)
+    (data_root / "acct-a" / "Default" / "Cookies").write_text(
+        "session-cookie", encoding="utf-8"
+    )
+    seed_before = mgr.profiles["acct-a"].fingerprint_seed
+
+    mgr.update_profile("acct-a", "acct-b", "", "windows")
+
+    # the jar moved...
+    assert not (data_root / "acct-a").exists()
+    assert (
+        data_root / "acct-b" / "Default" / "Cookies"
+    ).read_text(encoding="utf-8") == "session-cookie"
+    # ...and the machine that jar is attached to did not change underneath it
+    assert mgr.profiles["acct-b"].fingerprint_seed == seed_before
+
+
+def test_failed_dir_rename_does_not_mint_or_move_a_seed(mgr, monkeypatch):
+    # AC7: the failed-rename path returns False leaving everything untouched,
+    # and that must include the seed — a seed minted or mutated on a path that
+    # returned False would be a fingerprint change the operator never asked for
+    # and the return value denies. Companion to the two existing failed-rename
+    # tests, which this must not disturb.
+    import pathlib
+
+    mgr.add_profile("alpha", "", "windows")
+    before = _identity(mgr.profiles["alpha"])
+
+    def boom(self, target):
+        raise OSError("dir locked")
+
+    monkeypatch.setattr(pathlib.Path, "rename", boom)
+    assert mgr.update_profile("alpha", "bravo", "", "linux") is False
+
+    assert _identity(mgr.profiles["alpha"]) == before
+
+
+def test_a_new_profiles_seed_is_the_one_it_would_have_derived(mgr):
+    # The freeze must not RE-ROLL anything: a profile created today presents
+    # exactly what it would have presented before the seed was persisted. This
+    # is what keeps the change a freeze rather than the seed-secrecy change
+    # (which would move fingerprints and is deliberately out of scope).
+    mgr.add_profile("shop1", "", "windows")
+
+    assert mgr.profiles["shop1"].fingerprint_seed == _crc32("shop1")
+    assert mgr.profiles["shop1"].fingerprint_seed_value == _crc32("shop1")

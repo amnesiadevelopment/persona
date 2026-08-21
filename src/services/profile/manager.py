@@ -7,7 +7,7 @@ from collections.abc import Callable
 
 from ...core.config import DATA_DIR, PROFILES_FILE
 from ...core.logging import get_logger
-from ...models.profile import Profile
+from ...models.profile import Profile, mint_fingerprint_seed
 from ...utils.atomic import atomic_write_json
 from ...utils.store_guard import StoreGuardMixin
 from ...utils.trashable import TrashableMixin
@@ -177,6 +177,25 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                             "tags": p_data.get("tags", []),
                             "notes": p_data.get("notes", ""),
                             "ai_control": p_data.get("ai_control", False),
+                            # Absent key = a profile written before the seed
+                            # was persisted → None, which makes
+                            # fingerprint_seed fall back to crc32(name) and
+                            # present exactly what that profile has always
+                            # presented. That fallback is the entire migration
+                            # for existing profiles; do NOT default this to
+                            # crc32(name) here, which would silently freeze a
+                            # derived value and make a later rename of an OLD
+                            # profile behave differently depending on whether
+                            # it had been reloaded since. And per the
+                            # allow-list note above, omitting this line is not
+                            # an inert oversight: the seed would be saved by
+                            # to_dict() and dropped on the next load, so every
+                            # profile would quietly re-derive from its name at
+                            # restart and the freeze would evaporate while the
+                            # in-memory tests still passed.
+                            "fingerprint_seed_value": p_data.get(
+                                "fingerprint_seed_value"
+                            ),
                         }
                         self.profiles[name] = Profile(**clean_data)
                     except Exception:
@@ -266,6 +285,14 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                 tags=tags or [],
                 notes=notes,
                 ai_control=ai_control,
+                # Freeze the seed HERE, at the one moment the profile's
+                # identity is born. Minted from the creation name, so a new
+                # profile presents exactly what it would have presented when
+                # the seed was re-derived on every read — but from now on a
+                # rename moves the name and the data dir while the presented
+                # machine stays put. Mint only on CREATE: writing this on any
+                # edit path would re-roll the very thing it exists to pin.
+                fingerprint_seed_value=mint_fingerprint_seed(name),
             )
             self.save_profiles()
             pathlib.Path(self._data_path(name)).mkdir(exist_ok=True, parents=True)
