@@ -58,10 +58,10 @@ def test_geo_on_shared_recursive_registry(tmp_path):
     ext = build_geo_extension(1.0, 2.0, str(tmp_path / "geo"))
     js = (pathlib.Path(ext) / "geo.js").read_text()
     assert "applyGeoPatch" in js
-    assert "__pnaBoots.push(applyGeoPatch)" in js
+    assert "__pnaInstall(SELF, applyGeoPatch)" in js
     assert "HTMLIFrameElement" in js
     # LAT/LON live inside the leaf so .toString() carries them per realm
-    body = js.split("function applyGeoPatch(G)", 1)[1].split("__pnaBoot", 1)[0]
+    body = js.split("function applyGeoPatch(G)", 1)[1].split("__pnaInstall", 1)[0]
     assert "var LAT =" in body
 
 

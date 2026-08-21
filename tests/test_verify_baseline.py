@@ -757,3 +757,101 @@ def test_the_baseline_profile_is_never_written_to_the_profile_store():
     src = inspect.getsource(baseline.baseline_profile)
     assert "ProfileManager" not in src
     assert "add_profile" not in src
+
+
+# --- the artifact must track the probe inventory ----------------------------
+#
+# PS-48 shipped a broken gate through a fully green suite, and the hole was
+# structural rather than careless. The change reshaped `realm.bootMarkers` and
+# added `realm.seedRecoverable`, but the committed artifact — the reference
+# every `check` compares against — was updated for neither. `baseline check`
+# then reported four differing probes on a COMPLETELY HEALTHY browser.
+#
+# Nothing above caught it, because nothing above could:
+# `test_the_committed_baseline_compares_clean_against_itself` compares the
+# fixture to ITSELF, so it stays green no matter how far the fixture drifts
+# from what the code would now produce. Every other artifact test reads a probe
+# id it names literally, so a probe nobody thought to name is invisible.
+#
+# These close that: the artifact's probe-id set must equal the LIVE inventory's,
+# per realm. The failure mode they prevent is the worst kind for this gate — see
+# engine-fingerprint-baseline.md:182, a baseline that fails for an unexplained
+# reason "trains the operator to ignore the command", and the next REAL engine
+# drift then lands in a diff nobody reads.
+
+
+def _inventory_mismatch(snap, realm, live_ids=None):
+    """(missing, stale) between the artifact's probe ids and the inventory's.
+
+    `missing` exist in the inventory but not the artifact (a `check` reports
+    them ADDED on a healthy browser); `stale` are the reverse (reported
+    REMOVED). `live_ids` is injectable ONLY so the falsification below can drive
+    this same code with a probe the inventory does not really have — the two
+    tests share one implementation so the negative case exercises the real
+    comparison rather than re-deriving it.
+    """
+    from src.services.verify.probes import probes_for_realm
+
+    if live_ids is None:
+        live_ids = {p.id for p in probes_for_realm(realm)}
+    recorded = set(snap["probes"][realm])
+    return sorted(set(live_ids) - recorded), sorted(recorded - set(live_ids))
+
+
+@pytest.mark.parametrize("realm", ["window", "worker"])
+def test_the_committed_baseline_records_exactly_the_live_probe_inventory(realm):
+    """Reshape or add a probe and this fails until the artifact is re-recorded.
+
+    A SET comparison against the inventory, not a count, so the message names
+    the probe that moved instead of reporting that two numbers differ.
+    """
+    snap = json.loads(_artifact().read_text(encoding="utf-8"))
+    missing, stale = _inventory_mismatch(snap, realm)
+
+    assert not missing, (
+        f"{realm}: {missing} exist in the probe inventory but are absent from "
+        f"the committed baseline, so `check` reports them ADDED on a healthy "
+        f"browser. Re-record: "
+        f"xvfb-run -a python -m src.services.verify.baseline_cli record"
+    )
+    assert not stale, (
+        f"{realm}: {stale} are recorded in the committed baseline but no longer "
+        f"exist in the probe inventory, so `check` reports them REMOVED on a "
+        f"healthy browser. Re-record the artifact."
+    )
+
+
+def test_a_probe_added_without_re_recording_the_baseline_is_caught():
+    """The guard above must be shown to FAIL, or it is the same green-but-blind
+    test it was written to replace.
+
+    Drives the REAL comparison with an inventory carrying one probe the artifact
+    does not, which is exactly the PS-48 mistake.
+    """
+    from src.services.verify.probes import probes_for_realm
+
+    snap = json.loads(_artifact().read_text(encoding="utf-8"))
+    live = {p.id for p in probes_for_realm("window")} | {"realm.newlyAddedProbe"}
+
+    missing, stale = _inventory_mismatch(snap, "window", live_ids=live)
+
+    assert missing == ["realm.newlyAddedProbe"]
+    assert not stale
+
+
+def test_a_probe_dropped_from_the_inventory_is_caught():
+    """The other direction: the artifact still carries a probe the code removed.
+
+    Distinct from the case above because the two produce opposite `check`
+    verdicts (REMOVED vs ADDED) and a guard that only tested one would miss a
+    deletion entirely.
+    """
+    from src.services.verify.probes import probes_for_realm
+
+    snap = json.loads(_artifact().read_text(encoding="utf-8"))
+    live = {p.id for p in probes_for_realm("window")} - {"realm.seedRecoverable"}
+
+    missing, stale = _inventory_mismatch(snap, "window", live_ids=live)
+
+    assert stale == ["realm.seedRecoverable"]
+    assert not missing

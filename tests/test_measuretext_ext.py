@@ -116,7 +116,7 @@ def test_measuretext_on_shared_recursive_registry(tmp_path):
     d = build_measuretext_extension(str(tmp_path / "mt"))
     js = (pathlib.Path(d) / "measuretext.js").read_text()
     assert "applyMtPatch" in js
-    assert "__pnaBoots.push(applyMtPatch)" in js
+    assert "__pnaInstall(SELF, applyMtPatch)" in js
     assert "G.Worker" in js and "HTMLIFrameElement" in js
     assert "__personaMtFactor" in js
 

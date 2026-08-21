@@ -109,13 +109,13 @@ def test_mobile_on_shared_recursive_registry(tmp_path):
     )
     js = (pathlib.Path(d) / "mobile.js").read_text()
     assert "applyMobilePatch" in js
-    assert "__pnaBoots.push(applyMobilePatch)" in js
+    assert "__pnaInstall(SELF, applyMobilePatch)" in js
     assert "G.Worker" in js and "HTMLIFrameElement" in js
     # worker-safe: Window-only bits gated so the leaf doesn't throw in a worker
     assert "if (G.screen)" in js
     assert "if (G.matchMedia)" in js
     # params live inside the leaf so .toString() carries them per realm
-    body = js.split("function applyMobilePatch(G)", 1)[1].split("__pnaBoot", 1)[0]
+    body = js.split("function applyMobilePatch(G)", 1)[1].split("__pnaInstall", 1)[0]
     assert "var IS_IOS" in body and "var HWC" in body
 
 

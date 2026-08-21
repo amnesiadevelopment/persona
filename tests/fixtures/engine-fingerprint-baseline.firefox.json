@@ -151,11 +151,8 @@
       },
       "realm.bootMarkers": {
         "value": {
-          "bootCount": null,
-          "booted": false,
-          "hasBoots": false,
-          "installed": false,
-          "srcCount": null
+          "markerCount": 0,
+          "markers": []
         }
       },
       "realm.kind": {
@@ -163,6 +160,12 @@
           "ctor": "Window",
           "hasDocument": true,
           "hasWindow": true
+        }
+      },
+      "realm.seedRecoverable": {
+        "value": {
+          "candidateCount": 0,
+          "candidates": []
         }
       },
       "screen.devicePixelRatio": {
@@ -428,11 +431,8 @@
       },
       "realm.bootMarkers": {
         "value": {
-          "bootCount": null,
-          "booted": false,
-          "hasBoots": false,
-          "installed": false,
-          "srcCount": null
+          "markerCount": 0,
+          "markers": []
         }
       },
       "realm.kind": {
@@ -440,6 +440,12 @@
           "ctor": "DedicatedWorkerGlobalScope",
           "hasDocument": false,
           "hasWindow": false
+        }
+      },
+      "realm.seedRecoverable": {
+        "value": {
+          "candidateCount": 0,
+          "candidates": []
         }
       },
       "stealth.apiPresence": {
