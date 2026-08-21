@@ -164,10 +164,15 @@ def _profile_timezone(profile: Profile, proxy) -> str:
         ) from e
 
 
-def _spawn_invisible(profile: Profile, profile_dir: str):
+def _spawn_invisible(profile: Profile, profile_dir: str, *, in_process: bool = False):
     """Launch the invisible_playwright (patched Firefox 150) engine. SOCKS5
     proxy auth is handled natively (no bridge). Returns a Popen-compatible
-    handle."""
+    handle.
+
+    ``in_process`` runs the session in a THREAD of this process instead of a
+    forked child, so the caller can reach the session's eval hook (which is
+    registered in a per-process dict). See :class:`InvisibleProcess`.
+    """
     from .invisible_launch import is_invisible_installed, spawn
 
     store = ProxyStore()
@@ -229,7 +234,7 @@ def _spawn_invisible(profile: Profile, profile_dir: str):
             # ~118MB engine here and block the launch for minutes over Tor.
             "_needs_fetch": not is_invisible_installed(),
         }
-        proc = spawn(cfg)
+        proc = spawn(cfg, in_process=in_process)
         # Claim the terminator for this browser now that it exists (it had to
         # bind first — the engine gets its port in the proxy config). The handle
         # reports pid 0 on the non-fork path, where the engine runs on a thread
@@ -278,15 +283,20 @@ def effective_engine(profile: Profile) -> str:
     )
 
 
-def spawn_browser(profile: Profile) -> subprocess.Popen:
+def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.Popen:
     """Launch a persona browser (fingerprint-chromium or the patched Firefox)
-    for the given profile."""
+    for the given profile.
+
+    ``in_process`` is honoured by the FIREFOX path only: it runs the session in
+    a thread of this process so the caller can reach its eval hook. Chromium
+    needs no such flag — it is reachable over CDP from any process.
+    """
     profile_dir = os.path.join(DATA_DIR, profile.name)
     os.makedirs(profile_dir, exist_ok=True)
 
     engine = effective_engine(profile)
     if engine == "firefox":
-        proc = _spawn_invisible(profile, profile_dir)
+        proc = _spawn_invisible(profile, profile_dir, in_process=in_process)
         proc._proxy_bridge = None  # type: ignore[attr-defined]
         return proc
 
