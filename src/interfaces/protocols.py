@@ -77,6 +77,8 @@ class IBrowserLauncher(Protocol):
 
     def last_refusal(self, profile_name: str) -> "Refusal | None": ...
 
+    def forget_refusal(self, profile_name: str) -> None: ...
+
 
 class IProxyService(Protocol):
     def check_proxy_sync(

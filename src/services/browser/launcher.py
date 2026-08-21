@@ -369,15 +369,23 @@ class BrowserLauncher:
                     self._lock.notify_all()
                 raise
         except Exception as e:
+            # Classify BEFORE taking the lock. classify_refusal is pure and
+            # allocation-only, so holding the lock across it is safe today —
+            # but it is a classification function inside a critical section
+            # other threads block on, and keeping it outside means the
+            # invariant stays obvious if it ever grows. The timestamp is taken
+            # here too, which is if anything more truthful: it stamps the
+            # instant the failure was handled rather than the instant the lock
+            # was won.
+            #
+            # Records a REFUSAL and only a refusal. classify_refusal returns
+            # None for an ordinary failure, which stays in the log and off the
+            # card — if every transient spawn error marked a card, the operator
+            # would learn to skim past the one marker that means a guard fired.
+            refusal = classify_refusal(e, time.time())
             with self._lock:
                 self._starting.discard(profile.name)
                 self._aborting.discard(profile.name)
-                # Record a REFUSAL (and only a refusal) on the profile that
-                # refused. classify_refusal returns None for an ordinary
-                # failure, which stays in the log and off the card — if every
-                # transient spawn error marked a card, the operator would learn
-                # to skim past the one marker that means a guard fired.
-                refusal = classify_refusal(e, time.time())
                 if refusal is not None:
                     self._last_refusal[profile.name] = refusal
                 self._lock.notify_all()
@@ -503,6 +511,45 @@ class BrowserLauncher:
         """
         with self._lock:
             return self._last_refusal.get(profile_name)
+
+    def forget_refusal(self, profile_name: str) -> None:
+        """Drop the recorded refusal for ``profile_name`` — the profile IDENTITY
+        under that key is gone (deleted, wiped, renamed away, or overwritten).
+
+        DELIBERATELY NOT PART OF ``_forget_session_facts``, and the distinction
+        is the whole point. That helper tears down facts about a LIVE SESSION,
+        and a refusal must SURVIVE a teardown: a launch that never became a
+        session has no session whose end could retire it, and being there an
+        hour later is the property this ticket exists to deliver. Folding this
+        in there would erase the marker at the moment it becomes the only
+        remaining evidence.
+
+        Destruction of the identity is a DIFFERENT EVENT from the end of a
+        session, and it is the one event that must take the verdict with it.
+        ``_last_refusal`` is keyed by profile NAME, and a name is not a stable
+        identity in this codebase — ``ProfileManager`` deletes them, wipes them,
+        re-keys them on rename, and overwrites them on import, after which the
+        SAME STRING can name a different profile. Left in place, the verdict is
+        then attributed to a profile that never attempted a launch: the card
+        renders a red refusal chip, and because ``humanize_since`` re-derives the
+        age against the current clock it reads "just now" — the most urgent form
+        of the marker, on the least deserving profile. It would also point the
+        operator at a proxy check for a proxy that may be perfectly healthy,
+        which is the exact wasted trip the disproven/unknown wording split exists
+        to prevent.
+
+        So the survival rule is scoped to what it was always meant to mean: the
+        verdict outlives the SESSION, never the SUBJECT.
+
+        Idempotent, and safe for a name that has no verdict — every caller is a
+        lifecycle path that cannot know whether a refusal was ever recorded, and
+        making them ask first would be a race as well as a nuisance. Takes the
+        lock itself (unlike ``_forget_session_facts``, which is called from
+        inside existing critical sections) because its callers reach it from
+        ``ProfileManager``, holding no lock of ours.
+        """
+        with self._lock:
+            self._last_refusal.pop(profile_name, None)
 
     def _forget_session_facts(self, profile_name: str) -> None:
         """Drop every per-session fact recorded for ``profile_name``.
