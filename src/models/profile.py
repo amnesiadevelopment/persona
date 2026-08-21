@@ -1,5 +1,53 @@
 import zlib
+from collections.abc import Container
 from dataclasses import asdict, dataclass, field
+
+
+def mint_fingerprint_seed(name: str, taken: Container[int] | None = None) -> int:
+    """Mint the seed a NEW profile freezes into ``fingerprint_seed_value``.
+
+    The seed carries TWO properties, and this function has to hold both:
+
+    1. STABILITY — a profile's presented machine must not move under its own
+       live cookie jar. That is what persisting the seed buys, and why the
+       common case here is deliberately the SAME crc32(name) the old property
+       derived on every read: a freshly created profile presents
+       byte-identically to what it would have presented before the seed became
+       a field. This freezes the seed, it does not re-roll it.
+    2. ISOLATION — two LIVE profiles must not present the same machine. Once
+       the seed is frozen at creation, crc32(name) alone no longer delivers
+       this, because a name is REUSABLE: rename 'acme-bank' to 'acme-bank-old'
+       and create 'acme-bank' again and both hold crc32('acme-bank'), i.e. one
+       resolution, one device preset, one --fingerprint=. That is a
+       cross-profile linkage, and it is the ordinary "archive last quarter's
+       account, start a fresh one under the same label" workflow — not a
+       corner case.
+
+    So: mint crc32(name); if that value is already held by a live profile,
+    walk crc32(name + ':' + n) from n=1 for the first free one. Deterministic
+    (no RNG, reproducible from the inputs), and it only diverges from plain
+    crc32(name) when it must — every non-colliding create still mints exactly
+    the value it always would have.
+
+    ``taken`` is the set of seeds held by live profiles. Pass it under the same
+    lock that guards the check-then-insert, or two concurrent creates can both
+    read a stale set and mint the same seed. None = don't check (the caller has
+    no registry in hand).
+
+    Making the minted value SECRET/unguessable is a separate decision — it
+    would move existing profiles' fingerprints — and is deliberately not
+    attempted here. Freezing and hiding are different problems; keeping them
+    apart is why this is a named function and not an inlined literal.
+    """
+    seed = zlib.crc32(name.encode("utf-8"))
+    if taken is None or seed not in taken:
+        return seed
+    n = 1
+    while True:
+        seed = zlib.crc32(f"{name}:{n}".encode("utf-8"))
+        if seed not in taken:
+            return seed
+        n += 1
 
 
 @dataclass
@@ -35,15 +83,48 @@ class Profile:
     tags: list[str] = field(default_factory=list)
     notes: str = ""
     ai_control: bool = False
+    # The frozen fingerprint seed, minted once when the profile is created
+    # (ProfileManager.add_profile) and never rewritten. None = a profile that
+    # predates this field, which keeps deriving its seed from its name — see
+    # fingerprint_seed below for why that fallback is the whole migration.
+    # NOT named `fingerprint_seed`: that name is the read accessor every
+    # consumer already calls, and a field of the same name would shadow the
+    # property and hand callers a raw None on every pre-this-field profile.
+    fingerprint_seed_value: int | None = None
 
     @property
     def fingerprint_seed(self) -> int:
-        """Deterministic per-profile fingerprint seed derived from the name.
+        """This profile's fingerprint seed: the frozen one, else crc32(name).
 
-        Same profile name always yields the same fingerprint; distinct names
-        yield distinct fingerprints, so each persona is isolated without the
-        user having to pick seed numbers.
+        The whole presented machine (resolution, device preset, touch points,
+        --fingerprint=) derives from this integer, so it must not move under a
+        live cookie jar. It used to be crc32(name) unconditionally, which meant
+        renaming a profile re-rolled its hardware while update_profile carried
+        the SAME data dir across — cookies and sessions intact, machine
+        different. That is exactly the linkage event restore_profile refuses in
+        writing (manager.py: "restoring under a different name would hand back
+        the cookie jar attached to a DIFFERENT fingerprint").
+
+        A profile created since the seed became a field carries its own value
+        and a rename cannot touch it. A profile that predates the field has no
+        value to carry, so it falls back to crc32(name) and presents exactly
+        what it has always presented — the fallback IS the migration, which is
+        why this change moves no existing profile's fingerprint by a single bit
+        and needs no backfill. Do not "tidy" the fallback into a backfill.
+
+        The seed's SECOND property is unchanged and equally load-bearing:
+        distinct live profiles yield distinct fingerprints, so each persona is
+        isolated without the user having to pick seed numbers. Freezing the
+        seed is what put that at risk — a name is reusable, so crc32(name)
+        alone would hand a recreated name the seed its renamed predecessor is
+        still holding. mint_fingerprint_seed() is where isolation is enforced
+        (it skips a seed a live profile already holds); this property only
+        READS. Both halves are mandatory: stability without isolation is two
+        profiles presenting one machine, which is the linkage this whole area
+        exists to prevent.
         """
+        if self.fingerprint_seed_value is not None:
+            return self.fingerprint_seed_value
         return zlib.crc32(self.name.encode("utf-8"))
 
     def to_dict(self) -> dict:
