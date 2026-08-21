@@ -2,6 +2,7 @@ from collections.abc import Callable
 from typing import Protocol
 
 from ..models.profile import Profile
+from ..services.browser.refusal import Refusal
 from ..services.profile.proxy_assignment import PROXY_UNCHANGED, ProxyDirective
 
 
@@ -77,6 +78,10 @@ class IBrowserLauncher(Protocol):
     def started_at(self, profile_name: str) -> float | None: ...
 
     def cdp_channel_open(self, profile_name: str) -> bool: ...
+
+    def last_refusal(self, profile_name: str) -> "Refusal | None": ...
+
+    def forget_refusal(self, profile_name: str) -> None: ...
 
 
 class IProxyService(Protocol):

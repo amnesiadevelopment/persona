@@ -5,6 +5,7 @@ import flet as ft
 
 from ...models.profile import Profile
 from ...models.proxy import Proxy
+from ...services.browser.refusal import Refusal
 from ...services.proxy.freshness import PROXY_STALE_AFTER_S, proxy_indicator_state
 from ...utils.timefmt import humanize_since
 from ..flags import flag_path
@@ -217,6 +218,7 @@ def build_profile_card(
     proxy_checking: bool = False,
     on_notes_change: Callable[[str, str], None] | None = None,
     cdp_channel_open: bool = False,
+    refusal: Refusal | None = None,
 ) -> ft.Container:
     """Build a single profile row as a terminal-style line."""
     launch_btn = build_launch_button(
@@ -297,6 +299,33 @@ def build_profile_card(
                                 if is_running
                                 else []
                             ),
+                            # Spliced into the meta row that ALREADY EXISTS
+                            # rather than given a row of its own: that is what
+                            # keeps a bulk launch of twenty refusals to twenty
+                            # short lines in a column the operator is already
+                            # scanning, with no card growing taller.
+                            #
+                            # Gated on NOT running as a render-side belt. The
+                            # launcher already drops the verdict when a new
+                            # attempt starts, and a refusal badge over a live
+                            # browser would be the exact stale dishonesty this
+                            # design avoids.
+                            #
+                            # NOT a second independent guard, and the comment
+                            # said so before: `is_running` returns True while a
+                            # name sits in `_starting`, and the launcher's pop
+                            # happens in the SAME critical section that adds it
+                            # there — so this condition is strictly implied by
+                            # the launcher's, never true when the launcher's is
+                            # false. It is defence in depth (cheap, and it keeps
+                            # the render honest if that ordering ever moves),
+                            # not a condition covering a case the launcher
+                            # leaves open. Read it as a belt, not as braces.
+                            *(
+                                _refusal_chip(refusal, now)
+                                if not is_running
+                                else []
+                            ),
                         ],
                     ),
                 ],
@@ -332,6 +361,73 @@ def build_profile_card(
         padding=ft.Padding.symmetric(horizontal=18, vertical=14),
         content=row,
     )
+
+
+def _refusal_chip(refusal, now: float) -> list[ft.Control]:
+    """The 'this profile's launch was REFUSED' marker, or nothing at all.
+
+    Returned as a list so the caller splices it in — a profile with no refusal
+    on record renders EXACTLY as it did before this marker existed, no empty
+    box and no spacing change. The marker's PRESENCE is the signal, so an
+    absent marker must be a real absence rather than a dimmed variant the eye
+    learns to skip.
+
+    WHY THIS EXISTS. A refusal used to reach the operator only as
+    ``log_callback(f"Error starting process: {e}")`` — one line in a shared
+    panel that scrolls, with nothing landing on the profile. A card that
+    refused was pixel-identical to one that was never clicked, so an hour later
+    there was no way to tell which profiles refused or why. That misreading has
+    a direction: "the profile didn't open" invites the operator to remove the
+    protection that just fired correctly.
+
+    SIZED FOR TWENTY, NOT FOR ONE. Bulk launch is a real workflow, so the
+    failure mode to design against is a wall of identical prose. This is a
+    one-line chip spliced into the meta row that ALREADY EXISTS on every card:
+    twenty refusals cost twenty short lines in a column the operator is already
+    scanning, with no card growing taller and no layout shifting. The full
+    settled sentence rides the TOOLTIP, where it is one hover away for the row
+    the operator actually cares about instead of twenty paragraphs competing at
+    once.
+
+    IT CARRIES ITS AGE, and that is what makes it honest rather than merely
+    persistent. The marker is meant to be found long after the fact, and a
+    marker that cannot say when it happened gets read as NOW. "refused 40m ago"
+    is a timestamped historical claim that stays true however long it sits
+    there; a bare "refused" would quietly become a claim about the present.
+
+    Drawn in ``error`` red and never dimmed: this is the loudest thing on the
+    row, deliberately, because it is the one event the ticket says routine
+    noise must not be allowed to drown.
+
+    Pure render — it draws the value it is handed and performs no IO.
+    """
+    if refusal is None:
+        return []
+    return [
+        ft.Container(
+            border_radius=3,
+            border=ft.Border.all(1, COLORS["error"]),
+            padding=ft.Padding.symmetric(horizontal=6, vertical=1),
+            # The full, settled sentence — composed in process.py with the
+            # profile and proxy named and the one-click remedy spelled out. It
+            # is passed through verbatim, never restated here: the wording
+            # deliberately distinguishes "never checked successfully" from "the
+            # last check FAILED", and a copy in the UI layer would fork from it
+            # at the first edit.
+            tooltip=(
+                f"Launch REFUSED {humanize_since(refusal.at, now)}.\n\n"
+                f"{refusal.detail}\n\n"
+                "This is the fail-closed guard working, not a crash: the "
+                "profile was not opened, so nothing was disclosed."
+            ),
+            content=ft.Text(
+                f"refused · {refusal.label} · {humanize_since(refusal.at, now)}",
+                size=10,
+                color=COLORS["error"],
+                font_family=MONO,
+            ),
+        )
+    ]
 
 
 def _automation_channel_chip(cdp_channel_open: bool) -> list[ft.Control]:

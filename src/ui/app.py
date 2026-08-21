@@ -98,6 +98,12 @@ class App:
         self.ps: IProxyService = c.proxy_service
         # Delete/wipe must stop a running browser before rmtree'ing its data dir.
         self.pm.set_stop_hook(self.bl.stop_profile)
+        # Delete/wipe/rename/overwrite must ALSO tell the launcher the name has
+        # stopped meaning what it meant, so per-name state is not inherited by
+        # whatever takes the name next. Separate from the stop hook above on
+        # purpose: that one is about a live session (whose facts a refusal is
+        # built to OUTLIVE), this one is about the identity going away.
+        self.pm.set_forget_identity_hook(self.bl.forget_refusal)
         # Engine pruning deletes whole build trees (~320-600MB each) and keeps
         # only the HIGHEST build — so a profile still running on the PREVIOUS
         # build when a new one lands would have the tree it is executing from
@@ -3037,6 +3043,13 @@ class App:
                     # not p.ai_control, which set_ai_control can flip while the
                     # session runs without closing the port already bound.
                     cdp_channel_open=self.bl.cdp_channel_open(p.name),
+                    # The most recent REFUSED launch, from the launcher. A
+                    # refusal is the fail-closed guard firing, and it used to
+                    # reach the operator only as a log line that scrolled away
+                    # — leaving the card that refused identical to one that was
+                    # never clicked. Like the fact above it is a dict lookup
+                    # under a lock, no IO, so it is safe on this render path.
+                    refusal=self.bl.last_refusal(p.name),
                     proxy_checking=(
                         p.proxy in self._checking_proxies if p.proxy else False
                     ),
