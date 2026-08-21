@@ -24,6 +24,13 @@ must be able to tell them apart from the exit code alone:
         an unobtainable reading is inconclusive, and inconclusive is never a
         pass. Distinct from 1 so a future CI gate can treat "look again"
         differently from "the identity drifted"
+    2   refused. A file handed in is not a snapshot at all — it carries no
+        ``probes`` object, so NOTHING WAS COMPARED. Never 0: a comparison of
+        zero readings is not agreement, and an empty entry list is this
+        subsystem's agreement signal, so without this refusal a typo'd path
+        prints "no differences" and exits 0 — the tool at its most confident
+        with the least evidence. Never 1 either, for the reason ``compare``
+        already gives below: a refusal is not a finding
 
 Note which side of that line the asymmetric case falls on: a vector that read
 "Apple GPU" in the baseline and throws after an engine update exits **1**, not
@@ -39,14 +46,21 @@ is a later slice with its own approval.
 ``compare`` (cross-profile unlinkability) reuses those three codes with the
 polarity inverted — 0 is "the profiles DIFFER on every compared vector", 1 is
 "they agree somewhere, so they are linkable there", 3 is "the comparison rested
-only on readings nobody obtained". It adds a FOURTH outcome the other two
-subcommands cannot produce:
+only on readings nobody obtained". It refuses on a SECOND premise the other two
+subcommands do not have, reusing the same 2:
 
     2   refused. The two snapshots cannot answer the question at all — the same
         profile compared with itself, or two different engines compared as if
         they were one. Both verdicts would be wrong (a false leak and a false
         certificate respectively), so neither is given. Deliberately not 1: a
         refusal is not a finding
+
+Note that 2 means one thing across all three subcommands — "could not do what
+you asked", the same value ``record`` returns when it cannot reach a profile.
+What varies is only WHICH premise failed: for ``diff``/``realms`` the input was
+not a snapshot, for ``compare`` the pair could not answer the unlinkability
+question. A caller reading exit codes alone never has to know the difference:
+2 is never a verdict about an identity.
 """
 
 from __future__ import annotations
@@ -56,12 +70,14 @@ import sys
 
 from .diff import (
     ComparisonNotControlled,
+    NotASnapshot,
     compare_profiles,
     diff_realms,
     diff_snapshots,
     format_comparison,
     format_diff,
     inconclusive_count,
+    require_snapshot,
 )
 from .probes import ALL_REALMS, PROBES, WINDOW, WORKER
 from .runner import run_probes
@@ -138,16 +154,40 @@ def _exit_code(entries: "list[dict]") -> int:
     return 3 if unread == len(entries) else 1
 
 
+def _load_snapshot(path: str) -> dict:
+    """Load a snapshot file, refusing anything that is not a snapshot.
+
+    The refusal is raised HERE, at the load site, rather than being left to the
+    comparators, so the message can name the FILE the operator typed. A typo'd
+    path is the expected way into this branch, and "which of my two arguments
+    was wrong" is the only thing they need to know.
+
+    ``json.load`` on a non-object (``[1,2,3]``, ``null``, a bare string) is
+    caught by the same guard: those parse fine and used to reach ``_probes`` as
+    a traceback on exit 1. A traceback is not a diff verdict.
+    """
+    return require_snapshot(load(path), source=path)
+
+
 def _cmd_diff(args: argparse.Namespace) -> int:
-    entries = diff_snapshots(
-        load(args.expected), load(args.observed), include_meta=args.meta
-    )
+    try:
+        expected = _load_snapshot(args.expected)
+        observed = _load_snapshot(args.observed)
+    except NotASnapshot as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    entries = diff_snapshots(expected, observed, include_meta=args.meta)
     print(format_diff(entries))
     return _exit_code(entries)
 
 
 def _cmd_realms(args: argparse.Namespace) -> int:
-    entries = diff_realms(load(args.snapshot), args.left, args.right)
+    try:
+        snap = _load_snapshot(args.snapshot)
+    except NotASnapshot as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    entries = diff_realms(snap, args.left, args.right)
     print(format_diff(entries))
     return _exit_code(entries)
 
