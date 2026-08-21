@@ -34,8 +34,9 @@ concurrency:
 jobs:
   tests:
     runs-on: ubuntu-24.04
-    # Measured at 2m10s for 2366 tests on this runner image (see "the failure
-    # floor" below). That is well inside the window where people wait for a
+    # Measured at 107s on the runner (2454 passed, 1 failed, 14 skipped — see
+    # "the failure floor" below, which states each figure with the environment
+    # it came from). That is well inside the window where people wait for a
     # check rather than learning to merge past it, so the gate runs the WHOLE
     # suite: no -k narrowing, no --deselect, no "fast subset". If it ever grows
     # slow enough to tempt someone, split it by measuring again and gating on a
@@ -52,6 +53,22 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
+
+      - name: Set up Node
+        # PINNED DELIBERATELY. Parts of this suite drive the generated cloak
+        # scripts through a real JS engine, so `node` is a dependency of the
+        # tests whether or not it appears in pyproject — but nothing pinned it,
+        # and the version was whatever the runner image happened to ship. That
+        # drifted from 20 to 24 underneath the project and turned a green suite
+        # red (see the Node note under "Run the test suite"). An unpinned engine
+        # means the gate can change its answer with no change to this repo,
+        # which is the one thing a merge gate must never do.
+        #
+        # Keep this in step with release.yml's `tests` job, for the same reason
+        # the install step is identical there: two gates, one definition.
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: "24"
 
       - name: Install deps
         # Deliberately IDENTICAL to release.yml's `tests` job. The two gates
@@ -72,36 +89,72 @@ jobs:
           if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; else pip install pytest; fi
 
       - name: Run the test suite
-        # THE FAILURE FLOOR, MEASURED — not assumed, and deliberately not
-        # papered over with an allowlist.
+        # THE FAILURE FLOOR, MEASURED — and measured WHERE IT IS CLAIMED.
         #
         # A suite with a known-red floor teaches everyone to ignore the job, so
-        # the floor was measured on this runner image (python 3.13) both ways:
+        # the floor is stated here with its provenance attached. The previous
+        # revision of this comment did NOT do that: it reported figures taken in
+        # a dev container while describing them as "measured on this runner
+        # image", and concluded "any red here is a red this change introduced".
+        # This workflow's very first run on a real runner disproved that
+        # sentence — a test failed that the PR had not touched. The number was
+        # not wrong so much as it was from somewhere else, and that is the more
+        # durable defect: a stated floor is the sentence the next reader trusts
+        # when they are deciding whether their change broke something.
         #
-        #   bare interpreter, deps NOT installed : 42 failed, 2321 passed, 124s
-        #   after the install step above         :  0 failed, 2366 passed, 130s
+        # WHAT WAS MEASURED, AND WHERE
         #
-        # All 42 bare failures were missing-dependency failures and nothing else
-        # — ModuleNotFoundError for invisible_core / invisible_playwright, plus
-        # the aiohttp-branch assertions that report "aiohttp not installed".
-        # Every one of those three is a pyproject dependency that the install
-        # step above provides.
+        #   ON THIS RUNNER (ubuntu-24.04, run 32531702342, before the Node pin):
+        #     1 failed, 2454 passed, 14 skipped, 107s
+        #     The single failure was tests/test_ff_language_override.py::
+        #     test_reported_values_are_unchanged, and it was NOT caused by the
+        #     change under test — see the Node note below. It is fixed at
+        #     source in this same change, so the expected floor on this job is
+        #     now ZERO.
         #
-        # So on THIS job the floor is ZERO, and no allowlist / no expected-failure
-        # list is configured. That is the stronger outcome: an allowlist of
+        #   IN A DEV CONTAINER (python 3.13 via uv, node pinned to 24 by hand):
+        #     bare interpreter, deps NOT installed : 42 failed, 2321 passed
+        #     after the install step above         :  0 failed, 2398 passed, 120s
+        #     All 42 bare failures were missing-dependency failures and nothing
+        #     else — ModuleNotFoundError for invisible_core / invisible_playwright,
+        #     plus aiohttp-branch assertions reporting "aiohttp not installed".
+        #     Every one is a pyproject dependency the install step provides.
+        #
+        # THE TWO NUMBERS DO NOT MATCH, DELIBERATELY LEFT VISIBLE: the runner
+        # collects ~56 more tests than the container. So the container figure is
+        # useful for the bare-vs-installed COMPARISON (which needs two runs of
+        # the same environment) and is NOT a stand-in for the runner's absolute
+        # count. Anyone re-measuring the floor must do it on the runner.
+        #
+        # WHY THAT ONE RUNNER FAILURE HAPPENED — it is the argument for the Node
+        # pin above. Node 21 introduced a built-in `navigator` global defined as
+        # a getter-only accessor. tests/test_ff_language_override.py's harness
+        # installed its stub with a plain sloppy-mode assignment, which over a
+        # getter-only property is a SILENT no-op — no throw, no warning. On the
+        # runner's Node (24) the stub was therefore never installed and the test
+        # read the host's real locale; on a Node 20 machine the global does not
+        # exist, the assignment works, and the suite is green. Nothing in this
+        # repo pinned Node, so the gate's answer could change with no change to
+        # the repo. Both are now fixed: the harness uses defineProperty (correct
+        # on every engine) and the engine is pinned. This gate found a real,
+        # live, pre-existing bug on its first execution.
+        #
+        # NO ALLOWLIST IS CONFIGURED, and that is the stronger outcome: a list of
         # "known" failures is precisely how a real regression gets waved through,
-        # and it would also swallow a genuine break in those same files. Any red
-        # here is a red this change introduced. If a future dependency genuinely
-        # cannot be installed on the runner, state it in this comment WITH the
-        # measurement rather than silencing the test.
+        # and it would also swallow a genuine break in those same files. The one
+        # failure the runner showed was fixed at its cause instead of being
+        # listed. If a future dependency genuinely cannot be installed on the
+        # runner, state it in this comment WITH the measurement and WITH where it
+        # was taken — rather than silencing the test.
         #
         # Reported, not laundered: two tests that stand up real sockets/TLS with
         # timeouts (tests/test_cert_manager.py::test_session_end_to_end and
         # tests/test_cert_terminator.py::test_terminator_presents_cert_to_admin_host)
-        # have been seen failing intermittently under full-suite load, and were
-        # reproduced failing on an unmodified main as a control, so they are
-        # pre-existing and unrelated to any change gated here. They are NOT
-        # allowlisted (that would also hide a real regression in those files) and
-        # NOT fixed here. Neither reproduced across this job's measurement runs.
-        # If one trips a PR, re-run it and file it — do not add it to a skip list.
+        # were seen failing intermittently under full-suite load in an earlier
+        # session, and were reproduced failing on an unmodified main as a control,
+        # so they are pre-existing and unrelated to any change gated here. They
+        # did NOT reproduce in any run of this session, on the runner or in the
+        # container. They are NOT allowlisted (that would also hide a real
+        # regression in those files) and NOT fixed here. If one trips a PR,
+        # re-run it and file it — do not add it to a skip list.
         run: python -m pytest -q
