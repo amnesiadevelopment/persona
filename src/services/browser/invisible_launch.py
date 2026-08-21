@@ -47,6 +47,7 @@ from .engine_install import (  # noqa: F401
     # is what makes the wiring visible to it.
     set_in_use_provider,
 )
+from .env_policy import scrub_current_process_environ
 from .firefox_bookmarks import places_ready
 
 logger = get_logger("browser.invisible")
@@ -2127,6 +2128,22 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     BROWSER_CLOSED) so the launcher can treat this like the chromium Popen.
     """
     in_thread = stop_event is not None
+
+    # The browser executes untrusted remote code, so it inherits none of the
+    # operator's identity — above all SSH_AUTH_SOCK, which is a live handle onto
+    # their ssh-agent rather than a passive label. Done in this child's own
+    # environment: forks have separate memory, so this doesn't race with other
+    # profiles' children (the same reasoning as MOZ_APP_REMOTINGNAME below).
+    #
+    # FORK PATH ONLY, and the guard is the whole point. When `stop_event` is set
+    # we are a THREAD of the manager process (Windows/macOS, where re-exec can't
+    # work) and there is no separate environment to scrub: mutating os.environ
+    # there would strip persona's OWN environment and every other concurrently
+    # open profile's. That platform gap is a recorded absence, not a guarantee
+    # that silently doesn't hold. The chromium launcher, which passes an env=
+    # copy to Popen, is scrubbed on all platforms.
+    if not in_thread and _platform.IS_LINUX:
+        scrub_current_process_environ()
 
     out = os.fdopen(write_fd, "w", buffering=1)
 
