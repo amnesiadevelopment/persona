@@ -2757,6 +2757,13 @@ class App:
                     # not p.ai_control, which set_ai_control can flip while the
                     # session runs without closing the port already bound.
                     cdp_channel_open=self.bl.cdp_channel_open(p.name),
+                    # The most recent REFUSED launch, from the launcher. A
+                    # refusal is the fail-closed guard firing, and it used to
+                    # reach the operator only as a log line that scrolled away
+                    # — leaving the card that refused identical to one that was
+                    # never clicked. Like the fact above it is a dict lookup
+                    # under a lock, no IO, so it is safe on this render path.
+                    refusal=self.bl.last_refusal(p.name),
                     proxy_checking=(
                         p.proxy in self._checking_proxies if p.proxy else False
                     ),
