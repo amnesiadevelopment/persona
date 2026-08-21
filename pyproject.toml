@@ -62,6 +62,23 @@ dependencies = [
 # method on Windows). Generous per-test bound: real WMI/subprocess tests are
 # slow but finish well under this.
 timeout = 120
+# Every run says what it did NOT do. Without this, a skip and a pass are the
+# same green to every reader — including the release pipeline, which runs the
+# suite and reads only its exit code. The real-Firefox probes in
+# tests/test_ff_language_override.py are guarded twice and both guards resolve
+# to a skip, so the suite's strongest evidence could decline to run
+# indefinitely and report success.
+#
+# `s` = skipped (with the reason each gave), `f` = failed, `E` = errored.
+# The f and E are NOT decoration: `-r` REPLACES the default summary set, so a
+# bare `-rs` prints skip reasons and then SUPPRESSES the list of failed test
+# names, trading one blindness for another. Measured on this suite: `-rs`
+# rendered 30 failures as an aggregate count with no names.
+#
+# This is the project's ONE pytest config site — there is no pytest.ini,
+# setup.cfg or tox.ini. Keep it that way: a flag added to a CI invocation
+# instead of here drifts from what a developer sees locally.
+addopts = "-rsfE"
 
 [tool.flet]
 product = "persona"
