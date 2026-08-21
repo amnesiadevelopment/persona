@@ -92,10 +92,15 @@ jobs:
           sudo apt-get install -y xvfb
           python -m pip install --upgrade pip
           pip install --prefer-binary -r requirements.txt
-          # Install the driver at the pin CURRENTLY in the tree (the old one).
+          # Install the driver at the pin CURRENTLY in the tree (the old one),
+          # AND the core it must ship with. Both pins are read from pyproject
+          # because that is the only file that carries invisible_core at all —
+          # requirements.txt does not declare it, so nothing else installs it.
           pin="$(python -c "import re,pathlib; print(re.search(r'invisible_playwright @ git\+[^\"]+', pathlib.Path('pyproject.toml').read_text()).group(0))")"
-          echo "installing CURRENT engine driver: $pin"
+          core="$(python -c "import re,pathlib; print(re.search(r'invisible_core==[0-9][0-9.]*', pathlib.Path('pyproject.toml').read_text()).group(0))")"
+          echo "installing CURRENT engine driver: $pin / core: $core"
           pip install "$pin"
+          pip install "$core"
           # Download the engine BINARY named by the current baseline.
           tag="$(tr -d '[:space:]' < engine-baseline.txt)"
           echo "downloading CURRENT engine build: $tag"
@@ -131,10 +136,22 @@ jobs:
           BASE: ${{ steps.bump.outputs.baseline }}
         run: |
           # The pins in the tree have been rewritten by now, so this resolves to
-          # the NEW driver and the NEW engine build.
+          # the NEW driver, the NEW core and the NEW engine build.
+          #
+          # The core is installed EXPLICITLY, and that is the whole point of
+          # this block rather than an incidental extra line. `--no-deps` on the
+          # driver means invisible_core is not pulled transitively, and nothing
+          # else here would supply it: requirements.txt does not declare it, and
+          # no step installs from pyproject's dependencies — which is the only
+          # place the NEW pin lives. Without this line the "after" recording is
+          # taken on new binary + new driver + OLD core, a stack that will never
+          # ship, and the gate's own engine-build guard cannot see it because
+          # the binary genuinely did move.
           pin="$(python -c "import re,pathlib; print(re.search(r'invisible_playwright @ git\+[^\"]+', pathlib.Path('pyproject.toml').read_text()).group(0))")"
-          echo "installing BUMPED engine driver: $pin"
+          core="$(python -c "import re,pathlib; print(re.search(r'invisible_core==[0-9][0-9.]*', pathlib.Path('pyproject.toml').read_text()).group(0))")"
+          echo "installing BUMPED engine driver: $pin / core: $core"
           pip install --force-reinstall --no-deps "$pin"
+          pip install --force-reinstall --no-deps "$core"
           pip install --prefer-binary -r requirements.txt
           echo "downloading BUMPED engine build: ${BASE}"
           python -c "

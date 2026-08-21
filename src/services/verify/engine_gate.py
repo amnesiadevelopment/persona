@@ -64,6 +64,48 @@ precisely the moment it was supposed to be looking.
 drift. It is load-bearing — with it neutered, this gate prints PASS over two
 recordings of the same engine.
 
+THE ENGINE IS NOT ONLY THE BINARY: THE STACK HAS TO MOVE IN LOCKSTEP
+---------------------------------------------------------------------
+``require_engine_moved`` watches ``engine_build``, which resolves to the
+installed firefox BINARY. That leaves a false green one layer out from it, and
+the layer it leaves open is the one CI is most likely to get wrong.
+
+The engine ships as a PAIR: the ``firefox-NN`` binary and the driver that
+speaks to it, ``invisible_playwright``, which pins ``invisible_core==NN``. The
+two majors are the same number *by construction* — ``engine_autobump.plan()``
+derives ``new_baseline`` as ``f"firefox-{core_major(latest_core)}"`` — and a
+newer ``firefox-NN`` speaks a juggler contract only the newer core can drive.
+
+So a provisioning step that installs the new binary and the new driver but
+leaves ``invisible_core`` at the OLD major produces a recording of a stack
+**nobody will ever run**. ``engine_build`` genuinely moved, so
+``require_engine_moved`` is satisfied and the gate proceeds to certify — the
+one guard built to catch "a comparison that never really happened" cannot see
+this at all, because it is looking at the binary and the mismatch is in the
+driver.
+
+Both verdicts become unattributable when that happens:
+
+* DRIFT — did the bump change what a site sees, or did an old core drive a new
+  binary badly? The operator cannot tell, and this is exactly the false red
+  that trains people to disbelieve the true ones.
+* PASS — the tag is cut on evidence gathered from a stack no user runs.
+
+:func:`require_stack_lockstep` closes it, and asserts the gate's premise about
+the WHOLE engine stack rather than just the binary. It runs twice:
+
+* at ``record`` time, BEFORE the browser is launched, so a misprovisioned
+  runner fails fast and loudly instead of spending a browser launch producing a
+  recording that cannot mean anything. The resolved core version is then
+  stamped into the recording under ``engine_stack``;
+* at ``compare`` time, re-derived from each artifact's OWN stamp against its
+  OWN ``engine_build``. The artifact carries its evidence, so the check does
+  not depend on the recording side having been trusted to run it.
+
+A recording carrying no stamp is refused rather than compared, for the same
+reason an unresolved ``engine_build`` is: a premise nobody checked is not a
+premise that held.
+
 Exit codes — three outcomes, and only one of them is a pass:
 
     0   the comparison RAN over two genuinely different engine builds, every
@@ -85,9 +127,15 @@ from __future__ import annotations
 
 import argparse
 import copy
+import re
 import sys
 
-from .baseline import BaselineUnavailable, count_errors, record_snapshot
+from .baseline import (
+    BASELINE_ENGINE,
+    BaselineUnavailable,
+    count_errors,
+    record_snapshot,
+)
 from .diff import (
     NotASnapshot,
     diff_snapshots,
@@ -95,7 +143,7 @@ from .diff import (
     inconclusive_count,
     require_snapshot,
 )
-from .snapshot import load, write
+from .snapshot import engine_build, load, write
 
 EXIT_PASS = 0
 EXIT_DRIFT = 1
@@ -105,6 +153,18 @@ EXIT_CANNOT_RUN = 2
 # never raises and answers this string instead, so it arrives here as a value
 # that LOOKS like data and is not one.
 UNRESOLVED_BUILD = "unknown"
+
+# Header field the recording carries its resolved driver-stack version under.
+# Written by `record` (see `_cmd_record`) and re-checked by `compare`, so each
+# artifact carries the evidence for its own premise rather than depending on
+# the recording side having been trusted to check it.
+STACK_FIELD = "engine_stack"
+
+# The driver package whose major must track the firefox-NN binary. It is
+# invisible_playwright's own pin, and engine_autobump derives the baseline tag
+# from it (`firefox-{core_major(latest_core)}`), so the two majors are the same
+# number by construction rather than by coincidence.
+CORE_DISTRIBUTION = "invisible_core"
 
 
 class GateCannotRun(RuntimeError):
@@ -118,6 +178,130 @@ class GateCannotRun(RuntimeError):
 
 
 # --- preconditions ----------------------------------------------------------
+
+
+def major_of(version: str) -> int:
+    """``"20.14.0"`` -> ``20``; ``-1`` when it cannot be read.
+
+    Mirrors ``scripts/engine_autobump.core_major`` deliberately rather than
+    importing it: ``scripts/`` is not an importable package from here, and this
+    module must stay importable in a bare checkout.
+    """
+    match = re.match(r"^(\d+)(?:\.|$)", (version or "").strip())
+    return int(match.group(1)) if match else -1
+
+
+def build_major(build: str) -> int:
+    """``"firefox-20"`` -> ``20``; ``-1`` when it cannot be read."""
+    match = re.search(r"-(\d+)\s*$", (build or "").strip())
+    return int(match.group(1)) if match else -1
+
+
+def installed_core_version() -> str:
+    """The ``invisible_core`` version actually installed in THIS environment.
+
+    Read from installed package metadata rather than from ``pyproject.toml``:
+    the pin file says what CI was *asked* to install, and the entire defect
+    class this guards against is an install step that did not do what it was
+    asked. Only the installed distribution can answer what the recording is
+    really being taken against.
+
+    Returns ``""`` when the package is not installed, which the caller reports
+    as a refusal — never as a version.
+    """
+    try:
+        from importlib import metadata
+
+        return str(metadata.version(CORE_DISTRIBUTION))
+    except Exception:
+        return ""
+
+
+def require_stack_lockstep(build: str, core_version: str, *, side: str) -> str:
+    """Refuse a recording whose driver stack does not match its engine binary.
+
+    THE POINT OF THIS FUNCTION, and why it is separate from
+    :func:`require_engine_moved`. That guard compares ``engine_build``, which
+    resolves to the installed firefox BINARY. A provisioning step that fetches
+    the new binary and the new driver but leaves ``invisible_core`` at the old
+    major therefore SATISFIES it: the build genuinely moved. The comparison then
+    proceeds over a stack that will never ship, and both possible verdicts are
+    unattributable — a DRIFT nobody can attribute to the engine rather than to
+    the mismatch, or a PASS that certifies a tag on evidence from a stack no
+    user runs.
+
+    The two majors are equal by construction (``engine_autobump.plan`` derives
+    ``firefox-NN`` from ``core_major(latest_core)``), so a mismatch is never
+    incidental — it is always a provisioning failure.
+
+    Returns the validated core version so the caller can stamp it.
+    """
+    if not core_version:
+        raise GateCannotRun(
+            f"the {side} side has no {CORE_DISTRIBUTION} installed, so the "
+            "engine binary has no driver to be in lockstep with and this "
+            "recording cannot be taken against a stack anyone ships. The "
+            "engine is a PAIR — the firefox-NN binary and the driver that "
+            f"pins {CORE_DISTRIBUTION}==NN — and only half of it is here. "
+            "Check the provisioning step installed the driver stack, not just "
+            "the binary."
+        )
+
+    want = build_major(build)
+    got = major_of(core_version)
+    if want < 0:
+        raise GateCannotRun(
+            f"the {side} side's engine build {build!r} does not name a major "
+            "version, so it cannot be checked against the installed "
+            f"{CORE_DISTRIBUTION} ({core_version}). Refusing to certify a "
+            "comparison whose premise could not be established."
+        )
+    if got < 0:
+        raise GateCannotRun(
+            f"the {side} side's installed {CORE_DISTRIBUTION} version "
+            f"{core_version!r} does not parse, so it cannot be checked against "
+            f"engine build {build!r}. Refusing to certify a comparison whose "
+            "premise could not be established."
+        )
+    if want != got:
+        raise GateCannotRun(
+            f"the {side} side is MISPROVISIONED: engine build {build!r} "
+            f"(firefox-{want}) is installed alongside {CORE_DISTRIBUTION}=="
+            f"{core_version} (major {got}). The engine and its driver MUST "
+            "ship together — a firefox-NN binary speaks a juggler contract "
+            "only the matching driver can drive — and these two majors are "
+            "equal by construction, so this is a provisioning failure and "
+            "never an incidental difference.\n\n"
+            "A recording taken here would be of a stack NOBODY SHIPS, which "
+            "makes both verdicts meaningless: a drift could not be attributed "
+            "to the engine rather than to the mismatch, and a pass would "
+            "certify a release on evidence from a stack no user runs. The "
+            "engine-build guard cannot see this — the binary really did move. "
+            "Refusing to certify. Install the driver stack at the pin the tree "
+            "declares, not just the engine binary."
+        )
+    return core_version
+
+
+def stack_of(snapshot: dict, *, side: str) -> str:
+    """The driver-stack version a recording was taken under, refusing an absent one.
+
+    A recording with no stamp is refused rather than compared. The stamp is the
+    evidence that the lockstep premise was checked at all, and an unchecked
+    premise is not a premise that held — the same reasoning that makes an
+    unresolved ``engine_build`` a refusal rather than a value.
+    """
+    stack = snapshot.get(STACK_FIELD)
+    if not isinstance(stack, str) or not stack:
+        raise GateCannotRun(
+            f"the {side} recording does not say which {CORE_DISTRIBUTION} it "
+            f"was taken under ({STACK_FIELD}={stack!r}). Without it there is no "
+            "evidence that the engine binary and its driver were in lockstep "
+            "when this was recorded, and a recording of a mismatched stack is "
+            "a recording of something nobody ships. Re-record it with a "
+            "current gate build."
+        )
+    return stack
 
 
 def engine_build_of(snapshot: dict, *, side: str) -> str:
@@ -301,6 +485,26 @@ def gate(before: dict, after: dict) -> tuple[int, str]:
     before_build, after_build = require_engine_moved(before, after)
     lines.append(f"engine moved: {before_build} -> {after_build}")
 
+    # Re-derived from each artifact's OWN stamp against its OWN build, and
+    # checked on BOTH sides. `record` already refused a mismatched stack before
+    # launching a browser, so reaching here with one means the recording came
+    # from elsewhere — but the artifact carries its own evidence precisely so
+    # this does not rest on the recording side having been trusted to look.
+    #
+    # Note this cannot be folded into require_engine_moved: that guard is
+    # satisfied by a mismatched stack (the binary really did move), which is
+    # exactly why this defect class is invisible to it.
+    before_stack = require_stack_lockstep(
+        before_build, stack_of(before, side="before"), side="before"
+    )
+    after_stack = require_stack_lockstep(
+        after_build, stack_of(after, side="after"), side="after"
+    )
+    lines.append(
+        f"driver stack in lockstep: {CORE_DISTRIBUTION} {before_stack} -> "
+        f"{after_stack} (majors track {before_build} -> {after_build})"
+    )
+
     for proven in self_test(after):
         lines.append(f"self-test: {proven}")
 
@@ -354,9 +558,40 @@ def gate(before: dict, after: dict) -> tuple[int, str]:
 
 
 def _cmd_record(args: argparse.Namespace) -> int:
+    # Checked BEFORE the browser is launched, deliberately. A misprovisioned
+    # runner cannot produce a recording that means anything, so failing here
+    # costs one message instead of a browser launch plus a full probe sweep
+    # whose output would have to be thrown away — and it names the fault at the
+    # step that caused it rather than three steps later in the comparison.
+    #
+    # Resolved through the same accessor `build_snapshot` will use, so the
+    # version checked here is the version the recording ends up claiming.
+    build = engine_build_of(
+        {"engine_build": engine_build(BASELINE_ENGINE)}, side="this"
+    )
+    core = require_stack_lockstep(build, installed_core_version(), side="this")
+
     snapshot = record_snapshot(fresh=True)
     errors = count_errors(snapshot)
     total = sum(len(realm) for realm in snapshot["probes"].values())
+
+    # The pre-launch check was made against a build resolved BEFORE the session;
+    # this is the build the artifact will actually claim. They agree in every
+    # normal run, and a disagreement means the engine moved underneath the
+    # recording — so the stamp about to be written would attest to a pairing
+    # that was never true. Refuse rather than stamp it.
+    recorded_build = engine_build_of(snapshot, side="this")
+    if recorded_build != build:
+        raise GateCannotRun(
+            f"the engine build changed while recording: {build!r} was checked "
+            f"against {CORE_DISTRIBUTION} {core} before launch, but the "
+            f"recording claims {recorded_build!r}. The lockstep stamp would "
+            "attest to a pairing that was never true, so nothing is written."
+        )
+
+    # Stamped so `compare` can re-derive the premise from the artifact itself
+    # rather than trusting that this side ever checked it.
+    snapshot[STACK_FIELD] = core
 
     try:
         write(snapshot, args.output)
@@ -369,7 +604,8 @@ def _cmd_record(args: argparse.Namespace) -> int:
     print(
         f"wrote {args.output}: {total} readings across "
         f"{len(snapshot['realms'])} realm(s) on engine build "
-        f"{snapshot.get('engine_build')}, {errors} error(s)",
+        f"{snapshot.get('engine_build')} with {CORE_DISTRIBUTION} {core}, "
+        f"{errors} error(s)",
         file=sys.stderr,
     )
     # Errors are NOT fatal here, and that is deliberate: this side of the gate

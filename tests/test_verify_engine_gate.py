@@ -33,12 +33,23 @@ from src.services.verify import engine_gate
 # --- helpers ----------------------------------------------------------------
 
 
-def _snap(window=None, worker=None, *, build="firefox-20"):
-    """A minimal snapshot document shaped like the real one."""
+def _snap(window=None, worker=None, *, build="firefox-20", stack=None):
+    """A minimal snapshot document shaped like the real one.
+
+    ``stack`` defaults to a core version whose major TRACKS ``build``, which is
+    the only pairing a real runner is allowed to produce: engine_autobump
+    derives ``firefox-NN`` from ``core_major(latest_core)``, so the two majors
+    are equal by construction. Pass it explicitly to build the misprovisioned
+    pairing the lockstep guard exists to refuse.
+    """
+    if stack is None:
+        major = engine_gate.build_major(build)
+        stack = f"{major}.14.0" if major >= 0 else "0.14.0"
     return {
         "schema_version": 1,
         "engine": "firefox",
         "engine_build": build,
+        engine_gate.STACK_FIELD: stack,
         "profile": "persona-fingerprint-baseline",
         "app_version": "9.9.9",
         "realms": ["window", "worker"],
@@ -47,6 +58,19 @@ def _snap(window=None, worker=None, *, build="firefox-20"):
             "worker": dict(worker or {"navigator.userAgent": {"value": "FF"}}),
         },
     }
+
+
+@pytest.fixture
+def provisioned(monkeypatch):
+    """A correctly-provisioned runner: engine binary and driver in lockstep.
+
+    ``record`` resolves both from the environment, and neither is available in
+    this container (no engine, and invisible_core is a git-pinned dep that is
+    not importable here) — so without this the record tests would exercise the
+    misprovisioned path rather than the one they are about.
+    """
+    monkeypatch.setattr(engine_gate, "engine_build", lambda engine: "firefox-20")
+    monkeypatch.setattr(engine_gate, "installed_core_version", lambda: "20.14.0")
 
 
 def _pair(*, after_window=None, after_build="firefox-21"):
@@ -137,6 +161,225 @@ def test_an_unresolved_build_names_which_side_to_look_at():
 
 def test_require_engine_moved_returns_both_builds_when_they_differ():
     assert engine_gate.require_engine_moved(*_pair()) == ("firefox-20", "firefox-21")
+
+
+# --- THE STACK THE ENGINE-BUILD GUARD CANNOT SEE ----------------------------
+#
+# The second false green, one layer out from the first, and the reason these
+# tests are not folded into the section above.
+#
+# The engine ships as a PAIR: the firefox-NN binary and the driver that pins
+# invisible_core==NN. engine_autobump derives `firefox-{core_major(latest_core)}`,
+# so the two majors are equal BY CONSTRUCTION — a mismatch is never incidental,
+# it is always a provisioning failure.
+#
+# A CI step that installs the new binary and the new driver with `--no-deps`,
+# and never installs the core, leaves the OLD core in place. `engine_build`
+# genuinely MOVES, so `require_engine_moved` is SATISFIED and the gate proceeds
+# to certify a recording of a stack nobody will ever run. That is the exact
+# case these tests pin, and the first test below is the one that states why the
+# older guard is not enough.
+
+
+def test_a_stale_core_satisfies_the_engine_build_guard():
+    """The premise of this whole section: the OLDER guard cannot catch this.
+
+    Not a test of new code — a test that the gap the new guard fills is real.
+    If this ever fails, `require_engine_moved` grew teeth here and the lockstep
+    guard's justification needs re-reading.
+    """
+    before = _snap(build="firefox-20", stack="20.14.0")
+    after = _snap(build="firefox-21", stack="20.14.0")  # binary moved, core did not
+    assert engine_gate.require_engine_moved(before, after) == (
+        "firefox-20",
+        "firefox-21",
+    )
+
+
+def test_a_stale_core_on_the_after_side_is_refused():
+    before = _snap(build="firefox-20", stack="20.14.0")
+    after = _snap(build="firefox-21", stack="20.14.0")
+    with pytest.raises(engine_gate.GateCannotRun) as exc:
+        engine_gate.gate(before, after)
+    assert "MISPROVISIONED" in str(exc.value)
+
+
+def test_a_stale_core_is_cannot_run_not_drift(tmp_path):
+    """Never drift: nothing was OBSERVED to move, provisioning failed.
+
+    Reporting a mismatched stack as drift would be a false red on the loudest
+    signal this system has, and it trains an operator to disbelieve true reds.
+    """
+    before = tmp_path / "b.json"
+    after = tmp_path / "a.json"
+    before.write_text(json.dumps(_snap(build="firefox-20", stack="20.14.0")))
+    after.write_text(json.dumps(_snap(build="firefox-21", stack="20.14.0")))
+    code = engine_gate.main(["compare", str(before), str(after)])
+    assert code == engine_gate.EXIT_CANNOT_RUN
+    assert code != engine_gate.EXIT_DRIFT
+
+
+def test_a_stale_core_never_reports_a_pass(tmp_path, capsys):
+    before = tmp_path / "b.json"
+    after = tmp_path / "a.json"
+    before.write_text(json.dumps(_snap(build="firefox-20", stack="20.14.0")))
+    after.write_text(json.dumps(_snap(build="firefox-21", stack="20.14.0")))
+    engine_gate.main(["compare", str(before), str(after)])
+    assert "PASS" not in capsys.readouterr().out
+
+
+def test_the_refusal_names_both_halves_of_the_mismatched_pair():
+    """The operator has to be able to act on it: which binary, which core."""
+    with pytest.raises(engine_gate.GateCannotRun) as exc:
+        engine_gate.require_stack_lockstep("firefox-21", "20.14.0", side="after")
+    message = str(exc.value)
+    assert "firefox-21" in message
+    assert "20.14.0" in message
+    assert "after" in message
+
+
+def test_a_stale_core_on_the_before_side_is_refused_too():
+    """Both sides are checked. A stale core on the BEFORE side makes the
+    baseline a reading of a stack nobody ships, which is just as unusable."""
+    before = _snap(build="firefox-20", stack="19.14.0")
+    after = _snap(build="firefox-21", stack="21.0.1")
+    with pytest.raises(engine_gate.GateCannotRun) as exc:
+        engine_gate.gate(before, after)
+    assert "before" in str(exc.value)
+
+
+def test_a_matched_stack_passes_on_both_sides():
+    """The control: majors tracking their builds is the pass."""
+    before = _snap(build="firefox-20", stack="20.14.0")
+    after = _snap(build="firefox-21", stack="21.0.1")
+    code, _ = engine_gate.gate(before, after)
+    assert code == engine_gate.EXIT_PASS
+
+
+def test_the_pass_reports_the_lockstep_it_rests_on():
+    """A premise that was checked and not stated is a premise nobody can audit."""
+    before = _snap(build="firefox-20", stack="20.14.0")
+    after = _snap(build="firefox-21", stack="21.0.1")
+    _, report = engine_gate.gate(before, after)
+    assert "lockstep" in report.lower()
+    assert "20.14.0" in report and "21.0.1" in report
+
+
+@pytest.mark.parametrize("missing", [None, "", 0, [], {}])
+def test_a_recording_with_no_stack_stamp_is_refused(missing):
+    """An unchecked premise is not a premise that held — same rule the
+    unresolved engine_build refusal follows."""
+    before = _snap(build="firefox-20", stack="20.14.0")
+    after = _snap(build="firefox-21")
+    if missing is None:
+        del after[engine_gate.STACK_FIELD]
+    else:
+        after[engine_gate.STACK_FIELD] = missing
+    with pytest.raises(engine_gate.GateCannotRun) as exc:
+        engine_gate.gate(before, after)
+    assert engine_gate.STACK_FIELD in str(exc.value)
+
+
+def test_an_absent_core_install_is_refused():
+    """`pip install --no-deps` and nothing else: no core at all."""
+    with pytest.raises(engine_gate.GateCannotRun) as exc:
+        engine_gate.require_stack_lockstep("firefox-21", "", side="after")
+    assert "no invisible_core" in str(exc.value)
+
+
+def test_an_unparseable_core_version_is_refused():
+    with pytest.raises(engine_gate.GateCannotRun):
+        engine_gate.require_stack_lockstep("firefox-21", "not-a-version", side="after")
+
+
+def test_an_unparseable_build_is_refused():
+    with pytest.raises(engine_gate.GateCannotRun):
+        engine_gate.require_stack_lockstep("unknown", "21.0.1", side="after")
+
+
+@pytest.mark.parametrize(
+    "version,expected", [("20.14.0", 20), ("21.0.1", 21), ("9", 9), ("", -1), ("x", -1)]
+)
+def test_major_of_reads_a_core_version(version, expected):
+    assert engine_gate.major_of(version) == expected
+
+
+@pytest.mark.parametrize(
+    "build,expected",
+    [("firefox-20", 20), ("firefox-115", 115), ("unknown", -1), ("", -1)],
+)
+def test_build_major_reads_an_engine_build(build, expected):
+    assert engine_gate.build_major(build) == expected
+
+
+# --- the stamp: record checks the premise, and carries its evidence ---------
+
+
+def test_record_refuses_a_misprovisioned_runner_before_launching(tmp_path, monkeypatch):
+    """Fails FAST: no browser is launched to produce a recording that could not
+    mean anything, and the fault is named at the step that caused it."""
+    launched = []
+    monkeypatch.setattr(engine_gate, "engine_build", lambda engine: "firefox-21")
+    monkeypatch.setattr(engine_gate, "installed_core_version", lambda: "20.14.0")
+    monkeypatch.setattr(
+        engine_gate,
+        "record_snapshot",
+        lambda **kw: launched.append(1) or _snap(build="firefox-21"),
+    )
+    out = tmp_path / "rec.json"
+    assert engine_gate.main(["record", "-o", str(out)]) == engine_gate.EXIT_CANNOT_RUN
+    assert launched == [], "a browser was launched despite a misprovisioned stack"
+    assert not out.exists(), "a recording was written for a stack nobody ships"
+
+
+def test_record_stamps_the_core_it_verified(tmp_path, monkeypatch, provisioned):
+    """The artifact carries its own evidence, so `compare` does not have to
+    trust that this side ever checked the premise."""
+    monkeypatch.setattr(engine_gate, "record_snapshot", lambda **kw: _snap())
+    out = tmp_path / "rec.json"
+    assert engine_gate.main(["record", "-o", str(out)]) == engine_gate.EXIT_PASS
+    assert json.loads(out.read_text())[engine_gate.STACK_FIELD] == "20.14.0"
+
+
+def test_record_refuses_when_the_build_moves_under_the_recording(
+    tmp_path, monkeypatch, provisioned
+):
+    """Checked before launch, re-checked against what the artifact claims. A
+    disagreement means the stamp would attest to a pairing that never held."""
+    monkeypatch.setattr(
+        engine_gate, "record_snapshot", lambda **kw: _snap(build="firefox-21")
+    )
+    out = tmp_path / "rec.json"
+    assert engine_gate.main(["record", "-o", str(out)]) == engine_gate.EXIT_CANNOT_RUN
+    assert not out.exists()
+
+
+def test_a_recorded_artifact_round_trips_through_compare(tmp_path, monkeypatch):
+    """End to end: two recordings taken through `record` compare cleanly,
+    which is what the workflow actually does."""
+    for name, build, core in (("b", "firefox-20", "20.14.0"), ("a", "firefox-21", "21.0.1")):
+        monkeypatch.setattr(engine_gate, "engine_build", lambda engine, b=build: b)
+        monkeypatch.setattr(engine_gate, "installed_core_version", lambda c=core: c)
+        monkeypatch.setattr(
+            engine_gate, "record_snapshot", lambda **kw: _snap(build=build)
+        )
+        assert (
+            engine_gate.main(["record", "-o", str(tmp_path / f"{name}.json")])
+            == engine_gate.EXIT_PASS
+        )
+    assert (
+        engine_gate.main(
+            ["compare", str(tmp_path / "b.json"), str(tmp_path / "a.json")]
+        )
+        == engine_gate.EXIT_PASS
+    )
+
+
+def test_installed_core_version_answers_empty_when_absent(monkeypatch):
+    """Read from installed metadata, never from the pin file: the pin says what
+    CI was ASKED to install, and the defect class is an install that did not do
+    what it was asked. invisible_core is genuinely absent in this container."""
+    assert engine_gate.installed_core_version() == ""
 
 
 # --- drift: the finding -----------------------------------------------------
@@ -434,14 +677,14 @@ def test_a_refusal_never_prints_a_pass(tmp_path, capsys):
     assert "PASS" not in out.out
 
 
-def test_cli_record_writes_the_recording(tmp_path, monkeypatch):
+def test_cli_record_writes_the_recording(tmp_path, monkeypatch, provisioned):
     monkeypatch.setattr(engine_gate, "record_snapshot", lambda **kw: _snap())
     out = tmp_path / "rec.json"
     assert engine_gate.main(["record", "-o", str(out)]) == engine_gate.EXIT_PASS
     assert json.loads(out.read_text())["engine_build"] == "firefox-20"
 
 
-def test_cli_record_without_a_display_exits_2(tmp_path, monkeypatch):
+def test_cli_record_without_a_display_exits_2(tmp_path, monkeypatch, provisioned):
     """"Could not run" — never drift, and never a silent success."""
 
     def _no_display(**kw):
@@ -452,7 +695,7 @@ def test_cli_record_without_a_display_exits_2(tmp_path, monkeypatch):
     assert code == engine_gate.EXIT_CANNOT_RUN
 
 
-def test_cli_record_keeps_a_reading_that_has_errors(tmp_path, monkeypatch):
+def test_cli_record_keeps_a_reading_that_has_errors(tmp_path, monkeypatch, provisioned):
     """Errors are not fatal on ONE side: whether an unread probe matters is a
     question only the comparison can answer, and it answers it as inconclusive
     rather than as agreement.
