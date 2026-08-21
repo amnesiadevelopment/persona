@@ -216,6 +216,7 @@ def build_profile_card(
     on_check_proxy: Callable[[str], None] | None = None,
     proxy_checking: bool = False,
     on_notes_change: Callable[[str, str], None] | None = None,
+    cdp_channel_open: bool = False,
 ) -> ft.Container:
     """Build a single profile row as a terminal-style line."""
     launch_btn = build_launch_button(
@@ -272,11 +273,31 @@ def build_profile_card(
                         font_family=MONO,
                     ),
                     *([_tag_chips(profile.tags)] if profile.tags else []),
-                    ft.Text(
-                        meta,
-                        size=11,
-                        color=COLORS["accent"] if is_running else COLORS["text_sub"],
-                        font_family=MONO,
+                    ft.Row(
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Text(
+                                meta,
+                                size=11,
+                                color=(
+                                    COLORS["accent"] if is_running
+                                    else COLORS["text_sub"]
+                                ),
+                                font_family=MONO,
+                            ),
+                            # Gated on is_running as well as on the captured
+                            # fact: a stopped profile renders exactly as it did
+                            # before this indicator existed. The two conditions
+                            # are independent — the launcher drops the captured
+                            # fact at every teardown path, and this is the
+                            # render-side belt to that braces.
+                            *(
+                                _automation_channel_chip(cdp_channel_open)
+                                if is_running
+                                else []
+                            ),
+                        ],
                     ),
                 ],
             ),
@@ -311,6 +332,56 @@ def build_profile_card(
         padding=ft.Padding.symmetric(horizontal=18, vertical=14),
         content=row,
     )
+
+
+def _automation_channel_chip(cdp_channel_open: bool) -> list[ft.Control]:
+    """A distinct 'automation channel open' marker, or nothing at all.
+
+    Returned as a list so the caller splices it in: when no channel is open the
+    card renders EXACTLY as it did before this indicator existed — no empty
+    box, no placeholder, no spacing change. The marker's presence is the
+    signal, so an absent marker must be a real absence and not a dimmed variant
+    the eye learns to skip.
+
+    ``cdp_channel_open`` is a fact about the LIVE SESSION, captured by the
+    launcher when the browser was spawned (``BrowserLauncher.cdp_channel_open``).
+    It is deliberately NOT ``profile.ai_control``: that stored field can be
+    flipped mid-session by the connect-page checkbox without touching the port
+    chromium already bound, so rendering it would produce a quiet card over a
+    listening unauthenticated channel.
+
+    Pure render: it draws the boolean it is handed and performs no IO. Resolving
+    an actual CDP port means a file read (``read_cdp_port``) or live network IO
+    (``cdp_info_for``); neither may sit on a render path, because an indicator
+    that probes on every redraw is a different security object from one whose
+    cadence is a human opening a window.
+    """
+    if not cdp_channel_open:
+        return []
+    return [
+        ft.Container(
+            border_radius=3,
+            border=ft.Border.all(1, COLORS["warning"]),
+            padding=ft.Padding.symmetric(horizontal=6, vertical=1),
+            # Named in full rather than as a glyph or the bare acronym: this is
+            # the one surface that tells an operator an unauthenticated channel
+            # is open on a browser they are watching, and "CDP" alone assumes
+            # the reader already knows what it costs.
+            tooltip=(
+                "This session was launched with AI/CDP control: chromium has an "
+                "unauthenticated remote-debugging port open, which any process "
+                "running as this user can drive. It closes when the session ends.\n\n"
+                "Reflects the RUNNING session — toggling AI control now does not "
+                "close a port that is already open."
+            ),
+            content=ft.Text(
+                "automation",
+                size=10,
+                color=COLORS["warning"],
+                font_family=MONO,
+            ),
+        )
+    ]
 
 
 def _build_action_buttons(
