@@ -47,7 +47,24 @@ class Container:
     def browser_launcher(self) -> IBrowserLauncher:
         def build():
             from ..services.browser.launcher import BrowserLauncher
-            return BrowserLauncher()
+            bl = BrowserLauncher()
+
+            def _record_launch_build(profile) -> None:
+                # Stamp the profile with the engine build it is launching
+                # under. Wired HERE, at the composition root, because all three
+                # launch lanes (UI, REST, MCP) resolve the launcher from this
+                # container — so one wiring covers all three and an absent
+                # stamp unambiguously means "never launched" rather than
+                # "launched through a lane nobody wired".
+                from ..services.browser.launch_provenance import resolve
+
+                engine, build_id = resolve(profile)
+                self.profile_manager.set_last_launch_build(
+                    profile.name, engine, build_id
+                )
+
+            bl.set_launch_record_hook(_record_launch_build)
+            return bl
         return self._get("bl", build)
 
     @property

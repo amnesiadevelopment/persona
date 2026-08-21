@@ -80,6 +80,37 @@ class Profile:
     # one whose trust imported cleanly. None = never attempted (no certificate
     # assigned, or never launched since the field was added).
     cert_trust_status: str | None = None
+    # The engine this profile was LAST LAUNCHED under, recorded at launch as
+    # the pair (which engine, what that engine reports as its build).
+    #
+    # WHY A PAIR, AND WHY NOT NORMALISED. The two engines report builds in
+    # genuinely different shapes — Firefox a `firefox-NN` tag
+    # (services/engine/firefox.py current_version), Chromium a dotted version
+    # tag (services/engine/updater.py current_version). Flattening them into
+    # one format would lose which engine produced the string, and a build
+    # identifier that cannot say which engine it came from is not provenance:
+    # `151.0.8000.10` and `firefox-18` are not points on one scale. So each
+    # engine's own reported string is stored VERBATIM and labelled.
+    #
+    # WHY THE ENGINE CANNOT BE RE-DERIVED LATER. `engine` above is the STORED
+    # engine, and it is neither what necessarily launched nor immutable: a
+    # mobile profile stored as "firefox" actually launches chromium
+    # (browser/process.py effective_engine), and the stored value can be edited
+    # after the fact. This records what actually ran.
+    #
+    # NOT A SECOND SOURCE OF TRUTH ABOUT THE INSTALLED BUILD — the updater owns
+    # that. This answers a different question ("what did THIS profile run
+    # under"), and it may legitimately disagree with what is installed now.
+    # That disagreement is the entire point: without it, engine drift and a
+    # genuine masking regression are indistinguishable.
+    #
+    # None = NOT KNOWN, never a guess. Every profile that predates this field
+    # reads None, and there is deliberately no backfill: the build a past
+    # launch used was not recorded and cannot be recovered, so inventing one
+    # would make the comparison this field exists to enable return a false
+    # answer. An absent stamp is honest; a wrong one is worse than none.
+    last_launch_engine: str | None = None
+    last_launch_build: str | None = None
     tags: list[str] = field(default_factory=list)
     notes: str = ""
     ai_control: bool = False
