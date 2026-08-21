@@ -53,6 +53,75 @@ def test_manual_engine_update_downloads_with_digest(monkeypatch):
     assert stub._engine_busy is False
 
 
+def test_engine_update_refusal_is_not_reported_as_a_download_failure(monkeypatch):
+    """PS-49 round 2 — THE UPDATE PATH, which is the one an existing operator
+    actually hits.
+
+    The digest refusal was first written in `ensure_engine`, the FIRST-INSTALL
+    path. This function never calls it: it calls `download_engine` directly. So
+    on a digest-less release the operator was told "Engine update failed" — the
+    network blamed for a decision persona made, about a condition retrying
+    cannot change, which is precisely the confusion the refuse/failed vocabulary
+    exists to prevent. An operator who reads "download failed" retries forever.
+
+    Asserts the OPERATOR-FACING WORDS, not just that nothing installed: the
+    security half (failing closed) was already correct before this fix, so a
+    test that only checked `write_version` was not called would have passed
+    against the very defect this pins.
+    """
+    monkeypatch.setattr(
+        app_mod.engine,
+        "fetch_latest_checked",
+        lambda timeout=20: (
+            "148.0",
+            "http://example/e.AppImage",
+            "",  # upstream published no digest
+            app_mod.engine_policy.OK,  # NOT a policy refusal — that path already worked
+            "",
+        ),
+    )
+
+    # the real refusal, raised where both entry points share it
+    def refusing_download(url, timeout=600, digest=None, **kw):
+        raise app_mod.engine.EngineUnverifiable(
+            "Engine 148.0 not installed: no sha256 digest was published for "
+            "e.AppImage, so its contents cannot be verified. persona does not "
+            "install an unverified browser engine. This is not a download "
+            "failure and retrying will not change it."
+        )
+
+    monkeypatch.setattr(app_mod.engine, "download_engine", refusing_download)
+    written = []
+    monkeypatch.setattr(app_mod.engine, "write_version", written.append)
+    monkeypatch.setattr(app_mod.threading, "Thread", InlineThread)
+
+    logged = []
+    stub = SimpleNamespace(
+        _engine_busy=False,
+        _engine_latest="147.0",
+        _engine_status="",
+        _engine_deferred_tag="",
+        _engine_detail=SimpleNamespace(value=""),
+        _engine_progress_start=lambda: None,
+        _refresh_engine_text=lambda *a: None,
+        _refresh_sidebar=lambda *a: None,
+        _log=logged.append,
+        _engine_progress_cb=lambda d, t: None,
+    )
+    app_mod.App._update_engine_async(stub)
+
+    assert written == [], "an unverifiable engine must not be recorded as installed"
+    blob = " ".join(logged)
+    assert "no sha256 digest" in blob, "the refusal must reach the operator"
+    assert "e.AppImage" in blob, "and must name what could not be verified"
+    # THE REGRESSION THIS PINS: the old code fell through to the generic else.
+    assert "Engine update failed" not in blob, (
+        "a refusal must not be reported as a transfer failure — an operator "
+        "told the download failed retries forever"
+    )
+    assert stub._engine_busy is False, "the busy flag must not wedge on a refusal"
+
+
 def test_app_construction_wires_the_engine_prune_in_use_guard(monkeypatch):
     """PS-14: the guard is only worth anything if production actually wires it.
 

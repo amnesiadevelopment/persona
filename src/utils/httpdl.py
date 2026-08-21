@@ -16,11 +16,21 @@ fix.
 THE MISSING-CHECKSUM POLICY (one contract, whole project)
 ---------------------------------------------------------
 An absent digest FAILS CLOSED: an asset we cannot verify could be a swap, so we
-refuse it. The single exception is an explicit, per-call `allow_missing=True`,
-used at the one call site that genuinely has no digest source (the engine's
-Linux predictable-URL fallback, whose asset lives outside the API that carries
-the digest). A present-but-wrong digest is ALWAYS rejected, `allow_missing` or
-not.
+refuse it. A present-but-wrong digest is ALWAYS rejected.
+
+There is a per-call `allow_missing=True` opt-in in this module's signatures, and
+as of PS-49 NOTHING IN persona PASSES IT. The one caller that did was the
+engine's Linux predictable-URL fallback, whose asset was believed to live
+outside the API that carries the digest; measured against upstream, that belief
+was false twice over — the matched asset carries a sha256 in the very asset list
+the code already read, and the fallback 404s on every release where it actually
+fires. So the engine now verifies on every OS with no platform carved out, and
+the exception this paragraph used to describe no longer exists. The parameter is
+kept because its SEMANTICS are the project's vocabulary for "nothing was ever
+published" versus "a digest arrived and is unusable" (see `digest_missing`), and
+the engine's refusal is written in those terms — but it is a primitive with no
+caller, not a live path. Do not re-open it: an unverified browser engine is the
+regression PS-49 removed.
 
 Availability of an update is never weighed against the integrity of what gets
 executed (Invariant #0): a user who does not update has lost nothing, a user who
@@ -131,12 +141,13 @@ def digest_missing(digest: str | None) -> bool:
     second side to stay honest with.
 
     The distinction it draws still matters and is still tested. It is now the
-    predicate the ENGINE REFUSAL itself is written in (`ensure_engine` asks
-    `httpdl.digest_missing(digest)`), so the same one word decides whether an
-    operator is told "no digest was published" or an unusable digest is simply
-    rejected. Note this deliberately excludes whitespace-only ("   "), which is
-    read as a digest that arrived: widening this to `.strip()` would hand "   "
-    an acceptance that today fails closed.
+    predicate the ENGINE REFUSAL itself is written in — `download_engine` asks
+    `httpdl.digest_missing(digest)` and raises EngineUnverifiable — so the same
+    one word decides whether an operator is told "no digest was published" or an
+    unusable digest is simply rejected by the ordinary verify gate. Note this
+    deliberately excludes whitespace-only ("   "), which is read as a digest that
+    arrived: widening this to `.strip()` would hand "   " an acceptance that
+    today fails closed.
     """
     return not digest
 

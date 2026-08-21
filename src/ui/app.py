@@ -2658,6 +2658,7 @@ class App:
                     progress=self._engine_progress_cb,
                     defer_if_in_use=unattended,
                     log=self._log,
+                    tag=tag,
                 )
                 if ok:
                     # Record the tag from the fetch that produced THESE BYTES,
@@ -2677,6 +2678,18 @@ class App:
                     self._log(f"Engine updated to {tag}")
                 else:
                     self._log("Engine update failed")
+            except engine.EngineUnverifiable as e:
+                # A REFUSAL, NOT A FAILURE — and this is the path an EXISTING
+                # operator actually hits (PS-49 round 2). The first-install path
+                # goes through ensure_engine, which logs its own refusal; this
+                # one calls download_engine directly, so before the refusal was
+                # raised from inside the transfer this branch fell to the `else`
+                # above and said "Engine update failed". That blames the network
+                # for a decision persona made, about a condition retrying cannot
+                # change — so the operator retries forever. The message names
+                # the asset that could not be verified and says so explicitly.
+                self._engine_status = "engine could not be verified"
+                self._log(str(e))
             except engine.InstallDeferred:
                 # NOT a failure, and must not be reported as one: the network
                 # worked, the bytes are verified and on disk, and a profile was
