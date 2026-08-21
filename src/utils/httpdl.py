@@ -122,14 +122,21 @@ def digest_missing(digest: str | None) -> bool:
     them lets a malformed digest take the opt-in exit and be ACCEPTED, which is
     fail-open under a new name — the exact regression PS-6 exists to prevent.
 
-    IT IS ALSO, CHARACTER FOR CHARACTER, THE `not digest` THAT THE ONE CALLER OF
-    THE OPT-IN USES AS ITS GATE (engine/updater.py: `allow_unverified = not
-    digest and IS_LINUX`). That identity is the point, not a coincidence: bfc7cbf
-    was a real fix left inert because a guard and the check it protected disagreed
-    about one word, so "missing" MUST mean the same thing on both sides of that
-    seam. Note this deliberately excludes whitespace-only ("   "), which the gate
-    reads as a digest that arrived — widening this to `.strip()` would make the
-    two disagree again and hand "   " an acceptance that today fails closed.
+    THE OPT-IN NOW HAS NO CALLER IN persona (PS-49). The one that had it was
+    engine/updater.py's `allow_unverified = not digest and IS_LINUX`, and this
+    predicate was written to match that gate CHARACTER FOR CHARACTER, because
+    bfc7cbf was a real fix left inert when a guard and the check it protected
+    disagreed about one word. That caller is gone — the engine path refuses an
+    undigested asset on every OS instead — so the identity no longer has a
+    second side to stay honest with.
+
+    The distinction it draws still matters and is still tested. It is now the
+    predicate the ENGINE REFUSAL itself is written in (`ensure_engine` asks
+    `httpdl.digest_missing(digest)`), so the same one word decides whether an
+    operator is told "no digest was published" or an unusable digest is simply
+    rejected. Note this deliberately excludes whitespace-only ("   "), which is
+    read as a digest that arrived: widening this to `.strip()` would hand "   "
+    an acceptance that today fails closed.
     """
     return not digest
 
