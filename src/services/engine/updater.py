@@ -338,10 +338,18 @@ def _promote_staging(staging: str) -> None:
     first) keeps the window where the engine is incomplete as small as possible.
 
     The previous build is REVERSIBLE, not destroyed: each entry about to be
-    replaced is RENAMED into BACKUP_DIR first, and if any part of the promotion
+    replaced is RENAMED into BACKUP_NAME first, and if any part of the promotion
     raises, every entry already moved aside is put back before the error
-    propagates. So a failed upgrade leaves the build that was working, rather
-    than a tree that is part old and part new with no way back to either.
+    propagates — and entries the NEW build introduced, which had no previous
+    counterpart to restore over, are removed. So a failed upgrade leaves the
+    build that was working, rather than a tree that is part old and part new
+    with no way back to either.
+
+    A backup is dropped only once it is provably redundant: after a clean
+    promotion, or after every entry has been confirmed restored. If a restore
+    could NOT be completed, the backup is deliberately LEFT in ENGINE_DIR — it
+    is then the last surviving copy of the working build, and deleting it would
+    turn a failed upgrade into no engine at all.
 
     That is deliberately belt AND braces with the completion marker/sentinel:
     the marker (written afterwards) still gates LAUNCH, so a failure is
@@ -357,6 +365,11 @@ def _promote_staging(staging: str) -> None:
     httpdl.discard_aside(backup_root)  # a stale backup from an earlier crash
     # dst -> its backup path, for every entry we actually moved aside
     moved: list[tuple[str, str]] = []
+    # Entries the NEW build introduced that the previous one never had. They
+    # have no backup to restore over, so rolling back means REMOVING them —
+    # otherwise a rolled-back tree is still part old and part new, and a
+    # Chromium upgrade routinely adds files.
+    added: list[str] = []
     try:
         os.makedirs(backup_root, exist_ok=True)
         for name in os.listdir(staging):
@@ -365,14 +378,23 @@ def _promote_staging(staging: str) -> None:
             backup = os.path.join(backup_root, name)
             if httpdl.move_aside(dst, backup):
                 moved.append((dst, backup))
+            else:
+                added.append(dst)
             shutil.move(src, dst)
     except Exception:
         # Put the working build back, best-effort, then let the caller see the
         # failure. Restore never raises, so a failed rollback cannot turn a
         # reported install failure into a crash.
+        fully_restored = True
         for dst, backup in reversed(moved):
-            httpdl.restore_aside(backup, dst)
-        httpdl.discard_aside(backup_root)
+            if not httpdl.restore_aside(backup, dst):
+                fully_restored = False
+        for dst in reversed(added):
+            httpdl.discard_aside(dst)
+        if fully_restored:
+            httpdl.discard_aside(backup_root)  # nothing left in it to recover
+        # else: LEAVE the backup. It holds the only copy of at least one file
+        # of the working build, and an operator can put it back by hand.
         raise
     # The new build is fully in place; the old one is no longer needed.
     httpdl.discard_aside(backup_root)
@@ -418,17 +440,24 @@ def _install_macos(asset_path: str) -> bool:
         backup = os.path.join(ENGINE_DIR, BACKUP_NAME + "-Chromium.app")
         httpdl.discard_aside(backup)
         had_previous = httpdl.move_aside(dest, backup)
+        # A backup is dropped only once it is provably redundant: the new
+        # bundle is in place, or the previous one has been CONFIRMED restored.
+        # A restore that could not be completed leaves the backup where it is —
+        # it is then the only surviving copy of the working Chromium.app, and
+        # deleting it would turn a failed upgrade into no engine at all.
         try:
             os.replace(staging, dest)
             ok = os.path.isfile(ENGINE_BINARY)
         except OSError:
-            if had_previous:
-                httpdl.restore_aside(backup, dest)
+            if had_previous and httpdl.restore_aside(backup, dest):
+                httpdl.discard_aside(backup)
             return False
         if not ok and had_previous:
             # The new bundle landed but has no runnable binary inside it — a
             # broken engine is no better than a failed swap, so go back.
-            httpdl.restore_aside(backup, dest)
+            if httpdl.restore_aside(backup, dest):
+                httpdl.discard_aside(backup)
+            return ok
         httpdl.discard_aside(backup)
         return ok
     except OSError:
