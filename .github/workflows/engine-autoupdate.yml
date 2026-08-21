@@ -40,6 +40,80 @@ jobs:
         with:
           python-version: "3.13"
 
+      # Is there anything to bump? Asked BEFORE provisioning a browser, because
+      # the answer is "no" on almost every day and the provisioning below costs
+      # an apt install plus an engine download. A job that downloads a browser
+      # every morning to discover it had nothing to do is also a job with a
+      # daily chance of failing on a flaky download — which trains the operator
+      # to ignore a red engine-autoupdate run, the same way an always-red gate
+      # would.
+      #
+      # This calls plan() only; it rewrites nothing. The authority on whether a
+      # bump happens remains the "Detect newer engine" step below, and the
+      # commit+tag step is additionally guarded on the GATE having actually run
+      # (see there) — so if this check and that one ever disagree, the tag is
+      # refused rather than cut ungated.
+      - name: Is a bump available at all?
+        id: precheck
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import pathlib, re, sys
+          sys.path.insert(0, "scripts")
+          from engine_autobump import plan
+
+          pp = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
+          up = pathlib.Path("src/services/app_update/updater.py").read_text(encoding="utf-8")
+          m = re.search(r'APP_VERSION\s*=\s*"([^"]+)"', up)
+          bp = plan(pp, m.group(1) if m else "0.0.0")
+          # stderr -> the job log (visible); stdout -> $GITHUB_OUTPUT (the flag)
+          print(f"precheck: needed={bp.needed} reason={bp.reason}", file=sys.stderr)
+          print(f"needed={str(bp.needed).lower()}")
+          PY
+
+      # --- the fingerprint gate, part 1: read the OLD engine -----------------
+      #
+      # This runs BEFORE the pins are rewritten, because the "before" side of
+      # the comparison has to be a reading of the engine we are bumping AWAY
+      # from. Once engine_autobump.py has rewritten pyproject the old engine is
+      # no longer resolvable from the tree, so there is no later point at which
+      # this recording could be taken.
+      #
+      # Everything from here to the gate verdict happens in THIS job on THIS
+      # runner, deliberately. Several probes read through the host's real GL
+      # stack and installed font metrics (the committed reference declares them
+      # in provenance.env_sensitive_probes), so two recordings taken on two
+      # runners would report host variance as engine drift and the gate would be
+      # permanently red — a gate people learn to ignore. One host, one job, and
+      # the engine is the only variable.
+      - name: Provision a display + the CURRENT engine
+        if: steps.precheck.outputs.needed == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          python -m pip install --upgrade pip
+          pip install --prefer-binary -r requirements.txt
+          # Install the driver at the pin CURRENTLY in the tree (the old one).
+          pin="$(python -c "import re,pathlib; print(re.search(r'invisible_playwright @ git\+[^\"]+', pathlib.Path('pyproject.toml').read_text()).group(0))")"
+          echo "installing CURRENT engine driver: $pin"
+          pip install "$pin"
+          # Download the engine BINARY named by the current baseline.
+          tag="$(tr -d '[:space:]' < engine-baseline.txt)"
+          echo "downloading CURRENT engine build: $tag"
+          python -c "
+          import sys
+          from src.services.engine.firefox import download_engine, current_version
+          tag = sys.argv[1]
+          if not download_engine(tag):
+              sys.exit(f'could not download engine build {tag}')
+          print('installed build:', current_version())
+          " "$tag"
+
+      - name: Record the fingerprint on the OLD engine
+        if: steps.precheck.outputs.needed == 'true'
+        run: |
+          xvfb-run -a python -m src.services.verify.engine_gate record \
+            --output /tmp/fingerprint-before.json
+
       - name: Detect newer engine + bump pins
         id: bump
         run: |
@@ -50,8 +124,93 @@ jobs:
           echo "version=$ver" >> "$GITHUB_OUTPUT"
           echo "baseline=$base" >> "$GITHUB_OUTPUT"
 
-      - name: Commit + tag the bump
+      # --- the fingerprint gate, part 2: read the BUMPED engine --------------
+      - name: Provision the BUMPED engine
         if: steps.bump.outputs.version != 'none' && steps.bump.outputs.version != ''
+        env:
+          BASE: ${{ steps.bump.outputs.baseline }}
+        run: |
+          # The pins in the tree have been rewritten by now, so this resolves to
+          # the NEW driver and the NEW engine build.
+          pin="$(python -c "import re,pathlib; print(re.search(r'invisible_playwright @ git\+[^\"]+', pathlib.Path('pyproject.toml').read_text()).group(0))")"
+          echo "installing BUMPED engine driver: $pin"
+          pip install --force-reinstall --no-deps "$pin"
+          pip install --prefer-binary -r requirements.txt
+          echo "downloading BUMPED engine build: ${BASE}"
+          python -c "
+          import sys
+          from src.services.engine.firefox import download_engine, current_version
+          tag = sys.argv[1]
+          if not download_engine(tag):
+              sys.exit(f'could not download engine build {tag}')
+          print('installed build:', current_version())
+          " "${BASE}"
+
+      - name: Record the fingerprint on the BUMPED engine
+        if: steps.bump.outputs.version != 'none' && steps.bump.outputs.version != ''
+        run: |
+          xvfb-run -a python -m src.services.verify.engine_gate record \
+            --output /tmp/fingerprint-after.json
+
+      # THE GATE. A non-zero exit fails the job, and because the commit+tag step
+      # below runs only on success, a failure here means the tag is never
+      # created: `main` is untouched, nothing is published, and the daily job
+      # simply reports red. What the operator reads is "the bump was refused",
+      # not "the release was stopped halfway".
+      #
+      #   0  the comparison ran across two genuinely different engine builds and
+      #      no probe moved -> the bump proceeds to tag
+      #   1  a probe moved: the engine changes what a site sees about the pinned
+      #      profile. The log names probe, realm, expected vs observed
+      #   2  the gate could not run — including the case where both recordings
+      #      landed on the SAME engine build, which agrees by construction and
+      #      would otherwise be a confident pass over a comparison that never
+      #      happened
+      #
+      # This job deliberately has NO path that re-records the committed
+      # reference. Accepting a genuine move is a human act: review the diff, run
+      # `baseline_cli record`, and commit the artifact in a reviewable diff. A
+      # job that re-records itself until it goes green destroys the reference it
+      # exists to defend.
+      - name: Gate the bump on the fingerprint comparison
+        id: gate
+        if: steps.bump.outputs.version != 'none' && steps.bump.outputs.version != ''
+        run: |
+          xvfb-run -a python -m src.services.verify.engine_gate compare \
+            /tmp/fingerprint-before.json /tmp/fingerprint-after.json
+          # Only reached when the compare above exited 0. This is the token the
+          # tag step requires, and it is written by no other step: see the guard
+          # on "Commit + tag the bump" for why the tag is gated on THIS rather
+          # than on the gate step merely not having failed.
+          echo "verdict=pass" >> "$GITHUB_OUTPUT"
+
+      - name: Keep the recordings when the gate stops the bump
+        # Only on failure: on a red gate these two files are the whole evidence
+        # base for deciding "benign or leak?", and they live on a runner that is
+        # about to be destroyed.
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: engine-bump-fingerprint-recordings
+          path: /tmp/fingerprint-*.json
+          if-no-files-found: warn
+
+      - name: Commit + tag the bump
+        # Guarded on the GATE'S OWN VERDICT, not merely on a bump existing.
+        #
+        # `steps.bump.outputs.version != 'none'` alone was the guard before the
+        # gate existed, and it is not sufficient now: a step that is SKIPPED
+        # does not fail the job, so if the gate step's `if:` ever stops matching
+        # (a rename, an edited condition, a refactor that moves the bump step),
+        # the gate silently does not run and this step still tags — cutting an
+        # unverified release while the job reads green. That is the same class
+        # of failure the gate itself is built against: a confident pass over a
+        # comparison that never happened.
+        #
+        # `steps.gate.outputs.verdict` is written on the LAST line of the gate
+        # step, so it exists only when the comparison actually ran and exited 0.
+        # A skipped gate leaves it empty and no tag is cut.
+        if: steps.gate.outputs.verdict == 'pass'
         env:
           VER: ${{ steps.bump.outputs.version }}
           BASE: ${{ steps.bump.outputs.baseline }}
