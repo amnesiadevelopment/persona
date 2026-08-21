@@ -39,7 +39,11 @@ from .engine_install import (  # noqa: F401
     installed_builds,
     installed_version,
     is_invisible_installed,
+    pinned_build,
     prune_superseded_builds,
+    resume_engine_updates,
+    revert_to_previous_build,
+    rollback_target,
     # NOTE: the SETTER is re-exported, never `_in_use_provider` itself — a
     # `from ... import` binds a name by VALUE, so a re-exported variable would
     # be a stale copy that the setter's rebind in engine_install never reaches.
@@ -1343,6 +1347,49 @@ def _firefox_build_of(path: str) -> str:
     return m.group(1) if m else base
 
 
+def _build_number_of(path_or_tag: str) -> int:
+    """The NN in a firefox-NN dir name or tag, or -1. Shares the tag grammar
+    with engine.firefox.build_number, applied to whatever _firefox_build_of
+    canonicalised out of a path."""
+    m = re.match(r"^firefox-(\d+)$", _firefox_build_of(path_or_tag) or "")
+    return int(m.group(1)) if m else -1
+
+
+def _clear_downgrade_guard(profile_dir: str) -> bool:
+    """Remove the profile's compatibility.ini so an OLDER engine will open it.
+
+    THIS IS THE REVERSE DIRECTION OF THE PREFS PROBLEM, AND IT IS A DIFFERENT
+    MECHANISM. Dropping prefs.js (below) fixes the crash a stale prefs file
+    causes. It does NOT address Firefox's own *downgrade protection*, which is
+    a deliberate refusal rather than a crash: Firefox records the version that
+    last used a profile in compatibility.ini (LastVersion), and when it starts
+    on a profile last touched by a NEWER version it refuses to open it and puts
+    up the "you've launched an older version of Firefox" modal offering to
+    create a fresh profile. persona's launcher drives Firefox through juggler
+    with no one to click that modal, so the launch would simply never come up —
+    the profile would be unopenable, which is exactly the trap that makes
+    "moving binaries alone" an incomplete revert.
+
+    compatibility.ini is DERIVED, not user data: Firefox rewrites it on every
+    start from the build that is running. Removing it makes the version check
+    find no prior version to compare against, so the guard does not fire and
+    Firefox regenerates the file for the older build. Every piece of USER data
+    (cookies, logins, history, bookmarks, cert9/key4) lives in the sqlite/db
+    files and is untouched — the same reasoning that makes dropping prefs.js a
+    lossless migration.
+
+    Applied ONLY when the engine build actually goes DOWN. Forward moves are
+    left exactly as they were: they are the path that is live-proven today, and
+    the downgrade guard does not fire going forward, so clearing it there would
+    be a behaviour change bought for nothing. Returns True when removed."""
+    path = os.path.join(profile_dir, "compatibility.ini")
+    try:
+        os.remove(path)
+        return True
+    except OSError:
+        return False
+
+
 def _reset_prefs_on_engine_build_change(profile_dir: str, engine_dir: str) -> bool:
     """Drop the profile's Firefox-written prefs.js when the engine BUILD changed.
 
@@ -1377,6 +1424,63 @@ def _reset_prefs_on_engine_build_change(profile_dir: str, engine_dir: str) -> bo
     except OSError:
         logger.exception("Could not reset prefs.js on engine build change")
         return False
+
+
+def _migrate_profile_for_engine_build(profile_dir: str, engine_dir: str) -> list:
+    """Make `profile_dir` openable by the build at `engine_dir`, whichever
+    DIRECTION the build moved. Returns the emit() lines describing what it did.
+
+    THE ORDER HERE IS LOAD-BEARING, which is the whole reason this is one
+    function rather than two call sites. Both migrations key off the profile's
+    compatibility.ini and one of them DELETES it:
+
+      1. the DIRECTION is read FIRST, while the file is still on disk;
+      2. the prefs.js reset runs next — it READS compatibility.ini to decide
+         whether prefs.js is stale;
+      3. the downgrade guard is cleared LAST, because it REMOVES the file.
+
+    Clearing first would make step 2 read "Firefox never opened this profile"
+    and leave the incompatible prefs.js in place — trading Firefox's refusal
+    for the SIGSEGV that refusal was standing in front of. That is a strictly
+    worse outcome than not reverting at all, so the sequence is asserted by
+    test rather than left to reading order.
+    """
+    out = []
+    if not profile_dir or not engine_dir:
+        return out
+    # (1) Direction, taken before anything below mutates the profile.
+    was = _build_number_of(_profile_last_engine_dir(profile_dir))
+    now = _build_number_of(engine_dir)
+    going_back = was >= 0 and now >= 0 and now < was
+
+    # (2) A prefs.js written by a DIFFERENT build is not loadable by this one.
+    if _reset_prefs_on_engine_build_change(profile_dir, engine_dir):
+        out.append("ENGINE_BUILD_CHANGED: reset prefs for the new Firefox build")
+        # Resetting prefs.js drops the dark-theme + bookmarks-toolbar chrome prefs
+        # that a first-launch warmup would have baked in. On a profile that
+        # already has its bookmarks seeded the warmup is skipped, so the first
+        # visible launch after a reset opened LIGHT (live-proven on the boevaya
+        # Linux). Re-write the warmup chrome prefs and re-activate the dark theme
+        # (which also invalidates the addon startup cache) so the chrome comes
+        # back dark. (Firefox rebuilds its toolbar-theme startup cache lazily, so
+        # the tab strip goes dark immediately and the toolbar follows on the next
+        # launch — the same first-launch behaviour a brand-new profile has; #242.)
+        _upsert_prefs_js(profile_dir, _WARMUP_CHROME_PREFS)
+        _activate_dark_theme(profile_dir)
+
+    # (3) GOING BACK ONLY. Firefox refuses to open a profile last used by a
+    # NEWER version (the "you've launched an older version of Firefox" modal),
+    # and the launcher drives Firefox over juggler with nobody to click it — so
+    # the launch would simply never come up and the profile reads as broken.
+    if going_back and _clear_downgrade_guard(profile_dir):
+        out.append(
+            "ENGINE_BUILD_REVERTED: cleared the downgrade guard for the older build"
+        )
+        # The addon startup cache was written by the NEWER build; a stale one is
+        # what makes the chrome open wrong on the first launch after a reset
+        # (#242). Drop it so the older build rebuilds it from extensions.json.
+        _invalidate_addon_startup_cache(profile_dir)
+    return out
 
 
 def _engine_lib_dir():
@@ -2234,19 +2338,8 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
             _engine_dir = str(cache_dir_for_version(_build))
     except Exception:
         _engine_dir = ""
-    if _engine_dir and _reset_prefs_on_engine_build_change(profile_dir, _engine_dir):
-        emit("ENGINE_BUILD_CHANGED: reset prefs for the new Firefox build")
-        # Resetting prefs.js drops the dark-theme + bookmarks-toolbar chrome prefs
-        # that a first-launch warmup would have baked in. On a profile that
-        # already has its bookmarks seeded the warmup is skipped, so the first
-        # visible launch after a reset opened LIGHT (live-proven on the boevaya
-        # Linux). Re-write the warmup chrome prefs and re-activate the dark theme
-        # (which also invalidates the addon startup cache) so the chrome comes
-        # back dark. (Firefox rebuilds its toolbar-theme startup cache lazily, so
-        # the tab strip goes dark immediately and the toolbar follows on the next
-        # launch — the same first-launch behaviour a brand-new profile has; #242.)
-        _upsert_prefs_js(profile_dir, _WARMUP_CHROME_PREFS)
-        _activate_dark_theme(profile_dir)
+    for _line in _migrate_profile_for_engine_build(profile_dir, _engine_dir):
+        emit(_line)
 
     # Deterministic per-profile seed so the same profile keeps a stable
     # fingerprint across launches AND app restarts.
