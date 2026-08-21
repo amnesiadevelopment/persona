@@ -9,6 +9,7 @@ from collections.abc import Callable
 
 from ...core.logging import get_logger
 from ...models.profile import Profile
+from .automation_channel import opens_cdp_channel
 from .process import spawn_browser, terminate, wait_for_exit
 
 logger = get_logger("browser.launcher")
@@ -166,6 +167,18 @@ class BrowserLauncher:
         # DevToolsActivePort's mtime against this so a reader never attaches to a
         # port file left behind by a previous run of the same profile.
         self._session_started_at: dict[str, float] = {}
+        # Whether the LIVE session opened a remote-debugging (CDP) channel,
+        # evaluated once from the profile actually launched (see _register_session).
+        #
+        # This is deliberately NOT re-derived from the stored record at read
+        # time. ProfileManager.set_ai_control mutates and saves p.ai_control with
+        # no reference to whether the profile is running, so the record and the
+        # running session diverge the moment an operator flips the connect-page
+        # checkbox mid-session. The port that chromium bound at launch does not
+        # close because a boolean on disk changed; re-reading the record would
+        # report a channel CLOSED while it is still listening — the falsely
+        # reassuring direction. The launched fact is captured and kept.
+        self._session_cdp_open: dict[str, bool] = {}
         # Profiles whose spawn is in flight but not yet in _active_sessions.
         # start_thread reserves the slot here synchronously so a second launch of
         # the same profile — fired while the slow spawn_browser() runs — is
@@ -186,7 +199,7 @@ class BrowserLauncher:
                     notifier.set()
                 terminate(proc, name)
             self._active_sessions.clear()
-            self._session_started_at.clear()
+            self._forget_all_session_facts()
         logger.info("All browser sessions terminated")
 
     def start_thread(
@@ -237,7 +250,7 @@ class BrowserLauncher:
                     if self._active_sessions.get(profile.name) is proc:
                         self._active_sessions.pop(profile.name, None)
                         self._stop_notifiers.pop(profile.name, None)
-                        self._session_started_at.pop(profile.name, None)
+                        self._forget_session_facts(profile.name)
                 reason = close_reason[0]
                 if reason in _QUIET_CLOSE_REASONS:
                     log_callback(f"Session ended: {profile.name}")
@@ -264,12 +277,20 @@ class BrowserLauncher:
 
         try:
             proc = spawn_browser(profile)
+            # Evaluated HERE, from the profile that was actually just launched,
+            # and evaluated OUTSIDE the lock (it is pure, but it resolves the
+            # effective engine, so there is no reason to hold the lock for it).
+            # This is the whole mechanism behind the card's channel indicator:
+            # the answer is taken once, from the launch, and never re-derived
+            # from a record that set_ai_control can flip while the session runs.
+            cdp_open = opens_cdp_channel(profile)
             with self._lock:
                 aborted = profile.name in self._aborting
                 if not aborted:
                     self._active_sessions[profile.name] = proc
                     self._stop_notifiers[profile.name] = stop_event
                     self._session_started_at[profile.name] = time.time()
+                    self._session_cdp_open[profile.name] = cdp_open
                     self._starting.discard(profile.name)
                     self._lock.notify_all()
 
@@ -316,7 +337,7 @@ class BrowserLauncher:
                     if self._active_sessions.get(profile.name) is proc:
                         self._active_sessions.pop(profile.name, None)
                         self._stop_notifiers.pop(profile.name, None)
-                        self._session_started_at.pop(profile.name, None)
+                        self._forget_session_facts(profile.name)
                     self._lock.notify_all()
                 raise
         except Exception as e:
@@ -343,7 +364,7 @@ class BrowserLauncher:
                 # tear it down here.
                 proc = self._active_sessions.pop(profile_name, None)
                 notifier = self._stop_notifiers.pop(profile_name, None)
-                self._session_started_at.pop(profile_name, None)
+                self._forget_session_facts(profile_name)
                 if notifier:
                     notifier.set()
                 if proc is not None:
@@ -354,7 +375,7 @@ class BrowserLauncher:
                 return False
             proc = self._active_sessions.pop(profile_name)
             notifier = self._stop_notifiers.pop(profile_name, None)
-            self._session_started_at.pop(profile_name, None)
+            self._forget_session_facts(profile_name)
         if notifier:
             notifier.set()
         terminate(proc, profile_name, timeout)
@@ -369,7 +390,7 @@ class BrowserLauncher:
             for n in stale:
                 self._active_sessions.pop(n, None)
                 self._stop_notifiers.pop(n, None)
-                self._session_started_at.pop(n, None)
+                self._forget_session_facts(n)
             # A profile whose spawn is still in flight counts as running so the
             # UI shows it busy and a second launch is refused.
             return set(self._active_sessions.keys()) | set(self._starting)
@@ -387,7 +408,7 @@ class BrowserLauncher:
                 return True
             del self._active_sessions[profile_name]
             self._stop_notifiers.pop(profile_name, None)
-            self._session_started_at.pop(profile_name, None)
+            self._forget_session_facts(profile_name)
             return False
 
     def started_at(self, profile_name: str) -> float | None:
@@ -397,6 +418,60 @@ class BrowserLauncher:
         from a previous run of the same profile is never trusted."""
         with self._lock:
             return self._session_started_at.get(profile_name)
+
+    def cdp_channel_open(self, profile_name: str) -> bool:
+        """True if the LIVE session for ``profile_name`` has a CDP port open.
+
+        The fact is the one captured when the session was registered, from the
+        profile that was actually launched — NOT a re-read of the stored record.
+        ``ProfileManager.set_ai_control`` saves ``p.ai_control`` without any
+        reference to whether the profile is running, so a mid-session toggle
+        moves the record while the bound port does not move at all. Answering
+        from the record would report a channel closed while chromium is still
+        listening on it; that is the falsely reassuring direction, and it is the
+        defect this accessor exists to avoid.
+
+        False for a profile that is not running: the entry is dropped at every
+        teardown path (see ``_forget_session_facts``), so an ended session
+        reports no channel rather than leaving a stale claim behind.
+
+        Pure and cheap by construction — a dict lookup under the lock, exactly
+        like ``started_at`` above. It performs no IO, which is what makes it
+        safe to call from a render path.
+        """
+        with self._lock:
+            return self._session_cdp_open.get(profile_name, False)
+
+    def _forget_session_facts(self, profile_name: str) -> None:
+        """Drop every per-session fact recorded for ``profile_name``.
+
+        The caller MUST already hold ``self._lock`` — every teardown site does,
+        and this is called from inside those critical sections rather than
+        taking the lock itself (``self._lock`` is a Condition, not reentrant).
+
+        One helper instead of parallel ``.pop()`` lines at each site, on purpose:
+        the facts are popped at SEVEN places (six single-session teardowns plus
+        the bulk clear in ``shutdown_all``), which use three different key
+        expressions (``profile.name``, ``profile_name`` and a loop variable), so
+        the key is taken as an argument rather than assumed. A dict that gets
+        added here later is then cleaned up at all seven sites by construction —
+        the failure mode this guards is a dead session still reporting an open
+        CDP channel, which would light the indicator over a browser that is no
+        longer running.
+        """
+        self._session_started_at.pop(profile_name, None)
+        self._session_cdp_open.pop(profile_name, None)
+
+    def _forget_all_session_facts(self) -> None:
+        """Bulk counterpart of ``_forget_session_facts`` for ``shutdown_all``.
+
+        The caller MUST already hold ``self._lock``. Kept beside its per-session
+        twin so the two cannot drift: this is the site that tears down EVERY
+        session at once, and it is the one most easily forgotten when a new
+        per-session dict is introduced.
+        """
+        self._session_started_at.clear()
+        self._session_cdp_open.clear()
 
     def _monitor_process(
         self,
