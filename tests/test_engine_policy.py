@@ -119,7 +119,7 @@ def test_records_the_tag_whose_bytes_were_installed_not_the_stale_check(monkeypa
     )
     got = {}
 
-    def fake_download(url, timeout=600, digest=None, progress=None):
+    def fake_download(url, timeout=600, digest=None, progress=None, **kw):
         got["url"] = url
         return True
 
@@ -514,7 +514,7 @@ def test_a_normal_newer_build_still_installs_exactly_as_before(monkeypatch):
     )
     calls = {}
 
-    def fake_download(url, timeout=600, digest=None, progress=None):
+    def fake_download(url, timeout=600, digest=None, progress=None, **kw):
         calls["url"] = url
         calls["digest"] = digest
         return True
