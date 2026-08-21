@@ -847,6 +847,62 @@ def test_the_engine_build_survives_a_file_round_trip(tmp_path, monkeypatch):
     assert snapshot.load(str(path))["engine_build"] == "firefox-20"
 
 
+def test_a_failed_write_leaves_the_previous_artifact_byte_identical(tmp_path):
+    """``record``'s default ``-o`` is the COMMITTED baseline, so the write path
+    can destroy the reference every future check compares against. A write that
+    fails must leave the old artifact exactly as it was — not truncated, not
+    half-replaced."""
+    path = tmp_path / "ref.json"
+    snapshot.write({"probes": {"window": {"a": {"value": 1}}}}, str(path))
+    before = path.read_bytes()
+
+    # allow_nan=False: a non-finite float makes dumps() raise, so the failure
+    # lands mid-write rather than before it.
+    with pytest.raises(ValueError):
+        snapshot.write({"probes": {"window": {"a": {"value": float("nan")}}}}, str(path))
+
+    assert path.read_bytes() == before
+
+
+def test_a_failed_write_leaves_no_temp_file_behind(tmp_path):
+    """The atomic promote uses a temp file beside the target. If a failure left
+    it there, the baseline's own directory would slowly fill with debris that
+    looks like artifacts."""
+    path = tmp_path / "ref.json"
+    snapshot.write({"probes": {}}, str(path))
+
+    with pytest.raises(ValueError):
+        snapshot.write({"probes": {"window": {"a": {"value": float("inf")}}}}, str(path))
+
+    assert [p.name for p in tmp_path.iterdir()] == ["ref.json"]
+
+
+def test_an_unwritable_target_still_raises_oserror(tmp_path):
+    """The CLI maps OSError from this call to "could not run" (exit 2). Going
+    through a temp file must not swallow it into some other type, or that
+    mapping silently stops working."""
+    unwritable = tmp_path / "ro"
+    unwritable.mkdir()
+    unwritable.chmod(0o500)
+    try:
+        with pytest.raises(OSError):
+            snapshot.write({"probes": {}}, str(unwritable / "x.json"))
+    finally:
+        unwritable.chmod(0o700)
+
+
+def test_the_atomic_write_produces_the_same_canonical_bytes(tmp_path):
+    """Atomicity is about WHEN the bytes appear, never about what they are: the
+    artifact is a byte-stable reference, so the promote must not alter encoding,
+    ordering or the trailing newline."""
+    path = tmp_path / "a.json"
+    payload = {"probes": {"window": {"z": {"value": "ü"}, "a": {"value": 1}}}}
+    snapshot.write(payload, str(path))
+
+    assert path.read_bytes() == snapshot.dumps(payload).encode("utf-8")
+    assert snapshot.load(str(path)) == payload
+
+
 def test_the_engine_build_is_a_static_string_not_a_clock(monkeypatch):
     # The module's reason to exist is byte-stability (snapshot.py:1-18). A
     # build tag is admissible precisely because it does not vary with time.

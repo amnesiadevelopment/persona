@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import tempfile
 from typing import Any
 
 from .probes import ALL_REALMS, probes_for_realm
@@ -180,9 +182,40 @@ def dumps(snapshot: dict) -> str:
 
 
 def write(snapshot: dict, path: str) -> None:
-    """Write the canonical bytes of ``snapshot`` to ``path``."""
-    with open(path, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(dumps(snapshot))
+    """Write the canonical bytes of ``snapshot`` to ``path``, atomically.
+
+    Written to a temp file in the SAME directory and then promoted with
+    ``os.replace``, so ``path`` is never observed in a torn state: it is either
+    the previous artifact or the complete new one, never half of either.
+
+    This matters because the default ``-o`` for ``record`` is the COMMITTED
+    baseline. A plain ``open(path, "w")`` truncates first, so a recording
+    interrupted mid-write would leave a partial file at the blessed path — and
+    that path is the reference every future ``check`` compares against. The
+    guard in ``baseline.check`` means such a file now degrades honestly (exit 2,
+    "NOT drift") rather than silently, but not leaving the reference torn in the
+    first place is better than reporting it well afterwards.
+
+    Same directory, deliberately: ``os.replace`` is only atomic within a
+    filesystem, and a temp dir elsewhere could be on a different one.
+    """
+    directory = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(
+        dir=directory, prefix=f".{os.path.basename(path)}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(dumps(snapshot))
+        os.replace(tmp, path)
+    except BaseException:
+        # Never leave the temp file behind on a failed write. The original
+        # artifact is untouched either way, since the promote is the only thing
+        # that can modify it.
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def load(path: str) -> dict:
