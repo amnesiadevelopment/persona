@@ -26,6 +26,17 @@ _IND_H = 20
 # that geography, and src/services/ cannot import from src/ui/. They are
 # re-exported by name because this module is where both were first published —
 # callers and tests that import them from here keep working unchanged.
+#
+# PROXY_STALE_AFTER_S has no other use in this module: it is imported PURELY as
+# that re-export (tests/test_profile_card.py:10 binds it by name from here), so
+# __all__ states the intent rather than leaving it looking like a stray import.
+# Same convention this repo already uses in src/services/verify/ and
+# src/api/routes/__init__.py.
+__all__ = [
+    "PROXY_STALE_AFTER_S",
+    "proxy_indicator_state",
+    "build_profile_card",
+]
 
 
 def _tag_chips(tags: list[str]) -> ft.Control:

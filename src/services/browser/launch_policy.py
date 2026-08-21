@@ -302,7 +302,23 @@ def _proxy_timezone(proxy) -> str:
     # stale zone forever, which is exactly the defect. `time.time()` only feeds
     # the stale/verified split, which this guard does not act on — a failed
     # check reads "failed" at any age, so the answer here is time-independent.
-    if proxy_indicator_state(proxy, time.time()) == "failed":
+    #
+    # GATED ON GEOGRAPHY BEING ON FILE, and that conjunct is load-bearing rather
+    # than defensive. "failed" is a verdict about the CHECK, not about the
+    # record: a brand-new proxy whose FIRST check fails (app.py's
+    # on_check_failed -> ProxyStore.mark_check_failed) reads "failed" with
+    # tz='' country='' — it never had geography for anything to disprove. Both
+    # states refuse either way, so this changes no launch outcome; it decides
+    # which SENTENCE the operator is told, and "the geography still on file is
+    # disproven" asserts a record that does not exist. Without the conjunct that
+    # case falls in here and gets a false explanation, replacing PS-31's true
+    # "never successfully checked" — the inverse of the error AC4 forbids, on
+    # the state a new operator is most likely to reach first. With it, a failed
+    # check carrying no geo falls through to PS-31's raise below, which
+    # describes it accurately.
+    if (proxy.timezone or proxy.country_code) and proxy_indicator_state(
+        proxy, time.time()
+    ) == "failed":
         raise GeographyDisprovenError(
             "the proxy's last check FAILED, so its recorded geography is "
             "disproven: refusing to declare a location the most recent "

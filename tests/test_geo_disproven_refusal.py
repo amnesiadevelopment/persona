@@ -233,19 +233,37 @@ def test_neither_engine_emits_the_disproven_zone(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_the_refusal_is_reported_to_the_operator(monkeypatch):
+def test_the_refusal_is_reported_to_the_operator(monkeypatch, tmp_path):
     """launcher.start_thread catches the raise and reports it via log_callback
-    (launcher.py:322-328), so the operator sees WHY no browser appeared."""
+    (launcher.py:322-328), so the operator sees WHY no browser appeared.
+
+    Driven through the REAL spawn_browser, not a stand-in that raises a
+    hand-written sentence. An earlier cut of this test monkeypatched in its own
+    message and then asserted that message came back, so it would have passed
+    no matter what process.py actually composed — it tested the launcher's
+    plumbing and silently claimed to test AC4's CONTENT. Here the only thing
+    stubbed is the environment (the store, the bookmark pool, Popen); every
+    word the operator sees is composed by process._profile_timezone.
+    """
     import src.services.browser.launcher as launcher_mod
     from src.services.browser.launcher import BrowserLauncher
 
-    def _refuse(profile):
-        raise GeographyDisprovenError(
-            "Profile 'p' has proxy 'p1' assigned, but that proxy's LAST CHECK "
-            "FAILED. Re-check the proxy to resolve it."
-        )
+    spawned = []
 
-    monkeypatch.setattr(launcher_mod, "spawn_browser", _refuse)
+    class _FakePopen:
+        def __init__(self, args, **kwargs):
+            spawned.append(args)
+            self.pid = os.getpid()
+
+    monkeypatch.setattr(process, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(process, "ProxyStore", _StoreWithDisprovenProxy)
+    monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
+    monkeypatch.setattr(process, "write_window_entry", lambda name: None)
+    monkeypatch.setattr(process._platform, "IS_LINUX", False)
+    monkeypatch.setattr(process.subprocess, "Popen", _FakePopen)
+    _host_zone_is_distinctive(monkeypatch)
+    # The real thing: whatever process.py raises is what the operator is told.
+    monkeypatch.setattr(launcher_mod, "spawn_browser", process.spawn_browser)
 
     messages = []
     stopped = []
@@ -256,52 +274,157 @@ def test_the_refusal_is_reported_to_the_operator(monkeypatch):
     )
 
     joined = " | ".join(messages)
-    assert "check failed" in joined.lower() or "last check failed" in joined.lower(), (
+    assert "last check failed" in joined.lower(), (
         f"the operator was never told the check FAILED: {messages!r}"
+    )
+    assert "never been checked" not in joined.lower(), (
+        "the operator must not be told the proxy was never checked when it was "
+        f"checked and the check failed: {messages!r}"
     )
     assert "proxy" in joined.lower(), (
         f"the message must name what to act on: {messages!r}"
     )
+    assert "re-check" in joined.lower(), (
+        f"the message must name the remedy: {messages!r}"
+    )
+    assert not any("Europe/Berlin" in m for m in messages), (
+        f"the disproven zone must not be echoed to the operator: {messages!r}"
+    )
+    assert spawned == [], f"no engine may be spawned: {spawned!r}"
     assert stopped, "the UI must be released from its loading state"
 
 
-def test_the_message_distinguishes_disproven_from_never_checked(monkeypatch):
-    """AC4's real content: the operator must not be told "never checked" when
-    the truth is "checked, and it failed" — that sends them looking for the
-    wrong thing. The two causes get two different sentences.
+def _message_for(proxy):
+    """The operator-facing sentence composed for `proxy`, lowercased.
 
-    Asserted through _profile_timezone, which is where the operator-facing
-    wording is composed (process.py:139-146).
+    Driven through `_profile_timezone`, which is where process.py:139-146
+    actually composes the wording — not a hand-written string.
+    """
+    with pytest.raises(GeographyUnknownError) as raised:
+        process._profile_timezone(Profile(name="p", proxy="p1"), proxy)
+    return str(raised.value).lower()
+
+
+class _Geoless:
+    """No geography on file, and no check ever recorded — PS-31's row."""
+
+    timezone = ""
+    country_code = ""
+    checked_at = 0.0
+    last_check_ok = None
+
+
+class _GeolessAndFailed:
+    """No geography on file, and the most recent check FAILED.
+
+    The row a BRAND-NEW proxy lands in when its FIRST check fails: app.py's
+    on_check_failed -> ProxyStore.mark_check_failed writes last_check_ok=False
+    while tz/country stay empty, because no successful check ever wrote them.
+    Verified against the real store, not assumed — see
+    test_a_failed_first_check_is_reported_as_never_checked_not_disproven.
+
+    This is the overlap of the two causes, and it is the row the first cut of
+    this file was blind to: it reads "failed" from the indicator predicate, but
+    it has NO geography for a failure to have disproven.
+    """
+
+    timezone = ""
+    country_code = ""
+    checked_at = 1_000.0
+    last_check_ok = False
+
+
+def test_the_message_distinguishes_disproven_from_never_checked(monkeypatch):
+    """AC4's real content: each refusal must name its OWN cause.
+
+    The operator must not be told "never checked" when the truth is "checked,
+    and it failed" — and, just as importantly, not told "the geography on file
+    is disproven" when there is no geography on file. The inverse error is the
+    same error.
+
+    A row per state rather than one representative each, because the bug that
+    escaped review lived precisely in the OVERLAP (no geo AND last_check_ok is
+    False), which a two-representative test cannot see.
     """
     _host_zone_is_distinctive(monkeypatch)
 
-    class _Geoless:
-        timezone = ""
-        country_code = ""
-        checked_at = 0.0
-        last_check_ok = None
+    disproven_msg = _message_for(_disproven_proxy())
+    country_only_msg = _message_for(_disproven_proxy(timezone=""))
+    never_msg = _message_for(_Geoless())
+    failed_no_geo_msg = _message_for(_GeolessAndFailed())
 
-    with pytest.raises(GeographyUnknownError) as disproven:
-        process._profile_timezone(
-            Profile(name="d", proxy="p1"), _disproven_proxy()
+    # --- geography IS on file and a check disproved it -> "the check failed"
+    for label, msg in (("explicit zone", disproven_msg), ("country only", country_only_msg)):
+        assert "last check failed" in msg, (
+            f"the disproven case ({label}) must say the check FAILED: {msg!r}"
         )
-    with pytest.raises(GeographyUnknownError) as never:
-        process._profile_timezone(Profile(name="n", proxy="p1"), _Geoless())
+        assert "never been checked" not in msg, (
+            f"the disproven case ({label}) must NOT claim the proxy was never "
+            f"checked — it was checked, and it failed: {msg!r}"
+        )
 
-    disproven_msg = str(disproven.value).lower()
-    never_msg = str(never.value).lower()
-
-    assert "last check failed" in disproven_msg, (
-        f"the disproven case must say the check FAILED: {disproven_msg!r}"
-    )
-    assert "never been checked" not in disproven_msg, (
-        "the disproven case must NOT claim the proxy was never checked — it "
-        f"was checked, and it failed: {disproven_msg!r}"
-    )
+    # --- no geography ever established -> PS-31's wording, unchanged
     assert "never been checked" in never_msg, (
         f"PS-31's never-checked wording must be unchanged: {never_msg!r}"
     )
+
+    # --- THE OVERLAP: a failed check with NO geography is a never-checked
+    # proxy, not a disproven one. Nothing was disproven because nothing was
+    # ever established, and claiming otherwise asserts a record that does not
+    # exist.
+    assert "never been checked" in failed_no_geo_msg, (
+        "a proxy whose FIRST check failed has no geography on file, so it must "
+        "get PS-31's true 'never been checked' wording, not a claim that "
+        f"something on file was disproven: {failed_no_geo_msg!r}"
+    )
+    assert "disproven" not in failed_no_geo_msg, (
+        "the message must not assert that geography on file was disproven when "
+        f"there is no geography on file: {failed_no_geo_msg!r}"
+    )
+
     assert disproven_msg != never_msg, "the two causes must read differently"
+
+
+def test_a_failed_first_check_is_reported_as_never_checked_not_disproven(tmp_path):
+    """The overlap row, reached through the REAL ProxyStore rather than a stub.
+
+    A brand-new proxy whose first check fails is the most ordinary way to reach
+    `last_check_ok=False`, and it is far more common than a proxy that worked
+    and later stopped. The store is what proves the state is real: add() then
+    mark_check_failed() leaves tz='' country='' last_check_ok=False.
+
+    Both states refuse — the launch outcome is identical and fails closed
+    either way — so what this pins is the SENTENCE, which is what AC4 is about.
+    """
+    from src.services.proxy.store import ProxyStore
+
+    store = ProxyStore(str(tmp_path / "proxies.json"))
+    store.add("bad", "socks5://1.2.3.4:1080")
+    store.mark_check_failed("bad")
+    proxy = store.get("bad")
+
+    # The state is what the guard's extra conjunct is about: "failed" verdict,
+    # no geography on file.
+    assert proxy.last_check_ok is False
+    assert not proxy.timezone and not proxy.country_code
+    assert proxy_indicator_state(proxy, time.time()) == "failed", (
+        "precondition: the indicator reports 'failed' regardless of whether "
+        "any geography is on file — which is why the guard must ALSO require "
+        "geography before claiming something was disproven"
+    )
+
+    # It still refuses (fails closed, no zone ships) ...
+    with pytest.raises(GeographyUnknownError) as raised:
+        launch_policy._proxy_timezone(proxy)
+
+    # ... but it is NOT the disproven error, and does not claim a record exists.
+    assert not isinstance(raised.value, GeographyDisprovenError), (
+        "nothing was disproven: this proxy never had geography for a failed "
+        "check to contradict"
+    )
+    assert "never successfully checked" in str(raised.value).lower(), (
+        f"expected PS-31's true wording: {str(raised.value)!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
