@@ -121,7 +121,9 @@ def test_firefox_refuses_to_launch_when_geography_is_unknown(monkeypatch, tmp_pa
     """Firefox path (_spawn_invisible). The spawn spy must record NOTHING."""
     spawned = []
     monkeypatch.setattr(il, "is_invisible_installed", lambda: True)
-    monkeypatch.setattr(il, "spawn", lambda cfg: spawned.append(cfg) or _Spawned())
+    monkeypatch.setattr(
+        il, "spawn", lambda cfg, **kw: spawned.append(cfg) or _Spawned()
+    )
     monkeypatch.setattr(process, "ProxyStore", _StoreWithGeolessProxy)
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
     _host_zone_is_distinctive(monkeypatch)
@@ -183,7 +185,9 @@ def test_neither_engine_ever_emits_the_host_zone_for_a_geoless_proxy(
     monkeypatch.setattr(process._platform, "IS_LINUX", False)
     monkeypatch.setattr(process.subprocess, "Popen", _FakePopen)
     monkeypatch.setattr(il, "is_invisible_installed", lambda: True)
-    monkeypatch.setattr(il, "spawn", lambda cfg: emitted.append(cfg) or _Spawned())
+    monkeypatch.setattr(
+        il, "spawn", lambda cfg, **kw: emitted.append(cfg) or _Spawned()
+    )
     _host_zone_is_distinctive(monkeypatch)
 
     with pytest.raises(GeographyUnknownError):
@@ -276,7 +280,9 @@ def test_firefox_also_launches_once_geography_is_known(monkeypatch, tmp_path):
     """The escape hatch holds on the Firefox path too."""
     captured = []
     monkeypatch.setattr(il, "is_invisible_installed", lambda: True)
-    monkeypatch.setattr(il, "spawn", lambda cfg: captured.append(cfg) or _Spawned())
+    monkeypatch.setattr(
+        il, "spawn", lambda cfg, **kw: captured.append(cfg) or _Spawned()
+    )
     monkeypatch.setattr(process, "ProxyStore", _StoreWithCheckedProxy)
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
     _host_zone_is_distinctive(monkeypatch)

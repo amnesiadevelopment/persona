@@ -202,6 +202,68 @@ def test_two_identically_failed_readings_do_not_count_as_agreement():
     assert "FAIL" in result.report()
 
 
+def test_an_unread_probe_is_never_announced_as_drift():
+    """DRIFT is the alarm signal, so it must rest on an observation.
+
+    ``diff_snapshots`` reports a both-sides-failed probe as an INCONCLUSIVE
+    entry (deliberately — dropping it silently would be worse). Counting that
+    entry as drift would headline "N probe(s) differ" about a probe nobody
+    read: a confident claim derived from a non-reading, which is the drift-axis
+    twin of the false green ``ok`` exists to refuse.
+    """
+    err = {"error": "TypeError: WebGL is not available"}
+    result = baseline.compare(
+        _snap(worker={"webgl.unmasked": dict(err)}),
+        _snap(worker={"webgl.unmasked": dict(err)}),
+    )
+    report = result.report()
+
+    assert not result.drifted
+    assert "DRIFT:" not in report
+    # It is still a failure, and the probe is still NAMED — not quietly dropped.
+    assert not result.ok
+    assert "webgl.unmasked" in report
+    assert "FAIL" in report
+
+
+def test_an_all_inconclusive_comparison_never_claims_the_readings_match():
+    """The pass-side half of the same honesty.
+
+    Nothing moved, but nothing was read either. Reporting "every reading
+    matches the baseline" would reassure an operator about probes that were
+    never obtained.
+    """
+    err = {"error": "TypeError: WebGL is not available"}
+    result = baseline.compare(
+        _snap(worker={"webgl.unmasked": dict(err)}),
+        _snap(worker={"webgl.unmasked": dict(err)}),
+    )
+    report = result.report()
+
+    assert "every reading matches" not in report
+    assert "INCONCLUSIVE" in report
+
+
+def test_the_drift_count_excludes_probes_that_were_never_read():
+    """A real difference alongside an unread probe must report ONE drift, not
+    two: the headline number is what a human acts on, so padding it with a
+    non-reading overstates the finding."""
+    err = {"error": "TypeError: WebGL is not available"}
+    result = baseline.compare(
+        _snap(worker={"moved": {"value": 1}, "unread": dict(err)}),
+        _snap(worker={"moved": {"value": 2}, "unread": dict(err)}),
+    )
+    report = result.report()
+
+    assert result.drifted
+    assert len(result.entries) == 2
+    assert result.inconclusive == 1
+    assert "DRIFT: 1 probe(s) differ" in report
+    # Both are still listed; only the COUNT discriminates.
+    assert "worker/moved" in report
+    assert "worker/unread" in report
+
+
 def test_an_error_on_only_the_observed_side_is_inconclusive():
     before = _snap(worker={"p": {"value": 1}})
     after = _snap(worker={"p": {"error": "TypeError: nope"}})

@@ -72,7 +72,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from ...models.profile import Profile
-from .diff import diff_snapshots, format_diff
+from .diff import diff_snapshots, format_diff, inconclusive_count
 from .probes import WINDOW, WORKER
 from .runner import run_probes
 from .snapshot import build_snapshot, load
@@ -390,9 +390,31 @@ class BaselineResult:
     observed_build: str = "unknown"
 
     @property
+    def inconclusive(self) -> int:
+        """How many reported entries rest on readings nobody obtained.
+
+        Delegated to ``diff.inconclusive_count`` rather than recomputed, so this
+        verdict and the ``diff`` CLI's cannot drift apart about what counts as
+        "no evidence".
+        """
+        return inconclusive_count(self.entries)
+
+    @property
     def drifted(self) -> bool:
-        """A probe moved, appeared or vanished."""
-        return bool(self.entries)
+        """A probe genuinely moved, appeared or vanished.
+
+        NOT simply ``bool(self.entries)``. ``diff_snapshots`` reports an entry
+        for a probe that FAILED on both sides too — deliberately, since a
+        silently dropped one would be worse — but it labels it INCONCLUSIVE
+        because neither side carries a reading. Counting those as drift would
+        make the headline announce "N probe(s) differ" about probes that were
+        never read, which is a confident claim derived from a non-reading: the
+        same defect on the drift axis that ``ok`` closes on the pass axis.
+
+        Those entries are still REPORTED, and they still deny the pass through
+        ``ok`` — they are just not called drift.
+        """
+        return self.inconclusive < len(self.entries)
 
     @property
     def ok(self) -> bool:
@@ -400,9 +422,11 @@ class BaselineResult:
 
         Deliberately NOT just ``not self.drifted``. Two identically-failed
         readings compare equal, so an error on either side means the comparison
-        had nothing to say — that is not a pass.
+        had nothing to say — that is not a pass. Since ``drifted`` now excludes
+        inconclusive entries, the error terms are what keeps an all-inconclusive
+        comparison from passing, and they are load-bearing for exactly that.
         """
-        return not self.drifted and self.baseline_errors == 0 and self.observed_errors == 0
+        return not self.entries and self.baseline_errors == 0 and self.observed_errors == 0
 
     def report(self) -> str:
         """The verdict as an operator reads it: which probe, which realm, both
@@ -413,8 +437,27 @@ class BaselineResult:
             "",
         ]
         if self.drifted:
+            # Counts the probes that ACTUALLY moved, not every reported entry:
+            # an inconclusive one is listed below but is not a difference, and
+            # folding it into this number would overstate the finding.
             lines.append(
-                f"DRIFT: {len(self.entries)} probe(s) differ from the baseline."
+                f"DRIFT: {len(self.entries) - self.inconclusive} probe(s) "
+                "differ from the baseline."
+            )
+            lines.append("")
+            lines.append(format_diff(self.entries))
+        elif self.entries:
+            # Nothing moved, but the comparison was not clean either: every
+            # entry here rests on a reading nobody obtained. Saying "every
+            # reading matches" would be a false reassurance about probes that
+            # were never read — the pass-side twin of announcing DRIFT over a
+            # non-reading. They are LISTED, because a probe that quietly
+            # disappears from the report is exactly what this tool exists to
+            # prevent.
+            lines.append(
+                f"NOT DRIFT, but INCONCLUSIVE: {len(self.entries)} probe(s) "
+                "could not be read on either side, so nothing was established "
+                "about them. This is not agreement."
             )
             lines.append("")
             lines.append(format_diff(self.entries))
