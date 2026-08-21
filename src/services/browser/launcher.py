@@ -189,7 +189,29 @@ class BrowserLauncher:
         # returns: if set, it terminates the just-spawned process and never
         # registers a session, so the caller can safely remove the data dir.
         self._aborting: set[str] = set()
+        # Called with the Profile right after a launch has really proceeded, to
+        # record which engine build it ran under. Set by the composition root
+        # (core/container.py) rather than passed per-call: there are three
+        # launch lanes (UI, REST, MCP) and they all resolve THIS object from the
+        # container, so wiring it here covers all three. A per-call callback —
+        # the shape on_cert_trust uses — would have covered only the UI lane and
+        # left an API/MCP launch silently unrecorded, which is the failure mode
+        # that makes an absent stamp ambiguous: "never launched" and "launched
+        # through a lane that forgot to record" would be indistinguishable.
+        # No-op by default (headless/tests).
+        self._launch_record_hook: "Callable[[Profile], None] | None" = None
         atexit.register(self.shutdown_all)
+
+    def set_launch_record_hook(
+        self, hook: "Callable[[Profile], None] | None"
+    ) -> None:
+        """Install the hook that records a launch's engine build.
+
+        Optional by construction: a launcher with no hook launches exactly as
+        it always did. The hook's own failures are swallowed at the call site —
+        a profile that cannot record its build must still open.
+        """
+        self._launch_record_hook = hook
 
     def shutdown_all(self) -> None:
         with self._lock:
@@ -312,6 +334,32 @@ class BrowserLauncher:
                 if on_stop:
                     on_stop()
                 return
+
+            # Record WHICH ENGINE BUILD this profile just launched under.
+            #
+            # Placed here, after the abort check, so only a launch that really
+            # proceeded is stamped — an aborted spawn returns above and leaves
+            # the previous stamp alone rather than claiming a session that was
+            # torn down.
+            #
+            # ITS OWN try/except, and that is the whole point of this block
+            # rather than an incidental precaution. Everything here runs inside
+            # the outer `except Exception` that logs "Error starting process"
+            # and calls on_stop — so an unguarded raise from the hook would be
+            # reported to the operator as a FAILED launch and clear the card's
+            # loading state, while the browser it just spawned is registered
+            # and running. A profile that cannot record its build must still
+            # open; provenance is strictly a by-product of launching, never a
+            # precondition for it.
+            if self._launch_record_hook is not None:
+                try:
+                    self._launch_record_hook(profile)
+                except Exception:
+                    logger.exception(
+                        "Failed to record the engine build for profile %s; the "
+                        "launch proceeds and the profile keeps its previous "
+                        "stamp", profile.name,
+                    )
 
             try:
                 threading.Thread(
