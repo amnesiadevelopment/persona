@@ -308,7 +308,12 @@ def test_carries_gpu_spoof_into_iframes(tmp_path):
     # spoof must be carried into same-realm child frames.
     js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g")), "gpu.js")
     assert "contentWindow" in js and "HTMLIFrameElement" in js
-    assert "__pnaBoot(w)" in js
+    # the leaf is routed through the shared realm bootstrap, which chains the
+    # iframe accessors and re-runs the installer in the child (recursively).
+    # That the leaf REALLY reaches a child frame — and a depth-3 worker — is
+    # proven by execution in tests/test_worker_wrap.py; this pins the wiring.
+    assert "__pnaInstall(SELF, applyGpuPatch)" in js
+    assert "__pnaInstall(w, LEAF)" in js
 
 
 def test_shader_precision_and_extensions_spoofed(tmp_path):

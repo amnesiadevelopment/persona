@@ -530,15 +530,55 @@ PROBES: tuple[Probe, ...] = (
     Probe(
         "realm.bootMarkers",
         BOTH,
-        # Whether persona's shared realm registry reached this realm at all. A
-        # window that carries leaves and a worker that carries none is exactly
-        # the defect class worker_wrap.py exists to prevent.
+        # What a DETECTOR can find of persona's realm machinery — which must be
+        # nothing. This probe used to read the registry by name
+        # (__pnaBoots/__pnaBootSrc/__pnaBooted/__pnaBootInstalled) and report
+        # its size, which made it a presence check on globals that PS-48
+        # deleted: the leaf source text stored in __pnaBootSrc carried the
+        # profile seed compiled inside each leaf, so one property read gave a
+        # page both positive tool identification and the identity itself.
+        #
+        # So it now asserts ABSENCE instead, and reports the LEAKED NAMES rather
+        # than a count — a non-empty `markers` here is the regression. The
+        # standard is the in-tree one: tests/test_ff_language_override.py pins
+        # `"__pnaName" not in cloak`, and tests/native_mask_probe.py checks the
+        # observable property rather than the presence of a marker.
         "(function(){"
-        "var g=self;"
-        "return {hasBoots:Array.isArray(g.__pnaBoots),"
-        "bootCount:(Array.isArray(g.__pnaBoots)?g.__pnaBoots.length:null),"
-        "srcCount:(Array.isArray(g.__pnaBootSrc)?g.__pnaBootSrc.length:null),"
-        "booted:!!g.__pnaBooted,installed:!!g.__pnaBootInstalled};})()",
+        "var g=self,markers=[];"
+        "try{Object.getOwnPropertyNames(g).forEach(function(k){"
+        "  if(/^__pna|^__persona/.test(k))markers.push(k);});}catch(e){}"
+        "return {markers:markers,markerCount:markers.length};})()",
+    ),
+    Probe(
+        "realm.seedRecoverable",
+        BOTH,
+        # The other half of PS-48, and the one that matters most: can a script
+        # standing in this realm recover the profile seed at all? The seed is
+        # compiled INSIDE each masking leaf on purpose (gpu_ext.py, webgl_ext.py
+        # both say so in place) so that stringifying the leaf carries it across a
+        # realm boundary — which is exactly why a readable reference to a leaf,
+        # or to its source, published the identity.
+        #
+        # Reports the NAMES of any own property of the global object that is, or
+        # transitively stringifies to, something holding a long digit run. It
+        # cannot know the profile's actual seed (this file is profile-agnostic),
+        # so it reports candidates and their shape; an empty list is the healthy
+        # reading, and any entry is worth a human look.
+        "(function(){"
+        "var g=self,hits=[];"
+        "try{Object.getOwnPropertyNames(g).forEach(function(k){"
+        "  var v;try{v=g[k];}catch(e){return;}"
+        "  try{"
+        "    if(typeof v==='function'&&/\\d{5,}/.test(Function.prototype.toString.call(v)))"
+        "      {hits.push(k);return;}"
+        "    if(Array.isArray(v)){"
+        "      for(var i=0;i<v.length&&i<64;i++){"
+        "        var e0=v[i];"
+        "        var s=(typeof e0==='function')?Function.prototype.toString.call(e0)"
+        "              :(typeof e0==='string'?e0:'');"
+        "        if(/\\d{5,}/.test(s)){hits.push(k);return;}}}"
+        "  }catch(e){}});}catch(e){}"
+        "return {candidates:hits,candidateCount:hits.length};})()",
     ),
     Probe(
         "realm.kind",

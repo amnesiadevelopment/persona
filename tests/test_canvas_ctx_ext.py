@@ -92,6 +92,34 @@ globalThis.WebGL2RenderingContext = WebGL2RenderingContext;
 globalThis.CanvasRenderingContext2D = CanvasRenderingContext2D;
 globalThis.ImageBitmapRenderingContext = ImageBitmapRenderingContext;
 globalThis.GPUCanvasContext = GPUCanvasContext;
+
+// An iframe whose contentWindow is a CHILD REALM: its own canvas constructor
+// with its own UNPATCHED getContext, exactly as a fresh about:blank frame has.
+// This is how a test reaches the child realm through the mechanism a PAGE uses
+// (touch the accessor) rather than through a handle on the global object —
+// PS-48 removed the shared registry, and a test that reaches for a global to
+// apply the leaves itself is testing the harness, not the product.
+function ChildCanvas() { this.__ctx = null; this.__kind = null; }
+ChildCanvas.prototype.getContext = function getContext(id) {
+  const K = { "webgl": WebGLRenderingContext, "webgl2": WebGL2RenderingContext };
+  const C = K[String(id)];
+  if (!C) return null;
+  if (this.__ctx) return this.__kind === C ? this.__ctx : null;
+  this.__ctx = new C(); this.__kind = C; return this.__ctx;
+};
+globalThis.ChildCanvas = ChildCanvas;
+globalThis.__childRealm = { HTMLCanvasElement: ChildCanvas };
+
+function HTMLIFrameElement() {}
+Object.defineProperty(HTMLIFrameElement.prototype, "contentWindow", {
+  configurable: true,
+  get: function () { return globalThis.__childRealm; },
+});
+Object.defineProperty(HTMLIFrameElement.prototype, "contentDocument", {
+  configurable: true,
+  get: function () { return { defaultView: globalThis.__childRealm }; },
+});
+globalThis.HTMLIFrameElement = HTMLIFrameElement;
 """
 
 _HARNESS = r"""
@@ -605,39 +633,30 @@ def test_this_binding_is_preserved(tmp_path):
 def test_alias_reaches_a_child_realm(tmp_path):
     # A detector that finds the alias in the page and not in an about:blank
     # child frame has learned MORE than if it had never been added. The shared
-    # bootstrap must carry the leaf into child realms — asserted by BUILDING a
-    # second realm with its own HTMLCanvasElement (as a fresh child frame has),
-    # running the registered leaves against it, and calling through it. Not by
-    # grepping for the bootstrap's name.
+    # bootstrap must carry the leaf into child realms — asserted by reaching the
+    # child realm the way a PAGE does (touch the iframe accessor) and calling
+    # through it. Not by grepping for the bootstrap's name.
+    #
+    # PS-48: this used to apply the leaves itself via `self.__pnaBoots[i](child)`.
+    # That global is gone (it published every leaf's source, and with it the
+    # profile seed), and reaching for a handle on the global object tested the
+    # harness rather than the product anyway. Touching the accessor exercises
+    # the real carry path — the same one a child frame gets in a browser.
     got = _run(
         tmp_path, "ios",
         "(function(){"
-        # A child realm: its own canvas constructor and its own UNPATCHED
-        # getContext, which (like Chromium) does not know webkit-3d.
-        "function ChildCanvas(){this.__ctx=null;this.__kind=null;}"
-        "ChildCanvas.prototype.getContext=function getContext(id){"
-        " var K={'webgl':WebGLRenderingContext,'webgl2':WebGL2RenderingContext};"
-        " var C=K[String(id)]; if(!C) return null;"
-        " if(this.__ctx) return this.__kind===C?this.__ctx:null;"
-        " this.__ctx=new C(); this.__kind=C; return this.__ctx;};"
-        "var child={HTMLCanvasElement:ChildCanvas};"
-        # Before the bootstrap runs, the child must NOT know the alias — this is
-        # what makes the post-bootstrap result meaningful rather than a stub
-        # that answered all along.
+        # Before the accessor is touched, the child must NOT know the alias —
+        # this is what makes the post-bootstrap result meaningful rather than a
+        # stub that answered all along.
         "var before=new ChildCanvas().getContext('webkit-3d')===null;"
-        "for (var i=0;i<self.__pnaBoots.length;i++){try{self.__pnaBoots[i](child);}catch(e){}}"
+        # Touch the accessor exactly as a page does; the chained getter installs
+        # every registered leaf into that child realm.
+        "var w=new HTMLIFrameElement().contentWindow;"
         "var after=new ChildCanvas().getContext('webkit-3d') instanceof WebGLRenderingContext;"
         "return (before?'1':'0')+(after?'1':'0');})()",
     )
     # '1' = the child realm genuinely lacked the alias, '1' = the bootstrap gave it one
     assert got == "11"
-
-
-def test_registered_into_the_shared_realm_registry(tmp_path):
-    # The leaf must be in the shared per-realm registry (that is the mechanism
-    # by which every realm the rest of the masking reaches also gets the alias).
-    got = _run(tmp_path, "ios", "typeof self.__pnaBoots !== 'undefined' && self.__pnaBoots.length > 0")
-    assert got is True
 
 
 def test_offscreen_canvas_is_deliberately_left_alone(tmp_path):
@@ -670,19 +689,35 @@ def test_offscreen_canvas_is_deliberately_left_alone(tmp_path):
     assert ok is True
 
 
-def test_worker_realm_without_a_canvas_is_a_safe_noop(tmp_path):
+def test_canvasless_realm_is_a_safe_noop_and_does_not_break_other_modules(tmp_path):
     # A worker has no HTMLCanvasElement, so the leaf must bail cleanly rather
-    # than throwing — a leaf that throws in a worker realm can abort the shared
-    # bootstrap and take OTHER modules' spoofs down with it.
+    # than throwing — a leaf that throws in a realm can abort the chain and take
+    # OTHER modules' spoofs down with it.
+    #
+    # PS-48: this used to iterate `self.__pnaBoots` and count throws. That global
+    # is gone, and iterating it never proved the stated risk anyway — it called
+    # the leaves in isolation, so it could not observe one module breaking
+    # another. Load TWO modules (gpu + canvas_ctx) and drive the real carry path
+    # into a canvas-less child realm: the canvas leaf must bail, AND the gpu
+    # leaf must still arrive. That is the invariant the comment always claimed.
     got = _run(
         tmp_path, "ios",
-        "(function(){var workerRealm={};"
-        "var errs=0;"
-        "for (var i=0;i<self.__pnaBoots.length;i++){"
-        " try{self.__pnaBoots[i](workerRealm);}catch(e){errs++;}}"
-        "return errs===0 && workerRealm.HTMLCanvasElement===undefined;})()",
+        "(function(){"
+        # a child realm shaped like a worker: no HTMLCanvasElement at all
+        "globalThis.__childRealm={};"
+        "var threw=false;"
+        "try{var w=new HTMLIFrameElement().contentWindow;}catch(e){threw=true;}"
+        "return {threw:threw,"
+        " canvas:globalThis.__childRealm.HTMLCanvasElement===undefined,"
+        " otherModuleArrived:globalThis.__childRealm.__personaGpu===true};})()",
+        with_gpu=True,
     )
-    assert got is True
+    assert got["threw"] is False, "the carry path threw in a canvas-less realm"
+    assert got["canvas"] is True, "the canvas leaf installed itself where it should have bailed"
+    assert got["otherModuleArrived"] is True, (
+        "the canvas leaf's bail aborted the chain: gpu's spoof never reached the "
+        "realm, which is the failure this test exists to catch"
+    )
 
 
 # ---------------------------------------------------------------------------
