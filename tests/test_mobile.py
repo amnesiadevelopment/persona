@@ -7,6 +7,7 @@ from src.services.browser.device_presets import (
     presets_for,
     get_preset,
 )
+from src.services.browser.engine_version import parse as V
 from src.services.browser.mobile_ext import build_mobile_extension
 
 
@@ -28,7 +29,10 @@ def test_pick_preset_deterministic_and_in_family():
 
 def test_presets_have_required_fields():
     for p in presets_for("android") + presets_for("ios"):
-        assert "Mobile" in p.user_agent or "iPhone" in p.user_agent
+        ua = p.user_agent_for(V("149.0.8000.10"))
+        assert "Mobile" in ua or "iPhone" in ua
+        # no template slot survives into a launched UA
+        assert "{chrome}" not in ua
         assert p.width > 0 and p.height > 0 and p.dpr >= 1
         assert p.device_memory > 0 and p.hardware_concurrency > 0
 
@@ -41,7 +45,7 @@ def test_get_preset_by_key():
 def test_mobile_ext_builds_with_touch_and_screen(tmp_path):
     d = build_mobile_extension(
         str(tmp_path / "m"), is_ios=False, platform="Android",
-        model="Pixel 7", ua_full_version="148.0.0.0",
+        model="Pixel 7", chromium_version=V("149.0.8000.10"),
         css_width=412, css_height=915, dpr=2.625,
         device_memory=8, hardware_concurrency=8, touch_points=5,
     )
@@ -59,7 +63,7 @@ def test_mobile_ext_builds_with_touch_and_screen(tmp_path):
 def test_mobile_ext_ios_drops_uadata(tmp_path):
     d = build_mobile_extension(
         str(tmp_path / "i"), is_ios=True, platform="iPhone",
-        model="iPhone", ua_full_version="",
+        model="iPhone", chromium_version=None,
         css_width=393, css_height=852, dpr=3.0,
         device_memory=4, hardware_concurrency=6, touch_points=5,
     )
@@ -75,12 +79,12 @@ def test_ios_color_depth_is_32_android_is_24(tmp_path):
     # use to flag the profile as fake and cluster all persona iOS profiles.
     ios = pathlib.Path(build_mobile_extension(
         str(tmp_path / "ios"), is_ios=True, platform="iPhone", model="iPhone",
-        ua_full_version="", css_width=393, css_height=852, dpr=3.0,
+        chromium_version=None, css_width=393, css_height=852, dpr=3.0,
         device_memory=4, hardware_concurrency=6, touch_points=5,
     ) + "/mobile.js").read_text()
     android = pathlib.Path(build_mobile_extension(
         str(tmp_path / "and"), is_ios=False, platform="Android", model="Pixel 7",
-        ua_full_version="148.0.0.0", css_width=412, css_height=915, dpr=2.625,
+        chromium_version=V("149.0.8000.10"), css_width=412, css_height=915, dpr=2.625,
         device_memory=8, hardware_concurrency=8, touch_points=5,
     ) + "/mobile.js").read_text()
     # the depth is chosen from IS_IOS at runtime, so both 32 and 24 appear in the
@@ -99,7 +103,7 @@ def test_mobile_on_shared_recursive_registry(tmp_path):
 
     d = build_mobile_extension(
         str(tmp_path / "m"), is_ios=False, platform="Android",
-        model="Pixel 8", ua_full_version="148.0.0.0",
+        model="Pixel 8", chromium_version=V("149.0.8000.10"),
         css_width=412, css_height=915, dpr=2.625,
         device_memory=8, hardware_concurrency=8, touch_points=5,
     )
@@ -123,7 +127,7 @@ def test_touch_constructors_gated_behind_window(tmp_path):
     # TouchEvent/Touch assignments must sit inside an `if (G.Window)` gate.
     d = build_mobile_extension(
         str(tmp_path / "m"), is_ios=False, platform="Android",
-        model="Pixel 8", ua_full_version="148.0.0.0",
+        model="Pixel 8", chromium_version=V("149.0.8000.10"),
         css_width=412, css_height=915, dpr=2.625,
         device_memory=8, hardware_concurrency=8, touch_points=5,
     )

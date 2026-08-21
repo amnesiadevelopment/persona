@@ -12,6 +12,7 @@ for mobile are handled by the device extension and engine respectively.
 import json
 import pathlib
 
+from .engine_version import ChromiumVersion
 from .worker_wrap import realm_bootstrap_js
 
 _CONTENT_SCRIPT = r"""
@@ -65,9 +66,14 @@ _CONTENT_SCRIPT = r"""
       if (IS_IOS) {
         if ('userAgentData' in nav) def(nav, 'userAgentData', undefined);
       } else {
+        // MAJOR and FULLVER both come from the engine that is actually
+        // installed (engine_version.py) — never a constant. The two shapes
+        // differ on purpose: brands carries a BARE MAJOR, while uaFullVersion
+        // and fullVersionList carry the TRUE full version. 'Not.A/Brand' is a
+        // real GREASE entry and is version-independent, so it stays literal.
         var brands = [
-          { brand: 'Chromium', version: '148' },
-          { brand: 'Google Chrome', version: '148' },
+          { brand: 'Chromium', version: '__MAJOR__' },
+          { brand: 'Google Chrome', version: '__MAJOR__' },
           { brand: 'Not.A/Brand', version: '24' },
         ];
         var high = {
@@ -220,7 +226,7 @@ def build_mobile_extension(
     is_ios: bool,
     platform: str,
     model: str,
-    ua_full_version: str,
+    chromium_version: ChromiumVersion | None,
     css_width: int,
     css_height: int,
     dpr: float,
@@ -231,14 +237,37 @@ def build_mobile_extension(
     """Generate an unpacked extension that adds the JS-visible mobile signals
     (screen, touch, platform, Client Hints) for a mobile profile. Returns its
     directory.
+
+    ``chromium_version`` is the version of the ENGINE THAT IS INSTALLED, read
+    by ``engine_version.installed_chromium_version()``. It fills the Client
+    Hints brand major, the ``uaFullVersion`` and the ``fullVersionList`` —
+    there is deliberately no default here, because a default is what let the
+    advertised version drift from the engine's real one in the first place.
+
+    It may be ``None`` ONLY for iOS, where nothing consumes it: real iOS Safari
+    ships no UA-CH, so an iOS profile advertises no Chromium version at all and
+    the whole userAgentData object is removed rather than populated. An Android
+    build with ``None`` is a programming error and raises, rather than quietly
+    emitting a placeholder version into a live profile.
     """
+    if not is_ios and chromium_version is None:
+        raise ValueError(
+            "an Android mobile extension needs the installed engine's Chromium "
+            "version; refusing to build one that advertises a placeholder"
+        )
     ext_dir = pathlib.Path(base_dir)
     ext_dir.mkdir(parents=True, exist_ok=True)
+    # On iOS these two never reach a page (the userAgentData branch is dropped
+    # entirely), so the placeholders are substituted with empty strings purely
+    # to leave no unreplaced __TOKEN__ in the emitted script.
+    major = chromium_version.major if chromium_version else ""
+    full = chromium_version.full if chromium_version else ""
     script = (
         _CONTENT_SCRIPT
         .replace("__IS_IOS__", "true" if is_ios else "false")
         .replace("__MODEL__", model)
-        .replace("__FULLVER__", ua_full_version or "148.0.0.0")
+        .replace("__MAJOR__", major)
+        .replace("__FULLVER__", full)
         .replace("__TOUCH__", str(int(touch_points)))
         .replace("__CSS_W__", str(int(css_width)))
         .replace("__CSS_H__", str(int(css_height)))

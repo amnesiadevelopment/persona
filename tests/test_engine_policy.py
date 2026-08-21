@@ -209,62 +209,75 @@ def test_a_corrupt_policy_file_falls_back_to_the_shipped_defaults(tmp_path, monk
     pf.write_text("{not json at all")
     monkeypatch.setattr(policy, "POLICY_FILE", str(pf))
     monkeypatch.setattr(policy, "KNOWN_BAD_VERSIONS", frozenset({"148.0.7778.215"}))
-    monkeypatch.setattr(policy, "MAX_TESTED_MAJOR", 148)
 
-    assert policy.max_tested_major() == 148
+    # A mangled file is not an override, so no ceiling is in force — which is
+    # also the shipped default now that the version is derived, not constant.
+    assert policy.max_tested_major() == policy.NO_CEILING
     assert policy.is_installable("148.0.7778.215") is False   # shipped list survives
     assert policy.is_installable("148.0.7778.216") is True
+    assert policy.is_installable("999.0.1.1") is True         # nothing bricked
 
 
 # ---------------------------------------------------------------------------
-# 2b. policy: the compatibility ceiling
+# 2b. policy: there is no SHIPPED ceiling — only an operator-set one
 # ---------------------------------------------------------------------------
 
 
-def test_a_build_above_the_tested_major_is_not_installable(monkeypatch):
-    monkeypatch.setattr(policy, "MAX_TESTED_MAJOR", 148)
+def test_persona_ships_with_no_ceiling_so_a_new_major_updates_by_itself(monkeypatch):
+    """THE POINT OF PS-42. The advertised Chromium version is derived from the
+    installed engine, so no constant can be left behind by an engine bump and
+    there is nothing for a shipped ceiling to protect. A brand-new major must
+    install with no human in the loop and no source edit."""
     monkeypatch.setattr(policy, "POLICY_FILE", "/nonexistent/engine-policy.json")
 
-    kind, message = policy.check("149.0.8000.10")
-    assert kind == policy.ABOVE_CEILING
-    # the message must say what to DO, and must not read as a download failure
-    assert "update persona" in message.lower()
-    assert "149.0.8000.10" in message and "148" in message
-
-
-def test_the_ceiling_never_blocks_at_or_below_the_tested_major(monkeypatch):
-    """It is a CEILING, not a floor. Routine updating inside a known-good major
-    must be completely untouched — this is the "guards get routed around" clause
-    of the ticket, stated as an assertion."""
-    monkeypatch.setattr(policy, "MAX_TESTED_MAJOR", 148)
-    monkeypatch.setattr(policy, "POLICY_FILE", "/nonexistent/engine-policy.json")
-
-    for tag in ("148.0.7778.215", "148.0.9999.1", "147.0.1.1", "100.0.0.0"):
+    assert policy.max_tested_major() == policy.NO_CEILING
+    # majors far beyond anything this build ever hardcoded
+    for tag in ("149.0.8000.10", "151.0.1.1", "200.0.0.0", "999.0.1.2"):
         assert policy.is_installable(tag) is True, tag
+        assert policy.check(tag) == (policy.OK, "")
 
 
-def test_an_operator_may_raise_the_ceiling_deliberately(tmp_path, monkeypatch):
-    """The aim is that taking an untested engine is a DECISION with a visible
-    consequence, not that it is impossible."""
+def test_an_operator_may_still_impose_a_ceiling_deliberately(tmp_path, monkeypatch):
+    """Removing the SHIPPED ceiling does not remove the operator's ability to
+    pin their engine — e.g. while waiting out a checker regression."""
     pf = tmp_path / "engine-policy.json"
     pf.write_text(json.dumps({"max_tested_major": 149}))
     monkeypatch.setattr(policy, "POLICY_FILE", str(pf))
-    monkeypatch.setattr(policy, "MAX_TESTED_MAJOR", 148)
 
     assert policy.max_tested_major() == 149
     assert policy.is_installable("149.0.8000.10") is True
-    assert policy.is_installable("150.0.1.1") is False   # still bounded
+    assert policy.is_installable("150.0.1.1") is False   # bounded by THEIR choice
+
+
+def test_an_operator_ceiling_refusal_names_their_own_setting(tmp_path, monkeypatch):
+    """The old message said "update persona to get it" — correct when persona
+    shipped the ceiling, but actively misleading now that the only ceiling is
+    one the operator set. It must point at the knob they actually control, and
+    must still not read as a download failure."""
+    pf = tmp_path / "engine-policy.json"
+    pf.write_text(json.dumps({"max_tested_major": 148}))
+    monkeypatch.setattr(policy, "POLICY_FILE", str(pf))
+
+    kind, message = policy.check("149.0.8000.10")
+    assert kind == policy.ABOVE_CEILING
+    assert "149.0.8000.10" in message and "148" in message
+    assert "max_tested_major" in message
+    assert "update persona" not in message.lower()
+    assert "failed" not in message.lower()
+    # and the ceiling reads as a plain integer, not 148.0 or inf
+    assert "148.0" not in message
 
 
 def test_a_typo_in_the_ceiling_is_ignored_rather_than_obeyed(tmp_path, monkeypatch):
     """A bad override must not accidentally block every update (or every
-    update be blocked by someone fat-fingering a value)."""
-    monkeypatch.setattr(policy, "MAX_TESTED_MAJOR", 148)
+    update be blocked by someone fat-fingering a value). It falls back to no
+    ceiling — the shipped default."""
     pf = tmp_path / "engine-policy.json"
     for bad in ("abc", None, True, -5, [1]):
         pf.write_text(json.dumps({"max_tested_major": bad}))
         monkeypatch.setattr(policy, "POLICY_FILE", str(pf))
-        assert policy.max_tested_major() == 148, bad
+        assert policy.max_tested_major() == policy.NO_CEILING, bad
+        assert policy.is_installable("999.0.1.1") is True, bad
 
 
 def test_major_reads_the_leading_number_and_reports_minus_one_for_junk():
@@ -289,9 +302,19 @@ def test_an_unparseable_tag_is_installable_and_that_is_deliberate():
     -1 does not refuse, and must not silently start to: an unparseable tag can
     never be OFFERED as an update anyway (is_newer parses it to () which
     compares below every installed version), so the only path it reaches is a
-    FIRST install — where persona deliberately takes an untested build rather
-    than leave the app with no browser at all. Refusing here would contradict
-    the ABOVE_CEILING asymmetry rather than reinforce it.
+    FIRST install. Refusing it HERE would mislabel a malformed upstream release
+    tag as a governance decision — persona has no opinion about a build it
+    cannot even name.
+
+    This is NOT the old ABOVE_CEILING asymmetry, which PS-42 removed: a first
+    install now refuses an operator-pinned build exactly as an update does (see
+    test_first_install_refuses_a_build_the_operator_pinned_below). The two cases
+    differ in kind — an operator ceiling is an instruction persona must obey, an
+    unreadable tag is an upstream oddity persona has no basis to refuse.
+
+    What stops such a build being ADVERTISED wrongly lives downstream, in
+    browser/engine_version.parse(), which refuses any tag it cannot read a full
+    version from. The guard sits where the version is claimed, not here.
     """
     assert policy.check("nightly") == (policy.OK, "")
     assert policy.is_installable("nightly") is True
@@ -358,8 +381,10 @@ def test_a_refused_build_is_not_downloaded_and_says_why(monkeypatch):
         "fetch_latest_checked",
         lambda timeout=20: (
             "149.0.8000.10", "", "", policy.ABOVE_CEILING,
-            "Chromium engine 149.0.8000.10 is newer than persona has been "
-            "tested against (Chromium 148) — update persona to get it.",
+            "Chromium engine 149.0.8000.10 is above the maximum Chromium major "
+            "set in your engine policy file (Chromium 148) — raise or remove "
+            "max_tested_major in /home/op/.persona/engine-policy.json to "
+            "install it.",
         ),
     )
     downloads = []
@@ -378,13 +403,13 @@ def test_a_refused_build_is_not_downloaded_and_says_why(monkeypatch):
     assert downloads == [], "a refused build must not be downloaded"
     assert written == [], "and must not be recorded as installed"
     joined = " ".join(logs).lower()
-    assert "update persona" in joined
+    assert "max_tested_major" in joined
     assert "update failed" not in joined, (
         "a refusal must not be reported as a failed download — that blames the "
         "network for a decision persona made, and the operator retries forever"
     )
-    # the row shows the same distinction the Firefox row shows
-    assert stub._engine_status == "update persona for the newest engine"
+    # the row names the operator's own pin, not a persona update
+    assert stub._engine_status == "engine pinned by your policy file"
     # ...and it is RENDERED, not merely assigned. Asserting the attribute alone
     # is what let the refusal path ship while leaving the row wedged on
     # "downloading..." — the string was computed and never painted.
@@ -417,8 +442,10 @@ def test_a_refusal_actually_paints_the_row_instead_of_wedging_on_downloading(
         "fetch_latest_checked",
         lambda timeout=20: (
             "149.0.8000.10", "", "", policy.ABOVE_CEILING,
-            "Chromium engine 149.0.8000.10 is newer than persona has been "
-            "tested against (Chromium 148) — update persona to get it.",
+            "Chromium engine 149.0.8000.10 is above the maximum Chromium major "
+            "set in your engine policy file (Chromium 148) — raise or remove "
+            "max_tested_major in /home/op/.persona/engine-policy.json to "
+            "install it.",
         ),
     )
     monkeypatch.setattr(app_mod.engine, "download_engine", lambda *a, **k: True)
@@ -430,7 +457,7 @@ def test_a_refusal_actually_paints_the_row_instead_of_wedging_on_downloading(
     stub._engine_detail.value = "189 MB of 189 MB"
     app_mod.App._update_engine_async(stub)
 
-    assert stub.engine_text.value == "update persona for the newest engine", (
+    assert stub.engine_text.value == "engine pinned by your policy file", (
         f"the row must show the refusal; it read {stub.engine_text.value!r}"
     )
     assert stub.engine_text.value != "downloading...", "the row wedged on the spinner"
@@ -498,7 +525,7 @@ def test_a_known_bad_refusal_reads_differently_from_a_ceiling_refusal(monkeypatc
     app_mod.App._update_engine_async(stub)
 
     assert stub._engine_status == "engine update blocked"
-    assert stub._engine_status != "update persona for the newest engine"
+    assert stub._engine_status != "engine pinned by your policy file"
     assert "known-bad" in " ".join(logs)
 
 
@@ -539,14 +566,14 @@ def test_a_normal_newer_build_still_installs_exactly_as_before(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_a_refused_build_is_not_offered_as_an_available_update(monkeypatch):
+def test_a_refused_build_is_not_offered_as_an_available_update(tmp_path, monkeypatch):
     """If the row kept offering it, the operator would click, be refused, and
     the row would offer it again — forever."""
     monkeypatch.setattr(app_mod.engine, "current_version", lambda: "148.0.7778.215")
-    monkeypatch.setattr(app_mod.engine_policy, "MAX_TESTED_MAJOR", 148)
-    monkeypatch.setattr(
-        app_mod.engine_policy, "POLICY_FILE", "/nonexistent/engine-policy.json"
-    )
+    # the only ceiling that exists is one the operator set
+    pf = tmp_path / "engine-policy.json"
+    pf.write_text(json.dumps({"max_tested_major": 148}))
+    monkeypatch.setattr(app_mod.engine_policy, "POLICY_FILE", str(pf))
 
     stub = SimpleNamespace(_engine_latest="149.0.8000.10")
     assert app_mod.App._engine_update_available(stub) is False
@@ -556,15 +583,14 @@ def test_a_refused_build_is_not_offered_as_an_available_update(monkeypatch):
     assert app_mod.App._engine_update_available(stub2) is True
 
 
-def test_a_declined_build_does_not_read_as_up_to_date(monkeypatch):
+def test_a_declined_build_does_not_read_as_up_to_date(tmp_path, monkeypatch):
     """A refusal must be visible in the row. Falling through to the installed
     version would make a declined upstream build indistinguishable from being
-    current — the operator would never learn a persona update is needed."""
+    current — the operator would never learn their own pin is holding it back."""
     monkeypatch.setattr(app_mod.engine, "current_version", lambda: "148.0.7778.215")
-    monkeypatch.setattr(app_mod.engine_policy, "MAX_TESTED_MAJOR", 148)
-    monkeypatch.setattr(
-        app_mod.engine_policy, "POLICY_FILE", "/nonexistent/engine-policy.json"
-    )
+    pf = tmp_path / "engine-policy.json"
+    pf.write_text(json.dumps({"max_tested_major": 148}))
+    monkeypatch.setattr(app_mod.engine_policy, "POLICY_FILE", str(pf))
 
     logs = []
     stub = SimpleNamespace(
@@ -575,13 +601,13 @@ def test_a_declined_build_does_not_read_as_up_to_date(monkeypatch):
     stub._engine_update_available = lambda: app_mod.App._engine_update_available(stub)
     line = app_mod.App._record_engine_check(stub, "149.0.8000.10")
 
-    assert stub._engine_status == "update persona for the newest engine"
-    assert "update persona" in line.lower()
+    assert stub._engine_status == "engine pinned by your policy file"
+    assert "max_tested_major" in line
 
     # and the row renders that status rather than the installed version
     ui_stub = SimpleNamespace(
         _engine_latest="149.0.8000.10",
-        _engine_status="update persona for the newest engine",
+        _engine_status="engine pinned by your policy file",
         engine_text=SimpleNamespace(value=""),
         _sidebar_host=None,
         _safe_update=lambda: None,
@@ -591,22 +617,21 @@ def test_a_declined_build_does_not_read_as_up_to_date(monkeypatch):
         lambda: app_mod.App._engine_update_available(ui_stub)
     )
     app_mod.App._refresh_engine_text(ui_stub)
-    assert ui_stub.engine_text.value == "update persona for the newest engine"
+    assert ui_stub.engine_text.value == "engine pinned by your policy file"
     assert ui_stub.engine_text.value != "148.0.7778.215"
 
 
 def test_an_ordinary_up_to_date_check_clears_a_stale_status(monkeypatch):
     """A status left over from a previous refusal must not stick around after
-    the situation resolves (e.g. persona was updated and the ceiling rose)."""
+    the situation resolves (e.g. the operator lifted their pin)."""
     monkeypatch.setattr(app_mod.engine, "current_version", lambda: "149.0.8000.10")
-    monkeypatch.setattr(app_mod.engine_policy, "MAX_TESTED_MAJOR", 149)
     monkeypatch.setattr(
         app_mod.engine_policy, "POLICY_FILE", "/nonexistent/engine-policy.json"
     )
 
     stub = SimpleNamespace(
         _engine_latest="",
-        _engine_status="update persona for the newest engine",
+        _engine_status="engine pinned by your policy file",
         _log=lambda m: None,
     )
     stub._engine_update_available = lambda: app_mod.App._engine_update_available(stub)
@@ -716,21 +741,89 @@ def test_a_transient_failure_is_still_reported_as_a_download_failure(monkeypatch
     )
 
 
-def test_first_install_takes_an_above_ceiling_build_but_says_so(monkeypatch):
-    """Deliberately NOT symmetric with the update path. On an update, declining
-    costs nothing — a working engine is already installed. On a FIRST install
-    refusing would leave the app with no browser at all over a build that is
-    merely untested, and Chromium has no drivable older build to fall back to
-    the way Firefox has its package-pinned one. So: install, loudly."""
+def test_first_install_refuses_a_build_the_operator_pinned_below(monkeypatch):
+    """PS-42 INVERTED this path, so this test asserts the opposite of what it
+    used to. It also stubs the REAL policy.check message rather than inventing
+    one: the previous version stubbed "newer than persona has been tested
+    against", wording check() no longer produces, which is precisely what let an
+    incoherent operator-facing string survive unnoticed.
+
+    Before PS-42 ABOVE_CEILING was persona's own soft "not tested against this"
+    claim, which an operator could not lift without a persona release — so a
+    first install took the build anyway rather than strand them with no browser.
+    Now the verdict is reachable ONLY because the operator pinned max_tested_major
+    in their own file. Installing anyway would override an explicit instruction,
+    and refusing is recoverable in one local edit, so this refuses exactly as
+    KNOWN_BAD does."""
     monkeypatch.setattr(updater, "is_installed", lambda: False)
     monkeypatch.setattr(
         updater, "fetch_latest_full",
         lambda *a, **k: ("149.0.8000.10", "http://x/149", "sha256:n"),
     )
+    # The operator's own ceiling, exercised through the REAL policy code.
+    monkeypatch.setattr(policy, "_local_policy", lambda: {"max_tested_major": 148})
+    downloaded = []
     monkeypatch.setattr(
-        updater.policy, "check",
-        lambda tag: (policy.ABOVE_CEILING, "newer than persona has been tested against"),
+        updater, "download_engine", lambda *a, **k: downloaded.append(a) or True
     )
+    written = []
+    monkeypatch.setattr(updater, "write_version", written.append)
+
+    logs = []
+    ok, msg = updater.ensure_engine(attempts=3, log=logs.append)
+
+    assert ok is False, "persona must not install above a ceiling the operator set"
+    assert downloaded == [], "nothing may be downloaded past an operator's pin"
+    assert written == [], "and nothing may be recorded as installed"
+
+    joined = " ".join(logs)
+    assert joined, "the operator was told nothing at all"
+    # The refusal must name the build, their setting, and their file — that is
+    # what makes it recoverable in one edit rather than a dead end.
+    assert "149.0.8000.10" in joined
+    assert "max_tested_major" in joined
+    assert policy.POLICY_FILE in joined
+    # It must NOT read as a network problem: this is a decision, not a failure.
+    assert "download failed" not in joined.lower()
+    # And it must not contradict itself. The old branch concatenated "raise or
+    # remove max_tested_major to install it" with "Installing it anyway", which
+    # told the operator both things in one breath.
+    assert "anyway" not in joined.lower(), "persona claimed to refuse and install at once"
+    assert "untested" not in joined.lower(), (
+        "the reason is the operator's pin, not persona's testing claim"
+    )
+
+
+def test_an_operator_ceiling_refusal_does_not_burn_the_retry_attempts(monkeypatch):
+    """A verdict that comes from a local file cannot change on a retry, so the
+    refusal returns immediately instead of re-fetching — the same shape the
+    KNOWN_BAD branch uses."""
+    monkeypatch.setattr(updater, "is_installed", lambda: False)
+    fetches = []
+    monkeypatch.setattr(
+        updater, "fetch_latest_full",
+        lambda *a, **k: fetches.append(1) or ("149.0.8000.10", "http://x/149", "s"),
+    )
+    monkeypatch.setattr(policy, "_local_policy", lambda: {"max_tested_major": 148})
+    monkeypatch.setattr(updater, "download_engine", lambda *a, **k: True)
+    monkeypatch.setattr(updater, "write_version", lambda t: None)
+
+    ok, _msg = updater.ensure_engine(attempts=3, log=lambda m: None)
+
+    assert ok is False
+    assert len(fetches) == 1, "a local-file verdict was re-fetched as if it could change"
+
+
+def test_first_install_is_unaffected_when_the_operator_set_no_ceiling(monkeypatch):
+    """The default install path: persona ships no ceiling, so a brand-new major
+    installs with no human in the loop. This is the case PS-42 exists to make
+    routine, and it must not be caught by the refusal above."""
+    monkeypatch.setattr(updater, "is_installed", lambda: False)
+    monkeypatch.setattr(
+        updater, "fetch_latest_full",
+        lambda *a, **k: ("203.0.1.9", "http://x/203", "sha256:n"),
+    )
+    monkeypatch.setattr(policy, "_local_policy", dict)  # no operator overrides
     monkeypatch.setattr(updater, "download_engine", lambda *a, **k: True)
     written = []
     monkeypatch.setattr(updater, "write_version", written.append)
@@ -738,11 +831,9 @@ def test_first_install_takes_an_above_ceiling_build_but_says_so(monkeypatch):
     logs = []
     ok, msg = updater.ensure_engine(attempts=1, log=logs.append)
 
-    assert ok is True
-    assert written == ["149.0.8000.10"]
-    joined = " ".join(logs).lower()
-    assert "untested" in joined, "the untested state must be LOUD, not silent"
-    assert "tested against" in joined
+    assert (ok, msg) == (True, "203.0.1.9")
+    assert written == ["203.0.1.9"]
+    assert logs == [], "an ordinary install must stay silent"
 
 
 def test_first_install_of_a_good_build_is_unchanged_and_silent(monkeypatch):
@@ -765,25 +856,64 @@ def test_first_install_of_a_good_build_is_unchanged_and_silent(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 2g. the shipped defaults are what this build claims to know
+# 2g. the masking layer carries NO hardcoded Chromium version (PS-42)
 # ---------------------------------------------------------------------------
 
 
-def test_the_shipped_ceiling_matches_the_major_the_masking_layer_is_written_against():
-    """MAX_TESTED_MAJOR is a claim about testing, and the one mechanical anchor
-    it has is the Chrome major persona's own masking layer emits. If someone
-    bumps the UA client hints without revisiting the ceiling (or vice versa),
-    the two silently disagree and the ceiling is the one that is wrong — this
-    turns that into a red test instead of a quiet mismatch.
+def test_the_masking_layer_hardcodes_no_chromium_version_anywhere():
+    """The INVERSE of the test this replaces.
+
+    Until PS-42 this file asserted that ``MAX_TESTED_MAJOR`` and the masking
+    layer's hardcoded Chrome major agreed — it policed a duplication instead of
+    removing it, and the ceiling existed only to stop the engine from getting
+    ahead of that constant. Now the version is DERIVED from the installed
+    engine, so the correct assertion is that there is no constant left to
+    disagree with: a version literal reappearing in either file would silently
+    reintroduce exactly the drift the ceiling used to guard, but with no
+    ceiling left to catch it.
     """
+    import ast
+    import re
+
     from src.services.browser import device_presets, mobile_ext
 
-    assert policy.MAX_TESTED_MAJOR == 148
+    def code_of(mod) -> str:
+        """The module's source with its module docstring removed.
 
-    src = mobile_ext.__file__ and open(mobile_ext.__file__, encoding="utf-8").read()
-    assert f"version: '{policy.MAX_TESTED_MAJOR}'" in src, (
-        "mobile_ext's Chrome-brand client hints and policy.MAX_TESTED_MAJOR "
-        "disagree — bump them together"
+        Both files EXPLAIN the old hardcoded values in prose ("...carried
+        Chrome/148.0.0.0..."), and that documentation is the point — it must not
+        read as a live constant to this test.
+        """
+        raw = open(mod.__file__, encoding="utf-8").read()
+        doc = ast.get_docstring(ast.parse(raw))
+        return raw.replace(doc, "", 1) if doc else raw
+
+    ext_src = code_of(mobile_ext)
+    presets_src = code_of(device_presets)
+
+    # A Chrome/NNN.0.0.0 user agent must be a TEMPLATE, never a literal major.
+    assert "Chrome/{chrome}" in presets_src
+    assert not re.search(r"Chrome/\d", presets_src), (
+        "a device preset hardcodes a Chromium version again — it must carry a "
+        "{chrome} slot filled from the installed engine"
     )
-    presets = open(device_presets.__file__, encoding="utf-8").read()
-    assert f"Chrome/{policy.MAX_TESTED_MAJOR}.0.0.0" in presets
+
+    # The Client Hints brand list must interpolate, not state, the major.
+    assert "'__MAJOR__'" in ext_src
+    for brand in ("Chromium", "Google Chrome"):
+        assert not re.search(rf"brand: '{brand}', version: '\d", ext_src), (
+            f"the {brand} brand hardcodes a version again"
+        )
+    # ...and the full-version fallback constant is gone for good.
+    assert not re.search(r'"\d+\.0\.0\.0"', ext_src), (
+        "a full-version fallback constant is back in mobile_ext — a fallback is "
+        "precisely what lets the advertised version drift from the engine's"
+    )
+
+
+def test_policy_no_longer_ships_a_chromium_ceiling():
+    """The ceiling was a symptom of the duplication above. With the version
+    derived, persona ships none — and the constant itself is gone, so nothing
+    can quietly start reading a stale value again."""
+    assert not hasattr(policy, "MAX_TESTED_MAJOR")
+    assert policy.NO_CEILING == float("inf")
