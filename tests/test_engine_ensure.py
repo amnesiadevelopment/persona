@@ -387,3 +387,201 @@ def test_install_linux_swaps_in_the_new_engine_and_leaves_no_backup(
     assert engine.read_bytes() == b"new-engine"
     assert not (tmp_path / "engine.AppImage.bak").exists()
     assert os.access(str(engine), os.X_OK)
+
+
+# --- PS-38: the shared backup helper, on a DIRECTORY --------------------------
+#
+# _install_macos's end-to-end path is not exercisable in this container: it
+# shells out to hdiutil and ditto, neither of which exists here. Faking a dmg to
+# manufacture a green macOS test would be fabricated evidence. Instead the
+# backup/restore lives in the shared helper and is tested here DIRECTLY on a
+# plain directory — which needs no platform at all — and _install_macos is wired
+# to that same helper. The .app bundle IS a directory, which is precisely what
+# atomic_replace's file-only shutil.copy2 backup could not handle.
+
+
+def test_move_aside_then_restore_brings_a_whole_directory_back():
+    # AC3. The macOS-shaped case: a previous bundle directory is moved aside,
+    # the promotion fails, and the ORIGINAL directory comes back whole —
+    # contents, nesting and all.
+    import tempfile
+    from src.utils import httpdl
+
+    with tempfile.TemporaryDirectory() as tmp:
+        bundle = os.path.join(tmp, "Chromium.app")
+        os.makedirs(os.path.join(bundle, "Contents", "MacOS"))
+        binary = os.path.join(bundle, "Contents", "MacOS", "Chromium")
+        with open(binary, "wb") as f:
+            f.write(b"WORKING-BUNDLE")
+        backup = os.path.join(tmp, ".engine-backup-Chromium.app")
+
+        assert httpdl.move_aside(bundle, backup) is True
+        assert not os.path.exists(bundle)  # moved, not copied
+
+        # the failed promotion drops a half-written bundle where it belongs...
+        os.makedirs(os.path.join(bundle, "Contents"))
+        with open(os.path.join(bundle, "Contents", "junk"), "wb") as f:
+            f.write(b"HALF-WRITTEN")
+
+        # ...and the restore replaces it wholesale with the build that worked
+        assert httpdl.restore_aside(backup, bundle) is True
+        with open(binary, "rb") as f:
+            assert f.read() == b"WORKING-BUNDLE"
+        assert not os.path.exists(os.path.join(bundle, "Contents", "junk"))
+        assert not os.path.exists(backup)
+
+
+def test_move_aside_is_a_rename_not_a_copy():
+    # AC7. Peak disk during an upgrade must not grow by a second copy of the
+    # previous build (~300-600MB for Chromium), and a copy would drop the code
+    # signature/resource forks a macOS bundle needs. Same inode => renamed.
+    import tempfile
+    from src.utils import httpdl
+
+    with tempfile.TemporaryDirectory() as tmp:
+        artifact = os.path.join(tmp, "engine")
+        os.makedirs(artifact)
+        inner = os.path.join(artifact, "chrome")
+        with open(inner, "wb") as f:
+            f.write(b"x" * 1024)
+        before = os.stat(inner).st_ino
+
+        assert httpdl.move_aside(artifact, os.path.join(tmp, "bak")) is True
+        assert os.stat(os.path.join(tmp, "bak", "chrome")).st_ino == before
+
+
+def test_move_aside_reports_a_first_install_has_nothing_to_preserve():
+    # A first install has no previous artifact. That is not an error, and must
+    # not be mistaken for "a backup was taken" — the caller keys its restore on
+    # this answer, so a wrong True would try to restore a backup that never
+    # existed.
+    import tempfile
+    from src.utils import httpdl
+
+    with tempfile.TemporaryDirectory() as tmp:
+        missing = os.path.join(tmp, "not-there")
+        assert httpdl.move_aside(missing, os.path.join(tmp, "bak")) is False
+        assert not os.path.exists(os.path.join(tmp, "bak"))
+
+
+def test_restore_never_raises_so_a_failed_rollback_cannot_crash_the_install():
+    # The restore runs on a path that is ALREADY reporting a failure. If it
+    # raised, a reported install failure would become a crash — the same
+    # forgiveness the marker/sentinel writes use.
+    import tempfile
+    from src.utils import httpdl
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # nothing to restore from: answers False, does not explode
+        assert httpdl.restore_aside(
+            os.path.join(tmp, "no-backup"), os.path.join(tmp, "dst")
+        ) is False
+
+
+def test_a_failed_restore_leaves_the_backup_as_the_last_surviving_copy():
+    # The second-order failure this whole slice turns on. The restore itself can
+    # fail — on Windows an antivirus scanning a freshly-written .exe holds
+    # exactly this lock and os.replace raises PermissionError(32). If the
+    # destination were cleared FIRST and the rename then failed, the working
+    # artifact would be gone from the destination AND the caller would be told
+    # nothing, so a caller that drops the backup afterwards destroys the only
+    # copy left on disk. "Best-effort" means: if it did not work, do not destroy
+    # the evidence.
+    import tempfile
+    from src.utils import httpdl
+
+    with tempfile.TemporaryDirectory() as tmp:
+        artifact = os.path.join(tmp, "engine")
+        os.makedirs(artifact)
+        with open(os.path.join(artifact, "chrome"), "wb") as f:
+            f.write(b"THE-ONLY-WORKING-COPY")
+        backup = os.path.join(tmp, ".engine-backup")
+
+        assert httpdl.move_aside(artifact, backup) is True
+
+        # the half-promoted new build sits at the destination
+        os.makedirs(artifact)
+        with open(os.path.join(artifact, "chrome"), "wb") as f:
+            f.write(b"HALF-PROMOTED")
+
+        real_replace = os.replace
+
+        def locked_replace(src, dst):
+            if os.path.abspath(src) == os.path.abspath(backup):
+                raise PermissionError(32, "The process cannot access the file")
+            return real_replace(src, dst)
+
+        os.replace = locked_replace
+        try:
+            assert httpdl.restore_aside(backup, artifact) is False
+        finally:
+            os.replace = real_replace
+
+        # It reported the failure honestly...
+        # ...and the working build is STILL RECOVERABLE, sitting in the backup.
+        with open(os.path.join(backup, "chrome"), "rb") as f:
+            assert f.read() == b"THE-ONLY-WORKING-COPY"
+
+
+def test_restore_still_replaces_a_non_empty_directory():
+    # The guard above must not cost the restore its actual job. os.replace
+    # refuses a NON-EMPTY directory, which is precisely the .app-bundle case, so
+    # the destination is cleared and the rename retried — the difference is that
+    # this now happens only when the destination is provably what is in the way,
+    # not before every attempt.
+    import tempfile
+    from src.utils import httpdl
+
+    with tempfile.TemporaryDirectory() as tmp:
+        bundle = os.path.join(tmp, "Chromium.app")
+        os.makedirs(os.path.join(bundle, "Contents"))
+        with open(os.path.join(bundle, "Contents", "real"), "wb") as f:
+            f.write(b"WORKING")
+        backup = os.path.join(tmp, ".engine-backup-Chromium.app")
+        assert httpdl.move_aside(bundle, backup) is True
+
+        # a NON-EMPTY half-written bundle is in the way
+        os.makedirs(os.path.join(bundle, "Contents"))
+        with open(os.path.join(bundle, "Contents", "junk"), "wb") as f:
+            f.write(b"HALF-WRITTEN")
+
+        assert httpdl.restore_aside(backup, bundle) is True
+        with open(os.path.join(bundle, "Contents", "real"), "rb") as f:
+            assert f.read() == b"WORKING"
+        assert not os.path.exists(os.path.join(bundle, "Contents", "junk"))
+        assert not os.path.exists(backup)
+
+
+def test_a_lock_on_the_destination_does_not_destroy_it():
+    # The narrower half of the same rule. When the rename fails for a reason the
+    # DESTINATION cannot fix (a lock, a full disk, a cross-device rename),
+    # clearing the destination would delete a live artifact for a rename that
+    # was never going to succeed. So whatever is at `path` survives the failed
+    # attempt, and the backup does too — two copies on disk, not zero.
+    import tempfile
+    from src.utils import httpdl
+
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = os.path.join(tmp, "chrome.exe")
+        with open(dest, "wb") as f:
+            f.write(b"WHATEVER-IS-LIVE-NOW")
+        backup = os.path.join(tmp, ".engine-backup-chrome.exe")
+        with open(backup, "wb") as f:
+            f.write(b"THE-PREVIOUS-BUILD")
+
+        real_replace = os.replace
+
+        def locked_replace(src, dst):
+            raise PermissionError(32, "The process cannot access the file")
+
+        os.replace = locked_replace
+        try:
+            assert httpdl.restore_aside(backup, dest) is False
+        finally:
+            os.replace = real_replace
+
+        # neither copy was destroyed by the failed attempt
+        with open(dest, "rb") as f:
+            assert f.read() == b"WHATEVER-IS-LIVE-NOW"
+        with open(backup, "rb") as f:
+            assert f.read() == b"THE-PREVIOUS-BUILD"
