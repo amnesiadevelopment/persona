@@ -20,9 +20,12 @@ def test_manual_engine_update_downloads_with_digest(monkeypatch):
         lambda timeout=20: ("v9.9", "http://example/asset", "sha256:abc123"),
     )
 
-    def fake_download(url, timeout=600, digest=None, progress=None):
+    def fake_download(url, timeout=600, digest=None, progress=None, **kw):
         calls["url"] = url
         calls["digest"] = digest
+        # PS-43: the click path must never arm the deferral — the operator
+        # asked for this install, so it happens even while a profile runs.
+        calls["defer"] = kw.get("defer_if_in_use", False)
         return True
 
     monkeypatch.setattr(app_mod.engine, "download_engine", fake_download)
@@ -43,6 +46,9 @@ def test_manual_engine_update_downloads_with_digest(monkeypatch):
 
     assert calls["url"] == "http://example/asset"
     assert calls["digest"] == "sha256:abc123"
+    assert calls["defer"] is False, (
+        "the operator's click must install even while a profile is running"
+    )
     assert written == ["v9.9"]
     assert stub._engine_busy is False
 
@@ -78,5 +84,38 @@ def test_app_construction_wires_the_engine_prune_in_use_guard(monkeypatch):
     assert eng._engine_in_use() is False
     running.append("some-profile")
     assert eng._engine_in_use() is True, (
+        "the wired provider must report a running profile from the launcher"
+    )
+
+
+def test_app_construction_wires_the_chromium_engine_in_use_guard(monkeypatch):
+    """PS-43: the same argument as the prune guard above, for the more
+    dangerous of the two moments.
+
+    Pruning must not DELETE a build a session runs from; an unattended install
+    must not REPLACE one — and Chromium keeps a single un-versioned tree, so
+    its install path overwrites the very binary a live profile is executing.
+    The updater sits below the launcher and cannot import it, so the oracle is
+    injected, and an un-wired app is INVISIBLE from the install path itself.
+
+    It must be wired to the real launcher, not merely non-None: a provider that
+    always answered "idle" would defer nothing and read as correctly wired.
+    """
+    from src.core.container import Container
+    from src.services.engine import updater as chromium
+
+    monkeypatch.setattr(chromium, "_in_use_provider", None)
+
+    app = app_mod.App(Container())
+
+    assert chromium._in_use_provider is not None, (
+        "App construction must wire the Chromium engine in-use guard"
+    )
+
+    running: list[str] = []
+    monkeypatch.setattr(app.bl, "running_profile_names", lambda: running)
+    assert chromium._engine_in_use() is False
+    running.append("some-profile")
+    assert chromium._engine_in_use() is True, (
         "the wired provider must report a running profile from the launcher"
     )

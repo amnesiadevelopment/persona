@@ -47,6 +47,68 @@ RELEASES_API = (
 # both reach download_engine) so two extracts don't race into ENGINE_DIR.
 _install_lock = threading.Lock()
 
+# The oracle an UNATTENDED install consults before replacing the tree — a
+# zero-arg callable returning True while any profile is running.
+#
+# Chromium keeps ONE un-versioned tree and every install path replaces entries
+# of it IN PLACE, so an install that lands while a profile is executing from
+# that tree swaps the binary and its resources under a live session. POSIX does
+# not refuse that os.replace — only Windows does, by accident of its sharing
+# rules — so on Linux/macOS it is silent corruption, not a loud failure. The
+# only defence is to ASK.
+#
+# Injected rather than imported, exactly as the Firefox side does it
+# (browser/engine_install.set_in_use_provider): updater sits BELOW the launcher
+# and the UI in the layering and cannot import running_profile_names itself.
+# Keeping it injected also keeps the POLICY out of the updater — this module
+# learns whether the tree is busy, never what a profile is.
+_in_use_provider = None  # Callable[[], bool] | None
+
+
+def set_in_use_provider(fn) -> None:
+    """Wire the oracle an unattended install consults before replacing the tree.
+
+    `fn` is a zero-arg callable returning True while any profile is running.
+    Called once at startup by the UI, which owns the launcher; passing None
+    clears it. Only consulted by download_engine(defer_if_in_use=True) — the
+    operator's explicit click and the first-install path are deliberately
+    unaffected (see download_engine)."""
+    global _in_use_provider
+    _in_use_provider = fn
+
+
+def _engine_in_use(log=None) -> bool:
+    """True when the wired provider reports a running profile.
+
+    Fails CLOSED — no provider, or a provider that raises, both read as "in
+    use". That is deliberately the OPPOSITE of engine_install._engine_in_use's
+    fail-open default, because the two guards protect different things at
+    different costs. There, a broken oracle must not permanently wedge DISK
+    RECLAMATION, and the cost of proceeding is bounded. Here the cost of a
+    false "idle" is replacing a running browser's binary underneath it, while
+    the cost of a false "in use" is that an unattended update waits for the
+    next hourly check and installs from bytes already on disk. An unwired
+    provider is the same argument: this is only ever reached from the
+    unattended path, which exists only inside the app that wires it, so
+    "unwired" means something is wrong rather than "no UI is present"."""
+    fn = _in_use_provider
+    if fn is None:
+        if log:
+            log(
+                "Chromium engine: no in-use oracle wired — deferring the "
+                "unattended install rather than risking a live session"
+            )
+        return True
+    try:
+        return bool(fn())
+    except Exception as e:
+        if log:
+            log(
+                f"Chromium engine: in-use check failed ({e!r}) — deferring the "
+                "unattended install"
+            )
+        return True
+
 
 def current_version() -> str:
     try:
@@ -471,17 +533,50 @@ def _install_macos(asset_path: str) -> bool:
             pass
 
 
+class InstallDeferred(Exception):
+    """Raised by download_engine(defer_if_in_use=True) when the asset is on disk
+    and verified but a profile is running, so the tree must not be replaced yet.
+
+    A distinct type because this is NOT a failure and must not be reported as
+    one: the network worked, the bytes are good, and the install will happen on
+    a later check. Callers that conflate it with False would tell the operator
+    "Engine update failed" and blame the network for a decision persona made —
+    the exact confusion the refuse/failed vocabulary already exists to prevent."""
+
+
 def download_engine(
     url: str,
     timeout: int = 600,
     digest: str | None = None,
     progress=None,
     allow_unverified: bool = False,
+    defer_if_in_use: bool = False,
+    log=None,
 ) -> bool:
     """Download the per-OS engine asset and install it so the launcher finds the
     runnable binary at ENGINE_BINARY. `progress(done, total)` is called as bytes
     arrive. A missing digest fails closed unless allow_unverified is set (the
-    Linux predictable-URL fallback, whose asset carries no digest)."""
+    Linux predictable-URL fallback, whose asset carries no digest).
+
+    `defer_if_in_use` is for the UNATTENDED caller, and it is the whole reason
+    the in-use oracle lives in this module rather than at the decision site.
+    Deciding "no profile is running" before a multi-minute download and then
+    installing on the strength of that stale answer is a TOCTOU: a profile can
+    launch inside the window, and the promotion below would replace the tree it
+    is executing from. So the question is asked AGAIN here, under _install_lock,
+    immediately before the replacement — check and act adjacent, with no window
+    between them. On a yes, InstallDeferred is raised and the verified asset is
+    LEFT on disk, so a later check installs it without re-downloading.
+
+    Off by default, so the two paths that must NOT defer keep today's behaviour:
+    the operator's explicit click (they asked for it, and a silent no-op would
+    look like the stall this all exists to remove) and the first install (an app
+    with no browser at all is worse than one whose tree gets replaced — and with
+    nothing installed there is no live session to protect).
+
+    `log` (optional) receives the deferral notes the in-use oracle produces —
+    the wired-provider fault and the unwired case. Separate from `progress`,
+    which reports bytes, not prose."""
     if not url:
         return False
     os.makedirs(ENGINE_DIR, exist_ok=True)
@@ -489,13 +584,39 @@ def download_engine(
     # resumed .part survives restarts
     asset_name = url.rsplit("/", 1)[-1] or "engine.download"
     asset_path = os.path.join(ENGINE_DIR, asset_name)
-    if not _download_to(
+    # A previous run may have downloaded and VERIFIED this exact asset and then
+    # deferred the install. resumable_download cannot see that: it resumes from
+    # `asset_path + ".part"`, and publishing the complete file renamed that away
+    # — so without this check a deferral would re-download the whole asset on
+    # every retry, which is what makes deferring expensive enough to be wrong.
+    # Re-verified rather than trusted on presence: the file has been sitting on
+    # disk, and this is the same fail-closed digest gate the download itself
+    # applies, so a truncated or tampered leftover is discarded, not installed.
+    have_asset = os.path.isfile(asset_path) and httpdl.verify_file(
+        asset_path, digest, allow_missing=allow_unverified
+    )
+    if not have_asset and not _download_to(
         asset_path, url, timeout, digest, progress, allow_missing=allow_unverified
     ):
         return False
     # Serialise the extract/move + marker: two concurrent installs into the
     # shared ENGINE_DIR would interleave and could publish a mixed tree.
     with _install_lock:
+        # THE LAST POSSIBLE MOMENT to ask, and the only one that is safe to ask
+        # at. The decision to fetch was made minutes ago, before a download that
+        # a profile can easily outlive; re-asking here — holding the lock, with
+        # nothing between this answer and the replacement below — is what turns
+        # the guard from an opinion about the past into a fact about now.
+        #
+        # BEFORE the marker/sentinel writes, deliberately: those two are what
+        # make is_installed() read False, and a deferral must leave the engine
+        # exactly as it found it. Writing them first and bailing would report a
+        # perfectly good installed engine as missing and block the very launches
+        # this is protecting.
+        if defer_if_in_use and _engine_in_use(log=log):
+            raise InstallDeferred(
+                "a profile is running — install deferred to a later check"
+            )
         # Clear any prior completion marker so a failed install can't leave the
         # engine reading as "complete" — is_installed() must reflect the actual
         # on-disk state until we mark success below.

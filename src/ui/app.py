@@ -156,6 +156,12 @@ class App:
         # engine row so the refusal is visible rather than looking like a stalled
         # check. Mirrors _engine2_status on the Firefox row.
         self._engine_status: str = ""
+        # The build whose unattended install is currently DEFERRED because a
+        # profile is running. Set when the deferral is first logged and cleared
+        # once it installs, so the hourly retry doesn't repeat the same line
+        # forever at an operator who keeps a profile open all day. Holds the tag
+        # rather than a bool so a NEWER build supersedes it and speaks up again.
+        self._engine_deferred_tag: str = ""
         self._engines_open = False
         # An onboarding/changelog dialog owns the screen at startup; a staged
         # update that lands while it's open is held here and offered once the
@@ -1635,8 +1641,20 @@ class App:
         every prune (startup housekeeping and post-download alike) is covered
         without each call site needing its own condition.
 
-        Best-effort: a failure to wire must never stop the app from starting,
-        and leaves exactly today's behaviour (unset ⇒ prune proceeds)."""
+        Wires the SAME oracle into the Chromium updater, for the same reason at
+        a different moment: pruning must not DELETE a build a session is running
+        from, and an unattended install must not REPLACE one. Chromium keeps a
+        single un-versioned tree, so its install path is the more dangerous of
+        the two — see updater.set_in_use_provider. One method because there is
+        one oracle and one moment it must be wired by; splitting it invites an
+        app that wires half of it.
+
+        Best-effort: a failure to wire must never stop the app from starting.
+        Note the two layers answer an unwired provider DIFFERENTLY on purpose —
+        pruning proceeds (fail-open, bounded cost), the Chromium install defers
+        (fail-closed, the cost is a live session). So a wiring failure degrades
+        to today's behaviour on one side and to "wait for the next check" on the
+        other, and neither degrades to corrupting a running browser."""
         try:
             from ..services.browser import invisible_launch as inv
 
@@ -1645,6 +1663,12 @@ class App:
             )
         except Exception:
             logger.exception("Could not wire the engine-prune in-use guard")
+        try:
+            engine.set_in_use_provider(
+                lambda: len(self.bl.running_profile_names()) > 0
+            )
+        except Exception:
+            logger.exception("Could not wire the Chromium engine in-use guard")
 
     def _auto_update_engine2_async(self) -> None:
         """On startup: check the engine repo and, if a newer AND compatible
@@ -2251,9 +2275,21 @@ class App:
         FINGERPRINT_CHROMIUM, passed as argv[0]), and every install path
         replaces entries of that same dir in place — os.replace onto the Linux
         AppImage, per-entry os.replace in _promote_staging on Windows,
-        os.replace onto Chromium.app on macOS. None of them consults a
-        running-profile oracle. So this check is what keeps an unattended fetch
-        off a live session; see the PR for the full reasoning.
+        os.replace onto Chromium.app on macOS. POSIX does not refuse an
+        os.replace over a file a running process has open, so on Linux/macOS
+        that swap is SILENT; only Windows locks a running executable and turns
+        it into a loud, recoverable failure. (Firefox sidesteps all of this by
+        keeping each build in its own versioned dir, which is why its unattended
+        fetch is safe by construction — see PS-43 for the full comparison.)
+
+        THIS CHECK IS AN OPTIMISATION, NOT THE GUARD. It answers about the
+        moment the FETCH is decided, and the download that follows takes
+        minutes — a profile can launch inside that window, which would make
+        acting on this answer a TOCTOU. The real guard is re-asked inside
+        updater.download_engine, under the install lock, adjacent to the
+        replacement (see updater.set_in_use_provider). What this saves is a
+        pointless multi-hundred-MB download while a profile is obviously
+        already running.
 
         Fails CLOSED (a broken oracle reports "in use"), which is deliberately
         the OPPOSITE of engine_install._engine_in_use's fail-open default. The
@@ -2299,6 +2335,17 @@ class App:
         worse than one with an untested engine, so a missing engine keeps its
         own unattended download (_download_engine_fresh) with its own refusal
         handling. Hence the is_installed() guard — this only ever UPGRADES.
+
+        SAFETY AGAINST A LIVE SESSION IS NOT DECIDED HERE. Chromium keeps one
+        un-versioned tree and installing replaces it in place, so an unattended
+        install must not land while a profile is executing from it. The check
+        below is only a cheap early exit — the download it precedes takes
+        minutes, and a profile can launch inside that window, so acting on this
+        answer alone would be a TOCTOU. The binding guard is re-asked inside
+        download_engine under the install lock, immediately before the
+        replacement (unattended=True is what arms it), and raises InstallDeferred
+        there. The verified asset stays on disk, so the retry that follows
+        installs without downloading again.
         """
         if self._engine_busy or not engine.is_installed():
             return
@@ -2307,19 +2354,23 @@ class App:
             # check has already recorded the state and said so in the log.
             return
         if self._engine_tree_in_use():
-            # Wait for a safe moment rather than replacing the tree a running
-            # profile is executing from. The hourly check retries, so this
-            # resolves on its own once profiles have closed.
-            self._log(
-                f"Chromium engine {self._engine_latest} ready — waiting for "
-                "running profiles to close before updating"
-            )
+            # Don't even spend the bytes while a profile is obviously already
+            # running — the install would only defer at the end of it. Logged at
+            # most once per build (see _engine_deferred_tag): the hourly check
+            # retries, so an operator who keeps a profile open all day would
+            # otherwise get this identical line every hour, forever.
+            if self._engine_deferred_tag != self._engine_latest:
+                self._engine_deferred_tag = self._engine_latest
+                self._log(
+                    f"Chromium engine {self._engine_latest} ready — waiting for "
+                    "running profiles to close before updating"
+                )
             return
         self._log(
             f"Chromium engine {engine.current_version() or 'unknown'} is out of "
             f"date — fetching {self._engine_latest}"
         )
-        self._update_engine_async()
+        self._update_engine_async(unattended=True)
 
     def _check_engine_async(self) -> None:
         def work() -> None:
@@ -2553,7 +2604,20 @@ class App:
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _update_engine_async(self) -> None:
+    def _update_engine_async(self, unattended: bool = False) -> None:
+        """Fetch and install the newest acceptable Chromium build.
+
+        `unattended` marks the background caller (_auto_update_engine) rather
+        than the operator's click. It changes exactly one thing: the install is
+        allowed to DEFER if a profile is running when the bytes are ready. The
+        click never defers — the operator asked for it, and a silent no-op would
+        look like the stall this work exists to remove.
+
+        The deferral decision deliberately does NOT live here. Asking "is a
+        profile running?" before the download and installing on that answer
+        minutes later is a TOCTOU — a profile can launch inside the window. So
+        the question is asked inside download_engine, under the install lock,
+        adjacent to the replacement itself."""
         self._engine_busy = True
         self._engine_progress_start()
         self._refresh_engine_text("downloading...")
@@ -2579,7 +2643,11 @@ class App:
                     self._log(message)
                     return
                 ok = engine.download_engine(
-                    url, digest=digest, progress=self._engine_progress_cb
+                    url,
+                    digest=digest,
+                    progress=self._engine_progress_cb,
+                    defer_if_in_use=unattended,
+                    log=self._log,
                 )
                 if ok:
                     # Record the tag from the fetch that produced THESE BYTES,
@@ -2592,9 +2660,30 @@ class App:
                     # already-installed.
                     engine.write_version(tag)
                     self._engine_latest = tag
+                    # The deferral (if any) is resolved — clear it so a LATER
+                    # build's deferral is announced instead of being mistaken
+                    # for this one and silently swallowed.
+                    self._engine_deferred_tag = ""
                     self._log(f"Engine updated to {tag}")
                 else:
                     self._log("Engine update failed")
+            except engine.InstallDeferred:
+                # NOT a failure, and must not be reported as one: the network
+                # worked, the bytes are verified and on disk, and a profile was
+                # running at the moment of replacement. Saying "Engine update
+                # failed" here would blame the network for a decision persona
+                # made — the same confusion the refuse/failed vocabulary exists
+                # to prevent — and an operator would retry forever.
+                #
+                # Logged at most once per build (see _engine_deferred_tag): the
+                # hourly poll retries, so an operator who keeps a profile open
+                # all day would otherwise get this identical line eight times.
+                if self._engine_deferred_tag != (tag or self._engine_latest):
+                    self._engine_deferred_tag = tag or self._engine_latest
+                    self._log(
+                        f"Chromium engine {tag or self._engine_latest} downloaded "
+                        "— installing once running profiles close"
+                    )
             except Exception as e:
                 self._log(f"Engine update failed: {e}")
             finally:
