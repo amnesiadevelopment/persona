@@ -517,3 +517,207 @@ def test_http_proxy_reads_a_body_split_across_records():
     request = seen.get("request", b"")
     assert proxy_checker._NEUTRAL_USER_AGENT.encode() in request
     assert b"persona-proxy-check/1.0" not in request
+
+
+# --------------------------------------------------------------------------
+# The header the authority was asked for must survive the branch it takes.
+#
+# `fetch_json` declares `accept` with GitHub's versioned media type as its
+# default and the DIRECT branch honours it — but the PROXIED branch dropped it
+# and both of its sub-branches hardcoded the geo probe's "application/json".
+# So turning the policy ON silently changed the request on the wire, which is
+# precisely the disagreement-with-itself the single authority exists to
+# prevent: `application/json` is the UNVERSIONED type GitHub's API-versioning
+# guidance says not to rely on, and the drift landed only on operators who had
+# configured a proxy. Both sub-branches are asserted, because a header threaded
+# through only one of them would just relocate the drift.
+#
+# These read the header OFF THE WIRE rather than off a call signature: "the
+# exit saw the same request" is a fact about bytes, not about a kwarg.
+# --------------------------------------------------------------------------
+
+
+_DIRECT_ACCEPT = "application/vnd.github+json"
+
+
+def _accept_headers(request: bytes) -> list[str]:
+    """Every Accept: value in a raw request, lowercased keys, order preserved."""
+    return [
+        line.split(b":", 1)[1].strip().decode("latin-1")
+        for line in request.split(b"\r\n")
+        if line.lower().startswith(b"accept:")
+    ]
+
+
+def test_socks_branch_sends_the_accept_the_caller_asked_for():
+    """The SOCKS sub-branch must put the CALLER's Accept on the wire.
+
+    An http:// target keeps this TLS-free (the tunnel negotiates TLS only for
+    an https target), so the request bytes are readable directly — the contract
+    under test is the header, not the transport's crypto.
+    """
+    seen: dict[str, object] = {}
+    srv, port = _listener()
+    body = b'[{"tag_name": "v1", "assets": []}]'
+
+    def serve() -> None:
+        conn, _ = srv.accept()
+        conn.settimeout(10)
+        try:
+            greeting = _recv_exactly(conn, 2)
+            _recv_exactly(conn, greeting[1])  # the method list
+            seen["greeting"] = greeting
+            conn.sendall(b"\x05\x00")  # no auth required
+            _ver, _cmd, _rsv, atyp = _recv_exactly(conn, 4)
+            seen["atyp"] = atyp
+            host = _recv_exactly(conn, _recv_exactly(conn, 1)[0])
+            struct.unpack(">H", _recv_exactly(conn, 2))[0]
+            seen["host"] = host
+            conn.sendall(b"\x05\x00\x00\x01" + b"\x00" * 4 + b"\x00\x00")
+            request = b""
+            while b"\r\n\r\n" not in request:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                request += chunk
+            seen["request"] = request
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: application/json\r\n"
+                b"Connection: close\r\n\r\n" + body
+            )
+        except Exception as exc:  # pragma: no cover - surfaced via `seen`
+            seen["error"] = repr(exc)
+        finally:
+            conn.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+
+    settings.set_app_egress_proxy(f"socks5://127.0.0.1:{port}")
+    try:
+        doc = egress.fetch_json("http://api.github.com/x", timeout=10)
+    finally:
+        thread.join(15)
+        srv.close()
+
+    assert doc == json.loads(body), f"server said {seen.get('error')}"
+    request = seen.get("request", b"")
+    assert request, f"the proxy received no request at all ({seen.get('error')})"
+
+    assert _accept_headers(request) == [_DIRECT_ACCEPT], (
+        f"the exit saw Accept: {_accept_headers(request)}, but the caller asked "
+        f"for {_DIRECT_ACCEPT!r} — enabling the policy changed the request"
+    )
+    # Still the SOCKS properties this ticket bought, unweakened by the header.
+    assert seen.get("atyp") == 0x03
+    assert seen.get("host") == b"api.github.com"
+
+
+def test_http_proxy_branch_sends_the_accept_the_caller_asked_for():
+    """The aiohttp sub-branch, same contract. `http://` is a SUPPORTED policy
+    value (resolve() returns PROXIED for it), so this is the other half of the
+    live production surface, not a hypothetical."""
+    seen: dict[str, object] = {}
+    srv, port = _listener()
+    body = b'{"tag_name": "148.0.0.1", "assets": []}'
+
+    def serve() -> None:
+        conn, _ = srv.accept()
+        conn.settimeout(10)
+        try:
+            request = b""
+            while b"\r\n\r\n" not in request:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                request += chunk
+            seen["request"] = request
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: application/json\r\n"
+                b"Connection: close\r\n\r\n" + body
+            )
+        except Exception as exc:  # pragma: no cover - surfaced via `seen`
+            seen["error"] = repr(exc)
+        finally:
+            conn.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+
+    settings.set_app_egress_proxy(f"http://127.0.0.1:{port}")
+    try:
+        doc = egress.fetch_json("http://api.github.com/x", timeout=15)
+    finally:
+        thread.join(15)
+        srv.close()
+
+    assert doc == json.loads(body), f"server said {seen.get('error')}"
+    request = seen.get("request", b"")
+    assert request, f"the proxy received no request at all ({seen.get('error')})"
+    assert _accept_headers(request) == [_DIRECT_ACCEPT], (
+        f"the exit saw Accept: {_accept_headers(request)}, but the caller asked "
+        f"for {_DIRECT_ACCEPT!r} — enabling the policy changed the request"
+    )
+
+
+def test_the_geo_probe_still_asks_for_plain_json():
+    """The other side of the same coin: threading `accept` must not drag the
+    versioned GitHub type into the geo probe, which reaches an endpoint WE
+    chose and has no opinion about GitHub's API versions. The defaults are what
+    keep every pre-existing caller byte-identical."""
+    import inspect
+
+    for fn in (
+        proxy_checker.fetch_json_via_proxy,
+        proxy_checker.fetch_json_via_proxy_sync,
+        proxy_checker._json_via_socks,
+    ):
+        assert (
+            inspect.signature(fn).parameters["accept"].default == "application/json"
+        ), f"{fn.__name__} would change what an existing caller sends"
+
+    seen: dict[str, object] = {}
+    srv, port = _listener()
+
+    def serve() -> None:
+        conn, _ = srv.accept()
+        conn.settimeout(10)
+        try:
+            greeting = _recv_exactly(conn, 2)
+            _recv_exactly(conn, greeting[1])
+            conn.sendall(b"\x05\x00")
+            _recv_exactly(conn, 4)
+            _recv_exactly(conn, _recv_exactly(conn, 1)[0])
+            _recv_exactly(conn, 2)
+            conn.sendall(b"\x05\x00\x00\x01" + b"\x00" * 4 + b"\x00\x00")
+            request = b""
+            while b"\r\n\r\n" not in request:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                request += chunk
+            seen["request"] = request
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n" + b'{"ok": true}'
+            )
+        except Exception as exc:  # pragma: no cover - surfaced via `seen`
+            seen["error"] = repr(exc)
+        finally:
+            conn.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        # No `accept` passed — exactly how the geo caller invokes it.
+        proxy_checker.fetch_json_via_proxy_sync(
+            f"socks5://127.0.0.1:{port}", "http://ipwho.is/", 10
+        )
+    finally:
+        thread.join(15)
+        srv.close()
+
+    assert _accept_headers(seen.get("request", b"")) == ["application/json"], (
+        "an unspecified accept must still send the geo probe's own value"
+    )

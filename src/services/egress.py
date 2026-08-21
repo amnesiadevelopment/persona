@@ -150,7 +150,10 @@ def fetch_json(
 
     if verdict == PROXIED:
         try:
-            return fetch_json_via_proxy_sync(transport, url, timeout)
+            # `accept` must ride along: the direct branch below honours it, and
+            # a header that survives one branch but not the other would mean
+            # turning the policy ON changes the request on the wire.
+            return fetch_json_via_proxy_sync(transport, url, timeout, accept=accept)
         except Exception as e:
             # Fail CLOSED: the request either went through the configured
             # transport or it did not happen. Retrying directly here is the one
