@@ -13,6 +13,11 @@ from ...services.browser.profile_seed import (
 )
 from ...services.bookmark.store import DEFAULT_BOOKMARKS
 from ...services.browser.device_presets import is_mobile_os
+from ...services.profile.proxy_assignment import (
+    PROXY_NONE,
+    PROXY_UNCHANGED,
+    ProxyDirective,
+)
 from ...services.browser.invisible_launch import _system_dpr
 from ...services.browser.resolution import parse_resolution
 from ...utils.validation import validate_profile_name
@@ -30,6 +35,11 @@ from ..theme.styles import (
 )
 
 _DIRECT = "(direct)"
+#: Key prefix for the synthetic dropdown option that stands in for a profile's
+#: assigned proxy when that name is absent from the available list. Prefixed so
+#: it can never collide with a real proxy name, and read back on submit as
+#: "leave the assignment alone" rather than as a selection.
+_UNRESOLVED_PREFIX = "\x00unresolved:"
 _NO_POOL = "(none)"
 _NO_CERT = "(none)"
 
@@ -37,8 +47,27 @@ _NO_CERT = "(none)"
 def open_profile_dialog(
     page: ft.Page,
     proxy_service: IProxyService,
+    #: (name, proxy, os, search, pool, bookmarks, tags, notes, engine,
+    #: resolution, certificate) -> error message, or None on success.
+    #: The proxy position accepts a ``ProxyDirective`` as well as a name:
+    #: the dialog sends ``PROXY_NONE`` for a deliberate direct connection and
+    #: ``PROXY_UNCHANGED`` when it could not account for the profile's assigned
+    #: proxy, so that absence is never mistaken for "clear the assignment".
     on_save: Callable[
-        [str, str, str, str, str, list[str], list[str], str, str, str], str | None
+        [
+            str,
+            str | ProxyDirective,
+            str,
+            str,
+            str,
+            list[str],
+            list[str],
+            str,
+            str,
+            str,
+            str,
+        ],
+        str | None,
     ],
     profile: Profile | None = None,
     proxy_names: list[str] | None = None,
@@ -106,15 +135,47 @@ def open_profile_dialog(
     )
 
     current_proxy = (profile.proxy or "") if profile is not None else ""
-    proxy_value = current_proxy if current_proxy in proxy_names else _DIRECT
+    # A profile whose assigned proxy is NOT in the available list must NOT be
+    # rendered as DIRECT. That fallback was visually identical to a profile the
+    # operator deliberately set to direct, and saving from it turned a display
+    # fallback into a stored un-assignment — after which the launch guard had
+    # nothing left to refuse and the profile launched on the real IP.
+    #
+    # The list can legitimately be missing a name the profile still references:
+    # the proxy store skips a single malformed record (populated dropdown, one
+    # name absent) or quarantines the whole file (every name absent). Both are
+    # deliberate protections and neither reached this dialog in any form.
+    #
+    # So the unaccounted-for assignment gets its OWN option, carrying the name,
+    # selected and visibly distinct from DIRECT. Submitting while it is selected
+    # sends PROXY_UNCHANGED, so an operator who opened the dialog to rename the
+    # profile comes out with the same protection they went in with.
+    proxy_unresolved = bool(current_proxy) and current_proxy not in proxy_names
+    unresolved_option_key = f"{_UNRESOLVED_PREFIX}{current_proxy}"
+    if proxy_unresolved:
+        proxy_value = unresolved_option_key
+    elif current_proxy:
+        proxy_value = current_proxy
+    else:
+        proxy_value = _DIRECT
+    proxy_options = [ft.dropdown.Option(_DIRECT)]
+    if proxy_unresolved:
+        proxy_options.append(
+            ft.dropdown.Option(
+                key=unresolved_option_key,
+                text=f"{current_proxy} — NOT FOUND (keep assigned)",
+            )
+        )
+    proxy_options += [ft.dropdown.Option(n) for n in proxy_names]
     proxy_dropdown = ft.Dropdown(
         value=proxy_value,
         expand=True,
-        options=[ft.dropdown.Option(_DIRECT)]
-        + [ft.dropdown.Option(n) for n in proxy_names],
+        options=proxy_options,
         bgcolor=COLORS["input_bg"],
         color=COLORS["text_main"],
-        border_color=COLORS["card_border"],
+        border_color=(
+            COLORS["warning"] if proxy_unresolved else COLORS["card_border"]
+        ),
         focused_border_color=COLORS["accent"],
         border_radius=3,
         text_style=ft.TextStyle(font_family=MONO),
@@ -178,9 +239,14 @@ def open_profile_dialog(
             )
         )
     proxy_hint = ft.Text(
-        "manage proxies on the network page",
+        (
+            f"proxy {current_proxy!r} is assigned but was not found — "
+            "saving keeps it assigned"
+            if proxy_unresolved
+            else "manage proxies on the network page"
+        ),
         size=11,
-        color=COLORS["text_sub"],
+        color=COLORS["warning"] if proxy_unresolved else COLORS["text_sub"],
         font_family=MONO,
     )
     os_dropdown = build_os_dropdown(
@@ -650,8 +716,20 @@ def open_profile_dialog(
 
     def on_submit(_: ft.ControlEvent) -> None:
         name = (name_field.value or "").strip()
-        proxy = proxy_dropdown.value or _DIRECT
-        proxy = "" if proxy == _DIRECT else proxy
+        # Three outcomes, not two. The unresolved option means "I could not
+        # account for this assignment", which must travel as PROXY_UNCHANGED so
+        # saving an unrelated edit cannot discard the proxy. DIRECT stays
+        # expressible as a deliberate choice, and now says so explicitly with
+        # PROXY_NONE instead of relying on an empty string the model used to
+        # read as a clear-by-omission.
+        _picked = proxy_dropdown.value or _DIRECT
+        proxy: str | ProxyDirective
+        if _picked.startswith(_UNRESOLVED_PREFIX):
+            proxy = PROXY_UNCHANGED
+        elif _picked == _DIRECT:
+            proxy = PROXY_NONE
+        else:
+            proxy = _picked
         os_type = os_dropdown.value or "windows"
         engine = engine_dropdown.value or "chromium"
         # Firefox has no per-profile default search engine — it's pinned to

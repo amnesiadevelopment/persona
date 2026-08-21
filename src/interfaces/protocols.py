@@ -2,19 +2,28 @@ from collections.abc import Callable
 from typing import Protocol
 
 from ..models.profile import Profile
+from ..services.profile.proxy_assignment import PROXY_UNCHANGED, ProxyDirective
 
 
 class IProfileManager(Protocol):
     profiles: dict[str, Profile]
 
-    def add_profile(self, name: str, proxy: str, os_type: str) -> bool: ...
+    def add_profile(
+        self,
+        name: str,
+        proxy: str | ProxyDirective | None,
+        os_type: str,
+    ) -> bool: ...
 
     def update_profile(
         self,
         original_name: str,
         new_name: str,
-        new_proxy: str,
-        new_os: str,
+        # A proxy NAME, or PROXY_UNCHANGED / PROXY_NONE. Defaulted to
+        # PROXY_UNCHANGED so a caller that says nothing about the proxy changes
+        # nothing — see services/profile/proxy_assignment.py.
+        new_proxy: str | ProxyDirective | None = PROXY_UNCHANGED,
+        new_os: str | None = None,
     ) -> bool: ...
 
     def set_cookie_status(self, name: str, status: str) -> bool: ...
