@@ -573,51 +573,154 @@ def test_check_engine2_incompatible_says_update_persona(monkeypatch):
 
 
 def test_prune_removes_old_builds_including_superseded_pinned(monkeypatch, tmp_path):
-    # #213: once firefox-16 is installed and active, the shipped pinned
+    # #213: once a newer build is installed and active, the shipped pinned
     # firefox-15 (markerless BINARY_VERSION) is dead weight — launches and the
-    # install check both resolve firefox-16, so removing firefox-15 reclaims
-    # ~600MB and never triggers a re-download. Prune firefox-14 (marked, ours)
-    # AND firefox-15 (superseded pinned); keep firefox-16 (the new active).
+    # install check both resolve the newer build, so removing firefox-15
+    # reclaims ~600MB and never triggers a re-download. Prune firefox-14
+    # (marked, ours) AND firefox-15 (superseded pinned).
+    #
+    # PS-51 CHANGES THIS CASE, and the change is worth stating precisely —
+    # INCLUDING the part that is a LIMIT rather than a win.
+    #
+    # Retention spares exactly ONE build below `keep`: the highest. Normally
+    # that is the rollback target, because normally `keep` IS the active
+    # build. THIS FIXTURE IS THE CASE WHERE THAT BREAKS DOWN, so do not read
+    # the surviving firefox-15 below as "the way back":
+    #
+    #   installed_builds() -> [13, 14, 15]   firefox-16 capped out (#405)
+    #   active_build()     -> firefox-15     <- what LAUNCHES
+    #   rollback_target()  -> firefox-14     <- what a revert would go TO
+    #   ...after this prune...
+    #   survivors          -> [15, 16]
+    #   rollback_target()  -> ""             <- the revert is now REFUSED
+    #
+    # `installed_builds` caps what it surfaces at BINARY_VERSION (#405 — a
+    # build newer than the shipped driver can't be driven), so `keep`
+    # (firefox-16) is ABOVE the cap while active_build() is the pinned
+    # firefox-15. Retention measures "highest below `keep`", and with the cap
+    # binding that is firefox-15 — the ACTIVE build, the one you roll back
+    # FROM. The slot is spent on it, the genuine target firefox-14 is pruned,
+    # and retention yields NO usable way back in this configuration.
+    #
+    # So the firefox-15 assertion below is protecting the LAUNCHING build, not
+    # the undo path. The test still passes for #213's reason (13 and 14 are
+    # reclaimed); what it must not be read as is proof that rollback survives
+    # a prune when the cap binds. See
+    # test_prune_with_keep_above_cap_leaves_no_rollback_target, which pins that
+    # limit explicitly, and _prune_old_engine_builds' RETENTION docstring for
+    # why it is left as-is (unreachable through the app; the obvious
+    # alternative is measurably worse).
+    #
+    # In the REACHABLE configuration — `keep` at or below the cap, i.e. the
+    # active build — this is the depth-1 policy doing its job and not a leak:
+    # footprint stays two builds (retained + active), and everything below is
+    # still reclaimed. #213's concern was a build sitting there for NOTHING;
+    # there, it has a job — it is the way back.
     _fake_cache(
         monkeypatch,
         tmp_path,
         [
+            ("firefox-13", True, True),   # old, ours → pruned
             ("firefox-14", True, True),   # old, ours → pruned
-            ("firefox-15", True, False),  # superseded pinned → pruned (#213)
+            ("firefox-15", True, False),  # superseded pinned → retained (PS-51)
             ("firefox-16", True, True),   # new active → kept
         ],
         binary_version="firefox-15",
     )
     logs = []
     inv._prune_old_engine_builds(keep="firefox-16", log=logs.append)
+    assert not (tmp_path / "firefox-13").exists()
     assert not (tmp_path / "firefox-14").exists()
-    assert not (tmp_path / "firefox-15").exists()
+    assert (tmp_path / "firefox-15").exists(), (
+        "retention spares the highest build below keep; with keep above the "
+        "#405 cap that is active_build() itself, so this protects the "
+        "LAUNCHING build — not the way back (PS-51, see the comment above)"
+    )
     assert (tmp_path / "firefox-16").exists()
+    assert any("firefox-13" in m for m in logs)
     assert any("firefox-14" in m for m in logs)
-    assert any("firefox-15" in m for m in logs)
 
 
-def test_prune_superseded_builds_cleans_stale_pinned_at_startup(monkeypatch, tmp_path):
-    # #213: a firefox-15→16 upgrade that happened on an earlier run left the
-    # ~600MB pinned firefox-15 behind (the old prune kept it). The startup
-    # housekeeping prune reclaims it now that firefox-16 is active — without a
-    # fresh download.
-    # pkg drives firefox-16, so both 15 (stale, marked) and 16 (active) are
-    # visible to installed_builds and the older one is reclaimed.
+def test_prune_with_keep_above_cap_leaves_no_rollback_target(monkeypatch, tmp_path):
+    """PS-51 LIMIT, pinned deliberately: when `keep` is above the #405
+    visibility cap, retention does NOT leave a way back.
+
+    Retention spares the highest build below `keep`. That is the rollback
+    target only while `keep` is the active build. Here firefox-16 is installed
+    but capped out of installed_builds (the shipped driver can't drive it), so
+    active_build() is the pinned firefox-15 while `keep` is firefox-16 — and
+    the retention slot is spent on the ACTIVE build instead of on a build below
+    it. The genuine target firefox-14 is pruned and the revert gesture is
+    refused afterwards.
+
+    This is asserted rather than fixed. It is unreachable through the app
+    (fetch_latest marks any build above the pin incompatible, and the reachable
+    prune path takes `keep` from the already-capped list), and measuring
+    retain_n below active_build() instead is worse — it deletes the launching
+    build and still yields no target. See _prune_old_engine_builds' RETENTION
+    docstring. If someone makes this state reachable, THIS test is the one that
+    should start failing."""
     _fake_cache(
         monkeypatch,
         tmp_path,
         [
-            ("firefox-15", True, True),   # superseded, left stale
+            ("firefox-14", True, True),   # the genuine rollback target
+            ("firefox-15", True, False),  # shipped pinned == active_build()
+            ("firefox-16", True, True),   # installed but capped out (#405)
+        ],
+        binary_version="firefox-15",
+    )
+    # Precondition: the cap binds, and a way back exists right now.
+    assert eng.installed_builds() == ["firefox-14", "firefox-15"]
+    assert eng.active_build() == "firefox-15"
+    assert eng.rollback_target() == "firefox-14"
+
+    inv._prune_old_engine_builds(keep="firefox-16", log=lambda m: None)
+
+    # The spared build is the ACTIVE one, not the way back.
+    assert (tmp_path / "firefox-15").exists()
+    assert eng.active_build() == "firefox-15"
+    assert not (tmp_path / "firefox-14").exists(), (
+        "the rollback target was pruned — retention's slot went to the active "
+        "build because `keep` is above the cap (PS-51, stated limit)"
+    )
+    assert eng.rollback_target() == "", (
+        "with `keep` above the cap the revert is refused after the prune; if "
+        "this now returns a build, retention has been changed and the "
+        "RETENTION docstring's stated limit needs updating with it"
+    )
+
+
+def test_prune_superseded_builds_cleans_stale_pinned_at_startup(monkeypatch, tmp_path):
+    # #213: an upgrade that happened on an earlier run left ~600MB of stale
+    # builds behind (the old prune kept them). The startup housekeeping prune
+    # reclaims them now that firefox-16 is active — without a fresh download.
+    #
+    # PS-51: depth-1 retention spares the highest build below the active one
+    # (firefox-15, the rollback target). firefox-14 is the genuinely stale
+    # build this test is about — two updates back, no way to reach it from the
+    # UI, and nothing but dead weight. Housekeeping still reclaims it, which is
+    # the #213 promise; what changed is that the reclaim floor is now one build
+    # lower, not that it stopped happening.
+    _fake_cache(
+        monkeypatch,
+        tmp_path,
+        [
+            ("firefox-14", True, True),   # two back, stale → reclaimed
+            ("firefox-15", True, True),   # retained rollback target (PS-51)
             ("firefox-16", True, True),   # active
         ],
         binary_version="firefox-16",
     )
     logs = []
     inv.prune_superseded_builds(log=logs.append)
-    assert not (tmp_path / "firefox-15").exists()
+    assert not (tmp_path / "firefox-14").exists()
+    assert (tmp_path / "firefox-15").exists(), (
+        "the highest build below the active one is the retained rollback "
+        "target — housekeeping must not reclaim the way back (PS-51)"
+    )
     assert (tmp_path / "firefox-16").exists()
-    assert any("firefox-15" in m for m in logs)
+    assert any("firefox-14" in m for m in logs)
 
 
 def test_prune_superseded_builds_keeps_sole_engine(monkeypatch, tmp_path):
@@ -690,7 +793,12 @@ def test_prune_defers_while_a_profile_is_running(monkeypatch, tmp_path):
 
 def test_prune_proceeds_when_no_profile_is_running(monkeypatch, tmp_path):
     # The guard defers only while something is actually running: with the
-    # provider reporting "none", pruning reclaims exactly what it always did.
+    # provider reporting "none", pruning reclaims what it is allowed to.
+    #
+    # PS-51: firefox-15 is now the retained rollback target, so the build that
+    # proves "the prune ran" is firefox-14. This test is about the in-use
+    # GUARD, not the retention floor — the claim being defended is that a
+    # provider reporting "none" lets the prune proceed and logs no deferral.
     _fake_cache(
         monkeypatch,
         tmp_path,
@@ -706,7 +814,9 @@ def test_prune_proceeds_when_no_profile_is_running(monkeypatch, tmp_path):
     inv._prune_old_engine_builds(keep="firefox-16", log=logs.append)
 
     assert not (tmp_path / "firefox-14").exists()
-    assert not (tmp_path / "firefox-15").exists()
+    assert (tmp_path / "firefox-15").exists(), (
+        "retained rollback target (PS-51) — the prune ran, it just has a floor"
+    )
     assert (tmp_path / "firefox-16").exists()
     assert not any("running" in m for m in logs), logs
 
@@ -741,12 +851,22 @@ def test_prune_with_no_provider_wired_behaves_exactly_as_before(monkeypatch, tmp
     _fake_cache(
         monkeypatch,
         tmp_path,
-        [("firefox-14", True, True), ("firefox-16", True, True)],
+        [
+            ("firefox-13", True, True),
+            ("firefox-14", True, True),
+            ("firefox-16", True, True),
+        ],
         binary_version="firefox-15",
     )
     monkeypatch.setattr(eng, "_in_use_provider", None)
     inv._prune_old_engine_builds(keep="firefox-16")
-    assert not (tmp_path / "firefox-14").exists()
+    # PS-51: firefox-14 is now the retained rollback target, so firefox-13 is
+    # what proves the prune actually ran. The claim under test is unchanged —
+    # an unset provider must not fail closed and stop reclaiming disk.
+    assert not (tmp_path / "firefox-13").exists()
+    assert (tmp_path / "firefox-14").exists(), (
+        "retained rollback target (PS-51) — the prune ran, it just has a floor"
+    )
 
 
 def test_prune_proceeds_when_the_provider_raises(monkeypatch, tmp_path):
@@ -755,7 +875,11 @@ def test_prune_proceeds_when_the_provider_raises(monkeypatch, tmp_path):
     _fake_cache(
         monkeypatch,
         tmp_path,
-        [("firefox-14", True, True), ("firefox-16", True, True)],
+        [
+            ("firefox-13", True, True),
+            ("firefox-14", True, True),
+            ("firefox-16", True, True),
+        ],
         binary_version="firefox-15",
     )
 
@@ -765,7 +889,12 @@ def test_prune_proceeds_when_the_provider_raises(monkeypatch, tmp_path):
     monkeypatch.setattr(eng, "_in_use_provider", boom)
     logs = []
     inv._prune_old_engine_builds(keep="firefox-16", log=logs.append)
-    assert not (tmp_path / "firefox-14").exists()
+    # PS-51: firefox-14 is the retained rollback target, so firefox-13 is what
+    # proves the prune proceeded despite the broken oracle.
+    assert not (tmp_path / "firefox-13").exists()
+    assert (tmp_path / "firefox-14").exists(), (
+        "retained rollback target (PS-51) — the prune ran, it just has a floor"
+    )
     # Failing open degrades back into the exact deletion this guard exists to
     # prevent, so it must not do so SILENTLY: the raise is diagnosable, and the
     # message carries the cause rather than just noting a failure.

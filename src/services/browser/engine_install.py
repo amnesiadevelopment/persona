@@ -172,11 +172,127 @@ def installed_builds() -> list[str]:
         return []
 
 
+def pinned_build() -> str:
+    """The build an operator deliberately reverted to, or "" when they never
+    did. Read through a try: engine_install sits below core.settings in no
+    import cycle today, but a settings file that cannot be read must degrade
+    into "no pin" (normal updating) rather than break every launch."""
+    try:
+        from ...core import settings
+
+        return settings.engine_build_pin()
+    except Exception:
+        return ""
+
+
+def rollback_target() -> str:
+    """The retained previous build an operator can go BACK to — the highest
+    complete installed build strictly below the one launches currently use —
+    or "" when there is nothing to go back to.
+
+    This is the whole "can I undo this update?" question as one call: "" means
+    the gesture must not be offered, because a revert with no retained build
+    is a button that cannot work."""
+    from ..engine.firefox import build_number
+
+    current = build_number(active_build())
+    if current < 0:
+        return ""
+    lower = [b for b in installed_builds() if 0 <= build_number(b) < current]
+    return lower[-1] if lower else ""
+
+
+def revert_to_previous_build(log=None) -> str:
+    """Go BACK to the retained previous build. Returns the build now active, or
+    "" when the revert was refused.
+
+    This is the operator's undo for a bad update, and it MOVES NO BYTES: both
+    builds are already unpacked in their own versioned cache dirs, so going
+    back is a change of which one launches. That is why it is instant and
+    cannot half-succeed — there is no promotion here to fail, and so nothing
+    for the promotion rollback in httpdl/engine.updater to protect. This sits
+    beside that logic; it does not touch it.
+
+    Refused (returns "") in exactly two cases:
+      * nothing retained to go back to — see rollback_target;
+      * a profile is RUNNING. Firefox loads lazily from its build dir all
+        session long, so a live session is executing from the tree it was
+        launched with. Repointing launches mid-session would not disturb that
+        process, but the next prune reads the pin, and the operator would
+        reasonably expect the revert to apply to what they are looking at. The
+        honest answer is to make them close their profiles rather than hand
+        back a half-applied revert.
+    """
+    target = rollback_target()
+    if not target:
+        if log:
+            log(
+                "Firefox engine: nothing to go back to — only one build is "
+                "installed"
+            )
+        return ""
+    if _engine_in_use(log=log):
+        if log:
+            log(
+                "Firefox engine: close your running profiles before going back "
+                "to an earlier build"
+            )
+        return ""
+    try:
+        from ...core import settings
+
+        settings.set_engine_build_pin(target)
+    except Exception as e:
+        if log:
+            log(f"Firefox engine: couldn't record the revert ({e})")
+        return ""
+    if log:
+        log(
+            f"Firefox engine: went back to {target} — automatic updates are "
+            "paused until you resume them"
+        )
+    return target
+
+
+def resume_engine_updates(log=None) -> None:
+    """Clear the pin: the operator saying "go forward again". Launches resolve
+    the newest installed build once more and the automatic update resumes.
+
+    The build they had reverted FROM is still on disk (the pin kept it from
+    being pruned, and it is the newest build), so resuming is as instant as the
+    revert was — it does not re-download anything."""
+    try:
+        from ...core import settings
+
+        settings.set_engine_build_pin("")
+    except Exception as e:
+        if log:
+            log(f"Firefox engine: couldn't clear the pin ({e})")
+        return
+    if log:
+        log("Firefox engine: automatic updates resumed")
+
+
 def active_build() -> str:
     """The firefox-NN build launches use: the highest complete installed
     build, or the package's pinned BINARY_VERSION when nothing is installed
-    yet (that's the build the first download fetches)."""
+    yet (that's the build the first download fetches).
+
+    An operator PIN wins over "highest", and that inversion is the entire
+    revert gesture: going back to a build already on disk is expressed by
+    changing which installed build is active, not by moving any bytes. So a
+    revert is instant and cannot half-succeed — there is no promotion to fail.
+
+    A pin naming a build that is NOT installed is IGNORED rather than
+    honoured-into-nothing: returning a build with no tree on disk would make
+    every launch resolve a path that does not exist. A pin can only outlive
+    its build via hand-editing or a hand-deleted cache dir (a pinned build is
+    prune-immune), and the safe reading of that is the ordinary one — launch
+    the newest build that actually exists."""
     builds = installed_builds()
+    pin = pinned_build()
+    if pin and pin in builds:
+        return pin
     if builds:
         return builds[-1]
     try:
@@ -462,7 +578,61 @@ def _prune_old_engine_builds(keep: str, log=None) -> None:
     it and an rmtree below is still exposed — this narrows the window, it does
     not close it. Closing it needs per-session build provenance, which nothing
     records today (the launcher keeps only the Popen per name); treat this as a
-    strong default, not a hard guarantee."""
+    strong default, not a hard guarantee.
+
+    RETENTION — WHY THIS NO LONGER PRUNES EVERYTHING BELOW `keep`
+    -------------------------------------------------------------
+    Pruning every lower build is what made a bad update final: the moment a new
+    build was whole, the one that WORKED was gone, and going back needed a
+    download of a build upstream may not even still publish. So exactly ONE
+    build below `keep` is spared — the rollback target — and the operator's
+    pinned build is spared unconditionally.
+
+    The policy is a DEPTH, not a duration, which is what keeps the footprint
+    bounded without a timer nobody would ever see run: at most one retained
+    previous build (~320-600MB) beyond the active one. It is not a growing
+    archive — each update's retained build REPLACES the last one, so the second
+    slot is reused forever rather than accumulating. A build leaves disk when a
+    newer update supersedes it out of that one slot, or immediately when the
+    operator clears their pin and the next prune runs.
+
+    The cap is 2 builds normally, and 3 only while a pin holds a build that is
+    neither the newest nor the rollback target — reachable solely by a
+    deliberate revert, and it collapses back to 2 the moment the pin is
+    cleared.
+
+    WHERE THE POLICY DOES NOT DELIVER A WAY BACK (stated, not fixed)
+    ----------------------------------------------------------------
+    Retention is measured below `keep`, and normally `keep` IS the active
+    build, so the spared build is the one a revert goes TO. When `keep` is
+    ABOVE the #405 visibility cap those come apart, and the slot is spent on
+    active_build() itself. Measured, with BINARY_VERSION=firefox-15 and 16
+    installed (installed_builds -> [13,14,15], active_build -> firefox-15):
+    `keep=firefox-16` spares firefox-15 — the build launches USE — prunes the
+    real target firefox-14, and leaves rollback_target() == "", so the revert
+    is refused. Retention yields no undo in that configuration.
+
+    LEFT AS-IS DELIBERATELY, for two reasons.
+
+    It is not reachable through the app: `keep` only exceeds BINARY_VERSION via
+    install_engine_build, and fetch_latest marks any build above the pin
+    compatible=False (engine/firefox.py), which both _auto_update_engine2 and
+    the click path gate on. The reachable stranded-newer-install path runs
+    through prune_superseded_builds, whose `keep` comes from the already-capped
+    installed_builds() — there the revert survives correctly.
+
+    And the obvious alternative is measurably WORSE, not better. Measuring
+    retain_n below active_build() instead, in that same fixture, spares
+    firefox-14 and prunes firefox-15 — deleting the build that LAUNCHES,
+    dropping active_build() to firefox-14 — and rollback_target() is STILL "".
+    It trades a missing undo for a deleted running engine and buys nothing.
+
+    A genuine fix would have to keep TWO visible builds when the cap binds
+    (i.e. spare below active_build() as well as keep `keep` itself), which
+    raises the floor to 3 builds in a case no operator can currently reach.
+    Not worth the footprint until it is reachable. Pinned by
+    test_prune_with_keep_above_cap_leaves_no_rollback_target so this limit
+    fails loudly if someone makes it reachable."""
     if _engine_in_use(log=log):
         if log:
             log(
@@ -485,11 +655,30 @@ def _prune_old_engine_builds(keep: str, log=None) -> None:
         return
     import shutil
 
+    # The one build below `keep` that must survive, so a bad update can be
+    # undone from the machine. Highest-below-keep, computed over COMPLETE
+    # installs only (installed_builds already rejects half-extracted dirs), so
+    # the slot is never spent on a build that could not be launched anyway.
+    retain_n = -1
+    for b in installed_builds():
+        n_b = build_number(b)
+        if 0 <= n_b < keep_n and n_b > retain_n:
+            retain_n = n_b
+    # A pinned build is the one the operator is DELIBERATELY on. Pruning it
+    # would delete the tree launches are currently resolving — prune's `keep`
+    # is the highest installed build, which is exactly NOT the pinned one after
+    # a revert.
+    pin_n = build_number(pinned_build())
+
     for d in root.iterdir():
         tag = d.name
         n = build_number(tag)
         if n < 0 or n >= keep_n:
             continue
+        if n == retain_n:
+            continue  # the retained previous build — the undo path
+        if n >= 0 and n == pin_n:
+            continue  # the build the operator reverted to
         # Prune a build we fully installed (has our marker) OR the shipped
         # pinned build now that a newer one is active. Any other markerless
         # dir is a half-finished download — leave it for a later resume.
@@ -510,17 +699,24 @@ def prune_superseded_builds(log=None) -> None:
 
     _prune_old_engine_builds only runs right after a fresh download, so a build
     that went stale on an EARLIER run (or before this cleanup existed) would sit
-    forever. Only prunes when a strictly-higher build is active, so it never
-    touches the sole installed engine."""
+    forever. Only prunes when a strictly-higher build exists, so it never
+    touches the sole installed engine.
+
+    `keep` is the HIGHEST installed build, deliberately not active_build(): a
+    revert makes those two differ, and passing the pinned (lower) build would
+    invert this into pruning everything ABOVE it — deleting the newest build
+    the instant an operator went back one. Retention is measured from the
+    newest build on disk; which build LAUNCHES is a separate question that
+    active_build() answers, and the pin is honoured inside the prune itself."""
     from ..engine.firefox import build_number
 
     builds = installed_builds()
     if len(builds) < 2:
-        return  # nothing older than the active build to reclaim
-    active = builds[-1]
-    if build_number(active) < 0:
+        return  # nothing older than the newest build to reclaim
+    newest = builds[-1]
+    if build_number(newest) < 0:
         return
-    _prune_old_engine_builds(keep=active, log=log)
+    _prune_old_engine_builds(keep=newest, log=log)
 
 
 def _resumable_download(
