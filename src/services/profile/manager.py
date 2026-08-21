@@ -77,6 +77,12 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
         # profile dir out from under a live browser (corrupt cache / Windows
         # rmtree failure). No-op by default (headless/tests).
         self._stop_hook: "Callable[[str], None] | None" = None
+        # Set by the app once the launcher exists: called with a profile name
+        # whose IDENTITY has gone away (delete, wipe, rename-away, overwrite),
+        # so per-name state the launcher holds is not inherited by whatever
+        # takes the name next. Distinct from _stop_hook above, which is about a
+        # LIVE session; see set_forget_identity_hook. No-op by default.
+        self._forget_identity_hook: "Callable[[str], None] | None" = None
         # Serializes load+save so a concurrent read during a bulk import/tagging
         # flow can't see a half-written file and a concurrent add can't be lost.
         self._lock = threading.RLock()
@@ -477,6 +483,27 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                 # new name (process.py). Must come AFTER the dir rename, whose
                 # failure returns early and must leave everything untouched.
                 self._remove_window_entry(original_name)
+                # The ORIGINAL name is now free, so the launcher must stop
+                # holding state under it. Same site and same reason as the
+                # window entry above: a rename re-keys `self.profiles` and the
+                # launcher is never told, so a refusal recorded against
+                # `original_name` is orphaned there — invisible to the operator
+                # (the card now looks under the NEW name) while sitting on a key
+                # a future profile can take, which turns the quiet failure into
+                # the dishonest one.
+                #
+                # DROPPED, NOT MOVED to the new key, and that is a deliberate
+                # choice rather than a shortcut. The refusal's `detail` is the
+                # settled sentence composed in process.py with the profile named
+                # inside it ("Profile 'acme' has proxy ... Refusing to launch"),
+                # so re-keying it would render a chip whose full text names a
+                # profile that no longer exists. Restating the sentence to match
+                # is exactly the forking this design refuses (see refusal.py).
+                # "No verdict yet" is a state the card renders honestly, and the
+                # next launch attempt re-establishes the real answer against the
+                # proxy's CURRENT evidence — which is the only answer worth
+                # showing anyway.
+                self._forget_identity(original_name)
 
                 # Freeze a PRE-FIELD profile's seed to what it presents RIGHT
                 # NOW, before the new name can re-derive it.
@@ -729,6 +756,39 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
             except Exception as e:
                 logger.warning("stop hook failed for %s: %s", name, e)
 
+    def set_forget_identity_hook(
+        self, hook: "Callable[[str], None] | None"
+    ) -> None:
+        """Register the callback fired when a profile NAME stops meaning what it
+        meant — deleted, wiped, renamed away, or overwritten by an import.
+
+        A SECOND hook rather than more work on ``_stop_hook``, because the two
+        answer different questions and the difference is load-bearing. The stop
+        hook means "this browser must not be running while I touch its data
+        dir". This one means "the identity behind this name is gone; drop what
+        you were remembering ABOUT it". Session state must survive the first and
+        die on the second, so a caller that conflated them would either kill a
+        marker meant to outlive a teardown or keep one attached to a name a
+        different profile now holds.
+        """
+        self._forget_identity_hook = hook
+
+    def _forget_identity(self, name: str) -> None:
+        """Tell the launcher that ``name`` no longer identifies this profile.
+
+        Best-effort and swallowing, exactly like ``_stop_if_running``: this runs
+        on delete/wipe/rename paths that have already committed, and a failure to
+        drop a cached verdict must never turn a successful delete into a failed
+        one. The consequence of the swallow is a stale marker, which the next
+        launch attempt supersedes; the consequence of raising would be a
+        half-deleted profile.
+        """
+        if self._forget_identity_hook is not None:
+            try:
+                self._forget_identity_hook(name)
+            except Exception as e:
+                logger.warning("forget-identity hook failed for %s: %s", name, e)
+
     def delete_profile(self, name: str) -> bool:
         """Move a profile to the trash: it leaves the profile list and its data
         dir leaves the launchable area, but both are recoverable via
@@ -781,6 +841,22 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
             # on restore — a trashed profile leaves no more trace than a deleted
             # one did.
             self._remove_window_entry(name)
+            # The name is now free, so anything the launcher remembers under it
+            # would be inherited by whatever claims it next. A refused-launch
+            # verdict is the one that matters: left behind, a brand-new profile
+            # that has never been clicked renders a red "refused" chip aged
+            # against the current clock, i.e. "just now". _stop_if_running above
+            # does NOT cover this — it only tears down LIVE-session facts, and a
+            # refusal is deliberately built to outlive those.
+            #
+            # Fires for the trash move even though a restore can bring the
+            # profile back, and that is the honest direction: a restored profile
+            # carries NO verdict rather than a resurrected one. The refusal
+            # describes an attempt against a proxy whose state may have moved on
+            # entirely while the profile sat in the trash, and "no verdict yet"
+            # is a state the card already renders truthfully — the next launch
+            # re-establishes the real answer.
+            self._forget_identity(name)
             logger.info("Moved profile to trash: %s", name)
             return True
 
@@ -887,6 +963,10 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
             for name in names:
                 shutil.rmtree(self._data_path(name), ignore_errors=True)
                 self._remove_window_entry(name)
+                # Every name is now free — same reasoning as delete_profile, and
+                # a wipe frees them all at once, so a re-created profile taking
+                # any of these names would otherwise inherit a verdict.
+                self._forget_identity(name)
             self.profiles.clear()
             self.save_profiles()
         # Purge the trash as part of the wipe. A wipe that quietly parked fifty
@@ -1015,6 +1095,15 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                     profile.name, previous, profile.fingerprint_seed_value,
                 )
 
+            # An overwrite REPLACES the profile that held this name with a
+            # different record — the same identity-is-gone event as a delete,
+            # reached by a different door. Any verdict held under the name
+            # belongs to the profile being replaced, not to the one arriving, so
+            # it goes with it. Guarded on `overwrite` because a fresh import
+            # (the non-overwrite arm) took a name that was already free, and
+            # there is nothing to inherit.
+            if overwrite:
+                self._forget_identity(profile.name)
             self.profiles[profile.name] = profile
             self.save_profiles()
         logger.info("Registered imported profile: %s", profile.name)
