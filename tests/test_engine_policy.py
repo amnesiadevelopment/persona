@@ -575,11 +575,13 @@ def test_a_refused_build_is_not_offered_as_an_available_update(tmp_path, monkeyp
     pf.write_text(json.dumps({"max_tested_major": 148}))
     monkeypatch.setattr(app_mod.engine_policy, "POLICY_FILE", str(pf))
 
-    stub = SimpleNamespace(_engine_latest="149.0.8000.10")
+    # _engine_unverifiable_tag is the PS-49 digest refusal, empty here because
+    # this test is about the POLICY axis — but the predicate consults it.
+    stub = SimpleNamespace(_engine_latest="149.0.8000.10", _engine_unverifiable_tag="")
     assert app_mod.App._engine_update_available(stub) is False
 
     # ...while a good newer build IS offered
-    stub2 = SimpleNamespace(_engine_latest="148.0.9999.1")
+    stub2 = SimpleNamespace(_engine_latest="148.0.9999.1", _engine_unverifiable_tag="")
     assert app_mod.App._engine_update_available(stub2) is True
 
 
@@ -594,7 +596,8 @@ def test_a_declined_build_does_not_read_as_up_to_date(tmp_path, monkeypatch):
 
     logs = []
     stub = SimpleNamespace(
-        _engine_latest="", _engine_status="", _log=logs.append
+        _engine_latest="", _engine_status="", _engine_unverifiable_tag="",
+        _log=logs.append
     )
     # the helper consults the real availability predicate — bind it so the
     # policy gate under test actually runs rather than being stubbed away
@@ -608,6 +611,7 @@ def test_a_declined_build_does_not_read_as_up_to_date(tmp_path, monkeypatch):
     ui_stub = SimpleNamespace(
         _engine_latest="149.0.8000.10",
         _engine_status="engine pinned by your policy file",
+        _engine_unverifiable_tag="",
         engine_text=SimpleNamespace(value=""),
         _sidebar_host=None,
         _safe_update=lambda: None,
@@ -632,6 +636,7 @@ def test_an_ordinary_up_to_date_check_clears_a_stale_status(monkeypatch):
     stub = SimpleNamespace(
         _engine_latest="",
         _engine_status="engine pinned by your policy file",
+        _engine_unverifiable_tag="",
         _log=lambda m: None,
     )
     stub._engine_update_available = lambda: app_mod.App._engine_update_available(stub)
