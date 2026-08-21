@@ -599,7 +599,40 @@ def _prune_old_engine_builds(keep: str, log=None) -> None:
     The cap is 2 builds normally, and 3 only while a pin holds a build that is
     neither the newest nor the rollback target — reachable solely by a
     deliberate revert, and it collapses back to 2 the moment the pin is
-    cleared."""
+    cleared.
+
+    WHERE THE POLICY DOES NOT DELIVER A WAY BACK (stated, not fixed)
+    ----------------------------------------------------------------
+    Retention is measured below `keep`, and normally `keep` IS the active
+    build, so the spared build is the one a revert goes TO. When `keep` is
+    ABOVE the #405 visibility cap those come apart, and the slot is spent on
+    active_build() itself. Measured, with BINARY_VERSION=firefox-15 and 16
+    installed (installed_builds -> [13,14,15], active_build -> firefox-15):
+    `keep=firefox-16` spares firefox-15 — the build launches USE — prunes the
+    real target firefox-14, and leaves rollback_target() == "", so the revert
+    is refused. Retention yields no undo in that configuration.
+
+    LEFT AS-IS DELIBERATELY, for two reasons.
+
+    It is not reachable through the app: `keep` only exceeds BINARY_VERSION via
+    install_engine_build, and fetch_latest marks any build above the pin
+    compatible=False (engine/firefox.py), which both _auto_update_engine2 and
+    the click path gate on. The reachable stranded-newer-install path runs
+    through prune_superseded_builds, whose `keep` comes from the already-capped
+    installed_builds() — there the revert survives correctly.
+
+    And the obvious alternative is measurably WORSE, not better. Measuring
+    retain_n below active_build() instead, in that same fixture, spares
+    firefox-14 and prunes firefox-15 — deleting the build that LAUNCHES,
+    dropping active_build() to firefox-14 — and rollback_target() is STILL "".
+    It trades a missing undo for a deleted running engine and buys nothing.
+
+    A genuine fix would have to keep TWO visible builds when the cap binds
+    (i.e. spare below active_build() as well as keep `keep` itself), which
+    raises the floor to 3 builds in a case no operator can currently reach.
+    Not worth the footprint until it is reachable. Pinned by
+    test_prune_with_keep_above_cap_leaves_no_rollback_target so this limit
+    fails loudly if someone makes it reachable."""
     if _engine_in_use(log=log):
         if log:
             log(
