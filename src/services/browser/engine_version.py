@@ -89,14 +89,28 @@ class ChromiumVersion:
 def parse(tag: str) -> ChromiumVersion:
     """Read a release tag ('148.0.7778.215', 'v149.0.8000.10') into a version.
 
-    Raises ``EngineVersionUnreadableError`` when there is no leading numeric
-    component to read — this function has no default to fall back to, on
-    purpose.
+    Raises ``EngineVersionUnreadableError`` when the tag does not carry a real
+    BUILD — this function has no default to fall back to, on purpose.
 
-    A short tag is PADDED to four components ('149' → '149.0.0.0') rather than
-    refused: the major is the part every advertised shape actually needs, so a
-    tag that carries one is readable even if upstream stopped there. Trailing
-    non-numeric junk is dropped component-wise, which keeps a tag like
+    A TAG TOO SHORT TO YIELD A BUILD IS REFUSED, NOT PADDED. This is the one
+    decision in this function worth stating, because the tempting answer is the
+    wrong one. Padding '151' out to '151.0.0.0' looks harmless — the major is
+    all the user agent and the brand list need — but ``full`` also feeds
+    ``uaFullVersion``/``fullVersionList``, and the module docstring above names
+    a ``.0.0`` full version as a TELL that no real Chrome emits. Padding would
+    therefore reintroduce by a side door exactly the defect this module was
+    written to remove, and it would do it INVISIBLY, which is the property that
+    made the old hardcoded constants dangerous in the first place. Refusing is
+    the same fail-closed answer an unreadable version already gets, for the same
+    reason: persona does not advertise a version it cannot read.
+
+    So at least three numeric components are required (major.minor.build). Only
+    the fourth is padded, because a patch of 0 is a real value real builds ship
+    ('151.0.8000.0' is an ordinary version, '151.0.0.0' is not). Every
+    fingerprint-chromium tag observed to date is four-component, so this refuses
+    nothing upstream currently publishes.
+
+    Trailing non-numeric junk is dropped component-wise, which keeps a tag like
     '149.0.8000.10-beta' readable as the version it plainly states.
     """
     raw = (tag or "").strip().lstrip("vV")
@@ -106,11 +120,13 @@ def parse(tag: str) -> ChromiumVersion:
         if not digits:
             break
         parts.append(str(int(digits)))
-    if not parts:
+    if len(parts) < 3:
         raise EngineVersionUnreadableError(
-            f"cannot read a Chromium version from engine tag {tag!r}"
+            f"cannot read a Chromium version from engine tag {tag!r}: a tag must "
+            "carry major.minor.build to yield a real full version; persona will "
+            "not pad one into a build it cannot read"
         )
-    parts = (parts + ["0", "0", "0"])[:4]
+    parts = (parts + ["0"])[:4]
     return ChromiumVersion(full=".".join(parts))
 
 

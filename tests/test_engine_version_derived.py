@@ -80,8 +80,7 @@ def test_the_installed_version_is_read_from_the_engines_own_record(monkeypatch):
     [
         ("151.0.7778.215", "151.0.7778.215"),
         ("v151.0.7778.215", "151.0.7778.215"),   # a 'v' prefix is common upstream
-        ("151", "151.0.0.0"),                    # short tags pad, the major is what matters
-        ("151.0", "151.0.0.0"),
+        ("151.0.8000", "151.0.8000.0"),          # only the PATCH pads; 0 is a real patch
         ("151.0.8000.10-beta", "151.0.8000.10"),  # trailing junk drops component-wise
     ],
 )
@@ -96,6 +95,37 @@ def test_an_unreadable_version_raises_instead_of_defaulting(junk):
     considered answer — loud, and recoverable by an engine check."""
     with pytest.raises(EngineVersionUnreadableError):
         parse(junk)
+
+
+@pytest.mark.parametrize("short", ["151", "151.0", "v151", "151.0-beta"])
+def test_a_tag_too_short_to_carry_a_build_is_refused_not_padded(short):
+    """A tag with no BUILD component is refused for the same reason an
+    unreadable one is: persona does not advertise a version it cannot read.
+
+    Padding '151' out to '151.0.0.0' is the tempting answer — the major is all
+    the user agent and the brand list need. But ``full`` also feeds
+    ``uaFullVersion``/``fullVersionList``, where a ``.0.0`` version is a TELL
+    that no real Chrome emits; the old hardcoded constants advertised exactly
+    that, and it is one of the defects this module removed. Padding would
+    reintroduce it by a side door, invisibly — which is the property that made
+    the constants dangerous in the first place.
+    """
+    with pytest.raises(EngineVersionUnreadableError):
+        parse(short)
+
+
+def test_padding_never_produces_the_frozen_shape_in_the_full_version_list():
+    """The rule stated as the invariant it protects, rather than per-tag.
+
+    Whatever ``parse`` accepts, ``full`` must never come out equal to the
+    frozen UA form (``reduced``) — that equality IS the tell. Note this is a
+    real distinction and not a blanket ban on zeros: '151.0.8000.0' has a zero
+    patch and is a perfectly ordinary build, and it must still parse.
+    """
+    v = parse("151.0.8000.0")
+    assert v.full == "151.0.8000.0"
+    assert v.reduced == "151.0.0.0"
+    assert v.full != v.reduced, "a parsed full version must not be the frozen UA shape"
 
 
 # --------------------------------------------------------------------------
