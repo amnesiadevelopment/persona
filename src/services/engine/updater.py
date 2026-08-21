@@ -592,8 +592,25 @@ def download_engine(
     # Re-verified rather than trusted on presence: the file has been sitting on
     # disk, and this is the same fail-closed digest gate the download itself
     # applies, so a truncated or tampered leftover is discarded, not installed.
-    have_asset = os.path.isfile(asset_path) and httpdl.verify_file(
-        asset_path, digest, allow_missing=allow_unverified
+    #
+    # NOTE the deliberate absence of `allow_missing=allow_unverified` here, which
+    # is what makes that promise true. `allow_missing` is an opt-in to accept
+    # bytes THIS RUN JUST FETCHED from the source when no digest was published —
+    # a weak provenance, but a provenance. A leftover has none: verify_file
+    # short-circuits on a missing digest and returns allow_missing WITHOUT EVER
+    # HASHING, so passing it through would make have_asset True for any file that
+    # happens to hold this name, and promote it into the engine tree unread. So
+    # the reuse path asks the stricter question — is there a digest, and does the
+    # file match it — and re-downloads whenever it cannot verify.
+    #
+    # This costs the optimisation nothing: the deferral that motivated reuse
+    # always carries the digest its first pass verified against, and the one
+    # caller that sets allow_unverified (ensure_engine's Linux predictable-URL
+    # fallback, `not digest and IS_LINUX`) has no digest to reuse against anyway.
+    have_asset = (
+        not httpdl.digest_missing(digest)
+        and os.path.isfile(asset_path)
+        and httpdl.verify_file(asset_path, digest)
     )
     if not have_asset and not _download_to(
         asset_path, url, timeout, digest, progress, allow_missing=allow_unverified
