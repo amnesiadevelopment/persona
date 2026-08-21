@@ -92,23 +92,41 @@ def parse(tag: str) -> ChromiumVersion:
     Raises ``EngineVersionUnreadableError`` when the tag does not carry a real
     BUILD — this function has no default to fall back to, on purpose.
 
-    A TAG TOO SHORT TO YIELD A BUILD IS REFUSED, NOT PADDED. This is the one
+    A TAG THAT WOULD ADVERTISE THE FROZEN UA FORM IS REFUSED. This is the one
     decision in this function worth stating, because the tempting answer is the
-    wrong one. Padding '151' out to '151.0.0.0' looks harmless — the major is
+    wrong one. Emitting '151.0.0.0' as ``full`` looks harmless — the major is
     all the user agent and the brand list need — but ``full`` also feeds
     ``uaFullVersion``/``fullVersionList``, and the module docstring above names
-    a ``.0.0`` full version as a TELL that no real Chrome emits. Padding would
-    therefore reintroduce by a side door exactly the defect this module was
-    written to remove, and it would do it INVISIBLY, which is the property that
-    made the old hardcoded constants dangerous in the first place. Refusing is
-    the same fail-closed answer an unreadable version already gets, for the same
-    reason: persona does not advertise a version it cannot read.
+    a ``.0.0`` full version as a TELL that no real Chrome emits. Worse, it is
+    the tell a checker can actually SEE: it cross-references ``uaFullVersion``
+    against the reduced UA, and on such a tag the two fields come back
+    byte-identical. Refusing is the same fail-closed answer an unreadable
+    version already gets, for the same reason: persona does not advertise a
+    version it cannot state a real build for.
 
-    So at least three numeric components are required (major.minor.build). Only
-    the fourth is padded, because a patch of 0 is a real value real builds ship
-    ('151.0.8000.0' is an ordinary version, '151.0.0.0' is not). Every
-    fingerprint-chromium tag observed to date is four-component, so this refuses
-    nothing upstream currently publishes.
+    TWO GUARDS, BECAUSE NEITHER SUBSUMES THE OTHER — and getting this wrong is
+    how the first attempt at this rule shipped a hole:
+
+    * **the value guard** (``full != reduced``, checked below against the very
+      property the surfaces read) is the invariant proper. It is a statement
+      about component VALUES, so it catches '151.0.0.0' — four components,
+      nothing padded, straight through any count-based check.
+    * **the count guard** (three stated components) catches what the value
+      guard cannot: '151.5' normalises to '151.5.0.0', which is NOT equal to
+      the frozen form and so passes the invariant, while still stating no build
+      at all. A tag has to actually say major.minor.build.
+
+    Only the fourth component is padded, because a patch of 0 is a real value
+    real builds ship ('151.0.8000.0' is an ordinary version, '151.0.0.0' is
+    not). Every fingerprint-chromium tag observed to date is four-component, so
+    this refuses nothing upstream currently publishes.
+
+    What this deliberately does NOT rule out: a tag stating an implausibly
+    small build ('151.0.0.5' parses). That would be a claim about which build
+    NUMBERS are realistic, which persona has no evidence for and no business
+    guessing — whereas ``full == reduced`` is a defect persona can prove,
+    because it is the equality a checker performs. The guard is positioned on
+    the property that is observable, not on plausibility.
 
     Trailing non-numeric junk is dropped component-wise, which keeps a tag like
     '149.0.8000.10-beta' readable as the version it plainly states.
@@ -127,7 +145,23 @@ def parse(tag: str) -> ChromiumVersion:
             "not pad one into a build it cannot read"
         )
     parts = (parts + ["0"])[:4]
-    return ChromiumVersion(full=".".join(parts))
+    version = ChromiumVersion(full=".".join(parts))
+    # THE INVARIANT, checked against the very property the surfaces read rather
+    # than against a proxy for it. ``full`` feeds uaFullVersion/fullVersionList
+    # and ``reduced`` feeds the UA; a checker cross-references the two, so a tag
+    # whose full version IS the frozen UA form hands it byte-identical fields —
+    # the tell this module exists to remove. Note this cannot be folded into the
+    # count guard above: '151.0.0.0' states four components and pads nothing,
+    # while '151.5' fails the count guard yet satisfies this one.
+    if version.full == version.reduced:
+        raise EngineVersionUnreadableError(
+            f"refusing Chromium engine tag {tag!r}: it states no real build — its "
+            f"full version ({version.full}) is identical to the frozen user-agent "
+            "form, a shape no real Chrome reports; advertising it would make "
+            "uaFullVersion and the UA agree exactly, which is the tell persona "
+            "derives the version to avoid"
+        )
+    return version
 
 
 def installed_chromium_version() -> ChromiumVersion:
