@@ -1,0 +1,244 @@
+Intoli.com tests + additions
+Test Name	Result
+User Agent
+(Old)
+	Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0
+WebDriver
+(New)
+	missing (passed)
+WebDriver Advanced	passed
+Chrome
+(New)
+	missing (failed)
+Permissions
+(New)
+	prompt
+Plugins Length
+(Old)
+	5
+Plugins is of type PluginArray	passed
+Languages
+(Old)
+	pl-PL,pl
+WebGL Vendor	Google Inc. (NVIDIA)
+WebGL Renderer	ANGLE (NVIDIA, NVIDIA GeForce GTX 980 Direct3D11 vs_5_0 ps_5_0), or similar
+Broken Image Dimensions	24x24
+Fingerprint Scanner tests
+PHANTOM_UA	ok	
+{
+     "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0"
+}
+
+PHANTOM_PROPERTIES	ok	
+{
+     "attributesFound": [
+          false,
+          false,
+          false
+     ]
+}
+
+PHANTOM_ETSL	ok	
+{
+     "etsl": 37
+}
+
+PHANTOM_LANGUAGE	ok	
+{
+     "languages": [
+          "pl-PL",
+          "pl"
+     ]
+}
+
+PHANTOM_WEBSOCKET	ok	
+{}
+
+MQ_SCREEN	ok	
+{}
+
+PHANTOM_OVERFLOW	ok	
+{
+     "depth": 24012,
+     "errorMessage": "too much recursion",
+     "errorName": "InternalError",
+     "errorStacklength": 10112
+}
+
+PHANTOM_WINDOW_HEIGHT	ok	
+{
+     "wInnerHeight": 947,
+     "wOuterHeight": 1032,
+     "wOuterWidth": 1920,
+     "wInnerWidth": 1920,
+     "wScreenX": 0,
+     "wPageXOffset": 0,
+     "wPageYOffset": 0,
+     "cWidth": 1904,
+     "cHeight": 1565,
+     "sWidth": 1920,
+     "sHeight": 1080,
+     "sAvailWidth": 1920,
+     "sAvailHeight": 1032,
+     "sColorDepth": 24,
+     "sPixelDepth": 24,
+     "wDevicePixelRatio": 1
+}
+
+HEADCHR_UA	ok	
+{
+     "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0"
+}
+
+HEADCHR_CHROME_OBJ	ok	
+{}
+
+HEADCHR_PERMISSIONS	ok	
+{}
+
+HEADCHR_PLUGINS	ok	
+{
+     "plugins": [
+          "PDF Viewer::Portable Document Format::internal-pdf-viewer::__application/pdf~pdf~Portable Document Format,text/pdf~pdf~Portable Document Format",
+          "Chrome PDF Viewer::Portable Document Format::internal-pdf-viewer::__application/pdf~pdf~Portable Document Format,text/pdf~pdf~Portable Document Format",
+          "Chromium PDF Viewer::Portable Document Format::internal-pdf-viewer::__application/pdf~pdf~Portable Document Format,text/pdf~pdf~Portable Document Format",
+          "Microsoft Edge PDF Viewer::Portable Document Format::internal-pdf-viewer::__application/pdf~pdf~Portable Document Format,text/pdf~pdf~Portable Document Format",
+          "WebKit built-in PDF::Portable Document Format::internal-pdf-viewer::__application/pdf~pdf~Portable Document Format,text/pdf~pdf~Portable Document Format"
+     ]
+}
+
+HEADCHR_IFRAME	ok	
+{}
+
+CHR_DEBUG_TOOLS	ok	
+{}
+
+SELENIUM_DRIVER	ok	
+{
+     "attributesFound": [
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false
+     ]
+}
+
+CHR_BATTERY	ok	
+{}
+
+CHR_MEMORY	ok	
+{}
+
+TRANSPARENT_PIXEL	ok	
+{
+     "0": 0,
+     "1": 0,
+     "2": 0,
+     "3": 0
+}
+
+SEQUENTUM	ok	
+{}
+
+VIDEO_CODECS	ok	
+{
+     "h264": "probably"
+}
+Some details
+navigator.cookieEnabled	true
+navigator.doNotTrack	unspecified
+navigator.msDoNotTrack	undefined
+navigator.sendBeacon	
+navigator.cookieEnabled	true
+navigator.userAgent	Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0
+navigator.appName	Netscape
+navigator.vendor	
+navigator.appCodeName	Mozilla
+navigator.getUserMedia	
+navigator.sayswho	undefined
+navigator.javaEnabled	false
+navigator.plugins	{"0":{"0":{},"1":{}},"1":{"0":{},"1":{}},"2":{"0":{},"1":{}},"3":{"0":{},"1":{}},"4":{"0":{},"1":{}}}
+screen.width	1920
+screen.height	1080
+screen.colorDepth	24
+navigator.language	pl-PL
+navigator.loadPurpose	undefined
+navigator.platform	Win32
+navigator.mediaDevices	audioinput: id =
+videoinput: id =
+
+navigator.getBattery details	
+Canvas1	
+Hash: 995078238
+
+Canvas2	
+Hash: 995078238
+
+Canvas3 (iframe sandbox)	
+Hash: 995078238
+
+Canvas4 (iframe sandbox)	
+Hash: 995078238
+
+Canvas5 (iframe)	
+Hash: 995078238
+Fp-collect info
+{
+     "plugins": [
+          "PDF Viewer::Portable Document Format::internal-pdf-viewer::__application/pdf~pdf~Portable Document Format,text/pdf~pdf~Portable Document Format",
+          "Chrome PDF Viewer::Portable Document Format::internal-pdf-viewer::__application/pdf~pdf~Portable Document Format,text/pdf~pdf~Portable Document Format",
+          "Chromium PDF Viewer::Portable Document Format::internal-pdf-viewer::__application/pdf~pdf~Portable Document Format,text/pdf~pdf~Portable Document Format",
+          "Microsoft Edge PDF Viewer::Portable Document Format::internal-pdf-viewer::__application/pdf~pdf~Portable Document Format,text/pdf~pdf~Portable Document Format",
+          "WebKit built-in PDF::Portable Document Format::internal-pdf-viewer::__application/pdf~pdf~Portable Document Format,text/pdf~pdf~Portable Document Format"
+     ],
+     "mimeTypes": [
+          "Portable Document Format~~application/pdf~~pdf",
+          "Portable Document Format~~text/pdf~~pdf"
+     ],
+     "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0",
+     "platform": "Win32",
+     "languages": [
+          "pl-PL",
+          "pl"
+     ],
+     "screen": {
+          "wInnerHeight": 947,
+          "wOuterHeight": 1032,
+          "wOuterWidth": 1920,
+          "wInnerWidth": 1920,
+          "wScreenX": 0,
+          "wPageXOffset": 0,
+          "wPageYOffset": 0,
+          "cWidth": 1904,
+          "cHeight": 1565,
+          "sWidth": 1920,
+          "sHeight": 1080,
+          "sAvailWidth": 1920,
+          "sAvailHeight": 1032,
+          "sColorDepth": 24,
+          "sPixelDepth": 24,
+          "wDevicePixelRatio": 1
+     },
+     "touchScreen": [
+          0,
+          false,
+          false
+     ],
+     "videoCard": [
+          "Google Inc. (NVIDIA)",
+          "ANGLE (NVIDIA, NVIDIA GeForce GTX 980 Direct3D11 vs_5_0 ps_5_0), or similar"
+     ],
+     "multimediaDe
