@@ -19,6 +19,10 @@ _ONBOARDING_KEY = "onboarding_done"
 _SERVER_KEY = "server_enabled"
 _AUTO_UPDATE_KEY = "auto_update"
 _LAST_VERSION_KEY = "last_seen_version"
+# The firefox-NN build the operator deliberately went BACK to. Empty (the
+# normal state) means "launch the newest installed build" — the pin exists
+# only after an explicit revert, and clearing it resumes normal updating.
+_ENGINE_PIN_KEY = "engine_build_pin"
 
 
 def _path() -> str:
@@ -152,3 +156,23 @@ def last_seen_version() -> str:
 
 def set_last_seen_version(version: str) -> None:
     set(_LAST_VERSION_KEY, str(version))
+
+
+def engine_build_pin() -> str:
+    """The firefox-NN build an operator deliberately reverted to, or "" when
+    they never did. "" is the normal state and means "launch the newest
+    installed build" — the pin is written only by an explicit revert.
+
+    A pin is a STANDING instruction, not a one-off launch flag: it survives
+    restarts, it makes the build prune-immune, and it holds the automatic
+    update off. Otherwise the unattended updater would put the operator back
+    on the build they just rejected, which is the whole failure this exists to
+    end."""
+    v = get(_ENGINE_PIN_KEY, "")
+    return v if isinstance(v, str) else ""
+
+
+def set_engine_build_pin(build: str) -> None:
+    """Pin launches to `build`, or pass "" to clear the pin and resume normal
+    updating (the operator saying "go forward again")."""
+    set(_ENGINE_PIN_KEY, str(build or ""))
