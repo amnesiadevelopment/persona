@@ -47,8 +47,27 @@ _NO_CERT = "(none)"
 def open_profile_dialog(
     page: ft.Page,
     proxy_service: IProxyService,
+    #: (name, proxy, os, search, pool, bookmarks, tags, notes, engine,
+    #: resolution, certificate) -> error message, or None on success.
+    #: The proxy position accepts a ``ProxyDirective`` as well as a name:
+    #: the dialog sends ``PROXY_NONE`` for a deliberate direct connection and
+    #: ``PROXY_UNCHANGED`` when it could not account for the profile's assigned
+    #: proxy, so that absence is never mistaken for "clear the assignment".
     on_save: Callable[
-        [str, str, str, str, str, list[str], list[str], str, str, str], str | None
+        [
+            str,
+            str | ProxyDirective,
+            str,
+            str,
+            str,
+            list[str],
+            list[str],
+            str,
+            str,
+            str,
+            str,
+        ],
+        str | None,
     ],
     profile: Profile | None = None,
     proxy_names: list[str] | None = None,
