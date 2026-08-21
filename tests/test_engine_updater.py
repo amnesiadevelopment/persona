@@ -404,3 +404,122 @@ def test_promotion_backup_moves_the_old_build_it_never_copies_it(monkeypatch, tm
     # same inode => renamed, not copied: O(1), no extra disk, bytes untouched
     assert seen_inode.get("backup") == old_inode
     assert (engine_dir / "chrome.exe").read_bytes() == b"NEW-EXE"
+
+
+def test_a_failed_rollback_keeps_the_backup_instead_of_deleting_it(
+    monkeypatch, tmp_path
+):
+    import os
+
+    import pytest
+
+    # The second-order failure. The rollback itself can fail — on Windows an
+    # antivirus scanning a freshly-written .exe raises PermissionError(32) on
+    # the restore's rename. If the promotion then dropped the backup anyway, the
+    # ONLY surviving copy of the working build would be deleted behind it: a
+    # failed upgrade would become no engine at all, which is strictly worse than
+    # the mixed tree this slice set out to fix. The backup must SURVIVE a
+    # rollback that could not be completed.
+    _force_os(monkeypatch, win=True)
+    engine_dir = tmp_path / "engine"
+    engine_dir.mkdir()
+    _populate_engine(engine_dir)
+    monkeypatch.setattr(updater, "ENGINE_DIR", str(engine_dir))
+    monkeypatch.setattr(updater, "ENGINE_BINARY", str(engine_dir / "chrome.exe"))
+
+    staging = engine_dir / ".staging"
+    staging.mkdir()
+    (staging / "chrome.exe").write_bytes(b"NEW-EXE")
+    (staging / "some.dll").write_bytes(b"NEW-DLL")
+
+    # fail the promotion mid-loop...
+    real_move = updater.shutil.move
+    calls = {"n": 0}
+
+    def failing_move(src, dst):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise OSError("No space left on device")
+        return real_move(src, dst)
+
+    # ...and then fail the ROLLBACK's rename too
+    backup_root = engine_dir / updater.BACKUP_NAME
+    real_replace = os.replace
+
+    def locked_replace(src, dst):
+        if str(src).startswith(str(backup_root)):
+            raise PermissionError(32, "The process cannot access the file")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(updater.shutil, "move", failing_move)
+    monkeypatch.setattr(os, "replace", locked_replace)
+
+    with pytest.raises(OSError):
+        updater._promote_staging(str(staging))
+
+    monkeypatch.undo()
+
+    # The working build is still on disk, recoverable by hand, because the
+    # backup was NOT deleted after a rollback that did not complete.
+    assert backup_root.exists()
+    recovered = list(backup_root.iterdir())
+    assert recovered, "the backup dir survived but is empty — nothing to recover"
+    assert (backup_root / "chrome.exe").read_bytes() == b"OLD-ENGINE-EXE"
+
+
+def test_a_rolled_back_promotion_removes_files_only_the_new_build_had(
+    monkeypatch, tmp_path
+):
+    import os
+
+    import pytest
+
+    # Restoring the old entries is not the whole rollback. An entry the NEW
+    # build introduces has no previous counterpart, so it is moved in with no
+    # backup — and if it is left behind, the rolled-back tree is STILL part old
+    # and part new, which is the shape this slice exists to prevent. Chromium
+    # upgrades routinely add files, so this is the ordinary case, not an edge.
+    _force_os(monkeypatch, win=True)
+    engine_dir = tmp_path / "engine"
+    engine_dir.mkdir()
+    _populate_engine(engine_dir)
+    monkeypatch.setattr(updater, "ENGINE_DIR", str(engine_dir))
+    monkeypatch.setattr(updater, "ENGINE_BINARY", str(engine_dir / "chrome.exe"))
+
+    staging = engine_dir / ".staging"
+    staging.mkdir()
+    (staging / "newlib.dll").write_bytes(b"NEW-ONLY-LIB")  # no old counterpart
+    (staging / "chrome.exe").write_bytes(b"NEW-EXE")
+    (staging / "some.dll").write_bytes(b"NEW-DLL")
+
+    # Force the new-build-only entry to be promoted FIRST, so it is definitely
+    # in place when the failure lands (os.listdir order is otherwise arbitrary).
+    real_listdir = updater.os.listdir
+
+    def newlib_first(path):
+        names = real_listdir(path)
+        if os.path.abspath(path) == os.path.abspath(str(staging)):
+            return sorted(names, key=lambda n: n != "newlib.dll")
+        return names
+
+    real_move = updater.shutil.move
+    calls = {"n": 0}
+
+    def failing_move(src, dst):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise OSError("No space left on device")
+        return real_move(src, dst)
+
+    monkeypatch.setattr(updater.os, "listdir", newlib_first)
+    monkeypatch.setattr(updater.shutil, "move", failing_move)
+
+    with pytest.raises(OSError):
+        updater._promote_staging(str(staging))
+
+    # the previous build is back, byte-identical...
+    assert (engine_dir / "chrome.exe").read_bytes() == b"OLD-ENGINE-EXE"
+    assert (engine_dir / "old_only.dat").read_bytes() == b"OLD-ONLY"
+    # ...and the new build's own file did NOT survive the rollback
+    assert not (engine_dir / "newlib.dll").exists()
+    assert not (engine_dir / updater.BACKUP_NAME).exists()

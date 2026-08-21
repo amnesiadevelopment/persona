@@ -39,6 +39,7 @@ opener and report byte-level progress. Both resume, and both now share this
 module's verify + completion + atomic-replace logic.
 """
 
+import errno
 import hashlib
 import os
 import shutil
@@ -271,6 +272,30 @@ def discard_aside(path: str) -> None:
         pass
 
 
+def _dst_is_in_the_way(e: OSError) -> bool:
+    """True when `e` from an os.replace says the DESTINATION is what refused
+    the rename, rather than something about the source or the filesystem.
+
+    os.replace overwrites a file, a symlink or an empty directory atomically on
+    its own. It refuses two destination shapes: a non-empty directory
+    (ENOTEMPTY/EEXIST), and a kind mismatch — replacing a directory with a file
+    (ENOTDIR) or a file with a directory (EISDIR). Only those justify clearing
+    the destination and retrying.
+
+    Everything else — a lock (EACCES / Windows' ERROR_SHARING_VIOLATION=32), a
+    full disk (ENOSPC), a cross-device rename (EXDEV) — is a failure the
+    destination cannot fix. Clearing it there would destroy the live artifact
+    for a rename that is going to fail anyway, which is exactly how a failed
+    restore turns into no artifact at all.
+    """
+    return e.errno in (
+        errno.ENOTEMPTY,
+        errno.EEXIST,
+        errno.ENOTDIR,
+        errno.EISDIR,
+    )
+
+
 def move_aside(path: str, backup: str) -> bool:
     """Rename `path` out of the way to `backup`, so a failed install can put it
     back. The directory-capable counterpart to atomic_replace's .bak.
@@ -288,18 +313,44 @@ def move_aside(path: str, backup: str) -> bool:
 
 
 def restore_aside(backup: str, path: str) -> bool:
-    """Move `backup` back onto `path`, undoing move_aside. Returns True on
-    success.
+    """Move `backup` back onto `path`, undoing move_aside. Returns True only
+    when the previous artifact is genuinely back at `path`.
 
     Best-effort and NEVER raises: this runs on a failure path that is already
     reporting an error, and a failed restore must not escalate a reported
-    install failure into a crash. Whatever is at `path` now is the half-promoted
-    new artifact, so it is cleared first — restoring means the previous build is
-    back, not that the two are merged.
+    install failure into a crash.
+
+    THE RETURN VALUE IS LOAD-BEARING, AND SO IS THE ORDER OF OPERATIONS.
+    Whatever sits at `path` now is the half-promoted new artifact and has to go,
+    but clearing it FIRST would turn a survivable failure into an unrecoverable
+    one: if the rename then fails (an antivirus holding a freshly-written .exe
+    raises PermissionError on Windows, and that is the canonical case), the
+    destination is already destroyed and the backup is the only copy left. So
+    the rename is ATTEMPTED first — os.replace overwrites a file, a symlink or
+    an empty directory atomically on its own — and `path` is only cleared when
+    it is provably what is blocking the rename (a non-empty directory, or a
+    file/directory kind mismatch), as a second attempt.
+
+    A False return means the backup was NOT put back and is STILL THERE. The
+    caller must not delete it: it is the last surviving copy of the working
+    artifact, and an operator can recover it by hand. Deleting it is the
+    difference between "the upgrade failed" and "there is no engine at all".
     """
     try:
         if not os.path.exists(backup) and not os.path.islink(backup):
             return False
+        try:
+            os.replace(backup, path)
+            return True
+        except OSError as e:
+            # Only clear `path` when it is PROVABLY what blocks the rename —
+            # os.replace refuses a non-empty directory, and refuses to cross the
+            # file/directory kind boundary. Any other error (a lock, a
+            # permission, a full disk) says nothing about `path`, and clearing
+            # it there would destroy the destination for a rename that was
+            # never going to succeed anyway.
+            if not _dst_is_in_the_way(e):
+                return False
         discard_aside(path)
         os.replace(backup, path)
         return True
