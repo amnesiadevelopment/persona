@@ -265,3 +265,142 @@ def test_ensure_engine_refuses_unverified_off_linux(monkeypatch):
     ok, _msg = updater.ensure_engine(attempts=1)
     assert seen["allow_unverified"] is False
     assert ok is False
+
+
+# --- PS-38: a FAILED Chromium upgrade must leave the working build behind -----
+#
+# PS-32 made a failed upgrade DETECTABLE (the sentinel keeps is_installed()
+# False over a half-promoted tree). These pin the other half: RECOVERABLE. The
+# Windows path is driven end to end here, over a real multi-file zip, because
+# _force_os + _make_windows_zip make that reachable in any container.
+
+
+def _populate_engine(engine_dir):
+    """An ENGINE_DIR holding a previous, WORKING build."""
+    (engine_dir / "chrome.exe").write_bytes(b"OLD-ENGINE-EXE")
+    (engine_dir / "some.dll").write_bytes(b"OLD-DLL")
+    (engine_dir / "locales").mkdir()
+    (engine_dir / "locales" / "en.pak").write_bytes(b"OLD-PAK")
+    # a file only the OLD build has: on main this one is destroyed outright
+    (engine_dir / "old_only.dat").write_bytes(b"OLD-ONLY")
+
+
+def _new_build_zip(path):
+    _make_windows_zip(
+        path,
+        {
+            "chrome-win/chrome.exe": b"MZ" + b"\x00" * 100,
+            "chrome-win/some.dll": b"\x00" * 50,
+            "chrome-win/locales/en.pak": b"pak",
+        },
+    )
+
+
+def test_failed_windows_promotion_restores_the_previous_build(monkeypatch, tmp_path):
+    # AC2. RED ON MAIN: _promote_staging used to rmtree/os.remove each old entry
+    # before moving the new one on top, so a promotion that died partway left a
+    # tree that was part old build, part new — and old_only.dat gone entirely,
+    # with nothing anywhere to go back to. The previous build must survive
+    # BYTE-IDENTICAL when the promotion raises.
+    _force_os(monkeypatch, win=True)
+    engine_dir = tmp_path / "engine"
+    engine_dir.mkdir()
+    _populate_engine(engine_dir)
+    monkeypatch.setattr(updater, "ENGINE_DIR", str(engine_dir))
+    monkeypatch.setattr(updater, "ENGINE_BINARY", str(engine_dir / "chrome.exe"))
+
+    zip_path = tmp_path / "win.zip"
+    _new_build_zip(zip_path)
+
+    # fail the promotion PARTWAY: let some entries move, then blow up. Which
+    # entry trips it doesn't matter — os.listdir order is arbitrary — only that
+    # the failure lands mid-loop, with some old entries already moved aside.
+    real_move = updater.shutil.move
+    calls = {"n": 0}
+
+    def failing_move(src, dst):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise OSError("No space left on device")
+        return real_move(src, dst)
+
+    monkeypatch.setattr(updater.shutil, "move", failing_move)
+
+    assert updater._install_windows(str(zip_path)) is False
+
+    # every byte of the previous build is back, exactly as it was
+    assert (engine_dir / "chrome.exe").read_bytes() == b"OLD-ENGINE-EXE"
+    assert (engine_dir / "some.dll").read_bytes() == b"OLD-DLL"
+    assert (engine_dir / "locales" / "en.pak").read_bytes() == b"OLD-PAK"
+    assert (engine_dir / "old_only.dat").read_bytes() == b"OLD-ONLY"
+    # and no backup/staging debris is left beside the engine
+    assert not (engine_dir / updater.BACKUP_NAME).exists()
+    assert not any(p.name.startswith(".staging") for p in engine_dir.iterdir())
+
+
+def test_successful_windows_upgrade_leaves_no_backup_behind(monkeypatch, tmp_path):
+    # AC4. The rollback must not become a disk leak: on the SUCCESS path the
+    # backup of the previous build is dropped, so ENGINE_DIR holds the new build
+    # and nothing else. (Upgrading over a populated dir, unlike the pinning test
+    # next door, which installs into an empty one.)
+    _force_os(monkeypatch, win=True)
+    engine_dir = tmp_path / "engine"
+    engine_dir.mkdir()
+    _populate_engine(engine_dir)
+    monkeypatch.setattr(updater, "ENGINE_DIR", str(engine_dir))
+    monkeypatch.setattr(updater, "ENGINE_BINARY", str(engine_dir / "chrome.exe"))
+
+    zip_path = tmp_path / "win.zip"
+    _new_build_zip(zip_path)
+
+    assert updater._install_windows(str(zip_path)) is True
+    # the NEW build is live
+    assert (engine_dir / "chrome.exe").read_bytes().startswith(b"MZ")
+    assert (engine_dir / "locales" / "en.pak").read_bytes() == b"pak"
+    # no backup, no staging debris
+    assert not (engine_dir / updater.BACKUP_NAME).exists()
+    assert not any(p.name.startswith(".staging") for p in engine_dir.iterdir())
+    assert not any(p.name.startswith(".engine-backup") for p in engine_dir.iterdir())
+
+
+def test_promotion_backup_moves_the_old_build_it_never_copies_it(monkeypatch, tmp_path):
+    # AC7. A Chromium tree is ~300-600MB; copying it would double peak disk on
+    # the very path whose failure mode is a disk-full, and a copy would drop the
+    # macOS signature/resource forks. The backup must be a RENAME. Proven two
+    # ways: the backup shares the ORIGINAL's inode, and no recursive copy is
+    # called during promotion.
+    _force_os(monkeypatch, win=True)
+    engine_dir = tmp_path / "engine"
+    engine_dir.mkdir()
+    _populate_engine(engine_dir)
+    monkeypatch.setattr(updater, "ENGINE_DIR", str(engine_dir))
+    monkeypatch.setattr(updater, "ENGINE_BINARY", str(engine_dir / "chrome.exe"))
+
+    old_inode = (engine_dir / "chrome.exe").stat().st_ino
+    seen_inode = {}
+
+    def no_recursive_copy(*a, **k):
+        raise AssertionError("copytree: the old build must be MOVED, not copied")
+
+    monkeypatch.setattr(updater.shutil, "copytree", no_recursive_copy)
+
+    staging = engine_dir / ".staging"
+    staging.mkdir()
+    (staging / "chrome.exe").write_bytes(b"NEW-EXE")
+
+    real_move = updater.shutil.move
+
+    def peeking_move(src, dst):
+        # while the promotion is mid-flight, the backup already holds the old
+        # build — capture its inode before the backup is dropped on success
+        backup = engine_dir / updater.BACKUP_NAME / "chrome.exe"
+        if backup.exists():
+            seen_inode["backup"] = backup.stat().st_ino
+        return real_move(src, dst)
+
+    monkeypatch.setattr(updater.shutil, "move", peeking_move)
+    updater._promote_staging(str(staging))
+
+    # same inode => renamed, not copied: O(1), no extra disk, bytes untouched
+    assert seen_inode.get("backup") == old_inode
+    assert (engine_dir / "chrome.exe").read_bytes() == b"NEW-EXE"

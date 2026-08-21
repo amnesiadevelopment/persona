@@ -32,6 +32,13 @@ MARKER_FILE = os.path.join(ENGINE_DIR, ".engine-complete")
 # there, because version.txt (which nothing ever removes — deliberately, it's
 # the provenance record) keeps answering the gate on its own.
 INSTALLING_NAME = ".engine-installing"
+# Where the PREVIOUS build is renamed to while a new one is promoted into place,
+# so a failed upgrade can be rolled back instead of leaving a half-new tree with
+# nothing to return to. Lives inside ENGINE_DIR on purpose: the rename must stay
+# on one filesystem to be atomic and free. The name deliberately collides with
+# neither the ".staging" prefix _install_windows/_install_macos use (and whose
+# absence is asserted after a clean install) nor the marker/sentinel names above.
+BACKUP_NAME = ".engine-backup"
 RELEASES_API = (
     "https://api.github.com/repos/adryfish/fingerprint-chromium/releases/latest"
 )
@@ -328,16 +335,47 @@ def _install_windows(asset_path: str) -> bool:
 def _promote_staging(staging: str) -> None:
     """Move every entry from `staging` into ENGINE_DIR, replacing what's there.
     Overwriting an upgrade's old files in place (rather than emptying ENGINE_DIR
-    first) keeps the window where the engine is incomplete as small as possible;
-    the completion marker, written afterwards, is what actually gates launch."""
-    for name in os.listdir(staging):
-        src = os.path.join(staging, name)
-        dst = os.path.join(ENGINE_DIR, name)
-        if os.path.isdir(dst):
-            shutil.rmtree(dst, ignore_errors=True)
-        elif os.path.exists(dst):
-            os.remove(dst)
-        shutil.move(src, dst)
+    first) keeps the window where the engine is incomplete as small as possible.
+
+    The previous build is REVERSIBLE, not destroyed: each entry about to be
+    replaced is RENAMED into BACKUP_DIR first, and if any part of the promotion
+    raises, every entry already moved aside is put back before the error
+    propagates. So a failed upgrade leaves the build that was working, rather
+    than a tree that is part old and part new with no way back to either.
+
+    That is deliberately belt AND braces with the completion marker/sentinel:
+    the marker (written afterwards) still gates LAUNCH, so a failure is
+    detectable; this makes it recoverable. Detectability alone left an operator
+    with no engine at all until a fresh download of a *newer* build succeeded —
+    which needs the network, and cannot return you to the build you had.
+
+    The backups live inside ENGINE_DIR so the rename is same-filesystem (atomic,
+    O(1), no second copy of a ~300-600MB tree, and signatures/permissions
+    survive because nothing is rewritten).
+    """
+    backup_root = os.path.join(ENGINE_DIR, BACKUP_NAME)
+    httpdl.discard_aside(backup_root)  # a stale backup from an earlier crash
+    # dst -> its backup path, for every entry we actually moved aside
+    moved: list[tuple[str, str]] = []
+    try:
+        os.makedirs(backup_root, exist_ok=True)
+        for name in os.listdir(staging):
+            src = os.path.join(staging, name)
+            dst = os.path.join(ENGINE_DIR, name)
+            backup = os.path.join(backup_root, name)
+            if httpdl.move_aside(dst, backup):
+                moved.append((dst, backup))
+            shutil.move(src, dst)
+    except Exception:
+        # Put the working build back, best-effort, then let the caller see the
+        # failure. Restore never raises, so a failed rollback cannot turn a
+        # reported install failure into a crash.
+        for dst, backup in reversed(moved):
+            httpdl.restore_aside(backup, dst)
+        httpdl.discard_aside(backup_root)
+        raise
+    # The new build is fully in place; the old one is no longer needed.
+    httpdl.discard_aside(backup_root)
 
 
 def _install_macos(asset_path: str) -> bool:
@@ -372,10 +410,27 @@ def _install_macos(asset_path: str) -> bool:
         # plain copytree drops — Gatekeeper kills an unsigned-looking .app on
         # Apple Silicon (same reason the app-updater uses ditto).
         subprocess.run(["ditto", app_src, staging], check=True)
-        if os.path.exists(dest):
-            shutil.rmtree(dest, ignore_errors=True)
-        os.replace(staging, dest)
-        return os.path.isfile(ENGINE_BINARY)
+        # Move the previous bundle aside rather than deleting it, so a failed
+        # swap restores the Chromium.app that was working. A RENAME, not a copy:
+        # it is atomic, costs no extra disk, and preserves the signature and
+        # resource forks exactly — a copytree'd backup would restore a bundle
+        # Gatekeeper refuses to launch, which is not a rollback.
+        backup = os.path.join(ENGINE_DIR, BACKUP_NAME + "-Chromium.app")
+        httpdl.discard_aside(backup)
+        had_previous = httpdl.move_aside(dest, backup)
+        try:
+            os.replace(staging, dest)
+            ok = os.path.isfile(ENGINE_BINARY)
+        except OSError:
+            if had_previous:
+                httpdl.restore_aside(backup, dest)
+            return False
+        if not ok and had_previous:
+            # The new bundle landed but has no runnable binary inside it — a
+            # broken engine is no better than a failed swap, so go back.
+            httpdl.restore_aside(backup, dest)
+        httpdl.discard_aside(backup)
+        return ok
     except OSError:
         return False
     finally:
