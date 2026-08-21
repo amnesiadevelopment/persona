@@ -88,6 +88,17 @@ IMPORTS_MARKER = "PERSONA_BUNDLE_IMPORTS_OK"
 # third-party top-level imports actually reachable from src/. Several are imported
 # lazily at runtime, which is precisely why they are listed explicitly here rather
 # than left to the entry point to discover in front of a user.
+#
+# ---- MAINTENANCE: THIS LIST IS A SNAPSHOT, AND IT DOES NOT UPDATE ITSELF ----
+# ADD A DEPENDENCY TO pyproject => ADD IT HERE. Nothing enforces that, and the
+# failure is silent in the direction that matters: a dependency missing from this
+# list is simply never checked inside the bundle, so a lazily-imported one can go
+# missing from the frozen tree and still sail through this gate green.
+# The alternative — deriving the list automatically — was considered and not
+# taken: an import scan of src/ would need to resolve conditional and in-function
+# imports to be trustworthy, and a derivation that quietly under-reports is worse
+# than a hand-list that is visibly a hand-list. An explicit stale list beats no
+# lazy-import check at all, which is what stood here before.
 REQUIRED_IMPORTS = [
     "flet",
     "fastapi",
@@ -127,6 +138,16 @@ def find_app_payload(root: Path, workdir: Path) -> Path:
             f"no flutter_assets/app anywhere under {root} — the app payload was "
             "not found, so this check would prove nothing about the bundle"
         )
+    if len(candidates) > 1:
+        # rglob order is filesystem-dependent, so picking [0] here would silently
+        # smoke-test an ARBITRARY one of several payloads and report on the whole
+        # bundle. This script fails closed everywhere else; guessing which app is
+        # the real one would be the single place it did not.
+        fail(
+            f"{len(candidates)} flutter_assets/app trees under {root}: "
+            f"{[str(p.relative_to(root)) for p in candidates]}. Refusing to guess "
+            "which one ships — teach this script the bundle's shape instead"
+        )
     app_dir = candidates[0]
 
     zip_path = app_dir / "app.zip"
@@ -149,14 +170,29 @@ def find_app_payload(root: Path, workdir: Path) -> Path:
 def find_site_packages(root: Path) -> Path:
     """The bundle's OWN site-packages — the thing that makes -S meaningful."""
     exact = [p for p in root.rglob("site-packages") if p.is_dir()]
+    if len(exact) > 1:
+        # Same stance as find_app_payload: an arbitrary pick would decide WHICH
+        # dependency set the -S run resolves against, which is the whole point
+        # of the check. Refuse rather than guess.
+        fail(
+            f"{len(exact)} site-packages directories under {root}: "
+            f"{[str(p.relative_to(root)) for p in exact]}. Refusing to guess "
+            "which one the app ships with"
+        )
     if exact:
         return exact[0]
     # flet's layouts differ per OS; fall back to the directory that actually
     # carries the engine packages rather than assuming a fixed path.
     for probe in ("invisible_core", "flet"):
-        hits = [p for p in root.rglob(probe) if p.is_dir()]
+        hits = sorted({p.parent for p in root.rglob(probe) if p.is_dir()})
+        if len(hits) > 1:
+            fail(
+                f"{probe} appears in {len(hits)} different directories under "
+                f"{root}: {[str(p.relative_to(root)) for p in hits]}. Refusing "
+                "to guess which is the bundle's site-packages"
+            )
         if hits:
-            return hits[0].parent
+            return hits[0]
     fail(
         f"no bundled site-packages under {root} — without it every import would "
         "silently resolve from the runner instead, and this check would prove nothing"
@@ -204,7 +240,20 @@ print("PERSONA_BUNDLE_VERSION=" + APP_VERSION, flush=True)
 # Now open it for real. main.py's PERSONA_SELFTEST gate is pre-GUI and
 # pre-port-bind; reaching it means interpreter startup, the frozen module tree
 # and the entry point all worked. It prints the token and hard-exits.
-import main
+#
+# runpy with run_name="__main__", NOT `import main`. The gate lives inside
+# main()'s body, which is reached only through main.py's `if __name__ ==
+# "__main__"` guard — so a plain import binds the module, runs no entry point,
+# prints no token, and the bundle looks broken when it is fine. This launches
+# the entry point the way the app is really launched.
+import runpy
+runpy.run_path(os.path.join(APP_DIR, "main.py"), run_name="__main__")
+
+# Reaching here means main() RETURNED without the gate firing. On the selftest
+# path it must os._exit(0) after printing the token, so a normal return means
+# the gate did not run — fail loudly rather than falling off the end quietly.
+print("PERSONA_BUNDLE_ENTRYPOINT_RETURNED", flush=True)
+sys.exit(4)
 '''
 
 
@@ -256,10 +305,24 @@ def main() -> None:
         print(f"site-packages: {site_packages}", flush=True)
 
         for rel in REQUIRED_ASSETS:
-            if not (app_dir / rel).is_file() and not list(app_dir.rglob(Path(rel).name)):
+            # The EXACT path, with no "is it anywhere?" fallback. The failure
+            # being hunted is an asset addressed by filesystem path that stops
+            # resolving once frozen — and an icon.png that survived at some
+            # OTHER path is that failure, not an escape from it. A search of the
+            # whole tree by basename would wave the relocated case through while
+            # only catching outright deletion, so the check is the literal path
+            # the running app would open.
+            if not (app_dir / rel).is_file():
+                stray = [p for p in app_dir.rglob(Path(rel).name) if p.is_file()]
+                where = (
+                    f" (a file of that name exists at {[str(p.relative_to(app_dir)) for p in stray]}"
+                    ", but the app opens it by path, not by name)"
+                    if stray
+                    else ""
+                )
                 fail(
-                    f"asset {rel} did not survive freezing — it is addressed by "
-                    "filesystem path at runtime, so the app would fail once opened"
+                    f"asset {rel} did not survive freezing at the path the app "
+                    f"reads it from{where} — the app would fail once opened"
                 )
 
         try:

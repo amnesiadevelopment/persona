@@ -185,9 +185,98 @@ def test_ci_permissions_are_read_only(ci_yaml) -> None:
 
 def test_ci_documents_the_measured_failure_floor(ci_text) -> None:
     """The floor must be a recorded measurement, not folklore."""
-    assert "2366" in ci_text and "2321" in ci_text, (
+    assert "2454" in ci_text and "2321" in ci_text, (
         "the measured floor figures are not recorded in the workflow — the next "
         "reader cannot tell a real regression from an inherited red"
+    )
+
+
+def test_ci_floor_says_where_each_figure_was_measured(ci_text) -> None:
+    """A floor figure without provenance is the bug this test exists to stop.
+
+    The first revision of this workflow reported DEV CONTAINER figures while
+    describing them as measured "on this runner image", and concluded that any
+    red must be the developer's own. The runner disproved that on the very first
+    run. The figures being stale was survivable; the false provenance was not,
+    because it is the sentence the next reader trusts when deciding whether they
+    broke something.
+
+    So the floor comment must name BOTH environments, and must not claim a
+    single undifferentiated measurement.
+    """
+    floor = ci_text
+    # Pin the SECTION HEADERS, not loose prose. An earlier version of this test
+    # asserted on the phrases "on this runner" and "container", which also occur
+    # in the narrative explaining the original mistake — so rewriting the headers
+    # left the test green. It was mutation-tested and did not catch the mutation;
+    # these exact markers do.
+    assert "ON THIS RUNNER (" in floor, (
+        "the floor comment does not label which figures were taken on the runner"
+    )
+    assert "IN A DEV CONTAINER (" in floor, (
+        "the floor comment does not disclose that some figures were taken in a "
+        "dev container rather than on the runner"
+    )
+    # The two environments collect different numbers of tests. If that stops
+    # being stated, someone will read the container figure as the runner's.
+    assert "THE TWO NUMBERS DO NOT MATCH" in floor, (
+        "the floor comment does not warn that the container and runner counts "
+        "diverge — that divergence is exactly what made the first floor wrong"
+    )
+
+
+def test_ci_pins_the_javascript_engine(ci_yaml) -> None:
+    """Parts of the suite run generated JS through node, so node is a test
+    dependency — and an unpinned one lets the gate change its answer with no
+    change to this repo. That is not hypothetical here: the runner image moved
+    from Node 20 to Node 24, Node 21+ made `navigator` a getter-only global, and
+    a harness's plain assignment over it became a silent no-op. Green suite,
+    red runner, no commit responsible.
+    """
+    steps = ci_yaml["jobs"]["tests"]["steps"]
+    node_steps = [s for s in steps if "setup-node" in str(s.get("uses", ""))]
+    assert node_steps, (
+        "ci.yml does not pin a node version — the JS-driving tests run against "
+        "whatever the runner image happens to ship"
+    )
+    version = str(node_steps[0].get("with", {}).get("node-version", ""))
+    assert version.strip(), "setup-node is present but pins no explicit version"
+
+
+def test_release_pins_the_javascript_engine_too(release_yaml) -> None:
+    """The tag-time gate runs the same suite on the same image, so it carried
+    the same exposure — it had simply not fired since the image moved. Pinning
+    one and not the other would leave the two gates disagreeing about what "the
+    suite" means, which is the drift the install step is kept identical to stop.
+    """
+    steps = release_yaml["jobs"]["tests"]["steps"]
+    node_steps = [s for s in steps if "setup-node" in str(s.get("uses", ""))]
+    assert node_steps, (
+        "release.yml's tests job does not pin a node version, so the tag-time "
+        "gate can still change its answer when the runner image drifts"
+    )
+
+
+def test_the_language_harness_cannot_be_silently_ignored() -> None:
+    """The regression test for the bug the gate found.
+
+    `globalThis.navigator = ...` is a SILENT no-op on Node >= 21, where the
+    global is a getter-only accessor — no throw, no warning, the stub just never
+    installs and the test reads the host's real locale. defineProperty works on
+    every engine. This pins the fix at its source, so the harness stays correct
+    even if the Node pin above is ever raised or removed.
+    """
+    harness = (REPO_ROOT / "tests" / "test_ff_language_override.py").read_text(
+        encoding="utf-8"
+    )
+    assert not re.search(r"^\s*globalThis\.navigator\s*=", harness, re.MULTILINE), (
+        "the language harness assigns to globalThis.navigator, which is a silent "
+        "no-op on Node >= 21 — the stub would never install and the test would "
+        "read the host locale instead of the pinned one"
+    )
+    assert 'defineProperty(globalThis, "navigator"' in harness, (
+        "the language harness no longer installs its navigator stub with "
+        "defineProperty — the engine-independent form"
     )
 
 
@@ -320,6 +409,63 @@ def test_smoke_expects_the_selftest_token_exactly(smoke_text) -> None:
     assert '"SELFTEST_OK"' in main_py or "'SELFTEST_OK'" in main_py, (
         "main.py no longer prints SELFTEST_OK — this breaks both the smoke check "
         "and every installed copy's next self-update"
+    )
+
+
+def test_smoke_launches_the_entry_point_instead_of_importing_it(smoke_text) -> None:
+    """The regression test for a gate that could never have gone green.
+
+    MEASURED: the bootstrap used to end in `import main`, which binds the module
+    under __name__ == "main". But the PERSONA_SELFTEST gate lives inside main()'s
+    BODY, reached only through main.py's `if __name__ == "__main__"` guard — so
+    importing ran no entry point, printed no token, and the script failed every
+    healthy bundle. Verified both directions on a real bundle: `import main`
+    printed nothing, `main.main()` printed SELFTEST_OK.
+
+    That is the worst failure shape available to this check: it fails CLOSED, so
+    it would have blocked all three build jobs on every release while looking
+    like a careful gate.
+    """
+    assert "runpy" in smoke_text and 'run_name="__main__"' in smoke_text, (
+        "the bundle's entry point is not launched under __main__ — the selftest "
+        "gate sits behind main.py's __main__ guard and would never fire"
+    )
+    assert not re.search(r"^import main\s*$", smoke_text, re.MULTILINE), (
+        "the bootstrap imports main rather than running it; the gate is inside "
+        "main()'s body and an import will never reach it"
+    )
+
+
+def test_smoke_rejects_an_entry_point_that_returns_without_the_gate(smoke_text) -> None:
+    """On the selftest path main() must print the token and hard-exit. A normal
+    return means the gate did not run, which must be loud rather than a quiet
+    fall off the end of the bootstrap."""
+    assert "PERSONA_BUNDLE_ENTRYPOINT_RETURNED" in smoke_text, (
+        "nothing detects an entry point that returns without firing the gate"
+    )
+
+
+def test_smoke_checks_the_asset_at_its_exact_path(smoke_text) -> None:
+    """An asset that survived at the WRONG path is the freezing failure being
+    hunted, not an escape from it.
+
+    MEASURED with a before/after pair: the previous check fell back to a
+    whole-tree search by basename, and a RELOCATED icon.png passed it (exit 0)
+    while outright deletion was caught. The exact-path form catches both.
+    """
+    assert "the app opens it by path, not by name" in smoke_text, (
+        "the asset check does not assert the exact path — a relocated asset "
+        "would be waved through by a basename search"
+    )
+
+
+def test_smoke_refuses_to_guess_between_ambiguous_candidates(smoke_text) -> None:
+    """rglob order is filesystem-dependent, so picking [0] out of several
+    matches silently smoke-tests an arbitrary payload and reports on the whole
+    bundle. This script fails closed everywhere else."""
+    assert smoke_text.count("Refusing to guess") >= 2, (
+        "find_app_payload / find_site_packages still pick an arbitrary match "
+        "instead of failing closed on ambiguity"
     )
 
 

@@ -63,6 +63,17 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
+      - name: Set up Node
+        # PINNED DELIBERATELY — keep in step with ci.yml's `tests` job.
+        # This suite drives generated cloak scripts through a real JS engine, so
+        # `node` is a test dependency whether or not it appears in pyproject.
+        # Nothing pinned it, so the version was whatever the runner image
+        # shipped; it drifted 20 -> 24 and turned a green suite red. This job
+        # carried the same exposure as the merge gate and simply had not fired
+        # since the image moved, because it only runs on a version tag.
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: "24"
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
