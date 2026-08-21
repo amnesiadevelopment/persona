@@ -557,6 +557,45 @@ class InstallDeferred(Exception):
     the exact confusion the refuse/failed vocabulary already exists to prevent."""
 
 
+class EngineUnverifiable(Exception):
+    """Raised by download_engine when upstream published NO sha256 for the asset,
+    so its contents cannot be checked and persona refuses to install it.
+
+    A distinct type for the same reason InstallDeferred is one, and the reason
+    is the mirror image: InstallDeferred must not be reported as a failure
+    because nothing failed, and this must not be reported as one because the
+    NETWORK did not fail — the transfer would succeed perfectly. It is a
+    refusal, and a refusal an operator can do nothing about by retrying.
+
+    THIS LIVES AT THE TRANSFER, NOT AT A CALLER, ON PURPOSE (PS-49 round 2).
+    The refusal was first written in ensure_engine, which is only the FIRST-
+    INSTALL path. The sidebar's update path (_update_engine_async) does not call
+    ensure_engine at all — it calls download_engine directly — so on a digest-
+    less release an existing operator, the one who actually hits this, still got
+    "Engine update failed": the network blamed for a decision persona made,
+    about a condition retrying cannot change. That is the precise defect the
+    ticket named. Raised from inside the shared transfer instead, both entry
+    points inherit ONE refusal with ONE wording, and a third caller cannot be
+    added that misses it."""
+
+
+def _unverifiable_message(url: str, tag: str = "") -> str:
+    """The FOURTH operator-facing message, in one place.
+
+    There are already three distinct situations with three distinct wordings —
+    a known-bad build, a build above the operator's ceiling, and a failed
+    transfer. An unverifiable asset is a fourth and must not be folded into any
+    of them: an operator told "download failed" retries forever against
+    something retrying cannot change."""
+    asset = url.rsplit("/", 1)[-1] or "the engine asset"
+    what = f"Engine {tag} not installed" if tag else "Engine not installed"
+    return (
+        f"{what}: no sha256 digest was published for {asset}, so its contents "
+        "cannot be verified. persona does not install an unverified browser "
+        "engine. This is not a download failure and retrying will not change it."
+    )
+
+
 def download_engine(
     url: str,
     timeout: int = 600,
@@ -564,6 +603,7 @@ def download_engine(
     progress=None,
     defer_if_in_use: bool = False,
     log=None,
+    tag: str = "",
 ) -> bool:
     """Download the per-OS engine asset and install it so the launcher finds the
     runnable binary at ENGINE_BINARY. `progress(done, total)` is called as bytes
@@ -599,6 +639,28 @@ def download_engine(
     which reports bytes, not prose."""
     if not url:
         return False
+    # THE DIGEST GATE, AT THE ALTITUDE BOTH ENTRY POINTS SHARE (PS-49).
+    #
+    # Asked BEFORE any bytes move, and before ENGINE_DIR is even created: there
+    # is nothing to fetch when we already know we would refuse the result, and a
+    # refusal must not leave a half-populated directory behind.
+    #
+    # Raised rather than returned False, because False is the TRANSFER-FAILED
+    # answer and both callers already render it as "Engine update failed" /
+    # "download failed". This is not that: the transfer would succeed. It is
+    # persona declining to install bytes nothing can check, and an operator told
+    # the network failed retries forever against a condition retrying cannot
+    # change — the exact confusion the refuse/failed vocabulary exists to
+    # prevent. Same reasoning, and the same distinct-exception shape, as
+    # InstallDeferred immediately above.
+    #
+    # `digest_missing`, NOT `not normalize_digest(...)`: only "nothing was ever
+    # published" is this refusal. A digest that ARRIVED and is unusable
+    # ("sha256:", "   ") is a mismatch and is rejected by the verify gate below
+    # in the ordinary way — collapsing the two would let a malformed digest take
+    # this exit and be described to the operator as an upstream omission.
+    if httpdl.digest_missing(digest):
+        raise EngineUnverifiable(_unverifiable_message(url, tag))
     os.makedirs(ENGINE_DIR, exist_ok=True)
     # download the raw asset next to the engine dir, named after the URL so a
     # resumed .part survives restarts
@@ -790,16 +852,23 @@ def ensure_engine(
             continue
         # THE FOURTH REFUSAL, AND NO PLATFORM IS CARVED OUT OF IT (PS-49).
         #
-        # This used to read `allow_unverified = not digest and IS_LINUX` and
-        # hand that permission to download_engine, which forwarded it as
-        # `allow_missing` to a gate that returns it VERBATIM without ever
-        # hashing. Windows and macOS refused a digest-less asset; Linux
-        # installed one. So on that path persona installed — and then launched —
-        # a browser binary whose bytes nothing had checked, fetched from a URL
-        # built by string-formatting a tag. Anything able to answer that request
-        # chose the engine that executes untrusted remote code on the operator's
-        # machine. install.sh calls itself "the initial-install trust root that
-        # every later in-app update check builds on" and refuses what it cannot
+        # The rule itself is NOT written here. It lives in download_engine,
+        # which raises EngineUnverifiable — see that exception's docstring for
+        # why the altitude matters. In one line: this function is only the
+        # FIRST-INSTALL path, and the sidebar's update path does not call it at
+        # all, so a refusal written here would have covered exactly one of the
+        # two callers that reach the digest gate. This branch only translates
+        # the shared refusal into the (ok, message) shape this function returns.
+        #
+        # What the check REPLACED is worth keeping on the record. It used to
+        # read `allow_unverified = not digest and IS_LINUX`, handed to
+        # download_engine, which forwarded it as `allow_missing` to a gate that
+        # returns it VERBATIM without ever hashing. Windows and macOS refused a
+        # digest-less asset; Linux installed one. So on that path persona
+        # installed — and then launched — a browser binary whose bytes nothing
+        # had checked, fetched from a URL built by string-formatting a tag.
+        # install.sh calls itself "the initial-install trust root that every
+        # later in-app update check builds on" and refuses what it cannot
         # verify; this is one of those later updates and it did the opposite.
         #
         # The exemption existed for the Linux predictable-URL fallback, whose
@@ -821,21 +890,10 @@ def ensure_engine(
         #     what persona would install without looking.
         #
         # So this removes a carve-out rather than converting one: on today's
-        # releases the digest is present and the refusal below is unreachable.
-        # It is still written, and still worded, because a digest-less release
-        # is historically real — 135 and older carry no digest on ANY asset —
-        # and that is exactly the shape a substitution would take.
-        #
-        # STATED AS ITS OWN MESSAGE, not folded into "Engine download failed".
-        # There are already three distinct situations with three distinct
-        # wordings (known-bad build, above the operator's ceiling, transfer
-        # failure). An unverifiable asset is a fourth, and it is not a transfer
-        # failure: the transfer would succeed perfectly. An operator told
-        # "download failed" retries forever against a condition retrying cannot
-        # change — the precise confusion the refuse/failed vocabulary exists to
-        # prevent. Returned rather than `continue`d for the same reason
-        # KNOWN_BAD returns: what upstream published will not differ across the
-        # remaining attempts.
+        # releases the digest is present and the refusal is unreachable. It is
+        # still written, and still worded, because a digest-less release is
+        # historically real — 135 and older carry no digest on ANY asset — and
+        # that is exactly the shape a substitution would take.
         #
         # AND THIS BINDS ON THE FIRST INSTALL TOO, deliberately. The adjacent
         # ABOVE_CEILING branch above once installed anyway on a first install
@@ -845,27 +903,28 @@ def ensure_engine(
         # unverified is an unbounded one about whether these are that build's
         # bytes at all — and a first install is precisely when the operator has
         # no previous engine and no way to notice a substitution.
-        if httpdl.digest_missing(digest):
-            asset = url.rsplit("/", 1)[-1] or "the engine asset"
-            message = (
-                f"Engine {tag} not installed: no sha256 digest was published "
-                f"for {asset}, so its contents cannot be verified. persona does "
-                "not install an unverified browser engine. This is not a "
-                "download failure and retrying will not change it."
+        try:
+            installed = download_engine(
+                url,
+                timeout=timeout,
+                digest=digest,
+                progress=progress,
+                tag=tag,
             )
-            # Logged HERE, for the reason the two branches above are: the
-            # onboarding caller reads only `ok` and discards this message, and
-            # the sidebar caller would render it behind "Engine download
-            # failed:" — blaming the network for a refusal persona made.
+        except EngineUnverifiable as e:
+            message = str(e)
+            # Logged HERE, for the reason the KNOWN_BAD and ABOVE_CEILING
+            # branches above are: the onboarding caller reads only `ok` and
+            # discards this message, and the sidebar caller would render it
+            # behind "Engine download failed:" — blaming the network for a
+            # refusal persona made.
             if log:
                 log(message)
+            # RETURNED, not `continue`d, for the same reason KNOWN_BAD returns:
+            # what upstream published will not differ across the remaining
+            # attempts, so burning them only delays the same answer.
             return False, message
-        if download_engine(
-            url,
-            timeout=timeout,
-            digest=digest,
-            progress=progress,
-        ):
+        if installed:
             write_version(tag)
             return True, tag
         last = "download failed"
