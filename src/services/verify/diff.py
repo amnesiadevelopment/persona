@@ -102,6 +102,59 @@ class ComparisonNotControlled(ValueError):
     """
 
 
+class NotASnapshot(ValueError):
+    """Raised when an object handed to a comparator is not a snapshot at all.
+
+    A refusal, exactly like :class:`ComparisonNotControlled` above, and raised
+    for the same reason one rung higher up. That guard refuses a comparison
+    whose PREMISE does not hold; this one refuses a comparison that has no
+    SUBJECT — an object with no ``probes`` carries no readings, so there is
+    nothing for the comparators to compare.
+
+    Without it the failure is silent and inverted. ``_probes`` coerces a
+    missing or non-dict ``probes`` to ``{}``, so zero probes compare, the
+    comparator returns ``[]``, and an empty list is this module's agreement
+    signal — a file that was never a snapshot renders "no differences" and
+    exits 0. That is the module rule stated at the top of this file ("an
+    unobtainable reading is inconclusive, and inconclusive is never a pass")
+    failing in the one place it was never enforced: not on an individual
+    reading, but on whether any reading was handed in at all.
+
+    Note the asymmetry it closes, which is what makes this the dangerous
+    direction. A non-snapshot on ONE side is already caught — the real side's
+    probes all read as ``removed``, so the diff is loud. A non-snapshot on BOTH
+    sides was a clean pass. The tool was at its most confident exactly when it
+    held the least evidence, and a false GREEN is worse than a false red
+    because a red gets investigated while "no differences" gets believed.
+    """
+
+
+def require_snapshot(obj: Any, source: str | None = None) -> dict:
+    """Return ``obj`` if it is a snapshot; otherwise refuse with NotASnapshot.
+
+    ``probes`` is the discriminator because :func:`snapshot.build_snapshot`
+    ALWAYS emits it — every artifact this subsystem produces has one, so its
+    absence means the file did not come from ``record``. Deliberately shallow:
+    this answers "is this a snapshot at all", not "are its readings
+    well-formed". Validating probe CONTENTS (schema versions, realm names,
+    per-probe shape) is a deeper question and a separate slice.
+
+    ``source`` is the operator-facing name of where the object came from (a
+    path, usually). Optional so library callers get the same guard without
+    having to invent a label.
+    """
+    if isinstance(obj, dict) and isinstance(obj.get("probes"), dict):
+        return obj
+    where = f"{source!r} " if source else "the input "
+    raise NotASnapshot(
+        f"{where}is not a snapshot: it carries no 'probes' object, so NOTHING "
+        "WAS COMPARED. This is NOT agreement — no reading was obtained from "
+        "it, and a comparison of zero readings cannot establish that anything "
+        "matches. Record a snapshot first: "
+        "`python -m src.services.verify.cli record <profile> -o snap.json`."
+    )
+
+
 def _header(snapshot: dict, field: str) -> Any:
     return snapshot.get(field) if isinstance(snapshot, dict) else None
 
@@ -282,7 +335,16 @@ def diff_snapshots(
     ``"__meta__"``. Off by default so the common "did this profile survive a
     restart?" question is answered by probe evidence alone — an engine BUILD
     change is provenance, not a probe difference.
+
+    Both sides must BE snapshots. An object with no ``probes`` is refused with
+    :class:`NotASnapshot` rather than compared, because ``_probes`` would
+    otherwise coerce it to ``{}`` and this function would return ``[]`` — the
+    agreement signal — over a comparison that never happened. See the
+    exception.
     """
+    require_snapshot(expected)
+    require_snapshot(observed)
+
     out: list[dict] = []
 
     if include_meta:
@@ -348,7 +410,13 @@ def diff_realms(snapshot: dict, left: str, right: str) -> list[dict]:
     obtained reading. A vector read in one realm and unreadable in the other is
     ``changed`` — that asymmetry is the defect class this function exists to
     catch, not a request to look again.
+
+    The snapshot must BE a snapshot: an object with no ``probes`` is refused
+    with :class:`NotASnapshot` rather than compared, for the reason given on
+    that exception — two empty realms agree about everything, so this would
+    otherwise return ``[]`` and report agreement over zero readings.
     """
+    require_snapshot(snapshot)
     a_entries = _realm(snapshot, left)
     b_entries = _realm(snapshot, right)
     out: list[dict] = []
@@ -590,10 +658,13 @@ __all__ = [
     "INCONCLUSIVE",
     "META_REALM",
     "REMOVED",
+    "ComparisonNotControlled",
+    "NotASnapshot",
     "compare_profiles",
     "diff_realms",
     "diff_snapshots",
     "format_comparison",
     "format_diff",
     "inconclusive_count",
+    "require_snapshot",
 ]
