@@ -20,7 +20,7 @@ import re
 # tests patch one attribute and cover both. See fetch_latest.
 import urllib.request
 
-from .. import egress
+from ...services import egress
 
 RELEASES_API = (
     "https://api.github.com/repos/feder-cr/firefox_antidetect_patch/releases"

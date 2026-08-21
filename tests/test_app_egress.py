@@ -18,9 +18,12 @@ The two assertions that carry this file:
   SOCKS handshake, and a transport that cannot be used means the request is NOT
   SENT rather than silently falling back to the operator's real IP.
 """
+import asyncio
+import json
 import socket
 import struct
 import threading
+import time
 
 import pytest
 
@@ -28,6 +31,7 @@ from src.core import settings
 from src.services import egress
 from src.services.engine import firefox as ff
 from src.services.engine import updater
+from src.utils import proxy_checker
 
 
 # --------------------------------------------------------------------------
@@ -408,3 +412,108 @@ def test_settings_roundtrip_and_default():
 
     settings.set_app_egress_proxy("")
     assert settings.app_egress_proxy() == ""
+
+
+# --------------------------------------------------------------------------
+# The transport underneath the policy. Round 1 shipped twelve tests that ALL
+# configured a socks5:// proxy (or an unparseable value that returns REFUSE
+# before any transport runs), so the entire aiohttp branch of
+# fetch_json_via_proxy and the length-less EOF branch of _read_http_body had
+# ZERO coverage — and each carried a defect that a passing suite could not see.
+# `http://` and `https://` are accepted schemes (egress.resolve returns
+# PROXIED for them), so this is a SUPPORTED configuration, not a hypothetical.
+# --------------------------------------------------------------------------
+
+
+def test_release_body_without_content_length_is_capped_at_the_release_size():
+    """The length-less EOF branch must honour the max_body it was PARAMETERISED
+    with, not the geo constant.
+
+    `_http_get_head` sends `Connection: close`, which is exactly what makes a
+    response with neither Content-Length nor chunked encoding legal — so this
+    branch is reachable on the real path, not theoretical. A releases document
+    arriving that way was still being cut off at the 256 KB geo cap, which is
+    the precise failure _MAX_RELEASE_BODY was introduced to prevent: the live
+    document already measures ~129 KB and grows with every release.
+    """
+    body = b"x" * (300 * 1024)  # between _MAX_GEO_BODY and _MAX_RELEASE_BODY
+    assert proxy_checker._MAX_GEO_BODY < len(body) < proxy_checker._MAX_RELEASE_BODY
+
+    async def read_it(max_body):
+        reader = asyncio.StreamReader()
+        reader.feed_data(body)
+        reader.feed_eof()
+        return await proxy_checker._read_http_body(reader, {}, max_body=max_body)
+
+    out = asyncio.run(read_it(proxy_checker._MAX_RELEASE_BODY))
+    assert out == body, (
+        "a 300 KB release document with no Content-Length must survive — this "
+        "branch was still enforcing the 256 KB geo cap"
+    )
+
+    # And the cap must still BE a cap: the geo caller's default is unchanged.
+    with pytest.raises(ValueError):
+        asyncio.run(read_it(proxy_checker._MAX_GEO_BODY))
+
+
+def test_http_proxy_reads_a_body_split_across_records():
+    """The aiohttp branch must read the body to completion.
+
+    `StreamReader.read(n)` returns as soon as ANY data is buffered rather than
+    filling to `n`, so a document arriving in more than one TLS record came
+    back SHORT and json.loads raised — intermittently, depending on how the
+    response happened to be segmented. For a ~129 KB GitHub document that is
+    the normal path. This drives a real `http://` proxy (the branch every other
+    test in this file skips) and deliberately writes the body in two pieces
+    with a pause between them, which is the segmentation that reproduces it.
+    """
+    payload = json.dumps(
+        {"tag_name": "148.0.0.1", "assets": [{"name": "chrome.zip"}]}
+    ).encode()
+    split = 17  # mid-key, so a truncated read cannot parse as valid JSON
+    seen: dict[str, object] = {}
+    srv, port = _listener()
+
+    def serve() -> None:
+        conn, _ = srv.accept()
+        conn.settimeout(10)
+        try:
+            request = b""
+            while b"\r\n\r\n" not in request:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                request += chunk
+            seen["request"] = request
+            # No Content-Length and no chunked encoding: the body runs to EOF,
+            # which is legal under the `Connection: close` we announce.
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: application/json\r\n"
+                b"Connection: close\r\n\r\n" + payload[:split]
+            )
+            time.sleep(0.25)  # the second record arrives while the read waits
+            conn.sendall(payload[split:])
+        except Exception as exc:  # pragma: no cover - surfaced via `seen`
+            seen["error"] = repr(exc)
+        finally:
+            conn.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+
+    try:
+        doc = proxy_checker.fetch_json_via_proxy_sync(
+            f"http://127.0.0.1:{port}", "http://api.github.com/x", 15
+        )
+    finally:
+        thread.join(15)
+        srv.close()
+
+    assert doc == json.loads(payload), (
+        f"the body came back truncated or unparsed (server said {seen.get('error')})"
+    )
+    # The neutral UA is what reaches a third party — never the geo probe's.
+    request = seen.get("request", b"")
+    assert proxy_checker._NEUTRAL_USER_AGENT.encode() in request
+    assert b"persona-proxy-check/1.0" not in request

@@ -63,10 +63,22 @@ REFUSE = "refuse"
 
 class EgressRefused(Exception):
     """The configured transport could not carry this request, so it was NOT
-    sent. Raised rather than returned so a caller cannot accidentally treat a
-    refusal as an empty result — for the update checker, an empty release list
-    reads as "no update available", which would freeze the update path silently
-    instead of failing visibly."""
+    sent. Raised rather than returned so a refusal can never be mistaken for a
+    DOCUMENT: an empty release list reads as "no update available", and a
+    caller that got one back would have no way to tell the two apart.
+
+    Be precise about how far that guarantee reaches, because it does NOT
+    survive every call site. `updater.fetch_latest_full` and
+    `firefox.fetch_latest` both wrap their fetch in a blanket `except
+    Exception` that returns their existing ('','','') / ('',False) failure
+    sentinel — that predates this module and is what AC4 pins — so at those two
+    sites a refusal DOES land on the same value as "nothing found". What the
+    exception buys there is narrower but still real: the failure arm is taken
+    rather than the success arm, so no caller proceeds as if it holds a valid
+    (empty) document, and nothing falls back to a direct send. The operator's
+    distinguishing signal at those sites is the WARNING logged below, not the
+    return value. A new caller that needs to tell "refused" from "nothing
+    found" must catch this type explicitly rather than inspect the result."""
 
 
 def resolve(proxy: str | None = None) -> tuple[str, str]:

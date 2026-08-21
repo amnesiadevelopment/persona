@@ -446,8 +446,8 @@ async def _read_http_body(
         if not chunk:
             break
         out += chunk
-        if len(out) > _MAX_GEO_BODY:  # enforced every pass, not just at the end
-            raise ValueError("geo response too large")
+        if len(out) > max_body:  # enforced every pass, not just at the end
+            raise ValueError("response too large")
     return bytes(out)
 
 
@@ -995,10 +995,24 @@ async def fetch_json_via_proxy(
                 if status != 200:
                     data = None
                 else:
-                    raw = await response.content.read(max_body + 1)
-                    if len(raw) > max_body:
-                        raise ValueError("response too large")
-                    data = json.loads(raw)
+                    # Accumulate to EOF rather than `content.read(max_body+1)`:
+                    # StreamReader.read(n) returns as soon as ANY data is
+                    # buffered, so a body split across TLS records came back
+                    # short and json.loads raised. That is the SAME hazard
+                    # _read_http_body documents for the raw-socket branch, and
+                    # a ~129 KB releases document is the normal path, not an
+                    # edge case — it failed intermittently on segmentation.
+                    # The bound is enforced every pass, so it still refuses an
+                    # oversized body without ever buffering it whole.
+                    buf = bytearray()
+                    while True:
+                        chunk = await response.content.readany()
+                        if not chunk:
+                            break
+                        buf += chunk
+                        if len(buf) > max_body:
+                            raise ValueError("response too large")
+                    data = json.loads(buf)
 
     if status != 200:
         raise RuntimeError(f"request failed: HTTP {status}")
