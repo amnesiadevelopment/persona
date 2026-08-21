@@ -92,12 +92,12 @@ def test_screen_dpr_on_shared_registry_reaches_grandchild(tmp_path):
         build_device_extension(1, str(tmp_path / "dev")) + "/device.js"
     ).read_text()
     assert "applyScreenPatch" in js
-    assert "__pnaBoots.push(applyScreenPatch)" in js
+    assert "__pnaInstall(SELF, applyScreenPatch)" in js
     # the module's own non-recursive iframe getter for screen must be gone —
-    # __personaDevice was its one-level marker; the registry recurses instead.
+    # __personaDevice was its one-level marker; the bootstrap recurses instead.
     assert "__personaDevice" not in js
     # SEED lives inside applyScreenPatch so .toString() re-derives W/H per realm
-    body = js.split("function applyScreenPatch(G)", 1)[1].split("__pnaBoot", 1)[0]
+    body = js.split("function applyScreenPatch(G)", 1)[1].split("__pnaInstall", 1)[0]
     assert "var SEED =" in body
 
 

@@ -84,4 +84,9 @@ def test_only_byte_buffers_touched(tmp_path):
 def test_carries_webgl_noise_into_iframes(tmp_path):
     js = (pathlib.Path(build_webgl_extension(1, str(tmp_path / "ext"))) / "webgl.js").read_text()
     assert "contentWindow" in js and "HTMLIFrameElement" in js
-    assert "__pnaBoot(w)" in js
+    # routed through the shared realm bootstrap, which chains the iframe
+    # accessors and re-runs the installer in the child (recursively). The
+    # behavioural proof that a leaf reaches child frames and nested workers
+    # lives in tests/test_worker_wrap.py; this pins the wiring.
+    assert "__pnaInstall(SELF, applyWebglPatch)" in js
+    assert "__pnaInstall(w, LEAF)" in js
