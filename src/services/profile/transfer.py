@@ -166,6 +166,36 @@ def import_from_zip(
                     )
                     known.pop("fingerprint_seed_value")
 
+            # Same automatic round-trip, same untrusted source, for the launch
+            # provenance pair. The TYPE half only, exactly like the seed above:
+            # both fields are read as strings by every consumer, so a dict or a
+            # number sailing in from a hand-edited archive would be stored
+            # verbatim and blow up whichever surface first formats it. Drop a
+            # malformed value rather than refusing the archive — that lands the
+            # profile on None, which is the field's own honest "not known".
+            #
+            # A WELL-FORMED value is deliberately KEPT, and that choice is worth
+            # stating because the opposite is tempting. The exported data dir
+            # travels with the archive, so the imported profile continues the
+            # SAME identity — the build that produced that identity is genuine
+            # provenance and dropping it would discard a true fact. What this
+            # cannot do is VERIFY the claim: an archive is free to assert any
+            # build. That is a property of profile sharing as a whole (the same
+            # is true of every other field here) and not something this field
+            # can settle on its own; a consumer treating an imported stamp as
+            # locally observed is the thing that would be wrong.
+            for _prov_key in ("last_launch_engine", "last_launch_build"):
+                if _prov_key in known:
+                    _prov = known[_prov_key]
+                    if _prov is not None and not isinstance(_prov, str):
+                        logger.warning(
+                            "Profile archive %r carried a malformed %s (%r); "
+                            "dropping it, the profile will read as having no "
+                            "recorded launch build.",
+                            name, _prov_key, _prov,
+                        )
+                        known.pop(_prov_key)
+
             profile = Profile(name=name, **known)
 
             data_files = [f for f in zipf.namelist() if f.startswith("data/")]

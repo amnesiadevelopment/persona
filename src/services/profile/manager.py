@@ -203,6 +203,21 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                             "fingerprint_seed_value": p_data.get(
                                 "fingerprint_seed_value"
                             ),
+                            # Absent key = a profile that has not launched
+                            # since the field was added → None, which reads as
+                            # "not known". Do NOT default these to the
+                            # currently-installed build: that would invent a
+                            # provenance record for a launch that was never
+                            # observed, and the whole value of the field is
+                            # that a difference against it is interpretable.
+                            # A guessed stamp makes that comparison return a
+                            # false answer, which is worse than no answer.
+                            "last_launch_engine": p_data.get(
+                                "last_launch_engine"
+                            ),
+                            "last_launch_build": p_data.get(
+                                "last_launch_build"
+                            ),
                         }
                         self.profiles[name] = Profile(**clean_data)
                     except Exception:
@@ -577,6 +592,32 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
             if name not in self.profiles:
                 return False
             self.profiles[name].cert_trust_status = status
+            self.save_profiles()
+        return True
+
+    def set_last_launch_build(
+        self, name: str, engine: str, build: str | None
+    ) -> bool:
+        """Record the engine + build a profile was just launched under.
+
+        Stores the pair VERBATIM — the two engines report different shapes
+        (``firefox-NN`` vs a dotted Chromium version) and normalising them
+        would lose which engine produced the string, which is the half that
+        makes a later comparison interpretable at all.
+
+        ``build`` may be None: that is the resolver's "could not read the
+        installed build", and it is recorded as-is rather than being replaced
+        with a guess. The engine is still worth recording without it.
+
+        Returns False for an unknown profile (deleted mid-launch), which the
+        caller treats as a non-event — recording provenance must never be able
+        to fail a launch.
+        """
+        with self._lock:
+            if name not in self.profiles:
+                return False
+            self.profiles[name].last_launch_engine = engine
+            self.profiles[name].last_launch_build = build
             self.save_profiles()
         return True
 
