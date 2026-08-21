@@ -13,9 +13,14 @@ or the naming changed) needs a newer engine package — i.e. a persona update �
 so it is reported as incompatible rather than offered for download.
 """
 
-import json
 import re
+# Retained deliberately though this module no longer calls urlopen itself: the
+# direct send now happens in services/egress.py, and `firefox.urllib.request` is
+# the SAME module object egress resolves — which is what lets the existing
+# tests patch one attribute and cover both. See fetch_latest.
 import urllib.request
+
+from .. import egress
 
 RELEASES_API = (
     "https://api.github.com/repos/feder-cr/firefox_antidetect_patch/releases"
@@ -94,11 +99,11 @@ def fetch_latest(timeout: int = 20) -> tuple[str, bool]:
     except Exception:
         return "", False
     try:
-        req = urllib.request.Request(
-            RELEASES_API, headers={"Accept": "application/vnd.github+json"}
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            releases = json.load(resp)
+        # Same single authority the Chromium updater consults — this is the
+        # other unattended startup poll, so it must not be able to leave a
+        # different way. With no policy set this is a direct send, exactly as
+        # before.
+        releases = egress.fetch_json(RELEASES_API, timeout=timeout)
     except Exception:
         return "", False
     best_tag = ""

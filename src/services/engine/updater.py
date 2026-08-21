@@ -8,14 +8,18 @@ running platform while the launcher always finds the binary at the path
 platform.fingerprint_chromium_filename() resolves to.
 """
 
-import json
 import os
 import shutil
 import threading
+# Retained deliberately though this module no longer calls urlopen itself: the
+# direct send now happens in services/egress.py, and `updater.urllib.request` is
+# the SAME module object egress resolves — which is what lets the existing
+# tests patch one attribute and cover both. See fetch_latest_full.
 import urllib.request
 
 from ...core.config import ENGINE_DIR
 from ...core import platform as _platform
+from ...services import egress
 from ...utils import httpdl
 from ...utils.httpdl import atomic_replace, range_opener, resumable_download
 from . import policy
@@ -247,11 +251,13 @@ def fetch_latest_full(timeout: int = 20) -> tuple[str, str, str]:
     ceiling (see engine/policy.py) and blanks the URL when a build is refused.
     """
     try:
-        req = urllib.request.Request(
-            RELEASES_API, headers={"Accept": "application/vnd.github+json"}
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.load(resp)
+        # Through persona's OWN egress policy, never a bare urlopen: this runs
+        # unattended at every startup, so it must leave the way the operator
+        # said the application's traffic should leave. With no policy set that
+        # is a direct send — byte-identical to what this line used to do.
+        data = egress.fetch_json(RELEASES_API, timeout=timeout)
+        if not isinstance(data, dict):
+            return "", "", ""
         tag = data.get("tag_name", "")
         url = ""
         digest = ""
