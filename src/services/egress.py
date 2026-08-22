@@ -111,6 +111,72 @@ def resolve(proxy: str | None = None) -> tuple[str, str]:
     return PROXIED, value
 
 
+#: Trap-2 throttle state, for the CURL arm only. `fetch_json`'s callers poll
+#: hourly, so a warning per refusal is 24 lines a day; `app_update`'s poll runs
+#: every 60 SECONDS for the life of the process, so the identical line would be
+#: ~1,440 a day into a log this module's own comment notes reaches disk. The
+#: refusal must stay FINDABLE — a silent skip is indistinguishable from "no new
+#: release", which is the whole point of logging it — so this throttles by STATE
+#: CHANGE rather than dropping the log: the first refusal is always logged, a
+#: repeat of the SAME reason is not, and a changed reason (or a recovery, which
+#: clears the state) logs again. This is presentation, not policy: `resolve()`
+#: above remains the only place the decision is made.
+_last_curl_refusal: str | None = None
+
+
+def _reset_curl_refusal_log() -> None:
+    """Forget the last-logged refusal, so the next one logs again. Exists for
+    tests, which run many refusals in one process and would otherwise inherit
+    each other's throttle state."""
+    global _last_curl_refusal
+    _last_curl_refusal = None
+
+
+def curl_proxy_args(proxy: str | None = None) -> list[str]:
+    """`resolve()`'s CURL arm: the argv fragment a curl call site must splice in
+    to honour the policy. Returns [] for DIRECT, ["--proxy", url] for PROXIED,
+    and raises EgressRefused — without returning argv — for REFUSE.
+
+    This exists because `fetch_json` is not a drop-in for every persona-owned
+    request: `app_update`'s transport is `curl` subprocesses, not urllib. That
+    is an ADVANTAGE rather than a complication — `curl --proxy socks5h://…`
+    performs a real SOCKS5 handshake with remote DNS natively, which is exactly
+    the case this module's docstring documents urllib getting wrong (a plain
+    CONNECT emitted at a SOCKS port that never answers). The charter's
+    socks5h-only rule is satisfied by the transport itself.
+
+    It is a second SHAPE of the answer, never a second COPY of the decision:
+    the verdict comes from `resolve()` above, so a change there moves both arms
+    together. A call site that built its own `--proxy` argv from the setting
+    would be the drift this module exists to prevent.
+
+    Raising on REFUSE rather than returning [] is load-bearing: [] is DIRECT's
+    answer, so returning it would silently degrade "we cannot honour your proxy"
+    into "send from the real IP" — the precise failure this module was written
+    to make impossible.
+    """
+    global _last_curl_refusal
+    verdict, transport = resolve(proxy)
+
+    if verdict == REFUSE:
+        if _last_curl_refusal != transport:
+            # As in fetch_json: the transport string is NOT logged — it can
+            # embed credentials, and this line reaches the disk-backed log.
+            logger.warning(
+                "App egress: request NOT SENT — %s. Persona will not fall back "
+                "to a direct connection; fix or clear the app egress proxy "
+                "setting. (Further identical refusals are not repeated.)",
+                transport,
+            )
+            _last_curl_refusal = transport
+        raise EgressRefused(transport)
+
+    # Recovery re-arms the log, so a proxy that breaks, is fixed, and breaks
+    # again is reported the second time too.
+    _last_curl_refusal = None
+    return ["--proxy", transport] if verdict == PROXIED else []
+
+
 def fetch_json(
     url: str,
     timeout: int = 20,
