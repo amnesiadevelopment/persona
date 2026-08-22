@@ -3,7 +3,12 @@ import pathlib
 
 from src.services.browser.audio_ext import build_audio_extension
 from src.services.browser.native_ext import build_native_extension
-from tests.native_mask_probe import AUDIO_STUBS, assert_reads_native
+from tests.native_mask_probe import (
+    AUDIO_STUBS,
+    assert_reads_native,
+    native_form,
+    stringify_in_realm,
+)
 
 
 def test_builds_manifest_and_js(tmp_path):
@@ -63,8 +68,41 @@ def test_wrapper_reads_native_under_call_whatever_the_load_order(tmp_path):
     )
 
 
-def test_idempotent_guard(tmp_path):
-    # a second injection into the same realm must not re-patch (double-wrap would
-    # break the native rendering)
-    js = (pathlib.Path(build_native_extension(str(tmp_path / "n"))) / "native.js").read_text()
-    assert "__pnaToStringPatched" in js
+def test_a_second_patch_in_the_same_realm_does_not_double_wrap(tmp_path):
+    # THE PROPERTY the retired `__pnaToStringPatched` flag existed for. Two
+    # persona content scripts (native_ext, locale_ext) both patch
+    # Function.prototype.toString in one MAIN world; they used to coordinate
+    # through a shared enumerable global so at most ONE of them ever wrapped a
+    # realm. PS-68 replaced that with CHAINING — each wraps whatever it finds and
+    # delegates down — so the guard is gone and this property has to be asserted
+    # directly instead of assumed from the flag's presence.
+    #
+    # This test used to be `assert "__pnaToStringPatched" in js`. That PINNED THE
+    # MECHANISM: it went red for a rename, stayed green for a build where the flag
+    # was set but the patch never installed, and would have blocked exactly the
+    # marker-free implementation that is strictly better. The sibling test at :23
+    # already documents in-file why a substring check on the marker is the wrong
+    # shape; this is that argument applied to the guard.
+    #
+    # So: load native_ext TWICE into one realm and read the observable a detector
+    # reads. A double-wrap renders `function function getChannelData() { [native
+    # code] }() { [native code] }` or leaks the wrapper's own source — either way
+    # it is visible here and invisible to any string check.
+    #
+    # Both load orders across the two REAL extensions are covered separately, in
+    # tests/test_tostring_chain.py (PS-68 AC4), along with every worker/iframe
+    # depth. This keeps native_ext's own idempotency pinned in native_ext's own
+    # suite.
+    d = build_audio_extension(1, str(tmp_path / "audio"))
+    native = pathlib.Path(build_native_extension(str(tmp_path / "n"))) / "native.js"
+    doubled = stringify_in_realm(
+        tmp_path,
+        [native, pathlib.Path(d) / "audio.js", native],
+        AUDIO_STUBS,
+        "Function.prototype.toString.call(AudioBuffer.prototype.getChannelData)",
+        install_native=False,
+    )
+    assert doubled == native_form("getChannelData"), (
+        "a second injection into the same realm double-wrapped the cloak: a "
+        f"marked wrapper no longer renders the native form exactly once — {doubled!r}"
+    )
