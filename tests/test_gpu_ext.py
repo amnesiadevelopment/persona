@@ -12,7 +12,7 @@ def _read(d, name):
 
 
 def test_builds_files(tmp_path):
-    d = build_gpu_extension(0xDEADBEEF, "windows", str(tmp_path / "g"))
+    d = build_gpu_extension(0xDEADBEEF, "windows", str(tmp_path / "g"), 0)
     p = pathlib.Path(d)
     assert (p / "gpu.js").is_file()
     assert (p / "manifest.json").is_file()
@@ -29,7 +29,7 @@ def test_native_tostring_masking(tmp_path):
     # would fail on a marker-free implementation that is strictly better.
     # assert_reads_native also runs the counterfactual: without native_ext's
     # patch the same probe must NOT read native.
-    d = build_gpu_extension(1, "windows", str(tmp_path / "g"))
+    d = build_gpu_extension(1, "windows", str(tmp_path / "g"), 0)
     js = _read(d, "gpu.js")
     assert_reads_native(
         tmp_path,
@@ -45,7 +45,7 @@ def test_carries_gpu_spoof_into_workers(tmp_path):
     # A detector reads the WebGL vendor/renderer from an OffscreenCanvas inside a
     # Web Worker to catch a page-only spoof — the real GPU (a different IHV than
     # the page reports) leaks there. The spoof must be carried into workers.
-    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g")), "gpu.js")
+    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g"), 0), "gpu.js")
     assert "applyGpuPatch" in js
     assert "G.Worker" in js
     assert "SharedWorker" in js
@@ -57,7 +57,7 @@ def test_carries_gpu_spoof_into_workers(tmp_path):
 
 
 def test_manifest_mv3_main_world(tmp_path):
-    d = build_gpu_extension(1, "windows", str(tmp_path / "g"))
+    d = build_gpu_extension(1, "windows", str(tmp_path / "g"), 0)
     m = json.loads(_read(d, "manifest.json"))
     cs = m["content_scripts"][0]
     assert cs["world"] == "MAIN"
@@ -66,8 +66,8 @@ def test_manifest_mv3_main_world(tmp_path):
 
 
 def test_seed_and_os_baked(tmp_path):
-    w = _read(build_gpu_extension(0xABCDEF, "windows", str(tmp_path / "w")), "gpu.js")
-    m = _read(build_gpu_extension(0xABCDEF, "macos", str(tmp_path / "m")), "gpu.js")
+    w = _read(build_gpu_extension(0xABCDEF, "windows", str(tmp_path / "w"), 0), "gpu.js")
+    m = _read(build_gpu_extension(0xABCDEF, "macos", str(tmp_path / "m"), 0), "gpu.js")
     assert str(0xABCDEF) in w
     assert 'var OS = "windows";' in w
     assert 'var OS = "macos";' in m
@@ -75,21 +75,21 @@ def test_seed_and_os_baked(tmp_path):
 
 
 def test_unmasked_constants_and_extension(tmp_path):
-    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g")), "gpu.js")
+    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g"), 0), "gpu.js")
     assert "0x9245" in js and "0x9246" in js
     assert "UNMASKED_VENDOR_WEBGL" in js and "UNMASKED_RENDERER_WEBGL" in js
     assert "WEBGL_debug_renderer_info" in js
 
 
 def test_real_windows_strings(tmp_path):
-    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g")), "gpu.js")
+    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g"), 0), "gpu.js")
     assert "Direct3D11 vs_5_0 ps_5_0, D3D11)" in js
     assert "Google Inc. (NVIDIA)" in js
     assert "Google Inc. (Intel)" in js
 
 
 def test_real_macos_strings(tmp_path):
-    js = _read(build_gpu_extension(1, "macos", str(tmp_path / "g")), "gpu.js")
+    js = _read(build_gpu_extension(1, "macos", str(tmp_path / "g"), 0), "gpu.js")
     assert "ANGLE Metal Renderer: Apple M1, Unspecified Version" in js
     assert "Google Inc. (Apple)" in js
 
@@ -122,7 +122,7 @@ _LINUX_RENDERERS = {
 
 def test_real_linux_strings(tmp_path):
     # AC 7 — mirrors test_real_windows_strings / test_real_macos_strings.
-    js = _read(build_gpu_extension(1, "linux", str(tmp_path / "g")), "gpu.js")
+    js = _read(build_gpu_extension(1, "linux", str(tmp_path / "g"), 0), "gpu.js")
     for vendor, renderers in _LINUX_RENDERERS.items():
         assert vendor in js
         for r in renderers:
@@ -132,7 +132,7 @@ def test_real_linux_strings(tmp_path):
 def test_linux_resolves_to_its_own_os_marker_not_windows(tmp_path):
     # os_norm's else-branch used to swallow linux into "windows", which is what
     # made every downstream selection serve a Windows D3D11 GPU.
-    js = _read(build_gpu_extension(1, "linux", str(tmp_path / "l")), "gpu.js")
+    js = _read(build_gpu_extension(1, "linux", str(tmp_path / "l"), 0), "gpu.js")
     assert 'var OS = "linux";' in js
     assert 'var OS = "windows";' not in js
 
@@ -245,13 +245,13 @@ def test_linux_vendor_agrees_with_the_renderer_it_is_paired_with(tmp_path):
 
 
 def test_deterministic_linux_build(tmp_path):
-    a = _read(build_gpu_extension(42, "linux", str(tmp_path / "a")), "gpu.js")
-    b = _read(build_gpu_extension(42, "linux", str(tmp_path / "b")), "gpu.js")
+    a = _read(build_gpu_extension(42, "linux", str(tmp_path / "a"), 0), "gpu.js")
+    b = _read(build_gpu_extension(42, "linux", str(tmp_path / "b"), 0), "gpu.js")
     assert a == b
 
 
 def test_os_gate_present(tmp_path):
-    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g")), "gpu.js")
+    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g"), 0), "gpu.js")
     # 4-way pool gate: macOS→Apple/Metal, android→Adreno/Mali, linux→Mesa/GL,
     # else Windows/D3D11. (iOS bypasses the pool entirely — see IOS_GPU.)
     assert '(OS === "macos") ? MAC_GPUS' in js
@@ -263,27 +263,27 @@ def test_os_gate_present(tmp_path):
 def test_android_profile_gets_mobile_gpu(tmp_path):
     # #5 (audit4): an Android profile (phone UA + touch) returning a D3D11 desktop
     # GPU is impossible — it must get the Adreno/Mali ANGLE-over-GLES pool.
-    js = _read(build_gpu_extension(1, "android", str(tmp_path / "g")), "gpu.js")
+    js = _read(build_gpu_extension(1, "android", str(tmp_path / "g"), 0), "gpu.js")
     assert 'var OS = "android"' in js
     assert "Adreno" in js and "Mali" in js
     assert "OpenGL ES 3.2" in js
 
 
 def test_version_strings(tmp_path):
-    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g")), "gpu.js")
+    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g"), 0), "gpu.js")
     assert "WebGL 1.0 (OpenGL ES 2.0 Chromium)" in js
     assert "WebGL 2.0 (OpenGL ES 3.0 Chromium)" in js
 
 
 def test_required_limits(tmp_path):
-    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g")), "gpu.js")
+    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g"), 0), "gpu.js")
     for p in ["3379:", "3386:", "34024:", "34921:", "36348:", "35661:", "33902:"]:
         assert p in js, f"missing param {p}"
 
 
 def test_deterministic_build(tmp_path):
-    a = _read(build_gpu_extension(42, "windows", str(tmp_path / "a")), "gpu.js")
-    b = _read(build_gpu_extension(42, "windows", str(tmp_path / "b")), "gpu.js")
+    a = _read(build_gpu_extension(42, "windows", str(tmp_path / "a"), 0), "gpu.js")
+    b = _read(build_gpu_extension(42, "windows", str(tmp_path / "b"), 0), "gpu.js")
     assert a == b
 
 
@@ -306,7 +306,7 @@ def test_carries_gpu_spoof_into_iframes(tmp_path):
     # creepjs reads WebGL from a fresh about:blank/srcdoc iframe; on real hardware
     # the pristine iframe leaks the real GPU (a VM's SwiftShader hides it). The
     # spoof must be carried into same-realm child frames.
-    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g")), "gpu.js")
+    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g"), 0), "gpu.js")
     assert "contentWindow" in js and "HTMLIFrameElement" in js
     # the leaf is routed through the shared realm bootstrap, which chains the
     # iframe accessors and re-runs the installer in the child (recursively).
@@ -327,7 +327,7 @@ def test_shader_precision_and_extensions_spoofed(tmp_path):
     from src.services.browser.gpu_ext import build_gpu_extension
 
     js = pathlib.Path(
-        build_gpu_extension(1, "windows", str(tmp_path / "g")) + "/gpu.js"
+        build_gpu_extension(1, "windows", str(tmp_path / "g"), 0) + "/gpu.js"
     ).read_text()
     assert "getShaderPrecisionFormat = nativeWrap" in js
     assert "getSupportedExtensions = nativeWrap" in js
@@ -348,7 +348,7 @@ def test_android_extensions_and_limits_are_gles_coherent(tmp_path):
     from src.services.browser.gpu_ext import build_gpu_extension
 
     js = pathlib.Path(
-        build_gpu_extension(1, "android", str(tmp_path / "a")) + "/gpu.js"
+        build_gpu_extension(1, "android", str(tmp_path / "a"), 0) + "/gpu.js"
     ).read_text()
     # the ANDROID set is what the code selects for OS==="android"
     assert 'STABLE_EXTS = (OS === "android") ? ANDROID_EXTS' in js
@@ -367,7 +367,7 @@ def test_apple_extensions_drop_s3tc(tmp_path):
     from src.services.browser.gpu_ext import build_gpu_extension
 
     js = pathlib.Path(
-        build_gpu_extension(1, "macos", str(tmp_path / "m")) + "/gpu.js"
+        build_gpu_extension(1, "macos", str(tmp_path / "m"), 0) + "/gpu.js"
     ).read_text()
     assert '(OS === "macos") ? APPLE_EXTS' in js
     # APPLE_EXTS must not contain s3tc (verify the array itself, not the whole
@@ -527,7 +527,7 @@ def _probe(tmp_path, seed, os_type):
     node = shutil.which("node")
     if not node:
         pytest.skip("node not available")
-    d = pathlib.Path(build_gpu_extension(seed, os_type, str(tmp_path / f"p{seed}{os_type}")))
+    d = pathlib.Path(build_gpu_extension(seed, os_type, str(tmp_path / f"p{seed}{os_type}"), 0))
     harness = d / "harness.js"
     harness.write_text(_GPU_PROBE, encoding="utf-8")
     out = subprocess.run(
@@ -583,7 +583,7 @@ _IOS_GL1_EXTS = [
 def test_ios_resolves_to_its_own_os_marker_not_macos(tmp_path):
     # AC 1. `ios` used to normalize to "macos", which is what made every
     # downstream selection (pool, limits, extensions) serve a Mac.
-    js = _read(build_gpu_extension(1, "ios", str(tmp_path / "i")), "gpu.js")
+    js = _read(build_gpu_extension(1, "ios", str(tmp_path / "i"), 0), "gpu.js")
     assert 'var OS = "ios";' in js
     assert 'var OS = "macos";' not in js
 
@@ -592,7 +592,7 @@ def test_ipad_and_iphone_aliases_also_resolve_to_ios(tmp_path):
     # os_type is an unvalidated free-text str on the profile model, so the
     # obvious spellings must not silently fall through to the windows default.
     for alias in ("ios", "iOS", "iPhone", "ipad", "ipados"):
-        js = _read(build_gpu_extension(1, alias, str(tmp_path / alias)), "gpu.js")
+        js = _read(build_gpu_extension(1, alias, str(tmp_path / alias), 0), "gpu.js")
         assert 'var OS = "ios";' in js, f"{alias} did not resolve to ios"
 
 
@@ -944,8 +944,8 @@ def test_non_ios_platforms_select_unchanged_values(tmp_path, os_type):
 
 def test_deterministic_ios_build(tmp_path):
     # AC 8, mirroring test_deterministic_build for the new arm.
-    a = _read(build_gpu_extension(42, "ios", str(tmp_path / "a")), "gpu.js")
-    b = _read(build_gpu_extension(42, "ios", str(tmp_path / "b")), "gpu.js")
+    a = _read(build_gpu_extension(42, "ios", str(tmp_path / "a"), 0), "gpu.js")
+    b = _read(build_gpu_extension(42, "ios", str(tmp_path / "b"), 0), "gpu.js")
     assert a == b
 
 
@@ -973,7 +973,7 @@ def test_emitted_script_is_syntactically_valid_for_every_os(tmp_path):
     if not node:
         pytest.skip("node not available")
     for os_type in ("windows", "macos", "android", "ios", "linux"):
-        d = build_gpu_extension(1, os_type, str(tmp_path / f"s{os_type}"))
+        d = build_gpu_extension(1, os_type, str(tmp_path / f"s{os_type}"), 0)
         out = subprocess.run(
             [node, "--check", str(pathlib.Path(d) / "gpu.js")],
             capture_output=True, text=True, timeout=60,
