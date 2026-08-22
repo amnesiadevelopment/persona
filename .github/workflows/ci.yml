@@ -291,7 +291,7 @@ jobs:
         # answer with no change to the repo. Fixed at source (defineProperty)
         # and pinned here — this gate found a real, live bug on its first run.
         #
-        # Reported, not laundered: two tests that stand up real sockets/TLS with
+        # Reported, not laundered: tests that stand up real sockets/TLS with
         # timeouts (tests/test_cert_manager.py::test_session_end_to_end and
         # tests/test_cert_terminator.py::test_terminator_presents_cert_to_admin_host)
         # were seen failing intermittently under full-suite load in an earlier
@@ -299,6 +299,22 @@ jobs:
         # control, so they are pre-existing and unrelated to any change gated
         # here. They are NOT allowlisted and NOT fixed. If one trips a PR,
         # re-run it and file it — do not add it to a skip list.
+        #
+        # A THIRD MEMBER OF THAT FAMILY HAS NOW BEEN OBSERVED, and it is
+        # recorded here rather than absorbed silently:
+        #   tests/test_cert_terminator.py::
+        #     test_terminator_does_not_present_cert_to_other_host
+        #     Failed: DID NOT RAISE SSLError
+        # Windows came back 24 on run 32547960917 where the arithmetic above
+        # predicts 23 (floor 22 + the inherited red). The delta is exactly this
+        # one test, and it did NOT fail on the immediately preceding run of the
+        # same branch (32546241928, 23 failed) — so it is intermittent, not a
+        # new floor. It stands up a real mTLS origin over loopback with an 8s
+        # timeout via the same _mtls_origin helper as the sibling named above,
+        # which is why it belongs to this family and not to the seven causes.
+        # NOT allowlisted, NOT skipped, and the floor figure above is NOT being
+        # revised upward to absorb it — a floor that quietly grows to match
+        # whatever the last run produced is not a measurement.
         shell: bash
         env:
           PERSONA_REQUIRED_CAPABILITIES: browser
