@@ -223,6 +223,39 @@ def load(path: str) -> dict:
         return json.load(fh)
 
 
+def quote_path(path: object) -> str:
+    """Render a filesystem path for an error message, readably and LITERALLY.
+
+    Use this instead of ``{path!r}`` anywhere a refusal names a file, because
+    ``repr()`` ESCAPES BACKSLASHES and a Windows path is mostly backslashes::
+
+        >>> p = r"C:\\Users\\me\\snap.json"
+        >>> f"{p!r}"                      # what repr gives you
+        "'C:\\\\Users\\\\me\\\\snap.json'"
+        >>> quote_path(p)                 # what the operator actually typed
+        "'C:\\Users\\me\\snap.json'"
+
+    That difference is not cosmetic. These messages exist so an operator who
+    typo'd a path can SEE which file was bad, and the suite asserts exactly
+    that (``assert str(path) in combined``, "it must name the file the operator
+    typed"). Under ``repr()`` the doubled form does not contain the typed path,
+    so on Windows the message named a file that does not exist while claiming
+    to name theirs — the one job it had. On POSIX the bug is invisible: ``/`` is
+    not an escape character, so ``repr()`` happens to round-trip.
+
+    The quotes are kept because they are load-bearing: they delimit a path with
+    leading or trailing spaces, which is otherwise unreadable in prose. For a
+    path with no quote characters this returns BYTE-IDENTICAL output to
+    ``repr()``, which is why adopting it changes no POSIX message.
+    """
+    text = str(path)
+    # Mirror repr()'s quote choice so a path containing an apostrophe stays
+    # unambiguous, without ever escaping the separators themselves.
+    if "'" in text and '"' not in text:
+        return f'"{text}"'
+    return f"'{text}'"
+
+
 __all__ = [
     "FLOAT_PRECISION",
     "SCHEMA_VERSION",
@@ -232,5 +265,6 @@ __all__ = [
     "dumps",
     "engine_build",
     "load",
+    "quote_path",
     "write",
 ]

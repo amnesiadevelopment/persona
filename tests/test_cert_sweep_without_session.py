@@ -17,6 +17,7 @@ which would defeat the whole point: the claim under test is that the plaintext
 key is GONE, not that a function was reached.
 """
 import os
+import sys
 
 import pytest
 
@@ -189,6 +190,7 @@ def test_unpreparable_certificate_conjures_no_mtls_directory(tmp_path):
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
 def test_sweeping_never_aborts_a_launch_that_has_no_mtls(tmp_path, monkeypatch):
     # AC7. The guards return None so the browser opens WITHOUT mTLS; that
     # behaviour is unchanged and is the whole reason sweep_key_material is
@@ -196,6 +198,17 @@ def test_sweeping_never_aborts_a_launch_that_has_no_mtls(tmp_path, monkeypatch):
     #
     # The hostile case is an existing-but-unreadable work dir: the sweep cannot
     # enumerate it, and must degrade rather than raise out through the launch.
+    #
+    # SKIPPED ON WINDOWS, AND THE MARKER IS THE POINT — not `os.geteuid()`
+    # alone, which does not EXIST on Windows and raised AttributeError before
+    # the root check could even be reached. The skip is not a convenience: the
+    # hostile case is STAGED with `os.chmod(work, 0o000)`, and Windows does not
+    # honour POSIX mode bits on a directory, so the directory stays perfectly
+    # listable and the "unreadable work dir" this test exists to exercise is
+    # never actually created. Running it there would assert nothing while
+    # looking green — strictly worse than declining to run. Matches the guard
+    # `test_atomic_write.py` / `test_cert_store.py` already use for the same
+    # reason.
     if os.geteuid() == 0:
         pytest.skip("root bypasses directory permissions; can't make a dir unlistable")
 

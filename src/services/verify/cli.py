@@ -92,7 +92,7 @@ from .diff import (
 )
 from .probes import ALL_REALMS, PROBES, WINDOW, WORKER
 from .runner import run_probes
-from .snapshot import build_snapshot, dumps, load, write
+from .snapshot import build_snapshot, dumps, load, quote_path, write
 
 
 def _parse_realms(raw: str) -> tuple[str, ...]:
@@ -186,8 +186,8 @@ def _load_snapshot(path: str) -> dict:
     """
     if not os.path.isfile(path):
         raise SnapshotUnreadable(
-            f"no snapshot to read at {path!r}. Nothing was compared, so this "
-            "is NOT drift — check the path, or record a snapshot with: "
+            f"no snapshot to read at {quote_path(path)}. Nothing was compared, "
+            "so this is NOT drift — check the path, or record a snapshot with: "
             "`python -m src.services.verify.cli record <profile> -o snap.json`."
         )
     try:
@@ -203,8 +203,8 @@ def _load_snapshot(path: str) -> dict:
         # directory, a permission denial, a broken link). Same reasoning, and
         # the same pair, as `baseline.py`.
         raise SnapshotUnreadable(
-            f"the snapshot at {path!r} could not be read: {exc}. Nothing was "
-            "compared, so this is NOT drift — the recording itself is "
+            f"the snapshot at {quote_path(path)} could not be read: {exc}. "
+            "Nothing was compared, so this is NOT drift — the recording itself is "
             "unusable. Re-record it, and check that the file was written "
             "completely."
         ) from exc
