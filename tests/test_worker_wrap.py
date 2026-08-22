@@ -45,6 +45,7 @@ import subprocess
 import pytest
 
 from src.services.browser.worker_wrap import realm_bootstrap_js
+from tests.realm_harness import HARNESS
 
 
 # --------------------------------------------------------------------------
@@ -112,18 +113,13 @@ def test_bootstrap_is_syntactically_balanced():
 # another's globals, so a leaf only arrives if it was really transported.
 # --------------------------------------------------------------------------
 
-_PROBE = r"""
-const fs = require("fs");
-const vm = require("vm");
-
+# The realm machinery (makeRealm/spawn/BLOBS) is the SHARED harness in
+# tests/realm_harness.py — PS-68 reuses it to ask the same realms a different
+# question (does the toString cloak still render native at depth), rather than
+# standing up a second one that could drift from this.
+_PROBE = HARNESS + r"""
 const BOOTSTRAP_A = fs.readFileSync(process.argv[2], "utf8");
 const BOOTSTRAP_B = fs.readFileSync(process.argv[3], "utf8");
-
-// One shared blob store, like the browser's: a blob: URL created in one realm
-// resolves anywhere. This matters — each chain link re-reads the blob the link
-// above it produced, so a store that forgets content silently drops a module's
-// fragment and the test would under-report coverage.
-const BLOBS = new Map();
 
 // Two leaves from two separate "content scripts": the multi-module case. Each
 // marks the realm it reaches, and each carries a distinct fake SEED compiled
@@ -141,43 +137,6 @@ function asContentScript(leaf, bootstrap) {
   return "(function(){" + leaf + bootstrap + "})();";
 }
 
-function makeRealm() {
-  const captured = [];
-  const sandbox = {
-    Reflect, WeakSet,
-    URL: {
-      createObjectURL: (b) => {
-        const u = "blob:pna-" + (BLOBS.size + 1);
-        BLOBS.set(u, b.__parts[0]);
-        captured.push(b.__parts[0]);
-        return u;
-      },
-    },
-    Blob: function Blob(parts) { this.__parts = parts; },
-    Worker: function Worker(url) { this.url = url; },
-    SharedWorker: function SharedWorker(url) { this.url = url; },
-    XMLHttpRequest: function XMLHttpRequest() {
-      const me = this;
-      this.status = 0; this.responseText = "";
-      this.open = function (m, u) { me.__u = u; };
-      this.send = function () {
-        if (BLOBS.has(me.__u)) { me.status = 200; me.responseText = BLOBS.get(me.__u); }
-        else { me.status = 404; }
-      };
-    },
-  };
-  const ctx = vm.createContext(sandbox);
-  vm.runInContext("var self = this; globalThis.self = globalThis;", ctx);
-  return { ctx, captured };
-}
-
-// Spawn a worker FROM this realm; return the payload its wrapper prepended.
-function spawn(realm) {
-  vm.runInContext('new self.Worker("https://example.test/w.js");', realm.ctx);
-  const body = realm.captured[realm.captured.length - 1];
-  if (body === undefined) throw new Error("realm's Worker was not wrapped");
-  return body.replace(/\ntry\{importScripts[\s\S]*$/, "");
-}
 
 // What this realm ended up with. `alpha`/`beta` are OBSERVABLES — did the leaf
 // run here — not a count of some registry. `globals`/`seedFindable` are what a

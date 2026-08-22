@@ -373,7 +373,13 @@ def test_wrapped_backdoor_is_gone_and_nothing_is_enumerable(cloak_probe):
     assert cloak_probe["symbols"] == 0
     assert cloak_probe["workerKeys"] == []
     # ...and no new fixed global name for a detector to probe for: the whole
-    # registry is closure-scoped, unlike Chromium's __pnaToStringPatched flag
+    # registry is closure-scoped. Chromium reaches the same end by a different
+    # route — since PS-68 its two cloak scripts CHAIN onto whatever
+    # Function.prototype.toString is already installed rather than coordinating
+    # through a shared `__pnaToStringPatched` global, so neither engine now
+    # publishes a fixed name for this. Chromium still marks each wrapper with a
+    # non-enumerable `__pnaName` own property, which this closure WeakMap does
+    # not (the other of the two improvements, and its own port).
     assert sorted(cloak_probe["newGlobals"]) == ["outerHeight", "outerWidth"]
 
 
