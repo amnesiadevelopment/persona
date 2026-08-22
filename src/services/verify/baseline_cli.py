@@ -67,7 +67,7 @@ from .baseline import (
     count_errors,
     record_snapshot,
 )
-from .snapshot import write
+from .snapshot import quote_path, write
 
 
 def _cmd_record(args: argparse.Namespace) -> int:
@@ -126,7 +126,8 @@ def _cmd_record(args: argparse.Namespace) -> int:
     except OSError as exc:
         raise BaselineUnavailable(
             f"recorded a clean reading ({summary}) but could not write it to "
-            f"{args.output!r}: {exc}. Nothing was written; the previous "
+            f"{quote_path(args.output)}: {exc}. Nothing was written; the "
+            "previous "
             "artifact, if any, is UNCHANGED. Fix the path or pass -o."
         ) from exc
     print(f"wrote {args.output}: {summary}", file=sys.stderr)
