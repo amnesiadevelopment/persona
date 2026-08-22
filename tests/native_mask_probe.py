@@ -212,8 +212,8 @@ def assert_reads_native(tmp_path, scripts, stubs, probe, name, *, native_first=T
 # TWO TRAPS, both of which read as "the spoof is dead" when it is not:
 #
 #   1. The buffer must be PERTURBABLE. `perturbFloat` skips zeros
-#      (audio_ext.py:61 `if (v !== 0 && isFinite(v))`) and `perturbBytes` only
-#      nudges bytes where `1 < v < 254` (webgl_ext.py:66). A zero-filled audio
+#      (audio_ext.py:64 `if (v !== 0 && isFinite(v))`) and `perturbBytes` only
+#      nudges bytes where `1 < v < 254` (webgl_ext.py:68). A zero-filled audio
 #      buffer or a zero/saturated pixel buffer comes back identical for every
 #      seed — a dead STUB reported as a dead spoof. AUDIO_STUBS (above) is
 #      zero-filled by design for the toString probe, which needs no values; the
