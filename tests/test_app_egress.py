@@ -1057,6 +1057,28 @@ def test_shared_downloader_is_unrouted_by_default_so_fast_update_is_unchanged(
 
 from src.services.browser import engine_install as eng  # noqa: E402
 
+# Warm invisible_playwright HERE, at module scope, so it is in sys.modules
+# before any test below installs a socket spy.
+#
+# This is not tidiness — it is what makes the AC4 refusal test assert anything
+# at all. `_download_invisible` imports these two LAZILY, inside the function
+# (engine_install.py:434), and that import does not survive a patched
+# `socket.socket`: run first under the spy it dies inside invisible_core with
+# "TypeError: function() argument 'code' must be code, not str", which
+# invisible_playwright._pin re-raises as ImportError. That happens at :434,
+# BEFORE the egress consultation at ~:480 — so the refusal test would record
+# `opened == []` because the code under test never ran, not because a refusal
+# was honoured. Green for a reason unrelated to the property.
+#
+# The two routing tests below hid this: `_wire_firefox_install` imports
+# `invisible_playwright.download` while wiring, which warms sys.modules before
+# their spy exists. The refusal test is the one Firefox test that does not call
+# that fixture, so it was the one that failed in isolation while passing in a
+# full-file run — i.e. it was passing on file ordering. Warming for the whole
+# module removes the ordering dependency for every test here, not just that one.
+import invisible_playwright.constants  # noqa: E402,F401
+import invisible_playwright.download  # noqa: E402,F401
+
 
 def _socks_listener_capturing(seen: dict, reply: bytes = b""):
     """A fake SOCKS5 server that records the FIRST BYTES it receives and the
@@ -1479,3 +1501,333 @@ def test_digest_verification_is_unchanged_by_routing(tmp_path, monkeypatch):
     assert ok is False, "a digest mismatch must be refused however it was routed"
     assert not dest.exists()
     assert not (tmp_path / "engine.bin.part").exists(), "the partial must be dropped"
+
+
+# --------------------------------------------------------------------------
+# AC1/AC2/AC3 over TLS — the scheme production ACTUALLY uses.
+#
+# Every routing test above drives `http://`, and the shipped scheme is `https`
+# WITHOUT EXCEPTION: invisible_core/constants.py:113 builds the release URL as
+# `https://github.com/...`, and GitHub then 302s to a signed HTTPS CDN URL. So
+# the arm that ships was, until these tests, the arm no test entered —
+# `_SocksHTTPSConnection.connect()` was never executed by the suite.
+#
+# That is the highest-consequence gap in this change: the TLS wrap is
+# hand-written, and getting it wrong fails as a SILENT MITM, which announces
+# itself to nobody (invariant #0). A suite that exercises `http` while shipping
+# `https` is asserting on the arm that cannot fail (PS-11).
+#
+# The harness below is therefore a REAL SOCKS5 proxy RELAYING to a REAL TLS
+# server: a genuine handshake happens end to end, over the tunnel, rather than
+# a recorded byte sequence being replayed.
+# --------------------------------------------------------------------------
+
+
+def _self_signed(tmp_path, cn):
+    """A self-signed cert for `cn`, as (server_pem, ca_pem).
+
+    Same shape as tests/test_cert_manager.py's builder — SAN included, because
+    hostname verification is precisely what must stay live through the tunnel.
+    """
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subj = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subj)
+        .issuer_name(subj)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.datetime(2020, 1, 1))
+        .not_valid_after(datetime.datetime(2035, 1, 1))
+        .add_extension(
+            x509.SubjectAlternativeName([x509.DNSName(cn)]), critical=False
+        )
+        .sign(key, hashes.SHA256())
+    )
+    srv_pem = tmp_path / "srv.pem"
+    srv_pem.write_bytes(
+        cert.public_bytes(serialization.Encoding.PEM)
+        + key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        )
+    )
+    ca_pem = tmp_path / "ca.pem"
+    ca_pem.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    return srv_pem, ca_pem
+
+
+def _tls_origin(srv_pem, seen, body):
+    """A REAL TLS server that honours `Range` with a 206.
+
+    It records the Host and Range it saw INSIDE the tunnel — which is only
+    readable if the TLS handshake genuinely completed, so these two keys are
+    themselves evidence that the wrap worked.
+    """
+    import ssl as _ssl
+
+    ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(str(srv_pem))
+    srv, port = _listener()
+    srv.listen(5)
+
+    def serve() -> None:
+        while True:
+            try:
+                raw, _ = srv.accept()
+            except Exception:
+                return
+            try:
+                conn = ctx.wrap_socket(raw, server_side=True)
+            except Exception as exc:
+                seen.setdefault("tls_error", repr(exc))
+                continue
+            try:
+                req = conn.recv(4096)
+                start = 0
+                for line in req.split(b"\r\n"):
+                    low = line.lower()
+                    if low.startswith(b"range:"):
+                        seen["range@origin"] = line
+                        start = int(line.split(b"=")[1].split(b"-")[0])
+                    elif low.startswith(b"host:"):
+                        seen["host@origin"] = line.split(b":", 1)[1].strip()
+                chunk = body[start:]
+                conn.sendall(
+                    b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes "
+                    + f"{start}-{len(body) - 1}/{len(body)}".encode()
+                    + b"\r\nContent-Length: "
+                    + str(len(chunk)).encode()
+                    + b"\r\n\r\n"
+                    + chunk
+                )
+            except Exception as exc:
+                seen.setdefault("origin_error", repr(exc))
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    return srv, port, thread
+
+
+def _socks_relay_to(origin_port, seen):
+    """A REAL SOCKS5 proxy that records the handshake and then RELAYS raw bytes
+    to the origin, so the TLS session is negotiated through the tunnel rather
+    than terminated at the proxy.
+
+    Relaying (not replaying) is the point: it is what makes the assertions
+    below evidence about `_SocksHTTPSConnection`, not about this harness.
+    """
+    srv, port = _listener()
+    srv.listen(5)
+
+    def pipe(a, b) -> None:
+        try:
+            while True:
+                data = a.recv(65536)
+                if not data:
+                    break
+                b.sendall(data)
+        except Exception:
+            pass
+        finally:
+            for s in (a, b):
+                try:
+                    s.close()
+                except Exception:
+                    pass
+
+    def serve() -> None:
+        first = True
+        while True:
+            try:
+                conn, _ = srv.accept()
+            except Exception:
+                return
+            if not first:
+                # Same reason as _socks_listener_capturing: drain retries fast
+                # rather than letting them block against an unaccepted backlog.
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                continue
+            first = False
+            try:
+                seen["first"] = conn.recv(512)
+                conn.sendall(b"\x05\x00")  # no-auth
+                _ver, _cmd, _rsv, atyp = _recv_exactly(conn, 4)
+                seen["atyp"] = atyp
+                host = _recv_exactly(conn, _recv_exactly(conn, 1)[0])
+                tport = struct.unpack(">H", _recv_exactly(conn, 2))[0]
+                seen["target"] = (host.decode(), tport)
+                upstream = socket.create_connection(("127.0.0.1", origin_port))
+                conn.sendall(b"\x05\x00\x00\x01" + b"\x00" * 4 + b"\x00\x00")
+                threading.Thread(
+                    target=pipe, args=(conn, upstream), daemon=True
+                ).start()
+                pipe(upstream, conn)
+            except Exception as exc:
+                seen.setdefault("relay_error", repr(exc))
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    return srv, port, thread
+
+
+def test_https_engine_download_completes_a_real_tls_handshake_through_socks(
+    tmp_path, monkeypatch
+):
+    """AC1/AC2/AC3 on the scheme that actually ships.
+
+    Drives the PRODUCTION entry point `updater._download_to` — not a
+    hand-built opener with a context injected, which would exercise the
+    mechanism instead of the wiring (the AC9 trap that already caught an
+    earlier draft of the Firefox tests).
+
+    The test CA is trusted via SSL_CERT_FILE rather than by passing a context
+    in, precisely so the code under test keeps building its own default
+    context: the security-critical `context=None` branch is the one that
+    ships, so it is the one that must be executed here.
+
+    Evidence, all observed rather than asserted-on-a-substring:
+      * the SOCKS5 greeting (0x05) reached the proxy — not `CONNECT `
+      * the target went out as a NAME (atyp 0x03) on port 443 — remote DNS
+      * the Host and Range were readable INSIDE the tunnel, which is only
+        possible if the TLS handshake genuinely completed
+      * the verified bytes landed on disk
+    """
+    import hashlib
+
+    host = "engine.example.com"
+    full = b"ABCDEFGHIJ"
+    seen: dict = {}
+
+    srv_pem, ca_pem = _self_signed(tmp_path, host)
+    osrv, oport, othread = _tls_origin(srv_pem, seen, full)
+    psrv, pport, pthread = _socks_relay_to(oport, seen)
+
+    # Make the DEFAULT context (the one the shipped code builds for itself)
+    # trust our throwaway CA. Nothing about the code under test is stubbed.
+    monkeypatch.setenv("SSL_CERT_FILE", str(ca_pem))
+
+    dest = tmp_path / "asset.bin"
+    settings.set_app_egress_proxy(f"socks5://127.0.0.1:{pport}")
+    try:
+        ok = updater._download_to(
+            str(dest),
+            f"https://{host}/firefox-20.tar.gz",
+            15,
+            hashlib.sha256(full).hexdigest(),
+            None,
+        )
+    finally:
+        psrv.close()
+        osrv.close()
+        pthread.join(15)
+        othread.join(15)
+
+    assert ok is True, (
+        "the https engine download failed through the SOCKS tunnel "
+        f"(tls={seen.get('tls_error')} relay={seen.get('relay_error')} "
+        f"origin={seen.get('origin_error')})"
+    )
+    first = seen.get("first", b"")
+    assert first[:1] == b"\x05", f"expected a SOCKS5 greeting, got {first[:16]!r}"
+    assert not first.startswith(b"CONNECT "), (
+        "an https URL must still take a real SOCKS handshake, not HTTP CONNECT"
+    )
+    assert seen.get("atyp") == 0x03, (
+        "the https target must be sent as a NAME so the EXIT resolves it; a "
+        "local resolution trades an IP disclosure for a DNS one"
+    )
+    assert seen.get("target") == (host, 443), (
+        f"the tunnel was not opened to the https target: {seen.get('target')}"
+    )
+    # Readable only through a completed TLS session:
+    assert seen.get("host@origin") == host.encode(), (
+        "the origin never saw the request — the TLS wrap did not carry it"
+    )
+    assert dest.read_bytes() == full, "the verified bytes did not land on disk"
+
+
+def test_https_over_socks_still_verifies_the_certificate(tmp_path, monkeypatch):
+    """The other half of the TLS arm, and the one whose failure is SILENT.
+
+    A working transport is not evidence of a VERIFYING one: if verification
+    were off, or if `server_hostname` named the PROXY instead of the target,
+    every download here would still succeed and nothing would ever report it.
+    So this pins the failure explicitly — an UNTRUSTED cert must break the
+    transfer.
+
+    WHICH LINES THIS ACTUALLY GUARDS — measured, not assumed. Disabling the
+    `context or ssl.create_default_context()` fallback in
+    `_SocksHTTPSConnection.__init__` does NOT turn this test red, because that
+    fallback is UNREACHABLE from production: `SocksProxyHandler.__init__` calls
+    `HTTPSHandler.__init__(context=None)`, and urllib builds a VERIFYING
+    context there (verify_mode=CERT_REQUIRED, check_hostname=True) before this
+    class is ever constructed, so `context` is never None in the shipped path.
+    The two lines this test genuinely falsifies are the reachable ones:
+    the context handed down by `SocksProxyHandler.__init__` (disable
+    verification there and this goes red), and `server_hostname=self.host` in
+    `connect()` (point it at the proxy and this goes red with
+    SSLV3_ALERT_BAD_CERTIFICATE). Recorded so a future maintainer does not
+    "cover" the dead fallback and believe the live path is pinned.
+
+    Same harness as above with the CA simply not trusted; the SOCKS handshake
+    still completes, so this isolates certificate verification from routing.
+    """
+    import hashlib
+
+    host = "engine.example.com"
+    full = b"ABCDEFGHIJ"
+    seen: dict = {}
+
+    srv_pem, _ca_pem = _self_signed(tmp_path, host)
+    osrv, oport, othread = _tls_origin(srv_pem, seen, full)
+    psrv, pport, pthread = _socks_relay_to(oport, seen)
+
+    # Deliberately do NOT trust the CA: point the default store at an empty one.
+    empty_ca = tmp_path / "empty-ca.pem"
+    empty_ca.write_bytes(b"")
+    monkeypatch.setenv("SSL_CERT_FILE", str(empty_ca))
+
+    dest = tmp_path / "asset.bin"
+    settings.set_app_egress_proxy(f"socks5://127.0.0.1:{pport}")
+    try:
+        ok = updater._download_to(
+            str(dest),
+            f"https://{host}/firefox-20.tar.gz",
+            15,
+            hashlib.sha256(full).hexdigest(),
+            None,
+        )
+    finally:
+        psrv.close()
+        osrv.close()
+        pthread.join(15)
+        othread.join(15)
+
+    assert ok is False, (
+        "an UNTRUSTED certificate was accepted through the SOCKS tunnel — "
+        "the TLS wrap is not verifying, which fails as a silent MITM"
+    )
+    assert not dest.exists(), "unverified bytes were written to disk"
+    # The routing itself still worked, so the refusal above is about the
+    # certificate and not about a tunnel that never opened.
+    assert seen.get("first", b"")[:1] == b"\x05", (
+        "the proxy was never reached, so this proves nothing about TLS"
+    )
+    assert seen.get("target") == (host, 443)

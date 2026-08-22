@@ -194,7 +194,20 @@ class _SocksHTTPSConnection(_SocksHTTPConnection):
     """The TLS counterpart: the same proxied socket, wrapped.
 
     `server_hostname` is the TARGET's name, not the proxy's, so certificate
-    verification still checks the host we asked for.
+    verification still checks the host we asked for. That line is load-bearing:
+    point it at the proxy and the handshake fails BAD_CERTIFICATE, which is the
+    loud failure; the silent one would be verification switched off entirely,
+    since a MITM'd 200MB archive announces itself to nobody.
+
+    WHERE VERIFICATION IS ACTUALLY DECIDED — measured, not assumed. The
+    `context or ssl.create_default_context()` fallback below is UNREACHABLE
+    from production: `SocksProxyHandler.__init__` calls
+    `HTTPSHandler.__init__(context=None)`, and urllib builds a verifying
+    context there (verify_mode=CERT_REQUIRED, check_hostname=True) and passes
+    it down, so `context` is never None on the shipped path. The fallback is
+    kept only for a direct construction of this class. Anyone hardening this
+    should change the context handed down by the HANDLER — hardening the dead
+    fallback changes nothing and reads as if it did.
     """
 
     default_port = 443
