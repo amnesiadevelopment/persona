@@ -2762,10 +2762,30 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
         for pg in list(ctx.pages):
             try:
                 pg.evaluate(_audio_js)
-            except Exception:
+            except Exception as exc:
                 # A tab without a browsingContext (the fx-19 dead default tab)
                 # raises on any eval. Nothing to patch there; the next document
                 # in it comes from the init script.
+                #
+                # BREADCRUMB, deliberately not a re-raise. The swallow is
+                # correct for that known case, but its SYMPTOM when it fires
+                # for any OTHER reason is a silently unperturbed tab — which is
+                # precisely the defect this block exists to fix, and the hardest
+                # kind to notice (nothing fails; a digest just reads the stock
+                # value). So the reason is always recorded, and the known case
+                # is separated from the unknown one at the log level rather
+                # than being flattened into a single silent `continue`.
+                if "browsingContext" in str(exc):
+                    logger.debug(
+                        "audio patch skipped for a context-less tab "
+                        "(expected, fx-19 dead default tab): %s", exc,
+                    )
+                else:
+                    logger.warning(
+                        "audio patch FAILED on an open tab for an unexpected "
+                        "reason - that tab keeps the stock audio fingerprint "
+                        "and stays linkable: %s", exc,
+                    )
                 continue
 
     on_ctx(_apply_audio_to_open_tabs)

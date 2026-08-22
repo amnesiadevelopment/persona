@@ -121,6 +121,18 @@ def native_form(name: str) -> str:
     return "function " + name + "() { [native code] }"
 
 
+def spidermonkey_native_form(name: str) -> str:
+    """SpiderMonkey's native rendering: THREE lines, four-space indent.
+
+    Deliberately not the same string as `native_form` (V8's one-liner). Emitting
+    V8's form on Firefox is itself a masking tell — one
+    `Array.prototype.map.toString()` comparison away — so the two engines'
+    expected forms are kept as separate literals rather than one shared
+    "native-ish" matcher that would accept either.
+    """
+    return "function " + name + "() {\n    [native code]\n}"
+
+
 def stringify_in_realm(
     tmp_path, scripts, stubs, probe, *, install_native=True, native_first=True
 ):
@@ -163,6 +175,155 @@ def stringify_in_realm(
     )
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)["result"]
+
+
+# ==========================================================================
+# CHILD-FRAME realm probe (PS-73).
+#
+# WHY A SECOND REALM IS THE ONLY WITNESS. A cloak that captures and assigns a
+# BARE `Function.prototype.toString` and one that goes through
+# `G.Function.prototype` generate BYTE-IDENTICAL text in every other respect,
+# so no substring assertion can tell them apart. The difference is which realm
+# the binding resolves in, and that is only observable by running it.
+#
+# THE MECHANISM THIS MODELS. `worker_wrap.realm_bootstrap_js` chains the
+# `contentWindow` accessor and calls `__pnaInstall(childWindow, LEAF)` — where
+# LEAF is a PARENT-REALM FUNCTION OBJECT, not source text. Its lexical
+# `Function.prototype` is therefore the PARENT's, so a bare binding re-patches
+# the parent (a no-op, already patched) and leaves the child realm's own
+# pristine while still installing the wrappers there. A detector running in
+# that frame then reads raw patch source off the wrapper.
+#
+# Contrast the WORKER realm, which is correct under BOTH forms and must not be
+# "fixed": the leaf crosses into a worker as SOURCE TEXT and is re-evaluated in
+# the worker's own realm, so a bare `Function.prototype` resolves to the
+# worker's there. Only the frame case is affected.
+#
+# ⚠️ THE TRAP THAT MAKES THIS PROBE LIE. `vm.createContext(obj)` turns `obj`
+# into a VIEW onto the new realm, and that view carries NO `Function` /
+# `Object` / `Reflect` of its own — only what a script later assigned to it. A
+# real `iframe.contentWindow` IS the child's inner global and does carry them.
+# So the child handed to the parent must be the realm's own `globalThis`
+# (`vm.runInContext('globalThis', child)`), never the sandbox object. Hand over
+# the sandbox object and `G.Function` reads as absent, the cloak takes its
+# fail-soft path, and this probe reports a LEAK against a CORRECT fix — the
+# same trap `_HARNESS` above records for the single-realm case.
+_CHILD_REALM_HARNESS = r"""
+const fs = require('fs');
+const vm = require('vm');
+
+const cfg = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const REALM_INIT =
+  "globalThis.self = globalThis; globalThis.window = globalThis; globalThis.top = globalThis;";
+
+// --- child realm: stubs only, NO persona script installed directly ----------
+const child = {};
+vm.createContext(child);
+vm.runInContext(REALM_INIT, child);
+vm.runInContext(cfg.stubs, child, { filename: 'child-stubs.js' });
+
+// --- parent realm -----------------------------------------------------------
+const parent = {};
+vm.createContext(parent);
+vm.runInContext(REALM_INIT, parent);
+vm.runInContext(cfg.stubs, parent, { filename: 'parent-stubs.js' });
+
+// The iframe element whose accessor the bootstrap chains. Its `contentWindow`
+// hands back the CHILD realm's own global -- see the trap note in the module.
+vm.runInContext(
+  `function HTMLIFrameElement() {}
+   Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+     configurable: true, enumerable: true,
+     get: function () { return globalThis.__CHILD_WINDOW__; },
+   });
+   Object.defineProperty(HTMLIFrameElement.prototype, 'contentDocument', {
+     configurable: true, enumerable: true,
+     get: function () { return null; },
+   });`,
+  parent, { filename: 'iframe-stub.js' }
+);
+parent.__CHILD_WINDOW__ = vm.runInContext('globalThis', child);
+
+// Install into the PARENT only, exactly as add_init_script / a content script does.
+for (const p of cfg.scripts) {
+  vm.runInContext(fs.readFileSync(p, 'utf8'), parent, { filename: p });
+}
+
+// Touching contentWindow is what fires the chained accessor and carries the
+// leaf into the child. A page does this simply by reaching into its iframe.
+vm.runInContext('(new HTMLIFrameElement()).contentWindow;', parent);
+
+const result = vm.runInContext(cfg.probe, child, { filename: 'child-probe.js' });
+console.log(JSON.stringify({ result: result, type: typeof result }));
+"""
+
+
+def observe_in_child_realm(tmp_path, scripts, stubs, probe):
+    """Install `scripts` in a PARENT realm, let the bootstrap carry the leaf into
+    a CHILD frame realm, and evaluate `probe` from INSIDE that child.
+
+    This is what a detector running in an iframe reads. `probe` is evaluated in
+    the child realm, so `Function.prototype.toString.call(...)` there resolves
+    against the CHILD's Function.prototype — the binding under test.
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+
+    work = pathlib.Path(tmp_path) / "child-probe"
+    work.mkdir(parents=True, exist_ok=True)
+
+    harness = work / "harness.js"
+    harness.write_text(_CHILD_REALM_HARNESS, encoding="utf-8")
+    cfg = work / "cfg.json"
+    cfg.write_text(
+        json.dumps(
+            {"stubs": stubs, "scripts": [str(s) for s in scripts], "probe": probe}
+        ),
+        encoding="utf-8",
+    )
+
+    out = subprocess.run(
+        [node, str(harness), str(cfg)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)["result"]
+
+
+def assert_reads_native_in_child_realm(
+    tmp_path, scripts, stubs, probe, expected, *, reached_probe,
+    unpatched_observable
+):
+    """Assert the wrapper reads as native FROM INSIDE A CHILD FRAME, and that the
+    child realm was genuinely reached by the patch.
+
+    THE SECOND HALF IS NOT OPTIONAL, and it is what makes this test different
+    from a green that means nothing. If the bootstrap never carried the leaf
+    into the child at all, the wrapper there is the UNTOUCHED NATIVE STUB —
+    which stringifies natively too. The masking assertion would then pass for
+    precisely the opposite of the reason wanted: not "the cloak covered the
+    child" but "there was nothing in the child to cloak".
+
+    So `reached_probe` reads a VALUE from the same child realm, and it must
+    differ from `unpatched_observable` (what that realm reads with no patch
+    installed). That pins the patch as present in the child before its
+    stringification is allowed to count as evidence.
+    """
+    reached = observe_in_child_realm(tmp_path, scripts, stubs, reached_probe)
+    assert reached != unpatched_observable, (
+        "VACUOUS TEST: the patch never reached the child realm at all "
+        f"(it reads {reached!r}, the unpatched value). The native-form "
+        "assertion below would pass on the untouched built-in, so it would "
+        "witness nothing."
+    )
+
+    read = observe_in_child_realm(tmp_path, scripts, stubs, probe)
+    assert read == expected, (
+        f"read from inside a CHILD FRAME, the wrapper stringifies as "
+        f"{read!r} rather than the expected native form {expected!r}. A page "
+        f"that looks in an iframe sees the patch source — a masking tell."
+    )
 
 
 def assert_reads_native(tmp_path, scripts, stubs, probe, name, *, native_first=True):
@@ -251,6 +412,14 @@ AUDIO_OBSERVABLE_PROBE = r"""
   for (var i = 0; i < d.length; i++) { out.push(d[i].toPrecision(9)); }
   return out.join(',');
 })()
+"""
+
+# What a MASKING detector reads: the wrapper's own source, through the
+# `.call` form (a per-function `.toString` override does not intercept this).
+# Evaluated INSIDE a child frame realm by `observe_in_child_realm`, so
+# `Function.prototype` here is the CHILD's — which is the binding under test.
+AUDIO_STRINGIFY_PROBE = r"""
+Function.prototype.toString.call(AudioBuffer.prototype.getChannelData)
 """
 
 # What a fingerprinter reads off a WebGL context: the pixel bytes. NOTE the
