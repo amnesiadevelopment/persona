@@ -81,6 +81,18 @@ class EgressRefused(Exception):
     found" must catch this type explicitly rather than inspect the result."""
 
 
+def _configured_value(proxy: str | None = None) -> str:
+    """The raw configured egress value `resolve()` judges — read from settings
+    when `proxy` is omitted, otherwise the caller's own string, stripped.
+
+    Split out of `resolve()` so the refusal-log throttle can key on the value
+    that was REJECTED without re-deriving it from a different source. Reading
+    the setting twice would be a second copy of "what is configured", which is
+    the drift this module exists to prevent; one reader keeps them in step.
+    """
+    return settings.app_egress_proxy() if proxy is None else (proxy or "").strip()
+
+
 def resolve(proxy: str | None = None) -> tuple[str, str]:
     """THE resolver: how should persona's own request leave? Returns
     (verdict, transport).
@@ -101,7 +113,7 @@ def resolve(proxy: str | None = None) -> tuple[str, str]:
       "no one asked for a proxy" and "someone asked and we cannot honour it" is
       the whole reason this returns a verdict instead of an Optional string.
     """
-    value = settings.app_egress_proxy() if proxy is None else (proxy or "").strip()
+    value = _configured_value(proxy)
     if not value:
         return DIRECT, ""
     # Configured-but-unparseable must NEVER degrade to direct. A typo'd proxy is
@@ -118,9 +130,20 @@ def resolve(proxy: str | None = None) -> tuple[str, str]:
 #: refusal must stay FINDABLE — a silent skip is indistinguishable from "no new
 #: release", which is the whole point of logging it — so this throttles by STATE
 #: CHANGE rather than dropping the log: the first refusal is always logged, a
-#: repeat of the SAME reason is not, and a changed reason (or a recovery, which
-#: clears the state) logs again. This is presentation, not policy: `resolve()`
-#: above remains the only place the decision is made.
+#: repeat of the SAME rejected SETTING is not, and a DIFFERENT rejected setting
+#: (or a recovery, which clears the state) logs again. This is presentation,
+#: not policy: `resolve()` above remains the only place the decision is made.
+#:
+#: It keys on the rejected VALUE, not on the refusal reason, and that choice is
+#: load-bearing rather than incidental: `resolve()` has exactly ONE REFUSE
+#: string, so a reason-keyed throttle could never re-arm on a changed reason —
+#: the branch would be unreachable by construction and the comment describing it
+#: would be fiction. Keying on the value makes it genuinely reachable, and it
+#: tracks the operator who most needs the signal: someone who reads the warning,
+#: edits the setting, and gets it wrong a SECOND way is actively trying to fix
+#: this, and a reason-keyed throttle would answer their new typo with silence.
+#: The value is used as an identity here and is NEVER logged — it can embed
+#: credentials, and this line reaches the disk-backed log.
 _last_curl_refusal: str | None = None
 
 
@@ -159,16 +182,21 @@ def curl_proxy_args(proxy: str | None = None) -> list[str]:
     verdict, transport = resolve(proxy)
 
     if verdict == REFUSE:
-        if _last_curl_refusal != transport:
-            # As in fetch_json: the transport string is NOT logged — it can
-            # embed credentials, and this line reaches the disk-backed log.
+        # Keyed on the REJECTED VALUE, not on `transport` (the reason): there is
+        # only one REFUSE reason, so a reason-keyed throttle could never re-arm.
+        # See the comment on _last_curl_refusal above.
+        offending = _configured_value(proxy)
+        if _last_curl_refusal != offending:
+            # As in fetch_json: neither the transport string nor the offending
+            # value is logged — both can embed credentials, and this line
+            # reaches the disk-backed log.
             logger.warning(
                 "App egress: request NOT SENT — %s. Persona will not fall back "
                 "to a direct connection; fix or clear the app egress proxy "
                 "setting. (Further identical refusals are not repeated.)",
                 transport,
             )
-            _last_curl_refusal = transport
+            _last_curl_refusal = offending
         raise EgressRefused(transport)
 
     # Recovery re-arms the log, so a proxy that breaks, is fixed, and breaks
