@@ -312,33 +312,33 @@ which is shared, and is **not** evidence about desktop-specific behaviour.
 
 ## Cost
 
-Measured, whole committed suite: **11 tests, 545s** — PS-71's five (200s) plus
-PS-74's six (345.20s, one run against the committed tree). Per test the spread
-is **31–110s**:
+Measured, whole committed suite: **11 tests, 549s** — one run of the whole
+tier against the committed tree (549.23s), rebased onto main. Per test the
+spread is **31–111s**:
 
 | test | call |
 |---|---|
-| `test_selecting_each_os_option_reaches_the_saved_profile` | 110.5s |
-| `test_driven_selection_fails_when_the_selection_is_discarded` | 50.8s |
-| `test_selecting_in_the_engine_dropdown_reaches_the_saved_profile` | 47.5s |
-| `test_negative_control_is_surgical` | 47.5s |
-| `test_choosing_a_mobile_os_narrows_the_engine_choice` | 46.5s |
-| `test_typing_into_the_multiline_field_reaches_the_saved_product` | 44.3s |
-| `test_driven_test_fails_when_the_button_is_unwired` | 42.6s |
-| `test_creating_a_profile_through_the_controls_persists_it` | 42.6s |
-| `test_every_declared_option_of_both_dropdowns_is_reachable` | 41.8s |
+| `test_selecting_each_os_option_reaches_the_saved_profile` | 111.2s |
+| `test_driven_selection_fails_when_the_selection_is_discarded` | 51.2s |
+| `test_selecting_in_the_engine_dropdown_reaches_the_saved_profile` | 47.7s |
+| `test_negative_control_is_surgical` | 47.6s |
+| `test_choosing_a_mobile_os_narrows_the_engine_choice` | 46.8s |
+| `test_typing_into_the_multiline_field_reaches_the_saved_product` | 44.4s |
+| `test_driven_test_fails_when_the_button_is_unwired` | 42.4s |
+| `test_creating_a_profile_through_the_controls_persists_it` | 42.8s |
+| `test_every_declared_option_of_both_dropdowns_is_reachable` | 42.1s |
 | `test_every_visible_text_field_is_reachable_including_the_multiline_one` | 39.1s |
-| `test_real_controls_are_addressable_in_the_shipped_ui` | 31.4s |
+| `test_real_controls_are_addressable_in_the_shipped_ui` | 31.6s |
 
-**The fixed-boot shape holds, and the 110s outlier confirms it rather than
+**The fixed-boot shape holds, and the 111s outlier confirms it rather than
 breaking it.** That test creates five profiles — one per OS option — inside a
-single boot: five full create-profile cycles for ~110s, against ~45s for a test
+single boot: five full create-profile cycles for ~111s, against ~45s for a test
 that does one. So the *marginal* cost of another option is roughly **15s**,
 while the cost of another test is roughly **45s of boot before it does
 anything**. Drive more controls per boot; do not add a boot per assertion.
 
 The cost is **dominated by fixed startup, not by the interaction**: the cheapest
-test bounds boot-plus-settle (a ~25s app-settle plus browser startup) at ≤31.4s.
+test bounds boot-plus-settle (a ~25s app-settle plus browser startup) at ≤31.6s.
 So a test's price is essentially the boot, and driving *more* controls within
 one test is close to free — which is the shape that matters when sizing
 downstream work. Each test boots a real persona against a fresh isolated home,
