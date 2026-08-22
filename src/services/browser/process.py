@@ -74,16 +74,34 @@ def _cert_session_for(profile: Profile, profile_dir: str, upstream: str | None):
     """Start an mTLS terminator for the profile's assigned certificate, or None.
     The terminator's own upstream is the profile's real proxy so the exit IP is
     unchanged. Its work dir is under the profile so leaf/PEM material is cleaned
-    with the profile."""
+    with the profile.
+
+    Deciding there is NO mTLS session is also a decision about key material.
+    ``sweep_key_material`` used to be reachable only from inside
+    ``start_cert_session``, so a profile whose certificate was unassigned (an
+    ordinary, supported edit — ``models/profile.py``: ``certificate: str | None``)
+    stranded a previous session's decrypted client key in the profile's own data
+    dir with nothing left in the tree that would ever remove it. Every path out
+    of here now sweeps, so the key's lifetime belongs to the directory rather
+    than to the one path that happens to start a session.
+    """
+    from ..cert.terminator import sweep_key_material
+
+    work = os.path.join(profile_dir, ".persona-mtls")
     cert_name = getattr(profile, "certificate", None)
     if not cert_name:
+        # No certificate assigned: nothing will start a session for this
+        # profile, so this is the last chance to clear an earlier one's residue.
+        sweep_key_material(work)
         return None
     from ..cert.manager import start_cert_session
 
     cert = CertStore().get(cert_name)
     if cert is None:
+        # The profile still references a certificate record the operator has
+        # deleted. Same reasoning: no session will start, so sweep here.
+        sweep_key_material(work)
         return None
-    work = os.path.join(profile_dir, ".persona-mtls")
     return start_cert_session(cert, upstream or None, work)
 
 
