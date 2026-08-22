@@ -25,6 +25,7 @@ CloakBrowser issue reports): Windows = ANGLE-over-D3D11 with the literal
 import json
 import pathlib
 
+from ...models.hardware_generation import normalize_generation
 from .worker_wrap import realm_bootstrap_js
 
 _CONTENT_SCRIPT = r"""
@@ -41,6 +42,12 @@ _CONTENT_SCRIPT = r"""
     G.__personaGpu = true;
     var SEED = __SEED__;
     var OS = "__OS__";
+    // The profile's frozen hardware generation. A GPU is only visible to a
+    // profile whose generation is >= the generation that GPU was added in, so
+    // appending to a pool below cannot change `visible(...).length` for an
+    // existing profile — which is what stops the modulo below re-indexing it
+    // onto a different card. See models/hardware_generation.py.
+    var GEN = __GEN__;
 
   function h32(x) {
     var h = SEED ^ (x | 0);
@@ -48,7 +55,21 @@ _CONTENT_SCRIPT = r"""
     h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
     return (h ^ (h >>> 16)) >>> 0;
   }
-  function pick(arr, salt) { return arr[h32(salt) % arr.length]; }
+  // Entries with no `since` are generation 0 (every entry that shipped before
+  // generations existed), so an untagged pool filters to itself unchanged.
+  function visible(arr) {
+    var out = [];
+    for (var i = 0; i < arr.length; i++) {
+      if ((arr[i].since || 0) <= GEN) out.push(arr[i]);
+    }
+    return out;
+  }
+  // Divide by the length of the profile's OWN generation's pool, never by the
+  // whole array's — taking arr.length here is the original defect.
+  function pick(arr, salt) {
+    var pool = visible(arr);
+    return pool[h32(salt) % pool.length];
+  }
 
   function nativeWrap(orig, replacement) {
     try {
@@ -648,7 +669,9 @@ _MANIFEST = {
 }
 
 
-def build_gpu_extension(seed: int, os_type: str, base_dir: str) -> str:
+def build_gpu_extension(
+    seed: int, os_type: str, base_dir: str, generation: int
+) -> str:
     """Generate an unpacked extension that spoofs the WebGL getParameter GPU
     signature deterministically per profile seed, constrained to the profile's
     spoofed OS.
@@ -678,6 +701,7 @@ def build_gpu_extension(seed: int, os_type: str, base_dir: str) -> str:
     script = (
         _CONTENT_SCRIPT
         .replace("__SEED__", str(int(seed) & 0xFFFFFFFF))
+        .replace("__GEN__", str(normalize_generation(generation)))
         .replace("__OS__", os_norm)
         .replace("__REALM_BOOTSTRAP__", realm_bootstrap_js("applyGpuPatch"))
     )

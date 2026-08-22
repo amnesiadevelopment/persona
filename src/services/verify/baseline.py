@@ -151,6 +151,17 @@ def baseline_profile(name: str = BASELINE_PROFILE_NAME) -> Profile:
         bookmarks=[],
         certificate=None,
         ai_control=False,
+        # Pinned like every other identity input above, and pinned to 0
+        # SPECIFICALLY — never to CURRENT_HARDWARE_GENERATION. The hardware
+        # generation selects which slice of each hardware list the seed indexes
+        # into, so it feeds the derived identity exactly like os_type does. If
+        # this tracked the current constant, bumping that constant (i.e. adding
+        # hardware) would move the baseline's own screen and GPU, and the next
+        # recording would diff red for a reason that has nothing to do with the
+        # engine — destroying the one property this module exists to provide.
+        # 0 is also what a None would fall back to; stating it makes the
+        # invariant survive someone later changing that fallback.
+        hardware_generation_value=0,
     )
 
 

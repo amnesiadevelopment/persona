@@ -19,6 +19,7 @@ version at all — so ``user_agent_for`` is an identity for them.
 from dataclasses import dataclass
 
 from .engine_version import ChromiumVersion
+from ...models.hardware_generation import visible_entries
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,14 @@ class DevicePreset:
     # Client Hints
     platform: str         # navigator.userAgentData platform, e.g. "Android"
     model: str            # Sec-CH-UA model, e.g. "Pixel 7"
+    # The hardware generation this preset was ADDED IN — see
+    # hardware_generation.py. A profile only sees presets whose `since` is <= its
+    # own generation, which is what lets this list grow without moving anybody:
+    # appending used to change len(pool) and re-index existing profiles onto a
+    # different phone (IOS_PRESETS is 2 long, so one new iPhone re-indexed
+    # roughly two-thirds of iOS profiles). NEVER renumber a shipped preset —
+    # its `since` is the promise to the profiles already pinned to it.
+    since: int = 0
 
     def user_agent_for(self, version: "ChromiumVersion | None") -> str:
         """This device's user agent as launched, on the installed engine.
@@ -141,17 +150,69 @@ IOS_PRESETS = [
 _ALL = {p.key: p for p in ANDROID_PRESETS + IOS_PRESETS}
 
 
-def presets_for(os_type: str) -> list[DevicePreset]:
-    if os_type == "ios":
-        return IOS_PRESETS
-    return ANDROID_PRESETS
+def presets_for(os_type: str, generation: int) -> list[DevicePreset]:
+    """The presets a profile of ``generation`` may be picked onto.
+
+    ``generation`` is REQUIRED and has no default: every default would be a
+    silent guess about which pool a profile belongs to, and guessing high is
+    exactly the re-roll the generation filter exists to prevent.
+    """
+    pool = IOS_PRESETS if os_type == "ios" else ANDROID_PRESETS
+    return visible_entries(pool, generation)
 
 
-def pick_preset(seed: int, os_type: str) -> DevicePreset:
+def pick_preset(seed: int, os_type: str, generation: int) -> DevicePreset:
     """Deterministically choose a device preset for the OS family from the
-    profile seed, so a profile always presents the same device."""
-    pool = presets_for(os_type)
+    profile seed, so a profile always presents the same device.
+
+    The divisor is the length of the profile's OWN generation's pool, not of the
+    whole list, so a preset appended later cannot move this profile: a
+    generation-0 profile keeps dividing by the length the list had when it was
+    created.
+    """
+    pool = presets_for(os_type, generation)
     return pool[(int(seed) & 0xFFFFFFFF) % len(pool)]
+
+
+@dataclass(frozen=True)
+class TouchPointsEntry:
+    """One plausible Android maxTouchPoints value, tagged with the generation it
+    was added in.
+
+    ``since`` is a promise to the profiles already pinned to this entry, not
+    bookkeeping: never renumber it on a shipped entry. See
+    ``hardware_generation.py``.
+    """
+
+    points: int
+    since: int = 0
+
+
+# navigator.maxTouchPoints for an Android profile. iOS is a constant 5 and has no
+# pool, so it is not picked and cannot be re-indexed.
+#
+# ADDING ONE: give it `since=<CURRENT_HARDWARE_GENERATION after you bump it>` and
+# leave every entry below untouched.
+ANDROID_TOUCH_POINTS: list[TouchPointsEntry] = [
+    TouchPointsEntry(5),
+    TouchPointsEntry(10),
+]
+
+
+def pick_touch_points(seed: int, generation: int) -> int:
+    """Deterministically choose an Android profile's maxTouchPoints.
+
+    A constant 5 on every Android profile is a weak cluster tell, so this is
+    spread across profiles but stable per profile. The divisor is the length of
+    the profile's OWN generation's pool, so appending a third value cannot move
+    an existing profile — it used to move half of them.
+
+    ``generation`` is REQUIRED and has no default, for the same reason as
+    ``pick_preset``: a default would be a silent guess about which pool a profile
+    belongs to.
+    """
+    pool = visible_entries(ANDROID_TOUCH_POINTS, generation)
+    return pool[(int(seed) & 0xFFFFFFFF) % len(pool)].points
 
 
 def get_preset(key: str) -> DevicePreset | None:
