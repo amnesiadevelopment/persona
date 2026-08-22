@@ -2,7 +2,13 @@ import json
 import pathlib
 
 from src.services.browser.webgl_ext import build_webgl_extension
-from tests.native_mask_probe import GL_STUBS, assert_reads_native
+from tests.native_mask_probe import (
+    GL_OBSERVABLE_PROBE,
+    GL_STUBS,
+    assert_profiles_unlinkable,
+    assert_reads_native,
+    assert_seed_changes_observable,
+)
 
 
 def test_creates_files(tmp_path):
@@ -20,10 +26,26 @@ def test_main_world_document_start(tmp_path):
     assert cs["run_at"] == "document_start"
 
 
-def test_seed_embedded(tmp_path):
-    d = build_webgl_extension(987654, str(tmp_path / "ext"))
-    js = (pathlib.Path(d) / "webgl.js").read_text()
-    assert "987654" in js
+def test_seed_changes_the_observable_output(tmp_path):
+    # THE INVARIANT: the seed must reach the value a fingerprinter reads. This
+    # used to be a substring check for the seed literal in the generated text —
+    # a check that passes on a spoof which declares its seed and installs
+    # nothing, i.e. on a fully dead file.
+    #
+    # Asserted by EXECUTION: two seeds are run in isolated realms and the pixel
+    # bytes read back through readPixels must differ. The whole 512-byte buffer
+    # is compared, never a sample: STRIDE is 17, so only 31 indices are touched
+    # at all and two seeds agree at several of them (index 0 agrees for
+    # 111/222) — a narrow probe reports a false "no divergence".
+    # assert_seed_changes_observable also runs the counterfactual: the same
+    # probe against a neutered spoof must observe the SAME bytes for both seeds.
+    assert_seed_changes_observable(
+        tmp_path,
+        build_webgl_extension,
+        "webgl.js",
+        GL_STUBS,
+        GL_OBSERVABLE_PROBE,
+    )
 
 
 def test_patches_both_webgl_versions(tmp_path):
@@ -34,10 +56,25 @@ def test_patches_both_webgl_versions(tmp_path):
     assert "WebGL2RenderingContext" in js
 
 
-def test_different_seeds_differ(tmp_path):
-    a = (pathlib.Path(build_webgl_extension(111, str(tmp_path / "a"))) / "webgl.js").read_text()
-    b = (pathlib.Path(build_webgl_extension(222, str(tmp_path / "b"))) / "webgl.js").read_text()
-    assert a != b
+def test_different_seeds_are_unlinkable_to_a_page(tmp_path):
+    # THE INVARIANT (Level 2 of the bar): two profiles must not be linkable on
+    # the WebGL readback vector. This used to compare the two GENERATED FILES as
+    # text — which certifies unlinkability for two spoofs that install nothing,
+    # since two dead files carrying different seed literals are still not
+    # identical.
+    #
+    # Asserted on what a page reads: three profiles must observe pairwise
+    # different pixel buffers, one profile must observe the SAME bytes when
+    # built twice (per-profile, not random — a random vector makes a profile
+    # unrecognisable to itself), and with the spoof neutered all three must
+    # collapse onto one observable.
+    assert_profiles_unlinkable(
+        tmp_path,
+        build_webgl_extension,
+        "webgl.js",
+        GL_STUBS,
+        GL_OBSERVABLE_PROBE,
+    )
 
 
 def test_native_tostring_masking(tmp_path):
