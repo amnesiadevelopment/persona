@@ -1333,8 +1333,17 @@ def test_refused_policy_opens_no_socket_for_either_engine_download(monkeypatch):
     assert opened == [], f"a socket was opened despite the refusal: {opened}"
 
     # Chromium — the operator-click path.
+    #
+    # The host must RESOLVE but refuse the connection. An unresolvable host
+    # (the original "http://x/e") dies in getaddrinfo BEFORE a socket object
+    # is ever constructed, so `opened == []` held whether the refusal was
+    # honoured or the code sent directly — green for a reason unrelated to
+    # the property. 127.0.0.1:9 (discard) resolves, so an unrouted send
+    # constructs a socket and this assertion sees it.
     assert (
-        updater._download_to("/tmp/ps75-never", "http://x/e", 5, "00" * 32, None)
+        updater._download_to(
+            "/tmp/ps75-never", "http://127.0.0.1:9/e", 5, "00" * 32, None
+        )
         is False
     )
     assert opened == [], f"a socket was opened despite the refusal: {opened}"
