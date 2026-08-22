@@ -329,3 +329,200 @@ def test_a_blob_worker_survives_revoke_after_construction(revoke):
         "worse than the leak it would be trading against"
     )
     assert out["leafArrived"], "the spoof did not reach the worker realm"
+
+
+# --- the BOOTSTRAP's own wrappers must be cloaked too, on Firefox -----------
+#
+# ROUND 2 SHIPPED A TELL HERE, and the seat above is the reason it got through.
+# `test_firefox_carries_the_cloak_and_chromiums_marker_is_absent` slices the
+# LEAF out first:
+#
+#     leaf = js.split("function applyWebglPatch(G)", 1)[1].split("var SELF =", 1)[0]
+#
+# `var SELF =` is exactly where the shared bootstrap BEGINS, so the assertion
+# stops one line before the copy of the marker that survived — it measures the
+# region that was already fixed. This PR is the first thing to deliver
+# `realm_bootstrap_js` to Firefox at all, and the bootstrap installs wrappers of
+# its OWN (Worker, SharedWorker, the two HTMLIFrameElement accessors) quite apart
+# from the leaf's. On an engine with no extension to read `__pnaName`, those were
+# left carrying a bare own property no browser has, and stringifying as raw patch
+# source where every real engine returns `[native code]`.
+#
+# So this seat reads the WHOLE generated script, and it EXECUTES rather than
+# greps: it installs the real script in a node:vm realm, carries it across two
+# worker generations, and stringifies each wrapper from inside the realm a
+# detector would run in. `readPixels` is the POSITIVE CONTROL — the cloak should
+# always cover it, so a run where the control fails is a broken harness rather
+# than a finding.
+
+
+def _cloak_report(js: str) -> dict:
+    """Install ``js`` in a node:vm realm and report, per realm, how each wrapper
+    stringifies and whether it carries an own ``__pnaName``.
+
+    Three realms: the page, a depth-1 worker, and a depth-2 worker (a worker
+    spawning a worker) — the last because a silently-uncovered depth-2 realm
+    reporting REAL values is the failure this module's docstring records.
+    """
+    node = shutil.which("node")
+    if not node:  # pragma: no cover - environment-dependent
+        pytest.skip("node is required to execute the generated bootstrap")
+
+    harness = r"""
+const vm = require("node:vm");
+const JS = %(js)s;
+
+const PROBE = `
+  (function () {
+    function probe(label, fn) {
+      if (typeof fn !== "function") return { wrapper: label, missing: true };
+      var src = "";
+      try { src = Function.prototype.toString.call(fn); } catch (e) { src = "<threw>"; }
+      return {
+        wrapper: label,
+        readsNative: /\\[native code\\]/.test(src),
+        hasMarker: Object.prototype.hasOwnProperty.call(fn, "__pnaName"),
+        head: src.slice(0, 80).replace(/\\n/g, " "),
+      };
+    }
+    var out = [];
+    out.push(probe("readPixels", self.WebGLRenderingContext &&
+                                 self.WebGLRenderingContext.prototype.readPixels));
+    out.push(probe("Worker", self.Worker));
+    out.push(probe("SharedWorker", self.SharedWorker));
+    if (self.HTMLIFrameElement) {
+      ["contentWindow", "contentDocument"].forEach(function (p) {
+        var d = Object.getOwnPropertyDescriptor(self.HTMLIFrameElement.prototype, p);
+        out.push(probe("iframe:" + p, d && d.get));
+      });
+    }
+    return out;
+  })()
+`;
+
+function makeRealm() {
+  const sandbox = { Reflect, WeakSet, WeakMap };
+  sandbox.self = sandbox;
+  sandbox.globalThis = sandbox;
+  const ctx = vm.createContext(sandbox);
+  vm.runInContext(`
+    var __blobs = {}; var __n = 0;
+    function Worker(url, options) { this.url = url; }
+    function SharedWorker(url, options) { this.url = url; }
+    function WebGLRenderingContext() {}
+    WebGLRenderingContext.prototype.readPixels = function readPixels(){};
+    function WebGL2RenderingContext() {}
+    WebGL2RenderingContext.prototype.readPixels = function readPixels(){};
+    function HTMLIFrameElement() {}
+    Object.defineProperty(HTMLIFrameElement.prototype, "contentWindow",
+      { configurable: true, get: function contentWindow() { return null; } });
+    Object.defineProperty(HTMLIFrameElement.prototype, "contentDocument",
+      { configurable: true, get: function contentDocument() { return null; } });
+    function Blob(parts) { this.text = String(parts[0]); }
+    var URL = {
+      createObjectURL: function (b) { var u = "blob:s/" + (++__n); __blobs[u] = b.text; return u; },
+      revokeObjectURL: function () {},
+    };
+    function XMLHttpRequest() {}
+    XMLHttpRequest.prototype.open = function (m, u) { this._u = u; };
+    XMLHttpRequest.prototype.send = function () {
+      this.status = 200;
+      this.responseText = __blobs[this._u] !== undefined ? __blobs[this._u] : "";
+    };
+  `, ctx);
+  return ctx;
+}
+
+// Construct a worker through the installed wrapper and return the payload the
+// wrapper actually handed the engine. Re-evaluating it in a fresh realm IS the
+// worker: that is the only way to see whether the cloak CROSSED, which is a
+// property of __pnaInstall.toString() and not of the page realm.
+function spawn(ctx) {
+  const body = vm.runInContext(`
+    (function () {
+      var u = URL.createObjectURL(new Blob(["/*orig*/"]));
+      var w = new self.Worker(u);
+      return __blobs[w.url] || null;
+    })()`, ctx);
+  if (!body) return null;
+  const w = makeRealm();
+  vm.runInContext(body, w);
+  return w;
+}
+
+const out = {};
+const page = makeRealm();
+vm.runInContext(JS, page);
+out.page = vm.runInContext(PROBE, page);
+
+const w1 = spawn(page);
+out.worker1 = w1 ? vm.runInContext(PROBE, w1) : null;
+const w2 = w1 ? spawn(w1) : null;
+out.worker2 = w2 ? vm.runInContext(PROBE, w2) : null;
+
+console.log(JSON.stringify(out));
+""" % {"js": json.dumps(js)}
+
+    with tempfile.TemporaryDirectory() as d:
+        script = pathlib.Path(d, "cloak_harness.js")
+        script.write_text(harness, encoding="utf-8")
+        proc = subprocess.run(
+            [node, str(script)], capture_output=True, text=True, timeout=60
+        )
+    assert proc.returncode == 0, f"harness failed: {proc.stderr}"
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+def test_no_wrapper_the_firefox_script_installs_is_detectable():
+    """Every wrapper — the leaf's AND the bootstrap's — must stringify as native
+    and carry no own marker, in every realm the script reaches.
+
+    Reads the WHOLE script. The round-2 seat sliced the leaf out and so could not
+    see the bootstrap's copy of the marker; a wrapper is a tell wherever it lives.
+    """
+    report = _cloak_report(firefox_webgl_init_script(1234))
+
+    for realm in ("page", "worker1", "worker2"):
+        rows = report[realm]
+        assert rows, f"{realm}: no probe rows — the script did not install"
+
+        # POSITIVE CONTROL first. The cloak should always cover the leaf's own
+        # wrapper, so a control failure means the harness is broken and the rest
+        # of the readings in this realm are meaningless.
+        control = next(r for r in rows if r["wrapper"] == "readPixels")
+        assert not control.get("missing"), f"{realm}: control wrapper absent"
+        assert control["readsNative"] and not control["hasMarker"], (
+            f"{realm}: the POSITIVE CONTROL (readPixels) is not cloaked — the "
+            f"harness is broken, not the product: {control}"
+        )
+
+        # The bootstrap's own wrappers, which round 2 left bare.
+        for name in ("Worker", "SharedWorker", "iframe:contentWindow",
+                     "iframe:contentDocument"):
+            row = next((r for r in rows if r["wrapper"] == name), None)
+            assert row is not None and not row.get("missing"), (
+                f"{realm}: {name} wrapper was never installed"
+            )
+            assert not row["hasMarker"], (
+                f"{realm}: {name} carries an own __pnaName — a property no "
+                f"browser has, on an engine with no extension to read it"
+            )
+            assert row["readsNative"], (
+                f"{realm}: {name}.toString() returns patch source where every "
+                f"real engine returns [native code]: {row['head']!r}"
+            )
+
+
+def test_chromiums_bootstrap_keeps_its_marker():
+    """The other side of the seam: Chromium's wrappers MUST keep ``__pnaName``.
+
+    That marker is not incidental there — ``native_ext.py`` installs the single
+    ``Function.prototype.toString`` patch that reads it, so dropping it would
+    uncloak every Chromium wrapper. Pins that the Firefox fix did not "clean up"
+    the shared default, which is the way this refactor would most plausibly break
+    the engine it was told not to touch.
+    """
+    code = _code_only(realm_bootstrap_js("applyWebglPatch"))
+    assert '"__pnaName"' in code, "Chromium's bootstrap lost its cloak marker"
+    # and the Firefox form must NOT be what Chromium gets
+    assert "__bcloak" not in code
