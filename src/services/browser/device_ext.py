@@ -14,9 +14,58 @@ groupId hashes.
 
 import json
 import pathlib
+from dataclasses import dataclass
 
-from ...models.hardware_generation import normalize_generation
+from ...models.hardware_generation import normalize_generation, visible_entries
 from .worker_wrap import realm_bootstrap_js
+
+
+@dataclass(frozen=True)
+class CoresMemoryEntry:
+    """One plausible consumer-desktop (cores, GB-RAM) pair, tagged with the
+    generation it was added in.
+
+    ``since`` is a promise to the profiles already pinned to this entry, not
+    bookkeeping: never renumber it on a shipped entry. New entries get the
+    bumped ``CURRENT_HARDWARE_GENERATION``. See ``hardware_generation.py``.
+    """
+
+    cores: int
+    memory_gb: int
+    since: int = 0
+
+    @property
+    def pair(self) -> tuple[int, int]:
+        return (self.cores, self.memory_gb)
+
+
+# navigator.hardwareConcurrency / navigator.deviceMemory pairs. This pool is the
+# SINGLE source of truth for both realms: the page-realm pick and the worker-realm
+# twin inside applyHwPatch are both rendered from this list, so they cannot drift
+# apart. They used to be two hand-maintained JS literals that had to be kept in
+# sync by eye, and the worker copy silently shadowed the page copy.
+#
+# ADDING ONE: give it `since=<CURRENT_HARDWARE_GENERATION after you bump it>` and
+# leave every entry below untouched. Order is free to stay readable — the
+# generation filter is by tag, not by position.
+CORES_MEMORY: list[CoresMemoryEntry] = [
+    CoresMemoryEntry(4, 8),
+    CoresMemoryEntry(8, 8),
+    CoresMemoryEntry(8, 16),
+    CoresMemoryEntry(12, 16),
+    CoresMemoryEntry(16, 16),
+    CoresMemoryEntry(6, 8),
+]
+
+
+def cores_memory_for_generation(generation: int) -> list[tuple[int, int]]:
+    """The (cores, GB-RAM) pool a profile of ``generation`` picks from.
+
+    The emitted JS divides by the length of THIS, never of the whole list —
+    taking the whole list's length is the original defect.
+    """
+    return [e.pair for e in visible_entries(CORES_MEMORY, generation)]
+
 
 # Common real desktop resolutions (StatCounter-ish top set). Picking from a
 # real-world distribution keeps each profile plausible while differing between
@@ -228,7 +277,14 @@ __SCREEN_REALM_BOOTSTRAP__
   // rejected). Pin a plausible consumer-desktop (cores, GB-RAM) pair per seed.
   var HM = [4, 8];
   try {
-    var HCMEM = [[4, 8], [8, 8], [8, 16], [12, 16], [16, 16], [6, 8]];
+    // The (cores, GB-RAM) pool ALREADY FILTERED to this profile's frozen
+    // hardware generation, rendered from CORES_MEMORY in device_ext.py — the one
+    // source of truth for both this realm and the worker twin in applyHwPatch.
+    // It arrives pre-filtered rather than tagged-and-filtered-here so there is
+    // no unfiltered array in scope whose .length could be taken by mistake:
+    // dividing by the whole list's length is the original defect. Appending to
+    // CORES_MEMORY therefore cannot change this divisor for an existing profile.
+    var HCMEM = __HCMEM__;
     HM = pick(HCMEM, 0xc0de5);
     def(navigator, 'hardwareConcurrency', HM[0]);
     // deviceMemory is a coarse power-of-two-ish bucket the browser caps at 8.
@@ -250,7 +306,13 @@ __SCREEN_REALM_BOOTSTRAP__
     G.__personaHw = true;
     var SEED = __SEED__;
     function h(x){var v=SEED^(x|0);v=Math.imul(v^(v>>>16),0x85ebca6b);v=Math.imul(v^(v>>>13),0xc2b2ae35);return (v^(v>>>16))>>>0;}
-    var P=[[4,8],[8,8],[8,16],[12,16],[16,16],[6,8]]; var m=P[h(0xc0de5)%P.length];
+    // Same pre-filtered pool as the page realm, rendered from the SAME
+    // CORES_MEMORY list, so the worker cannot report a different machine than
+    // the page (a page/worker mismatch is itself a tell). This runs AFTER the
+    // top-level IIFE and re-defines both properties, so this is the divisor the
+    // page actually ends up with — it must be generation-filtered too, and
+    // fixing only the copy above would have changed nothing observable.
+    var P=__HCMEM__; var m=P[h(0xc0de5)%P.length];
     var def=function(o,k,val){try{var g=function(){return val;};try{Object.defineProperty(g,'__pnaName',{value:'get '+k});}catch(e){}Object.defineProperty(o,k,{get:g,configurable:true,enumerable:true});}catch(e){}};
     def(G.navigator,'hardwareConcurrency',m[0]);
     def(G.navigator,'deviceMemory',Math.min(m[1],8));
@@ -291,9 +353,20 @@ def build_device_extension(
     ``os_type`` selects the screen preset: a macOS profile gets a Retina preset
     (DPR 2, 30-bit color, menu-bar geometry, Mac resolutions) so it stays
     consistent with its Apple/Metal GPU; everything else gets the Windows preset.
+
+    ``generation`` is REQUIRED and deliberately has no default: every default
+    would be a silent guess about which pool a profile belongs to, and guessing
+    high is exactly the re-roll it exists to prevent.
     """
     ext_dir = pathlib.Path(base_dir)
     ext_dir.mkdir(parents=True, exist_ok=True)
+    gen = normalize_generation(generation)
+    # Render the cores/RAM pool ALREADY FILTERED to this profile's generation, so
+    # the emitted JS has no unfiltered array in scope to divide by. Both realms
+    # (page + worker twin) substitute this same value.
+    hcmem = json.dumps(
+        [list(pair) for pair in cores_memory_for_generation(gen)]
+    )
     forced = f"[{resolution[0]}, {resolution[1]}]" if resolution else "null"
     os_norm = (
         "macos"
@@ -302,7 +375,9 @@ def build_device_extension(
     )
     script = _CONTENT_SCRIPT.replace(
         "__SEED__", str(int(seed) & 0xFFFFFFFF)
-    ).replace("__GEN__", str(normalize_generation(generation))).replace(
+    ).replace("__GEN__", str(gen)).replace(
+        "__HCMEM__", hcmem
+    ).replace(
         "__FORCED_RES__", forced
     ).replace(
         "__OS__", os_norm

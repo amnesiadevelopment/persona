@@ -23,7 +23,7 @@ from .audio_ext import build_audio_extension
 from .device_ext import build_device_extension
 from .env_policy import scrub_operator_identity
 from .resolution import parse_resolution, resolve_resolution
-from .device_presets import is_mobile_os, pick_preset
+from .device_presets import is_mobile_os, pick_preset, pick_touch_points
 from .engine_version import (
     ChromiumVersion,
     EngineVersionUnreadableError,
@@ -446,11 +446,16 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
             # iOS always reports 5 touch points; Android varies by device (commonly 5
             # or 10). A constant 5 on every Android profile is a weak cluster tell, so
             # pick it deterministically from the profile seed — stable per profile,
-            # spread across profiles.
+            # spread across profiles. The Android pick is generation-filtered (see
+            # hardware_generation.py): it was `(5, 10)[seed % 2]`, so appending a
+            # third value would have re-indexed half of all Android profiles onto a
+            # different maxTouchPoints. iOS is a constant, so it has nothing to move.
             if preset.os_type == "ios":
                 touch_points = 5
             else:
-                touch_points = (5, 10)[profile.fingerprint_seed % 2]
+                touch_points = pick_touch_points(
+                    profile.fingerprint_seed, profile.hardware_generation
+                )
             extensions.append(
                 build_mobile_extension(
                     os.path.join(profile_dir, ".persona-mobile-ext"),
