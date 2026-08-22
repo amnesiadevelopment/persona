@@ -141,10 +141,28 @@ claims to be, **that is a real finding and it belongs to the masking direction
 as its own ticket**, with the evidence attached. This tier reads and records;
 it does not tune the handshake.
 
-`ja4` and `ja3n` are the comparison keys on **both** tiers. Raw `ja3_hash` is
-read nowhere and a test pins that: it varies with TLS extension permutation, so
-it moves without anything meaningful changing and would manufacture drift in
-the one record built to detect drift.
+The comparison keys are **not spelled alike on every endpoint**, and assuming
+they are is what this ticket's first attempt got wrong:
+
+- **`ja4` is the key on every checker** — it is normalised (upstream sorts the
+  extension list) so it does not move with permutation.
+- **`tls.browserleaks.com` also publishes a genuinely distinct `ja3n_hash`**,
+  and that one is read as a second key.
+- **`tls.peet.ws` publishes no normalised JA3 at all.** Its `ja3` is the RAW
+  string and its `ja3_hash` the MD5 of it (`pagpeter/TrackMe`
+  `pkg/types/structs.go:16-23`; the extension list is joined in wire order at
+  `pkg/tls/fingerprint_tls.go:88-99` and never sorted — contrast the
+  `sort.Strings` it *does* apply to peetprint at :171 and to ja4 at
+  `pkg/tls/ja4.go:73`). So peet's second key is **`peetprint_hash`**, and every
+  `ja3` spelling on that checker is skipped. `tools.scrapfly.io` mirrors peet's
+  schema and is treated the same way.
+
+Raw JA3 is read nowhere, under **any** of its spellings, and a test pins the
+rule rather than a list of spellings (`reads_raw_ja3` in
+`tests/test_verify_checkers.py`, imported by the engine tier's guard so the two
+cannot drift): it varies with TLS extension permutation, so it moves without
+anything meaningful changing and would manufacture drift in the one record
+built to detect drift.
 
 ## The header, and the two keys a comparison cannot work without
 

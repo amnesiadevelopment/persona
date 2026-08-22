@@ -64,12 +64,11 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from typing import Any, Callable
+from typing import Any
 
 from .checkers import (
     Checker,
     ENGINE_TLS_CHECKERS,
-    EXIT,
     FINGERPRINT,
     HARNESS,
 )
@@ -79,7 +78,6 @@ from .matrix import (
     UNOBTAINABLE,
     extract_json_item,
     readings_for_unread_checker,
-    unobtainable,
 )
 from .origin_proof import (
     ENGINE,
