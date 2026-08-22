@@ -4822,6 +4822,32 @@ def test_profile_prefs_no_webrtc_override_for_direct_profile():
     assert "media.peerconnection.ice.relay_only" not in prefs
 
 
+def test_profile_prefs_disables_trr_for_proxied_profile():
+    # #76: a TRR resolver speaks straight to a DoH endpoint and never asks
+    # SOCKS, so it would resolve names outside the tunnel and the DNS test
+    # would show a country unrelated to the exit IP. socks_remote_dns does NOT
+    # cover this — it routes the SOCKS-resolved path, a different mechanism —
+    # so the proxied profile must ALSO pin the resolver off.
+    #
+    # 5 is "off by explicit choice"; 0 is "off by default" and would be a no-op
+    # that a bumped engine default silently overwrites, which is the whole
+    # thing this pin exists to prevent.
+    prefs = _profile_prefs({
+        "search_engine": "duckduckgo",
+        "proxy_url": "socks5://user:pass@1.2.3.4:1080",
+    })
+    assert prefs.get("network.trr.mode") == 5
+
+
+def test_profile_prefs_no_trr_override_for_direct_profile():
+    # The guard lives inside the `if cfg.get("proxy_url")` gate, like every
+    # other guard in that block: a direct profile has no tunnel to bypass, so
+    # pinning its resolver would only make it more distinctive than a stock
+    # browser for no anti-leak benefit.
+    prefs = _profile_prefs({"search_engine": "duckduckgo"})
+    assert "network.trr.mode" not in prefs
+
+
 def test_profile_pids_anchored_no_prefix_sibling_crosskill(monkeypatch):
     # #8 (audit4): matching the bare profile_dir is a SUBSTRING match, so "work"
     # also matches "work2"'s command line and would resolve/kill work2's LIVE
