@@ -1,5 +1,11 @@
-"""Persona's OWN egress policy: the two unattended release-metadata fetches.
+"""Persona's OWN egress policy: every unattended request persona sends itself.
 
+Two shapes, one authority: the two engine release-metadata polls (urllib, via
+`fetch_json`) and `app_update`'s four `curl` sites (argv, via `curl_proxy_args`)
+— the latter added by PS-66 and covered at the end of this file.
+
+Why the module exists, which is the urllib arm's history
+--------------------------------------------------------
 Persona polls GitHub for release metadata twice at every startup, on a timer,
 with no operator gesture. Before services/egress.py there was no construct
 anywhere in the tree that decided how those requests should leave the host — and

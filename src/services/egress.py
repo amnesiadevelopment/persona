@@ -97,11 +97,18 @@ def resolve(proxy: str | None = None) -> tuple[str, str]:
     """THE resolver: how should persona's own request leave? Returns
     (verdict, transport).
 
-    This is the single place that decision is made. Both call sites consult it;
-    neither holds a copy, and no second copy may grow in the UI layer — a policy
-    implemented twice is one that disagrees with itself, which is the drift
-    argument `proxy_checker._http_get_head` and `_is_socks_scheme` are already
-    built on.
+    This is the single place that decision is made. EVERY call site consults it
+    — the two engine polls via `fetch_json`, `app_update`'s four curl sites via
+    `curl_proxy_args` — and none holds a copy; no second copy may grow in the UI
+    layer either. A policy implemented twice is one that disagrees with itself,
+    which is the drift argument `proxy_checker._http_get_head` and
+    `_is_socks_scheme` are already built on.
+
+    Deliberately phrased as "every" rather than a count: this sentence has
+    already been falsified once by growth (it read "Both call sites" when the
+    two engine polls were the whole population, and PS-66 made that six), and a
+    number here goes stale the next time an arm is added while the invariant it
+    is really asserting — that no site routes without asking — does not.
 
     `proxy` exists for testing and for a future caller that already holds the
     value; when omitted the configured setting is read. Three outcomes:
