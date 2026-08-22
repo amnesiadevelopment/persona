@@ -81,15 +81,34 @@ class EgressRefused(Exception):
     found" must catch this type explicitly rather than inspect the result."""
 
 
+def _configured_value(proxy: str | None = None) -> str:
+    """The raw configured egress value `resolve()` judges — read from settings
+    when `proxy` is omitted, otherwise the caller's own string, stripped.
+
+    Split out of `resolve()` so the refusal-log throttle can key on the value
+    that was REJECTED without re-deriving it from a different source. Reading
+    the setting twice would be a second copy of "what is configured", which is
+    the drift this module exists to prevent; one reader keeps them in step.
+    """
+    return settings.app_egress_proxy() if proxy is None else (proxy or "").strip()
+
+
 def resolve(proxy: str | None = None) -> tuple[str, str]:
     """THE resolver: how should persona's own request leave? Returns
     (verdict, transport).
 
-    This is the single place that decision is made. Both call sites consult it;
-    neither holds a copy, and no second copy may grow in the UI layer — a policy
-    implemented twice is one that disagrees with itself, which is the drift
-    argument `proxy_checker._http_get_head` and `_is_socks_scheme` are already
-    built on.
+    This is the single place that decision is made. EVERY call site consults it
+    — the two engine polls via `fetch_json`, `app_update`'s four curl sites via
+    `curl_proxy_args` — and none holds a copy; no second copy may grow in the UI
+    layer either. A policy implemented twice is one that disagrees with itself,
+    which is the drift argument `proxy_checker._http_get_head` and
+    `_is_socks_scheme` are already built on.
+
+    Deliberately phrased as "every" rather than a count: this sentence has
+    already been falsified once by growth (it read "Both call sites" when the
+    two engine polls were the whole population, and PS-66 made that six), and a
+    number here goes stale the next time an arm is added while the invariant it
+    is really asserting — that no site routes without asking — does not.
 
     `proxy` exists for testing and for a future caller that already holds the
     value; when omitted the configured setting is read. Three outcomes:
@@ -101,7 +120,7 @@ def resolve(proxy: str | None = None) -> tuple[str, str]:
       "no one asked for a proxy" and "someone asked and we cannot honour it" is
       the whole reason this returns a verdict instead of an Optional string.
     """
-    value = settings.app_egress_proxy() if proxy is None else (proxy or "").strip()
+    value = _configured_value(proxy)
     if not value:
         return DIRECT, ""
     # Configured-but-unparseable must NEVER degrade to direct. A typo'd proxy is
@@ -109,6 +128,88 @@ def resolve(proxy: str | None = None) -> tuple[str, str]:
     if parse_proxy(value) is None:
         return REFUSE, "app egress proxy is not a usable proxy URL"
     return PROXIED, value
+
+
+#: Trap-2 throttle state, for the CURL arm only. `fetch_json`'s callers poll
+#: hourly, so a warning per refusal is 24 lines a day; `app_update`'s poll runs
+#: every 60 SECONDS for the life of the process, so the identical line would be
+#: ~1,440 a day into a log this module's own comment notes reaches disk. The
+#: refusal must stay FINDABLE — a silent skip is indistinguishable from "no new
+#: release", which is the whole point of logging it — so this throttles by STATE
+#: CHANGE rather than dropping the log: the first refusal is always logged, a
+#: repeat of the SAME rejected SETTING is not, and a DIFFERENT rejected setting
+#: (or a recovery, which clears the state) logs again. This is presentation,
+#: not policy: `resolve()` above remains the only place the decision is made.
+#:
+#: It keys on the rejected VALUE, not on the refusal reason, and that choice is
+#: load-bearing rather than incidental: `resolve()` has exactly ONE REFUSE
+#: string, so a reason-keyed throttle could never re-arm on a changed reason —
+#: the branch would be unreachable by construction and the comment describing it
+#: would be fiction. Keying on the value makes it genuinely reachable, and it
+#: tracks the operator who most needs the signal: someone who reads the warning,
+#: edits the setting, and gets it wrong a SECOND way is actively trying to fix
+#: this, and a reason-keyed throttle would answer their new typo with silence.
+#: The value is used as an identity here and is NEVER logged — it can embed
+#: credentials, and this line reaches the disk-backed log.
+_last_curl_refusal: str | None = None
+
+
+def _reset_curl_refusal_log() -> None:
+    """Forget the last-logged refusal, so the next one logs again. Exists for
+    tests, which run many refusals in one process and would otherwise inherit
+    each other's throttle state."""
+    global _last_curl_refusal
+    _last_curl_refusal = None
+
+
+def curl_proxy_args(proxy: str | None = None) -> list[str]:
+    """`resolve()`'s CURL arm: the argv fragment a curl call site must splice in
+    to honour the policy. Returns [] for DIRECT, ["--proxy", url] for PROXIED,
+    and raises EgressRefused — without returning argv — for REFUSE.
+
+    This exists because `fetch_json` is not a drop-in for every persona-owned
+    request: `app_update`'s transport is `curl` subprocesses, not urllib. That
+    is an ADVANTAGE rather than a complication — `curl --proxy socks5h://…`
+    performs a real SOCKS5 handshake with remote DNS natively, which is exactly
+    the case this module's docstring documents urllib getting wrong (a plain
+    CONNECT emitted at a SOCKS port that never answers). The charter's
+    socks5h-only rule is satisfied by the transport itself.
+
+    It is a second SHAPE of the answer, never a second COPY of the decision:
+    the verdict comes from `resolve()` above, so a change there moves both arms
+    together. A call site that built its own `--proxy` argv from the setting
+    would be the drift this module exists to prevent.
+
+    Raising on REFUSE rather than returning [] is load-bearing: [] is DIRECT's
+    answer, so returning it would silently degrade "we cannot honour your proxy"
+    into "send from the real IP" — the precise failure this module was written
+    to make impossible.
+    """
+    global _last_curl_refusal
+    verdict, transport = resolve(proxy)
+
+    if verdict == REFUSE:
+        # Keyed on the REJECTED VALUE, not on `transport` (the reason): there is
+        # only one REFUSE reason, so a reason-keyed throttle could never re-arm.
+        # See the comment on _last_curl_refusal above.
+        offending = _configured_value(proxy)
+        if _last_curl_refusal != offending:
+            # As in fetch_json: neither the transport string nor the offending
+            # value is logged — both can embed credentials, and this line
+            # reaches the disk-backed log.
+            logger.warning(
+                "App egress: request NOT SENT — %s. Persona will not fall back "
+                "to a direct connection; fix or clear the app egress proxy "
+                "setting. (Further identical refusals are not repeated.)",
+                transport,
+            )
+            _last_curl_refusal = offending
+        raise EgressRefused(transport)
+
+    # Recovery re-arms the log, so a proxy that breaks, is fixed, and breaks
+    # again is reported the second time too.
+    _last_curl_refusal = None
+    return ["--proxy", transport] if verdict == PROXIED else []
 
 
 def fetch_json(

@@ -1,5 +1,11 @@
-"""Persona's OWN egress policy: the two unattended release-metadata fetches.
+"""Persona's OWN egress policy: every unattended request persona sends itself.
 
+Two shapes, one authority: the two engine release-metadata polls (urllib, via
+`fetch_json`) and `app_update`'s four `curl` sites (argv, via `curl_proxy_args`)
+— the latter added by PS-66 and covered at the end of this file.
+
+Why the module exists, which is the urllib arm's history
+--------------------------------------------------------
 Persona polls GitHub for release metadata twice at every startup, on a timer,
 with no operator gesture. Before services/egress.py there was no construct
 anywhere in the tree that decided how those requests should leave the host — and
@@ -721,3 +727,311 @@ def test_the_geo_probe_still_asks_for_plain_json():
     assert _accept_headers(seen.get("request", b"")) == ["application/json"], (
         "an unspecified accept must still send the geo probe's own value"
     )
+
+
+# --------------------------------------------------------------------------
+# PS-66 — the app-update poll. `services/egress.py` was written when the two
+# engine polls above were the whole population ("Both call sites consult it");
+# `app_update` is a THIRD, and the most frequent unattended egress persona
+# performs — `ui/app.py`'s `while True: check_for_update(); time.sleep(60)`
+# daemon thread, sixty times more often than the hourly engine poll. Its
+# transport is `curl` subprocesses rather than urllib, so it consults
+# `curl_proxy_args()` (the argv ARM of the same `resolve()`), and these tests
+# assert on the CONSTRUCTED ARGV — a return value is identical either way, so
+# asserting on one would pass against an implementation that routed nothing.
+# --------------------------------------------------------------------------
+
+from src.services.app_update import fast_update as fu  # noqa: E402
+from src.services.app_update import updater as au  # noqa: E402
+from src.utils import httpdl  # noqa: E402
+
+_PROXY = "socks5h://127.0.0.1:9050"
+
+
+@pytest.fixture(autouse=True)
+def _reset_refusal_throttle():
+    """The refusal log throttles by state change, so it is process state. Tests
+    that drive refusals would otherwise inherit each other's throttle and read
+    a suppressed line as a missing one."""
+    egress._reset_curl_refusal_log()
+    yield
+    egress._reset_curl_refusal_log()
+
+
+class _Ran:
+    """The subprocess.run result shape the updater's curl sites consume."""
+
+    returncode = 0
+    stdout = b""
+
+
+def _capture_curl(monkeypatch, *, staged=None):
+    """Run all four app-update curl sites and return the argv each one built.
+
+    Uses the seam tests/test_update_size.py already established — monkeypatching
+    `au.subprocess.run` with a fake that receives the command list.
+    """
+    seen = []
+
+    def fake_run(cmd, **k):
+        seen.append(list(cmd))
+        return _Ran()
+
+    monkeypatch.setattr(au.subprocess, "run", fake_run)
+
+    au.latest_tag()
+    au.remote_size("http://example.invalid/asset")
+    au._curl_get("http://example.invalid/checksums.txt")
+
+    # The download goes through the SHARED httpdl downloader, whose own
+    # subprocess is a separate seam.
+    def fake_dl_run(cmd, **k):
+        seen.append(list(cmd))
+        if staged is not None:
+            staged.write_bytes(b"x" * 100)
+        return _Ran()
+
+    monkeypatch.setattr(httpdl.subprocess, "run", fake_dl_run)
+    if staged is not None:
+        monkeypatch.setattr(au, "staged_path", lambda tag="": str(staged))
+        monkeypatch.setattr(au, "_clear_stale_staged", lambda keep: None)
+        au.download_update("http://example.invalid/asset", size=100)
+
+    return seen
+
+
+# --------------------------------------------------------------------------
+# AC1 — positive routing. The argv must ACTUALLY carry --proxy, at all four
+# sites. This is the assertion that goes red when the routing is reverted.
+# --------------------------------------------------------------------------
+
+
+def test_configured_policy_puts_proxy_argv_on_every_app_update_curl(
+    monkeypatch, tmp_path
+):
+    """AC1. With a policy set, each of the four app-update curl sites must send
+    through it. Asserted on the constructed command line, because both the
+    routed and the unrouted implementation return the same values."""
+    settings.set_app_egress_proxy(_PROXY)
+    staged = tmp_path / "staged.AppImage"
+
+    seen = _capture_curl(monkeypatch, staged=staged)
+
+    assert len(seen) == 4, f"expected all four sites to run, got {seen}"
+    for cmd in seen:
+        assert "--proxy" in cmd, f"site sent WITHOUT the configured proxy: {cmd}"
+        assert cmd[cmd.index("--proxy") + 1] == _PROXY, (
+            f"--proxy carried the wrong transport: {cmd}"
+        )
+
+
+def test_app_update_consults_the_one_authority_not_a_local_copy(monkeypatch, tmp_path):
+    """AC1's companion, and the anti-drift assertion: patching the SINGLE
+    resolver must divert every app-update site. A site that read the setting
+    itself — a second copy of the decision — would keep sending on this patch."""
+    settings.set_app_egress_proxy("")  # the resolver, not the setting, decides
+
+    monkeypatch.setattr(
+        egress, "resolve", lambda proxy=None: (egress.PROXIED, "socks5h://10.0.0.1:1")
+    )
+    seen = _capture_curl(monkeypatch, staged=tmp_path / "staged.AppImage")
+
+    assert len(seen) == 4
+    for cmd in seen:
+        assert "--proxy" in cmd and "socks5h://10.0.0.1:1" in cmd, (
+            f"site did not consult the shared authority: {cmd}"
+        )
+
+
+# --------------------------------------------------------------------------
+# AC2 — REFUSE must not degrade to a direct send. Asserted as a fact about
+# processes: nothing is spawned at all.
+# --------------------------------------------------------------------------
+
+
+def test_unusable_policy_spawns_no_curl_at_any_app_update_site(monkeypatch, tmp_path):
+    """AC2. A configured-but-unparseable proxy means the request is NOT SENT.
+    Spying on subprocess.run rather than on the return value, because every one
+    of these sites returns its ordinary failure sentinel either way — which is
+    exactly how a silent direct send would hide."""
+    settings.set_app_egress_proxy("this is not a proxy url")
+
+    def forbidden(cmd, **k):
+        raise AssertionError(f"a request was SENT despite the refusal: {cmd}")
+
+    monkeypatch.setattr(au.subprocess, "run", forbidden)
+    monkeypatch.setattr(httpdl.subprocess, "run", forbidden)
+    staged = tmp_path / "staged.AppImage"
+    monkeypatch.setattr(au, "staged_path", lambda tag="": str(staged))
+    monkeypatch.setattr(au, "_clear_stale_staged", lambda keep: None)
+
+    # Each site still reports its existing failure value — the refusal does not
+    # become a new exception the 60s poll was never written to catch.
+    assert au.latest_tag() == ""
+    assert au.remote_size("http://example.invalid/asset") == 0
+    assert au._curl_get("http://example.invalid/checksums.txt") == ""
+    assert au.download_update("http://example.invalid/asset", size=100) == ""
+
+
+def test_refusal_reaches_the_log_for_the_curl_sites(caplog):
+    """AC2's other half. A silent skip is indistinguishable from "no new
+    release", so the refusal must be findable — without echoing the transport,
+    which can embed credentials."""
+    settings.set_app_egress_proxy("this is not a proxy url")
+
+    with caplog.at_level("WARNING", logger="persona"):
+        with pytest.raises(egress.EgressRefused):
+            egress.curl_proxy_args()
+
+    assert any("NOT SENT" in r.getMessage() for r in caplog.records), (
+        f"no refusal was logged: {[r.getMessage() for r in caplog.records]}"
+    )
+
+
+# --------------------------------------------------------------------------
+# AC3 — the log must not flood. This poll runs every 60 SECONDS, so a line per
+# refusal is ~1,440 a day into a disk-backed log (the hourly engine poll that
+# egress.fetch_json serves is 24). Throttled by STATE CHANGE, not dropped.
+# --------------------------------------------------------------------------
+
+
+def test_repeated_identical_refusals_log_once_not_once_per_poll(caplog):
+    """AC3. Drive the refusal the way the 60s poll would and assert the warning
+    is emitted ONCE, not per iteration."""
+    settings.set_app_egress_proxy("this is not a proxy url")
+
+    with caplog.at_level("WARNING", logger="persona"):
+        for _ in range(25):
+            with pytest.raises(egress.EgressRefused):
+                egress.curl_proxy_args()
+
+    refusals = [r for r in caplog.records if "NOT SENT" in r.getMessage()]
+    assert len(refusals) == 1, (
+        f"the 60s poll would flood the disk-backed log: {len(refusals)} lines "
+        "for 25 refusals"
+    )
+
+
+def test_a_recovered_policy_logs_again(caplog):
+    """AC3's boundary — a second outage AFTER A RECOVERY must not be swallowed.
+
+    Named for the one re-arm it actually drives. It previously claimed the
+    changed-reason re-arm too, which the test never exercised — see
+    `test_a_second_distinct_bad_value_logs_again` below for that half.
+    """
+    with caplog.at_level("WARNING", logger="persona"):
+        settings.set_app_egress_proxy("this is not a proxy url")
+        with pytest.raises(egress.EgressRefused):
+            egress.curl_proxy_args()
+
+        # Recovery: a working policy clears the state...
+        settings.set_app_egress_proxy(_PROXY)
+        assert egress.curl_proxy_args() == ["--proxy", _PROXY]
+
+        # ...so the NEXT outage is reported rather than swallowed.
+        settings.set_app_egress_proxy("still not a proxy url")
+        with pytest.raises(egress.EgressRefused):
+            egress.curl_proxy_args()
+
+    refusals = [r for r in caplog.records if "NOT SENT" in r.getMessage()]
+    assert len(refusals) == 2, (
+        f"a refusal after a recovery must still be findable, got {len(refusals)}"
+    )
+
+
+def test_a_second_distinct_bad_value_logs_again(caplog):
+    """AC3's other boundary — the operator who typos TWICE, with no recovery in
+    between, must still get a signal for the second one.
+
+    This is the population most likely to be actively fixing the setting: they
+    read the warning, edited the key, and got it wrong a different way. A
+    throttle keyed on the REFUSAL REASON would answer them with silence, because
+    `resolve()` has exactly one REFUSE string — both typos produce the identical
+    reason, so the state would never change. Keying on the rejected VALUE is
+    what makes this re-arm reachable at all; this test is what holds it that way.
+    """
+    with caplog.at_level("WARNING", logger="persona"):
+        settings.set_app_egress_proxy("this is not a proxy url")
+        with pytest.raises(egress.EgressRefused):
+            egress.curl_proxy_args()
+
+        # A DIFFERENT unusable value — no recovery in between, and the refusal
+        # reason string is byte-identical to the first.
+        settings.set_app_egress_proxy("also://not a proxy url")
+        with pytest.raises(egress.EgressRefused):
+            egress.curl_proxy_args()
+
+    refusals = [r for r in caplog.records if "NOT SENT" in r.getMessage()]
+    assert len(refusals) == 2, (
+        "a second, distinct bad value is a NEW fact for the operator and must "
+        f"be logged; got {len(refusals)} line(s) — the throttle is keying on "
+        "the refusal reason, which never varies"
+    )
+
+
+# --------------------------------------------------------------------------
+# AC4 — the default. An unset key must be BYTE-IDENTICAL to before this
+# existed: that is the whole blast radius, and egress.py is explicit that a
+# fail-closed default would brick the update path, security updates included.
+# --------------------------------------------------------------------------
+
+
+def test_unset_policy_leaves_every_app_update_argv_byte_identical(
+    monkeypatch, tmp_path
+):
+    """AC4. The exact command lines this code built on `main` (fc27868), pinned.
+
+    The flag SHAPES are load-bearing and differ per site: `-sI` with no -L and
+    no -f (a 302 is the SUCCESS case — the tag is read out of the redirect),
+    `-fsSLI` with -L (GitHub 302s to a CDN and the real Content-Length is in the
+    final response). A well-meant flag cleanup here silently breaks version
+    detection — the failure this path has already shipped once."""
+    settings.set_app_egress_proxy("")
+    staged = tmp_path / "staged.AppImage"
+
+    seen = _capture_curl(monkeypatch, staged=staged)
+
+    latest = "https://github.com/amnesiadevelopment/persona/releases/latest"
+    assert seen == [
+        ["curl", "-sI", "--connect-timeout", "15", "--max-time", "30", latest],
+        ["curl", "-fsSLI", "--connect-timeout", "15", "--max-time", "30",
+         "http://example.invalid/asset"],
+        ["curl", "-fsSL", "--connect-timeout", "15", "--max-time", "30",
+         "http://example.invalid/checksums.txt"],
+        ["curl", "-fsSL", "--connect-timeout", "30", "--speed-limit", "1024",
+         "--speed-time", "30", "-C", "-", "-o", str(staged),
+         "http://example.invalid/asset"],
+    ], "an unset key must change NOTHING on the wire"
+
+
+# --------------------------------------------------------------------------
+# AC5 — the shared helper stays a mechanism. `httpdl.curl_download` has two
+# callers; putting the policy lookup INSIDE it would plant a second copy of the
+# decision in a shared utility. The proxy argv is caller-owned, exactly like
+# the timeout policy that function's own docstring already delegates.
+# --------------------------------------------------------------------------
+
+
+def test_shared_downloader_is_unrouted_by_default_so_fast_update_is_unchanged(
+    monkeypatch, tmp_path
+):
+    """AC5. `fast_update._download_small` is NOT edited by this slice and its
+    argv must be byte-identical to `main`: the new parameter defaults to empty,
+    and curl_download itself consults no policy."""
+    settings.set_app_egress_proxy(_PROXY)  # set, yet must not reach this caller
+    dst = tmp_path / "app.zip"
+    seen = []
+
+    def fake_run(cmd, **k):
+        seen.append(list(cmd))
+        dst.write_bytes(b"x")
+        return _Ran()
+
+    monkeypatch.setattr(httpdl.subprocess, "run", fake_run)
+
+    assert fu._download_small("http://example.invalid/app.zip", str(dst)) is True
+    assert seen == [
+        ["curl", "-fsSL", "--connect-timeout", "15", "--max-time", "180",
+         "-C", "-", "-o", str(dst), "http://example.invalid/app.zip"],
+    ], "the shared downloader grew a policy of its own — a second copy"
+    assert "--proxy" not in seen[0]

@@ -407,6 +407,7 @@ def curl_download(
     attempts: int,
     total: int = 0,
     deadline: float | None = None,
+    proxy_args: list | None = None,
 ) -> bool:
     """Fetch `url` to `dst` with curl, resuming across dropped connections.
 
@@ -415,6 +416,14 @@ def curl_download(
     caller owns the timeout policy (`timeout_args` go straight into the command
     line) and any progress reporting; this owns the retry loop and the
     completion rule. Returns True once the file is completely on disk.
+
+    `proxy_args` is caller-owned in exactly the same way and for a sharper
+    reason: this function is SHARED (app_update's download and fast_update's
+    `_download_small`), so resolving persona's egress policy in HERE would plant
+    a second copy of that decision inside a mechanism — the drift
+    `services/egress.py` exists to prevent. The authority stays in `egress`; the
+    caller resolves the verdict and hands the argv down. Defaulting to empty
+    keeps every existing caller byte-identical on the wire.
     """
     if not url or not dst:
         return False
@@ -423,6 +432,7 @@ def curl_download(
             break
         cmd = [
             "curl", "-fsSL",
+            *(proxy_args or []),
             *timeout_args,
             "-C", "-",  # resume from where the partial left off
             "-o", dst,

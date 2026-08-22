@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 
+from .. import egress
 from ..engine.updater import is_newer
 from ...core import platform as _platform
 from ...utils.httpdl import atomic_replace, curl_download, digest_ok, sha256_file
@@ -118,11 +119,21 @@ def _curl_get(url: str, headers: dict | None = None, max_time: int = 30) -> str:
     its full duration on a stalled connection — making the updater 'work through
     a router-down minute and then silently miss the new version'). Returns the
     body, or '' on any failure/timeout."""
-    cmd = ["curl", "-fsSL", "--connect-timeout", "15", "--max-time", str(max_time)]
-    for k, v in (headers or {}).items():
-        cmd += ["-H", f"{k}: {v}"]
-    cmd.append(url)
     try:
+        # Persona's own egress authority decides how this leaves the host; a
+        # REFUSE raises here, INSIDE the try, so it lands on this function's
+        # existing '' failure sentinel rather than becoming a new exception the
+        # callers (:499, :511, :933) were never written to handle. Nothing is
+        # sent on that path — the raise happens before the subprocess exists.
+        proxy_args = egress.curl_proxy_args()
+        cmd = [
+            "curl", "-fsSL",
+            *proxy_args,
+            "--connect-timeout", "15", "--max-time", str(max_time),
+        ]
+        for k, v in (headers or {}).items():
+            cmd += ["-H", f"{k}: {v}"]
+        cmd.append(url)
         out = subprocess.run(
             cmd, capture_output=True, timeout=max_time + 5,
             **_platform.no_window_kwargs(),
@@ -141,8 +152,15 @@ def remote_size(url: str, timeout: int = 30) -> int:
     if not url:
         return 0
     try:
+        # Egress policy, resolved before anything is sent; a REFUSE raises here
+        # inside the try and lands on this function's existing 0 sentinel. The
+        # -fsSLI shape is NOT touched: -L is load-bearing (GitHub 302s to a CDN
+        # and the real size is in the FINAL response), so --proxy is spliced in
+        # rather than the flags being reordered or normalised.
+        proxy_args = egress.curl_proxy_args()
         out = subprocess.run(
-            ["curl", "-fsSLI", "--connect-timeout", "15", "--max-time", str(timeout), url],
+            ["curl", "-fsSLI", *proxy_args,
+             "--connect-timeout", "15", "--max-time", str(timeout), url],
             capture_output=True, timeout=timeout + 5,
             **_platform.no_window_kwargs(),
         )
@@ -221,9 +239,15 @@ def latest_tag(timeout: int = 30) -> str:
     try:
         # -I: HEAD; no -L so we READ the redirect instead of following it. -f is
         # deliberately omitted — a 302 is the SUCCESS case here, and -f would
-        # treat some redirects as errors.
+        # treat some redirects as errors. --proxy is spliced into that exact
+        # shape; reordering or "cleaning up" these flags silently breaks version
+        # detection, which this path has already shipped once (a 403 read as
+        # "up to date"). The egress verdict is resolved before anything is sent;
+        # a REFUSE raises inside the try and lands on the existing '' sentinel.
+        proxy_args = egress.curl_proxy_args()
         out = subprocess.run(
-            ["curl", "-sI", "--connect-timeout", "15", "--max-time", str(timeout), url],
+            ["curl", "-sI", *proxy_args,
+             "--connect-timeout", "15", "--max-time", str(timeout), url],
             capture_output=True, timeout=timeout + 5,
             **_platform.no_window_kwargs(),
         )
@@ -339,6 +363,15 @@ def download_update(
     """
     if not url:
         return ""
+    # Resolve the egress policy FIRST — before staging, clearing or starting the
+    # progress watcher — so a refusal costs nothing and, above all, nothing is
+    # sent. The argv is caller-owned and handed down to the shared downloader
+    # (which must not hold a second copy of this decision); a REFUSE lands on
+    # this function's existing '' failure sentinel.
+    try:
+        proxy_args = egress.curl_proxy_args()
+    except egress.EgressRefused:
+        return ""
     staged = staged_path(tag)
     if not staged:
         return ""
@@ -380,6 +413,7 @@ def download_update(
                 "--speed-limit", str(_SPEED_LIMIT),
                 "--speed-time", str(_SPEED_TIME),
             ],
+            proxy_args=proxy_args,
             attempts=_MAX_ATTEMPTS,
             total=total,
             deadline=time.monotonic() + timeout,
