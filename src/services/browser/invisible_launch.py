@@ -1568,7 +1568,27 @@ def _import_mtls_ca(profile_dir: str, ca_path) -> bool:
     # password file. An empty password file covers the engine-created db too.
     import tempfile
 
-    pwfd, pwfile = tempfile.mkstemp(prefix="persona-nsspw-")
+    # WHERE this file lands, and WHAT it is called, are both load-bearing.
+    #
+    # dir=: without it mkstemp resolves through TMPDIR/tmp — outside
+    # PERSONA_HOME, outside the profile, and therefore outside everything
+    # delete_profile, the trash and wipe_all_profiles can reach. The `finally`
+    # below only covers the subprocess block, so a crash or SIGKILL between
+    # here and there strands a product-identifying `persona-*` artifact in the
+    # host's shared temp dir indefinitely, one per crashed import. ca_path is
+    # already verified to exist (guard at the top of this function) and lives in
+    # the cert session's <profile>/.persona-mtls, so its dirname names that
+    # directory without reconstructing the path and without needing a makedirs
+    # — sweep_key_material must never bring .persona-mtls into existence.
+    #
+    # prefix: sweep_key_material filters by NAME, not by directory
+    # (terminator.py: `name.startswith("persona-mtls-")`). A `persona-nsspw-`
+    # file placed here would be inside the perimeter but never swept — moved,
+    # yet permanent. The `persona-mtls-` stem is what makes crash residue
+    # genuinely reachable by the sweep at the start of the next session.
+    pwfd, pwfile = tempfile.mkstemp(
+        prefix="persona-mtls-nsspw-", dir=os.path.dirname(str(ca_path))
+    )
     os.close(pwfd)  # empty file = empty password
     try:
         if not os.path.isfile(os.path.join(profile_dir, "cert9.db")):
