@@ -74,93 +74,56 @@ which is the same disclosure PS-48 closes on the global object.
 """
 
 
-def realm_bootstrap_js(apply_fn_name: str, *, blob_via_import_scripts: bool = False) -> str:
+def realm_bootstrap_js(apply_fn_name: str) -> str:
     """Return JS that runs ``apply_fn_name`` (a leaf applyPatch(G)) in this realm
     and chains it into every realm this one can reach.
 
     The caller must have defined ``apply_fn_name`` already. Nothing is written to
     the global object: the leaf, its source and the dedup set stay in closure.
 
-    ``blob_via_import_scripts`` selects how a ``blob:`` worker is re-blobbed, and
-    exists because THE DEFAULT PATH IS BROKEN ON FIREFOX. MEASURED, not reasoned
-    (PS-78, live firefox-20 through this project's own launch path):
-
-        page realm    __personaWebgl === true        (the leaf ran)
-        worker realm  __personaWebgl === undefined   (the leaf never arrived)
-
-    The wrapper WAS installed and the worker DID spawn, so the failure is inside
-    the blob: branch. Probed step by step, the single cause is that Firefox
-    refuses a SYNCHRONOUS XHR against a ``blob:`` URL:
+    ONE ``blob:``/``data:`` BRANCH, ON BOTH ENGINES — and it must stay that way.
+    An earlier revision of PS-78 added a ``blob_via_import_scripts`` flag that
+    gave Firefox a separate ``blob:`` branch using an ``importScripts`` shim,
+    on the belief that this engine refuses a SYNCHRONOUS XHR against a ``blob:``
+    URL (``NetworkError``). THAT PREMISE IS FALSE, and the flag is gone. Measured
+    on firefox-20 / 151.0 through this project's own launch path, on a real
+    ``https://`` origin::
 
         new XMLHttpRequest().open("GET", blobUrl, false).send()
-            -> NetworkError: A network error occurred.
+            -> status 200, body read back intact
 
-    The branch catches that and falls through to
-    ``_Ref.construct(Orig, [url, options], W)`` — the UNMODIFIED worker. So the
-    failure is entirely silent: the worker spawns, runs, and carries nothing.
-    That is the exact shape this module's docstring warns about — "a depth-2
-    worker that silently receives nothing does not throw — it just reports the
-    REAL GPU/hardwareConcurrency/audio/fonts while the page reports spoofed
-    ones" — and a page/worker mismatch is a SHARPER tell than no spoof at all.
+    The same reading came back from a plain playwright launch of both engines
+    and from ``data:``/``about:blank``/``http`` origins. It is corroborated in
+    the tree: the locale spoof at ``invisible_launch.py:504`` has shipped this
+    identical sync-XHR ``blob:`` path in production all along, with live CreepJS
+    evidence behind it.
 
-    With the flag, a ``blob:`` worker takes the importScripts shim the http(s)
-    branch already uses, pointed at the blob URL. Measured to work on Firefox:
-    the boot payload arrives AND the original worker body still runs.
+    WHY THE SHIM WAS NOT MERELY REDUNDANT BUT HARMFUL. ``importScripts(blobUrl)``
+    DEFERS the fetch of the original body out of the ``new Worker(...)`` call and
+    into the worker's own startup, so the page's blob URL has to still be alive
+    at that later moment. Revoking right after construction is the pattern MDN
+    documents and bundlers emit::
 
-    ``data:`` DELIBERATELY KEEPS THE OLD PATH, and this is the part that must not
-    be "tidied up" into one branch later. ``importScripts`` against a ``data:``
-    URL does not merely fail on this engine, it HANGS — the worker never reaches
-    its first message (measured: TIMEOUT). Routing data: through the shim would
-    trade a silent leak for a BROKEN WORKER, i.e. a functional break on any site
-    that uses one. An unspoofed data: worker is a defect; a data: worker that
-    never runs is a worse one.
+        const w = new Worker(url);
+        URL.revokeObjectURL(url);   // ← body has not been read yet
 
-    Defaults to False so CHROMIUM'S GENERATED TEXT IS BYTE-IDENTICAL. Chromium's
-    sync-XHR path works and its recorded readbacks are the baseline every prior
-    reading was taken against (PS-78 boundary: "Chromium is unchanged"), and its
-    delivery path is explicitly out of scope. Only the Firefox init scripts pass
-    True.
+    Measured on the real launch path with the shim installed: the worker emits
+    ZERO events — ``importScripts`` throws ``SecurityError`` against the revoked
+    URL, the shim's own ``catch(e){}`` swallows it inside the worker realm, and
+    the original body never runs. That is a FUNCTIONAL BREAK, strictly worse than
+    the leak it was meant to close, and the outer ``try``/``catch`` around the
+    construct cannot save it because the throw happens in another realm.
+
+    The sync-XHR branch below has the property the shim lacked: it reads the body
+    SYNCHRONOUSLY, inside the constructor, while the URL is still valid. So it
+    survives both orderings. Verified on the real launch path, every realm
+    reading its own marker from the inside — depth-1, depth-2 (a worker spawning
+    a worker), a worker created inside a fresh ``about:blank`` iframe, and a
+    ``data:`` worker — all spoofed, with and without a revoke.
+
+    Keeping ONE branch is also what keeps Chromium byte-identical: there is no
+    per-engine text to drift.
     """
-    if blob_via_import_scripts:
-        blob_branch = r"""            if (/^blob:/i.test(s)) {
-              // FIREFOX: a synchronous XHR against a blob: URL raises
-              // NetworkError, so the re-blob path below cannot read the body and
-              // silently yields an UNSPOOFED worker. Use the same importScripts
-              // shim the http(s) branch uses instead — the boot payload runs
-              // first, then the original body is pulled in by the worker itself.
-              try {
-                var bbody = BOOT + "\ntry{importScripts(" + JSON.stringify(s) + ");}catch(e){}";
-                return _Ref.construct(Orig, [mkurl(bbody), options], W);
-              } catch (e) {}
-              return _Ref.construct(Orig, [url, options], W);
-            }
-            if (/^data:/i.test(s)) {
-              // NOT the shim: importScripts against a data: URL HANGS on this
-              // engine (the worker never reaches its first message), which would
-              // be a functional break rather than a leak. Keep the read-and-
-              // re-blob attempt, and its unmodified-worker fallback.
-              try {
-                var x = new _XHR();
-                x.open("GET", s, false);
-                x.send();
-                if (x.status === 0 || (x.status >= 200 && x.status < 300)) {
-                  return _Ref.construct(Orig, [mkurl(BOOT + "\n" + x.responseText), options], W);
-                }
-              } catch (e) {}
-              return _Ref.construct(Orig, [url, options], W);
-            }"""
-    else:
-        blob_branch = r"""            if (/^blob:|^data:/i.test(s)) {
-              try {
-                var x = new _XHR();
-                x.open("GET", s, false);
-                x.send();
-                if (x.status === 0 || (x.status >= 200 && x.status < 300)) {
-                  return _Ref.construct(Orig, [mkurl(BOOT + "\n" + x.responseText), options], W);
-                }
-              } catch (e) {}
-              return _Ref.construct(Orig, [url, options], W);
-            }"""
     return (
         r"""
   var SELF = (typeof self !== "undefined") ? self : this;
@@ -251,7 +214,17 @@ def realm_bootstrap_js(apply_fn_name: str, *, blob_via_import_scripts: bool = Fa
               var body = BOOT + "\ntry{importScripts(" + JSON.stringify(s) + ");}catch(e){}";
               return _Ref.construct(Orig, [mkurl(body), options], W);
             }
-%(blob_branch)s
+            if (/^blob:|^data:/i.test(s)) {
+              try {
+                var x = new _XHR();
+                x.open("GET", s, false);
+                x.send();
+                if (x.status === 0 || (x.status >= 200 && x.status < 300)) {
+                  return _Ref.construct(Orig, [mkurl(BOOT + "\n" + x.responseText), options], W);
+                }
+              } catch (e) {}
+              return _Ref.construct(Orig, [url, options], W);
+            }
             return _Ref.construct(Orig, [url, options], W);
           } catch (e) { return _Ref.construct(Orig, [url, options], W); }
         };
@@ -297,7 +270,7 @@ def realm_bootstrap_js(apply_fn_name: str, *, blob_via_import_scripts: bool = Fa
 
   try { __pnaInstall(SELF, %(fn)s); } catch (e) {}
 """
-        % {"fn": apply_fn_name, "blob_branch": blob_branch}
+        % {"fn": apply_fn_name}
     )
 
 

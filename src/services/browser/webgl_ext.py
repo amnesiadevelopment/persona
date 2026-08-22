@@ -117,28 +117,24 @@ _MANIFEST = {
 }
 
 
-def _webgl_patch_js(seed: int, native_wrap: str, *, blob_via_import_scripts: bool = False) -> str:
+def _webgl_patch_js(seed: int, native_wrap: str) -> str:
     """The shared patch body, with the engine's ``nativeWrap`` seam spliced in.
 
     Everything that computes the perturbation — the seed mixing, the stride, the
     byte nudging, the readPixels overrides, the realm bootstrap — is identical on
     both engines. Only the cloak differs, and it arrives as ``native_wrap``.
 
-    ``blob_via_import_scripts`` is forwarded to the realm bootstrap and is
-    FIREFOX-ONLY; see ``realm_bootstrap_js`` for the measurement behind it. It
-    defaults to False so Chromium's generated text does not move.
+    THE WORKER DELIVERY PATH IS SHARED TOO, deliberately. An earlier revision of
+    PS-78 gave Firefox its own ``blob:`` branch here via a
+    ``blob_via_import_scripts`` flag; the premise was wrong and the flag broke
+    workers whose URL is revoked after construction. See ``realm_bootstrap_js``
+    for the measurement. One path, both engines.
     """
     return (
         _CONTENT_SCRIPT.replace("__SEED__", str(int(seed) & 0xFFFFFFFF))
         .replace("__STRIDE__", str(_STRIDE))
         .replace("__NATIVE_WRAP__", native_wrap)
-        .replace(
-            "__REALM_BOOTSTRAP__",
-            realm_bootstrap_js(
-                "applyWebglPatch",
-                blob_via_import_scripts=blob_via_import_scripts,
-            ),
-        )
+        .replace("__REALM_BOOTSTRAP__", realm_bootstrap_js("applyWebglPatch"))
     )
 
 
@@ -174,9 +170,7 @@ def firefox_webgl_init_script(seed: int) -> str:
     """
     return (
         "(function(){"
-        + _webgl_patch_js(
-            seed, firefox_native_wrap_js(), blob_via_import_scripts=True
-        )
+        + _webgl_patch_js(seed, firefox_native_wrap_js())
         + "})();"
     )
 
