@@ -67,7 +67,29 @@ _CHROMIUM_NATIVE_WRAP = r"""  function nativeWrap(orig, replacement) {
 # silently reported the REAL audio while the page reported spoofed values.
 _FIREFOX_NATIVE_WRAP = r"""  var __nm = (typeof WeakMap === 'function') ? new WeakMap() : null;
   var __nl = String.fromCharCode(10);
-  var __pts = Function.prototype.toString;
+  // THE REALM MUST COME FROM G, NEVER FROM THE LEXICAL SCOPE. `applyAudioPatch`
+  // reaches a child frame as a PARENT-REALM FUNCTION OBJECT — worker_wrap.py's
+  // chained `contentWindow` accessor calls `__pnaInstall(childWindow, LEAF)`
+  // with the leaf itself, not with source text. So a bare `Function.prototype`
+  // here resolves to the PARENT's: it re-patches an already-patched toString (a
+  // no-op) and leaves the child realm's own pristine, while the audio wrappers
+  // ARE installed into the child. Read from inside that child — where a
+  // detector runs — the wrapper then stringifies as raw patch source,
+  // `perturbFloat` and all. Measured in two isolated realms, not reasoned.
+  //
+  // `G.Function.prototype` is Chromium's shape (native_ext.py:32,48) and the
+  // reason its comment names "a fresh about:blank iframe … has its own
+  // Function.prototype". The WORKER realm never had this problem — the leaf
+  // crosses there as SOURCE TEXT and is re-evaluated in the worker's own realm,
+  // so both forms resolve correctly there; this is the frame case only.
+  //
+  // FAIL SOFT, NEVER `return`: this block is spliced INSIDE applyAudioPatch,
+  // so bailing out here would skip the readback overrides too — trading the
+  // Level 2 unlinkability fix for the masking one. A realm without a usable
+  // Function.prototype loses the cloak and keeps the perturbation.
+  var __F = G.Function;
+  var __pts = (__F && __F.prototype && __F.prototype.toString)
+              || Function.prototype.toString;
   var __ts = function () {
     'use strict';
     // `this` is the function being stringified. Strict mode so a primitive
@@ -85,7 +107,8 @@ _FIREFOX_NATIVE_WRAP = r"""  var __nm = (typeof WeakMap === 'function') ? new We
     // Function.prototype.toString to catch exactly this trick.
     if (__nm) { __nm.set(__ts, 'toString'); }
     Object.defineProperty(__ts, 'name', { value: 'toString', configurable: true });
-    Function.prototype.toString = __ts;
+    // G's prototype, not the lexical one — see the note above.
+    if (__F && __F.prototype) { __F.prototype.toString = __ts; }
   } catch (e) {}
 
   function nativeWrap(orig, replacement) {
