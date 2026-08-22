@@ -53,6 +53,10 @@ from .engine_install import (  # noqa: F401
 )
 from .env_policy import scrub_current_process_environ
 from .firefox_bookmarks import places_ready
+# PS-78: the per-seed WebGL readPixels perturbation, shared with the Chromium
+# extension builder. Firefox loads no persona extension, so it takes the same
+# patch through add_init_script instead.
+from .webgl_ext import firefox_webgl_init_script
 
 logger = get_logger("browser.invisible")
 
@@ -2693,13 +2697,111 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     # the observer-rewrites-my-title tell that announced the masking regardless
     # of what the label said.
 
+    # --- the one delivery point for every per-profile init-script spoof ------
+    #
+    # PS-78. `add_init_script` reaches only documents created AFTER it is
+    # registered, and on a RESTORE launch Firefox has already rebuilt the
+    # session's tabs by the time `__enter__` returns. So an init script alone
+    # covers a FIRST launch and misses every restored tab.
+    #
+    # MEASURED, not reasoned, on this tree before the fix (three launches of one
+    # profile over one data dir, every reading taken from inside the page):
+    #
+    #                            launch 1 (fresh)  launch 2+ (restore)
+    #   Intl.DateTimeFormat("de-DE")
+    #     .resolvedOptions().locale   en-US            de-DE   <- override ABSENT
+    #   outerWidth - innerWidth       14               640     <- override ABSENT
+    #   outerWidth                    1166             1920 == screen.width
+    #
+    # Both overrides were present on the fresh launch and ABSENT on every
+    # restore. That is not a flicker: it is a permanent loss from launch 2
+    # onward, and since restart is the ordinary way a profile is used, the
+    # LEAKING state was the steady one and the correct one the transient.
+    #
+    # The two vectors are read through a signature only the override can
+    # produce, deliberately. This host has only the C/POSIX locales and a
+    # proxy-less profile is forced to en-US, so `navigator.language` reads
+    # "en-US" whether it is spoofed OR leaking — the obvious probe would have
+    # reported a confident false "no drift". `resolvedOptions().locale` for a
+    # REQUESTED locale is a direct read of the override's presence instead.
+    #
+    # WORSE THAN THE AUDIO CASE PS-73 CURED. Audio was linkability — two
+    # profiles reading alike. These are HOST leaks: the declared locale is the
+    # vector that must follow the proxy's geography, and this project refuses a
+    # launch outright rather than present the host zone. A restored tab quietly
+    # reporting the host locale defeats that refusal after the fact. And
+    # `outerWidth` reporting the spoofed SCREEN width is precisely the
+    # inner<outer==screen mismatch `_outer_size_override_script` exists to
+    # remove — so the vector was not merely unspoofed, it presented the exact
+    # tell the override was written against.
+    #
+    # ONE registry rather than a per-vector patch. The alternative is a fourth
+    # bespoke fix beside PS-73's `_apply_audio_to_open_tabs`, and that is how
+    # the FIFTH vector gets missed: the next spoof added here inherits the hole
+    # silently, because nothing about `add_init_script` announces it. Every
+    # spoof goes in through `_install_spoof`, which registers it for new
+    # documents and replays it into the tabs that already exist.
+    _spoof_scripts: list[tuple[str, str]] = []
+
+    def _install_spoof(label: str, js: str) -> None:
+        """Register one MAIN-world spoof for BOTH the new-document path and the
+        already-open tabs. The only supported way to add a spoof to this engine.
+        """
+        if not js:
+            return
+        _spoof_scripts.append((label, js))
+        on_ctx(lambda: ctx.add_init_script(js))
+
+    def _apply_spoofs_to_open_tabs():
+        """Replay every registered spoof into the tabs that ALREADY EXIST.
+
+        Nothing is navigated. A restore launch must NOT reload pages[0] — that
+        is the user's restored tab, and reloading it to apply a spoof would
+        clobber the session this engine goes to some length to preserve (the
+        constraint PS-73 encoded and the reason this is an `evaluate`, not a
+        `reload`). `evaluate` runs the same source in the live realm.
+
+        Every script here is idempotent by construction: each installs
+        value-pinning accessors or guards on its own realm marker, so a tab that
+        DID get the init script is unaffected by a second application.
+        """
+        for pg in list(ctx.pages):
+            for label, js in _spoof_scripts:
+                try:
+                    pg.evaluate(js)
+                except Exception as exc:
+                    # A tab without a browsingContext (the fx-19 dead default
+                    # tab) raises on any eval. Nothing to patch there; the next
+                    # document in it comes from the init script.
+                    #
+                    # BREADCRUMB, deliberately not a re-raise. The swallow is
+                    # correct for that known case, but its SYMPTOM when it fires
+                    # for any OTHER reason is a silently unspoofed tab — which
+                    # is precisely the defect this block exists to fix, and the
+                    # hardest kind to notice (nothing fails; a vector just reads
+                    # the host value). So the reason is always recorded, and the
+                    # known case is separated from the unknown one at the log
+                    # level rather than flattened into a silent `continue`.
+                    if "browsingContext" in str(exc):
+                        logger.debug(
+                            "%s spoof skipped for a context-less tab "
+                            "(expected, fx-19 dead default tab): %s", label, exc,
+                        )
+                    else:
+                        logger.warning(
+                            "%s spoof FAILED on an open tab for an unexpected "
+                            "reason - that tab keeps the HOST value and leaks: "
+                            "%s", label, exc,
+                        )
+                    continue
+
     # Keep outerWidth/outerHeight tied to the real window (inner + chrome) so a
     # small window on a big spoofed screen doesn't leak the screen size through
     # outerWidth (an inner<outer==screen mismatch a scanner can flag). Only when
     # a resolution was chosen — Auto opens the window at the engine's own screen,
     # where outer already agrees.
     if _res_overrides is not None:
-        on_ctx(lambda: ctx.add_init_script(_outer_size_override_script()))
+        _install_spoof("outer-size", _outer_size_override_script())
 
     # firefox-17 leaks the host OS locale through navigator.language even when the
     # Accept-Language header is the intended locale (the header follows
@@ -2711,7 +2813,29 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     # Mirror the effective locale (en-US when the profile leaves it unset) so the
     # override always runs — an unset-locale profile otherwise kept the host Intl.
     _lang = cfg.get("locale") or "en-US"
-    on_ctx(lambda: ctx.add_init_script(_language_override_script(_lang)))
+    _install_spoof("locale", _language_override_script(_lang))
+
+    # PS-78: the per-seed WebGL readPixels perturbation, which until now was
+    # CHROMIUM-ONLY and in fact UNREACHABLE on this engine — `spawn_browser`
+    # returns on the Firefox arm ~150 lines before the extension list carrying
+    # it is assembled, so `build_webgl_extension` was never called for a Firefox
+    # profile.
+    #
+    # The engine spoofs the WebGL vendor/renderer/parameter STRINGS per seed,
+    # but on a GPU-less host the actual rendering is identical everywhere, so
+    # `gl.readPixels` collides across profiles and links them. On Firefox the
+    # strings were spoofed and the pixels were not — the sharper of the two
+    # failures, because a profile that CLAIMS a distinct GPU while RENDERING the
+    # shared one is self-contradictory in a way a plain missing spoof is not.
+    # The GPU-less host is the permanent condition (PS-10), not a temporary one.
+    #
+    # Installed through the same registry as the two above, so it gets restored-
+    # tab coverage in the same breath rather than inheriting the hole the
+    # registry exists to close.
+    if seed is not None:
+        _install_spoof("webgl", firefox_webgl_init_script(seed))
+
+    on_ctx(_apply_spoofs_to_open_tabs)
 
     # The persistent context already opened ONE window: with a saved session
     # Firefox restored the user's tabs into it (the trailing -new-window arg
