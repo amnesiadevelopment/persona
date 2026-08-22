@@ -17,6 +17,10 @@ import time
 
 from ...core import platform as _platform
 from ...core.logging import get_logger
+# PS-73: the per-seed audio perturbation, shared with the Chromium extension
+# builder in the same module. Firefox loads no persona extension, so it takes
+# the same patch through add_init_script instead.
+from .audio_ext import firefox_audio_init_script
 # The engine install/download subsystem lives in engine_install.py. Every name
 # it owns is re-exported here so existing `invisible_launch.<name>` imports and
 # call sites — including the stay-behind launcher code that calls them as bare
@@ -2712,6 +2716,59 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     # override always runs — an unset-locale profile otherwise kept the host Intl.
     _lang = cfg.get("locale") or "en-US"
     on_ctx(lambda: ctx.add_init_script(_language_override_script(_lang)))
+
+    # PS-73: the per-seed audio perturbation, which until now was CHROMIUM-ONLY.
+    # spawn_browser returns on the Firefox arm ~100 lines before the extension
+    # list is assembled, so build_audio_extension was never called for a Firefox
+    # profile and nothing else fed audio variance to this engine. Measured
+    # consequence: audio.digest read 35.749972 on four profiles with four
+    # DISTINCT seeds — identical to 6dp, which on a continuous vector is not
+    # coincidence but the perturbation never being applied.
+    #
+    # audio.digest is the ONLY probe the inventory grades INDEPENDENT
+    # (probes.py:365). Every other seed-derived vector is POOLED — drawn from a
+    # finite set, so two profiles colliding on one proves nothing. Without this
+    # Firefox had the pooled vectors and not the continuous one, leaving mutual
+    # unlinkability with no vector on which agreement is PROOF of linkage.
+    #
+    # An init script, not a copied extension directory: this engine has no MV3
+    # unpacked-extension mechanism, and this is the same route the two overrides
+    # directly above already take. Identical text to Chromium's apart from the
+    # native-cloak seam, so a Firefox and a Chromium profile sharing a seed
+    # perturb identically — and Chromium's own emitted script is unchanged.
+    _audio_js = firefox_audio_init_script(seed)
+    on_ctx(lambda: ctx.add_init_script(_audio_js))
+
+    # ...and into the tabs that are ALREADY OPEN. add_init_script only reaches
+    # documents created AFTER it is registered, and on a RESTORE launch Firefox
+    # has already rebuilt the session's tabs by the time __enter__ returns — so
+    # the init script alone covers a first launch and misses every restored tab.
+    #
+    # MEASURED, not reasoned: with only the init script, one profile read
+    # audio.digest 35.749988 on its first launch and 35.749972 (the UNPERTURBED
+    # value) after a restart. That is worse than the defect this fixes. A vector
+    # that changes per launch is not an identity — it would have traded Level 2
+    # for the restart-continuity outcome PS-70 covers, turning one profile into
+    # two machines instead of making two profiles two machines.
+    #
+    # Evaluating the patch in the open tabs closes that gap without navigating
+    # anything: a restore launch must NOT touch pages[0] (that is the user's
+    # restored tab, and reloading it to apply a spoof would clobber the session
+    # this engine went to some length to preserve). The patch is idempotent —
+    # applyAudioPatch returns early on a realm it already covered — so a tab
+    # that DID get the init script is unaffected, and a context-less fx-19 tab
+    # raises here and is skipped rather than failing the launch.
+    def _apply_audio_to_open_tabs():
+        for pg in list(ctx.pages):
+            try:
+                pg.evaluate(_audio_js)
+            except Exception:
+                # A tab without a browsingContext (the fx-19 dead default tab)
+                # raises on any eval. Nothing to patch there; the next document
+                # in it comes from the init script.
+                continue
+
+    on_ctx(_apply_audio_to_open_tabs)
 
     # The persistent context already opened ONE window: with a saved session
     # Firefox restored the user's tabs into it (the trailing -new-window arg
