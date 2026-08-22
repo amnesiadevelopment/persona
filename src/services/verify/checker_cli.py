@@ -140,6 +140,7 @@ from .matrix_diff import (
     header_notes,
     require_record,
 )
+from .snapshot import quote_path
 
 
 # What this environment is, recorded in the header. The reading is only
@@ -596,7 +597,7 @@ def _load_record(path: str) -> dict:
     """
     if not os.path.isfile(path):
         raise RecordUnreadable(
-            f"no checker-matrix record to read at {path!r}. Nothing was "
+            f"no checker-matrix record to read at {quote_path(path)}. Nothing was "
             "compared, so this is NOT a finding — check the path, or take a "
             "reading with: `python -m src.services.verify.checker_cli read "
             "-o reading.json`."
@@ -612,7 +613,7 @@ def _load_record(path: str) -> dict:
         # covers the read that starts and then fails (a directory, a permission
         # denial, a broken link). Same pair, same reasoning, as `cli.py`.
         raise RecordUnreadable(
-            f"the record at {path!r} could not be read: {exc}. Nothing was "
+            f"the record at {quote_path(path)} could not be read: {exc}. Nothing was "
             "compared, so this is NOT a finding — the recording itself is "
             "unusable. Re-take it, and check that the file was written "
             "completely."

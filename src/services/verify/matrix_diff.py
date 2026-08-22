@@ -88,6 +88,7 @@ from typing import Any
 from .checkers import EXIT, FINGERPRINT, HARNESS, HOST
 from .diff import ComparisonNotControlled
 from .matrix import ABSENT as STATE_ABSENT, READ, UNOBTAINABLE
+from .snapshot import quote_path
 
 # Recorded in place of a row that does not exist on that side of the
 # comparison. Mirrors ``diff.ABSENT`` in role; named MISSING here so it is
@@ -306,7 +307,7 @@ def require_record(obj: Any, source: str | None = None) -> dict:
     """
     if isinstance(obj, dict) and isinstance(obj.get("readings"), list):
         return obj
-    where = f"{source!r} " if source else "the input "
+    where = f"{quote_path(source)} " if source else "the input "
     raise NotARecord(
         f"{where}is not a checker-matrix record: it carries no 'readings' "
         "list, so NOTHING WAS COMPARED. This is NOT 'nothing moved' — no "
@@ -837,7 +838,12 @@ def header_notes(before: dict, after: dict) -> "list[str]":
             "the spine of a presented identity, so fingerprint rows moving is "
             "NOT evidence of a coupling."
         )
-    elif before_declared is not None:
+    elif before_declared:
+        # Truthy, not `is not None`: `matrix.build_record` DEFAULTS the field to
+        # "" (matrix.py:342), so a record built by a direct call with no machine
+        # passed would otherwise render "same declared machine: ." — a note with
+        # a blank value and a stranded full stop. An unset machine is simply not
+        # mentioned rather than mentioned emptily.
         notes.append(
             f"same declared machine: {before_declared}"
             + (

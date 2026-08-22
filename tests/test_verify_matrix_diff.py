@@ -895,6 +895,74 @@ def test_the_refusal_explains_itself_on_stderr_and_prints_no_report(
     assert "NOT a finding" in captured.err
 
 
+# --- PS-72's rule, on this artifact: name the path the operator typed -------
+#
+# The defect is in the FORMATTING, not in the OS: `{path!r}` escapes
+# backslashes, so the message renders 'C:\\Users\\...' — which does not contain
+# what the operator typed, while claiming to name their file. So each test
+# below only needs a path that CONTAINS A BACKSLASH, on whatever OS it runs on.
+#
+# For a path that need not exist, a Windows-shaped literal works everywhere and
+# reproduces the Windows bug on Linux.
+WINDOWS_PATH = r"C:\Users\me\Desktop\reading.json"
+
+# For the two cases that need a REAL file, the backslash has to come from a
+# different place on each OS, because the two disagree about what a backslash
+# IS. On POSIX it is an ordinary filename character, so it is baked into the
+# name. On Windows it is the separator — that name would resolve to a real
+# drive path and fail to write — so a plain name is used and the backslashes
+# arrive for free in the tmp dir's own path. Either way the asserted string
+# contains one, which is all the defect needs to show itself.
+BACKSLASHED_NAME = "reading.json" if os.name == "nt" else WINDOWS_PATH
+
+
+def write_named(tmp_path, name: str, text: str) -> str:
+    """Write `text` to a file named literally `name` — backslashes and all."""
+    path = os.path.join(str(tmp_path), name)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    return path
+
+
+def test_a_missing_record_names_the_path_the_operator_typed(record, tmp_path, capsys):
+    """`compare` takes TWO paths, so "which of my two was wrong" is the only
+    thing this message has to answer — and a typo'd path is the expected way
+    into this branch.
+
+    Asserted through the CLI rather than on ``quote_path`` directly, because a
+    helper-level test is structurally incapable of catching a caller that never
+    adopts the helper — which is exactly the failure that shipped in PS-72's
+    first push, and the one this PR reintroduced at three sites.
+    """
+    before = write_record(tmp_path, "before.json", record)
+
+    assert main(["compare", before, WINDOWS_PATH]) == 2
+    assert WINDOWS_PATH in capsys.readouterr().err
+
+
+def test_an_unreadable_record_names_the_path_the_operator_typed(
+    record, tmp_path, capsys
+):
+    """The second refusal in ``_load_record``: the file exists but is not JSON."""
+    before = write_record(tmp_path, "before.json", record)
+    broken = write_named(tmp_path, BACKSLASHED_NAME, "<html>502 Bad Gateway</html>")
+    assert "\\" in broken  # else this asserts nothing about the defect
+
+    assert main(["compare", before, broken]) == 2
+    assert broken in capsys.readouterr().err
+
+
+def test_a_non_record_names_the_path_the_operator_typed(record, tmp_path, capsys):
+    """``require_record``'s refusal, which formats the path independently of
+    ``_load_record`` and so needs its own guard."""
+    before = write_record(tmp_path, "before.json", record)
+    not_a_record = write_named(tmp_path, BACKSLASHED_NAME, json.dumps({"probes": {}}))
+    assert "\\" in not_a_record  # else this asserts nothing about the defect
+
+    assert main(["compare", before, not_a_record]) == 2
+    assert not_a_record in capsys.readouterr().err
+
+
 def test_compare_needs_no_exit_and_no_network(record, tmp_path, monkeypatch):
     """It reads files, which is what makes it testable when the link is down.
 
