@@ -249,6 +249,115 @@ def test_an_explicit_marker_beats_reason_matching(sandbox: Path):
     assert "1 skipped" in quiet.stdout
 
 
+def test_a_marker_is_policed_on_every_capability_it_names(sandbox: Path):
+    """A multi-capability marker must be checked against ALL its names.
+
+    The regression: the classifier once returned only the FIRST declared
+    capability it recognised, alphabetically, and the caller tested that single
+    name against the declaration. So a test marked ("browser", "node"), skipping
+    because node was missing, on a machine that declares `node`, reported GREEN
+    — "browser" sorted first, was not in the declaration, and ended the search.
+    A guard whose firing depends on the alphabetical order of its own arguments
+    is a guard that silently declines to fire, which is this file's subject
+    matter one level up.
+
+    `node` is chosen deliberately: it does NOT sort first. A fix that still
+    considers only one name cannot pass this test.
+    """
+    (sandbox / "test_both.py").write_text(
+        "import pytest\n"
+        "@pytest.mark.requires_capability('browser', 'node')\n"
+        "def test_needs_browser_and_node():\n"
+        "    pytest.skip('node not available')\n"
+    )
+
+    result = _run_pytest(
+        sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "node"}
+    )
+
+    assert result.returncode != 0, (
+        "a skip for want of node, on a machine declaring node, reported green: "
+        + result.stdout
+    )
+    assert "test_needs_browser_and_node" in result.stdout
+    # ...and it names the capability the operator actually declared, with THAT
+    # capability's provisioning advice — telling them to install a browser here
+    # would send them after the wrong missing thing.
+    assert "Node.js" in result.stdout
+
+    # The first-listed name still works, so the fix widened the check rather
+    # than swapping which single name wins.
+    other = _run_pytest(
+        sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser"}
+    )
+    assert other.returncode != 0, other.stdout
+
+    # ...and an undeclared run is still an honest skip.
+    quiet = _run_pytest(sandbox, "-q")
+    assert quiet.returncode == 0, quiet.stdout
+    assert "1 skipped" in quiet.stdout
+
+
+def test_a_marker_naming_an_unknown_capability_is_a_hard_error(sandbox: Path):
+    """The typo that disables the guard, on the marker path this time.
+
+    `PERSONA_REQUIRED_CAPABILITIES=browserr` has always been a hard error.
+    `@pytest.mark.requires_capability("browserr")` was silently ignored, which
+    left the test entirely UNGUARDED while the marker sat in the source looking
+    exactly like protection. Both spellings of the declaration must fail closed;
+    a guard that a misspelling turns off, quietly, is the original defect
+    wearing a new hat.
+    """
+    (sandbox / "test_typo.py").write_text(
+        "import pytest\n"
+        "@pytest.mark.requires_capability('browserr')\n"
+        "def test_marked_with_a_typo():\n"
+        "    pytest.skip('conditions not met')\n"
+    )
+
+    result = _run_pytest(
+        sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser"}
+    )
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    output = result.stdout + result.stderr
+    assert "unknown test capability" in output
+    assert "browserr" in output
+    # it locates the offender rather than leaving the reader to grep for it,
+    # and offers the valid names
+    assert "test_marked_with_a_typo" in output
+    assert "browser, engine, node" in output
+    # The run must not have proceeded to report a confident green around it.
+    assert "1 skipped" not in result.stdout
+
+    # It is loud even when nothing is declared: the marker is wrong in the
+    # source, and it is wrong on every machine — not only on a provisioned one.
+    undeclared = _run_pytest(sandbox, "-q")
+    assert undeclared.returncode != 0, undeclared.stdout + undeclared.stderr
+    assert "unknown test capability" in undeclared.stdout + undeclared.stderr
+
+
+def test_a_valid_marker_still_collects_normally(sandbox: Path):
+    """The negative control for the collection-time validator.
+
+    Without this, a validator that rejected EVERY marker — or that crashed on
+    the happy path — would still make the typo test above pass. It must refuse
+    the unknown name and nothing else.
+    """
+    (sandbox / "test_ok_marker.py").write_text(
+        "import pytest\n"
+        "@pytest.mark.requires_capability('browser', 'node')\n"
+        "def test_well_formed_marker():\n"
+        "    assert True\n"
+    )
+
+    result = _run_pytest(sandbox, "-q")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 passed" in result.stdout
+    assert "unknown test capability" not in result.stdout + result.stderr
+
+
 def test_an_xfail_is_not_mistaken_for_a_declined_test(sandbox: Path):
     """An xfail reports as skipped internally but is a RESULT, not an absence
     of one — converting it would produce noise nobody can rank."""
