@@ -21,11 +21,18 @@ noise. So the tag is not decoration:
     carrier, timezone-vs-IP. **Expected to move between runs. Not news.**
 
 ``HOST``
-    Driven by the machine the engine ran on — the WebGL renderer under a
-    software rasteriser, installed fonts, text metrics. Constant here, and
-    DIFFERENT on another machine. A red here on a GPU-less runner is
-    environmental by construction: recorded with its reason, never counted as a
-    pass, never deleted to make a report look clean.
+    Driven by the machine the engine ran on — installed fonts, text metrics.
+    Constant here, and DIFFERENT on another machine. Recorded with its reason,
+    never counted as a pass, never deleted to make a report look clean.
+
+    **The GPU is NOT in this sort, and that is an owner decision rather than a
+    classification opinion** (2026-08-22, recorded in PS-10 under "a GPU-less
+    environment is not an exemption"). The renderer rows used to sit here and
+    were written off as "the runner has no GPU". They are now FINGERPRINT:
+    there will be no dev-VM and no GPU machine in the loop, and *the engine is
+    expected to present a plausible GPU wherever it runs, including on a host
+    that has none*. That makes an implausible renderer persona's defect, not
+    the container's — see ``GPU_CLAIMED`` / ``GPU_RENDERED`` below.
 
 ``FINGERPRINT``
     Driven by what persona presents — automation tells, patched-function shape,
@@ -105,6 +112,39 @@ HARNESS = "harness"
 
 ALL_SORTS = (EXIT, HOST, FINGERPRINT, HARNESS)
 
+# --- the two GPU vectors ----------------------------------------------------
+#
+# ORTHOGONAL to the sorts above: a sort says WHAT A READING DEPENDS ON, a
+# vector says WHICH OF TWO DIFFERENT QUESTIONS ABOUT THE GPU a reading answers.
+# Both GPU vectors are FINGERPRINT-sorted; they are told apart by this.
+#
+# The owner ruled (2026-08-22, PS-10) that the bar wants both — *"планка
+# требует идеала и там и там"* — and verification's obligation follows from it:
+# report WHICH of the two a red came from rather than collapsing them into "GPU
+# red". They have completely different fixes, so a merged row cannot be acted
+# on by whoever picks up the masking ticket.
+#
+# ``GPU_CLAIMED``
+#     What the renderer SAYS IT IS: the ``WEBGL_debug_renderer_info`` strings,
+#     the vendor, the reported capabilities. Fixed by changing what the spoofer
+#     declares. A checker reading `SwiftShader` or `llvmpipe` here is reading a
+#     string persona chose to present.
+#
+# ``GPU_RENDERED``
+#     What the checker's OWN RENDERING ACTUALLY PRODUCED: the canvas and WebGL
+#     hashes it computes FROM PIXELS. persona does not choose these — they fall
+#     out of whatever rasteriser really drew the frame. Fixed, if at all, at
+#     the rendering layer, and NOT by editing a declared string.
+#
+# The pairing is the point. A plausible claimed string beside a hash that came
+# out of a software rasteriser is the "the string is right but the render gives
+# us away" case the owner explicitly called a defect rather than an accepted
+# limit. Neither row alone can show it.
+GPU_CLAIMED = "gpu_claimed"
+GPU_RENDERED = "gpu_rendered"
+
+GPU_VECTORS = (GPU_CLAIMED, GPU_RENDERED)
+
 # --- how a verdict is obtained ----------------------------------------------
 
 TIER_JSON = "json"
@@ -126,6 +166,12 @@ class JsonItem:
     path: "tuple[str, ...]"
     sort: str
     note: str = ""
+    # Which GPU question this row answers, when it answers one at all:
+    # GPU_CLAIMED (the declared strings) or GPU_RENDERED (hashes computed from
+    # actual pixels). Empty on every row that is not about the GPU. Carried
+    # into the record so a report can say WHICH vector a red came from — the
+    # two have different fixes and a merged "GPU red" cannot be acted on.
+    vector: str = ""
 
 
 @dataclass(frozen=True)
@@ -169,6 +215,12 @@ class TextItem:
     adverse: bool = True
     capture: bool = False
     note: str = ""
+    # Which GPU question this row answers, when it answers one at all:
+    # GPU_CLAIMED (the declared strings) or GPU_RENDERED (hashes computed from
+    # actual pixels). Empty on every row that is not about the GPU. Carried
+    # into the record so a report can say WHICH vector a red came from — the
+    # two have different fixes and a merged "GPU red" cannot be acted on.
+    vector: str = ""
 
 
 @dataclass(frozen=True)
@@ -509,13 +561,50 @@ BROWSER_CHECKERS: "tuple[Checker, ...]" = (
                      note="Must agree with the zone the EXIT implies — "
                           "persona derives the profile timezone from proxy "
                           "geography."),
-            TextItem("webgl_renderer", r"webgl renderer\s+([^\n]+)", HOST,
-                     adverse=False, capture=True,
-                     note="Recorded as a VALUE rather than matched against a "
-                          "software-rasteriser pattern: the engine spoofs the "
-                          "renderer string, so the declared GPU is what is "
-                          "worth recording. See the host-fact note on "
-                          "creepjs.gpu_renderer."),
+            # --- the GPU, as TWO rows -------------------------------------
+            #
+            # These used to be one HOST-sorted row written off as "no GPU on
+            # this runner". That exemption is WITHDRAWN (owner, 2026-08-22,
+            # PS-10): the engine is expected to present a plausible GPU
+            # wherever it runs, so both rows are FINGERPRINT and a red on
+            # either is a PRODUCT finding filed against undetectable-masking.
+            #
+            # Split because the fixes are different. Measured on the real page
+            # (tests/fixtures/checker-pages/pixelscan.txt:209-218), pixelscan
+            # publishes BOTH under "Hardware": the strings it was TOLD, and
+            # hashes it computed from PIXELS IT DREW ITSELF.
+            TextItem("webgl_vendor", r"webgl vendor\s+([^\n]+)", FINGERPRINT,
+                     adverse=False, capture=True, vector=GPU_CLAIMED,
+                     note="What the renderer CLAIMS TO BE — a string persona "
+                          "chose to present. Measured `Google Inc. (NVIDIA)`."),
+            TextItem("webgl_renderer", r"webgl renderer\s+([^\n]+)",
+                     FINGERPRINT, adverse=False, capture=True,
+                     vector=GPU_CLAIMED,
+                     note="The claimed WEBGL_debug_renderer_info string. "
+                          "Captured as a VALUE, not matched against a "
+                          "software-rasteriser pattern: `SwiftShader` or "
+                          "`llvmpipe` here is a real finding, but so is a "
+                          "plausible card that disagrees with the DECLARED "
+                          "MACHINE in the record header, and only a value can "
+                          "show the second. `[^\\n]+` to the line end — the "
+                          "measured string contains `Intel(R)`, and a `[^)]+` "
+                          "form truncates inside it."),
+            # THE OTHER VECTOR. persona does not choose these: they fall out of
+            # whatever rasteriser really drew the frame. A believable renderer
+            # string beside a hash produced by software rendering is the "the
+            # string is right but the render gives us away" case the owner
+            # called a defect rather than an accepted limit — and NEITHER ROW
+            # ALONE CAN SHOW IT, which is the whole reason they are separate.
+            TextItem("webgl_hash", r"webgl hash\s+([0-9a-f]{8,})", FINGERPRINT,
+                     adverse=False, capture=True, vector=GPU_RENDERED,
+                     note="Computed by pixelscan FROM PIXELS. Not a string "
+                          "persona can edit — this is what the GPU actually "
+                          "produced."),
+            TextItem("canvas_hash", r"canvas hash\s+([0-9a-f]{8,})",
+                     FINGERPRINT, adverse=False, capture=True,
+                     vector=GPU_RENDERED,
+                     note="Canvas rendering, same vector as webgl_hash: drawn "
+                          "by the real rasteriser, not declared."),
         ),
     ),
     Checker(
@@ -558,25 +647,88 @@ BROWSER_CHECKERS: "tuple[Checker, ...]" = (
                      FINGERPRINT, adverse=False, capture=True),
             TextItem("chromium_claim", r"chromium:\s*(true|false)", FINGERPRINT,
                      adverse=False, capture=True),
-            TextItem("gpu_renderer", r"(angle \([^\n]+\))", HOST, adverse=False,
-                     capture=True,
-                     note="HOST-driven, and the one class this container "
-                          "genuinely cannot answer: there is no GPU here, so "
-                          "WebGL renders in SOFTWARE while the engine declares "
-                          "a card. That pair is impossible on real hardware "
-                          "and is a KNOWN-ENVIRONMENTAL red — the masking "
-                          "charter records it as a host-fact leak rather than "
-                          "a configuration mistake. Recorded with its reason, "
-                          "never counted as a pass, never raised as a new "
-                          "defect. Note no checker in this matrix FLAGGED it: "
-                          "the string alone reads as plausible, which is why "
-                          "it is recorded as a value to compare rather than "
-                          "as a verdict to trust. The capture takes the WHOLE "
+            # --- the GPU, as TWO rows -------------------------------------
+            #
+            # WAS one HOST-sorted row carrying a long note that called this "a
+            # KNOWN-ENVIRONMENTAL red ... never raised as a new defect". THAT
+            # NOTE IS WITHDRAWN, by owner decision of 2026-08-22 recorded in
+            # PS-10: there will be no dev-VM and no GPU machine, and the engine
+            # is expected to present a plausible GPU wherever it runs. So both
+            # rows are FINGERPRINT and a red on either is a PRODUCT finding,
+            # filed against undetectable-masking with the reading attached.
+            #
+            # The old note's most useful observation survives the retag and is
+            # worth keeping in front of whoever reads this: NO CHECKER IN THIS
+            # MATRIX FLAGGED the renderer. The claimed string alone reads as
+            # plausible. That is exactly why the claim is recorded as a value
+            # to compare rather than as a verdict to trust — and exactly why
+            # the rendered hashes below are read as their own vector, since a
+            # checker that believes the string may still be fingerprinting the
+            # pixels.
+            # `(?<![a-z])` IS LOAD-BEARING — measured, not defensive style.
+            # CreepJS also prints `webgpu: unsupported` (creepjs.txt:207), and
+            # a bare `gpu:` matches INSIDE it. Today the real `gpu:` block
+            # renders first so first-match-wins hides the bug; on a page where
+            # the gpu block does NOT populate — which CreepJS does, its blocks
+            # are notoriously partial — the pattern falls through to `webgpu:`
+            # and records `unsupported` AS THE GPU VENDOR. That is the quiet
+            # failure direction: a missing verdict recorded as a real value,
+            # rather than the loud ABSENT it should be.
+            TextItem("gpu_vendor",
+                     r"(?<![a-z])gpu:\s*(?:confidence:[^\n]*\n)?([^\n]+)",
+                     FINGERPRINT, adverse=False, capture=True,
+                     vector=GPU_CLAIMED,
+                     note="The claimed vendor, measured `Google Inc. "
+                          "(NVIDIA)`. CreepJS prints `gpu:` then an optional "
+                          "`confidence:` line before the value, so the "
+                          "confidence line is skipped rather than captured as "
+                          "the vendor. Anchored so `webgpu:` cannot match."),
+            TextItem("gpu_renderer", r"(angle \([^\n]+\))", FINGERPRINT,
+                     adverse=False, capture=True, vector=GPU_CLAIMED,
+                     note="What the renderer CLAIMS TO BE. Captured as a value "
+                          "rather than matched against a software-rasteriser "
+                          "pattern, because a PLAUSIBLE card that disagrees "
+                          "with the declared machine in the header is just as "
+                          "much a finding as `SwiftShader`, and only a value "
+                          "shows the second. The capture takes the WHOLE "
                           "ANGLE(...) string to the line end: a `[^)]+` form "
                           "stopped at the first ')' — which falls INSIDE "
                           "'Intel(R)' — and recorded the truncated 'Intel, "
                           "Intel(R'. A truncated renderer silently defeats "
                           "the comparison this row exists for."),
+            # THE OTHER VECTOR — hashes CreepJS computed from pixels it drew.
+            # persona cannot edit these: they are what the rasteriser really
+            # produced. Measured at creepjs.txt:92-96 and :119-120.
+            TextItem("webgl_image_hash", r"images:\s*([0-9a-f]{8,})",
+                     FINGERPRINT, adverse=False, capture=True,
+                     vector=GPU_RENDERED,
+                     note="WebGL imagery as actually rendered."),
+            TextItem("webgl_pixel_hash", r"pixels:\s*([0-9a-f]{8,})",
+                     FINGERPRINT, adverse=False, capture=True,
+                     vector=GPU_RENDERED,
+                     note="The sharpest of the rendered rows: a hash straight "
+                          "off the drawn pixels. A believable claimed string "
+                          "beside a pixel hash produced by software rendering "
+                          "is the 'the string is right but the render gives us "
+                          "away' defect, and neither row alone can show it."),
+            # ANCHORED TO THE CANVAS BLOCK — measured, not defensive style.
+            # A bare `data:` matches TWICE on the real page: Canvas's
+            # `data: 8d1ce292` (creepjs.txt:120) and AUDIO's `data:2dcdf6c2`
+            # (creepjs.txt:157). It reads correctly today only because Canvas
+            # happens to render FIRST and first-match-wins — i.e. by luck of
+            # ordering, not by construction. If CreepJS reorders its blocks, or
+            # the Canvas block fails to populate while Audio does, this row
+            # silently records THE AUDIO HASH as the canvas rendering. That is
+            # the quiet failure direction: a READ reading carrying a corrupted
+            # value, on a row whose entire purpose is being compared run to run.
+            TextItem("canvas_data_hash",
+                     r"canvas\s*[0-9a-f]{8,}\s*data:\s*([0-9a-f]{8,})",
+                     FINGERPRINT, adverse=False, capture=True,
+                     vector=GPU_RENDERED,
+                     note="Canvas as actually rendered (CreepJS's `Canvas` "
+                          "block). Same vector as the pixel hash. Anchored to "
+                          "the `Canvas <hash>` heading so the AUDIO block's "
+                          "own `data:` cannot be captured as a canvas render."),
         ),
     ),
 )

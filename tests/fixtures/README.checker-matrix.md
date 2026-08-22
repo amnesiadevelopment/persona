@@ -35,7 +35,8 @@ Every row carries `sort`, and comparing two records without it is meaningless
 because the exit rotates by design:
 
 - **`exit`** — expected to move between runs. Not news.
-- **`host`** — constant on this machine, different on another.
+- **`host`** — constant on this machine, different on another. **The GPU rows
+  are no longer in this sort** — see below.
 - **`fingerprint`** — must **not** move when only the address moved. One that
   does is a coupling and deserves its own ticket. That is the entire return on
   accepting a rotating exit.
@@ -147,3 +148,65 @@ Recorded honestly rather than re-run until it looked good:
 2026-08-21, kept so the suite can prove each pattern reads a **real** page the
 way the catalogue claims — which is how three of the four original pattern
 defects were caught.
+
+## The GPU is two rows, and it is a product row (PS-69)
+
+The committed record above tags its two renderer rows `host`, and an earlier
+version of this file explained them away as *"the sandbox has no GPU"*. **That
+exemption is withdrawn** — owner decision, 2026-08-22, recorded in knowledge
+article PS-10 under *"a GPU-less environment is not an exemption"*:
+
+> there will be no dev-VM and no GPU machine in the loop, and the engine is
+> expected to present a plausible GPU wherever it runs, including on a host
+> that has none.
+
+So the GPU rows are `fingerprint`, and a red on one is a **masking finding**
+filed against `undetectable-masking` with the reading attached — never written
+off as the container's fault.
+
+Asked whether the bar covers only the renderer *strings* or also the *pixels a
+checker renders*, the owner answered **both** (*"планка требует идеала и там и
+там"*). Those are different vectors with different fixes, so every GPU reading
+now carries a `vector` key and they are recorded **apart**:
+
+| `vector` | what it is | who fixes it |
+|---|---|---|
+| `gpu_claimed` | what the renderer **says it is** — the `WEBGL_debug_renderer_info` strings, vendor, reported capabilities. persona chooses these | the spoofer's declared values |
+| `gpu_rendered` | what the checker's **own rendering produced** — canvas/WebGL hashes computed from pixels. persona does **not** choose these | the rendering layer, if at all |
+
+The pairing is the point: a plausible claimed string beside a hash that came
+out of a software rasteriser is the *"the string is right but the render gives
+us away"* case, and **neither row alone can show it**. A single merged "GPU
+red" cannot be acted on, which is why reporting *which* vector a red came from
+is an obligation rather than a nicety.
+
+Both prose checkers publish both vectors, and all of it was already on the
+captured pages — only the claimed string was ever read:
+
+- **pixelscan** — `webgl_vendor`, `webgl_renderer` (claimed); `webgl_hash`,
+  `canvas_hash` (rendered)
+- **creepjs** — `gpu_vendor`, `gpu_renderer` (claimed); `webgl_image_hash`,
+  `webgl_pixel_hash`, `canvas_data_hash` (rendered)
+
+**The committed record is NOT retagged, deliberately.** A reading carries its
+`sort` (and now its `vector`) so a record stays interpretable after the
+catalogue moves — a row taken when an item was tagged `host` must not silently
+re-interpret as `fingerprint` because the tag was later corrected. So that file
+still says `host`, correctly, as the dated observation it is. The *next* record
+will carry the new tags, and the difference is the catalogue changing rather
+than the product.
+
+Two reader defects were found while splitting these rows, both by
+over-matching the new patterns against the captured pages, and both **hidden by
+luck of ordering** rather than by construction:
+
+- a bare `gpu:` matches inside CreepJS's `webgpu: unsupported`, so on a page
+  where the real GPU block does not populate the reader would record
+  `unsupported` **as the GPU vendor** — a missing verdict recorded as a real
+  value, rather than the loud `absent` it should be;
+- a bare `data:` matches **twice** — Canvas's `data: 8d1ce292` and the Audio
+  block's `data:2dcdf6c2` — so a reordered or partial page would record **the
+  audio hash as the canvas rendering**, a `read` row carrying a corrupted
+  value on a row whose entire purpose is being compared across runs.
+
+Both are anchored now and both directions are pinned by tests.
