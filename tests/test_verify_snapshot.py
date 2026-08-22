@@ -1849,3 +1849,202 @@ def test_compares_refusal_is_untouched_and_still_distinguishable(tmp_path):
     # And the two refusals are not the same exception wearing two names.
     assert not issubclass(diff.NotASnapshot, diff.ComparisonNotControlled)
     assert not issubclass(diff.ComparisonNotControlled, diff.NotASnapshot)
+
+
+# --- a file that could not be READ is not drift either (PS-61) --------------
+#
+# The corollary of the module rule enforced one step EARLIER than the guard
+# above. That one refuses a file that read back fine and is not a snapshot;
+# these refuse a file that never became an object to inspect at all.
+#
+# The defect these pin, executed at `fc27868` before the guard existed — all
+# nine RAISED out of `cli.main` rather than returning a code, and a traceback
+# surfaces as exit 1, the DRIFT code:
+#
+#   missing path      -> FileNotFoundError   x diff / realms / compare
+#   invalid JSON      -> JSONDecodeError     x diff / realms / compare
+#   non-UTF-8 bytes   -> UnicodeDecodeError  x diff / realms / compare
+#
+# A file nobody read cannot be evidence that an identity moved. Wired into the
+# release gate PS-50 builds, a mistyped --baseline or a truncated recording
+# would announce "the identity drifted" — and the remedy an operator reaches
+# for on apparent drift is not the remedy for a typo.
+#
+# NOTE ON THE ASSERTIONS: exit 2 alone proves nothing on this lane. THREE
+# distinct things return 2 here — this refusal, `compare`'s header premise, and
+# argparse's own usage error (`realms` takes --left/--right as OPTIONS, so
+# passing realms positionally exits 2 as a usage error). Each case below
+# therefore asserts on the MESSAGE as well as the code.
+
+
+def _unreadable_files(tmp_path):
+    """The three ways a snapshot file can fail to be READ at all.
+
+    Distinct from `_not_a_snapshot_files`, which returns files that parse
+    perfectly and simply are not snapshots. Nothing here parses.
+    """
+    missing = tmp_path / "typo.json"  # deliberately never created
+
+    invalid = tmp_path / "invalid.json"
+    # What a proxy or a captive portal leaves behind when a download of the
+    # artifact silently returned an error page instead of the file.
+    invalid.write_text("<html><body>404 Not Found</body></html>", encoding="utf-8")
+
+    corrupt = tmp_path / "corrupt.json"
+    # Bytes that are not valid UTF-8 — a truncated or half-flushed recording.
+    corrupt.write_bytes(b"\xff\xfe\x00\x01 not utf-8 at all")
+
+    return {"missing": missing, "invalid json": invalid, "non-utf8": corrupt}
+
+
+def _refusal_of(capsys, cli, argv):
+    """Run `cli.main(argv)`, returning (exit code, everything it printed)."""
+    code = cli.main(argv)
+    captured = capsys.readouterr()
+    return code, captured.out + captured.err
+
+
+def test_diff_refuses_a_file_it_could_not_read_instead_of_crying_drift(
+    tmp_path, capsys
+):
+    # AC1 + AC3 + AC4. The exit code is the whole point: 1 means "the identity
+    # moved", and none of these read a byte of anything to move.
+    from src.services.verify import cli
+
+    good = tmp_path / "good.json"
+    snapshot.write(_snapshot(), str(good))
+
+    for label, path in _unreadable_files(tmp_path).items():
+        # No `pytest.raises`: the point is that nothing propagates.
+        code, out = _refusal_of(capsys, cli, ["diff", str(path), str(good)])
+        assert code == 2, (
+            f"{label}: a file that was never read is not evidence of drift, so "
+            "this must not exit 1 — nothing was compared"
+        )
+        assert str(path) in out, f"{label}: the refusal must name the bad file"
+
+        # And the same file on the OTHER side of the comparison.
+        code, out = _refusal_of(capsys, cli, ["diff", str(good), str(path)])
+        assert code == 2, f"{label}: refused on the right-hand side too"
+        assert str(path) in out, f"{label}: names the bad file, not the good one"
+
+
+def test_realms_refuses_a_file_it_could_not_read(tmp_path, capsys):
+    # AC2 + AC3 + AC4, the single-file entry point.
+    from src.services.verify import cli
+
+    for label, path in _unreadable_files(tmp_path).items():
+        code, out = _refusal_of(capsys, cli, ["realms", str(path)])
+        assert code == 2, f"{label}: unreadable is a refusal, never drift"
+        # argparse ALSO exits 2 on a usage error, so pin that this is the
+        # guard's refusal and not argparse rejecting the command line.
+        assert str(path) in out, f"{label}: must name the file"
+        assert "usage:" not in out, (
+            f"{label}: exit 2 here must be the refusal, not an argparse usage "
+            "error — the codes collide and only the message tells them apart"
+        )
+
+
+def test_compare_refuses_a_file_it_could_not_read(tmp_path, capsys):
+    # AC2 + AC3 + AC4 on the subcommand that had NO file-level guard at all.
+    # It reached exit 2 on a non-snapshot by an unrelated route (the header
+    # premise), so every control was green while this hole was wide open.
+    from src.services.verify import cli
+
+    good = tmp_path / "b.json"
+    snapshot.write(_profile_snapshot("beta"), str(good))
+
+    for label, path in _unreadable_files(tmp_path).items():
+        code, out = _refusal_of(capsys, cli, ["compare", str(path), str(good)])
+        assert code == 2, f"{label}: refused, and never 1 — 1 would mean linkable"
+        assert str(path) in out, f"{label}: must name the file"
+
+        code, out = _refusal_of(capsys, cli, ["compare", str(good), str(path)])
+        assert code == 2, f"{label}: refused on the second argument too"
+        assert str(path) in out, f"{label}: names the offending argument"
+
+
+def test_a_file_that_is_not_utf8_refuses_rather_than_tracebacking(tmp_path, capsys):
+    # AC4, pinned on its own because it is the case that proves the guard was
+    # written at the right WIDTH. `UnicodeDecodeError` IS a `ValueError` but is
+    # NOT a `json.JSONDecodeError`, so a narrow JSONDecodeError-only catch
+    # fixes the other two rows and lets corrupt bytes traceback out on exit 1.
+    from src.services.verify import cli
+
+    corrupt = tmp_path / "truncated.json"
+    corrupt.write_bytes(b"\xff\xfe\x00\x01 not utf-8 at all")
+    good = tmp_path / "good.json"
+    snapshot.write(_snapshot(), str(good))
+
+    # The type relationship the width rests on, asserted rather than assumed.
+    with pytest.raises(UnicodeDecodeError) as caught:
+        corrupt.read_text(encoding="utf-8")
+    assert isinstance(caught.value, ValueError)
+    assert not isinstance(caught.value, json.JSONDecodeError)
+
+    assert cli.main(["diff", str(corrupt), str(good)]) == 2
+    assert cli.main(["realms", str(corrupt)]) == 2
+    assert cli.main(["compare", str(corrupt), str(good)]) == 2
+
+
+def test_every_unreadable_refusal_says_plainly_that_nothing_was_compared(
+    tmp_path, capsys
+):
+    # AC5, as behaviour rather than as an exit code. An operator who sees this
+    # must not go looking for an identity change: the message has to say the
+    # comparison did not happen, and it must not borrow the language of a
+    # verdict. "no differences" over a file nobody opened is the sentence this
+    # ticket exists to prevent.
+    from src.services.verify import cli
+
+    good = tmp_path / "good.json"
+    snapshot.write(_snapshot(), str(good))
+
+    for label, path in _unreadable_files(tmp_path).items():
+        for argv in (
+            ["diff", str(path), str(good)],
+            ["realms", str(path)],
+            ["compare", str(path), str(good)],
+        ):
+            code, out = _refusal_of(capsys, cli, argv)
+            assert code == 2, label
+            assert str(path) in out, (
+                f"{label}/{argv[0]}: a typo'd path is the expected way in, so "
+                "the message must name WHICH file was bad"
+            )
+            assert "NOT drift" in out, (
+                f"{label}/{argv[0]}: it must state plainly that this is not a "
+                "finding about an identity"
+            )
+            assert "differen" not in out.lower(), (
+                f"{label}/{argv[0]}: a refusal must not use the language of a "
+                "comparison verdict"
+            )
+
+
+def test_the_unreadable_refusal_is_its_own_exception_not_a_widened_one(tmp_path):
+    # The two refusals say different things to an operator ("no file" vs "wrong
+    # file") and are consumed separately elsewhere (`engine_gate` catches
+    # NotASnapshot specifically, and its message speaks about a missing
+    # 'probes' object). Pin that neither was collapsed into the other.
+    assert issubclass(diff.SnapshotUnreadable, ValueError)
+    assert not issubclass(diff.SnapshotUnreadable, diff.NotASnapshot)
+    assert not issubclass(diff.NotASnapshot, diff.SnapshotUnreadable)
+
+
+def test_a_readable_non_snapshot_still_refuses_by_the_OTHER_route(tmp_path, capsys):
+    # AC6. The boundary between the two guards, which is easy to blur: a file
+    # that PARSES is not "unreadable", and must still get the pre-existing
+    # message about a missing 'probes' object. A guard that swallowed the other
+    # would be invisible from the exit code alone, since both are 2.
+    from src.services.verify import cli
+
+    path = _not_a_snapshot_files(tmp_path)["list"]
+    code, out = _refusal_of(capsys, cli, ["diff", str(path), str(path)])
+
+    assert code == 2
+    assert "no 'probes' object" in out, (
+        "a file that read back perfectly well must not be reported as one that "
+        "could not be read"
+    )
+    assert "could not be read" not in out
