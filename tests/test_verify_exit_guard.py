@@ -130,9 +130,13 @@ def test_a_dead_relay_fails_the_fetch_rather_than_going_direct():
             proxy_url="socks5h://127.0.0.1:1",
             timeout=5,
         )
-    assert "ipinfo" not in str(exc.value).lower() or True
     # The failure names its cause rather than being a bare "error".
     assert ":" in str(exc.value)
+    # And it failed AT THE RELAY, not somewhere past it. The loopback endpoint
+    # that refused is named, which is what distinguishes "the relay is down"
+    # from "the relay worked and the checker itself refused us" — two outcomes
+    # that mean opposite things about whether the exit is usable.
+    assert "127.0.0.1:1" in str(exc.value)
 
 
 def test_a_dead_relay_refuses_the_whole_run():

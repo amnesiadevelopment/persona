@@ -48,6 +48,41 @@ because the exit rotates by design:
   fingerprint means driving these endpoints from the engine; that is a
   different transport and a later slice.
 
+## The header, and the two keys a comparison cannot work without
+
+Besides the observed `exit`, the header carries:
+
+- **`seed`** — the engine fingerprint seed. The engine's fingerprint is
+  *seed-derived*, so without this a comparison cannot tell **a real coupling**
+  from **a different seed**, which is the whole analysis this record exists to
+  enable. Measured: the renderer moved `NVIDIA GTX 980` → `Intel HD Graphics
+  400` between two runs here purely because the seed differed. `0` means the
+  engine's own default was used.
+- **`skipped_tiers`** — any tier the operator asked not to read. A skipped
+  tier's rows are still **present** as `unobtainable` with `tier skipped` as
+  the reason, so the matrix never silently narrows; this key is the
+  header-level statement of the same fact, so a later diff can tell *"the tier
+  was skipped"* from *"those checkers were dropped"* from *"that schema had no
+  such tier"*.
+
+## Each tier proves its own exit
+
+`exit_guard` proves the exit for the **Python fetcher** — it opens a
+`socks_fetch` socket and reads ipinfo through it. The browser tier is a
+**different process on a different socket**, so that proof does not transfer to
+it. The `engine-exit` checker is the browser tier's own proof: before any
+checker page is loaded, the **engine** observes its own egress and the country
+is checked. An engine whose proxy silently failed would otherwise render every
+page, parse every verdict and land every row as `read` — a complete-looking
+reading of the operator's real address taken against every checker in the
+matrix.
+
+It is recorded as rows (`sort: exit`) rather than merely asserted, so *"which
+address did the browser tier actually use?"* is answerable from the file
+instead of by hand. Firefox's `network.proxy.failover_direct` is pinned off for
+the same reason: with it on, a dead SOCKS proxy is answered by retrying
+**directly**.
+
 ## Provenance of the committed record, including what is wrong with it
 
 Recorded honestly rather than re-run until it looked good:
@@ -59,12 +94,36 @@ Recorded honestly rather than re-run until it looked good:
    inside `Intel(R)` and recorded a truncated renderer; and the harness/
    fingerprint mislabelling above. All three are now pinned by tests.
 
-2. **The committed run used the corrected reader**, but the mobile exit
-   **degraded during it** — `pixelscan`, `iphey` and `creepjs` failed with
-   `NS_ERROR_UNKNOWN_HOST` (DNS at the exit), and the exit stopped answering
-   entirely immediately afterwards (`curl (97)` on every host, three attempts
-   spaced 20s apart). So this record carries **28 unobtainable rows**, and its
-   browser tier is much thinner than the matrix can actually produce.
+2. **A second run found two more defects in the reader**, and neither fixture
+   could have caught them, because both fixtures were captured on the one exit
+   and the one page state that hides them:
+
+   - `geo_poland` matched `poland\s*/\s*warsaw` — a **city hardcoded into an
+     exit-sorted item**. The exit rotates within Poland *by design*, so when it
+     moved to Ursynów/Kraków a perfectly clean Polish page read `absent`,
+     which looks exactly like the checker having stopped reporting Poland. It
+     now matches the country and captures the whole `Poland / <city>` string.
+   - CreepJS's three rating items are `capture` items — matching means *the
+     rating was published*, not *the rating is bad*. Tagged adverse, the clean
+     measured page (`0% headless`, `0% stealth`, `6% like headless` — the best
+     readings CreepJS gives) recorded **three adverse matches**. The polarity
+     of a captured number lives in the number.
+
+   Both are pinned, including a test that demonstrates the naive city pattern
+   still missing the rotated exit.
+
+3. **The committed run used the twice-corrected reader**, and its exit
+   (`84.40.220.51`, AS12887 Netia SA, Ursynów) was proven **on both legs** —
+   the Python fetcher's and the engine's own, which agreed on the address.
+   The mobile exit then **degraded during the run**: `pixelscan` and `creepjs`
+   failed with `NS_ERROR_UNKNOWN_HOST` — DNS *at the exit*, which is
+   `socks_remote_dns` working as intended rather than a local resolver leak.
+   So this record carries **24 unobtainable rows** and its browser tier is
+   thinner than the matrix can actually produce.
+
+   A further attempt was made and **refused before recording anything**
+   (`Host unreachable`, exit code 2, nothing written) — the guard doing exactly
+   its job, live. No third attempt was made.
 
    That is left exactly as it is. Rotation and outage are the operator's, from
    the host: the standing rule is *report and stop*, never retry around a dead
@@ -72,9 +131,17 @@ Recorded honestly rather than re-run until it looked good:
    verdicts is a legitimate outcome; a run that quietly recorded them from the
    wrong address would not be.
 
-   **Consequence for whoever compares next:** most browser-tier rows here are
+   **Consequence for whoever compares next:** many browser-tier rows here are
    `unobtainable`, not `absent`. Do not read them as clean, and do not treat
    the first later run that actually reads them as a regression.
+
+   **One `absent` here also needs care.** `iphey.com` rendered — so its rows
+   are `absent` rather than `unobtainable` — but **both** polarity items
+   (`trustworthy` *and* `not_trustworthy`) are absent, which is a pair that
+   cannot both be true of a settled page. Read together they mean *the verdict
+   block never rendered*, not *the checker declined to call us trustworthy*.
+   A single-row read of that checker would get the opposite impression, which
+   is precisely why both polarities are catalogued as separate rows.
 
 `checker-pages/*.txt` are the rendered page texts captured through the exit on
 2026-08-21, kept so the suite can prove each pattern reads a **real** page the

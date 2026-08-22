@@ -45,7 +45,6 @@ exit: rotation is the operator's, from the host. Report and stop.
 
 from __future__ import annotations
 
-import json
 import os
 from dataclasses import dataclass
 

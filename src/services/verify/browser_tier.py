@@ -53,8 +53,14 @@ import re
 import time
 from typing import Any, Callable
 
-from .checkers import BROWSER_CHECKERS, Checker, TextItem
-from .matrix import Reading, extract_text_item, readings_for_unread_checker
+from .checkers import BROWSER_CHECKERS, Checker, ENGINE_EXIT_CHECKER
+from .exit_guard import EXPECTED_COUNTRY
+from .matrix import (
+    READ,
+    Reading,
+    extract_text_item,
+    readings_for_unread_checker,
+)
 
 # A page that has not loaded in this long is not going to. Generous because it
 # is a mobile exit carrying a full page load, and because the alternative to
@@ -105,8 +111,119 @@ def _prefs() -> dict:
     while the page itself still loads through the exit. The reading would look
     perfect and would have leaked exactly what the product forbids. The app's
     own launch path sets the same pref (``invisible_launch.py``).
+
+    ``failover_direct`` is the one that makes a *silent* wrong reading
+    possible. With it TRUE, Firefox answers a dead or refusing SOCKS proxy by
+    retrying the request DIRECTLY — the page then loads, the verdicts parse,
+    every row lands as READ, and the record is a reading of the operator's real
+    address. It is asserted here rather than assumed: measured on this build,
+    the engine's own ``_BASELINE`` already sets it False and ``extra_prefs`` is
+    applied LAST (``invisible_core/prefs.py``: ``translate_profile_to_prefs``
+    starts from ``_BASELINE`` and ends with ``_apply_caller_overlay``), so this
+    re-declaration cannot weaken it and pins it against an upstream flip on a
+    rebase. Exactly the reasoning the engine itself records for
+    ``socks5_remote_dns``: the safe behaviour being somebody else's default is
+    why it survived unasserted.
+
+    ``devtools.jsonview.enabled`` is off because the engine-exit proof reads
+    RAW JSON. With the viewer on, Firefox renders a JSON body as a DOM tree
+    with unquoted keys, the quoted pattern does not match, and the proof reads
+    ABSENT. That direction is fail-SAFE (an unmatched proof refuses the tier
+    rather than passing it), but the raw form is what the pattern is written
+    against and the viewer is a UI convenience nothing here wants.
     """
-    return {"network.proxy.socks_remote_dns": True}
+    return {
+        "network.proxy.socks_remote_dns": True,
+        "network.proxy.failover_direct": False,
+        "devtools.jsonview.enabled": False,
+    }
+
+
+class ExitNotProvenInEngine(RuntimeError):
+    """The ENGINE's own exit could not be proven.
+
+    Separate from :class:`EngineUnavailable` because the causes are different
+    and so is what a reader should conclude: the engine started fine, it simply
+    could not be shown leaving through the exit we are entitled to read from.
+    Both make the whole tier unobtainable, and neither is ever recoverable by
+    reading the pages anyway.
+    """
+
+
+def _observe_engine_exit(
+    live,
+    *,
+    expected_country: str = EXPECTED_COUNTRY,
+    checker: Checker = ENGINE_EXIT_CHECKER,
+) -> "tuple[str, str]":
+    """Make the ENGINE observe its own exit, and check the country.
+
+    Returns ``(page_text, country)`` — the TEXT rather than readings, so the
+    engine-exit rows are extracted by the same pure ``readings_from_texts``
+    path as every other browser row. One extraction path, so the proof cannot
+    drift from the thing it is proving.
+
+    Raises :class:`ExitNotProvenInEngine` when the engine may not go on to read
+    a checker page.
+
+    This is the browser tier's half of the run's first outcome. The Python
+    fetcher's proof (``exit_guard.prove_exit``) was made on a DIFFERENT SOCKET
+    IN A DIFFERENT PROCESS and does not transfer: an engine whose proxy
+    silently failed would render every page and parse every verdict just the
+    same. "The pages rendered" is not evidence the engine used the proxy, for
+    the identical reason "it returned 200" is not.
+    """
+    page = live.new_page()
+    try:
+        page.goto(
+            checker.url,
+            timeout=NAVIGATION_TIMEOUT_MS,
+            wait_until="domcontentloaded",
+        )
+        text = page.inner_text("body")
+    except Exception as exc:
+        raise ExitNotProvenInEngine(
+            f"the engine could not observe its own exit "
+            f"({type(exc).__name__}: {exc}). Refusing to read any checker "
+            "through an engine that has not been shown leaving through the "
+            "expected exit — the pages would render either way."
+        ) from exc
+    finally:
+        try:
+            page.close()
+        except Exception:
+            pass
+
+    # Extracted with the SAME pure function that reads every other browser row,
+    # so the proof and the recorded rows can never disagree about what the page
+    # said. Only the country is consumed here; the readings themselves are
+    # rebuilt downstream from the text.
+    by_id = {
+        item.id: extract_text_item(checker, item, text) for item in checker.items
+    }
+
+    country_reading = by_id.get("country")
+    country = ""
+    if country_reading is not None and country_reading.state == READ:
+        country = str(country_reading.value or "").upper()
+
+    if not country:
+        raise ExitNotProvenInEngine(
+            "the engine's exit observation carried no country, so the engine's "
+            "exit is unproven. Recording the checker pages anyway would record "
+            "an address nobody has established."
+        )
+    if country != expected_country.upper():
+        raise ExitNotProvenInEngine(
+            f"the ENGINE left through {country}, expected "
+            f"{expected_country.upper()} — even though the Python fetcher's "
+            "exit was proven. That is two different clients on two different "
+            "sockets, which is exactly why this is checked separately. A "
+            "checker folds geography into its cross-checks, so a reading taken "
+            "from the wrong country is not a worse reading, it is a "
+            "meaningless one."
+        )
+    return text, country
 
 
 def read_page_texts(
@@ -151,7 +268,28 @@ def read_page_texts(
 
     try:
         with engine as live:
+            # THE TIER'S OWN PRECONDITION, and it runs before a single checker
+            # page is loaded. Not after, and not alongside: a checker that has
+            # already been asked cannot be un-asked, and the whole point is
+            # that the operator's real address must never reach one.
+            try:
+                exit_text, _country = _observe_engine_exit(live)
+            except ExitNotProvenInEngine as exc:
+                # Every row in the tier becomes unobtainable with this reason,
+                # including the engine-exit rows themselves. Deliberately NOT
+                # an EngineUnavailable: the engine was fine, it was the exit
+                # that could not be shown.
+                return {
+                    checker.id: {"error": str(exc)} for checker in checkers
+                }
+            out[ENGINE_EXIT_CHECKER.id] = {"text": exit_text}
+
             for checker in checkers:
+                if checker.id == ENGINE_EXIT_CHECKER.id:
+                    # Already observed above — asking twice would record a
+                    # second, later address for the same run and make the
+                    # record self-contradicting on a rotating exit.
+                    continue
                 try:
                     page = live.new_page()
                 except Exception as exc:
@@ -258,6 +396,7 @@ def read_browser_tier(
 
 __all__ = [
     "EngineUnavailable",
+    "ExitNotProvenInEngine",
     "NAVIGATION_TIMEOUT_MS",
     "read_browser_tier",
     "read_page_texts",
