@@ -663,6 +663,51 @@ def test_ci_records_why_the_windows_floor_is_not_zero(ci_text) -> None:
         )
 
 
+def test_ci_records_the_red_it_inherited_rather_than_caused(ci_text) -> None:
+    """Every platform currently runs at its measured floor PLUS one failure
+    that arrived on main after those floors were taken. Recording it is what
+    lets the next reader tell an inherited red from one they just caused —
+    without it, three red jobs look like this matrix broke something.
+
+    Pinned to the marked line and to the evidence, not to a loose number: the
+    claim "not ours" is only worth anything if the proof travels with it.
+    """
+    assert "<- THE INHERITED RED" in ci_text, (
+        "no inherited failure is recorded, but all three platforms run one "
+        "above their stated floor — the table understates itself, which makes "
+        "every real regression look like an inherited red"
+    )
+    assert "test_installed_core_version_answers_empty_when_absent" in ci_text, (
+        "the inherited red is described but never named, so a reader cannot "
+        "check whether the red they are looking at is that one"
+    )
+    for evidence in ("4f94721", "fc27868"):
+        assert evidence in ci_text, (
+            f"the inherited red does not cite {evidence} — the commit that "
+            "introduced it and the main-tip run that fails it identically are "
+            "the whole basis for calling it inherited rather than ours"
+        )
+
+
+def test_the_inherited_red_is_reported_not_repaired(ci_text) -> None:
+    """The floor is measured and reported, never engineered away. An inherited
+    failure is the most tempting thing to quietly fix or allowlist, because
+    doing so turns three red jobs green without touching the product."""
+    assert "DELIBERATELY NOT FIXED HERE" in ci_text, (
+        "the workflow does not state that the inherited red is left alone, "
+        "leaving the next reader to 'helpfully' repair an unrelated test to "
+        "make the matrix green"
+    )
+    gate = REPO_ROOT / "src" / "services" / "verify" / "engine_gate.py"
+    if gate.exists():
+        blame = gate.read_text(encoding="utf-8")
+        assert 'CORE_DISTRIBUTION = "invisible_core"' in blame, (
+            "the inherited red is attributed to invisible_core metadata "
+            "resolution, but engine_gate no longer reads that distribution — "
+            "the recorded cause has gone stale and would mislead"
+        )
+
+
 def test_the_display_question_was_answered_by_measurement(ci_text) -> None:
     """Assuming a display is needed adds a moving part nothing uses; assuming
     it is not, when it is, fails for a reason unrelated to the product. The

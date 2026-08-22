@@ -203,6 +203,35 @@ jobs:
         #     Every one of the 42 was a missing-dependency failure the install
         #     step provides. Useful ONLY as a bare-vs-installed COMPARISON.
         #
+        # INHERITED SINCE THOSE FLOORS WERE MEASURED (+1 ON EVERY PLATFORM):
+        #     tests/test_verify_engine_gate.py::
+        #       test_installed_core_version_answers_empty_when_absent
+        #     AssertionError: assert '20.14.0' == ''    <- THE INHERITED RED
+        #
+        # It arrived on main with PS-50 (4f94721), AFTER the floors above were
+        # taken, so today every platform runs at its floor PLUS this one:
+        # ubuntu 0+1, macos 0+1, windows 22+1 = 23. The arithmetic is exact and
+        # is the reason it can be stated as inherited rather than suspected.
+        #
+        # IT IS NOT A REGRESSION FROM THIS WORKFLOW, AND THE PROOF IS ON MAIN:
+        # main's own tip (fc27868, run 32544633376) fails this same single test
+        # with the same message, on a job that predates this matrix. Anything
+        # this workflow did would not show up there.
+        #
+        # THE CAUSE, so nobody re-derives it: installed_core_version() reads
+        # importlib.metadata for `invisible_core` and returns "" when absent.
+        # The test's own docstring records the assumption it rests on — "is
+        # genuinely absent in this container" — and a GitHub runner is not that
+        # container: pyproject pins invisible_core==20.14.0, the install step
+        # installs it, so metadata resolves and the test gets a version where it
+        # demanded emptiness. An environment assumption, not a masking defect.
+        #
+        # DELIBERATELY NOT FIXED HERE, and not allowlisted either. Repairing an
+        # unrelated test to make this job green is the exact move the rest of
+        # this section argues against; it belongs to whoever owns PS-50. It is
+        # recorded so the next reader can tell an inherited red from their own
+        # without re-running anything — which is this whole section's purpose.
+        #
         # THE TWO NUMBERS DO NOT MATCH, DELIBERATELY LEFT VISIBLE: the runners
         # collect more tests than the container, and the three runners do not
         # agree with each other either (2487 / 2472 / 2446 collected-and-passed,
