@@ -2836,8 +2836,15 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     # Installed through the same registry as the two above, so it gets restored-
     # tab coverage in the same breath rather than inheriting the hole the
     # registry exists to close.
-    if seed is not None:
-        _install_spoof("webgl", firefox_webgl_init_script(seed))
+    #
+    # UNCONDITIONAL, and deliberately so. This read `if seed is not None:` until
+    # a review pointed out the guard can never fail: `_resolve_seed` (:2251)
+    # returns `int(cfg["seed"])` or a hash of the profile name, so it always
+    # yields an int. The guard therefore looked like it was protecting a
+    # seedless profile while protecting nothing — and a WebGL spoof that
+    # silently skips is precisely the failure this ticket exists to fix, so the
+    # honest form is no guard at all.
+    _install_spoof("webgl", firefox_webgl_init_script(seed))
 
     on_ctx(_apply_spoofs_to_open_tabs)
 
