@@ -290,6 +290,117 @@ JSON_CHECKERS: "tuple[Checker, ...]" = (
 )
 
 
+# --- the same endpoints, asked by the ENGINE --------------------------------
+#
+# The JSON tier above is fetched by this repository's Python client, so every
+# TLS row it produces is HARNESS: a reading about the instrument. Those rows
+# stay exactly as they are — they pin what persona's own unattended requests
+# look like on the wire, which is what PS-46's egress work needs.
+#
+# These are the SAME ENDPOINTS asked by persona's ENGINE, so that what the
+# checker records is the handshake persona actually performs. They are ADDED
+# BESIDE the harness rows rather than replacing them: two clients, two
+# readings, both true, and a comparison between them is the point.
+#
+# Distinct checker ids (``…@engine``) rather than a flag on the row, because
+# the record is keyed by (checker, item) and the two readings of the same
+# endpoint must not collide — a record cannot carry two rows both called
+# ``tls.peet.ws/ja4`` and stay comparable.
+#
+# THE SORT DECLARED HERE IS CONDITIONAL, and this is the load-bearing detail.
+# FINGERPRINT is what these rows are WORTH once it is shown the engine is what
+# spoke; it is NOT a promise that it did. ``engine_tls`` demotes every one of
+# them to HARNESS or UNOBTAINABLE unless the checker's own answer proves the
+# caller (see ``origin_proof``). Declaring the intended sort here and letting
+# the reader enforce the evidence keeps the catalogue readable while making the
+# claim impossible to fake — the transport asserting "the engine made this
+# request" is precisely the reasoning that produced the defect this closes.
+#
+# ``user_agent`` is catalogued FIRST on every one of these, because it is the
+# WITNESS: it is the field that exposed the original mistake, and a row set
+# without it could not demonstrate its own origin at all.
+#
+# Raw ``ja3_hash`` is still not read, on either tier. It varies with TLS
+# extension PERMUTATION, so it moves without anything meaningful changing and
+# would manufacture drift in the one record built to detect drift.
+
+def _engine_id(checker_id: str) -> str:
+    return f"{checker_id}@engine"
+
+
+ENGINE_TLS_CHECKERS: "tuple[Checker, ...]" = (
+    Checker(
+        id=_engine_id("tls.peet.ws"),
+        url="https://tls.peet.ws/api/all",
+        tier=TIER_BROWSER,
+        items=(
+            JsonItem("user_agent", ("user_agent",), FINGERPRINT,
+                     "THE WITNESS. Every other row on this checker is "
+                     "downgraded to HARNESS unless this one shows a browser "
+                     "engine — a row that cannot demonstrate its own origin "
+                     "is never recorded as persona's."),
+            JsonItem("ja4", ("tls", "ja4"), FINGERPRINT,
+                     "persona's REAL TLS client shape. The comparison key: "
+                     "stable across extension permutation, unlike ja3."),
+            JsonItem("ja3n", ("tls", "ja3"), FINGERPRINT,
+                     "peet publishes the normalised form under 'ja3'; its "
+                     "'ja3_hash' is the permutation-sensitive one and is "
+                     "deliberately not read."),
+            JsonItem("peetprint_hash", ("tls", "peetprint_hash"), FINGERPRINT),
+            JsonItem("akamai_fingerprint", ("http2", "akamai_fingerprint"),
+                     FINGERPRINT,
+                     "HTTP/2 SETTINGS shape. The engine negotiates h2, so "
+                     "unlike the harness row this one is expected to carry a "
+                     "value — an absent reading here is a fact worth having."),
+            JsonItem("http_version", ("http_version",), FINGERPRINT,
+                     "Corroborates the witness. NOT part of the verdict: a "
+                     "downgrade to HTTP/1.1 is legitimate, so gating on it "
+                     "would demote genuine engine rows."),
+            JsonItem("header_order", ("http1", "headers"), FINGERPRINT,
+                     "Header ORDER is a fingerprint vector in its own right "
+                     "and is invisible to every JS-level probe persona owns."),
+            JsonItem("observed_ip", ("ip",), EXIT),
+        ),
+    ),
+    Checker(
+        id=_engine_id("tls.browserleaks.com"),
+        url="https://tls.browserleaks.com/json",
+        tier=TIER_BROWSER,
+        items=(
+            JsonItem("user_agent", ("user_agent",), FINGERPRINT,
+                     "THE WITNESS — see the peet entry."),
+            JsonItem("ja4", ("ja4",), FINGERPRINT),
+            JsonItem("ja3n_hash", ("ja3n_hash",), FINGERPRINT,
+                     "Normalised JA3. ja3_hash itself is not read on either "
+                     "tier: it moves with extension order."),
+            JsonItem("akamai_hash", ("akamai_hash",), FINGERPRINT),
+            JsonItem("akamai_text", ("akamai_text",), FINGERPRINT),
+        ),
+    ),
+    Checker(
+        id=_engine_id("tools.scrapfly.io"),
+        url="https://tools.scrapfly.io/api/fp/anything",
+        tier=TIER_BROWSER,
+        items=(
+            JsonItem("user_agent", ("headers", "user-agent"), FINGERPRINT,
+                     "THE WITNESS. scrapfly echoes the request headers rather "
+                     "than publishing a top-level user_agent, so the witness "
+                     "is read from there — the same evidence by a different "
+                     "path."),
+            JsonItem("ja4", ("tls", "ja4"), FINGERPRINT),
+            JsonItem("ja3n", ("tls", "ja3"), FINGERPRINT),
+            JsonItem("akamai_hash", ("http2", "akamai_fingerprint"),
+                     FINGERPRINT),
+        ),
+        note_unreachable=(
+            "Did not answer through the mobile exit on 2026-08-21 (the SOCKS5 "
+            "connection could not be completed). Kept in the matrix and "
+            "recorded as UNOBTAINABLE per run rather than dropped."
+        ),
+    ),
+)
+
+
 # The address the ENGINE was observed leaving through — the browser tier's own
 # proof, and a row rather than a belief.
 #
@@ -604,7 +715,7 @@ UNREADABLE_CHECKERS: "tuple[Checker, ...]" = (
 
 
 CHECKERS: "tuple[Checker, ...]" = (
-    JSON_CHECKERS + BROWSER_CHECKERS + UNREADABLE_CHECKERS
+    JSON_CHECKERS + BROWSER_CHECKERS + ENGINE_TLS_CHECKERS + UNREADABLE_CHECKERS
 )
 
 
@@ -625,6 +736,7 @@ __all__ = [
     "CHECKERS",
     "Checker",
     "ENGINE_EXIT_CHECKER",
+    "ENGINE_TLS_CHECKERS",
     "EXIT",
     "FINGERPRINT",
     "HARNESS",

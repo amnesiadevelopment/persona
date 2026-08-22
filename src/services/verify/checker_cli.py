@@ -37,7 +37,12 @@ import datetime as _dt
 import platform
 import sys
 
-from .checkers import BROWSER_CHECKERS, JSON_CHECKERS, UNREADABLE_CHECKERS
+from .checkers import (
+    BROWSER_CHECKERS,
+    ENGINE_TLS_CHECKERS,
+    JSON_CHECKERS,
+    UNREADABLE_CHECKERS,
+)
 from .exit_guard import DEFAULT_CREDENTIAL_PATH, ExitNotProven, prove_exit, redact
 from .matrix import (
     build_record,
@@ -66,6 +71,13 @@ def _engine_label() -> str:
     a reading taken under a different engine build must not claim this one.
     Falls back to a name that says it is unknown rather than to a plausible
     guess.
+
+    WHICH ENGINE, NAMED — not "persona" (PS-62). persona ships a patched
+    Firefox AND a fingerprint-chromium, and they do NOT present the same TLS
+    handshake. A record that read one and labelled the rows "persona" would
+    repeat this ticket's own defect one level up: a true reading about one
+    engine, published under a name that claims both. So the label carries the
+    build, and the header note below says plainly which of the two was read.
     """
     try:
         from invisible_playwright.constants import BINARY_VERSION
@@ -134,7 +146,12 @@ def _cmd_read(args: argparse.Namespace) -> int:
     before = len(readings)
     if args.skip_browser:
         skipped_tiers.append("browser")
-        for checker in BROWSER_CHECKERS:
+        # The engine-TLS checkers are skipped with the browser tier because
+        # they ARE the browser tier's transport — same launch, same engine. A
+        # skipped tier keeps its full width, so they are recorded here too:
+        # "persona's TLS fingerprint was not read" is the exact fact PS-62
+        # exists because the record previously failed to state.
+        for checker in BROWSER_CHECKERS + ENGINE_TLS_CHECKERS:
             readings.extend(
                 readings_for_unread_checker(
                     checker, "tier skipped by --skip-browser"
@@ -150,7 +167,13 @@ def _cmd_read(args: argparse.Namespace) -> int:
         # required to read the JSON tier or to print --help.
         from .browser_tier import read_browser_tier
 
-        readings.extend(read_browser_tier(proxy_url, seed=args.seed))
+        readings.extend(
+            read_browser_tier(
+                proxy_url,
+                tls_checkers=ENGINE_TLS_CHECKERS,
+                seed=args.seed,
+            )
+        )
         print(
             f"browser tier: {len(readings) - before} readings",
             file=sys.stderr,
@@ -184,7 +207,7 @@ def _cmd_read(args: argparse.Namespace) -> int:
 
 
 def _cmd_list(args: argparse.Namespace) -> int:
-    for checker in JSON_CHECKERS + BROWSER_CHECKERS:
+    for checker in JSON_CHECKERS + BROWSER_CHECKERS + ENGINE_TLS_CHECKERS:
         print(f"{checker.tier}\t{checker.id}\t{len(checker.items)} item(s)")
     for checker in UNREADABLE_CHECKERS:
         print(f"{checker.tier}\t{checker.id}\t{checker.unreadable_reason}")
