@@ -6,6 +6,13 @@ re-indexed a large share of EXISTING profiles onto different hardware, under
 their live cookie jars. The live divisors made it sharp: ``IOS_PRESETS`` is 2, so
 one new iPhone re-indexed roughly two-thirds of iOS profiles.
 
+WHAT "EVERY" RANGES OVER. That sentence is a universal, and an earlier revision
+of this file stated it while covering only some of the pools — a review falsified
+it by finding two live ones with no coverage here at all. The enumerated set of
+seven pick sites, and the sweep that derives it, live in the
+``hardware_generation`` module docstring; this file is the measurement half, and
+there is a section below per site. If you add a pick site, it needs both.
+
 HOW THIS FILE TESTS IT, AND WHY THAT SHAPE. The ticket is explicit that a test
 asserting "the code has a stability mechanism" passes against an implementation
 that still re-indexes. So nothing here greps for a mechanism. Every test below
@@ -31,6 +38,7 @@ profile of the NEW generation can actually reach the new entry.
 
 import json
 import pathlib
+import re
 import shutil
 import subprocess
 
@@ -46,9 +54,12 @@ from src.services.browser import device_ext, gpu_ext
 from src.services.browser.device_ext import build_device_extension
 from src.services.browser.device_presets import (
     ANDROID_PRESETS,
+    ANDROID_TOUCH_POINTS,
     IOS_PRESETS,
     DevicePreset,
+    TouchPointsEntry,
     pick_preset,
+    pick_touch_points,
     presets_for,
 )
 from src.services.browser.gpu_ext import build_gpu_extension
@@ -380,6 +391,208 @@ def test_appended_screen_resolution_is_reachable_by_a_new_profile(
         "no seed in 0..59 was picked onto the appended resolution at the new "
         "generation — the append is inert and the list cannot be maintained"
     )
+
+
+# --------------------------------------------------------------------------
+# device_ext.py — the cores/RAM pool behind hardwareConcurrency + deviceMemory
+# --------------------------------------------------------------------------
+#
+# The fifth and sixth pick sites. device_ext.py carried the (cores, GB-RAM) pool
+# TWICE as hand-maintained JS literals: once in the page-realm IIFE (`HCMEM`) and
+# once inside `applyHwPatch` (`P`), the worker-realm twin. Both were
+# `pool[h(...) % pool.length]` over a 6-entry list, so appending one pair
+# re-indexed a large majority of existing profiles — measured at 82% here before
+# the fix, on values a page reads directly as navigator.hardwareConcurrency and
+# navigator.deviceMemory. That is the same sharpness as the IOS_PRESETS 2 -> 3
+# case the ticket leads with, not a large-pool tail perturbation.
+#
+# ONE PRECISION THAT DECIDES THE FIX'S SHAPE: `applyHwPatch` runs AFTER the
+# top-level IIFE and re-defines both properties from its own pool, so `P` is the
+# divisor the page actually ends up with and `HCMEM` is effectively shadowed.
+# Fixing only `HCMEM` would change nothing observable — which is exactly why
+# these tests read the value out of an executed extension rather than checking
+# that the source mentions a generation. Both realms now render from the single
+# Python-side CORES_MEMORY list, so they cannot drift apart by hand either.
+
+_HW_READ = r"""
+const src = require('fs').readFileSync(process.argv[2], 'utf8');
+const sandbox = {};
+require('vm').createContext(sandbox);
+require('vm').runInContext(
+  "globalThis.self = globalThis; globalThis.window = globalThis; " +
+  "globalThis.top = globalThis; " +
+  "globalThis.outerWidth = 800; globalThis.innerWidth = 800; " +
+  "globalThis.outerHeight = 600; globalThis.innerHeight = 600; " +
+  "globalThis.screen = { width: 1, height: 1, availWidth: 1, availHeight: 1," +
+  " colorDepth: 1, pixelDepth: 1 };" +
+  // Sentinels: if the extension fails to patch, we read these back and fail
+  // loudly rather than silently comparing two identical unpatched values.
+  "globalThis.navigator = { hardwareConcurrency: -1, deviceMemory: -1 };",
+  sandbox
+);
+require('vm').runInContext(src, sandbox);
+console.log(JSON.stringify(require('vm').runInContext(
+  "({ cores: navigator.hardwareConcurrency, memory: navigator.deviceMemory })",
+  sandbox
+)));
+"""
+
+# The append a maintainer's commit would make: one more plausible modern pair,
+# tagged with the bumped generation. Appended to the REAL CORES_MEMORY list, the
+# way a maintainer would edit it.
+_APPENDED_PAIR = device_ext.CoresMemoryEntry(24, 32, since=NEXT_GEN)
+
+
+def _hw_seen(tmp_path, seed, generation, tag):
+    """What a page actually reads for (hardwareConcurrency, deviceMemory)."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    d = pathlib.Path(
+        build_device_extension(seed, str(tmp_path / f"{tag}{seed}"), generation)
+    )
+    harness = d / "hwharness.js"
+    harness.write_text(_HW_READ, encoding="utf-8")
+    out = subprocess.run(
+        [node, str(harness), str(d / "device.js")],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert out.returncode == 0, out.stderr
+    seen = json.loads(out.stdout)
+    assert seen["cores"] != -1 and seen["memory"] != -1, (
+        "the extension did not patch navigator, so this measured nothing"
+    )
+    return (seen["cores"], seen["memory"])
+
+
+def _append_cores_memory(monkeypatch):
+    monkeypatch.setattr(
+        device_ext, "CORES_MEMORY", device_ext.CORES_MEMORY + [_APPENDED_PAIR]
+    )
+
+
+# Fewer seeds than SEEDS because each one spawns a node process; still wider than
+# the 6-entry pool's length, so every residue class is represented and a 6 -> 7
+# divisor change cannot hide in an unsampled gap.
+_HW_SEEDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 42, 4154289201]
+
+
+def test_appending_a_cores_memory_pair_moves_no_existing_profile(
+    tmp_path, monkeypatch
+):
+    # Measured end to end: build the extension, EXECUTE it, read what a page
+    # would see for navigator.hardwareConcurrency / deviceMemory, append to the
+    # real pool, re-read, demand identical values. Before the fix this moved 82%.
+    before = {s: _hw_seen(tmp_path, s, 0, "hwbefore") for s in _HW_SEEDS}
+    _append_cores_memory(monkeypatch)
+    after = {s: _hw_seen(tmp_path, s, 0, "hwafter") for s in _HW_SEEDS}
+
+    assert after == before
+    # And nobody was moved ONTO the new pair — the positive form of the same
+    # claim, which catches a filter that lets the entry through at generation 0.
+    assert 24 not in {cores for cores, _ in after.values()}
+
+
+def test_appended_cores_memory_pair_is_reachable_by_a_new_profile(
+    tmp_path, monkeypatch
+):
+    # The counterweight: an append nobody can ever be picked onto would satisfy
+    # "nothing moved" while making the list unmaintainable.
+    _append_cores_memory(monkeypatch)
+    for s in range(60):
+        if _hw_seen(tmp_path, s, NEXT_GEN, "hwnew")[0] == 24:
+            return
+    pytest.fail(
+        "no seed in 0..59 was picked onto the appended cores/RAM pair at the "
+        "new generation — the append is inert and the list cannot be maintained"
+    )
+
+
+def test_worker_realm_reports_the_same_machine_as_the_page(tmp_path, monkeypatch):
+    # The two realms render from ONE list, so they cannot disagree. A page/worker
+    # mismatch in cores or RAM is itself a detection tell, and the duplicated
+    # literals these replaced had to be kept in sync by eye.
+    #
+    # BUILT AT THE NEW GENERATION, WITH AN APPEND, DELIBERATELY. At generation 0
+    # a stale hard-coded literal and a correctly-filtered pool are byte-identical,
+    # so a generation-0 version of this test passes against a realm that was never
+    # wired to CORES_MEMORY at all — it did, during falsification. Appending and
+    # building at NEXT_GEN is what makes the two forms diverge: the filtered pool
+    # has the new pair, a stale literal does not.
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    _append_cores_memory(monkeypatch)
+    d = pathlib.Path(
+        build_device_extension(42, str(tmp_path / "realms"), NEXT_GEN)
+    )
+    js = (d / "device.js").read_text(encoding="utf-8")
+    pools = re.findall(r"var (?:HCMEM|P)\s*=\s*(\[\[.*?\]\])", js)
+    assert len(pools) == 2, (
+        f"expected both realm pools in the emitted script, found {len(pools)}"
+    )
+    page, worker = json.loads(pools[0]), json.loads(pools[1])
+    assert page == worker, (
+        "the page and worker realms rendered DIFFERENT cores/RAM pools — one of "
+        "them is not reading CORES_MEMORY, so they will drift apart by hand"
+    )
+    # Both must actually track the list, not merely agree with each other: two
+    # identical stale literals would satisfy the equality above.
+    assert list(_APPENDED_PAIR.pair) in page, (
+        "neither realm picked up the appended pair at the new generation — the "
+        "pools are hard-coded rather than rendered from CORES_MEMORY"
+    )
+
+
+def test_every_shipped_cores_memory_entry_is_generation_zero():
+    # Same promise as the other lists: generation 0's pool must be the entire
+    # shipped list, in shipped order, hence the shipped divisor.
+    assert all(e.since == 0 for e in device_ext.CORES_MEMORY)
+    assert device_ext.cores_memory_for_generation(0) == [
+        e.pair for e in device_ext.CORES_MEMORY
+    ]
+
+
+# --------------------------------------------------------------------------
+# device_presets.py — Android maxTouchPoints
+# --------------------------------------------------------------------------
+#
+# The seventh pick site, named by nobody: `(5, 10)[seed % 2]` in process.py.
+# A bare tuple literal rather than a curated list, which is why it reads as
+# incidental — but the divisor is still a pool length and the value is still
+# page-visible hardware (navigator.maxTouchPoints). Measured: appending a third
+# plausible value moved 50% of Android profiles. iOS is a constant 5 with no
+# pool, so it has nothing to re-index.
+
+
+def test_appending_a_touch_points_value_moves_no_existing_android_profile(
+    monkeypatch,
+):
+    before = {s: pick_touch_points(s, 0) for s in SEEDS}
+    monkeypatch.setattr(
+        "src.services.browser.device_presets.ANDROID_TOUCH_POINTS",
+        ANDROID_TOUCH_POINTS + [TouchPointsEntry(2, since=NEXT_GEN)],
+    )
+    after = {s: pick_touch_points(s, 0) for s in SEEDS}
+
+    assert after == before
+    assert 2 not in set(after.values())
+
+
+def test_appended_touch_points_value_is_reachable_by_a_new_profile(monkeypatch):
+    monkeypatch.setattr(
+        "src.services.browser.device_presets.ANDROID_TOUCH_POINTS",
+        ANDROID_TOUCH_POINTS + [TouchPointsEntry(2, since=NEXT_GEN)],
+    )
+    assert any(pick_touch_points(s, NEXT_GEN) == 2 for s in SEEDS), (
+        "no seed was picked onto the appended touch-points value at the new "
+        "generation — the append is inert"
+    )
+
+
+def test_every_shipped_touch_points_entry_is_generation_zero():
+    assert all(e.since == 0 for e in ANDROID_TOUCH_POINTS)
+    assert visible_entries(ANDROID_TOUCH_POINTS, 0) == ANDROID_TOUCH_POINTS
 
 
 # --------------------------------------------------------------------------

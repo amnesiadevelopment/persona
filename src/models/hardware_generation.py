@@ -10,6 +10,30 @@ list maintenance. The live divisors made it sharp rather than marginal:
 ``IOS_PRESETS`` is 2, so appending one iPhone moves the divisor 2 -> 3 and
 re-indexes roughly two-thirds of iOS profiles.
 
+THE PICK SITES, ENUMERATED. An earlier revision of this docstring asserted the
+sentence above as a universal without listing what it ranged over, and a review
+falsified it: two live pools were missing. So the set is written out here, and
+the claim is that THESE SEVEN are all of them:
+
+  1. ``device_presets.pick_preset``   — ANDROID_PRESETS (3)
+  2. ``device_presets.pick_preset``   — IOS_PRESETS (2)
+  3. ``device_presets.pick_touch_points`` — ANDROID_TOUCH_POINTS (2), consumed
+     by process.py; was a bare ``(5, 10)[seed % 2]`` tuple, 50% moved on append
+  4. ``resolution.resolve_resolution`` — DESKTOP_RESOLUTIONS (9)
+  5. ``gpu_ext`` ``pick()``            — WIN/MAC/ANDROID/LINUX GPU pools
+  6. ``device_ext`` ``ALL_RES``        — the JS copy of the desktop resolutions,
+     which is what actually sets screen.width for an "auto" profile
+  7. ``device_ext`` ``CORES_MEMORY``   — hardwareConcurrency + deviceMemory,
+     rendered into BOTH realms (page + the applyHwPatch worker twin); 82% moved
+
+HOW THAT SET WAS DERIVED, so it can be re-derived rather than trusted: the
+defect is a pool index whose divisor is a POOL LENGTH, so the sweep is for
+``% len(``, ``% <arr>.length``, any indexing of a literal by a seed expression,
+and the callers of any generic ``pick()`` helper (a helper hides its call sites
+from a ``%`` grep — that is how sites 3 and 7 were missed). ``_resolve_seed`` in
+invisible_launch.py matches a ``%`` grep but is NOT in this class: its divisor is
+the constant ``2**31`` and it derives a seed rather than indexing a pool.
+
 THE MECHANISM. Every entry carries the generation it was ADDED IN (``since``),
 and every profile carries the generation it was CREATED IN (frozen, exactly like
 its fingerprint seed). A profile only ever sees entries whose ``since`` is <= its

@@ -174,6 +174,47 @@ def pick_preset(seed: int, os_type: str, generation: int) -> DevicePreset:
     return pool[(int(seed) & 0xFFFFFFFF) % len(pool)]
 
 
+@dataclass(frozen=True)
+class TouchPointsEntry:
+    """One plausible Android maxTouchPoints value, tagged with the generation it
+    was added in.
+
+    ``since`` is a promise to the profiles already pinned to this entry, not
+    bookkeeping: never renumber it on a shipped entry. See
+    ``hardware_generation.py``.
+    """
+
+    points: int
+    since: int = 0
+
+
+# navigator.maxTouchPoints for an Android profile. iOS is a constant 5 and has no
+# pool, so it is not picked and cannot be re-indexed.
+#
+# ADDING ONE: give it `since=<CURRENT_HARDWARE_GENERATION after you bump it>` and
+# leave every entry below untouched.
+ANDROID_TOUCH_POINTS: list[TouchPointsEntry] = [
+    TouchPointsEntry(5),
+    TouchPointsEntry(10),
+]
+
+
+def pick_touch_points(seed: int, generation: int) -> int:
+    """Deterministically choose an Android profile's maxTouchPoints.
+
+    A constant 5 on every Android profile is a weak cluster tell, so this is
+    spread across profiles but stable per profile. The divisor is the length of
+    the profile's OWN generation's pool, so appending a third value cannot move
+    an existing profile — it used to move half of them.
+
+    ``generation`` is REQUIRED and has no default, for the same reason as
+    ``pick_preset``: a default would be a silent guess about which pool a profile
+    belongs to.
+    """
+    pool = visible_entries(ANDROID_TOUCH_POINTS, generation)
+    return pool[(int(seed) & 0xFFFFFFFF) % len(pool)].points
+
+
 def get_preset(key: str) -> DevicePreset | None:
     return _ALL.get(key)
 
