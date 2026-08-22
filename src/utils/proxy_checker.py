@@ -90,6 +90,17 @@ SOCKS_SCHEMES = frozenset(s for s in PROXY_SCHEMES if s.startswith("socks"))
 # (hostile endpoint or a MITM on the exit), so an unbounded read is a memory DoS.
 _MAX_GEO_BODY = 256 * 1024
 
+#: Hard cap for the RELEASE-METADATA response, which is a different shape of
+#: document than the geo probe and needs its own headroom: the Firefox releases
+#: fetch asks for `?per_page=30` and each release enumerates its assets, so the
+#: JSON is orders of magnitude larger than a geo answer (measured 129 KB against
+#: the live endpoint at the time of writing — already half of _MAX_GEO_BODY, and
+#: it grows with every published release). Reusing the geo cap would have worked
+#: until some future release quietly crossed it and turned the unattended update
+#: check into an intermittent failure. Still a BOUND, not an exemption: this body
+#: comes from a third party over a transport the operator may not control.
+_MAX_RELEASE_BODY = 4 * 1024 * 1024
+
 #: User-Agent for requests that travel to a THIRD-PARTY endpoint on the
 #: operator's behalf (the provider rotate endpoint). Deliberately neutral: the
 #: rotate path used to send `User-Agent: persona`, which self-identified the
@@ -394,23 +405,34 @@ async def _socks4_connect(
         raise ConnectionError(f"proxy refused CONNECT (reply {reply[1]})")
 
 
-async def _read_http_body(reader: asyncio.StreamReader, headers: dict) -> bytes:
+async def _read_http_body(
+    reader: asyncio.StreamReader, headers: dict, max_body: int = _MAX_GEO_BODY
+) -> bytes:
+    """Read the response body, refusing one larger than `max_body`.
+
+    The cap is a PARAMETER rather than a constant because this reader now
+    serves two response shapes with genuinely different sizes. It defaults to
+    _MAX_GEO_BODY so the geo probe — the caller the cap was sized for — is
+    unchanged; the release-metadata caller passes its own (see
+    _MAX_RELEASE_BODY). The bound itself is never optional: the body is still
+    attacker-influenced on both paths, so an unbounded read stays impossible.
+    """
     if headers.get("transfer-encoding", "").lower().startswith("chunked"):
         out = bytearray()
         while True:
             size = int((await reader.readuntil(b"\r\n")).split(b";")[0].strip(), 16)
             if size == 0:
                 break
-            if len(out) + size > _MAX_GEO_BODY:
-                raise ValueError("geo response too large")
+            if len(out) + size > max_body:
+                raise ValueError("response too large")
             out += await reader.readexactly(size)
             await reader.readexactly(2)  # trailing CRLF
         return bytes(out)
     length = headers.get("content-length", "")
     if length.isdigit():
         n = int(length)
-        if n > _MAX_GEO_BODY:
-            raise ValueError("geo response too large")
+        if n > max_body:
+            raise ValueError("response too large")
         return await reader.readexactly(n)
     # Neither Content-Length nor chunked — legal under the `Connection: close`
     # this client asks for, so the body runs to EOF. It must be READ to EOF:
@@ -424,8 +446,8 @@ async def _read_http_body(reader: asyncio.StreamReader, headers: dict) -> bytes:
         if not chunk:
             break
         out += chunk
-        if len(out) > _MAX_GEO_BODY:  # enforced every pass, not just at the end
-            raise ValueError("geo response too large")
+        if len(out) > max_body:  # enforced every pass, not just at the end
+            raise ValueError("response too large")
     return bytes(out)
 
 
@@ -476,15 +498,32 @@ async def _http_get_json(
     writer: asyncio.StreamWriter,
     host: str,
     path: str,
-) -> tuple[int, dict | None]:
-    """Minimal HTTP/1.1 GET over an already-established (TLS) stream."""
+    user_agent: str = "persona-proxy-check/1.0",
+    accept: str = "application/json",
+    max_body: int = _MAX_GEO_BODY,
+) -> tuple[int, dict | list | None]:
+    """Minimal HTTP/1.1 GET over an already-established (TLS) stream.
+
+    `user_agent` is a PARAMETER with the geo probe's value as its default, not
+    a hardcoded constant, because the two callers reach different actors and
+    must not identify persona the same way. The geo endpoint is one WE chose
+    and the tunnel carries the request to it, so `persona-proxy-check/1.0` is
+    deliberately left alone there. The release-metadata caller reaches a THIRD
+    PARTY (api.github.com), where that string would self-identify the tool on
+    every unattended poll — it passes _NEUTRAL_USER_AGENT instead. Defaulting
+    rather than requiring keeps every existing caller byte-identical.
+
+    A JSON array is a valid top-level document and the releases endpoint
+    returns one, so a list is returned as-is; only a non-JSON or scalar body
+    becomes None.
+    """
     status, headers = await _http_get_head(
-        reader, writer, host, path, "persona-proxy-check/1.0", "application/json"
+        reader, writer, host, path, user_agent, accept
     )
     if status != 200:
         return status, None
-    data = json.loads(await _read_http_body(reader, headers))
-    return status, (data if isinstance(data, dict) else None)
+    data = json.loads(await _read_http_body(reader, headers, max_body))
+    return status, (data if isinstance(data, (dict, list)) else None)
 
 
 async def _http_get_status(
@@ -594,12 +633,61 @@ async def _close_stream(writer: asyncio.StreamWriter) -> None:
 async def _geo_via_socks(
     proxy_config: dict, scheme: str, url: str
 ) -> tuple[int, dict | None]:
-    """Fetch the geo endpoint through a real SOCKS handshake."""
+    """Fetch the geo endpoint through a real SOCKS handshake.
+
+    NARROWED BACK TO `dict | None` AT THIS CALL SITE, deliberately. The shared
+    _http_get_json widened to `dict | list | None` for the release-metadata
+    caller, which legitimately receives a top-level JSON array. The geo probe
+    does not: check_proxy's 200-handler treats a non-object body as the
+    specific "Proxy geo lookup failed", and that arm is reached only via None.
+    Letting a list through here would sail past the None check and trip
+    `.get()` into the blanket handler's generic "Proxy check failed" instead —
+    so the narrowing is what keeps that documented behaviour, and this
+    signature, true. Narrow here rather than in the shared helper: the other
+    caller needs the list.
+    """
     reader, writer, target_host, path = await _open_socks_stream(
         proxy_config, scheme, url
     )
     try:
-        return await _http_get_json(reader, writer, target_host, path)
+        status, data = await _http_get_json(reader, writer, target_host, path)
+        return status, (data if isinstance(data, dict) else None)
+    finally:
+        await _close_stream(writer)
+
+
+async def _json_via_socks(
+    proxy_config: dict,
+    scheme: str,
+    url: str,
+    user_agent: str,
+    max_body: int,
+    accept: str = "application/json",
+) -> tuple[int, dict | list | None]:
+    """ONE JSON GET through a real SOCKS handshake.
+
+    The same tunnel _geo_via_socks opens, differing only in what it sends as
+    its User-Agent, what representation it asks for, and how much body it will
+    buffer — which is precisely why _open_socks_stream and _http_get_json are
+    shared rather than copied. In particular the target host reaches the proxy
+    as a DOMAIN NAME (atyp 0x03) and is never resolved here, so routing
+    persona's own release-metadata fetch through a proxy does not emit a DNS
+    query for api.github.com from the operator's real resolver.
+
+    `accept` is a PARAMETER for the same reason `user_agent` is, and the two
+    must be threaded together: the caller above this one decides what to ask
+    for, and a header honoured on the direct branch but silently replaced here
+    would mean turning the egress policy ON changes the request on the wire.
+    Its default is the geo probe's value, so every pre-existing caller stays
+    byte-identical.
+    """
+    reader, writer, target_host, path = await _open_socks_stream(
+        proxy_config, scheme, url
+    )
+    try:
+        return await _http_get_json(
+            reader, writer, target_host, path, user_agent, accept, max_body
+        )
     finally:
         await _close_stream(writer)
 
@@ -863,6 +951,143 @@ def fetch_status_via_proxy_sync(
             loop.close()
     except Exception:
         return False, "rotate request failed"
+
+
+async def fetch_json_via_proxy(
+    proxy_str: str,
+    url: str,
+    timeout: int,
+    user_agent: str = _NEUTRAL_USER_AGENT,
+    max_body: int = _MAX_RELEASE_BODY,
+    accept: str = "application/json",
+) -> dict | list:
+    """GET `url` THROUGH `proxy_str` and return the parsed JSON document.
+
+    The transport half of persona's OWN egress policy (see services/egress.py,
+    which is the only thing that decides whether this is called at all). Its
+    contract is deliberately the same one fetch_status_via_proxy states: the
+    request goes through the configured transport or it is NOT SENT. There is
+    no direct-send fallback anywhere in this function, because a fallback is
+    exactly the silent leak the policy exists to prevent — an operator who
+    configured a proxy and got a real-IP request instead would be worse off
+    than one who configured nothing, since they would believe they were covered.
+
+    Two properties are inherited from the shared tunnel rather than re-argued:
+
+    * SOCKS schemes take a REAL SOCKS handshake. `urllib`'s env-var proxy
+      support sends a plain `CONNECT host:443 HTTP/1.1` at a SOCKS port, which
+      a SOCKS server waiting for a \\x05 greeting never answers — the same
+      defect class _is_socks_scheme documents for aiohttp. Routing through here
+      is what makes socks5 (persona's default scheme) actually work.
+    * The target is resolved AT THE EXIT, as a domain name (atyp 0x03), so no
+      DNS query for the metadata host leaves the operator's real resolver.
+
+    Raises on every failure — a caller must never mistake "could not fetch"
+    for an empty release list, which would read as "no update available" and
+    silently freeze the update path. `user_agent` defaults to the NEUTRAL one
+    because this reaches a THIRD PARTY (api.github.com): the geo probe's
+    `persona-proxy-check/1.0` would self-identify the tool on every poll.
+
+    `accept` is threaded for the same reason and MUST stay beside it: the
+    policy's whole claim is that one authority decides how persona's requests
+    leave, so the request this branch puts on the wire has to be the one the
+    caller asked for — a header honoured on egress.py's direct branch and
+    replaced with a hardcoded value here would mean switching the policy on
+    silently changes what is sent, which is the disagreement-with-itself the
+    single authority exists to prevent. It reaches BOTH sub-branches below
+    (SOCKS and aiohttp), because a header threaded through only one of them
+    would just relocate the same drift. The default is the geo probe's value,
+    so callers that do not pass one are byte-identical.
+    """
+    proxy_config = parse_proxy(proxy_str)
+    if not proxy_config:
+        raise ValueError("request not sent: no usable proxy transport")
+
+    scheme = urllib.parse.urlparse(proxy_config["server"]).scheme.lower()
+
+    if _is_socks_scheme(scheme):
+        status, data = await asyncio.wait_for(
+            _json_via_socks(proxy_config, scheme, url, user_agent, max_body, accept),
+            timeout,
+        )
+    else:
+        if not AIOHTTP_AVAILABLE:
+            # Fail closed, exactly as the sibling fetches do for this branch:
+            # the only alternative to "not sent" is a direct send on the real
+            # IP, which is the disclosure the policy was configured to stop.
+            raise RuntimeError("request not sent: aiohttp not installed")
+        proxy_url = proxy_config["server"]
+        if "username" in proxy_config:
+            url_scheme, rest = proxy_url.split("://", 1)
+            password = proxy_config.get("password", "")
+            proxy_url = f"{url_scheme}://{proxy_config['username']}:{password}@{rest}"
+        timeout_obj = aiohttp.ClientTimeout(total=timeout)
+        async with aiohttp.ClientSession(timeout=timeout_obj) as session:
+            async with session.get(
+                url,
+                proxy=proxy_url,
+                headers={"User-Agent": user_agent, "Accept": accept},
+            ) as response:
+                status = response.status
+                if status != 200:
+                    data = None
+                else:
+                    # Accumulate to EOF rather than `content.read(max_body+1)`:
+                    # StreamReader.read(n) returns as soon as ANY data is
+                    # buffered, so a body split across TLS records came back
+                    # short and json.loads raised. That is the SAME hazard
+                    # _read_http_body documents for the raw-socket branch, and
+                    # a ~129 KB releases document is the normal path, not an
+                    # edge case — it failed intermittently on segmentation.
+                    # The bound is enforced every pass, so it still refuses an
+                    # oversized body without ever buffering it whole.
+                    buf = bytearray()
+                    while True:
+                        chunk = await response.content.readany()
+                        if not chunk:
+                            break
+                        buf += chunk
+                        if len(buf) > max_body:
+                            raise ValueError("response too large")
+                    data = json.loads(buf)
+
+    if status != 200:
+        raise RuntimeError(f"request failed: HTTP {status}")
+    if not isinstance(data, (dict, list)):
+        raise ValueError("response was not a JSON object or array")
+    return data
+
+
+def fetch_json_via_proxy_sync(
+    proxy_str: str,
+    url: str,
+    timeout: int,
+    user_agent: str = _NEUTRAL_USER_AGENT,
+    max_body: int = _MAX_RELEASE_BODY,
+    accept: str = "application/json",
+) -> dict | list:
+    """Blocking wrapper — both metadata fetches run on background threads.
+
+    Deliberately does NOT swallow exceptions the way fetch_status_via_proxy_sync
+    does: that one returns a (ok, message) verdict where False IS the failure
+    report, while this one returns a document, and the only honest way to say
+    "there is no document" is to raise. Swallowing here would hand the update
+    checker an empty result that reads as "no new release".
+
+    Every parameter is forwarded unchanged — this wrapper's only job is the
+    event loop. `accept` in particular must reach the transport: this is the
+    function egress.py's PROXIED branch calls, so dropping it here would be
+    exactly the direct-vs-proxied header drift the threading exists to close.
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(
+            fetch_json_via_proxy(proxy_str, url, timeout, user_agent, max_body, accept)
+        )
+    finally:
+        loop.close()
+        asyncio.set_event_loop(None)
 
 
 async def check_proxy(

@@ -23,6 +23,12 @@ _LAST_VERSION_KEY = "last_seen_version"
 # normal state) means "launch the newest installed build" — the pin exists
 # only after an explicit revert, and clearing it resumes normal updating.
 _ENGINE_PIN_KEY = "engine_build_pin"
+# How PERSONA'S OWN requests should leave the machine (the release-metadata
+# polls it makes unattended at startup) — NOT a profile's proxy, which lives
+# per-profile in the proxy store. Empty means DIRECT, which is what every
+# existing install has and what this key must keep meaning: see
+# services/egress.py for why the default is deliberately not fail-closed.
+_APP_EGRESS_KEY = "app_egress_proxy"
 
 
 def _path() -> str:
@@ -176,3 +182,29 @@ def set_engine_build_pin(build: str) -> None:
     """Pin launches to `build`, or pass "" to clear the pin and resume normal
     updating (the operator saying "go forward again")."""
     set(_ENGINE_PIN_KEY, str(build or ""))
+
+
+def app_egress_proxy() -> str:
+    """The proxy persona's OWN unattended requests must leave through, or "" to
+    send them directly.
+
+    "" is the default AND the behaviour every existing install already has, and
+    that is deliberate rather than lax. The charter's fail-closed rule governs a
+    PROFILE's declared geography, where refusing a launch costs one launch; here
+    a fail-closed default would mean no persona could check for updates until
+    its operator configured a proxy — bricking the update path, security updates
+    included, for every install that predates this key. Fail-closed applies ONCE
+    a value is set, and there it is genuine: see services/egress.py, where a
+    configured-but-unusable transport means the request is NOT SENT rather than
+    silently falling back to the real IP.
+    """
+    v = get(_APP_EGRESS_KEY, "")
+    return v.strip() if isinstance(v, str) else ""
+
+
+def set_app_egress_proxy(proxy: str) -> None:
+    """Set (or, with "", clear) the app-egress proxy. Stored stripped so a
+    stray-whitespace paste cannot become a value that is truthy here but
+    unparseable at the transport — the difference between "direct" and "refuse
+    to send", which must never turn on invisible characters."""
+    set(_APP_EGRESS_KEY, str(proxy).strip())
