@@ -49,6 +49,7 @@ from src.services.verify.matrix_diff import (
     HARNESS_SECTION,
     HOST_MACHINE_DIFFERS,
     HOST_MOVED,
+    MACHINE_EXPLAINED,
     NotARecord,
     REWORDED,
     RecordUnreadable,
@@ -517,6 +518,115 @@ def test_the_seed_override_reports_context_never_a_coupling(record):
     assert entry["classification"] == SEED_EXPLAINED
     assert entry["section"] != FINDINGS
     assert findings(entries) == []
+
+
+# --- the declared machine (PS-69 landed this field mid-ticket) --------------
+#
+# PS-69 widened the reader to both engines and more than one DECLARED machine,
+# adding `declared_machine` to the header. Its own reasoning is the argument
+# these tests encode: "without it in the header a later comparison cannot tell
+# a real coupling from a different configuration, which is exactly the argument
+# that put the seed here."
+#
+# Note the seam these tests sit on: PS-69 added the field WITHOUT bumping
+# SCHEMA_VERSION, so a pre-PS-69 record and a post-PS-69 one both say
+# `schema_version: 1` and the schema guard cannot separate them. That is why
+# the missing-field cases below are handled per-side rather than by the seed's
+# "absent on either side refuses" rule.
+
+
+def test_different_declared_machines_are_REFUSED_not_diffed(record):
+    """Otherwise EVERY fingerprint row across two machines reads as a coupling.
+
+    The declared machine is the spine of a presented identity — it constrains
+    GPU strings, voices, fonts, screen conventions, platform flags, the user
+    agent and client hints — so those rows were never supposed to match.
+    """
+    before = mutate(record)
+    after = mutate(record)
+    before["declared_machine"] = "windows"
+    after["declared_machine"] = "macos"
+
+    with pytest.raises(ComparisonNotControlled) as excinfo:
+        compare_records(before, after)
+    assert "machine" in str(excinfo.value).lower()
+
+
+def test_the_machine_override_reports_context_never_a_coupling(record):
+    """The same rule as the seed override: a flag may not manufacture a finding."""
+    before = mutate(record)
+    after = mutate(record)
+    before["declared_machine"] = "windows"
+    after["declared_machine"] = "macos"
+    row(before, A_FINGERPRINT_ROW)["value"] = True
+    row(after, A_FINGERPRINT_ROW)["value"] = False
+
+    entries = compare_records(before, after, allow_different_machine=True)
+    entry = entry_for(entries, A_FINGERPRINT_ROW)
+
+    assert entry["classification"] == MACHINE_EXPLAINED
+    assert entry["section"] != FINDINGS
+    assert findings(entries) == []
+
+
+def test_two_records_that_BOTH_predate_the_field_still_compare(record):
+    """The committed record has no `declared_machine` — it is the whole corpus.
+
+    Refusing on a field neither record carries would make the comparator
+    useless on every reading taken before PS-69, including the only one that
+    exists.
+    """
+    assert "declared_machine" not in record
+
+    compare_records(record, mutate(record))  # must not raise
+
+
+def test_the_field_present_on_only_ONE_side_is_refused(record):
+    """The `None == None` error, one field over — and the reason it matters here.
+
+    PS-69 did not bump SCHEMA_VERSION, so this pair is NOT caught by the schema
+    guard: both records say version 1. Treating "no field" as "same machine"
+    would silently compare a pre-PS-69 reading against a post-PS-69 one and
+    report a configuration change as a coupling.
+    """
+    after = mutate(record)
+    after["declared_machine"] = "macos"
+
+    with pytest.raises(ComparisonNotControlled) as excinfo:
+        compare_records(record, after)
+    assert "machine" in str(excinfo.value).lower()
+
+
+def test_the_same_declared_machine_compares_without_an_override(record):
+    before = mutate(record)
+    after = mutate(record)
+    before["declared_machine"] = after["declared_machine"] = "windows"
+
+    compare_records(before, after)  # must not raise
+
+
+def test_the_host_machine_and_the_declared_machine_are_NOT_the_same_question(
+    record,
+):
+    """One laptop can declare Windows or macOS; the two fields are independent.
+
+    `environment` is the host the reading was taken ON and governs host-sorted
+    rows. `declared_machine` is what the profile PRESENTED and governs
+    fingerprint-sorted rows. A report that said "different machines" for both
+    would send a reader to triage the wrong one, so the two notes are worded
+    apart.
+    """
+    before = mutate(record)
+    after = mutate(record)
+    before["declared_machine"] = "windows"
+    after["declared_machine"] = "macos"
+
+    notes = "\n".join(header_notes(before, after))
+
+    assert "DECLARED MACHINE DIFFERS" in notes
+    # Same host both sides, so the host line must NOT claim a difference.
+    assert "same host machine" in notes
+    assert "DIFFERENT HOST MACHINES" not in notes
 
 
 def test_different_engine_builds_are_REFUSED_not_diffed(record):

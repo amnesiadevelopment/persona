@@ -115,6 +115,13 @@ UNSORTED_MOVED = "unsorted-moved"
 #: the operator overrode the refusal. Not a coupling: the engine's fingerprint
 #: is seed-derived, so this is the expected consequence of the override.
 SEED_EXPLAINED = "seed-explained"
+#: A ``fingerprint`` row moved, but the two records DECLARED DIFFERENT MACHINES
+#: and the operator overrode the refusal. Not a coupling: the declared machine
+#: is the spine of a presented identity — it constrains GPU strings, voices,
+#: fonts, screen conventions, platform flags, the user agent and client hints —
+#: so those rows were never supposed to match. Same shape as SEED_EXPLAINED,
+#: kept distinct so the report names WHICH configuration explains the movement.
+MACHINE_EXPLAINED = "machine-explained"
 #: An ``exit`` row moved. Expected — the exit rotates by design.
 EXIT_ROTATED = "exit-rotated"
 #: A ``host`` row moved between readings from two DIFFERENT machines.
@@ -149,15 +156,16 @@ _RANK = {
     HOST_MOVED: 2,
     UNSORTED_MOVED: 3,
     SEED_EXPLAINED: 4,
-    EXIT_ROTATED: 5,
-    HOST_MACHINE_DIFFERS: 6,
-    HARNESS_MOVED: 7,
-    REWORDED: 8,
-    COVERAGE_LOST: 9,
-    COVERAGE_REGAINED: 10,
-    UNREAD_BOTH: 11,
-    APPEARED: 12,
-    VANISHED: 13,
+    MACHINE_EXPLAINED: 5,
+    EXIT_ROTATED: 6,
+    HOST_MACHINE_DIFFERS: 7,
+    HARNESS_MOVED: 8,
+    REWORDED: 9,
+    COVERAGE_LOST: 10,
+    COVERAGE_REGAINED: 11,
+    UNREAD_BOTH: 12,
+    APPEARED: 13,
+    VANISHED: 14,
 }
 
 # Sections, in the order they render. The grouping is the report's whole
@@ -176,6 +184,7 @@ _SECTION = {
     HOST_MOVED: FINDINGS,
     UNSORTED_MOVED: FINDINGS,
     SEED_EXPLAINED: CONTEXT,
+    MACHINE_EXPLAINED: CONTEXT,
     EXIT_ROTATED: CONTEXT,
     HOST_MACHINE_DIFFERS: CONTEXT,
     REWORDED: CONTEXT,
@@ -211,6 +220,13 @@ _MEANING = {
     SEED_EXPLAINED: (
         "a FINGERPRINT row moved, but the two records used different SEEDS and "
         "the refusal was overridden. The engine's fingerprint is seed-derived, "
+        "so this is NOT evidence of a coupling."
+    ),
+    MACHINE_EXPLAINED: (
+        "a FINGERPRINT row moved, but the two records DECLARED DIFFERENT "
+        "MACHINES and the refusal was overridden. The declared machine is the "
+        "spine of a presented identity — it constrains GPU strings, voices, "
+        "fonts, screen conventions, platform flags, the UA and client hints — "
         "so this is NOT evidence of a coupling."
     ),
     EXIT_ROTATED: "an EXIT row moved. The exit rotates by design — not news.",
@@ -306,6 +322,7 @@ def require_comparable(
     *,
     allow_cross_engine: bool = False,
     allow_different_seed: bool = False,
+    allow_different_machine: bool = False,
 ) -> None:
     """Refuse a comparison whose premise does not hold.
 
@@ -359,12 +376,37 @@ def require_comparable(
       they nor this module can state. Re-read the older record with the current
       reader instead.
 
-    The EXIT, the MACHINE and the SKIPPED TIERS deliberately do NOT refuse.
-    Each of them changes how a difference is READ rather than whether it can be
-    read at all, so each is an annotation on the report (see
-    :func:`compare_records`) — and the exit one especially: two records taken
-    through two exits is the NORMAL case this comparator exists for, not an
-    error.
+    * **The DECLARED MACHINE — overridable** with ``allow_different_machine``,
+      on exactly the argument that put the seed here. PS-69 made this field
+      real: the declared machine is the spine of a presented identity — it
+      constrains GPU strings, voices, fonts, screen conventions, platform
+      flags, the user agent and client hints — so two records taken on
+      different declared machines differ for a reason that has nothing to do
+      with a coupling. Without this guard EVERY fingerprint row across two
+      machines reports as the module's loudest finding.
+
+      Its ABSENCE is handled differently from the seed's, and the difference is
+      forced by a fact about the artifact rather than chosen: **PS-69 added the
+      field without bumping ``SCHEMA_VERSION``**, so a pre-PS-69 record and a
+      post-PS-69 one both say ``schema_version: 1``. The schema guard therefore
+      cannot separate them and this one must:
+
+      - **both missing** — no refusal. Both records predate the field; there is
+        no difference to detect, and refusing would make the tool useless on
+        the one committed record, which is the whole test corpus.
+      - **exactly one missing** — REFUSED. The two were produced by different
+        readers and nothing in either file says whether the machine moved.
+        Silently treating "no field" as "same machine" is the ``None == None``
+        error one field over.
+      - **both present and different** — refused unless overridden, and under
+        the override fingerprint rows report as :data:`MACHINE_EXPLAINED`
+        context rather than as a coupling.
+
+    The EXIT and the SKIPPED TIERS deliberately do NOT refuse. Each changes how
+    a difference is READ rather than whether it can be read at all, so each is
+    an annotation on the report (see :func:`compare_records`) — the exit one
+    especially: two records taken through two exits is the NORMAL case this
+    comparator exists for, not an error.
     """
     if "seed" not in before or "seed" not in after:
         raise ComparisonNotControlled(
@@ -407,6 +449,42 @@ def require_comparable(
             "identity. Re-take both on one build, or pass --allow-cross-engine "
             "to compare anyway (comparing across an engine update is a "
             "legitimate question — but it is a different one)."
+        )
+    # PS-69 added `declared_machine` WITHOUT bumping SCHEMA_VERSION, so the
+    # schema guard below cannot separate a pre-PS-69 record from a post-PS-69
+    # one — both say 1. This guard is what covers that seam, which is why its
+    # missing-field case is handled per-side rather than with the seed's
+    # "absent on either side refuses" rule.
+    before_has_machine = "declared_machine" in before
+    after_has_machine = "declared_machine" in after
+    if before_has_machine != after_has_machine:
+        raise ComparisonNotControlled(
+            "cannot compare: only one record states the DECLARED MACHINE "
+            f"(before: {before.get('declared_machine', '<missing>')!r}, after: "
+            f"{after.get('declared_machine', '<missing>')!r}). The two came "
+            "from different readers, and nothing in either file says whether "
+            "the machine moved — so a moved fingerprint row cannot be told "
+            "apart from a different declared identity. Treating 'no field' as "
+            "'same machine' is exactly the assumption that would report a "
+            "configuration change as a coupling. Re-take the older reading "
+            "with the current reader."
+        )
+    if (
+        before_has_machine
+        and before.get("declared_machine") != after.get("declared_machine")
+        and not allow_different_machine
+    ):
+        raise ComparisonNotControlled(
+            "cannot compare: the records declared different machines "
+            f"({before.get('declared_machine')!r} vs "
+            f"{after.get('declared_machine')!r}). The declared machine is the "
+            "spine of a presented identity — it constrains GPU strings, "
+            "voices, fonts, screen conventions, platform flags, the user agent "
+            "and client hints — so the fingerprint-driven rows were NEVER "
+            "SUPPOSED TO MATCH and a diff would read as catastrophic drift. "
+            "Re-take both on one machine, or pass --allow-different-machine to "
+            "compare anyway — the fingerprint rows are then reported as "
+            "machine-explained context, never as a coupling."
         )
     before_schema = before.get("schema_version")
     after_schema = after.get("schema_version")
@@ -463,7 +541,12 @@ def _verdict(row: dict) -> tuple:
 
 
 def _sort_classification(
-    sort: str, *, exit_moved: bool, same_machine: bool, seed_differs: bool
+    sort: str,
+    *,
+    exit_moved: bool,
+    same_machine: bool,
+    seed_differs: bool,
+    machine_differs: bool = False,
 ) -> str:
     """Map a row's SORT to how its movement is reported. The heart of the module."""
     if sort == FINGERPRINT:
@@ -473,6 +556,13 @@ def _sort_classification(
             # override, and calling it a coupling would let a flag manufacture
             # this module's loudest finding.
             return SEED_EXPLAINED
+        if machine_differs:
+            # Same reasoning one field over, and the same rule: an override
+            # must never be able to produce this module's loudest finding.
+            # The declared machine is the spine of a presented identity, so a
+            # fingerprint row moving across two machines is the expected
+            # consequence of the override rather than a coupling.
+            return MACHINE_EXPLAINED
         return COUPLING if exit_moved else FINGERPRINT_MOVED
     if sort == EXIT:
         return EXIT_ROTATED
@@ -491,6 +581,7 @@ def compare_records(
     *,
     allow_cross_engine: bool = False,
     allow_different_seed: bool = False,
+    allow_different_machine: bool = False,
 ) -> "list[dict]":
     """Compare two checker-matrix records and return what MOVED, ranked.
 
@@ -524,13 +615,22 @@ def compare_records(
         after,
         allow_cross_engine=allow_cross_engine,
         allow_different_seed=allow_different_seed,
+        allow_different_machine=allow_different_machine,
     )
 
-    # The three header facts that change how a row difference is READ. None of
-    # them refuses; each one re-classifies.
+    # The header facts that change how a row difference is READ. None of them
+    # refuses here; each one re-classifies.
+    #
+    # Note the two DIFFERENT machine questions, which must not be conflated:
+    # `same_machine` is the HOST the reading was taken on (`environment`) and
+    # governs host-sorted rows; `machine_differs` is the machine the profile
+    # DECLARED (`declared_machine`, PS-69) and governs fingerprint-sorted ones.
+    # A reading taken on one laptop can declare Windows or macOS, so the two
+    # are independent.
     exit_moved = before.get("exit") != after.get("exit")
     same_machine = before.get("environment") == after.get("environment")
     seed_differs = before.get("seed") != after.get("seed")
+    machine_differs = before.get("declared_machine") != after.get("declared_machine")
 
     before_rows = _rows(before)
     after_rows = _rows(after)
@@ -545,6 +645,7 @@ def compare_records(
             exit_moved=exit_moved,
             same_machine=same_machine,
             seed_differs=seed_differs,
+            machine_differs=machine_differs,
         )
         if entry is not None:
             out.append(entry)
@@ -560,6 +661,7 @@ def _classify(
     exit_moved: bool,
     same_machine: bool,
     seed_differs: bool,
+    machine_differs: bool = False,
 ) -> "dict | None":
     """Classify one row pair, or return None when it did not move at all.
 
@@ -605,6 +707,7 @@ def _classify(
             exit_moved=exit_moved,
             same_machine=same_machine,
             seed_differs=seed_differs,
+            machine_differs=machine_differs,
         )
         return _entry(a, b, classification, sort=sort, observed=True)
 
@@ -709,15 +812,42 @@ def header_notes(before: dict, after: dict) -> "list[str]":
             f"exit held: {_exit_label(before_exit)}. A fingerprint row that "
             "moved cannot be blamed on the address."
         )
+    # Two DIFFERENT machine questions live in this header and they must not be
+    # said in the same words. `environment` is the HOST the reading was taken
+    # ON (it governs host-sorted rows); `declared_machine` is the machine the
+    # profile PRESENTED (PS-69, it governs fingerprint-sorted rows). One laptop
+    # can declare Windows or macOS, so the two are independent — and a reader
+    # who conflates them will triage the wrong thing.
     before_env = before.get("environment") or "?"
     after_env = after.get("environment") or "?"
     if before_env != after_env:
         notes.append(
-            f"DIFFERENT MACHINES: {before_env!r} -> {after_env!r}. Host-driven "
-            "rows are expected to differ; they are reported as context."
+            f"DIFFERENT HOST MACHINES: {before_env!r} -> {after_env!r}. "
+            "Host-driven rows are expected to differ; they are reported as "
+            "context."
         )
     else:
-        notes.append(f"same machine: {before_env}. Host rows should hold.")
+        notes.append(f"same host machine: {before_env}. Host rows should hold.")
+    before_declared = before.get("declared_machine")
+    after_declared = after.get("declared_machine")
+    if before_declared != after_declared:
+        notes.append(
+            f"DECLARED MACHINE DIFFERS: {before_declared!r} -> "
+            f"{after_declared!r} (refusal overridden). The declared machine is "
+            "the spine of a presented identity, so fingerprint rows moving is "
+            "NOT evidence of a coupling."
+        )
+    elif before_declared is not None:
+        notes.append(
+            f"same declared machine: {before_declared}"
+            + (
+                " (NOT honoured by this engine — it presents Windows "
+                "regardless, so the field states what was actually declared)"
+                if before.get("declared_machine_honoured") is False
+                else ""
+            )
+            + "."
+        )
     if before.get("seed") != after.get("seed"):
         notes.append(
             f"SEED DIFFERS: {before.get('seed')!r} -> {after.get('seed')!r} "
@@ -875,6 +1005,7 @@ __all__ = [
     "HARNESS_MOVED",
     "HOST_MACHINE_DIFFERS",
     "HOST_MOVED",
+    "MACHINE_EXPLAINED",
     "MISSING",
     "NotARecord",
     "RecordUnreadable",

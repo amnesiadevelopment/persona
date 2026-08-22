@@ -559,6 +559,7 @@ def _cmd_compare(args: argparse.Namespace) -> int:
             after,
             allow_cross_engine=args.allow_cross_engine,
             allow_different_seed=args.allow_different_seed,
+            allow_different_machine=args.allow_different_machine,
         )
     except (ComparisonNotControlled, NotARecord, RecordUnreadable) as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
@@ -750,6 +751,17 @@ def build_parser() -> argparse.ArgumentParser:
             "never supposed to match and a diff reads as catastrophic drift. "
             "With the flag, fingerprint rows report as SEED-EXPLAINED context "
             "and never as a coupling"
+        ),
+    )
+    cmp_.add_argument(
+        "--allow-different-machine", action="store_true",
+        help=(
+            "compare records that DECLARED DIFFERENT MACHINES. Refused by "
+            "default: the declared machine is the spine of a presented "
+            "identity (GPU strings, voices, fonts, screen conventions, "
+            "platform flags, UA and client hints), so those rows were never "
+            "supposed to match. With the flag, fingerprint rows report as "
+            "MACHINE-EXPLAINED context and never as a coupling"
         ),
     )
     cmp_.set_defaults(func=_cmd_compare)
