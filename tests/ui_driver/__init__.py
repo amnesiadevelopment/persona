@@ -43,7 +43,7 @@ LAYER against the same isolated ``PERSONA_HOME`` the served app writes to.
 
 from __future__ import annotations
 
-from .driver import FletDriver, SemanticNode
+from .driver import FletDriver, SemanticNode, TextField
 from .server import ServedApp, serve_app
 
-__all__ = ["FletDriver", "SemanticNode", "ServedApp", "serve_app"]
+__all__ = ["FletDriver", "SemanticNode", "TextField", "ServedApp", "serve_app"]
