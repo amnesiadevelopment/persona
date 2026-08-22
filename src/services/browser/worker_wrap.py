@@ -74,13 +74,93 @@ which is the same disclosure PS-48 closes on the global object.
 """
 
 
-def realm_bootstrap_js(apply_fn_name: str) -> str:
+def realm_bootstrap_js(apply_fn_name: str, *, blob_via_import_scripts: bool = False) -> str:
     """Return JS that runs ``apply_fn_name`` (a leaf applyPatch(G)) in this realm
     and chains it into every realm this one can reach.
 
     The caller must have defined ``apply_fn_name`` already. Nothing is written to
     the global object: the leaf, its source and the dedup set stay in closure.
+
+    ``blob_via_import_scripts`` selects how a ``blob:`` worker is re-blobbed, and
+    exists because THE DEFAULT PATH IS BROKEN ON FIREFOX. MEASURED, not reasoned
+    (PS-78, live firefox-20 through this project's own launch path):
+
+        page realm    __personaWebgl === true        (the leaf ran)
+        worker realm  __personaWebgl === undefined   (the leaf never arrived)
+
+    The wrapper WAS installed and the worker DID spawn, so the failure is inside
+    the blob: branch. Probed step by step, the single cause is that Firefox
+    refuses a SYNCHRONOUS XHR against a ``blob:`` URL:
+
+        new XMLHttpRequest().open("GET", blobUrl, false).send()
+            -> NetworkError: A network error occurred.
+
+    The branch catches that and falls through to
+    ``_Ref.construct(Orig, [url, options], W)`` — the UNMODIFIED worker. So the
+    failure is entirely silent: the worker spawns, runs, and carries nothing.
+    That is the exact shape this module's docstring warns about — "a depth-2
+    worker that silently receives nothing does not throw — it just reports the
+    REAL GPU/hardwareConcurrency/audio/fonts while the page reports spoofed
+    ones" — and a page/worker mismatch is a SHARPER tell than no spoof at all.
+
+    With the flag, a ``blob:`` worker takes the importScripts shim the http(s)
+    branch already uses, pointed at the blob URL. Measured to work on Firefox:
+    the boot payload arrives AND the original worker body still runs.
+
+    ``data:`` DELIBERATELY KEEPS THE OLD PATH, and this is the part that must not
+    be "tidied up" into one branch later. ``importScripts`` against a ``data:``
+    URL does not merely fail on this engine, it HANGS — the worker never reaches
+    its first message (measured: TIMEOUT). Routing data: through the shim would
+    trade a silent leak for a BROKEN WORKER, i.e. a functional break on any site
+    that uses one. An unspoofed data: worker is a defect; a data: worker that
+    never runs is a worse one.
+
+    Defaults to False so CHROMIUM'S GENERATED TEXT IS BYTE-IDENTICAL. Chromium's
+    sync-XHR path works and its recorded readbacks are the baseline every prior
+    reading was taken against (PS-78 boundary: "Chromium is unchanged"), and its
+    delivery path is explicitly out of scope. Only the Firefox init scripts pass
+    True.
     """
+    if blob_via_import_scripts:
+        blob_branch = r"""            if (/^blob:/i.test(s)) {
+              // FIREFOX: a synchronous XHR against a blob: URL raises
+              // NetworkError, so the re-blob path below cannot read the body and
+              // silently yields an UNSPOOFED worker. Use the same importScripts
+              // shim the http(s) branch uses instead — the boot payload runs
+              // first, then the original body is pulled in by the worker itself.
+              try {
+                var bbody = BOOT + "\ntry{importScripts(" + JSON.stringify(s) + ");}catch(e){}";
+                return _Ref.construct(Orig, [mkurl(bbody), options], W);
+              } catch (e) {}
+              return _Ref.construct(Orig, [url, options], W);
+            }
+            if (/^data:/i.test(s)) {
+              // NOT the shim: importScripts against a data: URL HANGS on this
+              // engine (the worker never reaches its first message), which would
+              // be a functional break rather than a leak. Keep the read-and-
+              // re-blob attempt, and its unmodified-worker fallback.
+              try {
+                var x = new _XHR();
+                x.open("GET", s, false);
+                x.send();
+                if (x.status === 0 || (x.status >= 200 && x.status < 300)) {
+                  return _Ref.construct(Orig, [mkurl(BOOT + "\n" + x.responseText), options], W);
+                }
+              } catch (e) {}
+              return _Ref.construct(Orig, [url, options], W);
+            }"""
+    else:
+        blob_branch = r"""            if (/^blob:|^data:/i.test(s)) {
+              try {
+                var x = new _XHR();
+                x.open("GET", s, false);
+                x.send();
+                if (x.status === 0 || (x.status >= 200 && x.status < 300)) {
+                  return _Ref.construct(Orig, [mkurl(BOOT + "\n" + x.responseText), options], W);
+                }
+              } catch (e) {}
+              return _Ref.construct(Orig, [url, options], W);
+            }"""
     return (
         r"""
   var SELF = (typeof self !== "undefined") ? self : this;
@@ -171,17 +251,7 @@ def realm_bootstrap_js(apply_fn_name: str) -> str:
               var body = BOOT + "\ntry{importScripts(" + JSON.stringify(s) + ");}catch(e){}";
               return _Ref.construct(Orig, [mkurl(body), options], W);
             }
-            if (/^blob:|^data:/i.test(s)) {
-              try {
-                var x = new _XHR();
-                x.open("GET", s, false);
-                x.send();
-                if (x.status === 0 || (x.status >= 200 && x.status < 300)) {
-                  return _Ref.construct(Orig, [mkurl(BOOT + "\n" + x.responseText), options], W);
-                }
-              } catch (e) {}
-              return _Ref.construct(Orig, [url, options], W);
-            }
+%(blob_branch)s
             return _Ref.construct(Orig, [url, options], W);
           } catch (e) { return _Ref.construct(Orig, [url, options], W); }
         };
@@ -227,5 +297,104 @@ def realm_bootstrap_js(apply_fn_name: str) -> str:
 
   try { __pnaInstall(SELF, %(fn)s); } catch (e) {}
 """
-        % {"fn": apply_fn_name}
+        % {"fn": apply_fn_name, "blob_branch": blob_branch}
     )
+
+
+# --- the Firefox cloak seam, shared by every init-script spoof --------------
+#
+# On CHROMIUM every spoof is an MV3 extension and native_ext.py installs one
+# Function.prototype.toString patch that reads each wrapper's `__pnaName` marker
+# property. FIREFOX loads no persona extension at all (invisible_launch.py is
+# the whole launch path), so on that engine `__pnaName` has nobody to read it:
+# the marker is not a cloak there, it is a bare own property on every wrapper —
+# a tell rather than a hiding place. Each Firefox init-script spoof therefore
+# carries the cloak itself, and this is the one copy of it.
+#
+# Three deliberate differences from the Chromium form, each mirroring the cloak
+# already in invisible_launch._native_cloak_js:
+#
+#   * SPIDERMONKEY's native shape (three lines, four-space indent), NOT V8's
+#     one-liner. Emitting V8's form on Firefox is itself a masking tell — one
+#     `Array.prototype.map.toString()` comparison away.
+#   * a closure WeakMap, so NO own property is added to any wrapper and the
+#     registry cannot be enumerated or swept for symbols.
+#   * `Function.prototype.toString` is CHAINED, not flag-guarded, so this
+#     composes with the locale/outer-size cloaks already installed in the realm
+#     instead of racing them for the single slot.
+#
+# It must be spliced INSIDE the leaf `applyPatch`: the leaf crosses into a
+# worker as SOURCE TEXT (``realm_bootstrap_js`` serialises it with
+# ``LEAF.toString()``), so anything defined in an enclosing scope is undefined
+# in the worker realm — the exact failure this module's docstring records, where
+# a depth-2 worker silently reported REAL values while the page reported
+# spoofed ones.
+_FIREFOX_NATIVE_WRAP = r"""  var __nm = (typeof WeakMap === 'function') ? new WeakMap() : null;
+  var __nl = String.fromCharCode(10);
+  // THE REALM MUST COME FROM G, NEVER FROM THE LEXICAL SCOPE. The leaf reaches
+  // a child frame as a PARENT-REALM FUNCTION OBJECT — the chained
+  // `contentWindow` accessor above calls `__pnaInstall(childWindow, LEAF)` with
+  // the leaf itself, not with source text. So a bare `Function.prototype` here
+  // resolves to the PARENT's: it re-patches an already-patched toString (a
+  // no-op) and leaves the child realm's own pristine, while the wrappers ARE
+  // installed into the child. Read from inside that child — where a detector
+  // runs — the wrapper then stringifies as raw patch source. Measured in two
+  // isolated realms, not reasoned.
+  //
+  // `G.Function.prototype` is Chromium's shape (native_ext.py:32,48) and the
+  // reason its comment names "a fresh about:blank iframe … has its own
+  // Function.prototype". The WORKER realm never had this problem — the leaf
+  // crosses there as SOURCE TEXT and is re-evaluated in the worker's own realm,
+  // so both forms resolve correctly there; this is the frame case only.
+  //
+  // FAIL SOFT, NEVER `return`: this block is spliced INSIDE the leaf, so
+  // bailing out here would skip the spoof's own overrides too — trading the
+  // unlinkability fix for the masking one. A realm without a usable
+  // Function.prototype loses the cloak and keeps the perturbation.
+  var __F = G.Function;
+  var __pts = (__F && __F.prototype && __F.prototype.toString)
+              || Function.prototype.toString;
+  var __ts = function () {
+    'use strict';
+    // `this` is the function being stringified. Strict mode so a primitive
+    // `this` stays primitive and still reaches the original for its TypeError.
+    try {
+      var n = __nm && __nm.get(this);
+      if (typeof n === 'string') {
+        return 'function ' + n + '() {' + __nl + '    [native code]' + __nl + '}';
+      }
+    } catch (e) {}
+    return __pts.apply(this, arguments);
+  };
+  try {
+    // Cloak the patch as "toString": a detector stringifies
+    // Function.prototype.toString to catch exactly this trick.
+    if (__nm) { __nm.set(__ts, 'toString'); }
+    Object.defineProperty(__ts, 'name', { value: 'toString', configurable: true });
+    // G's prototype, not the lexical one — see the note above.
+    if (__F && __F.prototype) { __F.prototype.toString = __ts; }
+  } catch (e) {}
+
+  function nativeWrap(orig, replacement) {
+    try {
+      // configurable: true is the descriptor a native function's own `name`
+      // carries; the Chromium form omits it because its marker property, not
+      // `name`, is what its extension-side cloak reads.
+      Object.defineProperty(replacement, 'name',
+                            { value: orig.name, configurable: true });
+      if (__nm) { __nm.set(replacement, orig.name); }
+    } catch (e) {}
+    return replacement;
+  }"""
+
+
+def firefox_native_wrap_js() -> str:
+    """The ``nativeWrap`` seam a FIREFOX init-script spoof splices into its leaf.
+
+    Returns the Firefox form: a chained ``Function.prototype.toString`` backed by
+    a closure WeakMap, emitting SpiderMonkey's native shape. Splice it where the
+    Chromium build puts its own ``nativeWrap`` — everything else in a spoof's
+    patch body is shared between the two engines, and this is the only part that
+    differs.
+    """
+    return _FIREFOX_NATIVE_WRAP
