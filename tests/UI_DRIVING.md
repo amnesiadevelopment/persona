@@ -160,6 +160,7 @@ Measured by walking the real UI and recording what the semantics tree exposes.
 | Modal dialogs | `Create New Profile` opens with `[ create ]`, `[ cancel ]`, `[ + proxy ]`, `[ bulk ]` addressable |
 | Text fields — single-line | Real `<input>`; typing round-trips (`'ps71-driven-profile'` reached the saved profile) |
 | Text fields — multiline | Real `<textarea>`; typing round-trips (`'driven-notes-through-the-textarea'` reached the saved profile's `notes`). Reachable **only because the driver queries `input, textarea`** — see the correction note below |
+| **Dropdown options** | **Reachable (PS-74).** Every option of `build_os_dropdown` (`windows/macos/linux/android/ios`) and of `build_engine_dropdown` opens, is clickable, and the choice reaches the saved profile through `ProfileManager`. This row said **NOT reachable** until PS-74 — see the correction note below, which is the more important half |
 | Onboarding | `Skip` / `Next` |
 | Modal scoping | Correct — while onboarding is up, *only* `Skip`/`Next` are addressable. The driver cannot reach behind a modal, which matches what a user can do |
 
@@ -191,6 +192,64 @@ Measured by walking the real UI and recording what the semantics tree exposes.
 
 > Per the standing directive these are recorded as **not covered, with the
 > reason**. None is approximated by a weaker check.
+>
+> **Item 1 is now REACHABLE and is kept here deliberately**, correction and
+> all, rather than being moved up to the reachable table and tidied away. It
+> is the only entry in this document that was recorded as an unreachable
+> surface and then turned out to be a driver bug, and that is worth more to
+> the next reader than a clean list.
+
+> **Correction note — the dropdown row said NOT reachable, and that was
+> wrong. How it was wrong is the most useful thing in this document.** The
+> original measurement (below, kept verbatim) was honestly taken and its
+> conclusion — "Flutter renders the open menu in an overlay that does not
+> surface as semantics nodes here" — was **false**. The options were in the
+> semantics tree the whole time. Two independent addressing faults stacked on
+> top of each other, and **fixing either one alone still fails**, which is why
+> two separate routes both came back negative and looked like corroboration:
+>
+> 1. **The control was never actually clicked.** A dropdown surfaces as
+>    `<flt-semantics role="button" aria-expanded="false">` with **empty
+>    text** — the selected value is painted to canvas and never mirrored into
+>    the DOM. The original attempt addressed it by the value it displays
+>    (`filter(has_text="windows")`), which matches **zero nodes**. Re-measured
+>    directly: `nodes matching 'windows': 0`. The address is instead the
+>    **caption above it** ("Operating system"), taking the nearest
+>    `aria-expanded` node below (measured gap: 8px).
+> 2. **The dialog body scrolls, and the OS dropdown starts below the fold.**
+>    The scroller measures `scrollHeight 1248` against `clientHeight 592`
+>    (band y 196–788); the OS dropdown sits at **y=833**. A control below the
+>    fold still reports a real bounding box — at coordinates nobody can click —
+>    so the click lands on empty space and silently does nothing. This is why
+>    "re-measured in a 1500px-tall window" did not help: the WINDOW was taller,
+>    the scrolling DIALOG was not.
+>
+> A third measured fact explains why the keyboard route failed too: a dropdown
+> node carries **no `flt-tappable` and no `tabindex`** (a real button carries
+> both), so Flutter hit-tests it by **coordinate** and needs a real mouse press
+> at a genuinely visible position — exactly what (1) and (2) prevented.
+>
+> **And containment is not visibility.** The Engine dropdown spans y 743–788
+> inside a band ending at 788: "fully visible" by any containment test, and
+> clicking it does nothing (`aria-expanded` stays false, zero options).
+> Scrolling it inward and clicking the *same* control opens it. Hence
+> `_FOLD_MARGIN_PX` — a control flush against the fold is not hit-testable.
+>
+> The lesson worth carrying: **a negative reach result is a claim about the
+> DRIVER at least as much as about the framework.** Two input routes agreeing
+> is not corroboration when both share an address that resolves to nothing.
+> Before recording a control as unreachable, prove the control was *hit* —
+> `aria-expanded` flipping is that proof, and it costs one assertion.
+>
+> The claims are now **asserted by tests**, not by prose:
+> `test_every_declared_option_of_both_dropdowns_is_reachable` pins the full
+> option set of both builders, and
+> `test_selecting_each_os_option_reaches_the_saved_profile` drives all five and
+> reads each back out of `ProfileManager`.
+
+<details>
+<summary>The original PS-71 measurement, kept verbatim — it is what a careful
+negative result looks like when it is nonetheless wrong.</summary>
 
 **1. `ft.Dropdown` options — the most consequential limit.**
 The create-profile dialog carries seven dropdowns (the source declares proxy,
@@ -215,20 +274,17 @@ menu in an overlay that does not surface as semantics nodes here.
 explicitly — is **not reachable by this mechanism today**. See
 [Recommendation](#recommendation).
 
-*Second consequence — two text fields inherit this limit.* `custom_w` and
-`custom_h` (`src/ui/dialogs/profile.py:299,305`) carry no visibility flag of
-their own; they sit inside `custom_row` (`:311`), and it is that enclosing Row
-that is declared `visible=res_value == "custom"` (`:313`) and re-toggled in
-`on_res_change` (`:318`). So they render only once the **resolution** dropdown
-is set to `custom` — and that dropdown is one of the five that cannot be
-operated. Measured: the dialog exposes **3** text fields at rest, and after
-pressing the resolution control by its displayed value and driving it by
-keyboard it still exposes 3; no `custom` node ever enters the tree. So these
-two fields are not a gap in the text-field mechanism — typing works fine on
-every field that renders — they are **unreachable because the only control
-that reveals them is unreachable**. Recorded under the dropdown limit rather
-than as a separate text-field limit, because that is where the actual block
-is and that is what a fix would have to solve.
+</details>
+
+*The text fields that inherited this limit are now reachable in principle.*
+`custom_w` and `custom_h` (`src/ui/dialogs/profile.py:299,305`) carry no
+visibility flag of their own; they sit inside `custom_row` (`:311`), which is
+declared `visible=res_value == "custom"` (`:313`) and re-toggled in
+`on_res_change` (`:318`). They render only once the **resolution** dropdown is
+set to `custom` — and that dropdown is now operable by the same mechanism. PS-74
+did not drive that specific pair (its scope was the OS and engine controls), so
+this is recorded as **not yet exercised**, no longer as blocked: the control
+that reveals them is reachable.
 
 **2. Native file dialogs.** `[ import ]` and `[ export ]` press cleanly and
 then nothing happens in the tree — measured: 22 controls before, 22 after, zero
@@ -256,48 +312,58 @@ which is shared, and is **not** evidence about desktop-specific behaviour.
 
 ## Cost
 
-Measured, whole committed suite: **5 tests, 200s** — three runs, 200.29s,
-200.69s and 200.40s, the last against the committed tree rather than a dirty
-working copy. Per test the spread is **31–44s**, averaging **~40s**:
+Measured, whole committed suite: **11 tests, 545s** — PS-71's five (200s) plus
+PS-74's six (345.20s, one run against the committed tree). Per test the spread
+is **31–110s**:
 
 | test | call |
 |---|---|
+| `test_selecting_each_os_option_reaches_the_saved_profile` | 110.5s |
+| `test_driven_selection_fails_when_the_selection_is_discarded` | 50.8s |
+| `test_selecting_in_the_engine_dropdown_reaches_the_saved_profile` | 47.5s |
+| `test_negative_control_is_surgical` | 47.5s |
+| `test_choosing_a_mobile_os_narrows_the_engine_choice` | 46.5s |
 | `test_typing_into_the_multiline_field_reaches_the_saved_product` | 44.3s |
 | `test_driven_test_fails_when_the_button_is_unwired` | 42.6s |
 | `test_creating_a_profile_through_the_controls_persists_it` | 42.6s |
+| `test_every_declared_option_of_both_dropdowns_is_reachable` | 41.8s |
 | `test_every_visible_text_field_is_reachable_including_the_multiline_one` | 39.1s |
 | `test_real_controls_are_addressable_in_the_shipped_ui` | 31.4s |
 
-The cost is **dominated by fixed startup, not by the interaction**: the cheapest
-test bounds boot-plus-settle (a ~25s app-settle plus browser startup) at ≤31.4s,
-and the whole spread above that floor is only ~13s. So a test's price is
-essentially the boot, and driving *more* controls within one test is close to
-free — which is the shape that matters when sizing downstream work. Each test
-boots a real persona against a fresh isolated home, so they are independent and
-parallelisable, but they are not free — this is a marked, opt-in tier, not
-something to add to the default run.
+**The fixed-boot shape holds, and the 110s outlier confirms it rather than
+breaking it.** That test creates five profiles — one per OS option — inside a
+single boot: five full create-profile cycles for ~110s, against ~45s for a test
+that does one. So the *marginal* cost of another option is roughly **15s**,
+while the cost of another test is roughly **45s of boot before it does
+anything**. Drive more controls per boot; do not add a boot per assertion.
 
-> **This figure was wrong once, in the direction that matters.** It read
-> "3 tests, 117s / 45–60s per test" — accurate when written at `283993d`, and
-> left untouched when this branch added two tests, so it described a suite that
-> was no longer the committed one. The total understated the real 200.29s by
-> 42% (equivalently, the real figure is 71% above the stated 117s), and the
-> per-test band was wrong in the *opposite* direction — 45–60s excludes the
-> entire measured spread of 31.4–44.3s. Same failure mode as the
-> reach-map row corrected above: green, measured-looking, and false. Restated
-> here against the committed 5-test suite from a fresh run. If you add a test,
-> re-run and update this section — a stale number here is what the next ticket
-> sizes against.
+The cost is **dominated by fixed startup, not by the interaction**: the cheapest
+test bounds boot-plus-settle (a ~25s app-settle plus browser startup) at ≤31.4s.
+So a test's price is essentially the boot, and driving *more* controls within
+one test is close to free — which is the shape that matters when sizing
+downstream work. Each test boots a real persona against a fresh isolated home,
+so they are independent and parallelisable, but they are not free — this is a
+marked, opt-in tier, not something to add to the default run.
+
+> **This figure has been wrong twice, both times in the direction that
+> matters, and both times the same way: a suite grew and the number did not.**
+> First it read "3 tests, 117s / 45–60s per test" — accurate at `283993d`, left
+> untouched when two tests landed, understating the real 200.29s by 42% while
+> the per-test band excluded the entire measured spread. Then it read "5 tests,
+> 200s" while PS-74 added six more. Restated here against the committed
+> 11-test suite. **If you add a test, re-run and update this section** — a
+> stale number here is what the next ticket sizes against, and this specific
+> line has now failed that job twice.
 >
 > **This section is the single owner of the tier's cost figures.** The same
 > retired band shipped a second and third time in `conftest.py`'s `ui_driver`
 > marker and `test_ui_driven.py`'s module docstring, because a number that is
 > *copied* goes stale independently of the one it was copied from — and the
 > audit that caught the first instance was scoped to this file, so it missed
-> both. Those two now describe the *shape* of the cost (fixed boot dominates)
-> and point here for the magnitude. Keep it that way: state a measured figure
-> here and nowhere else, so there is exactly one place that can be wrong and
-> exactly one place to fix.
+> both. Those two describe the *shape* of the cost (fixed boot dominates) and
+> point here for the magnitude, and `test_ui_driven_dropdowns.py` was written
+> to the same rule. Keep it that way: state a measured figure here and nowhere
+> else, so there is exactly one place that can be wrong and one place to fix.
 
 Guarded honestly: the tests are marked `ui_driver` and skip with a reason
 naming exactly what is missing (`flet not installed`, `chromium not runnable
@@ -316,51 +382,61 @@ here`). The capability is registered in `conftest.py`, so on a machine
 
 ## Recommendation
 
-**The route works. Downstream coverage work is viable, with one carve-out.**
+**The route works, and the carve-out is gone.** Downstream coverage work is
+viable across buttons, text fields and dropdowns alike; what remains outside
+this route is native file dialogs and desktop window chrome (items 4 and 5 of
+the reach map), which need a different mechanism entirely.
 
 Order worth taking, cheapest evidence first:
 
 1. **Button-and-field paths** — profile create/edit, proxy add, bookmark add,
-   certificate add, trash empty. **Their buttons and text fields are reachable
-   today** — single-line and multiline both, driven and asserted through the
-   service layer. Each costs roughly one test at ~40s (see [Cost](#cost) — and
-   note the price is almost all fixed boot, so covering several controls inside
-   one test costs little more than covering one). Read that as a claim about
-   *buttons and text fields only*: any of these dialogs that also carries
-   a dropdown is **partially** coverable, because the dropdown options are not
-   drivable (item 3). Creating a profile is exactly such a case — the name,
-   tags and notes fields are reachable, the OS/engine/resolution choices are
-   not. Scope a "cover the create-profile dialog" ticket against that split,
-   not against the dialog as a whole.
+   certificate add, trash empty. **Their buttons, text fields AND dropdowns are
+   reachable today** — single-line and multiline fields both, and every option
+   of a dropdown, driven and asserted through the service layer. Each costs
+   roughly one test at ~45s (see [Cost](#cost) — the price is almost all fixed
+   boot, so covering several controls inside one test costs little more than
+   covering one; the marginal cost of another dropdown option is ~15s against
+   ~45s for another boot). Creating a profile is now coverable **as a whole
+   dialog**: name, tags and notes fields plus the OS, engine and resolution
+   choices.
 
-   *(This item previously read "these are fully reachable today". It was
-   inaccurate — multiline fields were unreachable at the time it was written,
-   and the dropdown carve-out in item 3 already contradicted the word "fully".
-   It is corrected here because this sentence is what the next ticket sizes
-   against.)*
+   *(This item has been corrected twice, and both corrections were narrowings
+   of a claim that had drifted. It first read "these are fully reachable
+   today" while multiline fields were not; it was then narrowed to "buttons
+   and text fields only", with dropdowns carved out as undrivable. PS-74
+   removed that carve-out — not by relaxing the claim but by fixing the
+   driver. This sentence is what the next ticket sizes against, so it is
+   restated rather than patched.)*
 2. **Navigation and modal scoping** — cheap, and the modal-scoping behaviour is
    already proven correct.
-3. **Dropdown options — do not promise these until the limit is solved.** This
-   is the one place where a coverage plan could quietly overstate itself. The
-   options are a genuine part of "creating a profile" and they are *not*
-   drivable now. Three honest ways forward, in preference order:
-   - drive the desktop window directly instead of web mode (see below);
-   - investigate whether a newer flet/Flutter emits menu semantics, and pin
-     the finding to a version rather than to a hope;
-   - accept the limit and cover option-handling through the service layer
-     (PS-70's half), recording the *control* as not covered with this reason.
-     **Note this is a service-layer check standing beside a UI gap, not a UI
-     check** — it must be labelled as such, not counted as button coverage.
+3. **Dropdown options — reachable, and the mechanism has three sharp edges.**
+   This item previously read *"do not promise these until the limit is
+   solved"*. The limit was in the driver, not the framework, and it is solved;
+   `select_option` handles all three edges, but anyone extending this should
+   know them because each one fails **silently**:
+   - **Address a dropdown by its caption, never by its displayed value.** The
+     value is painted to canvas; the node's text is empty. A value-based
+     locator matches nothing and clicks nothing.
+   - **Scroll it into view first, and demand a real margin.** A control below
+     the fold — or merely flush against it — reports a clickable-looking box
+     that does not respond.
+   - **Assert `aria-expanded` flipped.** This is the cheap proof that the
+     control was actually hit. Without it, "no options appeared" is
+     indistinguishable from "the menu is not in the tree", which is precisely
+     the wrong conclusion this document drew for one ticket.
+
+   Still worth pinning to a version: this is measured on **flet 0.85.3**.
 4. **Never promise** native file dialogs or window chrome through this route.
    Those need a different mechanism entirely (an OS-level driver), which is a
    separate decision with its own cost.
 
 **Not attempted here, and worth knowing before the next ticket commits:** a
 desktop-window driver (Xvfb is installed and a flet desktop window will start
-under it). That would address both the dropdown limit and window chrome, but it
-means driving Flutter pixels without a DOM — a materially harder problem than
-this one, and it should be scoped as its own investigation rather than assumed
-to work.
+under it). PS-71 floated this partly as the way out of the dropdown limit; that
+motivation is **gone** — the dropdown is drivable in web mode. What such a
+driver would still buy is window chrome (item 4), and it means driving Flutter
+pixels without a DOM — a materially harder problem than this one, and worth
+scoping as its own investigation rather than assumed to work.
 
 ### What the harness looks like
 
