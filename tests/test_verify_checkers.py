@@ -38,6 +38,8 @@ from src.services.verify.checkers import (
     CHECKERS,
     EXIT,
     FINGERPRINT,
+    GPU_CLAIMED,
+    GPU_RENDERED,
     HOST,
     JSON_CHECKERS,
     JsonItem,
@@ -204,11 +206,179 @@ def test_creepjs_ratings_are_captured_as_values():
     assert reading_for("creepjs", "stealth_rating").value == "0"
 
 
-def test_creepjs_records_the_host_gpu_string():
+def test_creepjs_records_the_claimed_gpu_string_as_a_product_row():
+    """WAS ``sort == HOST``, asserting the renderer was the container's fault.
+
+    That exemption is WITHDRAWN (owner, 2026-08-22, PS-10): there will be no
+    dev-VM and no GPU machine in the loop, and the engine is expected to
+    present a plausible GPU wherever it runs. So this row is FINGERPRINT — a
+    red on it is a masking finding filed against ``undetectable-masking``, not
+    an environment note written off as "the runner has no GPU".
+    """
     reading = reading_for("creepjs", "gpu_renderer")
     assert reading.state == READ
-    assert reading.sort == HOST
+    assert reading.sort == FINGERPRINT
+    assert reading.vector == GPU_CLAIMED
     assert "GeForce GTX 980" in reading.value
+
+
+# --- the two GPU vectors ----------------------------------------------------
+#
+# The owner ruled the bar wants BOTH a plausible renderer string AND pixels
+# that match it, and that verification must report WHICH of the two a red came
+# from. These tests hold that seam open: they are what stops a later edit
+# quietly collapsing the pair back into one "GPU red" nobody can act on.
+
+
+def test_the_gpu_is_read_as_two_separate_vectors_never_one():
+    """The ticket's hard requirement, and the reason the rows are split.
+
+    A merged "GPU red" cannot be acted on: the CLAIMED strings are fixed by
+    changing what the spoofer declares, and the RENDERED hashes are fixed — if
+    at all — at the rendering layer. Different fixes, different tickets.
+    """
+    claimed, rendered = [], []
+    for checker in BROWSER_CHECKERS:
+        for item in checker.items:
+            if item.vector == GPU_CLAIMED:
+                claimed.append(f"{checker.id}.{item.id}")
+            elif item.vector == GPU_RENDERED:
+                rendered.append(f"{checker.id}.{item.id}")
+
+    assert claimed, "no row records what the renderer CLAIMS to be"
+    assert rendered, (
+        "no row records what the checker's OWN RENDERING produced — without "
+        "it 'the string is right but the render gives us away' is unreadable"
+    )
+    # Both vectors on BOTH prose checkers: either one alone would leave a
+    # checker able to fingerprint pixels we never read.
+    for checker_id in ("pixelscan.net", "creepjs"):
+        vectors = {i.vector for i in checker_by_id(checker_id).items if i.vector}
+        assert vectors == {GPU_CLAIMED, GPU_RENDERED}, (
+            f"{checker_id} reads {vectors or 'neither vector'}; it publishes "
+            "both, so reading one is a half-answer that looks complete"
+        )
+
+
+def test_both_gpu_vectors_are_read_from_the_measured_pages():
+    """Grounded in the real captures, not in hand-written strings.
+
+    A pattern that matches nothing records as ABSENT — i.e. as *the checker
+    stopped reporting it* rather than *the reader broke*. PS-59 was bitten by
+    exactly that shape twice, so every row here is asserted against the page
+    as it actually rendered.
+    """
+    expected = {
+        ("pixelscan.net", "webgl_vendor"): "Google Inc. (NVIDIA)",
+        ("pixelscan.net", "webgl_renderer"): "GeForce GTX 980",
+        ("pixelscan.net", "webgl_hash"): "d2931cb9b32cff4a5324218b21ec0f35",
+        ("pixelscan.net", "canvas_hash"): "ebb68942c2501078e8309706d0f270e9",
+        ("creepjs", "gpu_vendor"): "Google Inc. (NVIDIA)",
+        ("creepjs", "gpu_renderer"): "GeForce GTX 980",
+        ("creepjs", "webgl_image_hash"): "439417c4",
+        ("creepjs", "webgl_pixel_hash"): "a8ee71dc",
+        ("creepjs", "canvas_data_hash"): "8d1ce292",
+    }
+    for (checker_id, item_id), substring in expected.items():
+        reading = reading_for(checker_id, item_id)
+        assert reading.state == READ, (
+            f"{checker_id}.{item_id} did not match its own measured page — "
+            "that records as ABSENT, which reads as the checker going quiet"
+        )
+        assert substring in reading.value
+
+
+def test_a_gpu_reading_carries_its_vector_into_the_record():
+    """The split has to survive into the DATA, not just the catalogue.
+
+    ``vector`` rides on the reading for the same reason ``sort`` does: a
+    record must stay interpretable after the catalogue moves, and the report
+    that names which vector a red came from is written from the record.
+    """
+    record = _record(
+        readings_from_texts({cid: {"text": page(cid)} for cid in PAGES})
+    )
+    rows = {
+        (r["checker"], r["item"]): r
+        for r in record["readings"]
+        if r.get("vector")
+    }
+    assert rows, "no reading carried a vector into the record"
+    assert rows[("creepjs", "gpu_renderer")]["vector"] == GPU_CLAIMED
+    assert rows[("creepjs", "webgl_pixel_hash")]["vector"] == GPU_RENDERED
+    # And a row that is not about the GPU must not acquire one.
+    non_gpu = [
+        r for r in record["readings"]
+        if r["item"] in ("timezone_from_js", "headless_rating")
+    ]
+    assert non_gpu, "expected some non-GPU rows in the record"
+    assert all("vector" not in r for r in non_gpu), (
+        "a non-GPU row carried a GPU vector; the key means 'which GPU "
+        "question this answers' and is meaningless elsewhere"
+    )
+
+
+def test_no_gpu_row_is_tagged_host_which_would_reinstate_the_exemption():
+    """A regression guard on an OWNER DECISION, not on a style preference.
+
+    HOST means "driven by the machine the engine ran on", and for a GPU row
+    that is precisely the "the runner has no GPU, so it does not count"
+    reading the owner withdrew. Retagging one back to HOST would silently
+    restore the exemption, so it fails here loudly instead.
+    """
+    for checker in CHECKERS:
+        for item in checker.items:
+            if item.vector:
+                assert item.sort != HOST, (
+                    f"{checker.id}.{item.id} is a GPU row tagged HOST; the "
+                    "GPU-less exemption was withdrawn (PS-10) and a red here "
+                    "is a product finding for undetectable-masking"
+                )
+
+
+def test_creepjs_gpu_vendor_does_not_capture_webgpu_unsupported():
+    """A near-miss found by over-matching my own pattern against the capture.
+
+    CreepJS also prints ``webgpu: unsupported`` (creepjs.txt:207) and a bare
+    ``gpu:`` matches INSIDE it. On the captured page the real block renders
+    first, so first-match-wins hides it — by luck of ordering, not by
+    construction. On a page where the gpu block does not populate (CreepJS's
+    blocks are routinely partial) the unanchored form records ``unsupported``
+    AS THE GPU VENDOR: a missing verdict recorded as a real value, which is
+    the quiet failure direction rather than the loud ABSENT it should be.
+    """
+    checker = checker_by_id("creepjs")
+    item = next(i for i in checker.items if i.id == "gpu_vendor")
+    gpu_block_missing = "vendor: blocked\nwebgpu: unsupported\nuserAgentData:\n"
+    assert extract_text_item(checker, item, gpu_block_missing).state == ABSENT
+    # ...and the real block still reads.
+    live = "gpu:\nconfidence: high\nGoogle Inc. (NVIDIA)\n"
+    assert extract_text_item(checker, item, live).value == "Google Inc. (NVIDIA)"
+
+
+def test_creepjs_canvas_hash_cannot_capture_the_audio_blocks_hash():
+    """The same class of near-miss, one level quieter.
+
+    A bare ``data:`` matches TWICE on the real page: Canvas's ``data:
+    8d1ce292`` (creepjs.txt:120) and AUDIO's ``data:2dcdf6c2``
+    (creepjs.txt:157). It reads correctly today only because Canvas happens to
+    render first. Reordered — or with the Canvas block absent while Audio
+    populates — the unanchored form records THE AUDIO HASH as the canvas
+    rendering: a READ reading with a corrupted value, on a row whose entire
+    purpose is being compared across runs.
+    """
+    checker = checker_by_id("creepjs")
+    item = next(i for i in checker.items if i.id == "canvas_data_hash")
+
+    audio_only = "Audio17546399\nunique: 4736\ndata:2dcdf6c2\ncopy:2dcdf6c2\n"
+    assert extract_text_item(checker, item, audio_only).state == ABSENT
+
+    # Audio BEFORE canvas: the anchored row must still pick the canvas hash.
+    reordered = (
+        "Audio17546399\ndata:2dcdf6c2\ncopy:2dcdf6c2\n\n"
+        "Canvas 2d711bcdbe\ndata: 8d1ce292\nrendering:\n"
+    )
+    assert extract_text_item(checker, item, reordered).value == "8d1ce292"
 
 
 def test_pixelscan_timezone_agrees_with_the_polish_exit():

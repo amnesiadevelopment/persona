@@ -92,6 +92,18 @@ class Reading:
     state: str
     sort: str
     value: Any = None
+    # Which GPU vector this reading answers — GPU_CLAIMED (the strings the
+    # renderer declares) or GPU_RENDERED (hashes the checker computed from
+    # pixels it actually drew). Empty on every reading that is not about the
+    # GPU.
+    #
+    # Rides ON THE READING for the same reason ``sort`` does: a record must
+    # stay interpretable after the catalogue moves. It is also the field that
+    # makes the owner's "report WHICH of the two a red came from" answerable
+    # from a record alone — the two vectors have different fixes, so a report
+    # that collapses them into "GPU red" cannot be acted on by whoever picks
+    # up the masking ticket.
+    vector: str = ""
     # For a prose checker: the pattern used, and the text it matched. Both are
     # recorded so a later run can tell "the verdict changed" from "the checker
     # reworded its page" — two facts that are indistinguishable if only the
@@ -112,6 +124,8 @@ class Reading:
             "sort": self.sort,
             "adverse": self.adverse,
         }
+        if self.vector:
+            out["vector"] = self.vector
         if self.state == READ:
             out["value"] = self.value
         if self.pattern:
@@ -131,6 +145,7 @@ def read(checker: str, item: "JsonItem | TextItem", value: Any, **extra) -> Read
         sort=item.sort,
         value=value,
         adverse=getattr(item, "adverse", False),
+        vector=getattr(item, "vector", ""),
         **extra,
     )
 
@@ -143,6 +158,7 @@ def absent(checker: str, item: "JsonItem | TextItem", reason: str, **extra) -> R
         sort=item.sort,
         reason=reason,
         adverse=getattr(item, "adverse", False),
+        vector=getattr(item, "vector", ""),
         **extra,
     )
 
@@ -157,6 +173,7 @@ def unobtainable(
         sort=item.sort,
         reason=reason,
         adverse=getattr(item, "adverse", False),
+        vector=getattr(item, "vector", ""),
         **extra,
     )
 
