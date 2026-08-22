@@ -511,3 +511,433 @@ def test_write_is_atomic_and_leaves_no_temp_file(tmp_path):
     write(record, str(target))
     assert json.loads(target.read_text()) == record
     assert [p.name for p in (tmp_path / "sub").iterdir()] == ["reading.json"]
+
+
+# --- the browser tier proves its OWN exit ------------------------------------
+#
+# The Python fetcher's proof (exit_guard.prove_exit) is made on a DIFFERENT
+# SOCKET IN A DIFFERENT PROCESS and does not transfer to the engine. Without
+# the engine's own proof, an engine whose proxy silently failed would render
+# every page, parse every verdict and land every row as READ — a
+# complete-looking reading of the OPERATOR'S REAL ADDRESS taken against every
+# checker in the matrix. These pin that it cannot.
+
+
+class _FakePage:
+    """The two methods the tier uses, and a record of what was asked."""
+
+    def __init__(self, texts, log, fail_on=()):
+        self._texts = texts
+        self._log = log
+        self._fail_on = fail_on
+        self._url = None
+
+    def goto(self, url, **kwargs):
+        self._log.append(url)
+        self._url = url
+        for fragment in self._fail_on:
+            if fragment in url:
+                raise RuntimeError(f"NS_ERROR_CONNECTION_REFUSED for {url}")
+
+    def inner_text(self, _selector):
+        for fragment, text in self._texts.items():
+            if fragment in (self._url or ""):
+                return text
+        return ""
+
+    def close(self):
+        pass
+
+
+class _FakeLive:
+    def __init__(self, texts, fail_on=()):
+        self.texts = texts
+        self.visited = []
+        self._fail_on = fail_on
+
+    def new_page(self):
+        return _FakePage(self.texts, self.visited, self._fail_on)
+
+
+def _exit_json(country="PL", ip="91.150.1.1"):
+    return json.dumps({
+        "ip": ip, "country": country, "city": "Warsaw",
+        "org": "AS9141 P4 Sp. z o.o.", "timezone": "Europe/Warsaw",
+    }, indent=2)
+
+
+def test_the_engine_observes_its_own_exit_and_reads_it_as_rows():
+    from src.services.verify.browser_tier import _observe_engine_exit
+
+    live = _FakeLive({"ipinfo.io": _exit_json()})
+    text, country = _observe_engine_exit(live)
+    assert country == "PL"
+    readings = readings_from_texts(
+        {"engine-exit": {"text": text}}, checkers=(checker_by_id("engine-exit"),)
+    )
+    by_id = {r.item: r for r in readings}
+    assert by_id["observed_ip"].value == "91.150.1.1"
+    assert by_id["country"].value == "PL"
+    assert by_id["timezone"].value == "Europe/Warsaw"
+    # It is EXIT-sorted: it is supposed to move between runs.
+    assert all(r.sort == EXIT for r in readings)
+
+
+def test_an_engine_leaving_through_the_wrong_country_refuses_the_tier():
+    """The scenario the reviewer named: the Python fetcher's exit was proven,
+    the engine's proxy silently failed, and every page still renders."""
+    from src.services.verify.browser_tier import (
+        ExitNotProvenInEngine,
+        _observe_engine_exit,
+    )
+
+    live = _FakeLive({"ipinfo.io": _exit_json(country="DE", ip="1.2.3.4")})
+    with pytest.raises(ExitNotProvenInEngine) as exc:
+        _observe_engine_exit(live)
+    assert "DE" in str(exc.value)
+    assert "PL" in str(exc.value)
+
+
+def test_an_engine_exit_with_no_country_refuses_rather_than_assuming():
+    from src.services.verify.browser_tier import (
+        ExitNotProvenInEngine,
+        _observe_engine_exit,
+    )
+
+    live = _FakeLive({"ipinfo.io": json.dumps({"ip": "91.150.1.1"})})
+    with pytest.raises(ExitNotProvenInEngine) as exc:
+        _observe_engine_exit(live)
+    assert "no country" in str(exc.value).lower()
+
+
+def test_an_unreachable_exit_observation_refuses_rather_than_reading_on():
+    from src.services.verify.browser_tier import (
+        ExitNotProvenInEngine,
+        _observe_engine_exit,
+    )
+
+    live = _FakeLive({}, fail_on=("ipinfo.io",))
+    with pytest.raises(ExitNotProvenInEngine) as exc:
+        _observe_engine_exit(live)
+    assert "could not observe its own exit" in str(exc.value)
+
+
+def test_an_empty_exit_observation_refuses_it_is_not_a_clean_reading():
+    """A page that rendered nothing proves nothing. Reading on would take the
+    whole matrix through an address nobody established."""
+    from src.services.verify.browser_tier import (
+        ExitNotProvenInEngine,
+        _observe_engine_exit,
+    )
+
+    live = _FakeLive({"ipinfo.io": "   \n  "})
+    with pytest.raises(ExitNotProvenInEngine):
+        _observe_engine_exit(live)
+
+
+def test_the_exit_is_observed_BEFORE_any_checker_page_is_loaded():
+    """Ordering is the whole guarantee: a checker that has already been asked
+    cannot be un-asked, so the proof must precede the first page load."""
+    from src.services.verify.browser_tier import _observe_engine_exit
+
+    live = _FakeLive({"ipinfo.io": _exit_json()})
+    _observe_engine_exit(live)
+    assert len(live.visited) == 1
+    assert "ipinfo.io" in live.visited[0]
+
+
+def test_an_unproven_engine_exit_makes_the_WHOLE_tier_unobtainable():
+    """Not a partial record and not a crash: every catalogued browser row is
+    present and unobtainable, carrying the reason. The matrix keeps its width
+    on exactly the run where something went wrong."""
+    import src.services.verify.browser_tier as bt
+
+    live = _FakeLive({"ipinfo.io": _exit_json(country="DE")})
+
+    class _Engine:
+        def __enter__(self):
+            return live
+
+        def __exit__(self, *a):
+            return False
+
+    # Drive the real body with a stubbed engine constructor.
+    import types
+    fake_module = types.SimpleNamespace(InvisiblePlaywright=lambda **kw: _Engine())
+    import sys as _sys
+    saved = _sys.modules.get("invisible_playwright")
+    _sys.modules["invisible_playwright"] = fake_module
+    try:
+        out = bt.read_page_texts("socks5h://u:p@host:1080")
+    finally:
+        if saved is None:
+            _sys.modules.pop("invisible_playwright", None)
+        else:
+            _sys.modules["invisible_playwright"] = saved
+
+    readings = readings_from_texts(out)
+    expected = sum(len(c.items) for c in BROWSER_CHECKERS)
+    assert len(readings) == expected
+    assert all(r.state == UNOBTAINABLE for r in readings)
+    assert all("DE" in r.reason for r in readings)
+    # And no checker page was ever requested.
+    assert live.visited == [checker_by_id("engine-exit").url]
+
+
+def test_a_proven_engine_exit_then_reads_the_checker_pages():
+    """The positive half: with the exit proven, the tier goes on to load the
+    pages — so the refusal above is a real gate and not a broken tier."""
+    import sys as _sys
+    import types
+    import src.services.verify.browser_tier as bt
+
+    live = _FakeLive({
+        "ipinfo.io": _exit_json(),
+        "sannysoft": page("bot.sannysoft.com"),
+    })
+
+    class _Engine:
+        def __enter__(self):
+            return live
+
+        def __exit__(self, *a):
+            return False
+
+    fake_module = types.SimpleNamespace(InvisiblePlaywright=lambda **kw: _Engine())
+    saved = _sys.modules.get("invisible_playwright")
+    _sys.modules["invisible_playwright"] = fake_module
+    try:
+        out = bt.read_page_texts(
+            "socks5h://u:p@host:1080",
+            checkers=(checker_by_id("engine-exit"),
+                      checker_by_id("bot.sannysoft.com")),
+            sleep=lambda _s: None,
+        )
+    finally:
+        if saved is None:
+            _sys.modules.pop("invisible_playwright", None)
+        else:
+            _sys.modules["invisible_playwright"] = saved
+
+    assert "text" in out["engine-exit"]
+    assert "text" in out["bot.sannysoft.com"]
+    # The exit was asked FIRST, and asked exactly once.
+    assert live.visited[0] == checker_by_id("engine-exit").url
+    assert live.visited.count(checker_by_id("engine-exit").url) == 1
+
+
+def test_the_engine_exit_is_not_asked_twice_in_one_run():
+    """Asking again would record a SECOND, later address for one run — on a
+    rotating exit that makes the record contradict itself."""
+    import sys as _sys
+    import types
+    import src.services.verify.browser_tier as bt
+
+    live = _FakeLive({"ipinfo.io": _exit_json()})
+
+    class _Engine:
+        def __enter__(self):
+            return live
+
+        def __exit__(self, *a):
+            return False
+
+    fake_module = types.SimpleNamespace(InvisiblePlaywright=lambda **kw: _Engine())
+    saved = _sys.modules.get("invisible_playwright")
+    _sys.modules["invisible_playwright"] = fake_module
+    try:
+        bt.read_page_texts(
+            "socks5h://u:p@host:1080",
+            checkers=(checker_by_id("engine-exit"),),
+            sleep=lambda _s: None,
+        )
+    finally:
+        if saved is None:
+            _sys.modules.pop("invisible_playwright", None)
+        else:
+            _sys.modules["invisible_playwright"] = saved
+
+    assert live.visited == [checker_by_id("engine-exit").url]
+
+
+def test_the_tier_pins_firefoxs_proxy_failover_off():
+    """The pref that makes a SILENT wrong reading possible: with failover on,
+    Firefox answers a dead SOCKS proxy by retrying DIRECTLY, and the pages
+    load, parse and record as a clean run on the operator's real address."""
+    from src.services.verify.browser_tier import _prefs
+
+    assert _prefs()["network.proxy.failover_direct"] is False
+    assert _prefs()["network.proxy.socks_remote_dns"] is True
+
+
+def test_the_exit_proof_reads_raw_json_not_the_firefox_json_viewer():
+    """The proof's patterns are written against RAW JSON. Firefox's viewer
+    renders a JSON body as a DOM tree with UNQUOTED keys, which the quoted
+    patterns do not match — so the viewer is turned off."""
+    from src.services.verify.browser_tier import _prefs
+
+    assert _prefs()["devtools.jsonview.enabled"] is False
+
+    # And the fail direction is SAFE: viewer-style text does not read as a pass.
+    from src.services.verify.browser_tier import _observe_engine_exit
+    from src.services.verify.browser_tier import ExitNotProvenInEngine
+
+    viewer_text = "ip: 91.150.1.1\ncountry: PL\ncity: Warsaw"
+    live = _FakeLive({"ipinfo.io": viewer_text})
+    with pytest.raises(ExitNotProvenInEngine):
+        _observe_engine_exit(live)
+
+
+# --- a skipped tier, and the seed -------------------------------------------
+
+
+def _read(argv, tmp_path, monkeypatch, exit_country="PL"):
+    """Drive the real CLI `read` path with the network stubbed out."""
+    import src.services.verify.checker_cli as cli
+    from src.services.verify.exit_guard import Exit
+
+    monkeypatch.setattr(
+        cli, "prove_exit",
+        lambda **kw: ("socks5h://u:p@host:1080",
+                      Exit(ip="91.150.1.1", country=exit_country, city="Warsaw",
+                           org="AS9141 P4", timezone="Europe/Warsaw")),
+    )
+    monkeypatch.setattr(cli, "read_json_tier", lambda *a, **k: [])
+    target = tmp_path / "reading.json"
+    rc = cli.main(["read", "-o", str(target)] + argv)
+    assert rc == 0
+    return json.loads(target.read_text())
+
+
+def test_a_skipped_tier_keeps_its_full_width_as_unobtainable_rows(
+        tmp_path, monkeypatch):
+    """--skip-browser must not make the record silently NARROWER. A later run
+    diffing two records could not otherwise tell "the tier was skipped" from
+    "those checkers were dropped" from "that schema had no such tier"."""
+    record = _read(["--skip-browser", "--skip-json"], tmp_path, monkeypatch)
+
+    rows = {(r["checker"], r["item"]) for r in record["readings"]}
+    for checker in BROWSER_CHECKERS:
+        for item in checker.items:
+            assert (checker.id, item.id) in rows
+    for checker in JSON_CHECKERS:
+        for item in checker.items:
+            assert (checker.id, item.id) in rows
+
+    skipped = [r for r in record["readings"]
+               if "tier skipped" in r.get("reason", "")]
+    assert skipped, "a skipped tier must leave rows behind"
+    assert all(r["state"] == UNOBTAINABLE for r in skipped)
+    # Never as a pass.
+    assert not any(r["state"] == READ for r in skipped)
+
+
+def test_the_header_names_which_tiers_were_skipped(tmp_path, monkeypatch):
+    record = _read(["--skip-browser"], tmp_path, monkeypatch)
+    assert record["skipped_tiers"] == ["browser"]
+
+    record = _read(["--skip-json"], tmp_path, monkeypatch)
+    assert record["skipped_tiers"] == ["json"]
+
+
+def test_a_run_that_skipped_nothing_says_so_rather_than_omitting_the_key(
+        tmp_path, monkeypatch):
+    """An absent key would have to be guessed at; an empty list is a statement."""
+    import src.services.verify.checker_cli as cli
+    monkeypatch.setattr(cli, "read_json_tier", lambda *a, **k: [])
+    record = _read(["--skip-browser"], tmp_path, monkeypatch)
+    assert "skipped_tiers" in record
+    assert isinstance(record["skipped_tiers"], list)
+
+
+def test_the_record_carries_the_seed_that_drove_the_fingerprint(
+        tmp_path, monkeypatch):
+    """The engine's fingerprint is SEED-DERIVED. Without the seed in the
+    header, a comparison cannot tell a real coupling from a different seed —
+    measured: the renderer moved NVIDIA GTX 980 -> Intel HD Graphics 400
+    between two runs purely because the seed differed."""
+    record = _read(["--skip-browser", "--skip-json", "--seed", "4242"],
+                   tmp_path, monkeypatch)
+    assert record["seed"] == 4242
+
+
+def test_the_seed_is_recorded_even_when_it_is_the_engine_default(
+        tmp_path, monkeypatch):
+    record = _read(["--skip-browser", "--skip-json"], tmp_path, monkeypatch)
+    assert record["seed"] == 0
+
+
+def test_the_record_still_carries_the_exit_and_engine_beside_the_seed(
+        tmp_path, monkeypatch):
+    record = _read(["--skip-browser", "--skip-json"], tmp_path, monkeypatch)
+    assert record["exit"]["country"] == "PL"
+    assert record["engine"]
+    assert record["observed_at"]
+
+
+# --- two catalogue defects the first live run through a ROTATING exit found --
+#
+# Both were found by MEASUREMENT, not review: the fixture pages could not have
+# caught either, because both fixtures were captured on the one exit
+# (Warsaw) and the one page state that happens to hide them. They are reader
+# defects, which are in scope; a product fix would not be.
+
+
+def test_a_rotating_polish_exit_still_reads_as_poland():
+    """DEFECT 1. `geo_poland` was `poland\\s*/\\s*warsaw` — a CITY hardcoded
+    into an EXIT-sorted item. The exit rotates within Poland BY DESIGN, so the
+    moment it moved to Ursynów/Krakow (measured 2026-08-22) a perfectly clean
+    Polish page read ABSENT, which looks exactly like the checker having
+    stopped reporting Poland."""
+    item = next(i for i in checker_by_id("pixelscan.net").items
+                if i.id == "geo_country_city")
+    checker = checker_by_id("pixelscan.net")
+
+    for city in ("Warsaw", "Krakow", "Ursynów", "Gdansk"):
+        reading = extract_text_item(checker, item, f"Check Geo API\n\nPoland / {city}\n")
+        assert reading.state == READ, f"a Polish exit in {city} must still read"
+        assert reading.value == f"Poland / {city}"
+
+    # The country is what is asserted: a non-Polish exit does NOT read.
+    assert extract_text_item(
+        checker, item, "Check Geo API\n\nGermany / Berlin\n").state == ABSENT
+
+
+def test_the_naive_city_pattern_would_have_missed_the_rotated_exit():
+    """Pins the BUG, so the fix cannot be reverted as a cosmetic loosening."""
+    naive = TextItem("geo_poland", r"poland\s*/\s*warsaw", EXIT, adverse=False)
+    checker = checker_by_id("pixelscan.net")
+    # The clean page from the rotated exit — Poland, just not Warsaw.
+    assert extract_text_item(checker, naive, "Poland / Krakow").state == ABSENT
+    # ...while the corrected item reads it.
+    fixed = next(i for i in checker.items if i.id == "geo_country_city")
+    assert extract_text_item(checker, fixed, "Poland / Krakow").state == READ
+
+
+def test_creepjs_best_possible_ratings_are_not_recorded_as_adverse():
+    """DEFECT 2. The three rating items are CAPTURE items: matching means "the
+    rating was PUBLISHED", not "the rating is bad". Tagged adverse=True, the
+    clean measured page — 0% headless, 0% stealth, 6% like headless, the BEST
+    readings CreepJS gives — recorded three ADVERSE MATCHES, so the run that
+    proved the engine looks right reported it as three red flags."""
+    for item_id, expected in (("headless_rating", "0"),
+                              ("stealth_rating", "0"),
+                              ("like_headless_rating", "6")):
+        reading = reading_for("creepjs", item_id)
+        assert reading.state == READ
+        assert reading.value == expected
+        assert reading.adverse is False, (
+            f"{item_id} is a captured NUMBER — its polarity lives in the "
+            f"value, and an adverse flag makes the best possible reading look "
+            f"like a defect"
+        )
+
+
+def test_no_adverse_row_matched_on_the_clean_captured_pages():
+    """The whole-catalogue statement of both defects above: reading the four
+    REAL clean pages must produce NO adverse match at all. Either defect alone
+    broke this, and neither showed up as a test failure."""
+    readings = readings_from_texts({cid: {"text": page(cid)} for cid in PAGES})
+    flagged = [(r.checker, r.item, r.value)
+               for r in readings if r.adverse and r.state == READ]
+    assert flagged == [], f"clean pages reported adverse matches: {flagged}"

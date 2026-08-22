@@ -290,6 +290,56 @@ JSON_CHECKERS: "tuple[Checker, ...]" = (
 )
 
 
+# The address the ENGINE was observed leaving through — the browser tier's own
+# proof, and a row rather than a belief.
+#
+# WHY THIS EXISTS AS A CHECKER AND NOT AS A PRECONDITION SOMEWHERE ELSE.
+# ``exit_guard.prove_exit`` proves the exit for the PYTHON FETCHER: it opens a
+# ``socks_fetch`` socket and reads ipinfo through it. The browser tier is a
+# DIFFERENT PROCESS ON A DIFFERENT SOCKET, so that proof says nothing about it.
+# Without this row, an engine whose proxy silently failed would still render
+# every page, parse every verdict and land every row as READ — a
+# complete-looking reading of the OPERATOR'S REAL ADDRESS taken against
+# Pixelscan, CreepJS, iphey and Sannysoft. That is the Invariant #0 failure the
+# guard exists to prevent, prevented on one leg and not the other.
+#
+# It is READ THE SAME WAY as every other browser row (``inner_text`` + a
+# pattern), so it needs no new extraction path — and it is recorded as EXIT,
+# because it is supposed to move between runs.
+#
+# The pattern is written against RAW JSON, which is why ``_prefs`` turns
+# Firefox's JSON viewer off: with the viewer on, the body renders as a DOM tree
+# whose keys are unquoted, the quoted pattern does not match, and the reading
+# is ABSENT. That is the fail-SAFE direction — an unmatched proof refuses the
+# tier rather than passing it — but the raw form is what this is written for.
+ENGINE_EXIT_CHECKER = Checker(
+    id="engine-exit",
+    url="https://ipinfo.io/json",
+    tier=TIER_BROWSER,
+    settle_seconds=0.0,
+    items=(
+        TextItem("observed_ip", r'"ip"\s*:\s*"([^"]+)"', EXIT,
+                 adverse=False, capture=True,
+                 note="The address the ENGINE came out of, observed through "
+                      "the engine itself. Compare against the JSON tier's "
+                      "observed_ip: the two are different clients and a "
+                      "divergence is a fact worth having in the record rather "
+                      "than in a comment."),
+        TextItem("country", r'"country"\s*:\s*"([^"]+)"', EXIT,
+                 adverse=False, capture=True),
+        TextItem("city", r'"city"\s*:\s*"([^"]+)"', EXIT,
+                 adverse=False, capture=True),
+        TextItem("org", r'"org"\s*:\s*"([^"]+)"', EXIT,
+                 adverse=False, capture=True),
+        TextItem("timezone", r'"timezone"\s*:\s*"([^"]+)"', EXIT,
+                 adverse=False, capture=True,
+                 note="The zone the engine's OWN exit implies. persona derives "
+                      "the profile timezone from proxy geography, so this is "
+                      "the value the browser-side timezone must agree with."),
+    ),
+)
+
+
 # Every pattern below was matched against the checker's REAL rendered text,
 # captured through the mobile exit on 2026-08-21, and those captures are kept
 # as fixtures under ``tests/fixtures/checker-pages/`` so the suite can prove
@@ -298,6 +348,9 @@ JSON_CHECKERS: "tuple[Checker, ...]" = (
 # trap on :class:`TextItem` — and were corrected by measurement, not review.
 
 BROWSER_CHECKERS: "tuple[Checker, ...]" = (
+    # First, and deliberately: it is the tier's own proof of exit, and no
+    # checker page is loaded until it holds.
+    ENGINE_EXIT_CHECKER,
     Checker(
         id="deviceandbrowserinfo.com",
         url="https://deviceandbrowserinfo.com/are_you_a_bot",
@@ -416,7 +469,25 @@ BROWSER_CHECKERS: "tuple[Checker, ...]" = (
             TextItem("timezone_spoofed", r"(?<!no )timezone spoofed", EXIT,
                      note="A timezone-vs-IP COMPARISON, so it is exit-driven: "
                           "it moves when the exit moves."),
-            TextItem("geo_poland", r"poland\s*/\s*warsaw", EXIT, adverse=False),
+            # CAPTURED, not asserted — and the fix for a defect the first live
+            # run through a ROTATING exit exposed. This item is EXIT-sorted,
+            # which means the value is SUPPOSED to move between runs; the
+            # pattern nonetheless hardcoded `poland / warsaw`, so the moment
+            # the mobile exit rotated to Ursynów/Krakow (measured 2026-08-22)
+            # a perfectly clean Polish page read ABSENT. An EXIT item that only
+            # matches ONE of the values the exit legitimately produces is a
+            # reader defect, and the failure direction is the bad one: it looks
+            # like the checker stopped reporting Poland.
+            #
+            # So the COUNTRY is what is matched and the CITY is recorded as a
+            # value to compare. A country that stops being Poland is then a
+            # real change, and a city that moves is the design working.
+            TextItem("geo_country_city", r"(poland\s*/\s*\S+)", EXIT,
+                     adverse=False, capture=True,
+                     note="The checker's own geo verdict. Matched on the "
+                          "COUNTRY and captured WHOLE: the exit rotates within "
+                          "Poland by design, so pinning a city here manufactures "
+                          "a false ABSENT on a clean page."),
             TextItem("timezone_from_js", r"timezone from js\s+(\S+)", EXIT,
                      adverse=False, capture=True,
                      note="Must agree with the zone the EXIT implies — "
@@ -441,17 +512,34 @@ BROWSER_CHECKERS: "tuple[Checker, ...]" = (
             # the word. Captured as a value, not as a boolean: a rating moving
             # 0% -> 40% would otherwise read as "still matching", i.e. as no
             # change at all.
+            #
+            # adverse=False ON ALL THREE, and that is a correction the first
+            # live run forced. These are CAPTURE items: matching them means
+            # "the rating was PUBLISHED", not "the rating is bad". Left at the
+            # default adverse=True, the clean measured page — `0% headless`,
+            # `0% stealth`, `6% like headless`, i.e. the best readings CreepJS
+            # can give — recorded three ADVERSE MATCHES, so the run that proved
+            # the engine looks right reported it as three red flags.
+            #
+            # The polarity of a captured NUMBER lives in the number, and it
+            # cannot be expressed by a boolean that only says whether the
+            # pattern fired: judging 0% against 40% is a comparator's job, and
+            # this row's job is to hand it a value it can trust. An `adverse`
+            # flag here would make every successful reading look like a defect
+            # and every UNREADABLE page look clean — the wrong way round twice.
             TextItem("headless_rating", r"(\d+(?:\.\d+)?)%\s*headless\b",
-                     FINGERPRINT, capture=True,
+                     FINGERPRINT, adverse=False, capture=True,
                      note="The headless-resistance block. Slow to populate, "
                           "and the trust-score block does not always render "
                           "at all — which is why a miss is recorded as a MISS "
-                          "and never as a zero."),
+                          "and never as a zero. LOWER IS BETTER: 0% measured "
+                          "on the clean run, so the VALUE carries the verdict "
+                          "and the match only says it was published."),
             TextItem("like_headless_rating",
                      r"(\d+(?:\.\d+)?)%\s*like headless", FINGERPRINT,
-                     capture=True),
+                     adverse=False, capture=True),
             TextItem("stealth_rating", r"(\d+(?:\.\d+)?)%\s*stealth",
-                     FINGERPRINT, capture=True),
+                     FINGERPRINT, adverse=False, capture=True),
             TextItem("chromium_claim", r"chromium:\s*(true|false)", FINGERPRINT,
                      adverse=False, capture=True),
             TextItem("gpu_renderer", r"(angle \([^\n]+\))", HOST, adverse=False,
@@ -520,8 +608,10 @@ __all__ = [
     "BROWSER_CHECKERS",
     "CHECKERS",
     "Checker",
+    "ENGINE_EXIT_CHECKER",
     "EXIT",
     "FINGERPRINT",
+    "HARNESS",
     "HOST",
     "JSON_CHECKERS",
     "JsonItem",

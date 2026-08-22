@@ -44,6 +44,7 @@ from .matrix import (
     dumps,
     read_json_tier,
     read_unreadable_tier,
+    readings_for_unread_checker,
     write,
 )
 
@@ -105,16 +106,50 @@ def _cmd_read(args: argparse.Namespace) -> int:
     ]
 
     readings = []
-    if not args.skip_json:
+    skipped_tiers: "list[str]" = []
+
+    if args.skip_json:
+        # A SKIPPED TIER KEEPS ITS FULL WIDTH. Dropping the rows would make the
+        # record silently narrower on exactly the runs where less was read, and
+        # a later comparison could not tell "the tier was skipped" from "those
+        # checkers were dropped from the catalogue" from "that schema had no
+        # such tier". Same principle as readings_for_unread_checker one level
+        # up, and the same PS-58 vocabulary: a reading that did not happen must
+        # never read as one that did.
+        skipped_tiers.append("json")
+        for checker in JSON_CHECKERS:
+            readings.extend(
+                readings_for_unread_checker(
+                    checker, "tier skipped by --skip-json"
+                )
+            )
+        print(
+            f"json tier: SKIPPED ({len(readings)} rows recorded unobtainable)",
+            file=sys.stderr,
+        )
+    else:
         readings.extend(read_json_tier(proxy_url))
         print(f"json tier: {len(readings)} readings", file=sys.stderr)
 
-    if not args.skip_browser:
+    before = len(readings)
+    if args.skip_browser:
+        skipped_tiers.append("browser")
+        for checker in BROWSER_CHECKERS:
+            readings.extend(
+                readings_for_unread_checker(
+                    checker, "tier skipped by --skip-browser"
+                )
+            )
+        print(
+            f"browser tier: SKIPPED "
+            f"({len(readings) - before} rows recorded unobtainable)",
+            file=sys.stderr,
+        )
+    else:
         # Imported here: the browser tier pulls the engine, which must not be
         # required to read the JSON tier or to print --help.
         from .browser_tier import read_browser_tier
 
-        before = len(readings)
         readings.extend(read_browser_tier(proxy_url, seed=args.seed))
         print(
             f"browser tier: {len(readings) - before} readings",
@@ -129,6 +164,8 @@ def _cmd_read(args: argparse.Namespace) -> int:
         engine=_engine_label(),
         observed_at=_now(),
         environment=_environment(),
+        seed=args.seed,
+        skipped_tiers=skipped_tiers,
         notes=notes,
     )
 
@@ -188,13 +225,18 @@ def build_parser() -> argparse.ArgumentParser:
     rd.add_argument(
         "--skip-browser", action="store_true",
         help=(
-            "read only the JSON tier. The browser-tier rows are then ABSENT "
-            "FROM the record rather than recorded as passing"
+            "read only the JSON tier. The browser-tier rows are still RECORDED "
+            "— as UNOBTAINABLE, with 'tier skipped' as the reason, and the "
+            "header names the skipped tier. A skipped tier never shrinks the "
+            "record and is never recorded as passing"
         ),
     )
     rd.add_argument(
         "--skip-json", action="store_true",
-        help="read only the browser tier",
+        help=(
+            "read only the browser tier. The JSON-tier rows are still RECORDED "
+            "as UNOBTAINABLE, exactly as with --skip-browser"
+        ),
     )
     rd.set_defaults(func=_cmd_read)
 

@@ -1,17 +1,17 @@
 {
   "counts": {
-    "absent": 3,
-    "read": 17,
-    "total": 48,
-    "unobtainable": 28
+    "absent": 7,
+    "read": 22,
+    "total": 53,
+    "unobtainable": 24
   },
   "engine": "invisible_playwright/firefox-20",
   "environment": "linux-x86_64 (agent sandbox)",
   "exit": {
-    "city": "Warsaw",
+    "city": "Ursynów",
     "country": "PL",
-    "ip": "217.119.73.138",
-    "org": "AS9141 P4 Sp. z o.o.",
+    "ip": "84.40.220.51",
+    "org": "AS12887 Netia SA",
     "region": "Mazovia",
     "timezone": "Europe/Warsaw"
   },
@@ -19,7 +19,7 @@
     "Read from the agent sandbox: no GPU, so WebGL renders in software while the engine declares a discrete card. That pair is impossible on real hardware and is a KNOWN-ENVIRONMENTAL host-fact leak, recorded with its reason and never counted as a pass.",
     "The exit is a rotating mobile address. Rotation WITHIN Poland is the design, not a fault: an exit-driven reading is expected to move between runs, and a FINGERPRINT-driven reading that moves when only the address moved is a coupling worth its own ticket."
   ],
-  "observed_at": "2026-08-21T23:40:14Z",
+  "observed_at": "2026-08-22T01:11:53Z",
   "readings": [
     {
       "adverse": false,
@@ -108,7 +108,7 @@
       "state": "unobtainable"
     },
     {
-      "adverse": true,
+      "adverse": false,
       "checker": "creepjs",
       "item": "headless_rating",
       "reason": "Error: Page.goto: NS_ERROR_UNKNOWN_HOST\nCall log:\n  - navigating to \"https://abrahamjuliot.github.io/creepjs\", waiting until \"domcontentloaded\"\n",
@@ -116,7 +116,7 @@
       "state": "unobtainable"
     },
     {
-      "adverse": true,
+      "adverse": false,
       "checker": "creepjs",
       "item": "like_headless_rating",
       "reason": "Error: Page.goto: NS_ERROR_UNKNOWN_HOST\nCall log:\n  - navigating to \"https://abrahamjuliot.github.io/creepjs\", waiting until \"domcontentloaded\"\n",
@@ -124,7 +124,7 @@
       "state": "unobtainable"
     },
     {
-      "adverse": true,
+      "adverse": false,
       "checker": "creepjs",
       "item": "stealth_rating",
       "reason": "Error: Page.goto: NS_ERROR_UNKNOWN_HOST\nCall log:\n  - navigating to \"https://abrahamjuliot.github.io/creepjs\", waiting until \"domcontentloaded\"\n",
@@ -149,6 +149,56 @@
     },
     {
       "adverse": false,
+      "checker": "engine-exit",
+      "item": "city",
+      "matched_text": "\"city\": \"Ursynów\"",
+      "pattern": "\"city\"\\s*:\\s*\"([^\"]+)\"",
+      "sort": "exit",
+      "state": "read",
+      "value": "Ursynów"
+    },
+    {
+      "adverse": false,
+      "checker": "engine-exit",
+      "item": "country",
+      "matched_text": "\"country\": \"PL\"",
+      "pattern": "\"country\"\\s*:\\s*\"([^\"]+)\"",
+      "sort": "exit",
+      "state": "read",
+      "value": "PL"
+    },
+    {
+      "adverse": false,
+      "checker": "engine-exit",
+      "item": "observed_ip",
+      "matched_text": "\"ip\": \"84.40.220.51\"",
+      "pattern": "\"ip\"\\s*:\\s*\"([^\"]+)\"",
+      "sort": "exit",
+      "state": "read",
+      "value": "84.40.220.51"
+    },
+    {
+      "adverse": false,
+      "checker": "engine-exit",
+      "item": "org",
+      "matched_text": "\"org\": \"AS12887 Netia SA\"",
+      "pattern": "\"org\"\\s*:\\s*\"([^\"]+)\"",
+      "sort": "exit",
+      "state": "read",
+      "value": "AS12887 Netia SA"
+    },
+    {
+      "adverse": false,
+      "checker": "engine-exit",
+      "item": "timezone",
+      "matched_text": "\"timezone\": \"Europe/Warsaw\"",
+      "pattern": "\"timezone\"\\s*:\\s*\"([^\"]+)\"",
+      "sort": "exit",
+      "state": "read",
+      "value": "Europe/Warsaw"
+    },
+    {
+      "adverse": false,
       "checker": "fv.pro",
       "item": "(whole checker)",
       "reason": "The fields worth reading are paywalled.",
@@ -159,33 +209,37 @@
       "adverse": false,
       "checker": "iphey.com",
       "item": "hardware_fine",
-      "reason": "Error: Page.goto: NS_ERROR_UNKNOWN_HOST\nCall log:\n  - navigating to \"https://iphey.com/\", waiting until \"domcontentloaded\"\n",
+      "pattern": "hardware\\s+everything is fine",
+      "reason": "the pattern did not match",
       "sort": "host",
-      "state": "unobtainable"
+      "state": "absent"
     },
     {
       "adverse": true,
       "checker": "iphey.com",
       "item": "not_trustworthy",
-      "reason": "Error: Page.goto: NS_ERROR_UNKNOWN_HOST\nCall log:\n  - navigating to \"https://iphey.com/\", waiting until \"domcontentloaded\"\n",
+      "pattern": "looks\\s+(?:not\\s+trustworthy|suspicious)",
+      "reason": "the pattern did not match",
       "sort": "fingerprint",
-      "state": "unobtainable"
+      "state": "absent"
     },
     {
       "adverse": false,
       "checker": "iphey.com",
       "item": "software_fine",
-      "reason": "Error: Page.goto: NS_ERROR_UNKNOWN_HOST\nCall log:\n  - navigating to \"https://iphey.com/\", waiting until \"domcontentloaded\"\n",
+      "pattern": "software\\s+everything is fine",
+      "reason": "the pattern did not match",
       "sort": "fingerprint",
-      "state": "unobtainable"
+      "state": "absent"
     },
     {
       "adverse": false,
       "checker": "iphey.com",
       "item": "trustworthy",
-      "reason": "Error: Page.goto: NS_ERROR_UNKNOWN_HOST\nCall log:\n  - navigating to \"https://iphey.com/\", waiting until \"domcontentloaded\"\n",
+      "pattern": "looks\\s+trustworthy",
+      "reason": "the pattern did not match",
       "sort": "fingerprint",
-      "state": "unobtainable"
+      "state": "absent"
     },
     {
       "adverse": false,
@@ -193,7 +247,7 @@
       "item": "as_number",
       "sort": "exit",
       "state": "read",
-      "value": 9141
+      "value": 12887
     },
     {
       "adverse": false,
@@ -201,7 +255,7 @@
       "item": "city_name",
       "sort": "exit",
       "state": "read",
-      "value": "Warsaw"
+      "value": "Krakow"
     },
     {
       "adverse": false,
@@ -217,7 +271,7 @@
       "item": "isp_name",
       "sort": "exit",
       "state": "read",
-      "value": "Play"
+      "value": "Netia SA"
     },
     {
       "adverse": false,
@@ -225,7 +279,7 @@
       "item": "observed_ip",
       "sort": "exit",
       "state": "read",
-      "value": "2a02:a31a:c1d1:6a00:27d:3bff:fe89:ed9f"
+      "value": "84.40.220.51"
     },
     {
       "adverse": false,
@@ -262,7 +316,7 @@
     {
       "adverse": false,
       "checker": "pixelscan.net",
-      "item": "geo_poland",
+      "item": "geo_country_city",
       "reason": "Error: Page.goto: NS_ERROR_UNKNOWN_HOST\nCall log:\n  - navigating to \"https://pixelscan.net/fingerprint-check\", waiting until \"domcontentloaded\"\n",
       "sort": "exit",
       "state": "unobtainable"
@@ -369,7 +423,7 @@
       "item": "observed_ip",
       "sort": "exit",
       "state": "read",
-      "value": "217.119.73.138:43228"
+      "value": "84.40.220.51:9298"
     },
     {
       "adverse": false,
@@ -412,5 +466,7 @@
       "state": "unobtainable"
     }
   ],
-  "schema_version": 1
+  "schema_version": 1,
+  "seed": 4242,
+  "skipped_tiers": []
 }

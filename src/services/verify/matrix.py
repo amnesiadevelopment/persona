@@ -59,14 +59,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .checkers import (
-    BROWSER_CHECKERS,
-    CHECKERS,
     Checker,
     JSON_CHECKERS,
     JsonItem,
-    TIER_BROWSER,
-    TIER_JSON,
-    TIER_UNREADABLE,
     TextItem,
     UNREADABLE_CHECKERS,
 )
@@ -326,6 +321,8 @@ def build_record(
     engine: str,
     observed_at: str,
     environment: str = "",
+    seed: int = 0,
+    skipped_tiers: "list[str] | None" = None,
     notes: "list[str] | None" = None,
 ) -> dict:
     """Assemble the committed document.
@@ -334,6 +331,23 @@ def build_record(
     fingerprint reading that moved when only the address moved is a coupling,
     and that correlation cannot be made at all unless the address is in the
     record beside the readings.
+
+    The SEED is in the header for the same reason and it is the other half of
+    that same question. The engine's fingerprint is SEED-DERIVED — two runs on
+    one seed present one identity, two runs on different seeds present two —
+    so without it a comparison cannot tell A REAL COUPLING from A DIFFERENT
+    SEED, which is the exact analysis the record exists to enable. Measured:
+    the renderer moved ``NVIDIA GTX 980`` -> ``Intel HD Graphics 400`` between
+    two runs here purely because the seed differed. ``0`` means the engine's
+    own default was used (no seed passed), which is itself the reproducible
+    fact worth recording.
+
+    ``skipped_tiers`` names any tier the operator asked not to read. A skipped
+    tier's rows are UNOBTAINABLE rows like any other unread checker — see
+    :func:`readings_for_unread_checker` — so the matrix keeps its full width;
+    this key is the header-level statement of the same fact, so a later
+    comparison can tell "the browser tier was skipped" from "those checkers did
+    not exist in that schema" without inferring it from a row count.
     """
     by_state: "dict[str, int]" = {READ: 0, ABSENT: 0, UNOBTAINABLE: 0}
     for reading in readings:
@@ -343,6 +357,8 @@ def build_record(
         "observed_at": observed_at,
         "environment": environment,
         "engine": engine,
+        "seed": seed,
+        "skipped_tiers": list(skipped_tiers or []),
         "exit": exit_.as_record(),
         "counts": {
             "total": len(readings),
