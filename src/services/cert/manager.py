@@ -47,19 +47,31 @@ def start_cert_session(
 ) -> CertSession | None:
     """Start a terminator for ``cert`` and return the session, or None when
     there's no certificate or it can't be prepared (the launch then proceeds
-    without mTLS rather than failing)."""
+    without mTLS rather than failing).
+
+    Each guard below returns before the sweep that used to be the mechanism's
+    only reachable call site, which made the "at most one session's key material
+    is ever on disk" guarantee silently false for a profile whose certificate
+    can no longer be prepared. Deciding there is no session is a decision about
+    key material too, so every early return sweeps first. ``sweep_key_material``
+    is TOTAL and never creates ``work_dir``, so this cannot turn a graceful "no
+    mTLS" degradation into a failed launch, nor conjure a directory."""
     if cert is None:
+        term.sweep_key_material(work_dir)
         return None
     if not cert.url:
         logger.error("certificate %r has no admin URL; skipping", cert.name)
+        term.sweep_key_material(work_dir)
         return None
     if not cert.p12_path or not os.path.isfile(cert.p12_path):
         logger.error("certificate %r: p12 missing at %s", cert.name, cert.p12_path)
+        term.sweep_key_material(work_dir)
         return None
 
     host, port_ = term.host_port(cert.url)
     if not host:
         logger.error("certificate %r: unparseable admin URL %r", cert.name, cert.url)
+        term.sweep_key_material(work_dir)
         return None
 
     # The decrypted client key is written UNENCRYPTED, under an mkstemp-unique
