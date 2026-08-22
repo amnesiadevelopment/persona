@@ -522,3 +522,80 @@ def test_socks_check_never_reports_success_without_a_proxy(monkeypatch):
     assert result[0] is False
     assert result[2:6] == ("", "", "", "")
     assert "127.0.0.1" not in result[1] and str(port) not in result[1]
+
+
+def test_socks_geo_body_that_is_a_json_array_reports_the_specific_failure(monkeypatch):
+    """A 200 whose SOCKS geo body is a valid JSON ARRAY must reach check_proxy's
+    documented "Proxy geo lookup failed" arm, not the generic catch-all.
+
+    _http_get_json is SHARED between this geo probe and the release-metadata
+    fetch, and the latter legitimately receives a top-level array — so the
+    helper returns `dict | list | None`. The geo caller must narrow that back
+    to `dict | None`, because check_proxy's 200-handler reaches its specific
+    message only via None: a list sails past the `data is None` check and then
+    trips `.get()` into the blanket `except`, which reports the generic
+    "Proxy check failed" for a case the code deliberately wrote a message for.
+
+    No TLS here on purpose: _ssl_context is patched to None so the tunnel stays
+    cleartext. The contract under test is the RETURN TYPE, not the transport,
+    and this keeps the test green in containers without `cryptography`.
+    """
+    srv, port = _listener()
+    seen: dict[str, object] = {}
+    body = b'[{"success": true, "country_code": "PL"}]'   # an ARRAY, not an object
+
+    def serve() -> None:
+        conn, _ = srv.accept()
+        conn.settimeout(10)
+        try:
+            greeting = _recv_exactly(conn, 2)
+            _recv_exactly(conn, greeting[1])
+            conn.sendall(b"\x05\x00")                     # no auth
+            _ver, _cmd, _rsv, atyp = _recv_exactly(conn, 4)
+            seen["atyp"] = atyp
+            _recv_exactly(conn, _recv_exactly(conn, 1)[0])
+            _recv_exactly(conn, 2)
+            conn.sendall(b"\x05\x00\x00\x01" + b"\x00" * 4 + b"\x00\x00")
+            request = b""
+            while b"\r\n\r\n" not in request:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                request += chunk
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: application/json\r\n"
+                b"Content-Length: " + str(len(body)).encode() + b"\r\n"
+                b"Connection: close\r\n\r\n" + body
+            )
+            conn.close()
+        except Exception as exc:
+            seen["error"] = repr(exc)
+            conn.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+
+    monkeypatch.setattr(proxy_checker, "_ssl_context", lambda: None)
+    try:
+        result = asyncio.run(
+            proxy_checker.check_proxy(
+                f"socks5://127.0.0.1:{port}", timeout=10, allow_loopback=True
+            )
+        )
+    finally:
+        thread.join(20)
+        srv.close()
+
+    ok, message = result[0], result[1]
+    assert ok is False, f"an array body must never read as a good geo check"
+    # THE assertion: the specific, documented message — not the generic arm the
+    # AttributeError falls into.
+    assert message == "Proxy geo lookup failed", (
+        f"got {message!r}; server: {seen.get('error')}"
+    )
+    assert message != "Proxy check failed"
+    # Failing closed must still leave the geo fields empty rather than half-set.
+    assert result[2:6] == ("", "", "", "")
+    # And the endpoint is still never named in an operator-visible string.
+    assert "127.0.0.1" not in message and str(port) not in message

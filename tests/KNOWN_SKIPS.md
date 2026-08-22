@@ -30,6 +30,16 @@ To make a skip *consequential* on a machine provisioned to run the thing, see
 Measured on the CI-equivalent Linux container at `96e574b` with a clean tree:
 **43 failed, 2377 passed, 17 skipped**.
 
+> **This table is a reading of one environment, not the universal position.**
+> It was measured on a container where `pip install .` had *not* been run. A
+> machine that has installed the project sees a materially different set — an
+> independent run during review, on a container carrying `playwright 1.61.0`
+> and `invisible_core`, reported **0 failed, 14 skipped**, and there the
+> `browser` skips come from the *launch* guard rather than the import guard.
+> Read a difference from this table as "a different environment" first, and
+> only then as a regression; what makes a skip legible is the reason it gives,
+> which prints on every run, not this snapshot's arithmetic.
+
 > The 43 failures are this container missing `invisible_core`, `aiohttp` and
 > `PIL` — they are the same before and after this change and are not caused by
 > it. A machine that has run `pip install .` does not see them.
