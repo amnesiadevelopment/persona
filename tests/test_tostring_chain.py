@@ -156,6 +156,17 @@ function report(realm) {
     "  var patchSelf = null;" +
     "  try { patchSelf = Function.prototype.toString.call(Function.prototype.toString); }" +
     "  catch (e) { patchSelf = 'threw: ' + e; }" +
+    // AC5a, SECOND AXIS: `.name` is read independently of stringification, and
+    // __pnaName does not cloak it. Chaining is what puts this on the critical
+    // path: it makes locale_ext's wrapper outermost in one of the two orders, so
+    // without a pinned name `Function.prototype.toString.name` answers with the
+    // persona-internal identifier "_pts" — positive tool identification in one
+    // property read, the same class of leak this ticket exists to remove.
+    // patchSelf CANNOT see this axis: the stringification is cloaked by
+    // __pnaName and stays green while the name leaks underneath it.
+    "  var patchName = null;" +
+    "  try { patchName = Function.prototype.toString.name; }" +
+    "  catch (e) { patchName = 'threw: ' + e; }" +
     // AC5b: an UNMARKED function must still stringify to its real source — the
     // delegate has to be reached, not swallowed. A cloak that returned the
     // native form for everything would pass AC4 and break every page on earth.
@@ -169,6 +180,7 @@ function report(realm) {
     "  try { Function.prototype.toString.call(42); }" +
     "  catch (e) { primitiveThrew = true; }" +
     "  return {pna: pna, persona: persona, marked: marked, patchSelf: patchSelf," +
+    "          patchName: patchName," +
     "          plain: plain, primitiveThrew: primitiveThrew," +
     "          bootMarkers: (" + BOOT_MARKERS + ")};" +
     "})()", realm.ctx);
@@ -359,13 +371,38 @@ def test_chaining_matches_the_guard_on_what_the_guard_protected(realms, flagged_
 @pytest.mark.parametrize("order", _ORDERS)
 @pytest.mark.parametrize("name", _REALMS)
 def test_the_patch_itself_reads_native(realms, order, name):
-    # native_ext.py:44-47 — a detector stringifies Function.prototype.toString to
+    # native_ext.py:60-63 — a detector stringifies Function.prototype.toString to
     # catch exactly this trick. Chaining puts a SECOND wrapper on top, so this is
     # the assertion most at risk from the change: the outer patch must carry its
     # own __pnaName.
     assert _realm(realms, order, name)["patchSelf"] == (
         "function toString() { [native code] }"
     ), f"{order}/{name}: the cloak betrayed itself"
+
+
+@pytest.mark.parametrize("order", _ORDERS)
+@pytest.mark.parametrize("name", _REALMS)
+def test_the_patch_does_not_leak_its_internal_name(realms, order, name):
+    # The axis the test above CANNOT see. `patchSelf` reads the STRINGIFICATION,
+    # which __pnaName cloaks; `.name` is a separate property read that __pnaName
+    # does not touch. Delete the `name` pin in locale_ext (or native_ext) and the
+    # test above stays green while this one goes red — which is exactly how the
+    # leak got as far as review unpinned.
+    #
+    # Chaining is what made this reachable, and it is the LAST script to run that
+    # owns the observable: whichever patch ends up outermost is the one whose
+    # `.name` a detector reads. So native_first (native, then locale) exposes
+    # locale_ext's "_pts", and locale_first exposes native_ext's patch — which is
+    # why BOTH orders have to be pinned and BOTH are asserted here.
+    #
+    # NB this is the opposite order from the pre-change build, and the difference
+    # is the whole point of the ticket: under the old shared flag exactly one
+    # script wrapped a realm (the FIRST one, the loser returning early), so it was
+    # locale_first that leaked "_pts". Chaining means both wrap, every time.
+    assert _realm(realms, order, name)["patchName"] == "toString", (
+        f"{order}/{name}: the cloak leaks its own internal identifier via .name "
+        "— a persona-internal name is readable in one property access"
+    )
 
 
 @pytest.mark.parametrize("order", _ORDERS)
