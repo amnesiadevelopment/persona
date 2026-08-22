@@ -479,3 +479,509 @@ def test_release_no_longer_claims_the_bundle_goes_unexamined(release_text) -> No
         "to has now shipped"
     )
     assert "A true guard would import from" not in release_text
+
+
+# --------------------------------------------------------------------------
+# PS-60: the suite runs on every platform persona ships to, a real engine is
+# launched, and what this environment cannot answer says so.
+# --------------------------------------------------------------------------
+
+GPU_SCRIPT = REPO_ROOT / ".github" / "scripts" / "report_runner_gpu.py"
+
+#: The three runner labels release.yml already builds on. The pre-merge gate
+#: must cover the same set — a platform that ships without ever running the
+#: suite is the gap this matrix closes.
+SHIPPED_PLATFORMS = ("ubuntu-24.04", "windows-latest", "macos-latest")
+
+
+def _load_gpu_reporter():
+    """Import the GPU reporter as a module so tests read what it PRODUCES.
+
+    Asserting on its source text instead also matches its own docstring, which
+    is how a mutation that gutted the printed explanation once slipped past.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_ps60_gpu_reporter", GPU_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def gpu_text() -> str:
+    return GPU_SCRIPT.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("platform", SHIPPED_PLATFORMS)
+def test_ci_runs_the_suite_on_every_shipped_platform(ci_yaml, platform) -> None:
+    """persona ships to three operating systems; until this matrix existed
+    exactly one of them had ever executed a test, and everything the project
+    believed about Windows or macOS was inference from source."""
+    matrix = ci_yaml["jobs"]["tests"]["strategy"]["matrix"]
+    assert platform in matrix["os"], (
+        f"{platform} is not in the pre-merge matrix, so a change can break it "
+        "and still be merged — that platform still ships"
+    )
+
+
+def test_ci_matrix_covers_the_same_platforms_release_builds_for(ci_yaml, release_yaml) -> None:
+    """A platform good enough to BUILD for is good enough to TEST on.
+
+    Pinned as a relationship rather than as a hardcoded list so that adding a
+    fourth build target cannot quietly leave the pre-merge gate behind.
+    """
+    built_on = {
+        str(job.get("runs-on", ""))
+        for name, job in release_yaml["jobs"].items()
+        if name.startswith("build-")
+    }
+    tested_on = set(ci_yaml["jobs"]["tests"]["strategy"]["matrix"]["os"])
+    missing = {p for p in built_on if p and "${{" not in p} - tested_on
+    assert not missing, (
+        f"release.yml builds on {sorted(missing)} but the pre-merge gate never "
+        "runs the suite there — those platforms ship unverified"
+    )
+
+
+def test_ci_matrix_does_not_fail_fast(ci_yaml) -> None:
+    """The interesting result is 'holds on Linux, not on Windows'.
+
+    fail-fast cancels the sibling platforms the moment one goes red, throwing
+    away exactly the rows that make a divergence legible.
+    """
+    strategy = ci_yaml["jobs"]["tests"]["strategy"]
+    assert strategy.get("fail-fast") is False, (
+        "the matrix cancels remaining platforms on the first failure, which "
+        "destroys the cross-platform comparison this matrix exists to produce"
+    )
+
+
+def test_no_platform_is_excused_from_a_red_result(ci_yaml, ci_text) -> None:
+    """The Windows floor is 22 real failures, so the temptation to mark that
+    platform continue-on-error is live. It must be refused: it is the allowlist
+    defect at job scale, and would hide NEW Windows regressions too."""
+    for name, job in ci_yaml["jobs"].items():
+        assert job.get("continue-on-error") is not True, (
+            f"job {name} cannot fail the workflow"
+        )
+    effective = "\n".join(_effective_lines(ci_text))
+    assert "continue-on-error" not in effective, (
+        "a continue-on-error appeared in the gate's directives — a platform "
+        "whose red does not block is a platform nobody is verifying"
+    )
+
+
+def test_ci_provisions_a_real_browser_engine(ci_text) -> None:
+    """The realm-sweep fixture launches a genuine Firefox and had never
+    executed anywhere, because the BINARY was never provisioned. `pip install .`
+    supplies the playwright package but not the browser."""
+    effective = "\n".join(_effective_lines(ci_text))
+    assert "playwright install firefox" in effective, (
+        "no step downloads the Firefox binary, so every real-browser probe "
+        "skips and the suite's strongest assertion never runs"
+    )
+
+
+def test_ci_declares_the_browser_capability_rather_than_inferring_it(ci_yaml) -> None:
+    """A job that HAS provisioned a browser says so, and in that job a skip of
+    the browser probes is a failure.
+
+    The declaration must be explicit. Inferring it ("playwright imported, so
+    this machine supports browser tests") re-creates the original defect one
+    level up: it concludes "unsupported here" on precisely the machine where
+    support broke, which is the one case that must be loud.
+    """
+    steps = ci_yaml["jobs"]["tests"]["steps"]
+    declaring = [
+        s for s in steps
+        if "browser" in str(s.get("env", {}).get("PERSONA_REQUIRED_CAPABILITIES", ""))
+    ]
+    assert declaring, (
+        "no step declares the 'browser' capability, so a browser probe that "
+        "declines to run on a provisioned machine still reads as green"
+    )
+    for step in declaring:
+        assert "pytest" in str(step.get("run", "")), (
+            "the capability is declared on a step that does not run the suite, "
+            "so nothing enforces it"
+        )
+
+
+def test_the_capability_declaration_uses_the_projects_existing_vocabulary() -> None:
+    """PS-58 owns 'did not run'. A second mechanism here would mean two
+    vocabularies for the same question and a skip that satisfies neither."""
+    conftest = (REPO_ROOT / "conftest.py").read_text(encoding="utf-8")
+    assert "PERSONA_REQUIRED_CAPABILITIES" in conftest, (
+        "the workflow declares a capability through a name the test harness "
+        "does not implement — the declaration would be silently inert"
+    )
+    assert '"browser"' in conftest or "'browser'" in conftest, (
+        "the 'browser' capability the workflow declares is not a known "
+        "capability, which the harness treats as a hard usage error"
+    )
+
+
+def test_ci_states_the_measured_floor_for_every_platform(ci_text) -> None:
+    """A floor is the sentence the next reader trusts when deciding whether
+    their change broke something, so each platform's figure must be stated —
+    and they differ, which is the point.
+
+    Pinned to the MARKED floor line for each platform, not to a loose substring.
+    An earlier version asserted `"2446" in ci_text`, which the narrative below
+    the table also contains — so deleting the authoritative figure left the test
+    green. It was mutation-tested and did not catch that; this form does.
+    """
+    for platform in SHIPPED_PLATFORMS:
+        assert f"ON THIS RUNNER ({platform}" in ci_text, (
+            f"no floor recorded for {platform}, or it is not labelled with the "
+            "runner it was taken on"
+        )
+    for marker in ("THE LINUX FLOOR", "THE MACOS FLOOR", "THE WINDOWS FLOOR"):
+        pattern = rf"(\d+) failed, (\d+) passed[^\n]*<- {marker}"
+        match = re.search(pattern, ci_text)
+        assert match, (
+            f"the line marked {marker!r} does not state a 'N failed, N passed' "
+            "figure — a floor without numbers cannot be compared against"
+        )
+    windows = re.search(r"(\d+) failed, (\d+) passed[^\n]*<- THE WINDOWS FLOOR", ci_text)
+    assert windows and int(windows.group(1)) > 0, (
+        "the Windows floor is recorded as zero failures, but it was measured at "
+        "22 — a floor that understates itself makes every real regression look "
+        "like an inherited red"
+    )
+
+
+def test_ci_records_why_the_windows_floor_is_not_zero(ci_text) -> None:
+    """A bare number teaches people to ignore the job. The causes are what make
+    the 22 actionable rather than scenery."""
+    for cause in ("os.fork", "0o666", "charmap", "socket"):
+        assert cause in ci_text, (
+            f"the Windows floor does not name the {cause!r} cause — an "
+            "unexplained red is indistinguishable from a broken gate"
+        )
+
+
+def test_ci_records_the_red_it_inherited_rather_than_caused(ci_text) -> None:
+    """Every platform currently runs at its measured floor PLUS one failure
+    that arrived on main after those floors were taken. Recording it is what
+    lets the next reader tell an inherited red from one they just caused —
+    without it, three red jobs look like this matrix broke something.
+
+    Pinned to the marked line and to the evidence, not to a loose number: the
+    claim "not ours" is only worth anything if the proof travels with it.
+    """
+    assert "<- THE INHERITED RED" in ci_text, (
+        "no inherited failure is recorded, but all three platforms run one "
+        "above their stated floor — the table understates itself, which makes "
+        "every real regression look like an inherited red"
+    )
+    assert "test_installed_core_version_answers_empty_when_absent" in ci_text, (
+        "the inherited red is described but never named, so a reader cannot "
+        "check whether the red they are looking at is that one"
+    )
+    for evidence in ("4f94721", "fc27868"):
+        assert evidence in ci_text, (
+            f"the inherited red does not cite {evidence} — the commit that "
+            "introduced it and the main-tip run that fails it identically are "
+            "the whole basis for calling it inherited rather than ours"
+        )
+
+
+def test_the_inherited_red_is_reported_not_repaired(ci_text) -> None:
+    """The floor is measured and reported, never engineered away. An inherited
+    failure is the most tempting thing to quietly fix or allowlist, because
+    doing so turns three red jobs green without touching the product."""
+    assert "DELIBERATELY NOT FIXED HERE" in ci_text, (
+        "the workflow does not state that the inherited red is left alone, "
+        "leaving the next reader to 'helpfully' repair an unrelated test to "
+        "make the matrix green"
+    )
+    gate = REPO_ROOT / "src" / "services" / "verify" / "engine_gate.py"
+    if gate.exists():
+        blame = gate.read_text(encoding="utf-8")
+        assert 'CORE_DISTRIBUTION = "invisible_core"' in blame, (
+            "the inherited red is attributed to invisible_core metadata "
+            "resolution, but engine_gate no longer reads that distribution — "
+            "the recorded cause has gone stale and would mislead"
+        )
+
+
+def test_the_display_question_was_answered_by_measurement(ci_text) -> None:
+    """Assuming a display is needed adds a moving part nothing uses; assuming
+    it is not, when it is, fails for a reason unrelated to the product. The
+    workflow must record which it actually was."""
+    effective = "\n".join(_effective_lines(ci_text))
+    for banned in ("xvfb", "Xvfb", "xvfb-run"):
+        assert banned not in effective, (
+            "a virtual display is provisioned although a headless launch was "
+            "measured to work on all three runners"
+        )
+    assert "MEASURED" in ci_text and "DISPLAY" in ci_text, (
+        "the workflow does not state that the display question was settled by "
+        "measurement, leaving the next reader to re-litigate it"
+    )
+
+
+def test_the_gpu_reading_is_taken_on_every_platform(ci_yaml) -> None:
+    steps = ci_yaml["jobs"]["tests"]["steps"]
+    gpu_steps = [s for s in steps if "report_runner_gpu.py" in str(s.get("run", ""))]
+    assert gpu_steps, "no GPU reading is taken, so the host-fact leak goes unrecorded"
+    assert any(str(s.get("if", "")).strip() == "always()" for s in gpu_steps), (
+        "the GPU reading is skipped when the suite fails — but the Windows job "
+        "is red at its measured floor, so the reading would never be recorded "
+        "there at all"
+    )
+
+
+def test_the_gpu_reading_is_never_counted_as_a_pass(gpu_text) -> None:
+    """THE central property. A green assertion here would enter the record as
+    evidence that persona's GPU masking was verified on a machine that has no
+    GPU — the precise misreading the reporter exists to prevent."""
+    assert "assert " not in gpu_text, (
+        "the GPU reporter asserts, so its result can be read as a verdict on "
+        "persona rather than as a reading of the environment"
+    )
+    assert "return 0" in gpu_text and "return 1" not in gpu_text, (
+        "the GPU reporter can exit non-zero, which would raise a permanent "
+        "environmental fact as a new defect on every run"
+    )
+
+
+def test_the_gpu_reading_states_its_cause() -> None:
+    """Recorded WITH ITS REASON: a reader must meet the explanation and the
+    value at the same moment, or the permanent red becomes evidence about
+    persona.
+
+    Reads the explanation the operator is ACTUALLY SHOWN, by calling the
+    function that produces it. Two earlier versions asserted on the module's
+    source text, which also contains this vocabulary in its docstring — so
+    gutting the printed explanation left the test green while the operator saw
+    nothing. Both were mutation-tested and neither caught it; this form does.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_ps60_gpu_reporter", GPU_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+
+    shown = "\n".join(module.explain_software_rendering()).lower()
+    assert "host-fact leak" in shown, (
+        "the printed reading does not classify the software-renderer pair as a "
+        "host-fact leak, which is how the masking charter already records it — "
+        "explaining it only in a docstring the operator never sees is not enough"
+    )
+    assert "by construction" in shown, (
+        "the printed reading does not say the pair is present by construction "
+        "on this infrastructure, so a reader may take it for a regression"
+    )
+    assert "not" in shown and "defect" in shown, (
+        "the printed reading does not tell the reader to refrain from filing it "
+        "as a new defect"
+    )
+    # The classification is worthless if the detection never fires.
+    assert module.looks_like_software("llvmpipe (LLVM 15.0.7, 256 bits)")
+    assert module.looks_like_software("Apple Software Renderer")
+    assert not module.looks_like_software("NVIDIA GeForce RTX 4090/PCIe/SSE2")
+
+
+def test_absent_gpu_data_is_never_reported_as_hardware() -> None:
+    """THE THREE STATES MUST STAY THREE.
+
+    Measured on the runners: windows-latest reports a software rasteriser
+    (Microsoft Basic Render Driver), macos-latest reports real hardware
+    (Apple M1), and ubuntu-24.04 reports NOTHING AT ALL — headless Firefox
+    exposes no WebGL context, so every parameter comes back None.
+
+    An earlier revision had two branches, so the Linux case printed "did NOT
+    report a software rasteriser" — letting an ABSENCE of data read as evidence
+    the host had a GPU. That is precisely the misreading this reporter exists to
+    prevent, one level up.
+    """
+    module = _load_gpu_reporter()
+
+    absent = "\n".join(module.explain_no_reading()).lower()
+    assert "no reading" in absent or "absence of data" in absent, (
+        "the no-data branch does not say that no reading was taken"
+    )
+    assert "not a claim" in absent, (
+        "the no-data branch does not refuse to make a claim about the host — an "
+        "absent reading must never read as 'this runner has a GPU'"
+    )
+
+    hardware = "\n".join(module.explain_hardware_reading("Apple M1")).lower()
+    assert "not a verification" in hardware or "do not record it as a pass" in hardware, (
+        "the hardware branch reads as a pass — reporting a real GPU is a fact "
+        "about the runner, not evidence that persona's masking held"
+    )
+
+    # The three explanations must be genuinely different text, or the
+    # distinction is cosmetic.
+    assert len({absent, hardware, "\n".join(module.explain_software_rendering()).lower()}) == 3
+
+    # AND THE DISPATCH ITSELF, not only the three texts it dispatches to. An
+    # earlier version tested the texts alone, so neutering the `renderer is
+    # None` branch kept every assertion green while a runner that answered
+    # NOTHING silently began reading as one that reported hardware.
+    assert module.explanation_for(None, False) == module.explain_no_reading(), (
+        "a reading with NO renderer string does not route to the no-data "
+        "explanation — an absence of data would read as a claim about the host"
+    )
+    assert module.explanation_for("Apple M1", False) == module.explain_hardware_reading("Apple M1"), (
+        "a hardware renderer does not route to the hardware explanation"
+    )
+    assert module.explanation_for("llvmpipe", True) == module.explain_software_rendering(), (
+        "a software rasteriser does not route to the host-fact-leak explanation"
+    )
+    # The software verdict must win even when a renderer string is present.
+    assert module.explanation_for(None, True) == module.explain_software_rendering()
+
+
+def test_the_gpu_explanation_is_the_one_actually_printed(gpu_text) -> None:
+    """Guards the seam every test above depends on.
+
+    If `main` stops routing through `explanation_for`, those functions become
+    dead code the tests still happily read — a green test describing output
+    nobody receives.
+    """
+    assert "banner += explanation_for(renderer, software)" in gpu_text, (
+        "main() no longer emits the explanation through explanation_for(), so "
+        "what is tested is not what is printed"
+    )
+
+
+def test_the_job_summary_states_the_same_three_states_as_the_banner() -> None:
+    """THE SUMMARY IS A SECOND SURFACE, AND IT MUST NOT CONTRADICT THE FIRST.
+
+    This test exists because the two surfaces once disagreed. The banner routed
+    through `explanation_for()` (three states) while the job summary carried a
+    two-branch ternary, so:
+
+      * on ubuntu-24.04 — renderer None, NO WebGL context at all — the summary
+        said "no software rasteriser was detected, which is unexpected",
+        reporting an ABSENCE OF DATA as a positive finding, on the one platform
+        whose failure floor is zero and whose page is therefore most read;
+      * on macos-latest — a real 'Apple M1' — the summary denied a detection the
+        banner directly above it had just made.
+
+    The summary is the wider-readership surface of the two: a rendered page, not
+    log output. Its wording is therefore not cosmetic.
+    """
+    module = _load_gpu_reporter()
+
+    absent = module.summary_note_for(None, False).lower()
+    hardware = module.summary_note_for("Apple M1", False).lower()
+    software = module.summary_note_for("llvmpipe (LLVM 15.0.7)", True).lower()
+
+    # 1. THE NO-DATA ARM — the one that was missing, and that fires every
+    #    ubuntu run. It must refuse to make a claim in either direction.
+    assert "no reading" in absent or "absence of data" in absent, (
+        "the job summary's no-data arm does not say that no reading was taken"
+    )
+    assert "not a claim" in absent, (
+        "the job summary does not refuse to make a claim about the host when no "
+        "reading exists — an absent reading must never read as 'this runner has "
+        "a GPU', which is the exact misreading this reporter exists to prevent"
+    )
+    assert "unexpected" not in absent, (
+        "the job summary calls an absent WebGL context 'unexpected', which is "
+        "the two-branch wording that treated missing data as a finding"
+    )
+
+    # 2. THE HARDWARE ARM must agree with the banner, not contradict it, and
+    #    must not read as a pass.
+    assert "apple m1" in hardware, (
+        "the job summary does not name the renderer that was actually reported, "
+        "so it cannot be checked against the banner printed beside it"
+    )
+    assert "not" in hardware and ("verification" in hardware or "pass" in hardware), (
+        "the job summary lets a real GPU reading read as a pass — reporting "
+        "hardware is a fact about the runner, not evidence that masking held"
+    )
+
+    # 3. THE SOFTWARE ARM keeps the charter's classification.
+    assert "host-fact leak" in software and "by construction" in software, (
+        "the job summary no longer classifies the software-renderer pair as a "
+        "host-fact leak present by construction"
+    )
+
+    # The three must be genuinely different text, or the distinction is
+    # cosmetic and a mutation collapsing two of them has nothing to escape.
+    assert len({absent, hardware, software}) == 3, (
+        "two of the job summary's three states produce the same text, so the "
+        "surface cannot distinguish them"
+    )
+
+    # The software verdict wins even when a renderer string is present, exactly
+    # as it does in explanation_for().
+    assert module.summary_note_for(None, True) == module.summary_note_for("llvmpipe", True)
+
+
+def test_the_job_summary_note_is_the_one_actually_written(gpu_text) -> None:
+    """Guards the summary seam, the way the banner seam is already guarded.
+
+    Without this, `summary_note_for` can be correct, fully tested, and never
+    called — which is precisely the state the previous defect was in, one
+    function over: the three good explanations existed while the summary
+    branched two ways on its own.
+    """
+    assert "+ summary_note_for(renderer, software)" in gpu_text, (
+        "main() no longer writes the job summary through summary_note_for(), so "
+        "what is tested is not what a reader is shown"
+    )
+    # And the wording that caused the defect must not come back inline.
+    assert "which is unexpected on a" not in gpu_text, (
+        "the two-branch summary wording is back in the reporter, reporting an "
+        "absence of data as an unexpected finding"
+    )
+
+
+def test_nothing_fakes_hardware_the_runner_does_not_have(ci_text, gpu_text) -> None:
+    """Out of scope, and actively harmful: forcing a renderer string corrupts
+    the one reading this environment is genuinely unable to give."""
+    effective = "\n".join(_effective_lines(ci_text)).lower()
+    for banned in ("mesa_gl_version_override", "libgl_always_software",
+                   "gallium_driver", "--use-gl=", "swiftshader-install"):
+        assert banned not in effective, (
+            f"the workflow sets {banned!r}, making the runner claim graphics "
+            "behaviour it does not have"
+        )
+    assert "getParameter" in gpu_text, (
+        "the reporter does not read the renderer from the live GL context, so "
+        "it cannot be reporting what the host actually draws with"
+    )
+
+
+def test_no_proxy_credential_is_introduced(ci_text) -> None:
+    """Explicitly out of scope: the mobile exit is metered and is itself the
+    subject of measurement elsewhere. Importing it here would spend quota to
+    improve a number nothing depends on, and create a credential in CI with no
+    consumer."""
+    effective = "\n".join(_effective_lines(ci_text)).lower()
+    for banned in ("proxy_url", "socks5", "proxy_user", "proxy_pass", "http_proxy:"):
+        assert banned not in effective, (
+            f"{banned!r} appeared in the gate — a datacenter exit IP is an "
+            "expected, IP-driven reading and must not be papered over"
+        )
+
+
+def test_ci_does_not_widen_the_read_only_permission_stance(ci_yaml) -> None:
+    """These jobs execute untrusted third-party code. Downloading and launching
+    a browser needs no token at all, so nothing added here may widen it."""
+    assert ci_yaml.get("permissions") == {"contents": "read"}
+    for name, job in ci_yaml["jobs"].items():
+        perms = job.get("permissions")
+        assert perms in (None, {"contents": "read"}), (
+            f"job {name} widens the default read-only permission stance"
+        )
+
+
+def test_no_self_hosted_runner_is_introduced(ci_yaml) -> None:
+    """Settled: the owner cannot grant machine access, which is the reason this
+    work stands on hosted infrastructure."""
+    for platform in ci_yaml["jobs"]["tests"]["strategy"]["matrix"]["os"]:
+        assert "self-hosted" not in str(platform), (
+            "a self-hosted runner appeared in the matrix"
+        )
