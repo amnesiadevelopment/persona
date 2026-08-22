@@ -63,6 +63,17 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
+      - name: Set up Node
+        # PINNED DELIBERATELY — keep in step with ci.yml's `tests` job.
+        # This suite drives generated cloak scripts through a real JS engine, so
+        # `node` is a test dependency whether or not it appears in pyproject.
+        # Nothing pinned it, so the version was whatever the runner image
+        # shipped; it drifted 20 -> 24 and turned a green suite red. This job
+        # carried the same exposure as the merge gate and simply had not fired
+        # since the image moved, because it only runs on a version tag.
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: "24"
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
@@ -137,10 +148,11 @@ jobs:
         # HEAD playwright bumps the required core past our pin), the bundled
         # engine raises ImportError and reads as "not ready" forever (#234). Fail
         # the build here instead of shipping that.
-        # LIMITATION (audit6 LOW g): this validates the RUNNER's pip env, not the
-        # actual flet-shipped bundle. A flet-build packaging bug that drops/downgrades
-        # a package would pass here yet ship broken. A true guard would import from
-        # inside the built bundle; tracked as a follow-up.
+        # This validates the RUNNER's pip env, which is the right scope for it —
+        # the "import from inside the built bundle" guard it used to defer to now
+        # exists as the "Open the frozen bundle before packaging it" step in each
+        # build job (.github/scripts/smoke_frozen_bundle.py), which catches the
+        # packaging bug this check cannot see.
         run: |
           pin="$(python -c "import re,pathlib; print(re.search(r'invisible_playwright @ git\+[^\"]+', pathlib.Path('pyproject.toml').read_text()).group(0))")"
           echo "installing engine from pyproject pin: $pin"
@@ -207,6 +219,15 @@ jobs:
             fi
           done
           echo "bundled engine packages OK"
+
+      - name: Open the frozen bundle before packaging it
+        # The checks above validate the RUNNER's pip env; this one looks INSIDE
+        # what flet actually froze. Runs BEFORE appimagetool and before upload,
+        # so a bundle that will not open is never wrapped, never checksummed and
+        # never published. Windowless by construction — see the script's
+        # docstring for exactly what it can and cannot ask without a screen.
+        run: |
+          python3 .github/scripts/smoke_frozen_bundle.py build/linux --repo-root .
 
       - name: Show what flet produced
         run: |
@@ -391,6 +412,17 @@ jobs:
             fi
           done
           echo "bundled engine packages OK"
+
+      - name: Open the frozen bundle before packaging it
+        # The counterpart of the Linux job's step, on the Windows bundle shape.
+        # Runs BEFORE Inno Setup and before upload, so a bundle that will not
+        # open is never wrapped into an installer and never published. The
+        # script discovers flet's layout rather than assuming a fixed path,
+        # which is what lets one script serve all three OSes without hollowing
+        # any of them out.
+        shell: bash
+        run: |
+          python .github/scripts/smoke_frozen_bundle.py build/windows --repo-root .
 
       - name: Show what flet produced
         shell: bash
@@ -812,6 +844,20 @@ jobs:
             fi
           done
           echo "bundled engine packages OK"
+
+      - name: Open the frozen bundle before packaging it
+        # The counterpart of the Linux/Windows steps, on the .app bundle shape.
+        # Runs BEFORE hdiutil and before upload, so a bundle that will not open
+        # is never wrapped into a dmg and never published. Pointed at the .app
+        # itself rather than build/macos so it reads the tree that actually
+        # ships.
+        run: |
+          APP="$(find build/macos -maxdepth 3 -name '*.app' | head -1)"
+          if [ -z "$APP" ]; then
+            echo "ERROR: no .app produced by flet build macos" >&2
+            exit 1
+          fi
+          python3 .github/scripts/smoke_frozen_bundle.py "$APP" --repo-root .
 
       - name: Package the .app into a dmg
         run: |
