@@ -482,12 +482,28 @@ BROWSER_CHECKERS: "tuple[Checker, ...]" = (
             # So the COUNTRY is what is matched and the CITY is recorded as a
             # value to compare. A country that stops being Poland is then a
             # real change, and a city that moves is the design working.
-            TextItem("geo_country_city", r"(poland\s*/\s*\S+)", EXIT,
+            # `[^\n]+`, NOT `\S+`. The value sits alone on its own line
+            # (measured: `Poland / Warsaw` at pixelscan.txt:107), and `\S+`
+            # stops at the first space — so a TWO-WORD city truncated to its
+            # first token: `Poland / Nowy Sacz` was captured as `Poland /
+            # Nowy`. Poland is full of them (Nowy Sącz, Zielona Góra, Nowy
+            # Targ, Gorzów Wielkopolski) and this exit rotates by design, so
+            # the case is reachable rather than theoretical.
+            #
+            # This is the SAME defect class as the hardcoded city above, one
+            # level down, and it fails in the QUIETER direction: the old bug
+            # read ABSENT (loud), this one read READ with a silently corrupted
+            # value. On a `capture=True` row in a record whose whole purpose is
+            # telling "the verdict changed" from "the wording changed",
+            # `Poland / Nowy` -> `Poland / Zielona` reads as a genuine geo
+            # change when both are just multi-word cities.
+            TextItem("geo_country_city", r"(poland\s*/\s*[^\n]+)", EXIT,
                      adverse=False, capture=True,
                      note="The checker's own geo verdict. Matched on the "
-                          "COUNTRY and captured WHOLE: the exit rotates within "
-                          "Poland by design, so pinning a city here manufactures "
-                          "a false ABSENT on a clean page."),
+                          "COUNTRY and captured WHOLE to the end of the line: "
+                          "the exit rotates within Poland by design, so pinning "
+                          "a city here manufactures a false ABSENT on a clean "
+                          "page, and `\\S+` would truncate a multi-word city."),
             TextItem("timezone_from_js", r"timezone from js\s+(\S+)", EXIT,
                      adverse=False, capture=True,
                      note="Must agree with the zone the EXIT implies — "
