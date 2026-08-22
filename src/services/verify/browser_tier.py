@@ -230,6 +230,7 @@ def read_page_texts(
     proxy_url: str,
     *,
     checkers: "tuple[Checker, ...]" = BROWSER_CHECKERS,
+    tls_checkers: "tuple[Checker, ...]" = (),
     seed: int = 0,
     sleep: Callable[[float], None] = time.sleep,
 ) -> "dict[str, dict]":
@@ -241,6 +242,15 @@ def read_page_texts(
 
     Raises :class:`EngineUnavailable` only when the ENGINE itself could not be
     started, which is the one failure that really is shared by every row.
+
+    ``tls_checkers`` are the JSON endpoints asked BY THE ENGINE (PS-62). They
+    ride THIS launch on purpose: the exit is proven once, here, and a second
+    launch would open a second set of sockets whose exit had not been proven —
+    the precise failure ``_observe_engine_exit`` exists to prevent. Their
+    results land in the SAME returned dict under their own (``…@engine``)
+    ids, carrying ``{"payload": <parsed json>}`` instead of ``{"text": …}``,
+    so one session produces one result map and each reader picks out the
+    checkers it catalogues.
     """
     try:
         from invisible_playwright import InvisiblePlaywright
@@ -280,9 +290,26 @@ def read_page_texts(
                 # an EngineUnavailable: the engine was fine, it was the exit
                 # that could not be shown.
                 return {
-                    checker.id: {"error": str(exc)} for checker in checkers
+                    checker.id: {"error": str(exc)}
+                    for checker in tuple(checkers) + tuple(tls_checkers)
                 }
             out[ENGINE_EXIT_CHECKER.id] = {"text": exit_text}
+
+            # The TLS endpoints, asked by THIS engine on THIS proven exit
+            # (PS-62). Done before the prose checkers because they are a
+            # single request each with no settle time, and because the
+            # handshake is what they record — a page that has been sitting
+            # open for minutes has nothing to do with it.
+            if tls_checkers:
+                from .engine_tls import fetch_payloads_with_engine
+
+                out.update(
+                    fetch_payloads_with_engine(
+                        live,
+                        checkers=tuple(tls_checkers),
+                        navigation_timeout_ms=NAVIGATION_TIMEOUT_MS,
+                    )
+                )
 
             for checker in checkers:
                 if checker.id == ENGINE_EXIT_CHECKER.id:
@@ -376,6 +403,7 @@ def read_browser_tier(
     proxy_url: str,
     *,
     checkers: "tuple[Checker, ...]" = BROWSER_CHECKERS,
+    tls_checkers: "tuple[Checker, ...]" = (),
     seed: int = 0,
 ) -> "list[Reading]":
     """The whole browser tier: launch, load, settle, read, extract.
@@ -383,15 +411,35 @@ def read_browser_tier(
     An engine that will not start makes every row unobtainable WITH THE REASON
     — the run continues and records that, rather than dying and recording
     nothing, because "we could not run a browser here" is itself a result.
+
+    ``tls_checkers`` (PS-62) are read through the SAME launch and returned in
+    the SAME list, so one call produces the whole engine-side reading. Their
+    rows are extracted by :mod:`engine_tls`, which earns their sort from the
+    response rather than from the fact that this function fetched them.
     """
     try:
-        pages = read_page_texts(proxy_url, checkers=checkers, seed=seed)
+        pages = read_page_texts(
+            proxy_url, checkers=checkers, tls_checkers=tls_checkers, seed=seed
+        )
     except EngineUnavailable as exc:
         out: "list[Reading]" = []
         for checker in checkers:
             out.extend(readings_for_unread_checker(checker, str(exc)))
+        if tls_checkers:
+            from .engine_tls import unread_engine_tls_tier
+
+            out.extend(
+                unread_engine_tls_tier(str(exc), checkers=tuple(tls_checkers))
+            )
         return out
-    return readings_from_texts(pages, checkers=checkers)
+    out = readings_from_texts(pages, checkers=checkers)
+    if tls_checkers:
+        from .engine_tls import readings_from_payloads
+
+        out.extend(
+            readings_from_payloads(pages, checkers=tuple(tls_checkers))
+        )
+    return out
 
 
 __all__ = [

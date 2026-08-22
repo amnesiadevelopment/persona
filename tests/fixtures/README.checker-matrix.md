@@ -45,8 +45,124 @@ because the exit rotates by design:
   curl/8.14.1`). Tagged `fingerprint`, a future Python or OpenSSL upgrade would
   read as *persona's fingerprint moving* — a false alarm of exactly the kind
   that makes a real one unbelievable. Reading persona's **real** TLS
-  fingerprint means driving these endpoints from the engine; that is a
-  different transport and a later slice.
+  fingerprint means driving these endpoints from the engine — **now built, see
+  below.**
+
+## The engine-driven TLS tier (PS-62)
+
+The gap the `harness` sort above was invented to *name* is now **closed as a
+capability**. The same three endpoints are also catalogued under `…@engine`
+ids (`tls.peet.ws@engine`, `tls.browserleaks.com@engine`,
+`tools.scrapfly.io@engine`) and asked by **persona's engine**, over the same
+launch and the same proven exit as the prose checkers.
+
+**The harness rows stayed.** They are not junk: they pin what this repo's own
+fetcher looks like on the wire, which is exactly what PS-46's egress work needs
+when it asks whether persona's unattended requests are distinguishable. The
+engine rows sit *beside* them — distinct checker ids, because the record is
+keyed by `(checker, item)` and two readings of one endpoint would otherwise
+collide.
+
+### A row must prove its own origin
+
+This is the part worth reading before trusting any `fingerprint`-sorted TLS row.
+
+**The tag is earned from the checker's answer, never from the transport.** The
+catalogue declares these items `fingerprint` because that is what they are
+*worth*; `engine_tls.retag` refuses to record them that way until the response
+shows a browser engine asked. The witness is the `user_agent` the checker echoes
+back — the same field that exposed the original mistake — and it is catalogued
+**first** on every one of these checkers so a row set meets the evidence before
+the claims.
+
+| the witness says | the row is recorded as |
+|---|---|
+| a browser engine | `fingerprint` — it describes persona |
+| a scripting client | `harness` — it describes the instrument, value kept |
+| unrecognised or absent | `unobtainable` — value dropped, nothing may be read |
+
+"The engine made this request, therefore these rows are the engine's" is
+precisely the reasoning that produced the original defect — the JSON tier was
+*known* to be fetched by `socks_fetch` and its rows were tagged `fingerprint`
+anyway. So the transport does not vouch for itself. A mis-wired client, a proxy
+answering from elsewhere, or a refactor that swaps the engine underneath all
+land as `harness` or `unobtainable` rather than as a false claim about persona.
+
+**`exit`-sorted rows are never demoted.** An observed address is a property of
+the exit and is the same fact whichever client asked; demoting it would discard
+a true reading to punish an unrelated uncertainty.
+
+**This is not a security control.** A hostile client can send any User-Agent it
+likes. The failure being guarded against is *our own instrument being mistaken
+for our own product* — two clients that are both ours, neither lying.
+
+### What has NOT been measured, and must not be read as clean
+
+**No live engine-TLS reading exists yet.** The capability is built and proven
+against recorded payloads; the *reading* is outstanding, for the reason the
+standing rules require be recorded rather than worked around:
+
+> The exit was **alive** at the start of the PS-62 session (Warsaw / PL /
+> `AS12912 T-Mobile Polska`, rotated onto an `ftth.dynamic` host) and **died
+> mid-session**. The engine's own geo preflight was refused (`0x05`), and
+> `curl -x socks5h://…` then returned `(97) cannot complete SOCKS5 connection`
+> on *every* host, while TCP to the SOCKS endpoint still connected and direct
+> egress still answered 200 — i.e. the exit refusing sessions, not a sandbox
+> fault. Rotation is the operator's, from the host: **report and stop**, no
+> retry loop, and no fallback to a direct connection. A TLS reading taken over
+> the sandbox's own address would be both wrong and an Invariant #0 exposure,
+> and it would look like data.
+
+So every `…@engine` row in a record taken before that exit is restored is
+`unobtainable` **with that reason**. Do not read them as clean, and do not
+treat the first later run that actually reads them as a regression — the same
+caution PS-59 recorded for its 24 unobtainable browser rows.
+
+### Firefox only — stated, not implied
+
+persona ships a patched **Firefox** *and* a **fingerprint-chromium**, and they
+will not present the same handshake. The engine tier is driven by
+`invisible_playwright` (Firefox, `firefox-20` as installed here);
+fingerprint-chromium is **not installed in the agent sandbox** and was **not
+read**. The record's `engine` header names the build for this reason: a matrix
+that read one engine and labelled the rows "persona" would repeat PS-62's own
+defect one level up — a true reading published under a name that claims both.
+
+Chromium additionally cannot authenticate to a SOCKS5 proxy on
+`--proxy-server`, so reading it needs the local relay
+(`src/services/proxy/bridge.py`, hardened by PS-25) that the Firefox path does
+not — it does SOCKS5-with-auth natively. That is the shape of the follow-up,
+not a defect in this one.
+
+### Out of scope here, on purpose
+
+If the engine's JA4 turns out to be distinctive or a poor match for what it
+claims to be, **that is a real finding and it belongs to the masking direction
+as its own ticket**, with the evidence attached. This tier reads and records;
+it does not tune the handshake.
+
+The comparison keys are **not spelled alike on every endpoint**, and assuming
+they are is what this ticket's first attempt got wrong:
+
+- **`ja4` is the key on every checker** — it is normalised (upstream sorts the
+  extension list) so it does not move with permutation.
+- **`tls.browserleaks.com` also publishes a genuinely distinct `ja3n_hash`**,
+  and that one is read as a second key.
+- **`tls.peet.ws` publishes no normalised JA3 at all.** Its `ja3` is the RAW
+  string and its `ja3_hash` the MD5 of it (`pagpeter/TrackMe`
+  `pkg/types/structs.go:16-23`; the extension list is joined in wire order at
+  `pkg/tls/fingerprint_tls.go:88-99` and never sorted — contrast the
+  `sort.Strings` it *does* apply to peetprint at :171 and to ja4 at
+  `pkg/tls/ja4.go:73`). So peet's second key is **`peetprint_hash`**, and every
+  `ja3` spelling on that checker is skipped. `tools.scrapfly.io` mirrors peet's
+  schema and is treated the same way.
+
+Raw JA3 is read nowhere, under **any** of its spellings, and a test pins the
+rule rather than a list of spellings (`reads_raw_ja3` in
+`tests/test_verify_checkers.py`, imported by the engine tier's guard so the two
+cannot drift): it varies with TLS extension permutation, so it moves without
+anything meaningful changing and would manufacture drift in the one record
+built to detect drift.
 
 ## The header, and the two keys a comparison cannot work without
 
