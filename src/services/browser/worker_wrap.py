@@ -77,31 +77,51 @@ from typing import NamedTuple
 
 
 class WorkerCloak(NamedTuple):
-    """The engine-specific way the BOOTSTRAP's own wrappers are made to look native.
+    """Every ENGINE-SPECIFIC seam in the bootstrap, in one object.
 
     The bootstrap installs wrappers of its own — ``Worker``, ``SharedWorker`` and
     the two ``HTMLIFrameElement`` accessors — quite apart from whatever the leaf
     patches. Those wrappers need the same cloak the leaf's do, and which cloak is
     correct depends on the engine, so it arrives here as a seam instead of being
-    hard-coded. Three fields, because the marker is applied in three syntactic
-    positions and only one of them is a statement:
+    hard-coded. Four cloak fields, because the marker is applied in four
+    syntactic positions and only one of them is a statement:
 
     * ``setup``   — statements spliced inside ``__pnaInstall``, once per realm.
     * ``apply``   — statements that cloak the ``Worker``/``SharedWorker`` wrapper.
     * ``frame_open`` / ``frame_close`` — wrapped AROUND the iframe accessor
       function expression, which is an argument position and cannot take one.
 
+    Two further fields carry the engine's WORKER-BODY DELIVERY, which is not a
+    cloak at all:
+
+    * ``blob_setup``   — statements spliced inside ``__pnaInstall`` that prepare
+      whatever the delivery needs (Firefox: retain the ``Blob`` behind each
+      object URL).
+    * ``blob_resolve`` — statements spliced at the TOP of the ``blob:``/``data:``
+      branch of the Worker wrapper, which may ``return`` a constructed worker to
+      pre-empt the shared sync-XHR path below.
+
+    THEY LIVE IN THE SAME OBJECT DELIBERATELY, and that is a correctness
+    property rather than tidiness. ``blob_setup`` defines ``__rb`` and cloaks its
+    ``createObjectURL`` chain through ``__bcloak``, which only exists if ``setup``
+    put it there — so a Firefox delivery paired with a Chromium cloak would
+    install an UNCLOAKED wrapper, i.e. the exact class of tell PS-78 round 3 was
+    rejected for. One object per engine makes that pairing unexpressible.
+
     Chromium's form is the ORIGINAL text and must stay byte-identical: it is the
     baseline every prior readback was taken against (the PS-78 boundary,
-    "Chromium is unchanged"). Its ``setup`` and frame pair are therefore EMPTY
-    STRINGS spliced at points chosen so that the empty case reproduces the old
-    template exactly — no stray blank line, no moved indentation.
+    "Chromium is unchanged"). Its ``setup``, frame pair and both delivery fields
+    are therefore EMPTY STRINGS spliced at points chosen so that the empty case
+    reproduces the old template exactly — no stray blank line, no moved
+    indentation.
     """
 
     setup: str
     apply: str
     frame_open: str
     frame_close: str
+    blob_setup: str = ""
+    blob_resolve: str = ""
 
 
 # Chromium: mark the wrapper for the single `Function.prototype.toString` patch
@@ -131,22 +151,44 @@ def realm_bootstrap_js(
     The caller must have defined ``apply_fn_name`` already. Nothing is written to
     the global object: the leaf, its source and the dedup set stay in closure.
 
-    ONE ``blob:``/``data:`` BRANCH, ON BOTH ENGINES — and it must stay that way.
-    An earlier revision of PS-78 added a ``blob_via_import_scripts`` flag that
-    gave Firefox a separate ``blob:`` branch using an ``importScripts`` shim,
-    on the belief that this engine refuses a SYNCHRONOUS XHR against a ``blob:``
-    URL (``NetworkError``). THAT PREMISE IS FALSE, and the flag is gone. Measured
-    on firefox-20 / 151.0 through this project's own launch path, on a real
-    ``https://`` origin::
+    ONE ``blob:``/``data:`` BRANCH, ON BOTH ENGINES — with a Firefox-only
+    delivery seam spliced at the top of it (``blob_resolve``), never a second
+    branch. An earlier revision of PS-78 added a ``blob_via_import_scripts`` flag
+    that gave Firefox a separate ``blob:`` branch using an ``importScripts``
+    shim, on the belief that this engine refuses a SYNCHRONOUS XHR against a
+    ``blob:`` URL (``NetworkError``). THE FLAG IS GONE, and its premise is only
+    HALF right — which is worse than plainly wrong, because it is right on every
+    origin a casual measurement reaches.
 
-        new XMLHttpRequest().open("GET", blobUrl, false).send()
-            -> status 200, body read back intact
+    IT IS NOT AN ENGINE FACT, IT IS A CSP FACT. The sync XHR is subject to the
+    page's ``connect-src``, so the answer depends on the ORIGIN, not on the
+    browser. Measured on firefox-20 / 151.0 through this project's own launch
+    path::
 
-    The same reading came back from a plain playwright launch of both engines
-    and from ``data:``/``about:blank``/``http`` origins. It is corroborated in
-    the tree: the locale spoof at ``invisible_launch.py:504`` has shipped this
-    identical sync-XHR ``blob:`` path in production all along, with live CreepJS
-    evidence behind it.
+        origin                    new XMLHttpRequest().open("GET", blobUrl, false)
+        https://example.com/      -> status 200, body read back intact
+        http://127.0.0.1          -> status 200
+        data: / about:blank       -> status 200
+        https://duckduckgo.com/   -> THROWS NetworkError
+
+    DuckDuckGo sends ``default-src 'none'`` with no ``blob:`` in its
+    ``connect-src``, so the fetch is refused by policy. An earlier round recorded
+    the "status 200" half here as a settled general fact; it was measured only on
+    origins that ship no CSP, and the conclusion did not survive an origin that
+    does. THAT ORIGIN IS THE DEFAULT START PAGE — ``_ensure_firefox_policies()``
+    pins DuckDuckGo — so the refusing case is where every Firefox profile already
+    is the moment it opens, not an exotic corner.
+
+    The in-tree corroboration is real but proves less than it appears to: the
+    locale spoof at ``invisible_launch.py:504`` has shipped this identical
+    sync-XHR ``blob:`` path in production all along, which establishes that the
+    path WORKS, not that it works EVERYWHERE. It is subject to the same
+    ``connect-src`` on the same origins.
+
+    Hence ``blob_resolve``: on Firefox the retained ``Blob`` is composed directly
+    and the XHR below is never reached for a url this realm minted. See
+    :data:`_FIREFOX_BLOB_RETAIN_SETUP` for the measurement and for why neither
+    the XHR nor the deleted shim clears both constraints alone.
 
     WHY THE SHIM WAS NOT MERELY REDUNDANT BUT HARMFUL. ``importScripts(blobUrl)``
     DEFERS the fetch of the original body out of the ``new Worker(...)`` call and
@@ -226,7 +268,7 @@ def realm_bootstrap_js(
       };
 
       // Run this module's leaf in this realm.
-      try { LEAF(G); } catch (e) {}%(cloak_setup)s
+      try { LEAF(G); } catch (e) {}%(cloak_setup)s%(blob_setup)s
 
       // --- workers ---------------------------------------------------------
       // Chain onto whatever Worker is already installed. Delegating to Orig is
@@ -264,7 +306,7 @@ def realm_bootstrap_js(
               var body = BOOT + "\ntry{importScripts(" + JSON.stringify(s) + ");}catch(e){}";
               return _Ref.construct(Orig, [mkurl(body), options], W);
             }
-            if (/^blob:|^data:/i.test(s)) {
+            if (/^blob:|^data:/i.test(s)) {%(blob_resolve)s
               try {
                 var x = new _XHR();
                 x.open("GET", s, false);
@@ -325,6 +367,8 @@ def realm_bootstrap_js(
             "cloak_apply": cloak.apply,
             "cloak_frame_open": cloak.frame_open,
             "cloak_frame_close": cloak.frame_close,
+            "blob_setup": cloak.blob_setup,
+            "blob_resolve": cloak.blob_resolve,
         }
     )
 
@@ -400,6 +444,121 @@ _FIREFOX_WORKER_CLOAK_SETUP = r"""
       } catch (e) {}"""
 
 
+# --- the Firefox WORKER-BODY DELIVERY seam ----------------------------------
+#
+# NOT A CLOAK. This is how the boot payload gets INTO a blob: worker at all, and
+# it exists because the shared sync-XHR path does not survive a real CSP.
+#
+# THE DEFECT, measured on the real engine through this project's own launch path
+# (xvfb + spawn_browser(in_process=True) + get_ff_eval, seeds pinned directly via
+# `fingerprint_seed_value` so the digest tracks the SEED and not the name):
+#
+#     origin                    sync XHR on blob:   page (1000 vs 2000)   WORKER
+#     https://duckduckgo.com/   THREW NetworkError  differ                COLLIDE
+#     https://example.com/      status 200          differ                differ
+#
+# The Worker wrapper reads the blob body with a SYNCHRONOUS XHR, and that XHR is
+# subject to the page's `connect-src`. DuckDuckGo sends `default-src 'none'` with
+# no `blob:` in its connect-src, so the XHR throws, the wrapper's own catch falls
+# back to constructing the ORIGINAL Worker, and the result is the worst available
+# shape: a worker that RUNS NORMALLY AND CARRIES NO SPOOF. Two profiles then read
+# the SAME readPixels digest in the worker realm — the exact linkability
+# `webgl_ext.py` exists to prevent, in exactly the realm its docstring names as
+# the one detectors read.
+#
+# AND THAT ORIGIN IS THE DEFAULT START PAGE. `_ensure_firefox_policies()` pins
+# DuckDuckGo, so this is not an exotic origin reached by browsing somewhere
+# unusual — it is where every Firefox profile already is the moment it opens.
+#
+# WHY THIS ROUTE AND NOT THE OTHER TWO. Three deliveries were measured against
+# the two constraints that have each already rejected a round of PS-78, on
+# duckduckgo.com:
+#
+#     route                      reaches the worker under CSP   survives revoke
+#     sync XHR (shared path)     NO  (NetworkError)             yes
+#     importScripts shim         yes                            NO (SecurityError)
+#     new Blob([BOOT, body])     YES                            YES
+#
+# NEITHER OF THE FIRST TWO CLEARS BOTH, which is why this is not a matter of
+# taste: the `importScripts` shim was deleted in round 2 precisely because a
+# worker whose blob URL is revoked right after construction (the pattern MDN
+# documents and bundlers emit) never ran at all. Composing the Blob OBJECT needs
+# no fetch, no XHR and no importScripts, so no CSP directive governs it; and a
+# `Blob` outlives `revokeObjectURL`, which tears down only the URL mapping. One
+# change retires both rejections instead of trading one for the other.
+#
+# HOW THE BLOB IS OBTAINED. `URL.createObjectURL` is CHAINED so each minted url
+# is remembered against the `Blob` it came from, and `revokeObjectURL` is chained
+# to forget it. THE RETENTION THIS ADDS IS ZERO, which is the point of chaining
+# the revoke as well: an un-revoked object URL already pins its blob alive in the
+# engine for the document's lifetime, so the map's lifetime is the engine's own
+# and a page that revokes properly frees the entry immediately. A plain Map, not
+# a WeakMap: the key is a STRING, which a WeakMap cannot hold.
+#
+# IT DEGRADES TO THE OLD BEHAVIOUR, NEVER BELOW IT. A `blob:` url the map has
+# never seen (minted before this script ran, or in another realm) simply falls
+# through to the sync-XHR path below — which is what it would have done anyway.
+# `data:` is untouched by this seam and keeps the XHR path, correctly: there is
+# no object URL to retain, and a data: URL carries its own body inline.
+#
+# BOTH NEW WRAPPERS ARE CLOAKED, through the same `__bcloak` the rest of this
+# object installs. An uncloaked `URL.createObjectURL` stringifying as raw patch
+# source is the identical class of tell that got round 3 rejected, and it would
+# be a fresh one introduced by the fix for the previous one.
+_FIREFOX_BLOB_RETAIN_SETUP = r"""
+
+      // --- retain the Blob behind each object URL (Firefox delivery) -------
+      // See the note beside _FIREFOX_BLOB_RETAIN_SETUP in worker_wrap.py. The
+      // worker wrapper composes `new Blob([BOOT, retained])` instead of
+      // re-fetching the url, because a restrictive `connect-src` (the DEFAULT
+      // start page ships one) refuses the fetch and leaves the worker unspoofed.
+      //
+      // Spliced inside __pnaInstall so it ships with __pnaInstall.toString() and
+      // every realm gets its OWN map — a map in an enclosing scope would be
+      // undefined in a worker, the exact failure this module's docstring records.
+      var __rb = (typeof Map === "function") ? new Map() : null;
+      try {
+        if (__rb && _URL && typeof _cou === "function"
+            && typeof _URL.revokeObjectURL === "function") {
+          var __orv = _URL.revokeObjectURL;
+          var __wcou = function createObjectURL(obj) {
+            var u = _cou.apply(this, arguments);
+            // Only Blob bodies are useful to compose with; a MediaSource has no
+            // body to prepend to and must fall through to the old path.
+            try { if (obj instanceof _Blob) { __rb.set(String(u), obj); } } catch (e) {}
+            return u;
+          };
+          var __wrv = function revokeObjectURL(u) {
+            // Forget FIRST, so the map can never outlive the engine's own
+            // mapping even if the underlying revoke throws.
+            try { __rb["delete"](String(u)); } catch (e) {}
+            return __orv.apply(this, arguments);
+          };
+          __bcloak(__wcou, "createObjectURL");
+          __bcloak(__wrv, "revokeObjectURL");
+          _URL.createObjectURL = __wcou;
+          _URL.revokeObjectURL = __wrv;
+        }
+      } catch (e) {}"""
+
+# Spliced at the TOP of the `blob:`/`data:` branch, so it pre-empts the sync XHR
+# for a blob: url whose Blob we still hold and falls through for everything else.
+# `_Blob` is the captured native constructor, so a page that later overrode
+# `Blob` is neither consulted nor handed the seed-bearing payload (PS-48).
+_FIREFOX_BLOB_RESOLVE = r"""
+              // Compose the retained Blob rather than re-fetching the url: no
+              // fetch means no `connect-src` to refuse it, and a Blob outlives
+              // revokeObjectURL. Falls through to the XHR path below when this
+              // realm never minted the url. See _FIREFOX_BLOB_RETAIN_SETUP.
+              try {
+                var rb = __rb && __rb.get(s);
+                if (rb) {
+                  var nb = new _Blob([BOOT + "\n", rb], { type: "application/javascript" });
+                  return _Ref.construct(Orig, [_cou.call(_URL, nb), options], W);
+                }
+              } catch (e) {}"""
+
+
 def firefox_worker_cloak() -> WorkerCloak:
     """The ``WorkerCloak`` a FIREFOX caller passes to :func:`realm_bootstrap_js`.
 
@@ -411,6 +570,15 @@ def firefox_worker_cloak() -> WorkerCloak:
 
     The Chromium default is not merely unnecessary on this engine, it is a tell:
     ``__pnaName`` exists on no browser, and nothing on Firefox reads it.
+
+    ALSO carries this engine's WORKER-BODY DELIVERY (``blob_setup`` /
+    ``blob_resolve``), which is not a cloak: the shared sync-XHR path is refused
+    by a restrictive ``connect-src`` and leaves the worker realm UNSPOOFED on the
+    default start page. See :data:`_FIREFOX_BLOB_RETAIN_SETUP` for the
+    measurement and for why neither of the two previously-tried routes clears
+    both constraints. The two travel in one object because ``blob_setup`` calls
+    ``__bcloak``, which ``setup`` defines — pairing this delivery with Chromium's
+    cloak would install an uncloaked wrapper.
     """
     return WorkerCloak(
         setup=_FIREFOX_WORKER_CLOAK_SETUP,
@@ -421,6 +589,8 @@ def firefox_worker_cloak() -> WorkerCloak:
         # argument position and cannot take a statement.
         frame_open="__bcloak(",
         frame_close=', "get " + prop, prop)',
+        blob_setup=_FIREFOX_BLOB_RETAIN_SETUP,
+        blob_resolve=_FIREFOX_BLOB_RESOLVE,
     )
 
 

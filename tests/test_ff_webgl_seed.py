@@ -30,7 +30,10 @@ from src.services.browser.webgl_ext import (
     build_webgl_extension,
     firefox_webgl_init_script,
 )
-from src.services.browser.worker_wrap import realm_bootstrap_js
+from src.services.browser.worker_wrap import (
+    firefox_worker_cloak,
+    realm_bootstrap_js,
+)
 
 
 def _code_only(js: str) -> str:
@@ -354,6 +357,201 @@ def test_a_blob_worker_survives_revoke_after_construction(revoke):
 # detector would run in. `readPixels` is the POSITIVE CONTROL — the cloak should
 # always cover it, so a run where the control fails is a broken harness rather
 # than a finding.
+
+
+# --- the CSP blocker, executed rather than read -----------------------------
+#
+# THE DEFECT THIS SEAT EXISTS FOR, and why every earlier round missed it.
+#
+# The bootstrap carried the boot payload into a `blob:` worker by reading the
+# body with a SYNCHRONOUS XHR inside the Worker constructor. That XHR is subject
+# to the page's `connect-src`. On an origin whose CSP forbids it the XHR throws,
+# the wrapper's own `catch` falls back to constructing the ORIGINAL Worker, and
+# the result is the worst available shape: A WORKER THAT RUNS NORMALLY AND
+# CARRIES NO SPOOF. Two profiles then read the SAME readPixels digest in the
+# worker realm -- the exact linkability webgl_ext.py exists to prevent, in
+# exactly the realm its docstring names as the one detectors read.
+#
+# AND IT IS THE DEFAULT START PAGE. `_ensure_firefox_policies()` pins
+# DuckDuckGo, which sends `default-src 'none'` with no `blob:` in connect-src.
+# So the affected origin is where every Firefox profile already is the moment it
+# opens -- not somewhere reached by browsing anywhere unusual.
+#
+# EVERY PRIOR MEASUREMENT RAN ON `example.com` OR A LOCAL ORIGIN, which ship no
+# CSP, and reported success on a profile that collides in production. That is
+# PS-11's third shape arriving from a new direction: not a vacuous test, but a
+# CORRECT test on the WRONG ORIGIN. Hence the parameter below -- the seat is run
+# on both, and the no-CSP arm is what keeps the CSP arm honest.
+#
+# Measured on the real engine (recorded on the ticket): with the fix, seeds 1000
+# and 2000 read DIFFERENT worker digests on duckduckgo.com; without it, both read
+# 3113650808, which is byte-for-byte the value they read with the mechanism
+# switched off entirely.
+
+
+def _run_csp_worker_case(csp_blocks_blob_xhr: bool, cloak=None) -> dict:
+    """Execute the real generated bootstrap against an XHR that behaves the way a
+    restrictive ``connect-src`` makes it behave, and report whether the LEAF
+    ARRIVED in the worker and whether the ORIGINAL BODY RAN.
+
+    Both facts, independently, because they fail apart and only one of the two
+    failures is loud: the CSP regression produced a worker that ran the original
+    body perfectly and carried no spoof at all.
+    """
+    node = shutil.which("node")
+    if not node:  # pragma: no cover - environment-dependent
+        pytest.skip("node is required to execute the generated bootstrap")
+
+    leaf = "function applyWebglPatch(G){ try { G.__WEBGL_SEED__ = 4242; } catch (e) {} }\n"
+    bootstrap = realm_bootstrap_js(
+        "applyWebglPatch", cloak if cloak is not None else firefox_worker_cloak()
+    )
+
+    harness = r"""
+const vm = require("node:vm");
+const CSP_BLOCKS = %(csp)s;
+const BLOBS = new Map();      // live object URLs -> Blob object
+let counter = 0;
+
+// A faithful-enough Blob: it keeps its PARTS, and composing a Blob out of other
+// Blobs concatenates their bodies. That composition is the whole mechanism under
+// test -- `new Blob([BOOT, retainedBlob])` -- so modelling it as a plain string
+// join would test nothing.
+const BLOB_SRC = `
+  function Blob(parts) {
+    var out = "";
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i];
+      out += (p && typeof p === "object" && typeof p.__text === "string")
+        ? p.__text : String(p);
+    }
+    this.__text = out;
+  }
+`;
+
+function makeRealm() {
+  const sandbox = { Reflect, WeakSet, WeakMap, Map };
+  sandbox.self = sandbox;
+  sandbox.globalThis = sandbox;
+  const ctx = vm.createContext(sandbox);
+  vm.runInContext(BLOB_SRC + `
+    var __n = 0;
+    function Worker(url, options) { this.url = url; }
+    function SharedWorker(url, options) { this.url = url; }
+    function XMLHttpRequest() {}
+    XMLHttpRequest.prototype.open = function (m, u) { this._u = u; };
+    XMLHttpRequest.prototype.send = function () {
+      // THE CSP. A restrictive connect-src refuses the fetch outright: the send
+      // THROWS, it does not return a status. That is what the wrapper's catch
+      // swallows before falling back to an unspoofed worker.
+      if (__CSP_BLOCKS && /^blob:/i.test(this._u)) {
+        var e = new Error("NetworkError"); e.name = "NetworkError"; throw e;
+      }
+      var b = __BLOB_GET(this._u);
+      if (b === undefined) { this.status = 0; this.responseText = ""; return; }
+      this.status = 200; this.responseText = b;
+    };
+  `, ctx);
+  ctx.__CSP_BLOCKS = CSP_BLOCKS;
+  ctx.__BLOB_GET = (u) => (BLOBS.has(u) ? BLOBS.get(u).__text : undefined);
+  // URL lives outside the sandbox source so the host Map is the single registry
+  // every realm shares -- that is what makes a url minted in the page realm
+  // resolvable when the worker realm is built from it. The two host callables
+  // must be INSTALLED BEFORE the source that closes over them is evaluated.
+  ctx.__COU = (b) => { const u = "blob:pna-" + (++counter); BLOBS.set(u, b); return u; };
+  ctx.__ROU = (u) => { BLOBS.delete(u); };
+  vm.runInContext("var URL = { createObjectURL: __COU, revokeObjectURL: __ROU };", ctx);
+  return ctx;
+}
+
+const page = makeRealm();
+vm.runInContext("(function(){" + %(leaf)s + %(bootstrap)s + "})();", page);
+
+const ORIGINAL_BODY = "self.__BODY_RAN__ = true;";
+vm.runInContext(
+  "var u = URL.createObjectURL(new Blob([" + JSON.stringify(ORIGINAL_BODY) + "]));" +
+  "var w = new self.Worker(u);" +
+  "globalThis.__spawned = w.url;",
+  page);
+
+const spawnedUrl = vm.runInContext("globalThis.__spawned", page);
+const workerBody = BLOBS.has(spawnedUrl) ? BLOBS.get(spawnedUrl).__text : null;
+
+const out = { bodyRan: false, leafArrived: false, workerResolvable: workerBody !== null };
+if (workerBody !== null) {
+  const worker = makeRealm();
+  try { vm.runInContext(workerBody, worker); } catch (e) { out.threw = String(e); }
+  out.bodyRan = vm.runInContext("self.__BODY_RAN__ === true", worker);
+  out.leafArrived = vm.runInContext("self.__WEBGL_SEED__ === 4242", worker);
+}
+console.log(JSON.stringify(out));
+""" % {
+        "csp": "true" if csp_blocks_blob_xhr else "false",
+        "leaf": json.dumps(leaf),
+        "bootstrap": json.dumps(bootstrap),
+    }
+
+    with tempfile.TemporaryDirectory() as d:
+        script = pathlib.Path(d, "csp_harness.js")
+        script.write_text(harness, encoding="utf-8")
+        proc = subprocess.run(
+            [node, str(script)], capture_output=True, text=True, timeout=60
+        )
+    assert proc.returncode == 0, f"harness failed: {proc.stderr}"
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+@pytest.mark.parametrize("csp_blocks_blob_xhr", [False, True])
+def test_the_spoof_reaches_a_worker_even_when_csp_forbids_the_fetch(csp_blocks_blob_xhr):
+    """THE BLOCKER THAT FAILED QA, pinned behaviourally and on BOTH origins.
+
+    The no-CSP arm is not padding: it is what distinguishes "the fix works" from
+    "the harness cannot see anything", and it is the arm every earlier round ran
+    exclusively.
+    """
+    out = _run_csp_worker_case(csp_blocks_blob_xhr)
+
+    assert out["workerResolvable"], "the wrapper produced no runnable worker body"
+    assert out["bodyRan"], (
+        "the ORIGINAL worker body did not run — a functional break, which is the "
+        "regression that killed the importScripts shim in round 2"
+    )
+    assert out["leafArrived"], (
+        "the spoof did not reach the worker realm: the worker runs UNSPOOFED, so "
+        "two profiles read the same WebGL digest there — on the DEFAULT start "
+        "page, whose CSP forbids the sync XHR the shared path uses"
+    )
+
+
+def test_that_seat_goes_red_without_the_firefox_delivery():
+    """THE CONTROL FOR THE SEAT ABOVE — without it the green means nothing.
+
+    Reruns the identical harness with ONLY the delivery seam removed (the round-3
+    form: Firefox's cloak seams intact, ``blob_resolve`` empty, so the shared
+    sync-XHR path is what runs). Under a CSP the leaf must then FAIL to arrive,
+    and — the diagnostic half — the worker must still RUN, because "runs normally
+    and carries no spoof" is precisely the shape that made this defect invisible.
+
+    Without CSP the same stripped form must still deliver, which is what proves
+    the red above is caused by the CSP and not by the strip.
+    """
+    stripped = firefox_worker_cloak()._replace(blob_resolve="")
+
+    blocked = _run_csp_worker_case(True, cloak=stripped)
+    assert not blocked["leafArrived"], (
+        "the seat cannot go red: the leaf arrived even with the delivery seam "
+        "removed, so it is not the seam that is being measured"
+    )
+    assert blocked["bodyRan"], (
+        "expected the WORST shape — a worker that runs and carries no spoof; a "
+        "dead worker would be a different (louder) defect"
+    )
+
+    ok = _run_csp_worker_case(False, cloak=stripped)
+    assert ok["leafArrived"], (
+        "the stripped form must still deliver WITHOUT a CSP — otherwise the red "
+        "above is caused by the strip rather than by the CSP"
+    )
 
 
 def _cloak_report(js: str) -> dict:
