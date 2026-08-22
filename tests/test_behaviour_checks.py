@@ -651,3 +651,61 @@ class TestUncoveredSurfacesClaimNoCoverageItDoesNotHave:
             "is checked, but no check reads cert_trust_status"
         )
         assert behaviour  # the disclosure lives with the vocabulary it qualifies
+
+
+class TestMissingDisplayCannotRunRatherThanFinding:
+    """A missing display must land on EXIT_CANNOT_RUN — never on EXIT_FINDING.
+
+    This is the three-way exit split's whole reason for existing, on the one
+    environmental path this project keeps getting bitten by. ``require_display``
+    delegates to ``baseline._require_display`` so the Xvfb message is identical
+    everywhere, but ``baseline`` raises ``BaselineUnavailable``, which is NOT a
+    ``BehaviourCheckError``. It is called from ``run_checks`` OUTSIDE any
+    per-check handler, so left untranslated it escaped the CLI's ``except``
+    entirely and Python's default unhandled-exception code — 1 — collided with
+    ``EXIT_FINDING``.
+
+    That collision is the exact misreading the split prevents: a CI job reading
+    exit 1 as documented concludes "a check RAN and the behaviour did NOT hold"
+    — a defect against persona — when in truth nothing was measured at all.
+    """
+
+    def test_require_display_raises_a_class_the_cli_can_catch(self, monkeypatch):
+        """The seam. ``BaselineUnavailable`` alone is invisible to the CLI."""
+        from src.services.verify.behaviour import require_display
+
+        monkeypatch.setattr("src.core.platform.IS_LINUX", True, raising=False)
+        monkeypatch.delenv("DISPLAY", raising=False)
+
+        with pytest.raises(BehaviourCheckError) as exc:
+            require_display()
+
+        # The actionable half of the message must survive the translation.
+        assert "xvfb" in str(exc.value).lower(), (
+            "the Xvfb install line is the part an operator acts on; it must "
+            "not be lost when the exception class is changed"
+        )
+
+    def test_the_cli_exits_cannot_run_and_says_so(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """The contract, observed at the CLI rather than asserted of a helper."""
+        from src.services.verify.behaviour_cli import _REEXEC_FLAG, main
+
+        home = tmp_path / "scratch"
+        home.mkdir()
+        monkeypatch.setenv("PERSONA_HOME", str(home))
+        monkeypatch.setattr("src.core.config.PERSONA_HOME", str(home), raising=False)
+        # Skip the re-exec: it would replace this test process.
+        monkeypatch.setenv(_REEXEC_FLAG, "1")
+        monkeypatch.setattr("src.core.platform.IS_LINUX", True, raising=False)
+        monkeypatch.delenv("DISPLAY", raising=False)
+
+        code = main(["run"])
+
+        assert code == EXIT_CANNOT_RUN
+        assert code != EXIT_FINDING, (
+            "a missing display reported as a FINDING accuses the product of a "
+            "defect when nothing was measured at all"
+        )
+        assert "CANNOT RUN:" in capsys.readouterr().err
