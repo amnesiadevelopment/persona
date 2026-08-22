@@ -68,6 +68,61 @@ from .matrix import (
 # lost row.
 NAVIGATION_TIMEOUT_MS = 90_000
 
+# --- the two engines --------------------------------------------------------
+
+FIREFOX = "firefox"
+CHROMIUM = "chromium"
+
+# Both engines persona ships, and the order the matrix runs them in. Firefox
+# first because it is the engine every prior record was taken under, so a
+# two-engine run's first half is directly comparable to the existing baseline.
+ENGINES: "tuple[str, ...]" = (FIREFOX, CHROMIUM)
+
+# The machines a run may declare. These are the values chromium's
+# ``--fingerprint-platform`` accepts; they are the OS the profile PRESENTS, not
+# the host it runs on.
+DECLARED_MACHINES: "tuple[str, ...]" = ("windows", "macos", "linux")
+
+DEFAULT_DECLARED_MACHINE = "windows"
+
+# What the Firefox engine declares no matter what it is asked for. Not a
+# default and not a preference: ``InvisiblePlaywright`` takes no OS/platform
+# argument at all, and the engine presents Windows regardless — the behaviour
+# ``services/browser/process.py`` records for the product as #211 ("unlike
+# stealth-Firefox, which reports Windows regardless"). Measured here too: a
+# Firefox session asked for nothing reported
+# ``Windows NT 10.0; Win64; x64 ... Firefox/151.0``.
+FIREFOX_DECLARES = "windows"
+
+
+def declared_machine_for(engine: str, requested: str = "") -> str:
+    """The machine an engine ACTUALLY declares, for the record header.
+
+    This function exists so the record can never claim a machine that was not
+    presented. The two engines differ and the difference is not symmetric:
+
+    * **chromium** honours ``--fingerprint-platform``, so it declares what was
+      requested.
+    * **firefox** cannot be asked — there is no parameter — and always presents
+      Windows. Asking it for macos and recording "macos" would be a fabricated
+      row: the record would state a machine the engine never declared, and a
+      later comparison would read the resulting difference as a coupling.
+
+    So a firefox run reports ``windows`` whatever was requested, and the CLI
+    says out loud that the request was not honoured rather than silently
+    dropping it. Reporting the asymmetry is the point; smoothing it over is the
+    failure this ticket names.
+    """
+    if engine == FIREFOX:
+        return FIREFOX_DECLARES
+    return requested or DEFAULT_DECLARED_MACHINE
+
+
+def honours_declared_machine(engine: str) -> bool:
+    """True when asking this engine for a machine actually changes what it
+    presents. False for firefox — see :func:`declared_machine_for`."""
+    return engine != FIREFOX
+
 
 class EngineUnavailable(RuntimeError):
     """persona's engine could not be launched here.
@@ -226,21 +281,86 @@ def _observe_engine_exit(
     return text, country
 
 
-def read_page_texts(
+def _read_open_session(
+    live,
+    *,
+    checkers: "tuple[Checker, ...]",
+    sleep: Callable[[float], None],
+) -> "dict[str, dict]":
+    """Prove the exit, then load and read every checker, on an OPEN session.
+
+    Engine-agnostic on purpose. It touches ``live`` only through ``new_page()``
+    and a page's ``goto`` / ``inner_text`` / ``close``, which is the whole
+    contract both engines satisfy — so the precondition, the settle wait, the
+    per-checker isolation and the "ask the exit checker once" rule are written
+    ONCE and cannot come out different on one engine than the other.
+
+    That sharing is the point rather than tidiness: a Chromium-specific copy of
+    this loop is exactly how one engine would quietly acquire a reading path
+    the other lacks, and a record built from two dialects is not comparable.
+    """
+    out: "dict[str, dict]" = {}
+
+    # THE TIER'S OWN PRECONDITION, and it runs before a single checker page is
+    # loaded. Not after, and not alongside: a checker that has already been
+    # asked cannot be un-asked, and the whole point is that the operator's real
+    # address must never reach one.
+    try:
+        exit_text, _country = _observe_engine_exit(live)
+    except ExitNotProvenInEngine as exc:
+        # Every row in the tier becomes unobtainable with this reason,
+        # including the engine-exit rows themselves. Deliberately NOT an
+        # EngineUnavailable: the engine was fine, it was the exit that could
+        # not be shown.
+        return {checker.id: {"error": str(exc)} for checker in checkers}
+    out[ENGINE_EXIT_CHECKER.id] = {"text": exit_text}
+
+    for checker in checkers:
+        if checker.id == ENGINE_EXIT_CHECKER.id:
+            # Already observed above — asking twice would record a second,
+            # later address for the same run and make the record
+            # self-contradicting on a rotating exit.
+            continue
+        try:
+            page = live.new_page()
+        except Exception as exc:
+            out[checker.id] = {"error": f"{type(exc).__name__}: {exc}"}
+            continue
+        try:
+            page.goto(
+                checker.url,
+                timeout=NAVIGATION_TIMEOUT_MS,
+                wait_until="domcontentloaded",
+            )
+            # The verdict does not exist at load time. Waiting is the whole
+            # difference between a reading and an empty page recorded as one.
+            sleep(checker.settle_seconds)
+            out[checker.id] = {"text": page.inner_text("body")}
+        except Exception as exc:
+            out[checker.id] = {"error": f"{type(exc).__name__}: {exc}"}
+        finally:
+            try:
+                page.close()
+            except Exception:
+                pass
+    return out
+
+
+def _read_page_texts_firefox(
     proxy_url: str,
     *,
-    checkers: "tuple[Checker, ...]" = BROWSER_CHECKERS,
-    seed: int = 0,
-    sleep: Callable[[float], None] = time.sleep,
+    checkers: "tuple[Checker, ...]",
+    seed: int,
+    sleep: Callable[[float], None],
 ) -> "dict[str, dict]":
-    """Load every browser-tier checker once and return its visible text.
+    """The Firefox half: construct the engine, then run the shared loop.
 
-    Returns ``{checker_id: {"text": str} | {"error": str}}``. Never raises for
-    ONE checker's failure — a checker that refuses the connection is a reading
-    about that checker, and it must not take the other five down with it.
-
-    Raises :class:`EngineUnavailable` only when the ENGINE itself could not be
-    started, which is the one failure that really is shared by every row.
+    Note what is NOT here: a declared machine. ``InvisiblePlaywright`` takes no
+    OS/platform argument at all, and the engine reports Windows regardless —
+    the same behaviour ``services/browser/process.py`` records for the product
+    ("unlike stealth-Firefox, which reports Windows regardless (#211)"). The
+    caller states the machine this engine actually declares rather than passing
+    one in and pretending it was honoured.
     """
     try:
         from invisible_playwright import InvisiblePlaywright
@@ -250,7 +370,6 @@ def read_page_texts(
             f"{type(exc).__name__}: {exc}"
         ) from exc
 
-    out: "dict[str, dict]" = {}
     kwargs: "dict[str, Any]" = {
         "headless": True,
         "humanize": False,
@@ -268,53 +387,7 @@ def read_page_texts(
 
     try:
         with engine as live:
-            # THE TIER'S OWN PRECONDITION, and it runs before a single checker
-            # page is loaded. Not after, and not alongside: a checker that has
-            # already been asked cannot be un-asked, and the whole point is
-            # that the operator's real address must never reach one.
-            try:
-                exit_text, _country = _observe_engine_exit(live)
-            except ExitNotProvenInEngine as exc:
-                # Every row in the tier becomes unobtainable with this reason,
-                # including the engine-exit rows themselves. Deliberately NOT
-                # an EngineUnavailable: the engine was fine, it was the exit
-                # that could not be shown.
-                return {
-                    checker.id: {"error": str(exc)} for checker in checkers
-                }
-            out[ENGINE_EXIT_CHECKER.id] = {"text": exit_text}
-
-            for checker in checkers:
-                if checker.id == ENGINE_EXIT_CHECKER.id:
-                    # Already observed above — asking twice would record a
-                    # second, later address for the same run and make the
-                    # record self-contradicting on a rotating exit.
-                    continue
-                try:
-                    page = live.new_page()
-                except Exception as exc:
-                    out[checker.id] = {
-                        "error": f"{type(exc).__name__}: {exc}"
-                    }
-                    continue
-                try:
-                    page.goto(
-                        checker.url,
-                        timeout=NAVIGATION_TIMEOUT_MS,
-                        wait_until="domcontentloaded",
-                    )
-                    # The verdict does not exist at load time. Waiting is the
-                    # whole difference between a reading and an empty page
-                    # recorded as one.
-                    sleep(checker.settle_seconds)
-                    out[checker.id] = {"text": page.inner_text("body")}
-                except Exception as exc:
-                    out[checker.id] = {"error": f"{type(exc).__name__}: {exc}"}
-                finally:
-                    try:
-                        page.close()
-                    except Exception:
-                        pass
+            return _read_open_session(live, checkers=checkers, sleep=sleep)
     except EngineUnavailable:
         raise
     except Exception as exc:
@@ -322,7 +395,107 @@ def read_page_texts(
             f"persona's engine failed during the run: "
             f"{type(exc).__name__}: {exc}"
         ) from exc
-    return out
+
+
+def _read_page_texts_chromium(
+    proxy_url: str,
+    *,
+    checkers: "tuple[Checker, ...]",
+    seed: int,
+    declared_machine: str,
+    sleep: Callable[[float], None],
+    allow_unsandboxed: bool = False,
+) -> "dict[str, dict]":
+    """The Chromium half: the same loop, behind a session that sets itself up.
+
+    Everything that makes Chromium harder than a flag — it cannot authenticate
+    to a SOCKS5 proxy so persona's hardened loopback relay carries the
+    credential, it is reached over CDP on a port that must be opened, it needs
+    a display — lives in :mod:`chromium_tier` and none of it reaches this loop.
+
+    ``ChromiumUnavailable`` is re-raised as :class:`EngineUnavailable` so a
+    caller keeps ONE way to say "the engine did not run, every row is
+    unobtainable for one shared reason" regardless of which engine was asked
+    for. The message is preserved, so the record still names the real cause.
+    """
+    from .chromium_tier import ChromiumSession, ChromiumUnavailable
+
+    try:
+        session = ChromiumSession(
+            proxy_url,
+            seed=seed,
+            declared_machine=declared_machine,
+            allow_unsandboxed=allow_unsandboxed,
+        )
+    except ChromiumUnavailable as exc:
+        raise EngineUnavailable(str(exc)) from exc
+    except Exception as exc:
+        raise EngineUnavailable(
+            f"could not construct persona's chromium engine: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+
+    try:
+        with session as live:
+            return _read_open_session(live, checkers=checkers, sleep=sleep)
+    except EngineUnavailable:
+        raise
+    except ChromiumUnavailable as exc:
+        raise EngineUnavailable(str(exc)) from exc
+    except Exception as exc:
+        raise EngineUnavailable(
+            f"persona's chromium engine failed during the run: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+
+
+def read_page_texts(
+    proxy_url: str,
+    *,
+    checkers: "tuple[Checker, ...]" = BROWSER_CHECKERS,
+    seed: int = 0,
+    engine: str = FIREFOX,
+    declared_machine: str = "",
+    allow_unsandboxed: bool = False,
+    sleep: Callable[[float], None] = time.sleep,
+) -> "dict[str, dict]":
+    """Load every browser-tier checker once and return its visible text.
+
+    Returns ``{checker_id: {"text": str} | {"error": str}}``. Never raises for
+    ONE checker's failure — a checker that refuses the connection is a reading
+    about that checker, and it must not take the other five down with it.
+
+    Raises :class:`EngineUnavailable` only when the ENGINE itself could not be
+    started, which is the one failure that really is shared by every row.
+
+    ``engine`` selects which of persona's two engines reads the pages. Both
+    reach the same shared loop; only the construction differs.
+
+    ``declared_machine`` is the OS the profile presents. It is honoured on
+    chromium and IGNORED on firefox, which cannot be asked — see
+    :func:`declared_machine_for`, which is what the record states so the
+    difference is recorded rather than implied.
+
+    ``allow_unsandboxed`` is the chromium-only waiver for a host that forbids
+    the user namespace its sandbox needs. Off by default and never inferred —
+    see :func:`chromium_tier.sandbox_available`.
+    """
+    if engine not in ENGINES:
+        raise EngineUnavailable(
+            f"unknown engine {engine!r}: persona ships {' and '.join(ENGINES)}"
+        )
+    if engine == CHROMIUM:
+        return _read_page_texts_chromium(
+            proxy_url,
+            checkers=checkers,
+            seed=seed,
+            declared_machine=declared_machine or DEFAULT_DECLARED_MACHINE,
+            allow_unsandboxed=allow_unsandboxed,
+            sleep=sleep,
+        )
+    return _read_page_texts_firefox(
+        proxy_url, checkers=checkers, seed=seed, sleep=sleep
+    )
 
 
 def readings_from_texts(
@@ -377,15 +550,29 @@ def read_browser_tier(
     *,
     checkers: "tuple[Checker, ...]" = BROWSER_CHECKERS,
     seed: int = 0,
+    engine: str = FIREFOX,
+    declared_machine: str = "",
+    allow_unsandboxed: bool = False,
 ) -> "list[Reading]":
     """The whole browser tier: launch, load, settle, read, extract.
 
     An engine that will not start makes every row unobtainable WITH THE REASON
     — the run continues and records that, rather than dying and recording
     nothing, because "we could not run a browser here" is itself a result.
+
+    That guarantee is why ``engine`` is safe to vary: a Chromium that cannot be
+    provisioned on some host produces a full-width record of unobtainable rows
+    naming the missing engine, never a narrower record and never a silent pass.
     """
     try:
-        pages = read_page_texts(proxy_url, checkers=checkers, seed=seed)
+        pages = read_page_texts(
+            proxy_url,
+            checkers=checkers,
+            seed=seed,
+            engine=engine,
+            declared_machine=declared_machine,
+            allow_unsandboxed=allow_unsandboxed,
+        )
     except EngineUnavailable as exc:
         out: "list[Reading]" = []
         for checker in checkers:
@@ -395,9 +582,17 @@ def read_browser_tier(
 
 
 __all__ = [
+    "CHROMIUM",
+    "DECLARED_MACHINES",
+    "DEFAULT_DECLARED_MACHINE",
+    "ENGINES",
     "EngineUnavailable",
     "ExitNotProvenInEngine",
+    "FIREFOX",
+    "FIREFOX_DECLARES",
     "NAVIGATION_TIMEOUT_MS",
+    "declared_machine_for",
+    "honours_declared_machine",
     "read_browser_tier",
     "read_page_texts",
     "readings_from_texts",
