@@ -19,6 +19,7 @@ version at all — so ``user_agent_for`` is an identity for them.
 from dataclasses import dataclass
 
 from .engine_version import ChromiumVersion
+from ...models.hardware_generation import visible_entries
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,14 @@ class DevicePreset:
     # Client Hints
     platform: str         # navigator.userAgentData platform, e.g. "Android"
     model: str            # Sec-CH-UA model, e.g. "Pixel 7"
+    # The hardware generation this preset was ADDED IN — see
+    # hardware_generation.py. A profile only sees presets whose `since` is <= its
+    # own generation, which is what lets this list grow without moving anybody:
+    # appending used to change len(pool) and re-index existing profiles onto a
+    # different phone (IOS_PRESETS is 2 long, so one new iPhone re-indexed
+    # roughly two-thirds of iOS profiles). NEVER renumber a shipped preset —
+    # its `since` is the promise to the profiles already pinned to it.
+    since: int = 0
 
     def user_agent_for(self, version: "ChromiumVersion | None") -> str:
         """This device's user agent as launched, on the installed engine.
@@ -141,16 +150,27 @@ IOS_PRESETS = [
 _ALL = {p.key: p for p in ANDROID_PRESETS + IOS_PRESETS}
 
 
-def presets_for(os_type: str) -> list[DevicePreset]:
-    if os_type == "ios":
-        return IOS_PRESETS
-    return ANDROID_PRESETS
+def presets_for(os_type: str, generation: int) -> list[DevicePreset]:
+    """The presets a profile of ``generation`` may be picked onto.
+
+    ``generation`` is REQUIRED and has no default: every default would be a
+    silent guess about which pool a profile belongs to, and guessing high is
+    exactly the re-roll the generation filter exists to prevent.
+    """
+    pool = IOS_PRESETS if os_type == "ios" else ANDROID_PRESETS
+    return visible_entries(pool, generation)
 
 
-def pick_preset(seed: int, os_type: str) -> DevicePreset:
+def pick_preset(seed: int, os_type: str, generation: int) -> DevicePreset:
     """Deterministically choose a device preset for the OS family from the
-    profile seed, so a profile always presents the same device."""
-    pool = presets_for(os_type)
+    profile seed, so a profile always presents the same device.
+
+    The divisor is the length of the profile's OWN generation's pool, not of the
+    whole list, so a preset appended later cannot move this profile: a
+    generation-0 profile keeps dividing by the length the list had when it was
+    created.
+    """
+    pool = presets_for(os_type, generation)
     return pool[(int(seed) & 0xFFFFFFFF) % len(pool)]
 
 

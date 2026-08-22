@@ -15,6 +15,7 @@ groupId hashes.
 import json
 import pathlib
 
+from ...models.hardware_generation import normalize_generation
 from .worker_wrap import realm_bootstrap_js
 
 # Common real desktop resolutions (StatCounter-ish top set). Picking from a
@@ -69,6 +70,11 @@ _CONTENT_SCRIPT = r"""
     var SEED = __SEED__;
     var FORCED = __FORCED_RES__;
     var OS = "__OS__";
+    // The profile's frozen hardware generation — lives INSIDE the patch with
+    // SEED/FORCED so .toString() carries it into every realm. See GEN's use
+    // below: it is what keeps `fits.length` from moving under an existing
+    // profile when a resolution is appended.
+    var GEN = __GEN__;
     var IS_MAC = (OS === "macos");
     // macOS has a ~25px top menu bar and no bottom taskbar; Windows a 40px
     // bottom taskbar. Real Chrome reports 30-bit color + Retina DPR 2 on Mac,
@@ -82,12 +88,19 @@ _CONTENT_SCRIPT = r"""
     var nw=function(orig,rep){try{Object.defineProperty(rep,'name',{value:orig.name});Object.defineProperty(rep,'__pnaName',{value:orig.name});}catch(e){}return rep;};
 
     // Logical (CSS-px) resolutions from a real-world distribution for the OS.
-    var RES = IS_MAC ? [
-      [1440, 900], [1512, 982], [1680, 1050], [1728, 1117], [2560, 1440],
+    // Third element is the hardware GENERATION the entry was added in (absent =
+    // 0, i.e. everything that shipped before generations existed). A profile
+    // only sees entries at or below its own frozen generation, so appending one
+    // here cannot change the divisor of the pick below for an existing profile.
+    // See models/hardware_generation.py. Append with `, N` and never renumber a
+    // shipped row.
+    var ALL_RES = IS_MAC ? [
+      [1440, 900, 0], [1512, 982, 0], [1680, 1050, 0], [1728, 1117, 0], [2560, 1440, 0],
     ] : [
-      [1366, 768], [1440, 900], [1536, 864], [1600, 900], [1920, 1080],
-      [1680, 1050], [1920, 1200], [2560, 1080], [2560, 1440],
+      [1366, 768, 0], [1440, 900, 0], [1536, 864, 0], [1600, 900, 0], [1920, 1080, 0],
+      [1680, 1050, 0], [1920, 1200, 0], [2560, 1080, 0], [2560, 1440, 0],
     ];
+    var RES = ALL_RES.filter(function (r) { return (r[2] || 0) <= GEN; });
 
     // Reuse the top window's already-computed W/H so every realm agrees. Only
     // the top realm has a real window extent to measure against.
@@ -266,6 +279,7 @@ _MANIFEST = {
 def build_device_extension(
     seed: int,
     base_dir: str,
+    generation: int,
     resolution: tuple[int, int] | None = None,
     os_type: str = "windows",
 ) -> str:
@@ -288,7 +302,9 @@ def build_device_extension(
     )
     script = _CONTENT_SCRIPT.replace(
         "__SEED__", str(int(seed) & 0xFFFFFFFF)
-    ).replace("__FORCED_RES__", forced).replace(
+    ).replace("__GEN__", str(normalize_generation(generation))).replace(
+        "__FORCED_RES__", forced
+    ).replace(
         "__OS__", os_norm
     ).replace(
         "__SCREEN_REALM_BOOTSTRAP__", realm_bootstrap_js("applyScreenPatch")

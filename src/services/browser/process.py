@@ -248,7 +248,9 @@ def _spawn_invisible(profile: Profile, profile_dir: str, *, in_process: bool = F
             proxy_url = cert_session.proxy_url
 
         width, height = resolve_resolution(
-            getattr(profile, "resolution", "auto"), profile.fingerprint_seed
+            getattr(profile, "resolution", "auto"),
+            profile.fingerprint_seed,
+            profile.hardware_generation,
         )
 
         cfg = {
@@ -375,7 +377,11 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
         # the mobile OS family for preset selection (android unless explicitly ios)
         mobile_os = profile.os_type if is_mobile_os(profile.os_type) else "android"
         preset = (
-            pick_preset(profile.fingerprint_seed, mobile_os) if is_mobile else None
+            pick_preset(
+                profile.fingerprint_seed, mobile_os, profile.hardware_generation
+            )
+            if is_mobile
+            else None
         )
         # The Chromium version this profile advertises, READ from the installed
         # engine rather than stored as a constant, so a routine engine bump
@@ -465,6 +471,7 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
                 build_device_extension(
                     profile.fingerprint_seed,
                     os.path.join(profile_dir, ".persona-device-ext"),
+                    profile.hardware_generation,
                     resolution=parse_resolution(getattr(profile, "resolution", "auto")),
                     os_type=profile.os_type,
                 )
@@ -480,6 +487,7 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
                 profile.fingerprint_seed,
                 profile.os_type,
                 os.path.join(profile_dir, ".persona-gpu-ext"),
+                profile.hardware_generation,
             )
         )
         # Safari's legacy webkit-3d context alias. iOS-only, and the extension

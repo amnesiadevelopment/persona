@@ -2,6 +2,8 @@ import zlib
 from collections.abc import Container
 from dataclasses import asdict, dataclass, field
 
+from .hardware_generation import normalize_generation
+
 
 def mint_fingerprint_seed(name: str, taken: Container[int] | None = None) -> int:
     """Mint the seed a NEW profile freezes into ``fingerprint_seed_value``.
@@ -122,6 +124,20 @@ class Profile:
     # consumer already calls, and a field of the same name would shadow the
     # property and hand callers a raw None on every pre-this-field profile.
     fingerprint_seed_value: int | None = None
+    # The hardware-list generation this profile was CREATED IN, frozen once at
+    # creation and never rewritten — the same freeze, for the same reason, as
+    # fingerprint_seed_value above. The seed pins WHICH INDEX a profile picks;
+    # this pins WHAT THAT INDEX MEANS, i.e. the pool the index divides into.
+    # Freezing only the seed left the mapping under it free to move: appending
+    # one entry to a hardware list changed `len(pool)` and re-indexed a large
+    # share of existing profiles onto different hardware, under their live
+    # cookie jars.
+    #
+    # NOT named `hardware_generation`: that name is the read accessor consumers
+    # call, and a field of the same name would shadow the property and hand
+    # callers a raw None on every pre-this-field profile — the same trap
+    # documented on the seed above.
+    hardware_generation_value: int | None = None
 
     @property
     def fingerprint_seed(self) -> int:
@@ -157,6 +173,25 @@ class Profile:
         if self.fingerprint_seed_value is not None:
             return self.fingerprint_seed_value
         return zlib.crc32(self.name.encode("utf-8"))
+
+    @property
+    def hardware_generation(self) -> int:
+        """The hardware-list generation whose pools this profile picks from.
+
+        The frozen value, else 0. Zero is the generation whose visible pool is
+        every entry that shipped before generations existed — i.e. the whole
+        list, in its original order, with its original length and therefore its
+        original divisor. So a profile that predates this field keeps presenting
+        EXACTLY what it has always presented, and the fallback IS the migration,
+        precisely as it is for fingerprint_seed above. Do not "tidy" it into a
+        backfill, and do not default it to CURRENT_HARDWARE_GENERATION: that
+        would hand every old profile the newest pool and re-roll the hardware of
+        every profile on the machine — the exact event this field prevents.
+
+        Read via normalize_generation so a malformed or negative stored value
+        also lands on 0 rather than on an empty pool.
+        """
+        return normalize_generation(self.hardware_generation_value)
 
     def to_dict(self) -> dict:
         return asdict(self)

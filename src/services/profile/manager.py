@@ -7,6 +7,7 @@ from collections.abc import Callable
 
 from ...core.config import DATA_DIR, PROFILES_FILE
 from ...core.logging import get_logger
+from ...models.hardware_generation import CURRENT_HARDWARE_GENERATION
 from ...models.profile import Profile, mint_fingerprint_seed
 from ...utils.atomic import atomic_write_json
 from ...utils.store_guard import StoreGuardMixin
@@ -209,6 +210,24 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                             "fingerprint_seed_value": p_data.get(
                                 "fingerprint_seed_value"
                             ),
+                            # Same allow-list trap as the seed above, and the
+                            # same reason it matters: omit this line and
+                            # to_dict() would save the generation while every
+                            # reload dropped it, so each restart would silently
+                            # re-read the profile as generation 0 — invisible
+                            # until a list grew, then a mass re-roll of exactly
+                            # the profiles this field exists to hold still.
+                            # Absent key = a profile written before the field
+                            # existed → None → generation 0, which sees the
+                            # lists as they shipped, i.e. precisely what that
+                            # profile has always presented. That fallback IS
+                            # the migration; do NOT default it to
+                            # CURRENT_HARDWARE_GENERATION, which would hand
+                            # every existing profile the newest pool and re-roll
+                            # the whole machine at once.
+                            "hardware_generation_value": p_data.get(
+                                "hardware_generation_value"
+                            ),
                             # Absent key = a profile that has not launched
                             # since the field was added → None, which reads as
                             # "not known". Do NOT default these to the
@@ -384,6 +403,18 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                 fingerprint_seed_value=mint_fingerprint_seed(
                     name, self._reserved_seeds()
                 ),
+                # Freeze the hardware generation at the same moment, for the
+                # same reason. The seed pins WHICH INDEX this profile picks;
+                # this pins WHAT THAT INDEX MEANS — the pool the index divides
+                # into. A new profile is minted into the CURRENT generation, so
+                # it can be picked onto hardware added since the lists shipped;
+                # every older profile keeps its own frozen generation and thus
+                # its own pool, contents, order and divisor unchanged.
+                #
+                # Mint only on CREATE, exactly like the seed: writing this on an
+                # edit path would move the profile to a newer pool and re-roll
+                # the very hardware it exists to pin.
+                hardware_generation_value=CURRENT_HARDWARE_GENERATION,
             )
             self.save_profiles()
             pathlib.Path(self._data_path(name)).mkdir(exist_ok=True, parents=True)

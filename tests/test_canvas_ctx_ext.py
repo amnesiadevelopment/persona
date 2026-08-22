@@ -160,7 +160,7 @@ def _run(tmp_path, os_type, probe, *, with_gpu=False, tag="", stubs=None):
     scripts = []
     if with_gpu:
         # gpu_ext installs the identity PS-12 landed; the alias must carry it.
-        gpu_dir = build_gpu_extension(1, os_type, str(work / "gpu"))
+        gpu_dir = build_gpu_extension(1, os_type, str(work / "gpu"), 0)
         scripts.append(str(pathlib.Path(gpu_dir) / "gpu.js"))
     cc_dir = build_canvas_ctx_extension(os_type, str(work / "cc"))
     scripts.append(str(pathlib.Path(cc_dir) / "canvas_ctx.js"))

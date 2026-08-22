@@ -226,6 +226,7 @@ def test_failed_dir_rename_keeps_the_old_entry(mgr, monkeypatch):
 import json as _json
 import zlib as _zlib
 
+from src.models.hardware_generation import CURRENT_HARDWARE_GENERATION
 from src.models.profile import Profile
 from src.services.browser.device_presets import pick_preset
 from src.services.browser.resolution import resolve_resolution
@@ -261,7 +262,8 @@ def _identity(profile):
     return {
         "seed": seed,
         "resolution": resolve_resolution(
-            getattr(profile, "resolution", "auto"), seed
+            getattr(profile, "resolution", "auto"), seed,
+            profile.hardware_generation,
         ),
         "touch_points": (5, 10)[seed % 2],
         "fingerprint_arg": f"--fingerprint={seed}",
@@ -310,7 +312,10 @@ def test_rename_preserves_the_mobile_device_preset(mgr):
     mgr.add_profile(
         "acme-bank-jdoe", "", "ios", device_type="mobile", engine="chromium"
     )
-    before = pick_preset(mgr.profiles["acme-bank-jdoe"].fingerprint_seed, "ios")
+    before = pick_preset(
+        mgr.profiles["acme-bank-jdoe"].fingerprint_seed, "ios",
+        mgr.profiles["acme-bank-jdoe"].hardware_generation,
+    )
 
     mgr.update_profile(
         "acme-bank-jdoe",
@@ -322,7 +327,8 @@ def test_rename_preserves_the_mobile_device_preset(mgr):
     )
 
     after = pick_preset(
-        mgr.profiles["acme-bank-jdoe-2"].fingerprint_seed, "ios"
+        mgr.profiles["acme-bank-jdoe-2"].fingerprint_seed, "ios",
+        mgr.profiles["acme-bank-jdoe-2"].hardware_generation,
     )
     assert after.key == before.key
     assert (after.width, after.height) == (before.width, before.height)
@@ -338,8 +344,12 @@ def test_a_profile_saved_without_a_seed_still_derives_it_from_its_name():
 
     assert legacy.fingerprint_seed_value is None  # nothing to fall back FROM
     assert legacy.fingerprint_seed == 1951056451
-    assert resolve_resolution("auto", legacy.fingerprint_seed) == (1440, 900)
-    assert pick_preset(legacy.fingerprint_seed, "ios").key == "iphone-14"
+    assert resolve_resolution(
+        "auto", legacy.fingerprint_seed, legacy.hardware_generation
+    ) == (1440, 900)
+    assert pick_preset(
+        legacy.fingerprint_seed, "ios", legacy.hardware_generation
+    ).key == "iphone-14"
 
 
 def test_a_pre_seed_record_on_disk_loads_with_the_name_derived_seed(
@@ -366,7 +376,9 @@ def test_a_pre_seed_record_on_disk_loads_with_the_name_derived_seed(
 
     assert loaded.fingerprint_seed_value is None
     assert loaded.fingerprint_seed == 2974223098  # crc32('legacy-profile')
-    assert resolve_resolution("auto", loaded.fingerprint_seed) == (1440, 900)
+    assert resolve_resolution(
+        "auto", loaded.fingerprint_seed, loaded.hardware_generation
+    ) == (1440, 900)
 
 
 def test_the_seed_survives_a_save_load_round_trip_after_a_rename(mgr, tmp_path):
@@ -394,6 +406,62 @@ def test_the_seed_survives_a_save_load_round_trip_after_a_rename(mgr, tmp_path):
         (tmp_path / "profiles.json").read_text(encoding="utf-8")
     )
     assert on_disk["work1"]["fingerprint_seed_value"] == seed_before
+
+
+def test_the_hardware_generation_survives_a_save_load_round_trip(mgr, tmp_path):
+    # PS-54, and the same AC4 trap as the seed above: the load allow-list is
+    # hand-enumerated, so a field the dataclass has and to_dict() SAVES is still
+    # silently DROPPED on reload unless it is listed there too. If that happened
+    # here, every restart would quietly re-read each profile as generation 0 —
+    # invisible today, then a mass re-roll the first time a hardware list grew,
+    # which is precisely the event this field exists to prevent.
+    #
+    # WRITTEN WITH A NON-ZERO GENERATION ON PURPOSE. CURRENT_HARDWARE_GENERATION
+    # is 0 today, so a profile created now stores 0 — and a dropped field also
+    # reads as 0 (None -> 0 is the migration fallback). At generation 0 the two
+    # outcomes are INDISTINGUISHABLE, so a test using the freshly-minted value
+    # would pass just as happily against an allow-list with this field missing.
+    # Setting 3 is what makes the assertion able to fail.
+    mgr.add_profile("work", "", "windows")
+    mgr.profiles["work"].hardware_generation_value = 3
+    mgr.save_profiles()
+
+    # a brand-new manager reading the same file back off disk
+    fresh = ProfileManager()
+    reloaded = fresh.profiles["work"]
+
+    assert reloaded.hardware_generation_value == 3
+    assert reloaded.hardware_generation == 3
+    # and the file itself really carries it
+    on_disk = _json.loads(
+        (tmp_path / "profiles.json").read_text(encoding="utf-8")
+    )
+    assert on_disk["work"]["hardware_generation_value"] == 3
+
+
+def test_a_new_profile_is_minted_into_the_current_generation(mgr):
+    # The stamp is written at CREATE, like the seed. Without it a new profile
+    # would read as generation 0 forever and could never be picked onto hardware
+    # added later — the lists would be unmaintainable in the other direction.
+    mgr.add_profile("fresh", "", "windows")
+    assert (
+        mgr.profiles["fresh"].hardware_generation_value
+        == CURRENT_HARDWARE_GENERATION
+    )
+
+
+def test_a_rename_does_not_move_a_profiles_hardware_generation(mgr):
+    # The generation is frozen at creation exactly like the seed: an edit path
+    # that rewrote it would move the profile onto a newer pool and re-roll the
+    # very hardware the freeze exists to pin. Same reasoning as
+    # test_rename_preserves_the_presented_machine, for the mapping rather than
+    # for the index into it.
+    mgr.add_profile("acct", "", "windows")
+    mgr.profiles["acct"].hardware_generation_value = 2
+
+    assert mgr.update_profile("acct", "acct-renamed", "", "windows") is True
+
+    assert mgr.profiles["acct-renamed"].hardware_generation_value == 2
 
 
 def test_the_cookie_jar_and_the_identity_travel_together(mgr, tmp_path):
