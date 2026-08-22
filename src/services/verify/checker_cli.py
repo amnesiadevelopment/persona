@@ -98,8 +98,13 @@ from .matrix import (
 
 
 # What this environment is, recorded in the header. The reading is only
-# interpretable against the machine it was taken on: the WebGL renderer class
-# is host-driven, and this container has no GPU.
+# interpretable against the machine it was taken on.
+#
+# NOTE this no longer excuses the GPU. It used to say "this container has no
+# GPU" as the standing explanation for a software renderer; the owner withdrew
+# that exemption on 2026-08-22 (PS-10). The environment is still recorded —
+# a reading must say where it was taken — but a GPU row is now judged as the
+# product's, not the container's.
 def _environment() -> str:
     return f"{platform.system().lower()}-{platform.machine()} (agent sandbox)"
 
@@ -251,10 +256,24 @@ def _notes_for(
     engine: str, requested_machine: str, allow_unsandboxed: bool = False
 ) -> "list[str]":
     notes = [
-        "Read from the agent sandbox: no GPU, so WebGL renders in software "
-        "while the engine declares a discrete card. That pair is impossible on "
-        "real hardware and is a KNOWN-ENVIRONMENTAL host-fact leak, recorded "
-        "with its reason and never counted as a pass.",
+        "The GPU rows are PRODUCT rows, not environment notes. This container "
+        "has no GPU, and that is NOT an exemption: the owner ruled "
+        "(2026-08-22, PS-10) that there will be no dev-VM and no GPU machine "
+        "in the loop, and that the engine is expected to present a plausible "
+        "GPU wherever it runs, including on a host that has none. A red on "
+        "either GPU row is therefore a masking finding, filed against "
+        "undetectable-masking with the reading attached — never written off "
+        "as the container's fault.",
+        "The two GPU vectors are recorded SEPARATELY and must be reported "
+        "that way: vector=gpu_claimed is what the renderer SAYS IT IS (the "
+        "WEBGL_debug_renderer_info strings, which persona chooses), and "
+        "vector=gpu_rendered is what the checker's OWN RENDERING PRODUCED "
+        "(canvas/WebGL hashes computed from pixels, which persona does not "
+        "choose). They have different fixes, so a merged 'GPU red' cannot be "
+        "acted on. A plausible claimed string beside a hash produced by "
+        "software rendering is the 'the string is right but the render gives "
+        "us away' case the owner called a defect rather than an accepted "
+        "limit — and neither row alone can show it.",
         "The exit is a rotating mobile address. Rotation WITHIN Poland is the "
         "design, not a fault: an exit-driven reading is expected to move "
         "between runs, and a FINGERPRINT-driven reading that moves when only "
