@@ -852,6 +852,92 @@ def test_the_gpu_explanation_is_the_one_actually_printed(gpu_text) -> None:
     )
 
 
+def test_the_job_summary_states_the_same_three_states_as_the_banner() -> None:
+    """THE SUMMARY IS A SECOND SURFACE, AND IT MUST NOT CONTRADICT THE FIRST.
+
+    This test exists because the two surfaces once disagreed. The banner routed
+    through `explanation_for()` (three states) while the job summary carried a
+    two-branch ternary, so:
+
+      * on ubuntu-24.04 — renderer None, NO WebGL context at all — the summary
+        said "no software rasteriser was detected, which is unexpected",
+        reporting an ABSENCE OF DATA as a positive finding, on the one platform
+        whose failure floor is zero and whose page is therefore most read;
+      * on macos-latest — a real 'Apple M1' — the summary denied a detection the
+        banner directly above it had just made.
+
+    The summary is the wider-readership surface of the two: a rendered page, not
+    log output. Its wording is therefore not cosmetic.
+    """
+    module = _load_gpu_reporter()
+
+    absent = module.summary_note_for(None, False).lower()
+    hardware = module.summary_note_for("Apple M1", False).lower()
+    software = module.summary_note_for("llvmpipe (LLVM 15.0.7)", True).lower()
+
+    # 1. THE NO-DATA ARM — the one that was missing, and that fires every
+    #    ubuntu run. It must refuse to make a claim in either direction.
+    assert "no reading" in absent or "absence of data" in absent, (
+        "the job summary's no-data arm does not say that no reading was taken"
+    )
+    assert "not a claim" in absent, (
+        "the job summary does not refuse to make a claim about the host when no "
+        "reading exists — an absent reading must never read as 'this runner has "
+        "a GPU', which is the exact misreading this reporter exists to prevent"
+    )
+    assert "unexpected" not in absent, (
+        "the job summary calls an absent WebGL context 'unexpected', which is "
+        "the two-branch wording that treated missing data as a finding"
+    )
+
+    # 2. THE HARDWARE ARM must agree with the banner, not contradict it, and
+    #    must not read as a pass.
+    assert "apple m1" in hardware, (
+        "the job summary does not name the renderer that was actually reported, "
+        "so it cannot be checked against the banner printed beside it"
+    )
+    assert "not" in hardware and ("verification" in hardware or "pass" in hardware), (
+        "the job summary lets a real GPU reading read as a pass — reporting "
+        "hardware is a fact about the runner, not evidence that masking held"
+    )
+
+    # 3. THE SOFTWARE ARM keeps the charter's classification.
+    assert "host-fact leak" in software and "by construction" in software, (
+        "the job summary no longer classifies the software-renderer pair as a "
+        "host-fact leak present by construction"
+    )
+
+    # The three must be genuinely different text, or the distinction is
+    # cosmetic and a mutation collapsing two of them has nothing to escape.
+    assert len({absent, hardware, software}) == 3, (
+        "two of the job summary's three states produce the same text, so the "
+        "surface cannot distinguish them"
+    )
+
+    # The software verdict wins even when a renderer string is present, exactly
+    # as it does in explanation_for().
+    assert module.summary_note_for(None, True) == module.summary_note_for("llvmpipe", True)
+
+
+def test_the_job_summary_note_is_the_one_actually_written(gpu_text) -> None:
+    """Guards the summary seam, the way the banner seam is already guarded.
+
+    Without this, `summary_note_for` can be correct, fully tested, and never
+    called — which is precisely the state the previous defect was in, one
+    function over: the three good explanations existed while the summary
+    branched two ways on its own.
+    """
+    assert "+ summary_note_for(renderer, software)" in gpu_text, (
+        "main() no longer writes the job summary through summary_note_for(), so "
+        "what is tested is not what a reader is shown"
+    )
+    # And the wording that caused the defect must not come back inline.
+    assert "which is unexpected on a" not in gpu_text, (
+        "the two-branch summary wording is back in the reporter, reporting an "
+        "absence of data as an unexpected finding"
+    )
+
+
 def test_nothing_fakes_hardware_the_runner_does_not_have(ci_text, gpu_text) -> None:
     """Out of scope, and actively harmful: forcing a renderer string corrupts
     the one reading this environment is genuinely unable to give."""

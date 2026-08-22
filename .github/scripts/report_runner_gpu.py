@@ -177,6 +177,45 @@ def explain_software_rendering() -> list[str]:
     ]
 
 
+def summary_note_for(renderer: object, software: bool) -> str:
+    """The job-summary counterpart of `explanation_for()` — THE SAME THREE STATES.
+
+    This function exists because its absence was a defect. The banner branched
+    three ways while the job summary branched two, so on ubuntu-24.04 — where no
+    WebGL context exists at all and `renderer` is None — the summary printed "no
+    software rasteriser was detected", stating an ABSENCE OF DATA as a positive
+    finding, on the one platform whose failure floor is zero and whose page
+    people therefore actually read. On macos-latest it contradicted its own
+    banner outright: the banner named the reported Apple hardware while the
+    summary underneath it said nothing had been detected.
+
+    The two surfaces must agree because they describe one reading. The summary
+    is the WIDER-READERSHIP of the two — a rendered web page rather than log
+    output — so a misstatement here reaches more readers, not fewer.
+    """
+    if software:
+        return (
+            "A hosted runner has no GPU, so WebGL renders in software. A declared "
+            "discrete GPU over a software-rendered canvas is a **host-fact leak**, "
+            "present here by construction on every run. It is recorded, never "
+            "counted as a pass, and never filed as a new persona defect.\n"
+        )
+    if renderer is None:
+        # THE ARM THAT WAS MISSING, and the one that fires on every ubuntu run.
+        return (
+            "**No reading was taken** — no WebGL context was available at all, so "
+            "every parameter came back empty. This is NOT a claim that the host "
+            "has a GPU and NOT a claim that it renders in software: it is the "
+            "absence of data. The question stays unanswered.\n"
+        )
+    return (
+        f"A hardware renderer was reported (`{renderer}`), so the software-rendered "
+        "pair is ABSENT on this platform. That is a fact about this runner, **not** "
+        "a verification of persona's masking — nothing here asserted that a spoof "
+        "held. Do not record it as a pass.\n"
+    )
+
+
 def _emit_summary(text: str) -> None:
     """Append to the GitHub job summary when running under Actions."""
     path = os.environ.get("GITHUB_STEP_SUMMARY")
@@ -236,15 +275,7 @@ def main() -> int:
         f"- **renderer**: `{renderer}`\n"
         f"- **vendor**: `{vendor}`\n"
         f"- **software-rendered**: `{software}`\n\n"
-        + (
-            "A hosted runner has no GPU, so WebGL renders in software. A declared "
-            "discrete GPU over a software-rendered canvas is a **host-fact leak**, "
-            "present here by construction on every run. It is recorded, never "
-            "counted as a pass, and never filed as a new persona defect.\n"
-            if software
-            else "No software rasteriser was detected, which is unexpected on a "
-            "hosted runner — re-read rather than trusting this line.\n"
-        )
+        + summary_note_for(renderer, software)
     )
     # ALWAYS 0. See rule 3 in the module docstring: this reports, it never judges.
     return 0
