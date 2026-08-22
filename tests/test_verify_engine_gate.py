@@ -376,10 +376,47 @@ def test_a_recorded_artifact_round_trips_through_compare(tmp_path, monkeypatch):
 
 
 def test_installed_core_version_answers_empty_when_absent(monkeypatch):
-    """Read from installed metadata, never from the pin file: the pin says what
-    CI was ASKED to install, and the defect class is an install that did not do
-    what it was asked. invisible_core is genuinely absent in this container."""
+    """Absence must answer "" — which the caller reports as a refusal, never as
+    a version.
+
+    THE ABSENCE IS STAGED, DELIBERATELY. An earlier revision of this test
+    asserted the same thing but staged nothing, resting on a docstring claim
+    that "invisible_core is genuinely absent in this container". It is not:
+    pyproject pins ``invisible_core==20.14.0`` and both CI gates install the
+    project, so the package is present wherever this suite is green. The test
+    took ``monkeypatch`` and never called it, so it read the real environment
+    and failed on the runner the moment it landed. A test about what happens
+    when a package is missing has to MAKE it missing.
+    """
+    from importlib import metadata
+
+    def not_installed(name):
+        raise metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(metadata, "version", not_installed)
     assert engine_gate.installed_core_version() == ""
+
+
+def test_installed_core_version_reads_the_installed_distribution(monkeypatch):
+    """The other half of the same contract, and the half that names the defect:
+    the version comes from what is INSTALLED, not from what pyproject pins.
+
+    Those two agree in a healthy environment, which is exactly why this needs a
+    value that could only have come from installed metadata — the pin is
+    ``20.14.0``, so a reader returning the pin would sail through an assertion
+    written against it. The sentinel below is a version no pin file mentions.
+    """
+    from importlib import metadata
+
+    seen = []
+
+    def installed(name):
+        seen.append(name)
+        return "99.99.99"
+
+    monkeypatch.setattr(metadata, "version", installed)
+    assert engine_gate.installed_core_version() == "99.99.99"
+    assert seen == [engine_gate.CORE_DISTRIBUTION]
 
 
 # --- drift: the finding -----------------------------------------------------
