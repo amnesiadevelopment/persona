@@ -417,7 +417,11 @@ def _read_one(
         declared_machine=declared_machine_for(engine, requested_machine),
         declared_machine_honoured=honours_declared_machine(engine),
         skipped_tiers=skipped_tiers,
-        notes=_notes_for(engine, requested_machine),
+        notes=_notes_for(
+            engine,
+            requested_machine,
+            allow_unsandboxed=args.allow_unsandboxed_chromium,
+        ),
     )
 
 

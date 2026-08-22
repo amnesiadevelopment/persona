@@ -446,15 +446,78 @@ def test_a_host_without_the_sandbox_refuses_rather_than_dying_obscurely(
     assert "--no-sandbox" in str(exc.value)
 
 
-def test_the_waiver_is_recorded_in_the_reading_it_produced():
-    """An unsandboxed reading is not the product's surface, so a record taken
-    that way must say so rather than looking like every other record."""
-    notes = cli._notes_for(bt.CHROMIUM, "windows", allow_unsandboxed=True)
-    assert any("--no-sandbox" in n for n in notes)
-    assert not any(
-        "--no-sandbox" in n
-        for n in cli._notes_for(bt.CHROMIUM, "windows")
+def _record_from_read(monkeypatch, argv: "list[str]") -> dict:
+    """Drive ``_read_one`` through the REAL parser, with the tiers stubbed.
+
+    The point of going through ``build_parser`` rather than constructing a
+    Namespace is that the operator types a FLAG, and the defect this file
+    guards was a flag that parsed correctly and then reached nothing: a
+    hand-built Namespace (or a hand-passed kwarg) asserts the helper's
+    ability rather than the shipped path's behaviour, and stays green while
+    the record discloses nothing.
+
+    Nothing here touches the network, an engine, or the exit: the exit is
+    proven by a stub, so this asserts the RECORD ONLY and no part of it can
+    be mistaken for a reading.
+    """
+    args = cli.build_parser().parse_args(argv)
+
+    monkeypatch.setattr(
+        cli,
+        "prove_exit",
+        lambda **_k: (
+            "socks5h://u:p@host:1080",
+            Exit(ip="192.0.2.1", country="PL", city="Warsaw", org="stub"),
+        ),
     )
+    monkeypatch.setattr(cli, "read_json_tier", lambda *_a, **_k: [])
+    monkeypatch.setattr(cli, "read_unreadable_tier", lambda *_a, **_k: [])
+    # Deferred import inside _read_one, so it resolves off the module.
+    monkeypatch.setattr(bt, "read_browser_tier", lambda *_a, **_k: [])
+
+    record = cli._read_one(
+        args, bt.CHROMIUM, "windows", seed=4242
+    )
+    assert record is not None
+    return record
+
+
+def test_the_waiver_is_recorded_in_the_reading_it_produced(monkeypatch):
+    """An unsandboxed reading is not the product's surface, so a record taken
+    that way must say so rather than looking like every other record.
+
+    Asserted on the RECORD, from the operator's actual command, because the
+    disclosure is a promise made by three shipped surfaces
+    (``SandboxUnavailable``, the flag's help text, and the note itself) and
+    ALL of them are kept by the record carrying the note — not by
+    ``_notes_for`` being capable of emitting it. This is also the host where
+    the waiver is REQUIRED, so the deferred through-the-exit reading is taken
+    on this path: if it went unrecorded, that record would be
+    indistinguishable from a sandboxed one and PS-67 would compare the
+    difference as a product change.
+    """
+    record = _record_from_read(
+        monkeypatch,
+        [
+            "read", "--engine", "chromium", "--declared-machine", "windows",
+            "--seed", "4242", "--allow-unsandboxed-chromium",
+        ],
+    )
+    assert any("--no-sandbox" in n for n in record["notes"])
+
+
+def test_a_sandboxed_reading_does_not_carry_the_waiver_note(monkeypatch):
+    """The other direction, so the assertion above cannot be satisfied by a
+    note that is simply always present — which would make every sandboxed
+    record falsely confess a waived sandbox."""
+    record = _record_from_read(
+        monkeypatch,
+        [
+            "read", "--engine", "chromium", "--declared-machine", "windows",
+            "--seed", "4242",
+        ],
+    )
+    assert not any("--no-sandbox" in n for n in record["notes"])
 
 
 def test_a_credentialled_upstream_gets_persona_s_hardened_relay(monkeypatch):
