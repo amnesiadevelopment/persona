@@ -7,6 +7,7 @@ import zipfile
 from datetime import datetime
 
 from ...core.logging import get_logger
+from ...models.hardware_generation import CURRENT_HARDWARE_GENERATION
 from ...models.profile import Profile
 from ...utils.validation import validate_profile_name
 
@@ -165,6 +166,43 @@ def import_from_zip(
                         name, seed,
                     )
                     known.pop("fingerprint_seed_value")
+
+            # Same automatic round-trip, same untrusted source, for the hardware
+            # generation — and it needs the same TYPE guard, for a reason that is
+            # NOT the seed's. This value is not an identity to be protected from
+            # collision; it selects which slice of each hardware list the profile
+            # may be picked from, so a malformed one has a different failure mode:
+            # a non-integer (or a float, or a string "3") reaches the `since <=
+            # generation` comparison and raises mid-launch on some Python paths
+            # while silently comparing wrong in the baked JS, and an absurdly
+            # LARGE value is not an error at all — it just pins the profile to
+            # every future generation forever, which is a slow re-roll rather
+            # than a crash.
+            #
+            # Model.hardware_generation already normalizes on READ (None,
+            # malformed and negative all read as 0), so this guard is belt-and-
+            # braces rather than the only line of defence — but dropping the key
+            # at the door keeps a nonsense value from being PERSISTED back out in
+            # the next save and travelling on to the next machine.
+            #
+            # Dropping lands the profile on generation 0 — the lists as they
+            # shipped, the pool every pre-generations profile sees. That is the
+            # conservative direction: it can only ever show an imported profile
+            # OLDER hardware than it claimed, never re-roll it onto newer.
+            if "hardware_generation_value" in known:
+                gen = known["hardware_generation_value"]
+                if gen is not None and not (
+                    isinstance(gen, int)
+                    and not isinstance(gen, bool)
+                    and 0 <= gen <= CURRENT_HARDWARE_GENERATION
+                ):
+                    logger.warning(
+                        "Profile archive %r carried an invalid hardware "
+                        "generation (%r); dropping it, the profile will read as "
+                        "generation 0 (the hardware lists as they shipped).",
+                        name, gen,
+                    )
+                    known.pop("hardware_generation_value")
 
             # Same automatic round-trip, same untrusted source, for the launch
             # provenance pair. The TYPE half only, exactly like the seed above:

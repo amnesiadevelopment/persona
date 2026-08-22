@@ -19,16 +19,16 @@ def test_is_mobile_os():
 
 
 def test_pick_preset_deterministic_and_in_family():
-    a = pick_preset(12345, "android")
-    b = pick_preset(12345, "android")
+    a = pick_preset(12345, "android", 0)
+    b = pick_preset(12345, "android", 0)
     assert a.key == b.key  # stable per seed
     assert a.os_type == "android"
-    i = pick_preset(12345, "ios")
+    i = pick_preset(12345, "ios", 0)
     assert i.os_type == "ios"
 
 
 def test_presets_have_required_fields():
-    for p in presets_for("android") + presets_for("ios"):
+    for p in presets_for("android", 0) + presets_for("ios", 0):
         ua = p.user_agent_for(V("149.0.8000.10"))
         assert "Mobile" in ua or "iPhone" in ua
         # no template slot survives into a launched UA
