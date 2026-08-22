@@ -27,12 +27,14 @@ function applyVoicePatch(G) {
   if (!G || G.__personaVoice || !G.speechSynthesis) return;
   G.__personaVoice = true;
   const LANG = %LANG%;
-  const OS = "%OS%";  // "windows" | "macos" | "linux"
+  const OS = "%OS%";  // "windows" | "macos" | "linux" | "android"
   const base = (LANG.split('-')[0] || 'en');
 
   // Per-OS voice roster: a macOS/iOS profile ships an Apple GPU + MacIntel, so a
   // Microsoft SAPI voice list is a hard OS-mismatch tell (real Apple = Samantha/
-  // Alex/Daniel). Linux uses eSpeak. getVoices() is a top-weight cross-check.
+  // Alex/Daniel). Linux uses eSpeak. Android is NOT Linux here — it reports ICU
+  // locale display names (see the android arm below). getVoices() is a
+  // top-weight cross-check.
   let BASE, LOCALE_VOICE, mkURI, defaultLocal;
   if (OS === "macos") {
     BASE = [
@@ -60,6 +62,73 @@ function applyVoicePatch(G) {
     }[base];
     mkURI = function (v) { return v.name; };
     defaultLocal = 'en-US';
+  } else if (OS === "android") {
+    // Android is NOT Linux-with-a-phone-UA. Chromium on Android does not expose
+    // Google TTS engine voice names at all: TtsPlatformImpl.java enumerates one
+    // voice PER AVAILABLE LOCALE, naming it getDisplayLanguage()+' '+
+    // getDisplayCountry() and setting lang to Locale.toString() — the UNDERSCORE
+    // form ("en_US"). tts_android.cc copies both verbatim, and
+    // speech_synthesis_impl.cc mints voiceURI = name, so the URI is a bare name
+    // here exactly as it is under eSpeak. THE URI SHAPE IS THEREFORE NOT THE
+    // TELL — the NAME TEXT and the underscore lang are. Full provenance (four
+    // Chromium source hops, each quoted) in
+    // tests/fixtures/android-voices-reference.md. Read that file, not this
+    // comment, and do not re-derive these from either.
+    const TAGS = [
+      'en_US','en_GB','en_AU','en_IN','es_ES','es_US','fr_FR','de_DE','it_IT',
+      'pt_BR','ru_RU','nl_NL','pl_PL','tr_TR','id_ID','ja_JP','ko_KR','zh_CN',
+      'hi_IN','ar_EG'
+    ];
+    // English fallback so a realm without Intl.DisplayNames (or a locale it
+    // rejects) degrades to a plausible roster rather than to an empty one.
+    const FALLBACK = {
+      'en_US':'English United States','en_GB':'English United Kingdom',
+      'en_AU':'English Australia','en_IN':'English India',
+      'es_ES':'Spanish Spain','es_US':'Spanish United States',
+      'fr_FR':'French France','de_DE':'German Germany','it_IT':'Italian Italy',
+      'pt_BR':'Portuguese Brazil','ru_RU':'Russian Russia',
+      'nl_NL':'Dutch Netherlands','pl_PL':'Polish Poland',
+      'tr_TR':'Turkish Türkiye','id_ID':'Indonesian Indonesia',
+      'ja_JP':'Japanese Japan','ko_KR':'Korean South Korea',
+      'zh_CN':'Chinese China','hi_IN':'Hindi India','ar_EG':'Arabic Egypt'
+    };
+    // The profile's own locale leads the list: is_default is (i === 0) in
+    // speech_synthesis_impl.cc, so the default voice must agree with
+    // navigator.language the way it does on a real device set to that locale.
+    const want = String(LANG || 'en-US').replace(/-/g, '_');
+    const tags = TAGS.filter(function (t) { return t !== want; });
+    tags.unshift(want);
+    // getDisplayLanguage() localizes to the DEVICE UI locale, so a phone whose
+    // UI is Polish says 'angielski Stany Zjednoczone' for en_US. Intl.DisplayNames
+    // serves the same CLDR data ICU gives Java; rendering in English on a
+    // pl-PL profile would itself be the inconsistent pair this arm exists to close.
+    let dnL = null, dnR = null;
+    try {
+      dnL = new Intl.DisplayNames([LANG], {type: 'language'});
+      dnR = new Intl.DisplayNames([LANG], {type: 'region'});
+    } catch (e) {}
+    const nameFor = function (tag) {
+      const p = tag.split('_'), lg = p[0], rg = p[1] || '';
+      try {
+        if (dnL) {
+          const ln = dnL.of(lg);
+          if (ln) {
+            const rn = (rg && dnR) ? dnR.of(rg) : '';
+            // Bare space join, no comma and no parenthesis — that is the
+            // literal Java concatenation, and it is what separates this roster
+            // from 'English (America)' (eSpeak) and from the SAPI shape.
+            return rn ? (ln + ' ' + rn) : ln;
+          }
+        }
+      } catch (e) {}
+      return FALLBACK[tag] || tag;
+    };
+    BASE = tags.map(function (t) { return {name: nameFor(t), lang: t}; });
+    // BASE already leads with the profile locale, so the generic prepend below
+    // must not run a second time.
+    LOCALE_VOICE = null;
+    mkURI = function (v) { return v.name; };
+    defaultLocal = 'en_US';
   } else {
     BASE = [
       {name:'Microsoft David - English (United States)', lang:'en-US'},
@@ -130,13 +199,27 @@ def build_voice_extension(
 ) -> str:
     """Generate an unpacked extension that replaces the speechSynthesis voice
     list with an OS-appropriate, `locale`-matched set: Apple voices for macOS/iOS,
-    eSpeak for Linux, Microsoft SAPI for Windows. Hardcoding Windows voices on a
-    macOS/iOS profile (which ships an Apple GPU) was a hard OS-mismatch tell."""
+    ICU locale display names for Android, eSpeak for Linux, Microsoft SAPI for
+    Windows. Hardcoding Windows voices on a macOS/iOS profile (which ships an
+    Apple GPU) was a hard OS-mismatch tell.
+
+    `android` needs its own arm for the same reason it needs one in `gpu_ext`:
+    it was folded into `linux`, so a phone profile — Android UA, Adreno/Mali
+    renderer, GLES viewport limits — served the eSpeak Linux DESKTOP roster
+    ('English (America)', a voice literally named 'Polish'). Android reports
+    neither eSpeak nor Google TTS engine names: Chromium enumerates one voice
+    per available locale, named from ICU display names with an underscore lang
+    ('en_US'). Provenance: tests/fixtures/android-voices-reference.md.
+
+    `ios` stays folded into `macos` deliberately — real iOS reports the Apple
+    roster, so that fold is correct rather than an oversight."""
     ext_dir = pathlib.Path(base_dir)
     ext_dir.mkdir(parents=True, exist_ok=True)
+    ot = str(os_type).lower()
     os_norm = (
-        "macos" if str(os_type).lower() in ("macos", "mac", "darwin", "ios")
-        else "linux" if str(os_type).lower() in ("linux", "android")
+        "macos" if ot in ("macos", "mac", "darwin", "ios")
+        else "android" if ot in ("android",)
+        else "linux" if ot in ("linux",)
         else "windows"
     )
     js = (
