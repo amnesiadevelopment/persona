@@ -213,10 +213,26 @@ def require_display() -> None:
     Xvfb message an operator sees is the same one everywhere. This is the trap
     the ticket calls out: without a display the engine raises, and a run that
     records the failure "correctly" still exits 0 over a near-empty record.
-    """
-    from .baseline import _require_display
 
-    _require_display()
+    The message is reused; the EXCEPTION CLASS is not. ``baseline`` raises
+    ``BaselineUnavailable``, which is not a :class:`BehaviourCheckError`, and
+    this function is called from :func:`run_checks` OUTSIDE any per-check
+    handler. Left untranslated it escaped the CLI's ``except`` entirely and
+    Python's default unhandled-exception code — 1 — collided with
+    :data:`EXIT_FINDING`, reporting "nothing could be measured" in the exact
+    words reserved for "the product is broken". That is the one confusion the
+    three-way exit split exists to prevent, so the translation happens HERE, at
+    the single seam where this module reaches into ``baseline``, rather than by
+    making the lower module import this one.
+    """
+    from .baseline import BaselineUnavailable, _require_display
+
+    try:
+        _require_display()
+    except BaselineUnavailable as exc:
+        # Message verbatim (the Xvfb install line is the actionable part);
+        # only the class changes, so the CLI can see it.
+        raise BehaviourCheckError(str(exc)) from exc
 
 
 @dataclass

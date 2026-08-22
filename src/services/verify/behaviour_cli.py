@@ -120,6 +120,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
     except BehaviourCheckError as exc:
         # Includes the safety refusal and a missing display. Nothing ran, so
         # this is EXIT_CANNOT_RUN and is stated in those words.
+        #
+        # The display case only arrives here because require_display TRANSLATES
+        # baseline's BaselineUnavailable into this class — untranslated it
+        # escapes main() and Python's default exit 1 collides with EXIT_FINDING,
+        # reporting "nothing was measured" as "the product is broken". Keep that
+        # translation if the seam is ever refactored.
         print(f"CANNOT RUN: {exc}", file=sys.stderr)
         return EXIT_CANNOT_RUN
 
