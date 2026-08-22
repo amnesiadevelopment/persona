@@ -494,6 +494,21 @@ GPU_SCRIPT = REPO_ROOT / ".github" / "scripts" / "report_runner_gpu.py"
 SHIPPED_PLATFORMS = ("ubuntu-24.04", "windows-latest", "macos-latest")
 
 
+def _load_gpu_reporter():
+    """Import the GPU reporter as a module so tests read what it PRODUCES.
+
+    Asserting on its source text instead also matches its own docstring, which
+    is how a mutation that gutted the printed explanation once slipped past.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_ps60_gpu_reporter", GPU_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    return module
+
+
 @pytest.fixture(scope="module")
 def gpu_text() -> str:
     return GPU_SCRIPT.read_text(encoding="utf-8")
@@ -727,16 +742,68 @@ def test_the_gpu_reading_states_its_cause() -> None:
     assert not module.looks_like_software("NVIDIA GeForce RTX 4090/PCIe/SSE2")
 
 
-def test_the_gpu_explanation_is_the_one_actually_printed(gpu_text) -> None:
-    """Guards the seam the test above depends on.
+def test_absent_gpu_data_is_never_reported_as_hardware() -> None:
+    """THE THREE STATES MUST STAY THREE.
 
-    If `main` stops calling `explain_software_rendering`, that function becomes
-    dead code the test still happily reads — a green test describing output
+    Measured on the runners: windows-latest reports a software rasteriser
+    (Microsoft Basic Render Driver), macos-latest reports real hardware
+    (Apple M1), and ubuntu-24.04 reports NOTHING AT ALL — headless Firefox
+    exposes no WebGL context, so every parameter comes back None.
+
+    An earlier revision had two branches, so the Linux case printed "did NOT
+    report a software rasteriser" — letting an ABSENCE of data read as evidence
+    the host had a GPU. That is precisely the misreading this reporter exists to
+    prevent, one level up.
+    """
+    module = _load_gpu_reporter()
+
+    absent = "\n".join(module.explain_no_reading()).lower()
+    assert "no reading" in absent or "absence of data" in absent, (
+        "the no-data branch does not say that no reading was taken"
+    )
+    assert "not a claim" in absent, (
+        "the no-data branch does not refuse to make a claim about the host — an "
+        "absent reading must never read as 'this runner has a GPU'"
+    )
+
+    hardware = "\n".join(module.explain_hardware_reading("Apple M1")).lower()
+    assert "not a verification" in hardware or "do not record it as a pass" in hardware, (
+        "the hardware branch reads as a pass — reporting a real GPU is a fact "
+        "about the runner, not evidence that persona's masking held"
+    )
+
+    # The three explanations must be genuinely different text, or the
+    # distinction is cosmetic.
+    assert len({absent, hardware, "\n".join(module.explain_software_rendering()).lower()}) == 3
+
+    # AND THE DISPATCH ITSELF, not only the three texts it dispatches to. An
+    # earlier version tested the texts alone, so neutering the `renderer is
+    # None` branch kept every assertion green while a runner that answered
+    # NOTHING silently began reading as one that reported hardware.
+    assert module.explanation_for(None, False) == module.explain_no_reading(), (
+        "a reading with NO renderer string does not route to the no-data "
+        "explanation — an absence of data would read as a claim about the host"
+    )
+    assert module.explanation_for("Apple M1", False) == module.explain_hardware_reading("Apple M1"), (
+        "a hardware renderer does not route to the hardware explanation"
+    )
+    assert module.explanation_for("llvmpipe", True) == module.explain_software_rendering(), (
+        "a software rasteriser does not route to the host-fact-leak explanation"
+    )
+    # The software verdict must win even when a renderer string is present.
+    assert module.explanation_for(None, True) == module.explain_software_rendering()
+
+
+def test_the_gpu_explanation_is_the_one_actually_printed(gpu_text) -> None:
+    """Guards the seam every test above depends on.
+
+    If `main` stops routing through `explanation_for`, those functions become
+    dead code the tests still happily read — a green test describing output
     nobody receives.
     """
-    assert "banner += explain_software_rendering()" in gpu_text, (
-        "main() no longer emits the explanation through "
-        "explain_software_rendering(), so what is tested is not what is printed"
+    assert "banner += explanation_for(renderer, software)" in gpu_text, (
+        "main() no longer emits the explanation through explanation_for(), so "
+        "what is tested is not what is printed"
     )
 
 

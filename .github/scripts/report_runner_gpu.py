@@ -93,6 +93,64 @@ def looks_like_software(*values: object) -> bool:
     return False
 
 
+def explanation_for(renderer: object, software: bool) -> list[str]:
+    """Pick the explanation for a reading — THE BRANCH ITSELF, as one function.
+
+    Extracted so a test can exercise the DISPATCH rather than only the three
+    texts it dispatches to. Testing the texts alone left a hole: neutering the
+    `renderer is None` branch in main() kept every text intact and every
+    assertion green, while a runner that answered NOTHING silently started
+    reading as a runner that reported hardware.
+    """
+    if software:
+        return explain_software_rendering()
+    if renderer is None:
+        # THE DISTINCTION THAT MATTERS. No renderer string at all is the ABSENCE
+        # of data, not evidence of hardware. Collapsing this into the "no
+        # software rasteriser" branch would let a runner that answered NOTHING
+        # read as a runner that reported a GPU.
+        return explain_no_reading()
+    return explain_hardware_reading(renderer)
+
+
+def explain_no_reading() -> list[str]:
+    """Shown when no renderer string could be read AT ALL.
+
+    A separate state from "hardware reported", and the distinction is the whole
+    point: an absent reading is NOT evidence that the host has a GPU, and must
+    never be allowed to read as one. Measured on ubuntu-24.04, where headless
+    Firefox creates no WebGL context and every parameter comes back None.
+    """
+    return [
+        "  NO READING WAS TAKEN — no WebGL context was available at all.",
+        "",
+        "  This is NOT a claim that the host has a GPU, and NOT a claim that it",
+        "  renders in software. It is the absence of data. Do not read it as",
+        "  either; the question this job cannot answer stays unanswered.",
+        "",
+        "  Measured cause on ubuntu-24.04: headless Firefox exposes no WebGL",
+        "  context on a runner with no GL stack, so there is no renderer string",
+        "  to report.",
+    ]
+
+
+def explain_hardware_reading(renderer: object) -> list[str]:
+    """Shown when a real, non-software renderer is reported.
+
+    Also not a pass. A hosted runner reporting hardware (macos-latest reports
+    'Apple M1') means the software-rendered pair is ABSENT here — so this
+    platform simply does not exhibit the host-fact leak, which is a statement
+    about the runner and not a verification of persona's masking.
+    """
+    return [
+        f"  A hardware renderer was reported: {renderer}",
+        "",
+        "  So the software-rendered pair is ABSENT on this platform. That is a",
+        "  fact about this runner, NOT a verification of persona's GPU masking —",
+        "  nothing here asserted that a spoof held. Do not record it as a pass.",
+    ]
+
+
 def explain_software_rendering() -> list[str]:
     """The explanation an operator is SHOWN when the pair is present.
 
@@ -169,14 +227,7 @@ def main() -> int:
         f"  software-rendered: {software}",
         "",
     ]
-    if software:
-        banner += explain_software_rendering()
-    else:
-        banner += [
-            "  This runner did NOT report a software rasteriser, which is not the",
-            "  expected shape for a hosted runner. Re-read before trusting it: the",
-            "  marker list in this script may simply not cover this string.",
-        ]
+    banner += explanation_for(renderer, software)
     banner.append("=" * 78)
     print("\n".join(banner))
 
