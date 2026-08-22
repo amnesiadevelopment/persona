@@ -65,6 +65,11 @@ from src.services.verify.origin_proof import (
     describe,
 )
 
+# THE RULE is imported, never restated. It is defined once beside the Python
+# tier's own guard, so the two tiers cannot come to disagree about what "raw
+# JA3" means.
+from tests.test_verify_checkers import reads_raw_ja3
+
 PEET = "tls.peet.ws@engine"
 
 # The UA persona's patched Firefox presents. A real engine announces a layout
@@ -78,15 +83,27 @@ HARNESS_UA = "curl/8.14.1"
 
 
 def _peet_payload(user_agent: str, *, ja4: str, http_version: str) -> dict:
-    """A tls.peet.ws response, in the shape the endpoint really returns."""
+    """A tls.peet.ws response, in the shape the endpoint really returns.
+
+    The ``tls`` block mirrors upstream's own struct
+    (``pagpeter/TrackMe`` ``pkg/types/structs.go:16-23``): ``ja3`` is the RAW
+    JA3 string and ``ja3_hash`` its MD5. There is deliberately no ``ja3n``
+    key, because the endpoint publishes none — an earlier revision of this
+    fixture invented one and thereby asserted the very premise it was meant to
+    establish. Both raw spellings are kept present-but-unread so the catalogue
+    guard has something real to refuse.
+    """
     return {
         "ip": "188.146.33.135:51000",
         "http_version": http_version,
         "user_agent": user_agent,
         "tls": {
             "ja4": ja4,
-            "ja3": f"ja3n-of-{ja4}",
+            # Raw, permutation-sensitive, and NOT read. Wire-order extension
+            # list — upstream does not sort it (fingerprint_tls.go:88-99).
+            "ja3": "771,4865-4867-4866-49195-49199,0-23-65281-10-11-35,29-23-24,0",
             "ja3_hash": "permutation-sensitive-do-not-read",
+            # peet's normalised shape, and the second comparison key.
             "peetprint_hash": f"peet-of-{ja4}",
         },
         "http2": {"akamai_fingerprint": "1:65536;2:0;4:131072;5:16384|…"},
@@ -323,20 +340,36 @@ def test_every_engine_tls_checker_catalogues_its_witness_first():
 def test_raw_ja3_is_read_on_neither_tier():
     """JA3 moves with TLS extension PERMUTATION, so it manufactures drift in
     the one record built to detect drift. PS-59 pinned this for the Python
-    tier; the engine tier must not quietly reintroduce it."""
+    tier; the engine tier must not quietly reintroduce it.
+
+    The rule itself lives in ``test_verify_checkers`` and is IMPORTED, not
+    restated — a second copy would be a second rule, free to drift from the
+    one it was meant to mirror.
+
+    Note peet publishes NO normalised JA3 — its ``tls.ja3`` is the raw string
+    and its ``tls.ja3_hash`` the MD5 (``pagpeter/TrackMe``
+    ``pkg/types/structs.go:16-23``; the extension list is built in wire order
+    at ``pkg/tls/fingerprint_tls.go:88-99`` and never sorted). So on peet this
+    rule excludes every ja3 spelling there is, and ``ja4``/``peetprint_hash``
+    carry the comparison instead."""
     for checker in tuple(JSON_CHECKERS) + tuple(ENGINE_TLS_CHECKERS):
         for item in checker.items:
-            assert item.path[-1] not in ("ja3_hash", "ja3_text"), (
-                f"{checker.id}.{item.id} reads raw JA3"
+            assert not reads_raw_ja3(item.path), (
+                f"{checker.id}.{item.id} reads raw JA3 via {item.path}"
             )
 
 
 def test_the_engine_tier_reads_the_comparison_keys_it_claims_to():
     """Guard the guard above: JA3 being absent must not be because the tier
-    reads no TLS vector at all."""
+    reads no TLS vector at all.
+
+    peet's stable keys are ``ja4`` and ``peetprint_hash`` — upstream sorts the
+    extension list for both (``pkg/tls/ja4.go:73``,
+    ``pkg/tls/fingerprint_tls.go:171``) and for neither ja3 spelling — so those
+    two are what must be READ once ja3 is excluded."""
     peet = _by_item(_peet_rows({PEET: {"payload": engine_payload()}}))
     assert peet["ja4"].state == READ
-    assert peet["ja3n"].state == READ
+    assert peet["peetprint_hash"].state == READ
 
 
 def test_engine_rows_do_not_collide_with_the_harness_rows_they_sit_beside():

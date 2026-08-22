@@ -427,15 +427,51 @@ def test_exit_driven_geography_stays_exit_driven():
     assert {i.sort for i in ipleak.items} == {EXIT}
 
 
+def reads_raw_ja3(path: "tuple[str, ...]") -> bool:
+    """Does this item read a RAW JA3 vector, under any of its spellings?
+
+    THE RULE, not a list of the spellings that happen to be in the catalogue
+    today — and it lives here, in one place, because the engine tier's guard
+    (``tests/test_verify_engine_tls.py``) imports it rather than restating it.
+    Two copies of a rule are two rules.
+
+    An earlier form rejected only ``ja3_hash`` and ``ja3_text``, so a bare
+    ``ja3`` path sailed straight through: a test named "ja3 is not read
+    anywhere" passed while items read a field called ``ja3``. An allowlist
+    written around the code cannot catch the code.
+
+    ``ja3n``/``ja3n_hash`` are the NORMALISED vector and are explicitly
+    allowed — browserleaks publishes ``ja3n_hash`` as a genuinely distinct
+    field and it is a legitimate comparison key.
+    """
+    leaf = path[-1]
+    if leaf.startswith("ja3n"):
+        return False
+    return leaf == "ja3" or leaf.startswith("ja3_")
+
+
 def test_ja3_is_not_read_anywhere():
     """JA3 moves with TLS extension permutation and manufactures false drift.
-    ja4 / ja3n are read instead."""
+
+    Note the endpoints do not spell this alike: browserleaks publishes a
+    distinct normalised ``ja3n_hash`` (read), while peet publishes only raw
+    ``ja3``/``ja3_hash`` and no normalised JA3 at all — so on peet the stable
+    keys are ``ja4`` and ``peetprint_hash`` instead."""
     for checker in JSON_CHECKERS:
         for item in checker.items:
-            leaf = item.path[-1]
-            assert leaf not in ("ja3_hash", "ja3_text"), (
-                f"{checker.id}.{item.id} reads raw JA3"
+            assert not reads_raw_ja3(item.path), (
+                f"{checker.id}.{item.id} reads raw JA3 via {item.path}"
             )
+
+
+def test_the_raw_ja3_rule_catches_a_bare_ja3_path():
+    """Guard the guard: the rule must reject the exact spelling that slipped
+    past its predecessor, and must still admit the normalised vector."""
+    assert reads_raw_ja3(("tls", "ja3"))
+    assert reads_raw_ja3(("tls", "ja3_hash"))
+    assert reads_raw_ja3(("ja3_text",))
+    assert not reads_raw_ja3(("ja3n_hash",))
+    assert not reads_raw_ja3(("tls", "ja4"))
 
 
 def test_item_ids_are_unique_within_a_checker():

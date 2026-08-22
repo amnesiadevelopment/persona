@@ -62,11 +62,30 @@ identical if only the match is kept.
 
 JA3 is deliberately not read
 ----------------------------
-``ja3_hash`` varies with TLS extension PERMUTATION, so it moves between runs
-without anything having changed and would manufacture false drift. ``ja4`` and
-``ja3n`` (n = normalised) are read instead. This is a correctness choice, not a
-preference: a vector that cannot be made stable is worse than no vector,
-because it makes a real difference unreadable.
+JA3 varies with TLS extension PERMUTATION, so it moves between runs without
+anything having changed and would manufacture false drift. This is a
+correctness choice, not a preference: a vector that cannot be made stable is
+worse than no vector, because it makes a real difference unreadable.
+
+The rule is about the VECTOR, not about a field name, and the distinction is
+load-bearing because the endpoints do not agree on their spelling:
+
+* ``tls.peet.ws`` publishes ``tls.ja3`` (the raw string) and ``tls.ja3_hash``
+  (its MD5). It has NO normalised JA3 at all — upstream builds the extension
+  list in wire order and does not sort it
+  (``pagpeter/TrackMe`` ``pkg/tls/fingerprint_tls.go:88-99``, against the
+  ``sort.Strings`` it DOES apply to peetprint at :171 and to ja4 at
+  ``pkg/tls/ja4.go:73``). So on peet the stable keys are ``ja4`` and
+  ``peetprint_hash``, and every ``ja3`` spelling is skipped.
+* ``tls.browserleaks.com`` does publish a genuinely distinct ``ja3n_hash``
+  field, and that one IS read.
+
+Reading peet's ``tls.ja3`` under a row NAMED ``ja3n`` would therefore record
+the permutation-sensitive vector as though it were the stable one — drift
+manufactured in the record built to detect drift, which is this module's own
+defect class one field down. ``test_raw_ja3_is_read_on_neither_tier`` enforces
+the rule by rejecting any path whose leaf is ``ja3`` or starts ``ja3_``,
+rather than by listing the spellings already known.
 """
 
 from __future__ import annotations
@@ -320,9 +339,12 @@ JSON_CHECKERS: "tuple[Checker, ...]" = (
 # WITNESS: it is the field that exposed the original mistake, and a row set
 # without it could not demonstrate its own origin at all.
 #
-# Raw ``ja3_hash`` is still not read, on either tier. It varies with TLS
-# extension PERMUTATION, so it moves without anything meaningful changing and
-# would manufacture drift in the one record built to detect drift.
+# Raw JA3 is still not read, on either tier, under ANY of its spellings —
+# ``ja3``, ``ja3_hash``, ``ja3_text``. It varies with TLS extension
+# PERMUTATION, so it moves without anything meaningful changing and would
+# manufacture drift in the one record built to detect drift. peet offers no
+# normalised JA3 to read instead (see the module docstring), so its stable
+# keys here are ``ja4`` and ``peetprint_hash``.
 
 def _engine_id(checker_id: str) -> str:
     return f"{checker_id}@engine"
@@ -342,11 +364,12 @@ ENGINE_TLS_CHECKERS: "tuple[Checker, ...]" = (
             JsonItem("ja4", ("tls", "ja4"), FINGERPRINT,
                      "persona's REAL TLS client shape. The comparison key: "
                      "stable across extension permutation, unlike ja3."),
-            JsonItem("ja3n", ("tls", "ja3"), FINGERPRINT,
-                     "peet publishes the normalised form under 'ja3'; its "
-                     "'ja3_hash' is the permutation-sensitive one and is "
-                     "deliberately not read."),
-            JsonItem("peetprint_hash", ("tls", "peetprint_hash"), FINGERPRINT),
+            JsonItem("peetprint_hash", ("tls", "peetprint_hash"), FINGERPRINT,
+                     "peet's own NORMALISED client shape, and the reason this "
+                     "checker needs no ja3n row: upstream sorts the extension "
+                     "list before hashing (pkg/tls/fingerprint_tls.go:171), so "
+                     "unlike ja3 it does not move with permutation. Second "
+                     "comparison key beside ja4."),
             JsonItem("akamai_fingerprint", ("http2", "akamai_fingerprint"),
                      FINGERPRINT,
                      "HTTP/2 SETTINGS shape. The engine negotiates h2, so "
@@ -387,8 +410,10 @@ ENGINE_TLS_CHECKERS: "tuple[Checker, ...]" = (
                      "than publishing a top-level user_agent, so the witness "
                      "is read from there — the same evidence by a different "
                      "path."),
-            JsonItem("ja4", ("tls", "ja4"), FINGERPRINT),
-            JsonItem("ja3n", ("tls", "ja3"), FINGERPRINT),
+            JsonItem("ja4", ("tls", "ja4"), FINGERPRINT,
+                     "The comparison key. scrapfly's 'tls.ja3' is RAW JA3 (it "
+                     "mirrors peet's schema) and is deliberately not read — "
+                     "see the peet entry."),
             JsonItem("akamai_hash", ("http2", "akamai_fingerprint"),
                      FINGERPRINT),
         ),
