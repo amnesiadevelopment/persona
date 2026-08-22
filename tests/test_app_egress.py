@@ -1035,3 +1035,447 @@ def test_shared_downloader_is_unrouted_by_default_so_fast_update_is_unchanged(
          "-C", "-", "-o", str(dst), "http://example.invalid/app.zip"],
     ], "the shared downloader grew a policy of its own — a second copy"
     assert "--proxy" not in seen[0]
+
+
+# ==========================================================================
+# PS-75 — the engine BINARY download, the third arm of this same authority.
+#
+# The two polls above ask "may I speak to GitHub, and how?". Until PS-75 the
+# ~80-230MB archive those polls exist to LOCATE was then fetched by a transport
+# that never asked, so ONE unattended startup sequence disagreed with itself
+# about how persona's traffic leaves. `download_opener()` closes that.
+#
+# Two call sites, two separate implementations, so each gets its OWN routing
+# assertion (AC5) — one passing says nothing about the other:
+#   * Firefox   — engine_install._resumable_download, UNATTENDED at startup
+#   * Chromium  — engine/updater._download_to, operator click
+#
+# Per the standing directive these assert on an OBSERVED CONNECTION, an
+# OBSERVED FIRST BYTE, or an OBSERVED ABSENCE of one — never on a substring in
+# generated argv or a handler present in a list.
+# ==========================================================================
+
+from src.services.browser import engine_install as eng  # noqa: E402
+
+
+def _socks_listener_capturing(seen: dict, reply: bytes = b""):
+    """A fake SOCKS5 server that records the FIRST BYTES it receives and the
+    target of the CONNECT, then optionally answers.
+
+    Mirrors the harness the metadata-poll tests above already use; the point is
+    the same one, moved to the binary path: what actually reached the wire.
+
+    It KEEPS ACCEPTING after the exchange it captures, and that is not
+    incidental. Both downloaders retry — `resumable_download` up to 40 times,
+    `_resumable_download` until its no-progress budget — so a one-shot listener
+    leaves every later attempt blocking in connect() against an unaccepted
+    backlog, and the test hangs instead of failing. Later connections are
+    closed immediately so the retries fail FAST; only the first is recorded.
+    """
+    srv, port = _listener()
+
+    def serve() -> None:
+        first = True
+        while True:
+            try:
+                conn, _ = srv.accept()
+            except Exception:
+                return  # the test closed the listener; we are done
+            if not first:
+                # drain the retries quickly rather than letting them block
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                continue
+            first = False
+            conn.settimeout(10)
+            try:
+                seen["first"] = conn.recv(512)
+                conn.sendall(b"\x05\x00")  # no-auth accepted
+                _ver, _cmd, _rsv, atyp = _recv_exactly(conn, 4)
+                seen["atyp"] = atyp
+                host = _recv_exactly(conn, _recv_exactly(conn, 1)[0])
+                tport = struct.unpack(">H", _recv_exactly(conn, 2))[0]
+                seen["target"] = (host.decode(), tport)
+                if reply:
+                    # granted, then serve the HTTP exchange over the tunnel
+                    conn.sendall(b"\x05\x00\x00\x01" + b"\x00" * 4 + b"\x00\x00")
+                    seen["http"] = conn.recv(4096)
+                    conn.sendall(reply)
+            except Exception as exc:
+                seen["error"] = repr(exc)
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    return srv, port, thread
+
+
+# --------------------------------------------------------------------------
+# AC1 + AC2 + AC3 — Firefox: the UNATTENDED path, and the sharp case.
+# --------------------------------------------------------------------------
+
+
+def _wire_firefox_install(monkeypatch, tmp_path, host="engine.example.com"):
+    """Point the UNATTENDED Firefox install at `host` and at a scratch cache.
+
+    Deliberately patches only the URL and the cache location — NOT the
+    transport and NOT the opener. `_download_invisible` is left to resolve the
+    egress policy itself, because that consultation is precisely what is under
+    test: a test that composed the opener and handed it in would pass with the
+    consultation deleted, which is the AC9 trap.
+    """
+    import invisible_playwright.download as ipdl
+
+    cache = tmp_path / "cache"
+    (cache / "firefox-20").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        ipdl, "_resolve_asset_url", lambda tag, name: f"http://{host}/{tag}/{name}"
+    )
+    monkeypatch.setattr(
+        ipdl, "cache_dir_for_version", lambda v: cache / str(v)
+    )
+    return cache
+
+
+def test_firefox_engine_download_speaks_socks_to_the_configured_proxy(
+    monkeypatch, tmp_path
+):
+    """AC1/AC2/AC3 for the Firefox archive — the path that runs at startup with
+    no operator gesture (ui/app.py → _auto_update_engine2_async → here).
+
+    Driven through the PRODUCTION entry point `_download_invisible`, which
+    resolves the policy itself. An earlier draft of this test passed the opener
+    in from the test and stayed GREEN under AC9's falsification — it was
+    exercising the mechanism I had just written rather than the wiring.
+
+    AC1: the download must actually EGRESS through the configured transport —
+    proven by a local listener RECEIVING the connection, not by a return value
+    that reads the same either way.
+
+    AC2: the first bytes must be a SOCKS5 greeting (0x05), NOT `CONNECT `. This
+    is the constraint-#1 assertion: a ProxyHandler-only fix would emit CONNECT
+    at a port awaiting a \\x05 greeting and HANG — a different failure wearing
+    the fix's clothes. socks5 is persona's DEFAULT scheme, so this is the
+    normal case, not an edge case.
+
+    AC3: the target must go out as a DOMAIN NAME (atyp 0x03) so the EXIT
+    resolves it. Resolving the GitHub/CDN host locally would trade an IP
+    disclosure for a DNS one, which egress.py explicitly refuses.
+    """
+    _wire_firefox_install(monkeypatch, tmp_path)
+    seen: dict = {}
+    srv, port, thread = _socks_listener_capturing(seen)
+
+    settings.set_app_egress_proxy(f"socks5://127.0.0.1:{port}")
+    try:
+        # The listener hangs up after the handshake, so the install fails —
+        # what is under test is what reached the wire before it did.
+        assert eng._download_invisible(version="firefox-20") is False
+    finally:
+        srv.close()
+        thread.join(15)
+
+    first = seen.get("first", b"")
+    assert first, (
+        "the engine download never reached the configured proxy at all — the "
+        f"binary download is still egressing unrouted ({seen.get('error')})"
+    )
+    assert first[:1] == b"\x05", f"expected a SOCKS5 greeting, got {first[:16]!r}"
+    assert not first.startswith(b"CONNECT "), (
+        "a ProxyHandler-only fix speaks HTTP CONNECT at a SOCKS port, which "
+        "hangs rather than leaks — constraint #1 of this ticket"
+    )
+    assert seen.get("atyp") == 0x03, (
+        "the target must be sent as a NAME so the exit resolves it (socks5h); "
+        "a local resolution trades an IP disclosure for a DNS one"
+    )
+    assert seen.get("target") == ("engine.example.com", 80)
+
+
+def test_firefox_engine_download_actually_transfers_through_the_proxy(
+    monkeypatch, tmp_path
+):
+    """AC1, the positive end-to-end on the unattended path: bytes that arrive
+    through the tunnel are the bytes written to disk. Routing that connects but
+    cannot deliver a file would satisfy a weaker assertion than this one.
+
+    Served content is a checksums.txt that does NOT list this OS's asset, so
+    the install stops right after it with "no checksum for this build" — which
+    keeps the test fast (no 200MB archive leg to retry) while still proving the
+    transfer itself came down the SOCKS tunnel and landed on disk.
+    """
+    cache = _wire_firefox_install(monkeypatch, tmp_path)
+    body = b"deadbeef  some-other-asset.tar.gz\n"
+    reply = (
+        b"HTTP/1.1 200 OK\r\nContent-Length: "
+        + str(len(body)).encode()
+        + b"\r\n\r\n"
+        + body
+    )
+    seen: dict = {}
+    srv, port, thread = _socks_listener_capturing(seen, reply=reply)
+
+    settings.set_app_egress_proxy(f"socks5://127.0.0.1:{port}")
+    try:
+        assert eng._download_invisible(version="firefox-20") is False
+    finally:
+        srv.close()
+        thread.join(15)
+
+    assert seen.get("first", b"")[:1] == b"\x05", (
+        f"nothing was spoken to the proxy ({seen.get('error')})"
+    )
+    # The request went out over the tunnel...
+    assert b"checksums.txt" in seen.get("http", b""), (
+        f"the tunnelled request was not the expected fetch: {seen.get('http')!r}"
+    )
+    # ...and the bytes that came back through it are on disk.
+    sums = cache / "firefox-20-checksums.txt"
+    assert sums.exists(), "nothing was written — the tunnel delivered no bytes"
+    assert sums.read_bytes() == body, "the file did not come through the tunnel"
+
+
+# --------------------------------------------------------------------------
+# AC5 — the OTHER path. Separate implementation, so its own assertion.
+# --------------------------------------------------------------------------
+
+
+def test_chromium_engine_download_speaks_socks_to_the_configured_proxy(tmp_path):
+    """AC5/AC1/AC2/AC3 for the Chromium asset, which goes through a DIFFERENT
+    downloader (httpdl.resumable_download) than the Firefox archive above. One
+    of these passing says nothing about the other, which is why both exist."""
+    seen: dict = {}
+    srv, port, thread = _socks_listener_capturing(seen)
+
+    settings.set_app_egress_proxy(f"socks5://127.0.0.1:{port}")
+    try:
+        updater._download_to(
+            str(tmp_path / "engine.bin"),
+            "http://chromium.example.com/engine.AppImage",
+            5,
+            "00" * 32,
+            None,
+        )
+    finally:
+        thread.join(15)
+        srv.close()
+
+    first = seen.get("first", b"")
+    assert first, (
+        "the Chromium asset never reached the configured proxy — this path "
+        f"is still egressing unrouted ({seen.get('error')})"
+    )
+    assert first[:1] == b"\x05", f"expected a SOCKS5 greeting, got {first[:16]!r}"
+    assert not first.startswith(b"CONNECT ")
+    assert seen.get("atyp") == 0x03
+    assert seen.get("target") == ("chromium.example.com", 80)
+
+
+# --------------------------------------------------------------------------
+# AC4 — REFUSE must not degrade to a direct send, on EITHER path.
+# --------------------------------------------------------------------------
+
+
+def test_refused_policy_opens_no_socket_for_either_engine_download(monkeypatch):
+    """AC4. A configured-but-unparseable proxy means NOTHING IS SENT.
+
+    Spied on socket.socket rather than on the return value, because both paths
+    return the same False for "refused" and "the download failed" — a return
+    value cannot tell a refusal from a leak. Mirrors curl_proxy_args' raise-
+    don't-return-[] semantics: the DIRECT answer is a usable opener, so handing
+    one back on REFUSE would silently degrade "we cannot honour your proxy"
+    into "send from the real IP", with 200MB behind it.
+    """
+    settings.set_app_egress_proxy("this is not a proxy url")
+
+    opened = []
+    real_socket = socket.socket
+
+    def spy(*a, **k):
+        opened.append(a)
+        return real_socket(*a, **k)
+
+    monkeypatch.setattr(socket, "socket", spy)
+
+    # Firefox — the unattended path. The refusal is resolved before the
+    # transfer, so it lands on the caller's existing False.
+    assert (
+        eng._download_invisible(version="firefox-20") is False
+    ), "a refused policy must fail the install, not proceed"
+    assert opened == [], f"a socket was opened despite the refusal: {opened}"
+
+    # Chromium — the operator-click path.
+    assert (
+        updater._download_to("/tmp/ps75-never", "http://x/e", 5, "00" * 32, None)
+        is False
+    )
+    assert opened == [], f"a socket was opened despite the refusal: {opened}"
+
+
+def test_refusal_on_the_download_path_is_surfaced_to_the_operator(caplog):
+    """AC4's other half. A silent skip is indistinguishable from "no update",
+    so the refusal must reach the log — without echoing the transport, which
+    can embed credentials."""
+    egress._reset_curl_refusal_log()
+    settings.set_app_egress_proxy("this is not a proxy url")
+
+    with caplog.at_level("WARNING", logger="persona"):
+        with pytest.raises(egress.EgressRefused):
+            egress.download_opener()
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("NOT STARTED" in m for m in messages), f"no refusal logged: {messages}"
+    assert not any(
+        "this is not a proxy url" in m for m in messages
+    ), "the rejected value must never be logged — it can embed credentials"
+
+
+# --------------------------------------------------------------------------
+# AC6 — the blast radius. With NO policy, both paths are unchanged.
+# --------------------------------------------------------------------------
+
+
+def test_default_engine_download_is_direct_and_unproxied():
+    """AC6. An unset key must change NOTHING: no proxy handler anywhere in the
+    opener, and the same Range-preserving redirect handler as before.
+
+    egress.py:32-40 is explicit that a fail-closed default would brick the
+    update path — security updates included — for every existing install.
+    """
+    assert settings.app_egress_proxy() == "", "the default must be unset"
+
+    opener = egress.download_opener()
+    names = [type(h).__name__ for h in opener.handlers]
+
+    assert names == [
+        type(h).__name__ for h in httpdl.range_opener().handlers
+    ], "the unset default must be byte-identical to the pre-PS-75 opener"
+    assert not any("Socks" in n or "Proxy" in n for n in names), (
+        f"the default path grew a proxy: {names}"
+    )
+    assert any(isinstance(h, httpdl.KeepRangeRedirect) for h in opener.handlers), (
+        "resume across GitHub's 302-to-CDN must survive the default path"
+    )
+
+
+def test_default_firefox_download_still_resumes_with_a_range_header(tmp_path):
+    """AC6/AC7 together, on the unattended path: with no policy set the request
+    is the one this code always made — including the `Range` header that makes
+    a resume fetch the tail instead of restarting from zero.
+
+    A routing change that breaks resume over a slow circuit is a regression:
+    this transport exists BECAUSE of slow circuits.
+    """
+    assert settings.app_egress_proxy() == ""
+
+    full = b"0123456789"
+    seen = {}
+    srv, port = _listener()
+
+    def serve():
+        conn, _ = srv.accept()
+        conn.settimeout(10)
+        try:
+            req = conn.recv(4096)
+            seen["req"] = req
+            start = 0
+            for line in req.split(b"\r\n"):
+                if line.lower().startswith(b"range:"):
+                    seen["range"] = line
+                    start = int(line.split(b"=")[1].split(b"-")[0])
+            body = full[start:]
+            head = (
+                b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes "
+                + f"{start}-{len(full) - 1}/{len(full)}".encode()
+                + b"\r\nContent-Length: "
+                + str(len(body)).encode()
+                + b"\r\n\r\n"
+            )
+            conn.sendall(head + body)
+        except Exception as exc:
+            seen["error"] = repr(exc)
+        finally:
+            conn.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+
+    dest = tmp_path / "archive.download"
+    dest.write_bytes(full[:4])  # a partial from a dropped circuit
+    try:
+        ok = eng._resumable_download(
+            f"http://127.0.0.1:{port}/firefox-20.tar.gz",
+            str(dest),
+            opener_factory=lambda: egress.download_opener(),
+            timeout=5,
+            stall_timeout=5,
+        )
+    finally:
+        thread.join(15)
+        srv.close()
+
+    assert ok is True, f"the default (direct) resume failed ({seen.get('error')})"
+    assert seen.get("range") == b"Range: bytes=4-", (
+        f"the resume did not ask for the tail: {seen.get('req')!r}"
+    )
+    assert dest.read_bytes() == full
+
+
+# --------------------------------------------------------------------------
+# AC8 — the shared mechanism holds no policy, and the digest gate is untouched.
+# --------------------------------------------------------------------------
+
+
+def test_the_shared_transport_resolves_no_policy_of_its_own(tmp_path):
+    """AC8's companion, and egress.py:88-91's invariant: `httpdl` is SHARED
+    (app_update/fast_update call it too), so a policy resolved in there would
+    be a second copy of this decision inside a mechanism. Set a policy, call
+    the primitive directly, and it must still be unrouted — the authority is
+    the CALLER's to consult.
+    """
+    settings.set_app_egress_proxy("socks5://127.0.0.1:9")
+
+    names = [type(h).__name__ for h in httpdl.range_opener().handlers]
+    assert not any("Socks" in n or "Proxy" in n for n in names), (
+        f"the shared mechanism grew a policy of its own: {names}"
+    )
+
+
+def test_digest_verification_is_unchanged_by_routing(tmp_path, monkeypatch):
+    """AC8. `verify_file` / fail-closed-on-missing-digest is PS-49 ground and
+    must not move. A wrong digest is still rejected and the partial discarded,
+    with the policy set and the transfer routed."""
+    assert httpdl.verify_file(str(tmp_path / "nope"), "aa" * 32) is False
+    assert httpdl.digest_missing(None) is True
+    assert httpdl.digest_missing("") is True
+    assert httpdl.digest_missing("   ") is False  # arrived-but-unusable
+
+    # and end to end: a served file whose digest does not match is refused
+    body = b"tampered"
+    reply = (
+        b"HTTP/1.1 200 OK\r\nContent-Length: "
+        + str(len(body)).encode()
+        + b"\r\n\r\n"
+        + body
+    )
+    seen: dict = {}
+    srv, port, thread = _socks_listener_capturing(seen, reply=reply)
+    dest = tmp_path / "engine.bin"
+    settings.set_app_egress_proxy(f"socks5://127.0.0.1:{port}")
+    try:
+        ok = updater._download_to(
+            str(dest), "http://chromium.example.com/e", 5, "aa" * 32, None
+        )
+    finally:
+        thread.join(15)
+        srv.close()
+
+    assert ok is False, "a digest mismatch must be refused however it was routed"
+    assert not dest.exists()
+    assert not (tmp_path / "engine.bin.part").exists(), "the partial must be dropped"

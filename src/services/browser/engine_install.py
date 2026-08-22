@@ -455,6 +455,35 @@ def _download_invisible(progress=None, log=None, version: str | None = None) -> 
     version_dir = cache_dir_for_version(version)
     version_dir.mkdir(parents=True, exist_ok=True)
 
+    # Persona's OWN egress policy, resolved ONCE for this whole install and
+    # handed down to both transfers below. This is the unattended path — it
+    # runs from startup with no operator gesture (ui/app.py →
+    # _auto_update_engine2_async → firefox.download_engine → here) — so the
+    # ~80-230MB archive must leave the host the way the operator said the
+    # application's traffic should leave. Until PS-75 the release-metadata poll
+    # that LOCATED this build asked the authority and the download itself asked
+    # nothing, so one operator gesture governed half of one startup sequence.
+    #
+    # Resolved BEFORE anything is fetched so a REFUSE costs no connection at
+    # all: nothing is sent, the reason is logged by the authority, and this
+    # returns the same False the caller already handles for a failed download.
+    # A refusal must never degrade into a direct send — an operator who
+    # configured a proxy and silently got a real-IP request would be worse off
+    # than one who configured nothing, because they would believe they were
+    # covered (services/egress.py).
+    #
+    # ONE opener for both transfers, deliberately: checksums.txt and the
+    # archive are two halves of one install, and a policy that changed between
+    # them (an operator editing the setting mid-download) would verify one
+    # build's bytes against another route's digest.
+    from ...services import egress
+
+    try:
+        opener = egress.download_opener()
+    except egress.EgressRefused:
+        say("Firefox engine: app egress proxy is unusable — nothing was sent.")
+        return False
+
     say("Firefox engine: resolving release over Tor…")
     url_archive = _resolve_asset_url(version, asset)
     url_sums = _resolve_asset_url(version, "checksums.txt")
@@ -471,7 +500,12 @@ def _download_invisible(progress=None, log=None, version: str | None = None) -> 
     # Range past the end and treats the file as done), and another build's
     # checksums would fail every verify.
     sums_path = version_dir.parent / f"{version}-checksums.txt"
-    if not _resumable_download(str(url_sums), str(sums_path), progress=None):
+    if not _resumable_download(
+        str(url_sums),
+        str(sums_path),
+        progress=None,
+        opener_factory=lambda: opener,
+    ):
         say("Firefox engine: couldn't fetch checksums — retrying later.")
         return False
     sums = _parse_checksums(open(sums_path, encoding="utf-8").read())
@@ -492,7 +526,10 @@ def _download_invisible(progress=None, log=None, version: str | None = None) -> 
     for verify_attempt in range(3):
         say("Firefox engine: downloading…")
         if not _resumable_download(
-            str(url_archive), str(archive_path), progress=progress
+            str(url_archive),
+            str(archive_path),
+            progress=progress,
+            opener_factory=lambda: opener,
         ):
             say("Firefox engine: download didn't complete — will resume next start.")
             return False
@@ -725,6 +762,7 @@ def _resumable_download(
     progress=None,
     timeout: int = 30,
     stall_timeout: int = 25,
+    opener_factory=None,
 ) -> bool:
     """Download `url` to `path`, resuming with an HTTP Range header across
     dropped connections. Returns True only on a complete file.
@@ -733,14 +771,27 @@ def _resumable_download(
     but no bytes arrive, so a plain socket timeout never fires and the download
     hangs on "connecting" forever. A stall watchdog closes the response if no
     byte arrives within `stall_timeout`, which raises in read() and drops us to
-    the next attempt with a fresh circuit; the partial on disk lets us resume."""
+    the next attempt with a fresh circuit; the partial on disk lets us resume.
+
+    `opener_factory` lets a caller supply its own opener builder, which is how
+    persona's egress policy reaches this transport (see `_download_invisible`).
+    It MUST still preserve Range across redirects (see httpdl.KeepRangeRedirect)
+    — a resume that loses Range gets the whole file back instead of the tail,
+    which over a slow circuit never finishes. Defaults to the direct
+    range-preserving opener, so a caller that passes nothing is byte-identical
+    to what this function has always done.
+
+    The POLICY is deliberately not resolved here. This is a mechanism, and the
+    verdict belongs to `services/egress.py`; re-reading the setting in here
+    would be a second copy of that decision, which is the drift that authority
+    exists to prevent."""
     import threading
     import urllib.error
     import urllib.request
 
     from ...utils.httpdl import range_opener
 
-    opener = range_opener()
+    opener = (opener_factory or range_opener)()
 
     # Bound the retries by CONSECUTIVE no-progress attempts, not total attempts:
     # over a slow Tor circuit (Mars saw ~0.1 MB/s) a 118MB archive drops its

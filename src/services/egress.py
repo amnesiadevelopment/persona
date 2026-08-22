@@ -212,6 +212,73 @@ def curl_proxy_args(proxy: str | None = None) -> list[str]:
     return ["--proxy", transport] if verdict == PROXIED else []
 
 
+def download_opener(proxy: str | None = None):
+    """`resolve()`'s BULK-DOWNLOAD arm: the urllib opener a resumable download
+    must use to honour the policy. Returns a Range-preserving opener that sends
+    DIRECTLY for DIRECT, one that sends through the transport for PROXIED, and
+    raises EgressRefused — without returning an opener — for REFUSE.
+
+    This exists because neither existing arm fits the engine BINARY download.
+    `fetch_json` reads a whole document into memory, which is right for a
+    release-metadata poll and wrong for a ~80-230MB archive; `curl_proxy_args`
+    serves a curl transport, and these two call sites are urllib downloads
+    whose byte-level progress callback, stall watchdog and 206/range-start
+    resume logic are the pinned behaviour of this path, not incidental detail.
+    So this is a third SHAPE of the answer — never a third COPY of the
+    decision. The verdict comes from `resolve()` above, so a change there moves
+    all three arms together.
+
+    Until this existed the two engine release-metadata polls asked "may I speak
+    to GitHub, and how?" and the ~80-230MB archive those polls exist to LOCATE
+    was then fetched by a transport that never asked — the two halves of one
+    unattended startup sequence disagreeing about how persona's traffic leaves.
+
+    Raising on REFUSE rather than returning a direct opener is load-bearing for
+    exactly the reason `curl_proxy_args` raises rather than returning []: the
+    DIRECT answer is a perfectly usable opener, so handing one back on REFUSE
+    would silently degrade "we cannot honour your proxy" into "send from the
+    real IP" — with a 200MB transfer behind it.
+
+    The mechanism (how a socket is opened through a SOCKS or HTTP proxy) lives
+    in `utils/httpdl`; the POLICY lives here. A call site that built its own
+    proxied opener from the setting would be the drift this module prevents.
+    """
+    global _last_curl_refusal
+    from ..utils import httpdl
+
+    verdict, transport = resolve(proxy)
+
+    if verdict == REFUSE:
+        # Throttled on the same state as the curl arm, and deliberately sharing
+        # it: the engine's unattended poll and app_update's 60-second poll both
+        # refuse on the SAME configured value, so keying them together reports
+        # a broken setting once rather than once per transport shape. Keyed on
+        # the rejected VALUE, never the reason — see _last_curl_refusal.
+        offending = _configured_value(proxy)
+        if _last_curl_refusal != offending:
+            # Neither the transport string nor the offending value is logged —
+            # both can embed credentials, and this reaches the disk-backed log.
+            logger.warning(
+                "App egress: download NOT STARTED — %s. Persona will not fall "
+                "back to a direct connection; fix or clear the app egress proxy "
+                "setting. (Further identical refusals are not repeated.)",
+                transport,
+            )
+            _last_curl_refusal = offending
+        raise EgressRefused(transport)
+
+    # Recovery re-arms the log, so a proxy that breaks, is fixed, and breaks
+    # again is reported the second time too.
+    _last_curl_refusal = None
+    if verdict == PROXIED:
+        return httpdl.proxied_range_opener(transport)
+    # DIRECT is byte-identical to what these call sites did before this arm
+    # existed — the same range_opener, so the Range header, the redirect
+    # handling and the resume behaviour are unchanged for every install that
+    # has no policy set. That is the whole blast radius of this change.
+    return httpdl.range_opener()
+
+
 def fetch_json(
     url: str,
     timeout: int = 20,
