@@ -108,6 +108,42 @@ as `_UNWIRE_CREATE_BUTTON` in the test file, applied only inside the served
 child, and verified surgical (it fires on `[ create ]` and leaves `[ save ]`
 wired).
 
+**Re-run against the real source, not just the served child.** The committed
+break above monkeypatches `ft.Button` inside the served subprocess, which
+proves the driver reacts but not that it would catch a defect in the shipped
+file. So `on_click=on_submit` was deleted from
+`src/ui/dialogs/profile.py:955` **itself** and the driven tests re-run:
+
+```
+AssertionError: the profile was not created at all. Service layer holds []
+FAILED test_creating_a_profile_through_the_controls_persists_it
+FAILED test_typing_into_the_multiline_field_reaches_the_saved_product
+2 failed in 87.43s
+```
+
+Restored afterwards; `git status src/` clean. That is the real thing going red
+on a real break in real production code.
+
+**The text-field claim was falsified the same way.** A reach claim needs its
+own negative control, or it is prose. `_FIELD_SELECTOR` was reverted to the
+original buggy `"input"` and the two field tests re-run:
+
+| driver | census sees | field tests |
+|---|---|---|
+| `"input, textarea"` | 3 fields (`INPUT`, `INPUT`, `TEXTAREA`) | **green** |
+| `"input"` (the shipped bug) | 2 fields — Notes silently absent | **RED** |
+
+```
+AssertionError: no text field labelled 'optional'. Fields on screen:
+["single-line label='e.g. Amazon US Shopper' value=''",
+ "single-line label='shopping, us, amazon' value=''"]
+```
+
+This matters more than it looks. The first version of this document called
+text fields reachable while the driver could not reach the multiline one, and
+**nothing failed** — the map was wrong and every test was green. These two
+tests are what make that specific silence impossible now.
+
 ---
 
 ## The reach map
@@ -122,9 +158,34 @@ Measured by walking the real UI and recording what the semantics tree exposes.
 | Top-bar actions | `[ + new ]`, `[ import ]`, `[ export ]`, `[ wipe all ]` |
 | Per-page primary actions | `[ + add proxy ]`, `[ + add bookmark ]`, `[ + add certificate ]`, `[ + add host ]`, `[ empty trash ]`, `[ assign to selected ]`, `[ make pool from selected ]`, `[ edit ]` |
 | Modal dialogs | `Create New Profile` opens with `[ create ]`, `[ cancel ]`, `[ + proxy ]`, `[ bulk ]` addressable |
-| Text fields | Real `<input>`; typing round-trips (`'ps71-driven-profile'` reached the saved profile) |
+| Text fields — single-line | Real `<input>`; typing round-trips (`'ps71-driven-profile'` reached the saved profile) |
+| Text fields — multiline | Real `<textarea>`; typing round-trips (`'driven-notes-through-the-textarea'` reached the saved profile's `notes`). Reachable **only because the driver queries `input, textarea`** — see the correction note below |
 | Onboarding | `Skip` / `Next` |
 | Modal scoping | Correct — while onboarding is up, *only* `Skip`/`Next` are addressable. The driver cannot reach behind a modal, which matches what a user can do |
+
+> **Correction note — this row was wrong in the first version of this
+> document, and the way it was wrong is worth keeping.** It read *"Text
+> fields | Real `<input>`; typing round-trips"*, while `FletDriver.type_into`
+> queried `page.locator("input")` only. Flutter web backs a **multiline**
+> field with a `<textarea>`, not an `<input>`, so the Notes field in the very
+> dialog this document demonstrates was **silently unreachable** while the map
+> called text fields reachable. Measured in that dialog:
+>
+> ```
+> locator('input')           -> 2      # name, tags
+> locator('textarea')        -> 1      # notes   <-- invisible to type_into
+> locator('input, textarea') -> 3
+> ```
+>
+> Two things follow, and the second is why this note exists rather than a
+> silent edit. The fix is one line (`_FIELD_SELECTOR = "input, textarea"`).
+> But a *prose* claim about reach is exactly what failed here — so the claim
+> is now **asserted by a test**: `test_every_visible_text_field_is_reachable_including_the_multiline_one`
+> pins the census by TAG (`INPUT`, `INPUT`, `TEXTAREA`), and
+> `test_typing_into_the_multiline_field_reaches_the_saved_product` drives the
+> `<textarea>` and reads the value back out of `ProfileManager`. If a future
+> flet backs a field with something new, those fail and this row gets
+> corrected instead of quietly drifting out of true.
 
 ### NOT reachable — recorded with the reason
 
@@ -153,6 +214,19 @@ menu in an overlay that does not surface as semantics nodes here.
 *Consequence:* "every option in creating a profile" — which the directive names
 explicitly — is **not reachable by this mechanism today**. See
 [Recommendation](#recommendation).
+
+*Second consequence — two text fields inherit this limit.* `custom_w` and
+`custom_h` (`src/ui/dialogs/profile.py:299,305`) are declared
+`visible=res_value == "custom"`, so they render only once the **resolution**
+dropdown is set to `custom` — and that dropdown is one of the five that cannot
+be operated. Measured: the dialog exposes **3** text fields at rest, and after
+pressing the resolution control by its displayed value and driving it by
+keyboard it still exposes 3; no `custom` node ever enters the tree. So these
+two fields are not a gap in the text-field mechanism — typing works fine on
+every field that renders — they are **unreachable because the only control
+that reveals them is unreachable**. Recorded under the dropdown limit rather
+than as a separate text-field limit, because that is where the actual block
+is and that is what a fix would have to solve.
 
 **2. Native file dialogs.** `[ import ]` and `[ export ]` press cleanly and
 then nothing happens in the tree — measured: 22 controls before, 22 after, zero
@@ -208,8 +282,21 @@ here`). The capability is registered in `conftest.py`, so on a machine
 Order worth taking, cheapest evidence first:
 
 1. **Button-and-field paths** — profile create/edit, proxy add, bookmark add,
-   certificate add, trash empty. These are fully reachable today and are where
-   the defect history is. Each costs roughly one test at ~50s.
+   certificate add, trash empty. **Their buttons and text fields are reachable
+   today** — single-line and multiline both, driven and asserted through the
+   service layer. Each costs roughly one test at ~50s. Read that as a claim
+   about *buttons and text fields only*: any of these dialogs that also carries
+   a dropdown is **partially** coverable, because the dropdown options are not
+   drivable (item 3). Creating a profile is exactly such a case — the name,
+   tags and notes fields are reachable, the OS/engine/resolution choices are
+   not. Scope a "cover the create-profile dialog" ticket against that split,
+   not against the dialog as a whole.
+
+   *(This item previously read "these are fully reachable today". It was
+   inaccurate — multiline fields were unreachable at the time it was written,
+   and the dropdown carve-out in item 3 already contradicted the word "fully".
+   It is corrected here because this sentence is what the next ticket sizes
+   against.)*
 2. **Navigation and modal scoping** — cheap, and the modal-scoping behaviour is
    already proven correct.
 3. **Dropdown options — do not promise these until the limit is solved.** This

@@ -47,6 +47,20 @@ _WAKE_JS = """() => {
   return 'woken';
 }"""
 
+#: Flutter web backs a single-line field with <input> and a MULTILINE one with
+#: <textarea>. Querying only 'input' skips every multiline field on the screen
+#: while reporting success on the rest — a whole control class missing with no
+#: signal. Both tags carry data-semantics-role="text-field"; the tag union is
+#: used rather than that attribute so the selector still works if Flutter
+#: changes its private attribute names.
+_FIELD_SELECTOR = "input, textarea"
+
+_FIELDS_JS = """() => [...document.querySelectorAll('input, textarea')].map(e => ({
+  tag: e.tagName,
+  label: e.getAttribute('aria-label'),
+  value: e.value,
+}))"""
+
 _SCRAPE_JS = """() => [...document.querySelectorAll('flt-semantics')].map(e => {
   const r = e.getBoundingClientRect();
   return {
@@ -71,6 +85,28 @@ class SemanticNode:
 
     def __str__(self) -> str:  # pragma: no cover - diagnostic only
         return f"[{self.role or '-'}] {self.text[:60]!r} box={self.box}"
+
+
+@dataclass(frozen=True)
+class TextField:
+    """One text field as the served page really exposes it.
+
+    ``label`` is the field's HINT text, which Flutter drops once the field
+    holds a value — so it is a usable address for an empty field and useless
+    for a filled one. Recorded as measured rather than smoothed over.
+    """
+
+    tag: str
+    label: str | None
+    value: str
+
+    @property
+    def multiline(self) -> bool:
+        return self.tag == "TEXTAREA"
+
+    def describe(self) -> str:  # pragma: no cover - diagnostic only
+        kind = "multiline" if self.multiline else "single-line"
+        return f"{kind} label={self.label!r} value={self.value!r}"
 
 
 class SemanticsNotAvailable(RuntimeError):
@@ -205,24 +241,67 @@ class FletDriver:
         loc.last.click(timeout=10_000)
         self.page.wait_for_timeout(settle_ms)
 
-    def type_into(self, index: int, value: str, settle_ms: int = 1200) -> str:
+    def fields(self) -> list[TextField]:
+        """Every text field on screen, in DOM order, with what it holds.
+
+        Exists because the alternative — querying a locator inline — is how a
+        whole field CLASS went missing without a signal. ``type_into`` indexes
+        into exactly this list, so a census and an address can never disagree.
+        """
+        return [
+            TextField(tag=f["tag"], label=f["label"], value=f["value"])
+            for f in self.page.evaluate(_FIELDS_JS)
+        ]
+
+    def type_into(self, target: int | str, value: str, settle_ms: int = 1200) -> str:
         """Type into a real text field and return what it holds afterwards.
 
-        Flutter web backs a focused field with a genuine ``<input>``, so this
-        is real typing through a real element, not a state poke.
+        ``target`` is either a DOM-order index or the field's visible hint text
+        (``type_into("optional", ...)``). Real typing through a real element —
+        a click, then keystrokes — not a state poke.
+
+        Both single-line and multiline fields are reached: Flutter web backs a
+        focused field with a genuine ``<input>``, EXCEPT a multiline one, which
+        it backs with a ``<textarea>``. Querying only ``input`` silently skips
+        every multiline field on the screen, which is precisely the kind of
+        omission this harness must not make.
         """
-        fields = self.page.locator("input")
-        if fields.count() <= index:
+        found = self.fields()
+        index = target if isinstance(target, int) else self._field_index(target, found)
+        if index >= len(found):
             raise AssertionError(
-                f"no text field at index {index} (found {fields.count()}). "
-                f"Present controls:\n{self.describe()}"
+                f"no text field at index {index} (found {len(found)}: "
+                f"{[f.describe() for f in found]}).\nPresent controls:\n"
+                f"{self.describe()}"
             )
-        field = fields.nth(index)
+        field = self.page.locator(_FIELD_SELECTOR).nth(index)
         field.click()
         self.page.wait_for_timeout(400)
         self.page.keyboard.type(value)
         self.page.wait_for_timeout(settle_ms)
         return field.input_value()
+
+    @staticmethod
+    def _field_index(label: str, found: list[TextField]) -> int:
+        """Resolve a field by its visible hint text. Loud on 0 or >1 matches.
+
+        MEASURED CAVEAT, and the reason this is offered beside indexing rather
+        than instead of it: the ``aria-label`` Flutter exposes is the field's
+        HINT, and the hint is dropped once the field holds a value. So a label
+        addresses an EMPTY field reliably and a filled one not at all. Ambiguity
+        raises rather than guessing, because silently typing into the wrong
+        field is the failure this whole harness exists to prevent.
+        """
+        hits = [i for i, f in enumerate(found) if f.label == label]
+        if len(hits) == 1:
+            return hits[0]
+        problem = "no text field" if not hits else f"{len(hits)} text fields"
+        raise AssertionError(
+            f"{problem} labelled {label!r}. Fields on screen: "
+            f"{[f.describe() for f in found]}. Note a field's label is its "
+            f"hint text and disappears once it holds a value — address a "
+            f"filled field by index."
+        )
 
     def screenshot(self, path: str) -> str:
         self.page.screenshot(path=path)

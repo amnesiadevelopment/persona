@@ -51,12 +51,15 @@ def _requirements() -> None:
         pytest.skip(f"chromium not runnable here: {SYSTEM_CHROMIUM} is absent")
 
 
-def _profiles_in(home: str) -> list[str]:
+def _saved_profiles(home: str) -> list[dict]:
     """Read the product's own state through the SERVICE LAYER.
 
     In a subprocess because ``src.core.config`` resolves ``PERSONA_HOME`` at
     import time; the test interpreter has already imported it against a
     different home, and re-importing in-process is unreliable.
+
+    Returns the fields the driven tests assert on, not just names: a field is
+    only proven reachable if what was TYPED lands in the persisted product.
     """
     script = textwrap.dedent(
         f"""
@@ -64,7 +67,10 @@ def _profiles_in(home: str) -> list[str]:
         os.environ["PERSONA_HOME"] = {home!r}
         sys.path.insert(0, {REPO_ROOT!r})
         from src.services.profile.manager import ProfileManager
-        print(json.dumps([p.name for p in ProfileManager().list_profiles()]))
+        print(json.dumps([
+            {{"name": p.name, "notes": p.notes, "tags": list(p.tags)}}
+            for p in ProfileManager().list_profiles()
+        ]))
         """
     )
     out = subprocess.run(
@@ -77,6 +83,11 @@ def _profiles_in(home: str) -> list[str]:
     if out.returncode != 0:
         raise AssertionError(f"service-layer read failed:\n{out.stdout}\n{out.stderr}")
     return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+def _profiles_in(home: str) -> list[str]:
+    """Just the names — the shape most assertions want."""
+    return [p["name"] for p in _saved_profiles(home)]
 
 
 def _dismiss_onboarding(drv: FletDriver) -> None:
@@ -94,6 +105,20 @@ def _create_profile_through_the_ui(drv: FletDriver, name: str) -> str:
     drv.press("create")
     drv.page.wait_for_timeout(4000)
     return typed
+
+
+#: The create-profile dialog's three VISIBLE text fields, in DOM order, with
+#: the tag Flutter web backs each one with. The third is the one that matters:
+#: ``notes_field`` is ``multiline=True`` (``src/ui/dialogs/profile.py:705``),
+#: and Flutter backs a multiline field with a ``<textarea>``, not an
+#: ``<input>``. A driver querying only ``input`` reaches the first two and is
+#: blind to the third while reporting success — a whole control class missing
+#: with no signal. That is why the census below is asserted by TAG.
+_EXPECTED_FIELDS = (
+    ("INPUT", "e.g. Amazon US Shopper"),  # name
+    ("INPUT", "shopping, us, amazon"),  # tags
+    ("TEXTAREA", "optional"),  # notes -- multiline
+)
 
 
 # --------------------------------------------------------------------------
@@ -152,6 +177,78 @@ def test_creating_a_profile_through_the_controls_persists_it(_requirements):
         f"pressing [ create ] did not create the profile. Service layer holds "
         f"{after!r}. The control was found and pressed, so the failure is in "
         f"the path behind it."
+    )
+
+
+def test_every_visible_text_field_is_reachable_including_the_multiline_one(
+    _requirements,
+):
+    """The reach map's text-field row, asserted instead of claimed.
+
+    This exists because the first version of that row was WRONG: it called text
+    fields reachable while the driver queried ``input`` only, so the multiline
+    Notes field — a ``<textarea>`` — was silently unreachable and the map said
+    otherwise. A prose claim about reach is worth nothing; this drives it.
+
+    Two halves, and the census is the half that matters. Asserting only that
+    typing works would still pass a driver blind to a whole control class, so
+    the census pins the exact tags the dialog renders: if a future flet backs a
+    field with something new, this fails and the map gets corrected rather than
+    quietly drifting out of true.
+    """
+    with serve_app(REPO_ROOT) as app, FletDriver(app.url) as drv:
+        _dismiss_onboarding(drv)
+        drv.press("+ new")
+
+        found = drv.fields()
+        assert [(f.tag, f.label) for f in found] == list(_EXPECTED_FIELDS), (
+            "the create-profile dialog does not render the fields this map "
+            f"claims. Found: {[f.describe() for f in found]}"
+        )
+        assert sum(f.multiline for f in found) == 1, (
+            "expected exactly one multiline field (Notes); a driver querying "
+            f"only 'input' would miss it. Found: {[f.describe() for f in found]}"
+        )
+
+        # Every field accepts real typing through a real element.
+        for index, (tag, _label) in enumerate(_EXPECTED_FIELDS):
+            value = f"reach-{index}"
+            got = drv.type_into(index, value)
+            assert got == value, (
+                f"field {index} ({tag}) did not accept typing: {got!r}. This is "
+                f"the multiline case if tag is TEXTAREA."
+            )
+
+
+def test_typing_into_the_multiline_field_reaches_the_saved_product(_requirements):
+    """The multiline field is reachable *and the value lands in the product*.
+
+    Reaching a control is not the same as operating it. The census test above
+    proves the ``<textarea>`` accepts keystrokes; this proves those keystrokes
+    survive ``[ create ]`` and appear in what ProfileManager persists — the
+    only evidence that the field is wired to anything.
+    """
+    name = "ps71-multiline-profile"
+    notes = "driven-notes-through-the-textarea"
+    with serve_app(REPO_ROOT) as app:
+        with FletDriver(app.url) as drv:
+            _dismiss_onboarding(drv)
+            drv.press("+ new")
+            # Address the multiline field by its visible hint, the way a user
+            # identifies it. Legitimate here because the field is still empty.
+            assert drv.type_into("optional", notes) == notes
+            drv.type_into(0, name)
+            drv.press("create")
+            drv.page.wait_for_timeout(4000)
+
+        saved = _saved_profiles(app.home)
+
+    match = [p for p in saved if p["name"] == name]
+    assert match, f"the profile was not created at all. Service layer holds {saved!r}"
+    assert match[0]["notes"] == notes, (
+        f"the multiline Notes field did not reach the saved profile: "
+        f"{match[0]['notes']!r}. The text was typed and accepted by the "
+        f"element, so the break is between the control and the service layer."
     )
 
 
