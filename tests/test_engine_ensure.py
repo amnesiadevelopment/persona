@@ -19,6 +19,28 @@ class _Opener:
         return self._factory(req)
 
 
+def _wire_opener(monkeypatch, opener):
+    """Install `opener` as the transport `_download_to` will use.
+
+    PS-75 moved this seam. `_download_to` no longer builds its own opener from
+    `updater.range_opener`; it asks persona's egress authority for one, so that
+    the ~80-230MB engine asset leaves the host the way the operator said the
+    application's traffic should leave. Patching the OLD name still "worked" in
+    the sense that nothing raised — the fake was simply never consulted and the
+    real opener failed to reach a fake URL, so a fail-closed test kept passing
+    while measuring nothing. Patch the seam that actually decides the transport,
+    and return a used-count so each test can prove it was consulted.
+    """
+    used = {"n": 0}
+
+    def _factory():
+        used["n"] += 1
+        return opener
+
+    monkeypatch.setattr(updater.egress, "download_opener", _factory)
+    return used
+
+
 def _wire_engine_dir(monkeypatch, tmp_path):
     """Point ENGINE_BINARY/MARKER_FILE/VERSION_FILE at tmp_path and force
     non-macOS so is_installed() checks the plain binary + completion marker."""
@@ -249,10 +271,9 @@ def test_download_to_refuses_missing_digest(tmp_path, monkeypatch):
         def read(self, n):
             return self._data.pop(0) if self._data else b""
 
-    monkeypatch.setattr(
-        updater, "range_opener", lambda: _Opener(lambda *a, **k: FakeResp())
-    )
+    used = _wire_opener(monkeypatch, _Opener(lambda *a, **k: FakeResp()))
     ok = updater._download_to(str(path), "http://x/engine", 5, None, None)
+    assert used["n"] == 1, "the test's transport must actually be the one used"
     assert ok is False
     assert not path.exists()
     assert not (tmp_path / "engine.bin.part").exists()
@@ -282,26 +303,94 @@ def test_download_to_allows_missing_digest_when_opted_in(tmp_path, monkeypatch):
         def read(self, n):
             return self._data.pop(0) if self._data else b""
 
-    monkeypatch.setattr(
-        updater, "range_opener", lambda: _Opener(lambda *a, **k: FakeResp())
-    )
+    used = _wire_opener(monkeypatch, _Opener(lambda *a, **k: FakeResp()))
     ok = updater._download_to(
         str(path), "http://x/engine", 5, None, None, allow_missing=True
     )
+    assert used["n"] == 1, "the test's transport must actually be the one used"
     assert ok is True
     assert path.read_bytes() == payload
 
 
-def test_download_to_uses_range_preserving_opener():
-    # audit7 #8: GitHub 302s to a signed CDN URL and the default redirect handler
-    # drops the Range header, so every resume re-downloads the whole file (200)
-    # — over Tor that never finishes. _download_to must build its opener from the
-    # range-preserving one so the tail request survives the redirect.
-    import inspect
+def test_download_to_preserves_range_across_a_real_redirect(tmp_path, monkeypatch):
+    # audit7 #8: GitHub 302s to a signed CDN URL, and a resume whose Range is
+    # lost on that hop gets the whole file (200) instead of the tail — over Tor
+    # that never finishes. This pins the END-TO-END property: a resumed
+    # _download_to still presents its Range at the FINAL hop, through whatever
+    # opener the egress authority handed down.
+    #
+    # This used to assert `"range_opener()" in inspect.getsource(...)`, i.e. on
+    # text this repo wrote about itself. That is the PS-11 anti-pattern: it went
+    # RED when PS-75 routed this call site through the egress authority, even
+    # though Range preservation was completely intact — it was tracking a
+    # spelling, not a behaviour.
+    #
+    # HONEST BOUND, measured rather than assumed: this does NOT falsify
+    # KeepRangeRedirect. Neutering that handler leaves this test GREEN, because
+    # CPython >= 3.13's own HTTPRedirectHandler.redirect_request already copies
+    # req.headers (minus content-length/type) onto the follow-up request, so
+    # Range survives natively here. The handler still earns its place — it is
+    # what made this work on the older interpreters this project has shipped
+    # against, and it states the requirement explicitly rather than resting on
+    # a stdlib implementation detail. What this test DOES catch is the whole
+    # path regressing: a transport or proxy arm that rebuilds the request and
+    # drops Range on the way to the CDN.
+    import http.server
+    import threading
 
-    src = inspect.getsource(updater._download_to)
-    assert "range_opener()" in src
-    assert "urlopen" not in src  # no bare urlopen that would lose Range
+    full = b"ABCDEFGHIJ"
+    seen = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/asset":
+                # the GitHub hop: 302 to the "CDN"
+                self.send_response(302)
+                self.send_header("Location", "/cdn-asset")
+                self.end_headers()
+                return
+            # the CDN hop: this is the one whose Range header matters
+            seen["range"] = self.headers.get("Range")
+            start = 0
+            if seen["range"]:
+                start = int(seen["range"].split("=")[1].split("-")[0])
+            body = full[start:]
+            self.send_response(206 if start else 200)
+            self.send_header("Content-Length", str(len(body)))
+            if start:
+                self.send_header(
+                    "Content-Range",
+                    f"bytes {start}-{len(full) - 1}/{len(full)}",
+                )
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        path = tmp_path / "engine.bin"
+        # a partial already on disk, so the fetch is a RESUME and must send Range
+        path.with_suffix(".bin.part").write_bytes(full[:4])
+        digest = hashlib.sha256(full).hexdigest()
+
+        ok = updater._download_to(
+            str(path),
+            f"http://127.0.0.1:{srv.server_port}/asset",
+            5,
+            digest,
+            None,
+        )
+    finally:
+        srv.shutdown()
+
+    assert ok is True
+    assert path.read_bytes() == full
+    # THE assertion: the Range survived the 302 onto the second hop. Without
+    # KeepRangeRedirect this is None and the CDN hands back the whole file.
+    assert seen["range"] == "bytes=4-"
 
 
 def test_download_to_resumes_with_206_after_a_dropped_connection(tmp_path, monkeypatch):
@@ -336,9 +425,10 @@ def test_download_to_resumes_with_206_after_a_dropped_connection(tmp_path, monke
         return Resp(full[start:4] if start == 0 else full[start:], start, len(full))
 
     opener = _Opener(factory)
-    monkeypatch.setattr(updater, "range_opener", lambda: opener)
+    used = _wire_opener(monkeypatch, opener)
 
     ok = updater._download_to(str(path), "http://x/engine", 5, digest, None)
+    assert used["n"] == 1, "the test's transport must actually be the one used"
     assert ok is True
     assert path.read_bytes() == full
     # the resume actually sent a Range header (proves append-not-restart)

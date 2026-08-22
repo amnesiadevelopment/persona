@@ -51,10 +51,14 @@ module's verify + completion + atomic-replace logic.
 
 import errno
 import hashlib
+import http.client
 import os
 import shutil
+import socket
+import ssl
 import subprocess
 import time
+import urllib.parse
 import urllib.request
 
 from ..core import platform as _platform
@@ -89,6 +93,168 @@ class KeepRangeRedirect(urllib.request.HTTPRedirectHandler):
 def range_opener() -> urllib.request.OpenerDirector:
     """An opener that preserves the Range header across redirects."""
     return urllib.request.build_opener(KeepRangeRedirect)
+
+
+# --- the same opener, but reaching the target through a proxy ----------------
+#
+# MECHANISM ONLY — there is deliberately no policy here. Nothing below reads
+# `app_egress_proxy` or decides whether a proxy should be used; a caller that
+# already holds a verdict from `services/egress.py` hands the transport down.
+# That split is the whole point: this module is SHARED (app_update/fast_update
+# call it too), so resolving persona's egress policy in here would plant a
+# second copy of that decision inside a mechanism — the drift `egress.py:88-91`
+# exists to prevent. The authority stays in `egress`; this owns only "how do I
+# physically open a socket through that transport".
+#
+# WHY NOT urllib's own ProxyHandler FOR SOCKS
+# -------------------------------------------
+# Handed a `socks5://` value, ProxyHandler emits a plain `CONNECT host:443
+# HTTP/1.1` at a port that is waiting for a `\x05` greeting and never answers.
+# socks5 is persona's DEFAULT scheme, so a ProxyHandler-only implementation
+# would not leak — it would HANG, which is a different failure wearing the
+# fix's clothes. This is the same defect class `egress.py:22-30` and
+# `proxy_checker._is_socks_scheme` already document. So socks schemes get a
+# real handshake (via PySocks, a declared dependency and already how
+# `utils/proxy_checker.py` and `services/verify/socks_fetch.py` reach a SOCKS
+# proxy); only http/https proxies go through ProxyHandler.
+#
+# REMOTE DNS IS NOT OPTIONAL
+# --------------------------
+# `rdns=True` is hard-wired below and is passed EXPLICITLY rather than left to
+# a library default, so a future default change cannot silently turn this into
+# a local resolution. Resolving the GitHub/CDN host on the operator's own
+# resolver would trade an IP disclosure for a DNS one, which `egress.py`
+# refuses. This is why PySocks' bundled `sockshandler` is NOT reused: its
+# connect() carries a `socks4_no_rdns` fallback that silently retries with
+# rdns=False, i.e. exactly the local resolution this must never perform. A
+# configured `socks5://` is therefore spoken with remote DNS anyway — the same
+# upgrade `proxy_checker._socks5_connect` already performs for the metadata
+# poll (it sends atyp 0x03 whatever the scheme said), so the two arms of one
+# policy cannot disagree about who resolves the name.
+
+_SOCKS_PROXY_TYPES = {
+    "socks4": "SOCKS4",
+    "socks4h": "SOCKS4",
+    "socks5": "SOCKS5",
+    "socks5h": "SOCKS5",
+}
+
+
+def _proxy_parts(transport: str) -> tuple[str, str, int, str | None, str | None]:
+    """Split a proxy URL into (scheme, host, port, username, password).
+
+    A value with no scheme is read as http, matching `proxy_parser.parse_proxy`
+    — the same reader `egress.resolve()` already used to decide this transport
+    was usable at all, so the two cannot disagree about what the operator typed.
+    """
+    parsed = urllib.parse.urlparse(
+        transport if "://" in transport else "http://" + transport
+    )
+    if not parsed.hostname or not parsed.port:
+        raise ValueError("proxy URL is missing a host or a port")
+    user = urllib.parse.unquote(parsed.username) if parsed.username else None
+    password = urllib.parse.unquote(parsed.password) if parsed.password else None
+    return parsed.scheme.lower(), parsed.hostname, parsed.port, user, password
+
+
+def _real_timeout(timeout):
+    """urllib hands a connection either a number or socket's sentinel object;
+    PySocks wants a number or None."""
+    return timeout if isinstance(timeout, (int, float)) else None
+
+
+class _SocksHTTPConnection(http.client.HTTPConnection):
+    """An HTTPConnection whose socket is opened THROUGH a SOCKS proxy.
+
+    `_socks` — (proxy_type, host, port, user, password) — is attached by the
+    handler below.
+    """
+
+    _socks: tuple = ()
+
+    def connect(self):
+        import socks  # PySocks; a declared dependency (requirements.txt)
+
+        ptype, phost, pport, puser, ppass = self._socks
+        self.sock = socks.create_connection(
+            (self.host, self.port),
+            _real_timeout(self.timeout),
+            self.source_address,
+            getattr(socks, ptype),
+            phost,
+            pport,
+            True,  # rdns — the EXIT resolves the target name. Never False.
+            puser,
+            ppass,
+            ((socket.IPPROTO_TCP, socket.TCP_NODELAY, 1),),
+        )
+
+
+class _SocksHTTPSConnection(_SocksHTTPConnection):
+    """The TLS counterpart: the same proxied socket, wrapped.
+
+    `server_hostname` is the TARGET's name, not the proxy's, so certificate
+    verification still checks the host we asked for.
+    """
+
+    default_port = 443
+
+    def __init__(self, *args, context=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._ssl_context = context or ssl.create_default_context()
+
+    def connect(self):
+        super().connect()
+        self.sock = self._ssl_context.wrap_socket(
+            self.sock, server_hostname=self.host
+        )
+
+
+class SocksProxyHandler(urllib.request.HTTPHandler, urllib.request.HTTPSHandler):
+    """Routes both http and https through a SOCKS proxy with a real handshake."""
+
+    def __init__(self, parts: tuple, context=None):
+        urllib.request.HTTPSHandler.__init__(self, context=context)
+        self._parts = parts
+
+    def _factory(self, cls):
+        def build(host, port=None, timeout=0, **kwargs):
+            conn = cls(host=host, port=port, timeout=timeout, **kwargs)
+            conn._socks = self._parts
+            return conn
+
+        return build
+
+    def http_open(self, req):
+        return self.do_open(self._factory(_SocksHTTPConnection), req)
+
+    def https_open(self, req):
+        return self.do_open(
+            self._factory(_SocksHTTPSConnection), req, context=self._context
+        )
+
+
+def proxied_range_opener(transport: str) -> urllib.request.OpenerDirector:
+    """`range_opener()`'s PROXIED shape: the same Range-preserving opener, but
+    every connection is made through `transport`.
+
+    Not a second opener with its own redirect rules — `KeepRangeRedirect` rides
+    along unchanged, because a resume over a slow circuit is exactly the case
+    this transport exists for and losing Range across GitHub's 302-to-CDN would
+    restart the download from zero on every attempt.
+    """
+    scheme, host, port, user, password = _proxy_parts(transport)
+    if scheme in _SOCKS_PROXY_TYPES:
+        handler = SocksProxyHandler(
+            (_SOCKS_PROXY_TYPES[scheme], host, port, user, password)
+        )
+        return urllib.request.build_opener(handler, KeepRangeRedirect)
+    # An http/https proxy speaks CONNECT natively, so urllib's own handler is
+    # correct here — the SOCKS arm above exists because it is NOT correct there.
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": transport, "https": transport}),
+        KeepRangeRedirect,
+    )
 
 
 # --- hashing -----------------------------------------------------------------
