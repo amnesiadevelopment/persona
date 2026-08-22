@@ -2091,6 +2091,51 @@ def test_a_refusal_names_a_windows_path_exactly_as_the_operator_typed_it():
     )
 
 
+def test_require_snapshot_names_a_windows_path_exactly_as_the_operator_typed_it():
+    # THE CALLER-LEVEL ASSERTION, and the reason it exists separately from the
+    # one above.
+    #
+    # The test above asserts the property on `quote_path` itself. That is a
+    # good source-level guarantee, but it is structurally incapable of catching
+    # the failure that actually shipped: a CALLER that never adopts the helper.
+    # `diff.py`'s `require_snapshot` was exactly that caller — it kept `{!r}`
+    # while every neighbouring site was converted, so the helper was correct,
+    # its unit test was green, and the operator-facing contract was still
+    # broken on Windows.
+    #
+    # So this asserts through the ROUTE instead. `source` is the operator's
+    # typed path (`cli.py` passes it straight from argv), and it is a plain
+    # string, so a Windows-shaped path can be driven on any platform — the
+    # defect is in the FORMATTING, not in the filesystem.
+    from src.services.verify.diff import NotASnapshot, require_snapshot
+
+    typed = r"C:\Users\runneradmin\AppData\Local\Temp\pytest-0\object.json"
+
+    # Parses fine, carries no `probes` — the shape that bypasses both
+    # SnapshotUnreadable guards and lands here.
+    with pytest.raises(NotASnapshot) as excinfo:
+        require_snapshot({"name": "persona-site"}, source=typed)
+
+    assert typed in str(excinfo.value), (
+        "the refusal must name the file the operator typed, verbatim — this is "
+        "the same contract test_a_refusal_never_renders_as_no_differences "
+        "asserts through the CLI, pinned here at the site that renders it"
+    )
+
+
+def test_a_non_path_source_label_is_rendered_unchanged():
+    # `engine_gate` passes PROSE, not a path ("the before recording"), through
+    # the same parameter. Adopting quote_path must not churn those messages:
+    # for any string without a quote character quote_path IS repr, so this
+    # pins that the conversion was invisible to the non-path callers.
+    from src.services.verify.diff import NotASnapshot, require_snapshot
+
+    for label in ("the before recording", "the after recording"):
+        with pytest.raises(NotASnapshot) as excinfo:
+            require_snapshot({"name": "x"}, source=label)
+        assert f"{label!r} is not a snapshot" in str(excinfo.value), label
+
+
 def test_quoting_a_posix_path_is_byte_identical_to_the_old_repr():
     # The fix must not churn the messages on the two platforms that were
     # already green. For any path without a quote character, quote_path is

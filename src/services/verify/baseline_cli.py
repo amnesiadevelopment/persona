@@ -127,8 +127,7 @@ def _cmd_record(args: argparse.Namespace) -> int:
         raise BaselineUnavailable(
             f"recorded a clean reading ({summary}) but could not write it to "
             f"{quote_path(args.output)}: {exc}. Nothing was written; the "
-            "previous "
-            "artifact, if any, is UNCHANGED. Fix the path or pass -o."
+            "previous artifact, if any, is UNCHANGED. Fix the path or pass -o."
         ) from exc
     print(f"wrote {args.output}: {summary}", file=sys.stderr)
     return 0

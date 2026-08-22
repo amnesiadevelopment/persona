@@ -583,8 +583,9 @@ def check(
         # behind, not a typo'd path.
         raise BaselineUnavailable(
             f"the baseline at {quote_path(baseline_path)} is a snapshot but "
-            "contains no probe readings at all, so there is nothing to compare — "
-            "this is NOT drift. Every probe would be reported as 'added'. "
+            "contains no probe readings at all, so there is nothing to compare "
+            "against — this is NOT drift. Every probe would be reported as "
+            "'added'. "
             "Re-record it, and check that the recording was not refused for "
             "unread probes."
         )
