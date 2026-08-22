@@ -30,13 +30,22 @@ function applyLocalePatch(G) {
     // a masking detector (creepjs) calls Function.prototype.toString on Intl in a
     // Web Worker and, seeing our wrapper source, marks the Timezone/Intl
     // component "rejected". native_ext also patches this per realm via the shared
-    // registry, but load order between the two leaves isn't guaranteed — so re-
-    // apply the same __pnaName-aware toString here, sharing native_ext's guard
-    // flag (__pnaToStringPatched) so at most ONE of the two ever wraps a realm.
+    // registry, but load order between the two leaves isn't guaranteed — so
+    // re-apply the same __pnaName-aware toString here.
+    //
+    // CHAIN onto whatever is installed; do NOT guard on a shared global. The two
+    // scripts used to coordinate through `G.__pnaToStringPatched` so that at most
+    // one wrapped a realm — an enumerable global under persona's own prefix,
+    // which `Object.keys(window)` found in one line in every realm. Delegating to
+    // `_ots` (the engine's toString, or native_ext's patch) makes the two compose
+    // with no shared name, and keeps the property the flag protected: whichever
+    // patch ends up outermost answers a `__pnaName` hit itself and never reaches
+    // the one below, so a marked wrapper renders the native form EXACTLY once, in
+    // either load order. See native_ext.py's applyNativePatch and
+    // worker_wrap.py:28-32 for the same idiom.
     try {
       const FP = G.Function && G.Function.prototype;
-      if (FP && !G.__pnaToStringPatched) {
-        G.__pnaToStringPatched = true;
+      if (FP) {
         const _ots = FP.toString;
         const _pts = function () {
           try { const n = this && this.__pnaName;
@@ -45,6 +54,7 @@ function applyLocalePatch(G) {
           return _ots.apply(this, arguments);
         };
         try { Object.defineProperty(_pts, "__pnaName", { value: "toString" }); } catch (e) {}
+        try { Object.defineProperty(_pts, "name", { value: "toString" }); } catch (e) {}
         FP.toString = _pts;
       }
     } catch (e) {}
