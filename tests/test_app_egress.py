@@ -906,10 +906,13 @@ def test_repeated_identical_refusals_log_once_not_once_per_poll(caplog):
     )
 
 
-def test_a_changed_or_recovered_policy_logs_again(caplog):
-    """AC3's boundary — the throttle must not silence a NEW fact. Suppressing a
-    changed reason, or a second outage after a recovery, would turn "throttled"
-    into the silent skip this log exists to prevent."""
+def test_a_recovered_policy_logs_again(caplog):
+    """AC3's boundary — a second outage AFTER A RECOVERY must not be swallowed.
+
+    Named for the one re-arm it actually drives. It previously claimed the
+    changed-reason re-arm too, which the test never exercised — see
+    `test_a_second_distinct_bad_value_logs_again` below for that half.
+    """
     with caplog.at_level("WARNING", logger="persona"):
         settings.set_app_egress_proxy("this is not a proxy url")
         with pytest.raises(egress.EgressRefused):
@@ -927,6 +930,36 @@ def test_a_changed_or_recovered_policy_logs_again(caplog):
     refusals = [r for r in caplog.records if "NOT SENT" in r.getMessage()]
     assert len(refusals) == 2, (
         f"a refusal after a recovery must still be findable, got {len(refusals)}"
+    )
+
+
+def test_a_second_distinct_bad_value_logs_again(caplog):
+    """AC3's other boundary — the operator who typos TWICE, with no recovery in
+    between, must still get a signal for the second one.
+
+    This is the population most likely to be actively fixing the setting: they
+    read the warning, edited the key, and got it wrong a different way. A
+    throttle keyed on the REFUSAL REASON would answer them with silence, because
+    `resolve()` has exactly one REFUSE string — both typos produce the identical
+    reason, so the state would never change. Keying on the rejected VALUE is
+    what makes this re-arm reachable at all; this test is what holds it that way.
+    """
+    with caplog.at_level("WARNING", logger="persona"):
+        settings.set_app_egress_proxy("this is not a proxy url")
+        with pytest.raises(egress.EgressRefused):
+            egress.curl_proxy_args()
+
+        # A DIFFERENT unusable value — no recovery in between, and the refusal
+        # reason string is byte-identical to the first.
+        settings.set_app_egress_proxy("also://not a proxy url")
+        with pytest.raises(egress.EgressRefused):
+            egress.curl_proxy_args()
+
+    refusals = [r for r in caplog.records if "NOT SENT" in r.getMessage()]
+    assert len(refusals) == 2, (
+        "a second, distinct bad value is a NEW fact for the operator and must "
+        f"be logged; got {len(refusals)} line(s) — the throttle is keying on "
+        "the refusal reason, which never varies"
     )
 
 
