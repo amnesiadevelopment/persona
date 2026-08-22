@@ -893,10 +893,18 @@ def test_a_rotating_polish_exit_still_reads_as_poland():
                 if i.id == "geo_country_city")
     checker = checker_by_id("pixelscan.net")
 
-    for city in ("Warsaw", "Krakow", "Ursynów", "Gdansk"):
+    # MULTI-WORD cities are in this loop deliberately. Poland is full of them
+    # (Nowy Sącz, Zielona Góra, Nowy Targ, Gorzów Wielkopolski) and the exit
+    # rotates by design, so they are reachable rather than theoretical — but
+    # every city here was single-token until 2026-08-22, which is exactly why
+    # the truncation defect below survived a round of review.
+    for city in ("Warsaw", "Krakow", "Ursynów", "Gdansk",
+                 "Nowy Sacz", "Zielona Gora", "Gorzów Wielkopolski"):
         reading = extract_text_item(checker, item, f"Check Geo API\n\nPoland / {city}\n")
         assert reading.state == READ, f"a Polish exit in {city} must still read"
-        assert reading.value == f"Poland / {city}"
+        assert reading.value == f"Poland / {city}", (
+            f"{city!r} must be captured WHOLE, as the item's note promises"
+        )
 
     # The country is what is asserted: a non-Polish exit does NOT read.
     assert extract_text_item(
@@ -912,6 +920,40 @@ def test_the_naive_city_pattern_would_have_missed_the_rotated_exit():
     # ...while the corrected item reads it.
     fixed = next(i for i in checker.items if i.id == "geo_country_city")
     assert extract_text_item(checker, fixed, "Poland / Krakow").state == READ
+
+
+def test_the_naive_word_pattern_would_have_TRUNCATED_a_multi_word_city():
+    """DEFECT 1b — the same defect class as 1, one level down, and it survived
+    a round of review because every city in the test loop was single-token.
+
+    ``\\S+`` stops at the first space, so a two-word city was captured as its
+    first token only. This fails in the QUIETER direction than the hardcoded
+    city did: that one read ABSENT (loud — it looks like the checker stopped
+    reporting Poland), this one reads READ with a silently CORRUPTED value.
+    That is the worse outcome on a ``capture=True`` row, because this record
+    exists precisely so a later run can tell "the verdict changed" from "the
+    wording changed" — and ``Poland / Nowy`` -> ``Poland / Zielona`` reads as
+    a genuine geo change when both are just multi-word cities.
+    """
+    checker = checker_by_id("pixelscan.net")
+    naive = TextItem("geo_naive", r"(poland\s*/\s*\S+)", EXIT,
+                     adverse=False, capture=True)
+    fixed = next(i for i in checker.items if i.id == "geo_country_city")
+
+    for city in ("Nowy Sacz", "Zielona Gora", "Gorzów Wielkopolski"):
+        page = f"Check Geo API\n\nPoland / {city}\n"
+
+        # The BUG: it still READS, which is why it is quiet — but the captured
+        # value has silently lost everything after the first space.
+        broken = extract_text_item(checker, naive, page)
+        assert broken.state == READ
+        assert broken.value == f"Poland / {city.split()[0]}"
+        assert broken.value != f"Poland / {city}", (
+            "this test must demonstrate the truncation, not agree with the fix"
+        )
+
+        # ...while the corrected item captures the city WHOLE.
+        assert extract_text_item(checker, fixed, page).value == f"Poland / {city}"
 
 
 def test_creepjs_best_possible_ratings_are_not_recorded_as_adverse():
