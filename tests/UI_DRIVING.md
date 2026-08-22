@@ -288,6 +288,16 @@ something to add to the default run.
 > here against the committed 5-test suite from a fresh run. If you add a test,
 > re-run and update this section — a stale number here is what the next ticket
 > sizes against.
+>
+> **This section is the single owner of the tier's cost figures.** The same
+> retired band shipped a second and third time in `conftest.py`'s `ui_driver`
+> marker and `test_ui_driven.py`'s module docstring, because a number that is
+> *copied* goes stale independently of the one it was copied from — and the
+> audit that caught the first instance was scoped to this file, so it missed
+> both. Those two now describe the *shape* of the cost (fixed boot dominates)
+> and point here for the magnitude. Keep it that way: state a measured figure
+> here and nowhere else, so there is exactly one place that can be wrong and
+> exactly one place to fix.
 
 Guarded honestly: the tests are marked `ui_driver` and skip with a reason
 naming exactly what is missing (`flet not installed`, `chromium not runnable

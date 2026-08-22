@@ -175,8 +175,13 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
         "ui_driver: drives persona's own flet UI through real controls. Boots "
-        "a real app and a real browser, so these are slow (~45-60s each) and "
-        "are selected/deselected as a group with `-m ui_driver`.",
+        "a real app and a real browser per test, so the tier is slow and its "
+        "cost is dominated by that fixed boot rather than by the interaction "
+        "(driving more controls inside one test is close to free). Measured "
+        "per-test and whole-suite figures live in tests/UI_DRIVING.md#cost, "
+        "which is their single owner — deliberately not restated here, because "
+        "a copied number goes stale when the suite changes. Selected and "
+        "deselected as a group with `-m ui_driver`.",
     )
 
     requested = _requested_capabilities(config)
