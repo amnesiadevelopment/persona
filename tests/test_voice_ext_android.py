@@ -47,7 +47,12 @@ G.speechSynthesis = {
 };
 function SpeechSynthesisVoice() {}
 G.SpeechSynthesisVoice = SpeechSynthesisVoice;
-G.setTimeout = function () {};
+// Record deferred callbacks instead of dropping them. A no-op setTimeout makes
+// the SECOND voiceschanged dispatch invisible, and that is the half that exists
+// for listeners registered after document_start — so stubbing it away would
+// leave the load-bearing behaviour unobservable and untestable.
+G.__deferred = [];
+G.setTimeout = function (fn) { G.__deferred.push(fn); return 0; };
 G.Intl = Intl;
 G.Object = Object;
 G.self = G; G.window = G; G.globalThis = G;
@@ -56,18 +61,33 @@ const src = require('fs').readFileSync(process.argv[2], 'utf8');
 require('vm').createContext(G);
 require('vm').runInContext(src, G, { filename: 'voices.js' });
 
+// Snapshot BEFORE draining: these are the events a listener present at
+// document_start saw synchronously.
+const immediate = G.__events.slice();
+// Now run what setTimeout deferred — this is what a LATE listener depends on.
+for (const fn of G.__deferred.splice(0)) { fn(); }
+const deferred = G.__events.slice(immediate.length);
+
 console.log(JSON.stringify({
   voices: G.speechSynthesis.getVoices().map((v) => ({
     name: v.name, lang: v.lang, voiceURI: v.voiceURI,
     localService: v.localService, default: v.default,
   })),
   events: G.__events,
+  immediateEvents: immediate,
+  deferredEvents: deferred,
 }));
 """
 
 
-def _voices(tmp_path, locale, os_type):
-    """Build the extension for `os_type`, execute it, return the roster."""
+def _probe(tmp_path, locale, os_type):
+    """Build the extension for `os_type`, execute it, return the whole probe result.
+
+    Returns the full dict: the selected roster plus the `voiceschanged` events,
+    split into the ones dispatched synchronously and the ones `setTimeout`
+    deferred. Kept separate from `_voices` so the event plumbing is actually
+    READ by a test rather than threaded out and discarded.
+    """
     node = shutil.which("node")
     if not node:
         pytest.skip("node not available")
@@ -85,7 +105,12 @@ def _voices(tmp_path, locale, os_type):
     assert data["voices"] != ["HOST_VALUE_NOT_SPOOFED"], (
         "the patch did not install — the page would see the HOST voice list"
     )
-    return data["voices"]
+    return data
+
+
+def _voices(tmp_path, locale, os_type):
+    """Build the extension for `os_type`, execute it, return the roster."""
+    return _probe(tmp_path, locale, os_type)["voices"]
 
 
 def _os_marker(tmp_path, locale, os_type):
@@ -207,9 +232,35 @@ def test_android_roster_agrees_with_navigator_language(tmp_path):
 
 
 def test_android_voices_are_local_and_patch_announces_itself(tmp_path):
-    # native = true in tts_android.cc, and is_local_service = !remote.
-    voices = _voices(tmp_path, "en-US", "android")
+    """Both halves of the name, asserted — the roster IS local, and the patch
+    DOES announce itself.
+
+    `localService`: native = true in tts_android.cc, and is_local_service =
+    !remote, so every Android voice is local. A remote voice here would imply a
+    network TTS engine the device never reported.
+
+    `voiceschanged`: voice_ext.py:172-174 dispatches TWICE on purpose —
+    synchronously, then again through setTimeout. The deferred one is not
+    redundant: getVoices() is famously empty on first call, so real pages
+    register a voiceschanged listener and re-read. A listener attached AFTER
+    document_start misses the synchronous dispatch entirely and would be left
+    holding the HOST roster — the exact leak this extension exists to prevent.
+    Both phases are therefore asserted separately; asserting only the union
+    would let the deferred dispatch be deleted silently.
+    """
+    data = _probe(tmp_path, "en-US", "android")
+    voices = data["voices"]
     assert all(v["localService"] is True for v in voices)
+
+    assert "voiceschanged" in data["immediateEvents"], (
+        "no synchronous voiceschanged: a listener present at document_start is "
+        f"never told the roster changed. events={data['events']}"
+    )
+    assert "voiceschanged" in data["deferredEvents"], (
+        "no deferred voiceschanged: a listener registered AFTER document_start "
+        "re-reads getVoices() on this event only, so without it the page keeps "
+        f"the HOST roster. events={data['events']}"
+    )
 
 
 # --------------------------------------------------------------------------
