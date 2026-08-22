@@ -287,8 +287,18 @@ def _launch_args(
     if _platform.IS_LINUX:
         # Software GL keeps the GPU process alive so the fingerprint WebGL
         # spoofer populates a believable vendor/renderer; --disable-gpu leaves
-        # a blank WebGL that flags as fake. The host has no GPU, which is the
-        # known-environmental limitation the record already tags.
+        # a blank WebGL that flags as fake.
+        #
+        # This host has no GPU, and that is NOT an exemption. The owner
+        # withdrew that reading (2026-08-22, PS-10): there will be no dev-VM
+        # and no GPU machine in the loop, and the engine is expected to
+        # present a plausible GPU wherever it runs — in the claimed strings
+        # AND in the pixels a checker renders. So what this flag buys is a
+        # populated gpu_claimed; it does NOT make gpu_rendered the product's
+        # own. Both are recorded as PRODUCT rows (vector=gpu_claimed /
+        # gpu_rendered, tagged FINGERPRINT), and a red on either is a finding
+        # against undetectable-masking rather than something the record
+        # excuses as environmental.
         args += [
             "--use-gl=angle",
             "--use-angle=swiftshader",
