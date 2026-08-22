@@ -373,6 +373,17 @@ class FletDriver:
         The box is RE-READ rather than adjusted arithmetically: a scroller
         clamps at its end, so assuming the requested delta was applied is how a
         click ends up a few dozen pixels off the control it is aiming at.
+
+        SINGLE-SHOT BY DESIGN — do not "fix" this into a retry loop. It
+        scrolls once, re-reads, and returns WITHOUT re-checking the margin or
+        trying again, so a clamped scroll can still leave the control against
+        the fold. That is deliberate: :meth:`_open` then asserts
+        ``aria-expanded`` actually flipped, so the failure surfaces LOUDLY as
+        "the dropdown did not open" instead of being papered over. A retry
+        loop here would convert that loud failure into a silent stall and,
+        worse, into a driver that reports "unreachable" for a control it
+        simply never managed to aim at — which is the exact class of bug this
+        whole ticket existed to overturn.
         """
         nx, ny, _nw, nh = node.box
         # Only a region that could actually hold this control can scroll it
