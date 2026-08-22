@@ -238,7 +238,18 @@ def test_override_scripts_cloak_every_installed_function():
 _HARNESS = r"""
 const fs = require("fs"), vm = require("vm");
 globalThis.Navigator = function Navigator() {};
-globalThis.navigator = Object.create(Navigator.prototype);
+// NOT `globalThis.navigator = ...`. Node >=21 ships a built-in `navigator`
+// defined as a getter-only accessor, and a sloppy-mode assignment over a
+// getter-only property is a SILENT no-op — no throw, no warning. The stub
+// would never be installed, `navigator.language` would return the host's real
+// locale, and the behavioural assertions below would fail for a reason that
+// has nothing to do with the code under test. defineProperty overwrites the
+// accessor on every engine, so this harness reads the same on Node 20 and 24.
+Object.defineProperty(globalThis, "navigator", {
+  value: Object.create(Navigator.prototype),
+  writable: true,
+  configurable: true,
+});
 globalThis.self = globalThis;
 globalThis.window = globalThis;
 globalThis.innerWidth = 1200;
