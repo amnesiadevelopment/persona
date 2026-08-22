@@ -479,3 +479,311 @@ def test_release_no_longer_claims_the_bundle_goes_unexamined(release_text) -> No
         "to has now shipped"
     )
     assert "A true guard would import from" not in release_text
+
+
+# --------------------------------------------------------------------------
+# PS-60: the suite runs on every platform persona ships to, a real engine is
+# launched, and what this environment cannot answer says so.
+# --------------------------------------------------------------------------
+
+GPU_SCRIPT = REPO_ROOT / ".github" / "scripts" / "report_runner_gpu.py"
+
+#: The three runner labels release.yml already builds on. The pre-merge gate
+#: must cover the same set — a platform that ships without ever running the
+#: suite is the gap this matrix closes.
+SHIPPED_PLATFORMS = ("ubuntu-24.04", "windows-latest", "macos-latest")
+
+
+@pytest.fixture(scope="module")
+def gpu_text() -> str:
+    return GPU_SCRIPT.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("platform", SHIPPED_PLATFORMS)
+def test_ci_runs_the_suite_on_every_shipped_platform(ci_yaml, platform) -> None:
+    """persona ships to three operating systems; until this matrix existed
+    exactly one of them had ever executed a test, and everything the project
+    believed about Windows or macOS was inference from source."""
+    matrix = ci_yaml["jobs"]["tests"]["strategy"]["matrix"]
+    assert platform in matrix["os"], (
+        f"{platform} is not in the pre-merge matrix, so a change can break it "
+        "and still be merged — that platform still ships"
+    )
+
+
+def test_ci_matrix_covers_the_same_platforms_release_builds_for(ci_yaml, release_yaml) -> None:
+    """A platform good enough to BUILD for is good enough to TEST on.
+
+    Pinned as a relationship rather than as a hardcoded list so that adding a
+    fourth build target cannot quietly leave the pre-merge gate behind.
+    """
+    built_on = {
+        str(job.get("runs-on", ""))
+        for name, job in release_yaml["jobs"].items()
+        if name.startswith("build-")
+    }
+    tested_on = set(ci_yaml["jobs"]["tests"]["strategy"]["matrix"]["os"])
+    missing = {p for p in built_on if p and "${{" not in p} - tested_on
+    assert not missing, (
+        f"release.yml builds on {sorted(missing)} but the pre-merge gate never "
+        "runs the suite there — those platforms ship unverified"
+    )
+
+
+def test_ci_matrix_does_not_fail_fast(ci_yaml) -> None:
+    """The interesting result is 'holds on Linux, not on Windows'.
+
+    fail-fast cancels the sibling platforms the moment one goes red, throwing
+    away exactly the rows that make a divergence legible.
+    """
+    strategy = ci_yaml["jobs"]["tests"]["strategy"]
+    assert strategy.get("fail-fast") is False, (
+        "the matrix cancels remaining platforms on the first failure, which "
+        "destroys the cross-platform comparison this matrix exists to produce"
+    )
+
+
+def test_no_platform_is_excused_from_a_red_result(ci_yaml, ci_text) -> None:
+    """The Windows floor is 22 real failures, so the temptation to mark that
+    platform continue-on-error is live. It must be refused: it is the allowlist
+    defect at job scale, and would hide NEW Windows regressions too."""
+    for name, job in ci_yaml["jobs"].items():
+        assert job.get("continue-on-error") is not True, (
+            f"job {name} cannot fail the workflow"
+        )
+    effective = "\n".join(_effective_lines(ci_text))
+    assert "continue-on-error" not in effective, (
+        "a continue-on-error appeared in the gate's directives — a platform "
+        "whose red does not block is a platform nobody is verifying"
+    )
+
+
+def test_ci_provisions_a_real_browser_engine(ci_text) -> None:
+    """The realm-sweep fixture launches a genuine Firefox and had never
+    executed anywhere, because the BINARY was never provisioned. `pip install .`
+    supplies the playwright package but not the browser."""
+    effective = "\n".join(_effective_lines(ci_text))
+    assert "playwright install firefox" in effective, (
+        "no step downloads the Firefox binary, so every real-browser probe "
+        "skips and the suite's strongest assertion never runs"
+    )
+
+
+def test_ci_declares_the_browser_capability_rather_than_inferring_it(ci_yaml) -> None:
+    """A job that HAS provisioned a browser says so, and in that job a skip of
+    the browser probes is a failure.
+
+    The declaration must be explicit. Inferring it ("playwright imported, so
+    this machine supports browser tests") re-creates the original defect one
+    level up: it concludes "unsupported here" on precisely the machine where
+    support broke, which is the one case that must be loud.
+    """
+    steps = ci_yaml["jobs"]["tests"]["steps"]
+    declaring = [
+        s for s in steps
+        if "browser" in str(s.get("env", {}).get("PERSONA_REQUIRED_CAPABILITIES", ""))
+    ]
+    assert declaring, (
+        "no step declares the 'browser' capability, so a browser probe that "
+        "declines to run on a provisioned machine still reads as green"
+    )
+    for step in declaring:
+        assert "pytest" in str(step.get("run", "")), (
+            "the capability is declared on a step that does not run the suite, "
+            "so nothing enforces it"
+        )
+
+
+def test_the_capability_declaration_uses_the_projects_existing_vocabulary() -> None:
+    """PS-58 owns 'did not run'. A second mechanism here would mean two
+    vocabularies for the same question and a skip that satisfies neither."""
+    conftest = (REPO_ROOT / "conftest.py").read_text(encoding="utf-8")
+    assert "PERSONA_REQUIRED_CAPABILITIES" in conftest, (
+        "the workflow declares a capability through a name the test harness "
+        "does not implement — the declaration would be silently inert"
+    )
+    assert '"browser"' in conftest or "'browser'" in conftest, (
+        "the 'browser' capability the workflow declares is not a known "
+        "capability, which the harness treats as a hard usage error"
+    )
+
+
+def test_ci_states_the_measured_floor_for_every_platform(ci_text) -> None:
+    """A floor is the sentence the next reader trusts when deciding whether
+    their change broke something, so each platform's figure must be stated —
+    and they differ, which is the point.
+
+    Pinned to the MARKED floor line for each platform, not to a loose substring.
+    An earlier version asserted `"2446" in ci_text`, which the narrative below
+    the table also contains — so deleting the authoritative figure left the test
+    green. It was mutation-tested and did not catch that; this form does.
+    """
+    for platform in SHIPPED_PLATFORMS:
+        assert f"ON THIS RUNNER ({platform}" in ci_text, (
+            f"no floor recorded for {platform}, or it is not labelled with the "
+            "runner it was taken on"
+        )
+    for marker in ("THE LINUX FLOOR", "THE MACOS FLOOR", "THE WINDOWS FLOOR"):
+        pattern = rf"(\d+) failed, (\d+) passed[^\n]*<- {marker}"
+        match = re.search(pattern, ci_text)
+        assert match, (
+            f"the line marked {marker!r} does not state a 'N failed, N passed' "
+            "figure — a floor without numbers cannot be compared against"
+        )
+    windows = re.search(r"(\d+) failed, (\d+) passed[^\n]*<- THE WINDOWS FLOOR", ci_text)
+    assert windows and int(windows.group(1)) > 0, (
+        "the Windows floor is recorded as zero failures, but it was measured at "
+        "22 — a floor that understates itself makes every real regression look "
+        "like an inherited red"
+    )
+
+
+def test_ci_records_why_the_windows_floor_is_not_zero(ci_text) -> None:
+    """A bare number teaches people to ignore the job. The causes are what make
+    the 22 actionable rather than scenery."""
+    for cause in ("os.fork", "0o666", "charmap", "socket"):
+        assert cause in ci_text, (
+            f"the Windows floor does not name the {cause!r} cause — an "
+            "unexplained red is indistinguishable from a broken gate"
+        )
+
+
+def test_the_display_question_was_answered_by_measurement(ci_text) -> None:
+    """Assuming a display is needed adds a moving part nothing uses; assuming
+    it is not, when it is, fails for a reason unrelated to the product. The
+    workflow must record which it actually was."""
+    effective = "\n".join(_effective_lines(ci_text))
+    for banned in ("xvfb", "Xvfb", "xvfb-run"):
+        assert banned not in effective, (
+            "a virtual display is provisioned although a headless launch was "
+            "measured to work on all three runners"
+        )
+    assert "MEASURED" in ci_text and "DISPLAY" in ci_text, (
+        "the workflow does not state that the display question was settled by "
+        "measurement, leaving the next reader to re-litigate it"
+    )
+
+
+def test_the_gpu_reading_is_taken_on_every_platform(ci_yaml) -> None:
+    steps = ci_yaml["jobs"]["tests"]["steps"]
+    gpu_steps = [s for s in steps if "report_runner_gpu.py" in str(s.get("run", ""))]
+    assert gpu_steps, "no GPU reading is taken, so the host-fact leak goes unrecorded"
+    assert any(str(s.get("if", "")).strip() == "always()" for s in gpu_steps), (
+        "the GPU reading is skipped when the suite fails — but the Windows job "
+        "is red at its measured floor, so the reading would never be recorded "
+        "there at all"
+    )
+
+
+def test_the_gpu_reading_is_never_counted_as_a_pass(gpu_text) -> None:
+    """THE central property. A green assertion here would enter the record as
+    evidence that persona's GPU masking was verified on a machine that has no
+    GPU — the precise misreading the reporter exists to prevent."""
+    assert "assert " not in gpu_text, (
+        "the GPU reporter asserts, so its result can be read as a verdict on "
+        "persona rather than as a reading of the environment"
+    )
+    assert "return 0" in gpu_text and "return 1" not in gpu_text, (
+        "the GPU reporter can exit non-zero, which would raise a permanent "
+        "environmental fact as a new defect on every run"
+    )
+
+
+def test_the_gpu_reading_states_its_cause() -> None:
+    """Recorded WITH ITS REASON: a reader must meet the explanation and the
+    value at the same moment, or the permanent red becomes evidence about
+    persona.
+
+    Reads the explanation the operator is ACTUALLY SHOWN, by calling the
+    function that produces it. Two earlier versions asserted on the module's
+    source text, which also contains this vocabulary in its docstring — so
+    gutting the printed explanation left the test green while the operator saw
+    nothing. Both were mutation-tested and neither caught it; this form does.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_ps60_gpu_reporter", GPU_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+
+    shown = "\n".join(module.explain_software_rendering()).lower()
+    assert "host-fact leak" in shown, (
+        "the printed reading does not classify the software-renderer pair as a "
+        "host-fact leak, which is how the masking charter already records it — "
+        "explaining it only in a docstring the operator never sees is not enough"
+    )
+    assert "by construction" in shown, (
+        "the printed reading does not say the pair is present by construction "
+        "on this infrastructure, so a reader may take it for a regression"
+    )
+    assert "not" in shown and "defect" in shown, (
+        "the printed reading does not tell the reader to refrain from filing it "
+        "as a new defect"
+    )
+    # The classification is worthless if the detection never fires.
+    assert module.looks_like_software("llvmpipe (LLVM 15.0.7, 256 bits)")
+    assert module.looks_like_software("Apple Software Renderer")
+    assert not module.looks_like_software("NVIDIA GeForce RTX 4090/PCIe/SSE2")
+
+
+def test_the_gpu_explanation_is_the_one_actually_printed(gpu_text) -> None:
+    """Guards the seam the test above depends on.
+
+    If `main` stops calling `explain_software_rendering`, that function becomes
+    dead code the test still happily reads — a green test describing output
+    nobody receives.
+    """
+    assert "banner += explain_software_rendering()" in gpu_text, (
+        "main() no longer emits the explanation through "
+        "explain_software_rendering(), so what is tested is not what is printed"
+    )
+
+
+def test_nothing_fakes_hardware_the_runner_does_not_have(ci_text, gpu_text) -> None:
+    """Out of scope, and actively harmful: forcing a renderer string corrupts
+    the one reading this environment is genuinely unable to give."""
+    effective = "\n".join(_effective_lines(ci_text)).lower()
+    for banned in ("mesa_gl_version_override", "libgl_always_software",
+                   "gallium_driver", "--use-gl=", "swiftshader-install"):
+        assert banned not in effective, (
+            f"the workflow sets {banned!r}, making the runner claim graphics "
+            "behaviour it does not have"
+        )
+    assert "getParameter" in gpu_text, (
+        "the reporter does not read the renderer from the live GL context, so "
+        "it cannot be reporting what the host actually draws with"
+    )
+
+
+def test_no_proxy_credential_is_introduced(ci_text) -> None:
+    """Explicitly out of scope: the mobile exit is metered and is itself the
+    subject of measurement elsewhere. Importing it here would spend quota to
+    improve a number nothing depends on, and create a credential in CI with no
+    consumer."""
+    effective = "\n".join(_effective_lines(ci_text)).lower()
+    for banned in ("proxy_url", "socks5", "proxy_user", "proxy_pass", "http_proxy:"):
+        assert banned not in effective, (
+            f"{banned!r} appeared in the gate — a datacenter exit IP is an "
+            "expected, IP-driven reading and must not be papered over"
+        )
+
+
+def test_ci_does_not_widen_the_read_only_permission_stance(ci_yaml) -> None:
+    """These jobs execute untrusted third-party code. Downloading and launching
+    a browser needs no token at all, so nothing added here may widen it."""
+    assert ci_yaml.get("permissions") == {"contents": "read"}
+    for name, job in ci_yaml["jobs"].items():
+        perms = job.get("permissions")
+        assert perms in (None, {"contents": "read"}), (
+            f"job {name} widens the default read-only permission stance"
+        )
+
+
+def test_no_self_hosted_runner_is_introduced(ci_yaml) -> None:
+    """Settled: the owner cannot grant machine access, which is the reason this
+    work stands on hosted infrastructure."""
+    for platform in ci_yaml["jobs"]["tests"]["strategy"]["matrix"]["os"]:
+        assert "self-hosted" not in str(platform), (
+            "a self-hosted runner appeared in the matrix"
+        )

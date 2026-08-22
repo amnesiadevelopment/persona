@@ -1,6 +1,7 @@
 name: ci
 
-# Run the test suite BEFORE a change lands, not after.
+# Run the test suite BEFORE a change lands, not after — on every OS persona
+# ships to, and with a real browser engine actually launched.
 #
 # release.yml runs the same suite, but only on a version-tag push — by which
 # point the change is already on main and headed into every consumer's next
@@ -9,6 +10,15 @@ name: ci
 # front of the pipeline: a pull request is checked before it can be merged, and
 # a push straight to main is checked too, so a path that bypasses review does
 # not also bypass verification.
+#
+# WHY THREE PLATFORMS (PS-60). persona ships to Linux, Windows and macOS, and
+# until this matrix existed exactly one of them had ever executed a test.
+# Everything the project believed about Windows or macOS behaviour was
+# inference from source. The interesting result here is deliberately NOT "green
+# everywhere" — it is "this holds on Linux and does not hold on Windows", and
+# the matrix exists to make that difference visible before a merge rather than
+# after a release. See "THE FAILURE FLOOR" below: the three floors differ, and
+# they are reported rather than flattened.
 on:
   pull_request:
     branches:
@@ -22,6 +32,10 @@ on:
 # these jobs install and execute untrusted third-party code (git-dep setup.py,
 # the engine packages) and must not hold a write-capable token that code could
 # exfiltrate. Nothing here writes to the repo, so nothing needs widening.
+#
+# This stance is INHERITED by everything added for the three-platform matrix and
+# the browser job — downloading a Firefox binary and launching it needs no token
+# at all, so nothing here widens the default.
 permissions:
   contents: read
 
@@ -33,15 +47,23 @@ concurrency:
 
 jobs:
   tests:
-    runs-on: ubuntu-24.04
-    # Measured at 107s on the runner (2454 passed, 1 failed, 14 skipped — see
-    # "the failure floor" below, which states each figure with the environment
-    # it came from). That is well inside the window where people wait for a
-    # check rather than learning to merge past it, so the gate runs the WHOLE
-    # suite: no -k narrowing, no --deselect, no "fast subset". If it ever grows
-    # slow enough to tempt someone, split it by measuring again and gating on a
-    # stated portion — do not quietly start skipping tests here.
-    timeout-minutes: 20
+    name: tests (${{ matrix.os }})
+    strategy:
+      # Never cancel the other platforms because one went red. The whole point
+      # of the matrix is the COMPARISON between platforms, and fail-fast throws
+      # away exactly the rows that make a divergence legible.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    # Measured per platform (see the floor table below): ubuntu 107s,
+    # macOS 110s, Windows 225-245s. Windows is ~2x the others and is the reason
+    # this is 30 rather than 20. All three are inside the window where people
+    # wait for a check rather than learning to merge past it, so the gate runs
+    # the WHOLE suite: no -k narrowing, no --deselect, no "fast subset". If it
+    # ever grows slow enough to tempt someone, split it by measuring again and
+    # gating on a stated portion — do not quietly start skipping tests here.
+    timeout-minutes: 30
     steps:
       - name: Check out the code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
@@ -70,6 +92,18 @@ jobs:
         with:
           node-version: "24"
 
+      - name: Report what this machine actually is
+        # The macOS runner is ARM (measured: macOS 26.5.2 arm64, Python
+        # 3.13.14), while the engine pins and much of this project's history
+        # assume x86_64. That is not a problem to solve here, but it IS a fact
+        # every reader of a macOS failure needs in front of them, so the job
+        # states it rather than leaving the next person to guess.
+        shell: bash
+        run: |
+          python -c "import platform, sys; print('platform:', platform.platform()); print('machine :', platform.machine()); print('python  :', sys.version)"
+          node --version
+          echo "DISPLAY=[${DISPLAY:-<unset>}]"
+
       - name: Install deps
         # Deliberately IDENTICAL to release.yml's `tests` job. The two gates
         # must not drift into two different definitions of "the suite" — if
@@ -79,6 +113,12 @@ jobs:
         #
         # Install the project from pyproject (NOT requirements.txt) so the suite
         # runs against the EXACT dependency set the build bundles.
+        #
+        # MEASURED ON ALL THREE PLATFORMS: this exact sequence succeeds on
+        # ubuntu-24.04 (x86_64), windows-latest (AMD64) and macos-latest
+        # (arm64). The macOS ARM question was settled by running it, not by
+        # assuming the pins would resolve.
+        shell: bash
         run: |
           python -m pip install --upgrade pip
           pip install --prefer-binary .
@@ -88,78 +128,169 @@ jobs:
           pip check
           if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; else pip install pytest; fi
 
+      - name: Provision the browser engine
+        # THE FIRST TIME A REAL ENGINE HAS EVER BEEN LAUNCHED BY THIS PROJECT'S
+        # AUTOMATION. tests/test_ff_language_override.py carries a fixture that
+        # launches a genuine Firefox and sweeps the realm for any function that
+        # betrays itself by shape. The assertion was already written and already
+        # strong; it had simply never executed anywhere, because the browser
+        # BINARY was never provisioned. This step is that provisioning.
+        #
+        # `pip install .` supplies the playwright PACKAGE (invisible_playwright
+        # hard-depends on upstream playwright), so the import guard passes
+        # wherever deps are installed — it is the BINARY that was missing, and
+        # this is the step that supplies it.
+        #
+        # NO DISPLAY SERVER IS INSTALLED, AND THAT IS A MEASURED RESULT, NOT AN
+        # ASSUMPTION. A headless Firefox was launched on all three runners with
+        # DISPLAY deliberately unset and reported a working page on each
+        # (Firefox 151 on every platform). Provisioning Xvfb "just in case"
+        # would add a moving part that nothing needs; assuming headless works
+        # when it does not would fail for a reason unrelated to the product.
+        # It was measured: headless suffices, on all three.
+        shell: bash
+        run: python -m playwright install firefox
+
       - name: Run the test suite
-        # THE FAILURE FLOOR, MEASURED — and measured WHERE IT IS CLAIMED.
+        # THE ENVIRONMENT DECLARES WHAT IT SUPPLIES — IT IS NEVER INFERRED.
         #
-        # A suite with a known-red floor teaches everyone to ignore the job, so
-        # the floor is stated here with its provenance attached. The previous
-        # revision of this comment did NOT do that: it reported figures taken in
-        # a dev container while describing them as "measured on this runner
-        # image", and concluded "any red here is a red this change introduced".
-        # This workflow's very first run on a real runner disproved that
-        # sentence — a test failed that the PR had not touched. The number was
-        # not wrong so much as it was from somewhere else, and that is the more
-        # durable defect: a stated floor is the sentence the next reader trusts
-        # when they are deciding whether their change broke something.
+        # This job has just provisioned a browser, so it SAYS SO, and from that
+        # moment a browser probe that declines to run is a FAILURE naming what
+        # was missing rather than a skip nobody reads. That is PS-58's
+        # mechanism (conftest.py), consumed here rather than re-invented; this
+        # workflow deliberately introduces no second vocabulary for "did not
+        # run".
         #
-        # WHAT WAS MEASURED, AND WHERE
+        # The declaration is an explicit environment variable BECAUSE the
+        # tempting shortcut — "playwright imported, therefore this machine
+        # supports browser tests" — re-creates the original defect one level
+        # up: it concludes "unsupported here" on precisely the machine where
+        # support broke, which is the one case that must be loud. Nothing reads
+        # the presence of the thing being checked.
         #
-        #   ON THIS RUNNER (ubuntu-24.04, run 32531702342, BEFORE the Node pin):
+        # ---------------------------------------------------------------------
+        # THE FAILURE FLOOR, MEASURED PER PLATFORM, WITH ITS PROVENANCE ATTACHED
+        # ---------------------------------------------------------------------
+        # A floor figure without provenance is the defect this section exists to
+        # prevent. An earlier revision reported DEV CONTAINER figures while
+        # describing them as measured "on this runner image", and concluded that
+        # any red must be the developer's own. The runner disproved that on the
+        # very first run. Stale figures were survivable; false provenance was
+        # not, because this is the sentence the next reader trusts when deciding
+        # whether they broke something. So every figure below names WHERE it was
+        # taken.
+        #
+        #   ON THIS RUNNER (ubuntu-24.04, x86_64, run 32538852334):
+        #     0 failed, 2487 passed, 14 skipped, 107s          <- THE LINUX FLOOR
+        #
+        #   ON THIS RUNNER (macos-latest, arm64, run 32538852334):
+        #     0 failed, 2472 passed, 29 skipped, 110s          <- THE MACOS FLOOR
+        #     First measurement ever taken of this suite on macOS.
+        #
+        #   ON THIS RUNNER (windows-latest, AMD64, runs 32538852334/32539306321):
+        #     22 failed, 2446 passed, 33 skipped, 225-245s   <- THE WINDOWS FLOOR
+        #     First measurement ever taken of this suite on Windows. NOT zero;
+        #     see the seven causes below.
+        #
+        #   ON THIS RUNNER (ubuntu-24.04, BEFORE the Node pin, run 32531702342):
         #     1 failed, 2454 passed, 14 skipped, 107s
-        #     The single failure was tests/test_ff_language_override.py::
-        #     test_reported_values_are_unchanged, and it was NOT caused by the
-        #     change under test — see the Node note below.
-        #
-        #   ON THIS RUNNER (ubuntu-24.04, run 32534655026, AFTER the Node pin):
-        #     0 failed, 2463 passed, 14 skipped, 106.59s   <- THE FLOOR
-        #     Same job, same image, with node pinned to 24 (the log confirms
-        #     `node-version: 24` -> v24.19.0) and the harness fixed at source.
-        #     This is the figure to compare against: it was taken on the runner
-        #     this job actually runs on, not somewhere else.
+        #     Kept as the before/after pair for the Node pin below — the single
+        #     failure was NOT caused by the change under test.
         #
         #   IN A DEV CONTAINER (python 3.13 via uv, node pinned to 24 by hand):
         #     bare interpreter, deps NOT installed : 42 failed, 2321 passed
         #     after the install step above         :  0 failed, 2398 passed, 120s
-        #     All 42 bare failures were missing-dependency failures and nothing
-        #     else — ModuleNotFoundError for invisible_core / invisible_playwright,
-        #     plus aiohttp-branch assertions reporting "aiohttp not installed".
-        #     Every one is a pyproject dependency the install step provides.
+        #     Every one of the 42 was a missing-dependency failure the install
+        #     step provides. Useful ONLY as a bare-vs-installed COMPARISON.
         #
-        # THE TWO NUMBERS DO NOT MATCH, DELIBERATELY LEFT VISIBLE: the runner
-        # collects ~56 more tests than the container. So the container figure is
-        # useful for the bare-vs-installed COMPARISON (which needs two runs of
-        # the same environment) and is NOT a stand-in for the runner's absolute
-        # count. Anyone re-measuring the floor must do it on the runner.
+        # THE TWO NUMBERS DO NOT MATCH, DELIBERATELY LEFT VISIBLE: the runners
+        # collect more tests than the container, and the three runners do not
+        # agree with each other either (2487 / 2472 / 2446 collected-and-passed,
+        # on platform-gated tests). So no container figure is a stand-in for a
+        # runner figure, and no ONE platform's figure is a stand-in for
+        # another's. Anyone re-measuring a floor must do it on that platform's
+        # runner.
         #
-        # WHY THAT ONE RUNNER FAILURE HAPPENED — it is the argument for the Node
-        # pin above. Node 21 introduced a built-in `navigator` global defined as
-        # a getter-only accessor. tests/test_ff_language_override.py's harness
-        # installed its stub with a plain sloppy-mode assignment, which over a
-        # getter-only property is a SILENT no-op — no throw, no warning. On the
-        # runner's Node (24) the stub was therefore never installed and the test
-        # read the host's real locale; on a Node 20 machine the global does not
-        # exist, the assignment works, and the suite is green. Nothing in this
-        # repo pinned Node, so the gate's answer could change with no change to
-        # the repo. Both are now fixed: the harness uses defineProperty (correct
-        # on every engine) and the engine is pinned. This gate found a real,
-        # live, pre-existing bug on its first execution.
+        # THE WINDOWS FLOOR IS NOT ZERO, AND IT IS NOT BEING HIDDEN. Those 22
+        # are pre-existing and unrelated to any change gated here — they are the
+        # first measurement anyone has ever taken of this suite on Windows, and
+        # they are the whole reason this matrix exists. They fall into seven
+        # causes, none of which is a flake:
         #
-        # NO ALLOWLIST IS CONFIGURED, and that is the stronger outcome: a list of
-        # "known" failures is precisely how a real regression gets waved through,
-        # and it would also swallow a genuine break in those same files. The one
-        # failure the runner showed was fixed at its cause instead of being
-        # listed. If a future dependency genuinely cannot be installed on the
-        # runner, state it in this comment WITH the measurement and WITH where it
-        # was taken — rather than silencing the test.
+        #   os.fork / os.geteuid absent on Windows (4)
+        #     test_browser_env_policy.py x3, test_cert_terminator.py x1
+        #   file mode asserted 0o600 but read back 0o666 (2)
+        #     test_trash_store.py, test_trash_stores.py  <-- SEE BELOW
+        #   an unwritable path does not raise OSError on Windows (2)
+        #     test_verify_snapshot.py
+        #   cp1252 default encoding on file reads (3)
+        #     test_locale_ext.py — UnicodeDecodeError: 'charmap' codec
+        #   a socket is opened where the POSIX path opens none (3)
+        #     test_rotate_through_proxy.py x2, test_proxy_checker_lanes.py x1
+        #   engine install/restore sentinel behaviour differs (4)
+        #     test_engine_ensure.py
+        #   path/text comparison differences (4)
+        #     test_title_ext.py x2, test_verify_baseline.py, test_rotate_* x1
+        #
+        # AT LEAST TWO OF THOSE ARE SECURITY-RELEVANT RATHER THAN COSMETIC and
+        # are reported, not repaired, here: the trash-store files that must be
+        # owner-only are world-readable (0o666) on Windows, and a proxy lane
+        # that must refuse to open a socket opens one. Both are exactly the
+        # "holds on Linux, does not hold on Windows" finding this matrix was
+        # built to surface. Fixing them is NOT this workflow's job and was
+        # explicitly out of scope for the ticket that added it; they belong to
+        # the product, and the honest move is to make them visible on every PR
+        # until someone owns them.
+        #
+        # NO ALLOWLIST IS CONFIGURED, ON ANY PLATFORM, AND THAT IS DELIBERATE.
+        # A list of "known" failures is precisely how a real regression gets
+        # waved through, and it is also how a floor becomes permanent: the 22
+        # would stop being a debt anyone can see and start being scenery. The
+        # Windows job is therefore RED at its measured floor, on purpose, and
+        # will stay red until the product is fixed — which is a statement about
+        # persona on Windows, not about this gate. Do not silence it, do not
+        # mark the platform continue-on-error (that would hide NEW Windows
+        # regressions too, which is the allowlist defect at job scale), and do
+        # not "fix" unrelated tests to improve the number.
+        #
+        # WHY THE NODE PIN ABOVE EXISTS. Node 21+ defines `navigator` as a
+        # getter-only accessor, so a sloppy-mode assignment over it is a SILENT
+        # no-op. tests/test_ff_language_override.py's harness installed its stub
+        # that way; on the runner's Node the stub was never installed and the
+        # test read the host's real locale, while a Node 20 machine stayed
+        # green. Nothing in this repo pinned Node, so the gate could change its
+        # answer with no change to the repo. Fixed at source (defineProperty)
+        # and pinned here — this gate found a real, live bug on its first run.
         #
         # Reported, not laundered: two tests that stand up real sockets/TLS with
         # timeouts (tests/test_cert_manager.py::test_session_end_to_end and
         # tests/test_cert_terminator.py::test_terminator_presents_cert_to_admin_host)
         # were seen failing intermittently under full-suite load in an earlier
-        # session, and were reproduced failing on an unmodified main as a control,
-        # so they are pre-existing and unrelated to any change gated here. They
-        # did NOT reproduce in any run of this session, on the runner or in the
-        # container. They are NOT allowlisted (that would also hide a real
-        # regression in those files) and NOT fixed here. If one trips a PR,
+        # session, and were reproduced failing on an unmodified main as a
+        # control, so they are pre-existing and unrelated to any change gated
+        # here. They are NOT allowlisted and NOT fixed. If one trips a PR,
         # re-run it and file it — do not add it to a skip list.
+        shell: bash
+        env:
+          PERSONA_REQUIRED_CAPABILITIES: browser
         run: python -m pytest -q
+
+      - name: GPU reading (known-environmental, never a pass)
+        # A hosted runner has no GPU, so WebGL renders in software. A persona
+        # profile that declares a discrete GPU over a software-rendered canvas
+        # is an IMPOSSIBLE PAIR — and the masking charter classifies that as a
+        # HOST-FACT LEAK (the deployment environment reaching through the mask),
+        # not as a configuration mistake. On this infrastructure that pair is
+        # present BY CONSTRUCTION, on every run, permanently.
+        #
+        # It is therefore TAGGED, not fixed and not hidden: recorded with its
+        # reason, never counted as a pass (the script asserts nothing and always
+        # exits 0), and never raised as a new defect. `if: always()` so it
+        # cannot vanish from the record just because the suite above went red —
+        # the Windows job is red at its floor, and this reading must survive it.
+        #
+        # Nothing here installs a driver or forces a renderer string. Doing so
+        # would corrupt the one reading this environment genuinely cannot give.
+        if: always()
+        shell: bash
+        run: python .github/scripts/report_runner_gpu.py
