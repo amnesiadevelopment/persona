@@ -16,7 +16,13 @@ pixel reads are left untouched so WebGL maths is unaffected.
 import json
 import pathlib
 
-from .worker_wrap import firefox_native_wrap_js, realm_bootstrap_js
+from .worker_wrap import (
+    CHROMIUM_WORKER_CLOAK,
+    WorkerCloak,
+    firefox_native_wrap_js,
+    firefox_worker_cloak,
+    realm_bootstrap_js,
+)
 
 # One byte is nudged per this many bytes, by +/-1. Sparse enough to be invisible
 # and to keep the image plausible, dense enough that the readback hash differs
@@ -117,12 +123,24 @@ _MANIFEST = {
 }
 
 
-def _webgl_patch_js(seed: int, native_wrap: str) -> str:
-    """The shared patch body, with the engine's ``nativeWrap`` seam spliced in.
+def _webgl_patch_js(
+    seed: int, native_wrap: str, worker_cloak: WorkerCloak = CHROMIUM_WORKER_CLOAK
+) -> str:
+    """The shared patch body, with the engine's cloak seams spliced in.
 
     Everything that computes the perturbation — the seed mixing, the stride, the
     byte nudging, the readPixels overrides, the realm bootstrap — is identical on
-    both engines. Only the cloak differs, and it arrives as ``native_wrap``.
+    both engines. Only the cloaks differ, and there are TWO of them because there
+    are two sets of wrappers:
+
+    * ``native_wrap`` cloaks the LEAF's wrappers (``readPixels``);
+    * ``worker_cloak`` cloaks the wrappers the BOOTSTRAP installs (``Worker``,
+      ``SharedWorker``, the two ``HTMLIFrameElement`` accessors).
+
+    Round 2 of PS-78 passed the first and forgot the second, which left the
+    Chromium ``__pnaName`` marker on Firefox's ``Worker`` — an own property no
+    browser has, on an engine with no extension to read it. Both default to the
+    Chromium form so its bytes cannot move.
 
     THE WORKER DELIVERY PATH IS SHARED TOO, deliberately. An earlier revision of
     PS-78 gave Firefox its own ``blob:`` branch here via a
@@ -134,7 +152,9 @@ def _webgl_patch_js(seed: int, native_wrap: str) -> str:
         _CONTENT_SCRIPT.replace("__SEED__", str(int(seed) & 0xFFFFFFFF))
         .replace("__STRIDE__", str(_STRIDE))
         .replace("__NATIVE_WRAP__", native_wrap)
-        .replace("__REALM_BOOTSTRAP__", realm_bootstrap_js("applyWebglPatch"))
+        .replace(
+            "__REALM_BOOTSTRAP__", realm_bootstrap_js("applyWebglPatch", worker_cloak)
+        )
     )
 
 
@@ -170,7 +190,7 @@ def firefox_webgl_init_script(seed: int) -> str:
     """
     return (
         "(function(){"
-        + _webgl_patch_js(seed, firefox_native_wrap_js())
+        + _webgl_patch_js(seed, firefox_native_wrap_js(), firefox_worker_cloak())
         + "})();"
     )
 

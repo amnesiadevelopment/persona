@@ -73,10 +73,60 @@ handed the assembled payload — the seed-bearing leaf source — as an argument
 which is the same disclosure PS-48 closes on the global object.
 """
 
+from typing import NamedTuple
 
-def realm_bootstrap_js(apply_fn_name: str) -> str:
+
+class WorkerCloak(NamedTuple):
+    """The engine-specific way the BOOTSTRAP's own wrappers are made to look native.
+
+    The bootstrap installs wrappers of its own — ``Worker``, ``SharedWorker`` and
+    the two ``HTMLIFrameElement`` accessors — quite apart from whatever the leaf
+    patches. Those wrappers need the same cloak the leaf's do, and which cloak is
+    correct depends on the engine, so it arrives here as a seam instead of being
+    hard-coded. Three fields, because the marker is applied in three syntactic
+    positions and only one of them is a statement:
+
+    * ``setup``   — statements spliced inside ``__pnaInstall``, once per realm.
+    * ``apply``   — statements that cloak the ``Worker``/``SharedWorker`` wrapper.
+    * ``frame_open`` / ``frame_close`` — wrapped AROUND the iframe accessor
+      function expression, which is an argument position and cannot take one.
+
+    Chromium's form is the ORIGINAL text and must stay byte-identical: it is the
+    baseline every prior readback was taken against (the PS-78 boundary,
+    "Chromium is unchanged"). Its ``setup`` and frame pair are therefore EMPTY
+    STRINGS spliced at points chosen so that the empty case reproduces the old
+    template exactly — no stray blank line, no moved indentation.
+    """
+
+    setup: str
+    apply: str
+    frame_open: str
+    frame_close: str
+
+
+# Chromium: mark the wrapper for the single `Function.prototype.toString` patch
+# native_ext.py installs from the extension side, which reads `__pnaName`.
+CHROMIUM_WORKER_CLOAK = WorkerCloak(
+    setup="",
+    apply=(
+        '        try { Object.defineProperty(W, "__pnaName", { value: Orig.name }); } catch (e) {}\n'
+        '        try { Object.defineProperty(W, "name", { value: Orig.name }); } catch (e) {}'
+    ),
+    frame_open="",
+    frame_close="",
+)
+
+
+def realm_bootstrap_js(
+    apply_fn_name: str, cloak: WorkerCloak = CHROMIUM_WORKER_CLOAK
+) -> str:
     """Return JS that runs ``apply_fn_name`` (a leaf applyPatch(G)) in this realm
     and chains it into every realm this one can reach.
+
+    ``cloak`` selects how the bootstrap's OWN wrappers are made to stringify as
+    native; it defaults to the Chromium form, which is the original text. Pass
+    ``firefox_worker_cloak()`` on that engine — see its docstring for why the
+    default is actively wrong there rather than merely unnecessary.
 
     The caller must have defined ``apply_fn_name`` already. Nothing is written to
     the global object: the leaf, its source and the dedup set stay in closure.
@@ -176,7 +226,7 @@ def realm_bootstrap_js(apply_fn_name: str) -> str:
       };
 
       // Run this module's leaf in this realm.
-      try { LEAF(G); } catch (e) {}
+      try { LEAF(G); } catch (e) {}%(cloak_setup)s
 
       // --- workers ---------------------------------------------------------
       // Chain onto whatever Worker is already installed. Delegating to Orig is
@@ -229,8 +279,7 @@ def realm_bootstrap_js(apply_fn_name: str) -> str:
           } catch (e) { return _Ref.construct(Orig, [url, options], W); }
         };
         W.prototype = Orig.prototype;
-        try { Object.defineProperty(W, "__pnaName", { value: Orig.name }); } catch (e) {}
-        try { Object.defineProperty(W, "name", { value: Orig.name }); } catch (e) {}
+%(cloak_apply)s
         return W;
       };
 
@@ -253,14 +302,14 @@ def realm_bootstrap_js(apply_fn_name: str) -> str:
             if (!d0 || !d0.get) return;
             Object.defineProperty(IF.prototype, prop, {
               configurable: true, enumerable: d0.enumerable,
-              get: function () {
+              get: %(cloak_frame_open)sfunction () {
                 var r = d0.get.call(this);
                 try {
                   var w = prop === "contentWindow" ? r : (r && r.defaultView);
                   if (w && fresh(w)) __pnaInstall(w, LEAF);
                 } catch (e) {}
                 return r;
-              },
+              }%(cloak_frame_close)s,
             });
           });
         }
@@ -270,7 +319,108 @@ def realm_bootstrap_js(apply_fn_name: str) -> str:
 
   try { __pnaInstall(SELF, %(fn)s); } catch (e) {}
 """
-        % {"fn": apply_fn_name}
+        % {
+            "fn": apply_fn_name,
+            "cloak_setup": cloak.setup,
+            "cloak_apply": cloak.apply,
+            "cloak_frame_open": cloak.frame_open,
+            "cloak_frame_close": cloak.frame_close,
+        }
+    )
+
+
+# --- the BOOTSTRAP's own cloak, on Firefox ----------------------------------
+#
+# Distinct from `_FIREFOX_NATIVE_WRAP` below, and the distinction is the whole
+# point of PS-78 round 3. That one cloaks the LEAF's wrappers (readPixels &c);
+# this one cloaks the wrappers the BOOTSTRAP installs — `Worker`,
+# `SharedWorker`, and the two `HTMLIFrameElement` accessors. They were left
+# carrying `__pnaName` when this PR became the first thing to deliver
+# `realm_bootstrap_js` to Firefox at all, where no extension exists to read that
+# marker: a bare own property on every wrapper, plus a `toString()` returning
+# raw patch source where every real engine returns `[native code]`. Two
+# independent reads, either sufficient on its own.
+#
+# It cannot simply REUSE the leaf's cloak. The leaf's `__nm`/`nativeWrap` live
+# inside `applyWebglPatch`'s body; the bootstrap is a sibling scope and a
+# separate serialisation unit. More decisively, `setup` below is spliced INSIDE
+# `__pnaInstall`, because `__pnaInstall.toString()` is what crosses into a
+# worker — anything defined in an enclosing scope is undefined there, which is
+# the exact failure this module's docstring records (a depth-2 worker silently
+# reporting REAL values). So the bootstrap carries its own copy, per realm.
+#
+# It is installed AFTER `LEAF(G)` deliberately: `Function.prototype.toString` is
+# CHAINED, not flag-guarded, so leaf-then-bootstrap composes with the leaf's
+# cloak (and with the locale/outer-size cloaks already in the realm) instead of
+# racing it for the single slot.
+_FIREFOX_WORKER_CLOAK_SETUP = r"""
+
+      // --- cloak for the wrappers THIS BOOTSTRAP installs (Firefox) --------
+      // See the note beside _FIREFOX_WORKER_CLOAK_SETUP in worker_wrap.py.
+      // Spliced inside __pnaInstall so it ships with __pnaInstall.toString()
+      // and every realm — page, worker, nested worker, child frame — gets its
+      // own. Mirrors invisible_launch._native_cloak_js: closure WeakMap (no own
+      // property to enumerate), SpiderMonkey's three-line native shape (NOT
+      // V8's one-liner, which is itself a tell on this engine), and a CHAINED
+      // Function.prototype.toString.
+      var __bnm = (typeof WeakMap === "function") ? new WeakMap() : null;
+      var __bnl = String.fromCharCode(10);
+      // G's Function, never the lexical one: the leaf reaches a child frame as
+      // a PARENT-REALM function object, so a bare `Function.prototype` here
+      // would re-patch the parent's and leave the child's pristine while the
+      // wrappers ARE installed into the child.
+      var __bF = G.Function;
+      var __bpts = (__bF && __bF.prototype && __bF.prototype.toString)
+                   || Function.prototype.toString;
+      var __bts = function () {
+        'use strict';
+        try {
+          var n = __bnm && __bnm.get(this);
+          if (typeof n === "string") {
+            return "function " + n + "() {" + __bnl + "    [native code]" + __bnl + "}";
+          }
+        } catch (e) {}
+        return __bpts.apply(this, arguments);
+      };
+      // `f` gets `.name` = n; its SOURCE TEXT reports `s` (an accessor's name
+      // carries a `get ` prefix that its source text does not).
+      var __bcloak = function (f, n, s) {
+        try {
+          Object.defineProperty(f, "name", { value: n, configurable: true });
+          if (__bnm) { __bnm.set(f, s === undefined ? n : s); }
+        } catch (e) {}
+        return f;
+      };
+      try {
+        // Cloak the patch as "toString": a detector stringifies
+        // Function.prototype.toString to catch exactly this trick.
+        if (__bnm) { __bnm.set(__bts, "toString"); }
+        Object.defineProperty(__bts, "name", { value: "toString", configurable: true });
+        if (__bF && __bF.prototype) { __bF.prototype.toString = __bts; }
+      } catch (e) {}"""
+
+
+def firefox_worker_cloak() -> WorkerCloak:
+    """The ``WorkerCloak`` a FIREFOX caller passes to :func:`realm_bootstrap_js`.
+
+    Cloaks the bootstrap's own ``Worker``/``SharedWorker`` wrappers and its two
+    ``HTMLIFrameElement`` accessors through a closure WeakMap, adding NO own
+    property — the standard already set in tree by the locale spoof's Firefox
+    worker wrapper (``invisible_launch.py:511``, ``return __cloak(W,Orig.name)``,
+    whose marker-absence ``tests/test_ff_language_override.py:166`` pins).
+
+    The Chromium default is not merely unnecessary on this engine, it is a tell:
+    ``__pnaName`` exists on no browser, and nothing on Firefox reads it.
+    """
+    return WorkerCloak(
+        setup=_FIREFOX_WORKER_CLOAK_SETUP,
+        apply="        __bcloak(W, Orig.name);",
+        # An accessor's `.name` is "get contentWindow" while its source text
+        # stringifies as "function contentWindow() { [native code] }" — hence the
+        # two names. Wrapped AROUND the function expression because that is an
+        # argument position and cannot take a statement.
+        frame_open="__bcloak(",
+        frame_close=', "get " + prop, prop)',
     )
 
 
