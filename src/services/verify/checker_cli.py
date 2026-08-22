@@ -1,12 +1,16 @@
 """Operator CLI for reading the checker matrix (Level 3 of the project bar).
 
     python -m src.services.verify.checker_cli read -o reading.json
+    python -m src.services.verify.checker_cli compare before.json after.json
 
-One subcommand, deliberately. This is a CAPABILITY THAT CAN BE INVOKED, not a
-gate: it produces a reading and records it, and it must not acquire the
-authority to stop anything. Comparison against a baseline, a triage rule and a
-refusal are a later slice and depend on a baseline existing — which is what
-this produces.
+``read`` produces a reading and records it. ``compare`` holds one record
+against another and reports what MOVED, classified by whether it could have
+moved on its own.
+
+Neither is a gate. These are CAPABILITIES THAT CAN BE INVOKED, and they must
+not acquire the authority to stop anything: the charter's rule is that a
+difference opens a triage, and what the triage finds is what blocks. Wiring a
+refusal into a release is a later slice that depends on this existing first.
 
 THE MATRIX: one command surface, both engines, more than one machine
 --------------------------------------------------------------------
@@ -43,7 +47,7 @@ records as #211. So:
   record identical to the first but claiming a different machine — the worst
   possible artefact for a comparator.
 
-Exit codes — the refusal is the interesting one:
+Exit codes for ``read`` — the refusal is the interesting one:
 
     0   every configuration asked for was read and recorded. NOT a claim that
         every verdict was good: a recorded adverse verdict still exits 0,
@@ -61,17 +65,47 @@ Exit codes — the refusal is the interesting one:
     1   the run itself broke (an unexpected error). Distinct from 2 so "we
         declined to measure" is never confused with "we crashed".
 
+Exit codes for ``compare`` — the SAME convention, which PS-61 settled and this
+subcommand adopts rather than re-deciding:
+
+    0   nothing to triage. Either the records agree, or everything that moved
+        was exit rotation, harness movement, rewording, a catalogue change, or
+        a row that is unreadable in both records (the standing state of this
+        matrix — see ``matrix_diff.coverage_lost``). Read the output anyway:
+        0 means "no FINDING", never "no differences"
+    1   at least one FINDING — a fingerprint row moved, a host row moved on one
+        machine, or an untagged row moved. This is what opens a triage, and it
+        is deliberately the same code ``cli.py`` uses for drift
+    3   no finding, but COVERAGE WAS LOST: a row that was readable in the
+        earlier record is unobtainable in the later one. Never folded into 1,
+        because a run that failed is not the product moving — that conflation
+        is exactly what would train a reader to skim a red report
+    2   REFUSED. A file that could not be read, a file that is not a record, or
+        two records that cannot be compared at all (different seeds, different
+        engine builds, different schema versions). Never 1: a refusal is not a
+        finding, and the drift code must never mean "I could not look"
+
+Note 2 means one thing across both subcommands — "could not do what you asked"
+— exactly as it does across ``cli.py``'s three. What varies is only WHICH
+premise failed, and a caller reading exit codes alone never has to know: 2 is
+never a verdict about the identity.
+
 There is deliberately NO ``--no-proxy``, ``--allow-direct`` or ``--force``
-flag. A caller cannot ask this tool to read a checker over a direct
+flag on ``read``. A caller cannot ask this tool to read a checker over a direct
 connection, because there is no argument that would make that a good idea: a
 fingerprint reading taken over the wrong exit is worse than no reading, since
 it looks like data.
+
+``compare`` needs no exit at all — it reads two files — which is deliberate and
+is what makes the comparison testable when the link is down, on exactly the
+runs where an operator most wants to know what the last good record said.
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import json
 import os
 import platform
 import sys
@@ -94,6 +128,17 @@ from .matrix import (
     read_unreadable_tier,
     readings_for_unread_checker,
     write,
+)
+from .matrix_diff import (
+    ComparisonNotControlled,
+    NotARecord,
+    RecordUnreadable,
+    compare_records,
+    coverage_lost,
+    findings,
+    format_comparison,
+    header_notes,
+    require_record,
 )
 
 
@@ -494,6 +539,89 @@ def _cmd_read(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_compare(args: argparse.Namespace) -> int:
+    """Hold one record against another and report what moved.
+
+    Reads two files and nothing else. No exit is proven and no network is
+    touched, deliberately: this consumes what ``read`` wrote and must not
+    acquire a second path to the checkers. It also makes the comparison usable
+    when the link is down — which is exactly when an operator wants to know
+    what the last good record said.
+
+    Every refusal below returns 2 and prints to stderr, so the report on stdout
+    is never half a comparison. See the module header for why 2 is never 1.
+    """
+    try:
+        before = _load_record(args.before)
+        after = _load_record(args.after)
+        entries = compare_records(
+            before,
+            after,
+            allow_cross_engine=args.allow_cross_engine,
+            allow_different_seed=args.allow_different_seed,
+        )
+    except (ComparisonNotControlled, NotARecord, RecordUnreadable) as exc:
+        print(f"REFUSED: {exc}", file=sys.stderr)
+        print(
+            "Nothing was compared, so this is NOT a finding.", file=sys.stderr
+        )
+        return 2
+
+    print(format_comparison(entries, notes=header_notes(before, after)))
+
+    # The order is the argument. A FINDING outranks lost coverage: when both
+    # happened, the caller is told the identity moved, which is the louder
+    # fact. But lost coverage must never be folded INTO that code — a run that
+    # failed is not the product moving.
+    if findings(entries):
+        return 1
+    if coverage_lost(entries):
+        return 3
+    return 0
+
+
+def _load_record(path: str) -> dict:
+    """Load a record file, refusing anything that is not a readable record.
+
+    The refusal is raised HERE, at the load site, rather than left to the
+    comparator, so the message can name the FILE the operator typed — a typo'd
+    path is the expected way into this branch, and "which of my two arguments
+    was wrong" is the only thing they need to know.
+
+    Three failures, all exiting 2 and never 1, sharing the property that is the
+    point rather than a list to memorise: none of them COMPARED anything, so
+    none of them can be a finding. This mirrors ``cli._load_snapshot`` one
+    artifact over, on the same terms PS-61 settled.
+    """
+    if not os.path.isfile(path):
+        raise RecordUnreadable(
+            f"no checker-matrix record to read at {path!r}. Nothing was "
+            "compared, so this is NOT a finding — check the path, or take a "
+            "reading with: `python -m src.services.verify.checker_cli read "
+            "-o reading.json`."
+        )
+    try:
+        with open(path, encoding="utf-8") as handle:
+            obj = json.load(handle)
+    except (OSError, ValueError) as exc:
+        # ValueError, NOT json.JSONDecodeError, and the width is deliberate:
+        # a file that is not valid UTF-8 raises UnicodeDecodeError, which IS a
+        # ValueError but is NOT a JSONDecodeError. Catching the narrower type
+        # would let a truncated or corrupt-bytes record traceback out. OSError
+        # covers the read that starts and then fails (a directory, a permission
+        # denial, a broken link). Same pair, same reasoning, as `cli.py`.
+        raise RecordUnreadable(
+            f"the record at {path!r} could not be read: {exc}. Nothing was "
+            "compared, so this is NOT a finding — the recording itself is "
+            "unusable. Re-take it, and check that the file was written "
+            "completely."
+        ) from exc
+    # OUTSIDE the try, deliberately: NotARecord subclasses ValueError, so
+    # raising it in there would be caught by the guard above and re-labelled
+    # "could not be read" for a file that read back perfectly well.
+    return require_record(obj, source=path)
+
+
 def _cmd_list(args: argparse.Namespace) -> int:
     for checker in JSON_CHECKERS + BROWSER_CHECKERS:
         print(f"{checker.tier}\t{checker.id}\t{len(checker.items)} item(s)")
@@ -591,6 +719,40 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     rd.set_defaults(func=_cmd_read)
+
+    cmp_ = sub.add_parser(
+        "compare",
+        help="compare two records and report what moved",
+        description=(
+            "Holds a later record against an earlier one and reports the "
+            "DIFFERENCES ONLY, classified by the sort of the row that moved: a "
+            "fingerprint row is a finding, an exit row is expected, a harness "
+            "row is about this repo's own instrument. Reads two files and "
+            "needs no exit. Reports; never gates."
+        ),
+    )
+    cmp_.add_argument("before", help="the earlier record")
+    cmp_.add_argument("after", help="the later record")
+    cmp_.add_argument(
+        "--allow-cross-engine", action="store_true",
+        help=(
+            "compare records taken under DIFFERENT engine builds. Refused by "
+            "default: a row that moved may have moved because of the build. "
+            "Does NOT relax the refusal on an UNRECORDED engine — that gives "
+            "you no caveat to weigh"
+        ),
+    )
+    cmp_.add_argument(
+        "--allow-different-seed", action="store_true",
+        help=(
+            "compare records taken under DIFFERENT seeds. Refused by default: "
+            "the engine's fingerprint is seed-derived, so those rows were "
+            "never supposed to match and a diff reads as catastrophic drift. "
+            "With the flag, fingerprint rows report as SEED-EXPLAINED context "
+            "and never as a coupling"
+        ),
+    )
+    cmp_.set_defaults(func=_cmd_compare)
 
     ls = sub.add_parser("list", help="print the checker inventory")
     ls.set_defaults(func=_cmd_list)
