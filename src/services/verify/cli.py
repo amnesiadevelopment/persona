@@ -33,14 +33,13 @@ that is not a verdict at all, the refusal:
         with the least evidence. Never 1 either, for the reason ``compare``
         already gives below: a refusal is not a finding
 
-That refusal covers a file that PARSED but is not a snapshot. Two input
-failures are still NOT covered and remain as they were before it existed: a
-path that does not exist, and a file that is not valid JSON, both still exit
-**1** with a traceback rather than a refusal. 1 is the DRIFT code, so those
-two read as "the identity moved" — which is precisely the confusion 2 exists
-to end, and a typo'd path is the likeliest way into them. Verified identical
-with the guard absent, so this is pre-existing and not a regression of it;
-closing it is a separate slice. ``baseline.py`` already guards both.
+That refusal covers three ways a reading can fail to happen at all, which is
+the property they share rather than a list to memorise: a file that PARSED but
+is not a snapshot, a path that does not exist, and a file that could not be
+read back as JSON (including bytes that are not valid UTF-8, and the read that
+fails part-way). None of them compared anything, so none of them can be drift,
+and all three exit 2. ``baseline.py`` guards the reference artifact on the same
+terms, so the two entry points now agree.
 
 Note which side of that line the asymmetric case falls on: a vector that read
 "Apple GPU" in the baseline and throws after an engine update exits **1**, not
@@ -76,11 +75,13 @@ question. A caller reading exit codes alone never has to know the difference:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from .diff import (
     ComparisonNotControlled,
     NotASnapshot,
+    SnapshotUnreadable,
     compare_profiles,
     diff_realms,
     diff_snapshots,
@@ -165,7 +166,7 @@ def _exit_code(entries: "list[dict]") -> int:
 
 
 def _load_snapshot(path: str) -> dict:
-    """Load a snapshot file, refusing anything that is not a snapshot.
+    """Load a snapshot file, refusing anything that is not a readable snapshot.
 
     The refusal is raised HERE, at the load site, rather than being left to the
     comparators, so the message can name the FILE the operator typed. A typo'd
@@ -175,15 +176,49 @@ def _load_snapshot(path: str) -> dict:
     ``json.load`` on a non-object (``[1,2,3]``, ``null``, a bare string) is
     caught by the same guard: those parse fine and used to reach ``_probes`` as
     a traceback on exit 1. A traceback is not a diff verdict.
+
+    Three failures are guarded, all exiting 2 and never 1: a path that does not
+    exist, a file that could not be read back as JSON, and a file that read
+    fine but is not a snapshot. The distinction they share is the one this
+    module is built on — none of them COMPARED anything, so none of them can be
+    drift. This mirrors the guard ``baseline.py`` already applies to the
+    reference artifact; the two entry points now refuse on the same terms.
     """
-    return require_snapshot(load(path), source=path)
+    if not os.path.isfile(path):
+        raise SnapshotUnreadable(
+            f"no snapshot to read at {path!r}. Nothing was compared, so this "
+            "is NOT drift — check the path, or record a snapshot with: "
+            "`python -m src.services.verify.cli record <profile> -o snap.json`."
+        )
+    try:
+        obj = load(path)
+    except (OSError, ValueError) as exc:
+        # ValueError, NOT json.JSONDecodeError, and the width is deliberate and
+        # load-bearing: a file that is not valid UTF-8 raises UnicodeDecodeError,
+        # which IS a ValueError but is NOT a JSONDecodeError. Catching the
+        # narrower type would guard a typo'd path and a `<html>` error page
+        # while letting a truncated or corrupt-bytes recording traceback out on
+        # exit 1 — the DRIFT signal — which is the exact confusion this guard
+        # exists to end. OSError covers the read that starts and then fails (a
+        # directory, a permission denial, a broken link). Same reasoning, and
+        # the same pair, as `baseline.py`.
+        raise SnapshotUnreadable(
+            f"the snapshot at {path!r} could not be read: {exc}. Nothing was "
+            "compared, so this is NOT drift — the recording itself is "
+            "unusable. Re-record it, and check that the file was written "
+            "completely."
+        ) from exc
+    # OUTSIDE the try, deliberately: NotASnapshot subclasses ValueError, so
+    # raising it in there would be caught by the guard above and re-labelled
+    # "could not be read" for a file that read back perfectly well.
+    return require_snapshot(obj, source=path)
 
 
 def _cmd_diff(args: argparse.Namespace) -> int:
     try:
         expected = _load_snapshot(args.expected)
         observed = _load_snapshot(args.observed)
-    except NotASnapshot as exc:
+    except (NotASnapshot, SnapshotUnreadable) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     entries = diff_snapshots(expected, observed, include_meta=args.meta)
@@ -194,7 +229,7 @@ def _cmd_diff(args: argparse.Namespace) -> int:
 def _cmd_realms(args: argparse.Namespace) -> int:
     try:
         snap = _load_snapshot(args.snapshot)
-    except NotASnapshot as exc:
+    except (NotASnapshot, SnapshotUnreadable) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     entries = diff_realms(snap, args.left, args.right)
@@ -222,12 +257,23 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     code. 2 is reused from ``record``'s "could not do the thing you asked"
     rather than minted fresh, and it is deliberately NOT 1: a refusal is not a
     finding, and a future gate must not read it as a leak.
+
+    Both loads go through :func:`_load_snapshot`, the same helper ``diff`` and
+    ``realms`` use, rather than a bare ``load``. Routing rather than adding a
+    third parallel guard is deliberate: this subcommand reached exit 2 on a
+    non-snapshot by a DIFFERENT route (``compare_profiles`` applies
+    ``require_snapshot`` internally, then the header premise refuses), so every
+    control was green and the code was the documented one while the file-level
+    guard was missing entirely. One load site cannot drift away from the other
+    two the way a duplicated guard can.
     """
     try:
         entries = compare_profiles(
-            load(args.a), load(args.b), allow_cross_engine=args.allow_cross_engine
+            _load_snapshot(args.a),
+            _load_snapshot(args.b),
+            allow_cross_engine=args.allow_cross_engine,
         )
-    except ComparisonNotControlled as exc:
+    except (ComparisonNotControlled, NotASnapshot, SnapshotUnreadable) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     print(format_comparison(entries))
