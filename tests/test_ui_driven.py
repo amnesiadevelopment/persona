@@ -11,8 +11,12 @@ screen at all. These fail in every one of those cases, which
 ``test_driven_test_fails_when_the_button_is_unwired`` proves by breaking the
 wiring on purpose and watching the same path go red.
 
-COST: each test boots a real persona and a real browser (~45-60s). They are
-marked ``ui_driver`` and skipped unless the environment can supply both.
+COST: each test boots a real persona and a real browser, and that fixed boot —
+not the interaction — is what you pay for, so driving more controls inside one
+test is close to free. Measured figures live in ``tests/UI_DRIVING.md#cost``,
+which owns them; they are deliberately not restated here, because a copied
+number goes stale the moment this module gains a test. These are marked
+``ui_driver`` and skipped unless the environment can supply both.
 """
 
 from __future__ import annotations
