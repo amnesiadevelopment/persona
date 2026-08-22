@@ -15,6 +15,7 @@ stopped looking is caught on the run where it stopped rather than a month later.
 
 from __future__ import annotations
 
+import contextlib
 import os
 
 from .behaviour import (
@@ -489,9 +490,61 @@ def _falsify_proxy_assignment_survives_edit(ctx: Context) -> str:
 # --- 5. a launch REFUSES when the geography is broken -----------------------
 
 
+class _ReachedEngineSpawn(Exception):
+    """Raised in place of the engine spawn: the launch path traversed every
+    guard and was about to start a browser. Carries the timezone the launch was
+    about to hand the engine."""
+
+
+def _launch_outcome(profile) -> str:
+    """Drive the REAL public launch entry point and report where it stopped.
+
+    Returns the timezone the launch was about to declare to the engine, or
+    propagates the refusal the launch raised.
+
+    This calls ``spawn_browser`` — the entry point the UI and the REST lane
+    both go through — rather than an internal helper. Asserting that a private
+    function raises IS the shape of a unit test, and it comes apart from the
+    product in ways that are not hypothetical: a refactor that resolves the
+    timezone AFTER the engine spawns, or that swallows the error anywhere
+    between the helper and the launch, would leave such an assertion green
+    while the product launched on the operator's real timezone.
+
+    ONLY the engine spawn is replaced, by a sentinel. It sits BEYOND the last
+    guard, so it cannot mask a refusal that should have happened — every gate
+    under test (proxy resolution, then the geography gate at process.py:249)
+    runs untouched and in its real order, ahead of any socket, any display and
+    any exit. A launch that is correctly REFUSED never reaches the sentinel at
+    all, which is what keeps ``needs_launch=False`` honest: no browser starts
+    on the refusal path, and none starts on the healthy path either.
+    """
+    from ..browser import invisible_launch
+    from ..browser.process import spawn_browser
+
+    original = invisible_launch.spawn
+
+    def _sentinel(cfg, **kwargs):
+        raise _ReachedEngineSpawn(cfg.get("timezone", ""))
+
+    invisible_launch.spawn = _sentinel
+    try:
+        proc = spawn_browser(profile)
+    except _ReachedEngineSpawn as reached:
+        return str(reached)
+    finally:
+        invisible_launch.spawn = original
+    # A launch that got past the sentinel is not the path this check believes
+    # it is driving; never leave a real engine running behind a check.
+    with contextlib.suppress(Exception):
+        proc.terminate()
+    raise BehaviourCheckError(
+        "spawn_browser returned a live handle without reaching the engine "
+        "spawn sentinel, so this check no longer drives the path it claims to."
+    )
+
+
 def _run_launch_refuses_broken_geography(ctx: Context) -> Outcome:
-    from ..browser.process import _profile_timezone
-    from ..proxy.errors import GeographyUnknownError
+    from ..proxy.errors import GeographyDisprovenError, GeographyUnknownError
 
     pm = ctx.manager()
     store = _proxy_store()
@@ -504,15 +557,16 @@ def _run_launch_refuses_broken_geography(ctx: Context) -> Outcome:
     ctx.make_profile(name, proxy="ps70-geo")
     profile = pm.profiles[name]
 
-    healthy = _profile_timezone(profile, store.get("ps70-geo"))
+    healthy = _launch_outcome(profile)
     if healthy != "Europe/Warsaw":
         return Outcome(
             name="launch-refuses-broken-geography",
             surface="a launch refuses when the geography is broken",
             status=FINDING,
             detail=(
-                "a proxy with VERIFIED geography did not yield its exit's zone "
-                f"(got {healthy!r}, expected 'Europe/Warsaw')."
+                "a launch with VERIFIED proxy geography did not carry its "
+                f"exit's zone to the engine (got {healthy!r}, expected "
+                "'Europe/Warsaw')."
             ),
         )
 
@@ -520,21 +574,47 @@ def _run_launch_refuses_broken_geography(ctx: Context) -> Outcome:
     # is contradicted by the product's own most recent evidence.
     store.mark_check_failed("ps70-geo")
     try:
-        leaked = _profile_timezone(profile, store.get("ps70-geo"))
-    except GeographyUnknownError as exc:
+        leaked = _launch_outcome(profile)
+    except GeographyDisprovenError as exc:
         return Outcome(
             name="launch-refuses-broken-geography",
             surface="a launch refuses when the geography is broken",
             status=PASS,
             detail=(
-                "with the proxy's last check FAILED, the launch path refused "
+                "with the proxy's last check FAILED, spawn_browser refused "
                 "rather than proceeding with a zone the latest evidence "
-                "disproves. Refusal observed on the real launch path, not "
-                "asserted in a unit test."
+                "disproves. Observed by driving the public launch entry point "
+                "until it was about to start an engine — not by asserting "
+                "that an internal helper raises. The refusal names the "
+                "SPECIFIC cause (the check failed) rather than the generic "
+                "one (never checked), which is the distinction the product "
+                "went to trouble to keep."
             ),
             evidence=[
-                f"verified -> {healthy!r}",
-                f"after mark_check_failed -> {type(exc).__name__}",
+                f"verified -> launch declared {healthy!r} to the engine",
+                f"after mark_check_failed -> spawn_browser raised {type(exc).__name__}",
+            ],
+        )
+    except GeographyUnknownError as exc:
+        # The parent class. The launch DID fail closed — no leak — but it
+        # reports "never checked" for a proxy that WAS checked and failed,
+        # sending the operator after the wrong remedy.
+        return Outcome(
+            name="launch-refuses-broken-geography",
+            surface="a launch refuses when the geography is broken",
+            status=FINDING,
+            detail=(
+                "the launch refused (so nothing leaked), but as "
+                f"{type(exc).__name__} — the 'never checked' cause — for a "
+                "proxy that WAS checked and whose check FAILED. The two are "
+                "deliberately distinct (errors.py: GeographyDisprovenError "
+                "subclasses GeographyUnknownError precisely so the cause can "
+                "be stated truthfully); collapsing them tells the operator to "
+                "check a proxy they already checked."
+            ),
+            evidence=[
+                f"after mark_check_failed -> {type(exc).__name__} "
+                "(expected GeographyDisprovenError)"
             ],
         )
     return Outcome(
@@ -542,25 +622,24 @@ def _run_launch_refuses_broken_geography(ctx: Context) -> Outcome:
         surface="a launch refuses when the geography is broken",
         status=FINDING,
         detail=(
-            "the launch path did NOT refuse a proxy whose last check failed: it "
-            f"returned {leaked!r}. Declaring a location the product's own "
-            "latest evidence contradicts is exactly the incoherence the "
-            "refusal exists to prevent."
+            "the launch path did NOT refuse a proxy whose last check failed: "
+            f"spawn_browser carried {leaked!r} to the engine. Declaring a "
+            "location the product's own latest evidence contradicts is "
+            "exactly the incoherence the refusal exists to prevent."
         ),
         evidence=[f"after mark_check_failed -> {leaked!r} (expected a refusal)"],
     )
 
 
 def _falsify_launch_refuses_broken_geography(ctx: Context) -> str:
-    """Show the refusal is CONDITIONAL, not a function that always raises.
+    """Show the refusal is CONDITIONAL and CAUSALLY SPECIFIC.
 
     A guard that refuses everything would pass the check above while being
     useless — every profile would be unlaunchable. So the falsification proves
-    the negative side: a healthy proxy must NOT refuse, and an unchecked one
-    (no geography at all) must.
+    both negatives: a healthy proxy must NOT be refused, an unchecked one must
+    be, and the two refusing states must not be reported as the same cause.
     """
-    from ..browser.process import _profile_timezone
-    from ..proxy.errors import GeographyUnknownError
+    from ..proxy.errors import GeographyDisprovenError, GeographyUnknownError
 
     pm = ctx.manager()
     store = _proxy_store()
@@ -573,16 +652,17 @@ def _falsify_launch_refuses_broken_geography(ctx: Context) -> str:
     profile = pm.profiles[name]
 
     try:
-        zone = _profile_timezone(profile, store.get("ps70-geo-falsify"))
+        zone = _launch_outcome(profile)
     except GeographyUnknownError as exc:
         raise BehaviourCheckError(
-            "a proxy with VERIFIED geography was refused "
+            "a launch with VERIFIED proxy geography was refused "
             f"({type(exc).__name__}). A guard that refuses everything makes "
             "every profile unlaunchable and its 'refusal' proves nothing."
         ) from exc
     if zone != "Europe/Berlin":
         raise BehaviourCheckError(
-            f"a verified proxy yielded {zone!r} rather than its exit's zone"
+            f"a verified proxy launched declaring {zone!r} rather than its "
+            "exit's zone"
         )
 
     # The other refusing state: never successfully checked, so no geography.
@@ -590,18 +670,25 @@ def _falsify_launch_refuses_broken_geography(ctx: Context) -> str:
     unchecked_name = "ps70-geo-unchecked-holder"
     ctx.make_profile(unchecked_name, proxy="ps70-geo-unchecked")
     try:
-        zone2 = _profile_timezone(
-            pm.profiles[unchecked_name], store.get("ps70-geo-unchecked")
-        )
+        zone2 = _launch_outcome(pm.profiles[unchecked_name])
+    except GeographyDisprovenError as exc:
+        raise BehaviourCheckError(
+            "a proxy that was NEVER checked was refused as "
+            f"{type(exc).__name__} — 'the check failed' — conflating the two "
+            "causes in the opposite direction. The check above would then be "
+            "unable to tell a disproven geography from an absent one."
+        ) from exc
     except GeographyUnknownError:
         return (
-            "the refusal is conditional: a VERIFIED proxy launches with its "
-            "exit zone (Europe/Berlin) while an UNCHECKED one is refused"
+            "the refusal is conditional AND causally specific: a VERIFIED "
+            "proxy launches declaring its exit's zone (Europe/Berlin), an "
+            "UNCHECKED one is refused as GeographyUnknownError, and only a "
+            "DISPROVEN one raises GeographyDisprovenError"
         )
     raise BehaviourCheckError(
-        "a proxy that was never successfully checked was NOT refused: it "
-        f"returned {zone2!r}. Deriving a zone from the host would declare the "
-        "operator's real location inside the tunnel."
+        "a proxy that was never successfully checked was NOT refused: the "
+        f"launch declared {zone2!r}. Deriving a zone from the host would "
+        "declare the operator's real location inside the tunnel."
     )
 
 

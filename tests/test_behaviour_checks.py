@@ -341,3 +341,313 @@ class TestInventoryHonesty:
             "the must-differ inventory is EMPTY, so compare_profiles would "
             "compare nothing and its empty result would read as a pass"
         )
+
+
+class _FakeProxy:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+class _FakeStore:
+    """Just enough ProxyStore for the geography check's bookkeeping."""
+
+    def __init__(self) -> None:
+        self.proxies: dict[str, _FakeProxy] = {}
+        self.failed: list[str] = []
+
+    def add(self, name, url):
+        self.proxies[name] = _FakeProxy(name)
+
+    def mark_checked(self, name, cc, country, ip=None, timezone=None):
+        self.proxies.setdefault(name, _FakeProxy(name))
+
+    def mark_check_failed(self, name):
+        self.failed.append(name)
+
+    def get(self, name):
+        return self.proxies.get(name)
+
+
+class _FakeManager:
+    def __init__(self) -> None:
+        self.profiles: dict[str, object] = {}
+
+
+class _FakeCtx:
+    """A Context stand-in: makes profile records without touching a store."""
+
+    def __init__(self) -> None:
+        self._manager = _FakeManager()
+
+    def manager(self):
+        return self._manager
+
+    def make_profile(self, name, **kwargs):
+        profile = type("P", (), {"name": name, "proxy": kwargs.get("proxy")})()
+        self._manager.profiles[name] = profile
+        return profile
+
+
+def _geo_check():
+    from src.services.verify.behaviour_checks import CHECKS
+
+    return next(c for c in CHECKS if c.name == "launch-refuses-broken-geography")
+
+
+class TestGeographyCheckDrivesTheRealLaunchPath:
+    """The refusal must be OBSERVED at the public entry point, not asserted of
+    an internal helper.
+
+    The ticket named this surface in exactly those terms — "the refusal paths
+    are shipped; that they FIRE is asserted in unit tests, not observed in a
+    launched profile" — so a check that calls a private helper and asserts it
+    raises is reproducing the very gap it was written to close. These tests
+    pin the distinction so it cannot quietly regress.
+    """
+
+    def test_the_module_does_not_reach_for_the_private_timezone_helper(self):
+        """A regression guard on the SHAPE of the check, not its result.
+
+        Asserting that ``_profile_timezone`` raises passes just as happily when
+        a refactor has moved the timezone resolution to AFTER the engine
+        spawns, or swallowed the error between the helper and the launch — the
+        product would then launch on the operator's real timezone with this
+        check still green. Reaching for the helper at all is the defect.
+        """
+        import inspect
+
+        from src.services.verify import behaviour_checks
+
+        source = inspect.getsource(behaviour_checks)
+
+        assert "_profile_timezone" not in source, (
+            "the geography check is reaching for the private timezone helper "
+            "again; drive the public spawn_browser entry point instead"
+        )
+
+    def test_launch_outcome_drives_spawn_browser(self, monkeypatch):
+        """The public entry point is the thing under observation."""
+        from src.services.browser import invisible_launch
+        from src.services.verify import behaviour_checks
+
+        called: list[object] = []
+
+        def fake_spawn_browser(profile, **kwargs):
+            called.append(profile)
+            # Reach the engine spawn exactly as a real launch would.
+            return invisible_launch.spawn({"timezone": "Europe/Warsaw"})
+
+        monkeypatch.setattr(
+            "src.services.browser.process.spawn_browser", fake_spawn_browser
+        )
+        profile = object()
+
+        zone = behaviour_checks._launch_outcome(profile)
+
+        assert called == [profile], "spawn_browser was not the entry point driven"
+        assert zone == "Europe/Warsaw"
+
+    def test_the_engine_spawn_sentinel_is_always_restored(self, monkeypatch):
+        """The sentinel must not leak into the rest of the run.
+
+        It replaces the module-level engine spawn, so a check that left it in
+        place would silently neuter every launch AFTER it — turning later
+        checks green without launching anything, which is this module's own
+        failure mode.
+        """
+        from src.services.browser import invisible_launch
+        from src.services.verify import behaviour_checks
+
+        original = invisible_launch.spawn
+
+        monkeypatch.setattr(
+            "src.services.browser.process.spawn_browser",
+            lambda profile, **kw: invisible_launch.spawn({"timezone": "Europe/Rome"}),
+        )
+        behaviour_checks._launch_outcome(object())
+
+        assert invisible_launch.spawn is original
+
+        # ...and also when the launch REFUSES, which is the common path here.
+        def refusing(profile, **kw):
+            from src.services.proxy.errors import GeographyDisprovenError
+
+            raise GeographyDisprovenError("nope")
+
+        monkeypatch.setattr("src.services.browser.process.spawn_browser", refusing)
+        with pytest.raises(Exception):
+            behaviour_checks._launch_outcome(object())
+
+        assert invisible_launch.spawn is original
+
+    def test_a_launch_that_slips_past_the_sentinel_is_refused_not_reported(
+        self, monkeypatch
+    ):
+        """If a real handle comes back, the check is no longer driving the path
+        it claims to — and a live engine must never be left running."""
+        from src.services.verify import behaviour_checks
+
+        stopped: list[str] = []
+
+        class _Handle:
+            def terminate(self):
+                stopped.append("terminated")
+
+        monkeypatch.setattr(
+            "src.services.browser.process.spawn_browser", lambda p, **kw: _Handle()
+        )
+
+        with pytest.raises(BehaviourCheckError) as exc:
+            behaviour_checks._launch_outcome(object())
+
+        assert "no longer drives the path" in str(exc.value)
+        assert stopped == ["terminated"], "a live engine handle was left running"
+
+
+class TestGeographyCheckSeparatesTheTwoRefusalCauses:
+    """`GeographyDisprovenError` subclasses `GeographyUnknownError` deliberately.
+
+    Catching only the parent makes the check unable to tell "we never learned
+    where this exits" from "we looked, and what we stored is contradicted" —
+    a distinction the product went to real trouble to keep, because the two
+    send the operator after different remedies.
+    """
+
+    def _run(self, monkeypatch, outcomes):
+        from src.services.verify import behaviour_checks
+
+        calls = iter(outcomes)
+
+        def fake_launch(profile):
+            nxt = next(calls)
+            if isinstance(nxt, Exception):
+                raise nxt
+            return nxt
+
+        monkeypatch.setattr(behaviour_checks, "_proxy_store", _FakeStore)
+        monkeypatch.setattr(behaviour_checks, "_launch_outcome", fake_launch)
+        return _geo_check().run(_FakeCtx())
+
+    def test_a_disproven_geography_refusal_is_the_pass(self, monkeypatch):
+        from src.services.proxy.errors import GeographyDisprovenError
+
+        outcome = self._run(
+            monkeypatch, ["Europe/Warsaw", GeographyDisprovenError("refused")]
+        )
+
+        assert outcome.status == PASS
+        assert "spawn_browser" in outcome.detail
+
+    def test_the_generic_parent_cause_is_a_FINDING_not_a_pass(self, monkeypatch):
+        """It failed CLOSED, so nothing leaked — but it named the wrong cause.
+
+        Reporting "never checked" for a proxy that WAS checked and failed sends
+        the operator to re-check a proxy they already checked. A check that
+        accepted the parent here could not see this at all.
+        """
+        from src.services.proxy.errors import GeographyUnknownError
+
+        outcome = self._run(
+            monkeypatch, ["Europe/Warsaw", GeographyUnknownError("refused")]
+        )
+
+        assert outcome.status == FINDING
+        assert "GeographyUnknownError" in "".join(outcome.evidence)
+
+    def test_a_launch_that_proceeds_on_a_disproven_zone_is_a_FINDING(
+        self, monkeypatch
+    ):
+        outcome = self._run(monkeypatch, ["Europe/Warsaw", "Europe/Warsaw"])
+
+        assert outcome.status == FINDING
+        assert "did NOT refuse" in outcome.detail
+
+    def test_a_healthy_proxy_that_loses_its_exit_zone_is_a_FINDING(self, monkeypatch):
+        outcome = self._run(monkeypatch, ["America/New_York"])
+
+        assert outcome.status == FINDING
+        assert "Europe/Warsaw" in outcome.detail
+
+
+class TestGeographyFalsificationProvesTheGuardIsConditional:
+    def _falsify(self, monkeypatch, outcomes):
+        from src.services.verify import behaviour_checks
+
+        calls = iter(outcomes)
+
+        def fake_launch(profile):
+            nxt = next(calls)
+            if isinstance(nxt, Exception):
+                raise nxt
+            return nxt
+
+        monkeypatch.setattr(behaviour_checks, "_proxy_store", _FakeStore)
+        monkeypatch.setattr(behaviour_checks, "_launch_outcome", fake_launch)
+        return _geo_check().falsify(_FakeCtx())
+
+    def test_a_guard_that_refuses_a_HEALTHY_proxy_fails_the_falsification(
+        self, monkeypatch
+    ):
+        """A guard that refuses everything would pass the check while making
+        every profile unlaunchable."""
+        from src.services.proxy.errors import GeographyUnknownError
+
+        with pytest.raises(BehaviourCheckError) as exc:
+            self._falsify(monkeypatch, [GeographyUnknownError("refused")])
+
+        assert "refuses everything" in str(exc.value)
+
+    def test_an_UNCHECKED_proxy_reported_as_disproven_fails_the_falsification(
+        self, monkeypatch
+    ):
+        """The conflation in the opposite direction, which the run path alone
+        cannot see."""
+        from src.services.proxy.errors import GeographyDisprovenError
+
+        with pytest.raises(BehaviourCheckError) as exc:
+            self._falsify(
+                monkeypatch, ["Europe/Berlin", GeographyDisprovenError("wrong cause")]
+            )
+
+        assert "NEVER checked" in str(exc.value)
+
+    def test_a_conditional_causally_specific_guard_passes(self, monkeypatch):
+        from src.services.proxy.errors import GeographyUnknownError
+
+        line = self._falsify(
+            monkeypatch, ["Europe/Berlin", GeographyUnknownError("refused")]
+        )
+
+        assert "conditional" in line
+
+    def test_an_UNCHECKED_proxy_that_is_not_refused_fails_the_falsification(
+        self, monkeypatch
+    ):
+        with pytest.raises(BehaviourCheckError) as exc:
+            self._falsify(monkeypatch, ["Europe/Berlin", "Europe/Berlin"])
+
+        assert "real location inside the tunnel" in str(exc.value)
+
+
+class TestUncoveredSurfacesClaimNoCoverageItDoesNotHave:
+    """`UNCOVERED_SURFACES` is printed on every run and exists so a reader does
+    not over-read the green. A false coverage claim inside the honesty block
+    inverts its purpose."""
+
+    def test_the_certificate_gap_does_not_claim_the_status_field_is_checked(self):
+        import inspect
+
+        from src.services.verify import behaviour, behaviour_checks
+        from src.services.verify.behaviour import UNCOVERED_SURFACES
+
+        cert = [t for t in UNCOVERED_SURFACES if "certificate" in t[0]]
+        assert cert, "the certificate trust gap is no longer disclosed at all"
+
+        reads_the_field = "cert_trust_status" in inspect.getsource(behaviour_checks)
+        claims_the_field = "truthfulness of the stored status" in cert[0][1]
+
+        assert not claims_the_field or reads_the_field, (
+            "UNCOVERED_SURFACES claims the stored status field's truthfulness "
+            "is checked, but no check reads cert_trust_status"
+        )
+        assert behaviour  # the disclosure lives with the vocabulary it qualifies

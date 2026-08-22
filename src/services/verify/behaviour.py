@@ -96,9 +96,10 @@ UNCOVERED_SURFACES: tuple[tuple[str, str], ...] = (
     (
         "certificate trust OUTCOME under a real mTLS launch",
         "cert_trust_status is written by a launch that reaches a real admin "
-        "host. This module checks the key-material half (nothing decrypted "
-        "outlives the session) and the truthfulness of the stored status "
-        "field, but does not stand up an mTLS endpoint to drive the import.",
+        "host. This module checks the key-material half ONLY (nothing "
+        "decrypted outlives the session). It does not stand up an mTLS "
+        "endpoint, so it never reads cert_trust_status and says nothing "
+        "about whether that field reports what actually happened.",
     ),
     (
         "engine upgrade / downgrade continuity",
