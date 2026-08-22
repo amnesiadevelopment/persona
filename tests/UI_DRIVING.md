@@ -384,7 +384,7 @@ here`). The capability is registered in `conftest.py`, so on a machine
 
 **The route works, and the carve-out is gone.** Downstream coverage work is
 viable across buttons, text fields and dropdowns alike; what remains outside
-this route is native file dialogs and desktop window chrome (items 4 and 5 of
+this route is native file dialogs and desktop window chrome (items 2 and 4 of
 the reach map), which need a different mechanism entirely.
 
 Order worth taking, cheapest evidence first:

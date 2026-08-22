@@ -264,7 +264,7 @@ def test_selecting_in_the_engine_dropdown_reaches_the_saved_profile(_requirement
 def test_choosing_a_mobile_os_narrows_the_engine_choice(_requirements):
     """Driving one dropdown changes another — proof the real handler ran.
 
-    ``on_os_change`` (``src/ui/dialogs/profile.py:511``) drops the Firefox
+    ``on_os_change`` (``src/ui/dialogs/profile.py:512``) drops the Firefox
     option when a mobile OS is picked, because invisible_playwright is desktop
     Firefox with no mobile mode. Observing that from the outside is evidence
     the selection reached the application's own logic, not merely the widget:
