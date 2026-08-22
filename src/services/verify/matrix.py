@@ -322,6 +322,8 @@ def build_record(
     observed_at: str,
     environment: str = "",
     seed: int = 0,
+    declared_machine: str = "",
+    declared_machine_honoured: bool = True,
     skipped_tiers: "list[str] | None" = None,
     notes: "list[str] | None" = None,
 ) -> dict:
@@ -342,6 +344,24 @@ def build_record(
     own default was used (no seed passed), which is itself the reproducible
     fact worth recording.
 
+    The DECLARED MACHINE is in the header for the third time by the same
+    argument. It is the spine of a presented identity — it constrains GPU
+    strings, voices, fonts, screen conventions, platform flags, the user agent
+    and client hints — so two records taken on different declared machines
+    differ for a reason that has nothing to do with a coupling. Without it in
+    the header a later comparison cannot tell a real coupling from a different
+    configuration, which is exactly the argument that put the seed here.
+
+    ``declared_machine_honoured`` is the half that keeps that field honest.
+    persona's two engines are NOT symmetric: chromium honours the requested
+    machine, and the Firefox engine cannot be asked at all (no parameter
+    exists) and presents Windows regardless — ``services/browser/process.py``
+    records the same behaviour for the product as #211. So the header states
+    what the engine ACTUALLY DECLARED plus whether asking changed anything. A
+    record that simply echoed the request would fabricate a machine on every
+    Firefox run, and a comparator would read the resulting difference as a
+    product coupling rather than as an engine that ignored the question.
+
     ``skipped_tiers`` names any tier the operator asked not to read. A skipped
     tier's rows are UNOBTAINABLE rows like any other unread checker — see
     :func:`readings_for_unread_checker` — so the matrix keeps its full width;
@@ -358,6 +378,8 @@ def build_record(
         "environment": environment,
         "engine": engine,
         "seed": seed,
+        "declared_machine": declared_machine,
+        "declared_machine_honoured": declared_machine_honoured,
         "skipped_tiers": list(skipped_tiers or []),
         "exit": exit_.as_record(),
         "counts": {
