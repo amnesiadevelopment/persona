@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 import pytest
@@ -156,12 +157,10 @@ def pytest_configure(config: pytest.Config) -> None:
     if unknown:
         # Loud, not lenient. A typo'd capability name that was quietly ignored
         # would silently disable the very guard being asked for — which is the
-        # defect this file exists to close, one level up.
-        known = ", ".join(sorted(CAPABILITIES))
-        raise pytest.UsageError(
-            f"unknown test capability {', '.join(sorted(unknown))!r} "
-            f"(via {REQUIRE_ENV_VAR} or --require-capability). "
-            f"Known capabilities: {known}."
+        # defect this file exists to close, one level up. The marker path holds
+        # the same rule at collection; see pytest_collection_modifyitems.
+        raise _unknown_capabilities_error(
+            unknown, f"via {REQUIRE_ENV_VAR} or --require-capability"
         )
     config._persona_required_capabilities = requested  # type: ignore[attr-defined]
     config._persona_capability_failures = {}  # type: ignore[attr-defined]
@@ -171,6 +170,14 @@ def _required(config: pytest.Config) -> list[str]:
     return list(getattr(config, "_persona_required_capabilities", []))
 
 
+def _unknown_capabilities_error(unknown: list[str], via: str) -> pytest.UsageError:
+    known = ", ".join(sorted(CAPABILITIES))
+    return pytest.UsageError(
+        f"unknown test capability {', '.join(sorted(unknown))!r} ({via}). "
+        f"Known capabilities: {known}."
+    )
+
+
 def _declared_marker_capabilities(item: pytest.Item) -> set[str]:
     names: set[str] = set()
     for marker in item.iter_markers(name="requires_capability"):
@@ -178,22 +185,79 @@ def _declared_marker_capabilities(item: pytest.Item) -> set[str]:
     return names
 
 
-def capability_for_skip(
+def pytest_collection_modifyitems(
+    session: pytest.Session, config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    """A marker naming a capability that does not exist refuses to run.
+
+    The same rule the environment declaration already holds, applied to the
+    other way of declaring. `@pytest.mark.requires_capability("browserr")`
+    that was quietly ignored would leave the test entirely UNGUARDED while the
+    marker sat there looking like protection — a guard disabled by a typo,
+    reporting green. Unknown marker names were the one path into this file
+    that failed open; both now fail closed.
+
+    Validated at collection so the error names the offending tests and arrives
+    before any of them runs, rather than at the end of a long suite.
+    """
+    offenders: dict[str, list[str]] = {}
+    for item in items:
+        for name in sorted(_declared_marker_capabilities(item)):
+            if name not in CAPABILITIES:
+                offenders.setdefault(name, []).append(item.nodeid)
+    if not offenders:
+        return
+    located = "; ".join(
+        f"{name!r} on {', '.join(nodes)}" for name, nodes in sorted(offenders.items())
+    )
+    raise _unknown_capabilities_error(
+        list(offenders), f"via @pytest.mark.requires_capability — {located}"
+    )
+
+
+def capabilities_for_skip(
     reason: str, declared: set[str] | None = None
-) -> Capability | None:
-    """Which capability, if any, a skip of this reason belongs to.
+) -> Iterator[Capability]:
+    """EVERY capability this skip belongs to, not merely the first one found.
 
     An explicit marker wins over reason matching: a test that names its own
     capability is never re-classified by the text it happened to print.
+
+    ALL of a marker's names are yielded, and that is the whole point. Returning
+    only one — say the alphabetically first — would make the outcome depend on
+    the order the names happen to sort in: a test marked
+    ``("browser", "node")`` that skips for want of node would go unguarded on a
+    machine declaring `node`, because "browser" sorted first, did not appear in
+    the declaration, and ended the search. A green run that enforced nothing is
+    precisely the defect this file exists to close, so the search must exhaust
+    the declaration rather than abandon it.
+
+    Reason matching stops at the first match by design: the patterns partition
+    causes rather than overlapping, and a reason is one cause.
     """
-    for name in sorted(declared or ()):
-        cap = CAPABILITIES.get(name)
-        if cap is not None:
-            return cap
+    if declared:
+        for name in sorted(declared):
+            cap = CAPABILITIES.get(name)
+            if cap is not None:
+                yield cap
+        return
     for cap in CAPABILITIES.values():
         if cap.matches_reason(reason):
-            return cap
-    return None
+            yield cap
+            return
+
+
+def capability_for_skip(
+    reason: str, declared: set[str] | None = None
+) -> Capability | None:
+    """The single best capability for a skip, or None.
+
+    Kept for reason-only classification, where "the cause of this skip" is a
+    single answer. Anything deciding whether a skip is POLICED must use
+    :func:`capabilities_for_skip` and check every declared name against the
+    environment's declaration.
+    """
+    return next(capabilities_for_skip(reason, declared), None)
 
 
 def _skip_reason(report: pytest.TestReport) -> str:
@@ -215,8 +279,21 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
         return report
 
     reason = _skip_reason(report)
-    cap = capability_for_skip(reason, _declared_marker_capabilities(item))
-    if cap is None or cap.name not in required:
+    # EVERY declared capability is checked against the environment's
+    # declaration, not just the first one found. See capabilities_for_skip:
+    # stopping at the first match would let a test marked ("browser", "node")
+    # skip for want of node, on a machine declaring node, and still report
+    # green — a guard that silently declines to fire, which is this file's own
+    # subject matter one level up.
+    cap = next(
+        (
+            c
+            for c in capabilities_for_skip(reason, _declared_marker_capabilities(item))
+            if c.name in required
+        ),
+        None,
+    )
+    if cap is None:
         return report
 
     # This environment DECLARED it supplies the capability, and the test
