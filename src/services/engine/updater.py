@@ -21,7 +21,7 @@ from ...core.config import ENGINE_DIR
 from ...core import platform as _platform
 from ...services import egress
 from ...utils import httpdl
-from ...utils.httpdl import atomic_replace, range_opener, resumable_download
+from ...utils.httpdl import atomic_replace, resumable_download
 from . import policy
 
 ENGINE_BINARY = os.path.join(ENGINE_DIR, _platform.fingerprint_chromium_filename())
@@ -337,11 +337,31 @@ def _download_to(
     engine.
 
     The transfer itself is utils.httpdl's resumable_download, shared with the app
-    updater. The opener is built here, through this module's range_opener(), so
+    updater. The opener is built here, through persona's OWN egress authority, so
     the Range header survives GitHub's 302 to a signed CDN URL — without that a
     resume gets the whole file (200) instead of the tail (206) and over Tor never
-    finishes.
+    finishes — AND the ~80-230MB asset leaves the host the way the operator said
+    the application's traffic should leave.
+
+    Routing the asset was the half this path was missing. `fetch_latest_full`
+    above already asks the authority "may I speak to GitHub, and how?"; until
+    PS-75 the binary it located was then fetched by a transport that never
+    asked, so one operator gesture governed the metadata poll and not the
+    download it exists to locate.
+
+    The verdict is resolved HERE and the opener handed down, rather than the
+    shared downloader resolving it: httpdl is a mechanism several pipelines
+    call, and a policy implemented twice is one that disagrees with itself
+    (services/egress.py). A REFUSE means NOTHING IS SENT — it lands on this
+    function's existing False, which is the same answer its caller already
+    handles for a failed download, and it is resolved BEFORE the transfer so a
+    refusal costs no connection. With no policy set this is byte-identical to
+    the direct send it has always been.
     """
+    try:
+        opener = egress.download_opener()
+    except egress.EgressRefused:
+        return False
     return resumable_download(
         path,
         url,
@@ -349,7 +369,7 @@ def _download_to(
         digest,
         progress=progress,
         allow_missing=allow_missing,
-        opener_factory=lambda: range_opener(),
+        opener_factory=lambda: opener,
     )
 
 
