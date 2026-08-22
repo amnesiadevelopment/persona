@@ -129,6 +129,24 @@ class NotASnapshot(ValueError):
     """
 
 
+class SnapshotUnreadable(ValueError):
+    """Raised when a snapshot file could not be READ at all.
+
+    The sibling of :class:`NotASnapshot`, one step earlier in the same story.
+    That one refuses a file that read back perfectly well and simply is not a
+    snapshot; this one refuses a file that never became an object to inspect —
+    the path does not exist, the bytes are not UTF-8, or the text is not JSON.
+
+    Kept SEPARATE rather than folded into ``NotASnapshot`` because the two say
+    different things to an operator ("wrong file" vs "no file"), and because
+    ``NotASnapshot``'s own message and its handler in ``engine_gate`` both
+    speak specifically about a missing ``probes`` object. Both surface as the
+    CLI's exit 2 for the same reason, which is the part that matters: nothing
+    was compared, so neither can be drift. 1 is the DRIFT code, and a file
+    nobody read is not evidence that an identity moved.
+    """
+
+
 def require_snapshot(obj: Any, source: str | None = None) -> dict:
     """Return ``obj`` if it is a snapshot; otherwise refuse with NotASnapshot.
 
@@ -660,6 +678,7 @@ __all__ = [
     "REMOVED",
     "ComparisonNotControlled",
     "NotASnapshot",
+    "SnapshotUnreadable",
     "compare_profiles",
     "diff_realms",
     "diff_snapshots",
