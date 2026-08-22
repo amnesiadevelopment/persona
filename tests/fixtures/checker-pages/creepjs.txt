@@ -1,0 +1,251 @@
+FP ID: ee64f034b0b6796fada3e37e2e711fb41a453fcb80996dbdde62149b6d5ed747
+Fuzzy: aaa782f05becfaf08b7c7f833f8f9d0c5ff550979e1f80fefffc000000000000
+729.00 ms
+WebRTC7f5bca3d
+host connection:
+candidate:0 1 TCP 2105524479 a4150669-3d2f-49a5-abca-fbf9054b701d.local 9 typ host tcptype active
+foundation/ip:
+type & base ip: 0
+blocked
+sdp capabilities: 2ddac696
+stun connection:
+blocked
+devices (2):
+mic, webcam
+9.00ms
+Timezone3968d3fc
+czas środkowoeuropejski letni
+
+
+Europe, Warsaw
+
+
+-27028689840000
+
+
+-120
+3.00ms
+Intl19f5eb66
+pl-PL
+
+
+lipiec czas środkowoeuropejski letni
+
+
+angielski amerykański
+
+
+21 milionów
+
+
+w przyszłym roku
+
+
+0 lub 1
+
+
+one
+6.00ms
+Headlesse9d45bc0
+chromium: false
+6% like headless: 7bca6f28
+0% headless: 52defe05
+0% stealth: 0c019315
+platform hints:
+Segoe UI:Windows
+521.00ms
+Resistancebfd6ca31
+privacy: unknown
+security: unknown
+mode: unknown
+extension: unknown
+619.00ms
+ServiceWorkerGlobalScope
+Worker33d838a9
+lang/timezone:
+pl-PL (
+1 US dollar
+)
+en-US
+
+
+Europe/Warsaw (-120)
+confidence: high
+gpu:
+Google Inc. (NVIDIA)
+
+
+ANGLE (NVIDIA, NVIDIA GeForce GTX 980 Direct3D11 vs_5_0 ps_5_0), or similar
+userAgent:
+Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0
+device:
+Windows (Win32)
+
+
+Windows 10 (64-bit)
+
+
+cores: 8
+userAgentData:
+unsupported
+444.00ms
+WebGL94f1a2bc
+images:439417c4
+pixels:a8ee71dc
+params (78): 88bb6058
+exts (41): f34e166b
+gpu:
+confidence: high
+Google Inc. (NVIDIA)
+ANGLE (NVIDIA, NVIDIA GeForce GTX 980 Direct3D11 vs_5_0 ps_5_0), or similar
+0.00ms
+Screen9d83f24a
+...screen: 1920 x 1080
+....avail: 1920 x 1032
+touch: false
+depth: 24|24
+viewport:
+1920
+1920
+1920
+1032
+947
+947
+browser
+landscape
+landscape-primary
+1
+55.00ms
+Canvas 2d711bcdbe
+data: 8d1ce292
+rendering:
+textMetrics:
+0.020406635004361472
+😀🤵‍♂️♨...☝✍❄
+41.00ms
+Fonts7ce55f89
+load (0/51): Like undefined
+apps: unsupported
+unsupported
+
+0.024214669999999997
+😀👨‍👩‍👧‍👦©™◼
+4.00ms
+DOMRectc6ec5720
+elems A: 0.4950627700024415
+elems B: 0.4950627700024415
+range A: 0.4950627700024415
+range B: 0.4950627700024415
+0.024238499603271485
+😀👨‍👩‍👧‍👦©™◼
+6.00ms
+SVGRect02555ed0
+bBox: 0.07573724956512451
+char: 0.03886166687011719
+subs: 0.027461666870117186
+text: 0.027461666870117186
+0.010394666595458985
+😀👨‍👩‍👧‍👦©™◼
+56.00ms
+Audio17546399
+sum: 35.749972093850374
+gain: -31.502185821533203
+freq: 167699.85206985474
+time: 148.47541846334934
+trap: 0.7059201721044277
+unique: 4736
+data:2dcdf6c2
+copy:2dcdf6c2
+values: 0bcf0945
+0.00ms
+Speech544386cd
+local (5): 9c64fe85
+remote (0): unsupported
+lang (1): en-US
+default:
+Microsoft David - English (United States) [en-US]
+6.00ms
+Mediaf9bbe805
+mimes (8/12): 3d1317f4
+5.00ms
+Features: 112+
+JS/DOM: e27778b4 (v109-112)
+CSS: 3f5479cf (v112)
+Window: 01de435c (v112)
+4.00ms
+CSS Media Queries202401c6
+@media: ff9efd09
+matchMedia: ff9efd09
+touch device: unknown
+screen query: 1920 x 1080
+5.00ms
+Computed Style822eaaa1
+keys (1152): b42e7c7e
+system styles: 4eb750f8
+1.00ms
+Math1747db31
+results: details
+1.00ms
+Error5311d4b7
+results: details
+2.00ms
+Window047188b9
+keys (977): details
+0.00ms
+HTMLElement514cd241
+keys (331): details
+5.00ms
+Navigatoreda38869
+properties (47): 10af22e8
+dnt: unspecified
+gpc: false
+lang: pl-PL, pl (pl-PL)
+mimeTypes (2): 11003d7c
+permissions (1): a2368e02
+plugins (5): 6488a554
+vendor: blocked
+webgpu: unsupported
+userAgentData:
+unsupported
+device:
+Windows NT 10.0; Win64; x64
+
+
+Windows (Win32)
+
+
+Windows 10 (64-bit)
+
+
+cores: 8, touch: 0
+ua parsed: Firefox 151
+userAgent:
+Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0
+appVersion:
+5.0 (Windows)
+Status7294bcea
+network:
+unsupported
+battery:
+unsupported
+available:
+storage: 10GB
+[10737418240]
+timing res:
+1
+1
+stack: 29534
+Tests
+Workers
+Iframes
+Fonts
+Timezone
+Window Version
+Screen
+Prototype
+DOMRect
+Emojis
+Math
+Machine
+Chrome Extensions
+JS Proxy
