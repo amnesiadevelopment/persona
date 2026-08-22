@@ -2001,6 +2001,35 @@ def _profile_prefs(cfg: dict) -> dict:
                 "media.peerconnection.ice.proxy_only_if_behind_proxy": True,
                 "media.peerconnection.use_document_iceservers": False,
                 "network.proxy.socks_remote_dns": True,
+                # DNS-over-HTTPS (TRR) guard for a PROXIED profile, mirroring
+                # the Chromium path's --dns-over-https-mode=off. The argument is
+                # LOCATION, not compatibility: a TRR resolver speaks straight to
+                # a DoH endpoint and never asks SOCKS, so the DNS test would
+                # show a country unrelated to the exit IP. socks_remote_dns
+                # above does NOT cover this — it routes the SOCKS-resolved path
+                # and says nothing about a resolver that bypasses SOCKS
+                # entirely. Different mechanism, hence a second pref.
+                #
+                # Measured on the bundled build (Firefox 151.0, fresh profile,
+                # read over Marionette in chrome scope): mode defaults to 0 and
+                # Services.dns.currentTrrMode is 0, i.e. TRR is already off. So
+                # this is a PIN against an engine bump flipping that default,
+                # not a fix for a live leak — the daily 06:00 UTC engine
+                # autobump lands a new build on main with nobody looking, and
+                # this pref is what keeps that from silently enabling DoH.
+                #
+                # 5 ("off by explicit choice") rather than 0 ("off by default"):
+                # 0 is a no-op that a bumped default would overwrite, which
+                # would defeat the entire point. The two are indistinguishable
+                # to a page — both emit zero DoH traffic, and content JS cannot
+                # read a pref (only privileged chrome code can), so the explicit
+                # value buys the pin without adding a masking tell.
+                #
+                # network.trr.uri is deliberately NOT set: measured with mode
+                # forced to 3 and uri="", the resolver adopts
+                # network.trr.default_provider_uri (Cloudflare) anyway, so
+                # pinning the uri is decorative. mode is the pref that carries.
+                "network.trr.mode": 5,
             }
         )
     # The chosen search engine feeds the Home button and the start page a
