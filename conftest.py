@@ -116,6 +116,27 @@ CAPABILITIES: dict[str, Capability] = {
             "could not import 'invisible_core",
         ),
     ),
+    # Driving persona's OWN flet UI (tests/test_ui_driven.py). Distinct from
+    # "browser" above, which is about launching a browser as the PRODUCT does:
+    # this one needs flet installed so the UI can be SERVED in web mode, plus a
+    # chromium the driver can attach to. Measured on this container: `flet` is
+    # declared in requirements.txt but is NOT present in the dev image, and the
+    # playwright browser cache carries firefox only — so both halves genuinely
+    # have to be provisioned, and neither can be inferred from the other.
+    "ui_driver": Capability(
+        name="ui_driver",
+        summary="flet plus a chromium binary, so persona's own UI can be driven",
+        provisioned_by=(
+            "`pip install flet==0.85.3` (to serve the UI in web mode) and "
+            "install a chromium at /usr/bin/chromium (the playwright cache "
+            "ships firefox only, so the driver uses the system binary)"
+        ),
+        reason_patterns=(
+            "flet not installed",       # the serve-side import guard
+            "could not import 'flet",   # importorskip's own wording
+            "chromium not runnable here",  # the driver-side binary guard
+        ),
+    ),
 }
 
 
@@ -150,6 +171,17 @@ def pytest_configure(config: pytest.Config) -> None:
         "markers",
         "requires_capability(name): this test needs a declared environment "
         "capability; skipping it is a failure where that capability is declared.",
+    )
+    config.addinivalue_line(
+        "markers",
+        "ui_driver: drives persona's own flet UI through real controls. Boots "
+        "a real app and a real browser per test, so the tier is slow and its "
+        "cost is dominated by that fixed boot rather than by the interaction "
+        "(driving more controls inside one test is close to free). Measured "
+        "per-test and whole-suite figures live in tests/UI_DRIVING.md#cost, "
+        "which is their single owner — deliberately not restated here, because "
+        "a copied number goes stale when the suite changes. Selected and "
+        "deselected as a group with `-m ui_driver`.",
     )
 
     requested = _requested_capabilities(config)
