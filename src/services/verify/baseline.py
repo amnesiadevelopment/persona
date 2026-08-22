@@ -75,7 +75,7 @@ from ...models.profile import Profile
 from .diff import diff_snapshots, format_diff, inconclusive_count
 from .probes import WINDOW, WORKER
 from .runner import run_probes
-from .snapshot import build_snapshot, load
+from .snapshot import build_snapshot, load, quote_path
 
 # --- the pinned baseline profile -------------------------------------------
 
@@ -525,8 +525,8 @@ def check(
     """
     if not os.path.isfile(baseline_path):
         raise BaselineUnavailable(
-            f"no baseline to compare against at {baseline_path!r}. Nothing was "
-            "compared, so this is NOT drift. "
+            f"no baseline to compare against at {quote_path(baseline_path)}. "
+            "Nothing was compared, so this is NOT drift. "
             f"{BASELINE_ARTIFACT} is repo-relative, so if you are running from "
             "outside the repository root, pass --baseline with a full path. If "
             "the artifact is genuinely absent, record one with:\n"
@@ -543,7 +543,7 @@ def check(
         # Verified: opening a non-UTF-8 file under json.load raises
         # UnicodeDecodeError (isinstance ValueError=True, JSONDecodeError=False).
         raise BaselineUnavailable(
-            f"the baseline at {baseline_path!r} could not be read: {exc}. "
+            f"the baseline at {quote_path(baseline_path)} could not be read: {exc}. "
             "Nothing was compared, so this is NOT drift — the reference "
             "itself is unusable. Restore it from git, or re-record it after "
             "an ACCEPTED bump."
@@ -567,7 +567,7 @@ def check(
     # comparison did not happen, so it cannot be drift. Exit 2.
     if not isinstance(baseline, dict) or not isinstance(baseline.get("probes"), dict):
         raise BaselineUnavailable(
-            f"the file at {baseline_path!r} parsed as JSON but is not a "
+            f"the file at {quote_path(baseline_path)} parsed as JSON but is not a "
             "baseline snapshot — it has no 'probes' object. Nothing was "
             "compared, so this is NOT drift. --baseline must point at an "
             "artifact produced by `record` (the committed one is "
@@ -582,9 +582,10 @@ def check(
         # cause — this shape is what a REFUSED or truncated recording leaves
         # behind, not a typo'd path.
         raise BaselineUnavailable(
-            f"the baseline at {baseline_path!r} is a snapshot but contains no "
-            "probe readings at all, so there is nothing to compare against — "
-            "this is NOT drift. Every probe would be reported as 'added'. "
+            f"the baseline at {quote_path(baseline_path)} is a snapshot but "
+            "contains no probe readings at all, so there is nothing to compare "
+            "against — this is NOT drift. Every probe would be reported as "
+            "'added'. "
             "Re-record it, and check that the recording was not refused for "
             "unread probes."
         )

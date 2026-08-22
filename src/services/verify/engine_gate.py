@@ -143,7 +143,7 @@ from .diff import (
     inconclusive_count,
     require_snapshot,
 )
-from .snapshot import engine_build, load, write
+from .snapshot import engine_build, load, quote_path, write
 
 EXIT_PASS = 0
 EXIT_DRIFT = 1
@@ -597,7 +597,7 @@ def _cmd_record(args: argparse.Namespace) -> int:
         write(snapshot, args.output)
     except OSError as exc:
         raise GateCannotRun(
-            f"recorded a reading but could not write it to {args.output!r}: "
+            f"recorded a reading but could not write it to {quote_path(args.output)}: "
             f"{exc}. Nothing was written."
         ) from exc
 

@@ -47,6 +47,7 @@ from typing import Any
 # lazy-import pattern ``cli`` documents exists for ``transport``, which reaches
 # playwright) and it imports nothing from this module, so there is no cycle.
 from .probes import must_differ_probes
+from .snapshot import quote_path
 
 # Sentinel recorded in place of a reading that does not exist on that side.
 ABSENT = {"absent": True}
@@ -163,7 +164,7 @@ def require_snapshot(obj: Any, source: str | None = None) -> dict:
     """
     if isinstance(obj, dict) and isinstance(obj.get("probes"), dict):
         return obj
-    where = f"{source!r} " if source else "the input "
+    where = f"{quote_path(source)} " if source else "the input "
     raise NotASnapshot(
         f"{where}is not a snapshot: it carries no 'probes' object, so NOTHING "
         "WAS COMPARED. This is NOT agreement — no reading was obtained from "

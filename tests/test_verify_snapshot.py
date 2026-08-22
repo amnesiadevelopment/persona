@@ -2048,3 +2048,120 @@ def test_a_readable_non_snapshot_still_refuses_by_the_OTHER_route(tmp_path, caps
         "could not be read"
     )
     assert "could not be read" not in out
+
+
+# ---------------------------------------------------------------------------
+# A refusal must name the path THE OPERATOR TYPED, on every platform (PS-72)
+# ---------------------------------------------------------------------------
+
+
+def test_a_refusal_names_a_windows_path_exactly_as_the_operator_typed_it():
+    # THE WINDOWS CI REGRESSION, REPRODUCED ON EVERY PLATFORM.
+    #
+    # These refusals exist so an operator who typo'd a path can SEE which file
+    # was bad, and the suite asserts that directly ("it must name the file the
+    # operator typed"). Formatting the path with `{path!r}` satisfied that on
+    # POSIX BY ACCIDENT — `/` is not an escape character, so repr() round-trips
+    # — while breaking it on Windows, where repr() DOUBLES every backslash:
+    #
+    #     typed : C:\Users\me\snap.json
+    #     repr(): 'C:\\Users\\me\\snap.json'
+    #
+    # The message then named a path that does not exist while claiming to name
+    # theirs. Four tests in this file failed on windows-latest for exactly this
+    # (run 32561607430) and none could fail on Linux, which is why the defect
+    # survived: the bug is in the FORMATTING, so it is reproducible anywhere by
+    # formatting a Windows-shaped path — no Windows required.
+    #
+    # This asserts the property at its source rather than through a CLI, so it
+    # holds for every caller and cannot be satisfied by a path that happens to
+    # contain no backslashes.
+    from src.services.verify.snapshot import quote_path
+
+    typed = r"C:\Users\runneradmin\AppData\Local\Temp\pytest-0\typo.json"
+
+    assert typed in quote_path(typed), (
+        "a refusal must contain the path the operator typed, verbatim"
+    )
+    # Pin the actual defect, so re-introducing `!r` here fails loudly rather
+    # than only on a Windows runner nobody runs locally.
+    assert typed not in f"{typed!r}", (
+        "guard assumption: repr() is precisely what did NOT contain the typed "
+        "path — if this ever holds, this test is no longer testing anything"
+    )
+
+
+def test_require_snapshot_names_a_windows_path_exactly_as_the_operator_typed_it():
+    # THE CALLER-LEVEL ASSERTION, and the reason it exists separately from the
+    # one above.
+    #
+    # The test above asserts the property on `quote_path` itself. That is a
+    # good source-level guarantee, but it is structurally incapable of catching
+    # the failure that actually shipped: a CALLER that never adopts the helper.
+    # `diff.py`'s `require_snapshot` was exactly that caller — it kept `{!r}`
+    # while every neighbouring site was converted, so the helper was correct,
+    # its unit test was green, and the operator-facing contract was still
+    # broken on Windows.
+    #
+    # So this asserts through the ROUTE instead. `source` is the operator's
+    # typed path (`cli.py` passes it straight from argv), and it is a plain
+    # string, so a Windows-shaped path can be driven on any platform — the
+    # defect is in the FORMATTING, not in the filesystem.
+    from src.services.verify.diff import NotASnapshot, require_snapshot
+
+    typed = r"C:\Users\runneradmin\AppData\Local\Temp\pytest-0\object.json"
+
+    # Parses fine, carries no `probes` — the shape that bypasses both
+    # SnapshotUnreadable guards and lands here.
+    with pytest.raises(NotASnapshot) as excinfo:
+        require_snapshot({"name": "persona-site"}, source=typed)
+
+    assert typed in str(excinfo.value), (
+        "the refusal must name the file the operator typed, verbatim — this is "
+        "the same contract test_a_refusal_never_renders_as_no_differences "
+        "asserts through the CLI, pinned here at the site that renders it"
+    )
+
+
+def test_a_non_path_source_label_is_rendered_unchanged():
+    # `engine_gate` passes PROSE, not a path ("the before recording"), through
+    # the same parameter. Adopting quote_path must not churn those messages:
+    # for any string without a quote character quote_path IS repr, so this
+    # pins that the conversion was invisible to the non-path callers.
+    from src.services.verify.diff import NotASnapshot, require_snapshot
+
+    for label in ("the before recording", "the after recording"):
+        with pytest.raises(NotASnapshot) as excinfo:
+            require_snapshot({"name": "x"}, source=label)
+        assert f"{label!r} is not a snapshot" in str(excinfo.value), label
+
+
+def test_quoting_a_posix_path_is_byte_identical_to_the_old_repr():
+    # The fix must not churn the messages on the two platforms that were
+    # already green. For any path without a quote character, quote_path is
+    # exactly repr() — so every POSIX message is unchanged, character for
+    # character, and this change carries no risk for ubuntu/macOS.
+    from src.services.verify.snapshot import quote_path
+
+    for p in (
+        "/tmp/pytest-of-x/pytest-0/test_realms0/typo.json",
+        "snap.json",
+        "/tmp/dir with spaces/snap.json",
+        "",
+    ):
+        assert quote_path(p) == repr(p), p
+
+
+def test_a_path_containing_an_apostrophe_stays_unambiguous():
+    # The quotes are load-bearing (they delimit leading/trailing spaces), so
+    # they are kept — which means a path with an apostrophe must not produce a
+    # message whose delimiters are ambiguous. repr() escapes; we switch quote
+    # style instead, because an ESCAPED apostrophe would re-introduce the very
+    # defect above (a rendered path the operator did not type).
+    from src.services.verify.snapshot import quote_path
+
+    typed = "/home/o'brien/snap.json"
+    rendered = quote_path(typed)
+
+    assert typed in rendered, "the typed path must survive verbatim"
+    assert rendered.startswith('"') and rendered.endswith('"')
