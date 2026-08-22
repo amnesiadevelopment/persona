@@ -210,3 +210,59 @@ luck of ordering** rather than by construction:
   value on a row whose entire purpose is being compared across runs.
 
 Both are anchored now and both directions are pinned by tests.
+
+## Comparing two records (PS-67)
+
+    python -m src.services.verify.checker_cli compare before.json after.json
+
+Reports **only what moved**, classified by the `sort` of the row that moved,
+which is what the three-sort tagging above exists for. It reads two files,
+needs no exit, and **gates nothing** — a difference opens a triage, and what
+the triage finds is what blocks.
+
+- A moved **`fingerprint`** row is the finding, and it is loudest when the
+  **exit also moved** between the two records: that is the coupling a rotating
+  exit was chosen to expose.
+- A moved **`exit`** row is context. It rotates by design.
+- A moved **`host`** row is a finding on the **same** machine and context
+  across two machines — the header's `environment` decides which.
+- A moved **`harness`** row is reported under its own heading, so this repo's
+  own Python/OpenSSL shape can never be triaged as persona's fingerprint.
+- A row that went `read` → `unobtainable` is **coverage lost, not drift**, and
+  a row that appeared or vanished is a **catalogue** change, not drift. Both
+  are exactly the cases this record's 24 unobtainable rows would otherwise
+  turn into a screen of false red.
+
+Exit codes follow the convention PS-61 settled: `1` a finding, `3` coverage was
+lost, `2` **refused**, `0` nothing to triage (which means *no finding* — never
+*no differences*; read the output).
+
+It **refuses** rather than emitting a diff that reads as catastrophic drift
+when the two records were never comparable: a different `seed` (the engine's
+fingerprint is seed-derived — see above), a different **declared machine**, a
+different engine build, a different schema version, or a missing
+`seed`/`engine` header. The first three are overridable with
+`--allow-different-seed` / `--allow-different-machine` / `--allow-cross-engine`;
+a *missing* header is not, because an unrecorded fact gives an operator nothing
+to weigh. Under either override the fingerprint rows report as seed-explained
+or machine-explained **context**, so a flag can never manufacture the loudest
+finding.
+
+The **declared machine** guard is the PS-69 half of that same argument: the
+declared machine is the spine of a presented identity (GPU strings, voices,
+fonts, screen conventions, platform flags, UA and client hints), so two records
+that declared different machines were never supposed to match on fingerprint
+rows. One seam is worth knowing about — **PS-69 added `declared_machine`
+without bumping `schema_version`**, so a pre-PS-69 record and a post-PS-69 one
+both say `1` and the schema guard cannot separate them. The comparator
+therefore handles the field's absence per side: both missing compares fine (the
+committed record above has no such field), both present and differing needs the
+override, and **present on only one side is refused** — treating "no field" as
+"same machine" is exactly how a configuration change would get reported as a
+coupling.
+
+Do not confuse the two "machine" words: `environment` is the **host** the
+reading was taken *on* (it governs `host`-sorted rows), while
+`declared_machine` is what the profile **presented** (it governs
+`fingerprint`-sorted rows). One laptop can declare Windows or macOS, so the
+report words them apart deliberately.
