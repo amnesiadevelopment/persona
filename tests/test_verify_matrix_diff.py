@@ -528,11 +528,16 @@ def test_the_seed_override_reports_context_never_a_coupling(record):
 # a real coupling from a different configuration, which is exactly the argument
 # that put the seed here."
 #
-# Note the seam these tests sit on: PS-69 added the field WITHOUT bumping
-# SCHEMA_VERSION, so a pre-PS-69 record and a post-PS-69 one both say
-# `schema_version: 1` and the schema guard cannot separate them. That is why
-# the missing-field cases below are handled per-side rather than by the seed's
-# "absent on either side refuses" rule.
+# Note the seam these tests sit on. PS-69 added the field WITHOUT bumping
+# SCHEMA_VERSION, so for a window a pre-PS-69 record and a post-PS-69 one both
+# said `schema_version: 1` and the schema guard could not separate them.
+#
+# PS-81 closed that at the source (`matrix.HEADER_GENERATIONS`; the writer now
+# emits 2), but the fix is NOT retroactive — a record written during the drift
+# window still claims 1 while carrying generation 2's keys. So the missing-field
+# cases below are still handled per-side rather than by the seed's "absent on
+# either side refuses" rule, and they must keep passing: they are what covers
+# the records the bump arrived too late for.
 
 
 def test_different_declared_machines_are_REFUSED_not_diffed(record):

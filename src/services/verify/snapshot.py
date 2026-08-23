@@ -29,6 +29,51 @@ from .probes import ALL_REALMS, probes_for_realm
 
 SCHEMA_VERSION = 1
 
+# The body of the document — data, not header. See `schema_ledger.header_keys`.
+SNAPSHOT_BODY_KEY = "probes"
+
+# Keys attached to a snapshot AFTER `build_snapshot` returns, by a layer that
+# is not the writer: `baseline.record` attaches `provenance`, `engine_gate`
+# attaches `engine_stack` (:data:`engine_gate.STACK_FIELD`). Excluded from the
+# generation match because the ledger describes what the WRITER emits —
+# counting them would make a document's generation depend on which pipeline
+# handled it, so an annotated snapshot would be permanently unrecognisable.
+POST_WRITER_ANNOTATIONS = frozenset({"provenance", "engine_stack"})
+
+# What each generation's HEADER ACTUALLY CONTAINS. Same mechanism as
+# ``matrix.HEADER_GENERATIONS``, and same rule — **generation N is defined by
+# what committed records labelled N actually carry** — but that rule lands
+# somewhere different here, and the difference is forced by the artifacts
+# rather than chosen:
+#
+# PS-19 (`b3fe337`) added ``engine_build`` to this header and left
+# SCHEMA_VERSION at 1, exactly as PS-69 later did to the checker record. So the
+# drift is the same defect, twice, in two modules — which is the strongest
+# argument that a remembered convention was never going to hold.
+#
+# The REMEDY differs because the evidence differs. The one committed snapshot
+# (``tests/fixtures/engine-fingerprint-baseline.firefox.json``) says
+# ``schema_version: 1`` and ALREADY CARRIES ``engine_build``: there is no record
+# on disk with the pre-PS-19 shape. So generation 1 here is the post-PS-19 key
+# set, recorded in place, and NOTHING IS RE-TAGGED — every committed snapshot
+# already matches it. Bumping would be the harmful move: it would label a shape
+# as new when no reader has ever seen the old one, and strand the committed
+# baseline at a version no writer produces.
+#
+# The checker record needed the opposite call for the opposite reason — its
+# committed reading predates PS-69's fields — so it gained a generation 2. Two
+# artifacts, one rule, two outcomes.
+HEADER_GENERATIONS: "dict[int, frozenset[str]]" = {
+    1: frozenset({
+        "schema_version",
+        "engine",
+        "profile",
+        "app_version",
+        "engine_build",
+        "realms",
+    }),
+}
+
 # Decimal places every float is rounded to before it reaches the document.
 FLOAT_PRECISION = 6
 
@@ -258,7 +303,10 @@ def quote_path(path: object) -> str:
 
 __all__ = [
     "FLOAT_PRECISION",
+    "HEADER_GENERATIONS",
+    "POST_WRITER_ANNOTATIONS",
     "SCHEMA_VERSION",
+    "SNAPSHOT_BODY_KEY",
     "app_version",
     "build_snapshot",
     "canonicalise",

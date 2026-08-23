@@ -67,7 +67,62 @@ from .checkers import (
 )
 from .exit_guard import Exit
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+# The body of the document — data, not header. See `schema_ledger.header_keys`.
+RECORD_BODY_KEY = "readings"
+
+# What each generation's HEADER ACTUALLY CONTAINS. Maintained by hand and
+# checked against the REAL output of :func:`build_record` (never against this
+# module's source text — see knowledge article PS-11) by
+# ``tests/test_verify_schema_ledger.py``.
+#
+# **Editing `build_record`'s header means editing this map**, and that edit is
+# the moment the version question gets asked. That is the entire mechanism: the
+# convention used to live in whoever happened to be reading, and PS-69 shows
+# what that is worth.
+#
+# The rule that fixes each generation's key set: **generation N is defined by
+# what committed records labelled N actually carry.** It is not a wish about
+# what they should have carried.
+#
+# 1 — PS-59 (`9bf7f69`), the shape of the one committed reading
+#     (`tests/fixtures/checker-matrix-reading.sandbox.json`). That file says
+#     `schema_version: 1` and carries exactly these keys, so this entry
+#     describes a real artifact rather than a reconstruction.
+# 2 — PS-69 (`6741df7`) added `declared_machine` and
+#     `declared_machine_honoured` and left the version at 1. THIS TICKET
+#     (PS-81) assigns that shape its own number. The committed record is NOT
+#     re-tagged: it is genuinely generation 1 and keeps saying so. What changes
+#     is that a reading taken from now on says 2, so the two are distinguishable
+#     without a consumer sniffing for individual fields — which is precisely
+#     what PS-67 was forced to do.
+HEADER_GENERATIONS: "dict[int, frozenset[str]]" = {
+    1: frozenset({
+        "schema_version",
+        "observed_at",
+        "environment",
+        "engine",
+        "seed",
+        "skipped_tiers",
+        "exit",
+        "counts",
+        "notes",
+    }),
+    2: frozenset({
+        "schema_version",
+        "observed_at",
+        "environment",
+        "engine",
+        "seed",
+        "declared_machine",
+        "declared_machine_honoured",
+        "skipped_tiers",
+        "exit",
+        "counts",
+        "notes",
+    }),
+}
 
 # --- reading states ---------------------------------------------------------
 
@@ -443,7 +498,9 @@ def write(record: dict, path: str) -> None:
 
 __all__ = [
     "ABSENT",
+    "HEADER_GENERATIONS",
     "READ",
+    "RECORD_BODY_KEY",
     "Reading",
     "SCHEMA_VERSION",
     "UNOBTAINABLE",
