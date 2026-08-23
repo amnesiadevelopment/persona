@@ -17,7 +17,7 @@ import pathlib
 from dataclasses import dataclass
 
 from ...models.hardware_generation import normalize_generation, visible_entries
-from .worker_wrap import realm_bootstrap_js
+from .worker_wrap import realm_bootstrap_js, realm_guard_js
 
 
 @dataclass(frozen=True)
@@ -115,24 +115,7 @@ _CONTENT_SCRIPT = r"""
   function applyScreenPatch(G) {
    try {
     if (!G || !G.screen) return;
-    var __pnaReg = null;
-    try {
-      var __pnaO = G.Object;
-      if (__pnaO) {
-        __pnaReg = __pnaO.__pnaRealm;
-        if (!__pnaReg) {
-          __pnaReg = {};
-          __pnaO.defineProperty(__pnaO, '__pnaRealm',
-                                { value: __pnaReg, configurable: true });
-        }
-      }
-    } catch (e) { __pnaReg = null; }
-    try {
-      if (__pnaReg) {
-        if (__pnaReg["screen"] === true) return;
-        __pnaReg["screen"] = true;
-      }
-    } catch (e) {}
+__SCREEN_REALM_GUARD__
     var SEED = __SEED__;
     var FORCED = __FORCED_RES__;
     var OS = "__OS__";
@@ -320,24 +303,7 @@ __SCREEN_REALM_BOOTSTRAP__
   function applyHwPatch(G) {
    try {
     if (!G || !G.navigator) return;
-    var __pnaReg = null;
-    try {
-      var __pnaO = G.Object;
-      if (__pnaO) {
-        __pnaReg = __pnaO.__pnaRealm;
-        if (!__pnaReg) {
-          __pnaReg = {};
-          __pnaO.defineProperty(__pnaO, '__pnaRealm',
-                                { value: __pnaReg, configurable: true });
-        }
-      }
-    } catch (e) { __pnaReg = null; }
-    try {
-      if (__pnaReg) {
-        if (__pnaReg["hw"] === true) return;
-        __pnaReg["hw"] = true;
-      }
-    } catch (e) {}
+__HW_REALM_GUARD__
     var SEED = __SEED__;
     function h(x){var v=SEED^(x|0);v=Math.imul(v^(v>>>16),0x85ebca6b);v=Math.imul(v^(v>>>13),0xc2b2ae35);return (v^(v>>>16))>>>0;}
     // Same pre-filtered pool as the page realm, rendered from the SAME
@@ -419,6 +385,10 @@ def build_device_extension(
         "__SCREEN_REALM_BOOTSTRAP__", realm_bootstrap_js("applyScreenPatch")
     ).replace(
         "__HW_REALM_BOOTSTRAP__", realm_bootstrap_js("applyHwPatch")  # noqa: E501
+    ).replace(
+        "__SCREEN_REALM_GUARD__", realm_guard_js("screen")
+    ).replace(
+        "__HW_REALM_GUARD__", realm_guard_js("hw")
     )
     (ext_dir / "device.js").write_text(script, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(

@@ -22,6 +22,7 @@ from .worker_wrap import (
     firefox_native_wrap_js,
     firefox_worker_cloak,
     realm_bootstrap_js,
+    realm_guard_js,
 )
 
 # How many bytes we aim to nudge in any one readback, by +/-1.
@@ -104,24 +105,7 @@ _CONTENT_SCRIPT = r"""
   function applyWebglPatch(G) {
    try {
     if (!G) return;
-    var __pnaReg = null;
-    try {
-      var __pnaO = G.Object;
-      if (__pnaO) {
-        __pnaReg = __pnaO.__pnaRealm;
-        if (!__pnaReg) {
-          __pnaReg = {};
-          __pnaO.defineProperty(__pnaO, '__pnaRealm',
-                                { value: __pnaReg, configurable: true });
-        }
-      }
-    } catch (e) { __pnaReg = null; }
-    try {
-      if (__pnaReg) {
-        if (__pnaReg["webgl"] === true) return;
-        __pnaReg["webgl"] = true;
-      }
-    } catch (e) {}
+__REALM_GUARD__
     var SEED = __SEED__;
     var BUDGET = __BUDGET__;
 
@@ -277,6 +261,7 @@ def _webgl_patch_js(
         .replace(
             "__REALM_BOOTSTRAP__", realm_bootstrap_js("applyWebglPatch", worker_cloak)
         )
+        .replace("__REALM_GUARD__", realm_guard_js("webgl"))
     )
 
 

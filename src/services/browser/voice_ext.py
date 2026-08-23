@@ -12,7 +12,7 @@ locale-matched entry, so a scanner reads a normal Windows machine.
 import json
 import pathlib
 
-from .worker_wrap import realm_bootstrap_js
+from .worker_wrap import realm_bootstrap_js, realm_guard_js
 
 # A stock Windows 10/11 SAPI5 voice set (what Edge/Chrome expose on Windows),
 # plus a voice for the spoofed language so the list agrees with navigator.language.
@@ -25,24 +25,7 @@ CONTENT_SCRIPT = r"""
 function applyVoicePatch(G) {
  try {
   if (!G || !G.speechSynthesis) return;
-  var __pnaReg = null;
-  try {
-    var __pnaO = G.Object;
-    if (__pnaO) {
-      __pnaReg = __pnaO.__pnaRealm;
-      if (!__pnaReg) {
-        __pnaReg = {};
-        __pnaO.defineProperty(__pnaO, '__pnaRealm',
-                              { value: __pnaReg, configurable: true });
-      }
-    }
-  } catch (e) { __pnaReg = null; }
-  try {
-    if (__pnaReg) {
-      if (__pnaReg["voice"] === true) return;
-      __pnaReg["voice"] = true;
-    }
-  } catch (e) {}
+__REALM_GUARD__
   const LANG = %LANG%;
   const OS = "%OS%";  // "windows" | "macos" | "linux" | "android"
   const base = (LANG.split('-')[0] || 'en');
@@ -244,6 +227,7 @@ def build_voice_extension(
         .replace("%LANG%", json.dumps(locale or "en-US"))
         .replace("%OS%", os_norm)
         .replace("__REALM_BOOTSTRAP__", realm_bootstrap_js("applyVoicePatch"))
+        .replace("__REALM_GUARD__", realm_guard_js("voice", indent=2))
     )
     (ext_dir / "voices.js").write_text(js, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(json.dumps(MANIFEST, indent=2), encoding="utf-8")

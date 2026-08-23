@@ -750,16 +750,30 @@ def firefox_native_wrap_js() -> str:
 def realm_guard_js(module_key: str, indent: int = 4) -> str:
     """Inline JS that returns early if ``module_key`` already ran in this realm.
 
+    THE ONLY SOURCE OF THIS TEXT. Every leaf that needs the guard carries a
+    ``*_REALM_GUARD__`` placeholder in its template and fills it from HERE in its
+    builder's ``.replace()`` chain, exactly as ``realm_bootstrap_js`` is already
+    consumed in those same files. Do NOT paste the emitted body into a leaf: it
+    was pasted into all twelve sites once, and the copies were coupled to this
+    function by nothing — editing the helper silently changed nothing that
+    shipped, and editing one copy silently diverged it from eleven others. The
+    structural suite in tests/test_realm_guard.py asserts every generated script
+    contains ``realm_guard_js(<its key>)``, so a dropped placeholder or an
+    unwired builder goes red per-site rather than becoming a leaf with no
+    idempotency at all.
+
     Splice INSIDE the leaf (it emits a bare ``return``), AFTER the leaf's own
     preconditions and before it patches anything. That ordering matters where a
     leaf legitimately bails in some realms (canvas_ctx and measuretext bail
     without a DOM): a realm where the leaf did no work must NOT be recorded as
     covered, or a later invocation that COULD have patched it returns early
-    against an empty realm.
+    against an empty realm. Those two therefore keep their placeholder at the
+    point where the leaf is known to be doing work, not at the top of the body.
 
     Emitted as text with no free variables other than ``G``, so it survives the
     trip into a worker realm. ``indent`` is the leaf body's own indentation —
-    voice_ext.py indents its body by 2, every other leaf by 4.
+    voice_ext.py indents its body by 2, every other leaf by 4 — and a wrong
+    value here is a real mismatch the structural suite catches, not cosmetic.
     """
     key = json.dumps(module_key)
     body = (

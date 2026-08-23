@@ -26,7 +26,7 @@ import json
 import pathlib
 
 from ...models.hardware_generation import normalize_generation
-from .worker_wrap import realm_bootstrap_js
+from .worker_wrap import realm_bootstrap_js, realm_guard_js
 
 _CONTENT_SCRIPT = r"""
 (function () {
@@ -39,24 +39,7 @@ _CONTENT_SCRIPT = r"""
   function applyGpuPatch(G) {
    try {
     if (!G) return;
-    var __pnaReg = null;
-    try {
-      var __pnaO = G.Object;
-      if (__pnaO) {
-        __pnaReg = __pnaO.__pnaRealm;
-        if (!__pnaReg) {
-          __pnaReg = {};
-          __pnaO.defineProperty(__pnaO, '__pnaRealm',
-                                { value: __pnaReg, configurable: true });
-        }
-      }
-    } catch (e) { __pnaReg = null; }
-    try {
-      if (__pnaReg) {
-        if (__pnaReg["gpu"] === true) return;
-        __pnaReg["gpu"] = true;
-      }
-    } catch (e) {}
+__REALM_GUARD__
     var SEED = __SEED__;
     var OS = "__OS__";
     // The profile's frozen hardware generation. A GPU is only visible to a
@@ -721,6 +704,7 @@ def build_gpu_extension(
         .replace("__GEN__", str(normalize_generation(generation)))
         .replace("__OS__", os_norm)
         .replace("__REALM_BOOTSTRAP__", realm_bootstrap_js("applyGpuPatch"))
+        .replace("__REALM_GUARD__", realm_guard_js("gpu"))
     )
     (ext_dir / "gpu.js").write_text(script, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(

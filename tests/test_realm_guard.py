@@ -327,7 +327,15 @@ def test_falsification_a_guard_that_fails_constraint_b_is_caught(tmp_path):
     # idempotency assertion must go red, on the OBSERVABLE.
     shipped_src = _audio_patch_js(SEED, _CHROMIUM_NATIVE_WRAP)
     guard = realm_guard_js("audio")
-    assert guard in shipped_src, "guard text not found — re-derive this mutation"
+    assert guard in shipped_src, (
+        "the guard is missing from the GENERATED audio script — it is spliced "
+        "from realm_guard_js at build time, so either the placeholder was "
+        "dropped from _audio_patch_js's .replace() chain or the leaf lost its "
+        "placeholder. Fix the SPLICE; do not re-derive this mutation to match "
+        "the drift (that would be adjusting the test to fit the defect it "
+        "exists to catch). The structural suite at the bottom of this file "
+        "asserts the same thing across all twelve sites."
+    )
     # Same test-and-set, same key, same fail-open shape — but the registry is a
     # fresh local object per call instead of being resolved from the realm. That
     # is the ONE property under test: per-invocation instead of per-realm.
@@ -349,4 +357,159 @@ def test_falsification_a_guard_that_fails_constraint_b_is_caught(tmp_path):
     )
     assert got["childDigest"] != got["topDigestAfterSecondInvoke"], (
         "the top-vs-child fingerprint assertion stays green under a (b) failure"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Structural: the guard the helper emits is in EVERY generated script.
+#
+# WHY THIS EXISTS, and what it caught. The first round of this ticket pasted the
+# 21-line guard into all twelve sites and never called `realm_guard_js` from any
+# of them — the helper was dead code in production, and the twelve copies were
+# coupled to it by nothing. Two failures compounded there, and this test closes
+# the second:
+#
+#   * DRIFT — editing the helper (the single source of truth) changed nothing
+#     that ships; editing one copy diverged it from eleven others, silently.
+#   * COVERAGE — the behavioural suite above drives `_audio_patch_js` only, so
+#     eleven of the twelve sites had their idempotency asserted by NOTHING.
+#     Deleting `geo_ext`'s guard outright — a real masking regression, since
+#     `applyGeoPatch` would then re-wrap `navigator.geolocation` on every
+#     independent invocation into a realm — left the whole suite GREEN (159
+#     passed). The source-level tests at the top of this file could not catch it
+#     either: they assert the old marker names are ABSENT, and a deleted guard
+#     keeps them absent, so they cannot tell "replaced correctly" from "removed
+#     entirely".
+#
+# So this asserts the shipped artifact CONTAINS the helper's own output, keyed
+# per module. It is deliberately cheap — twelve builder calls, no node — because
+# the alternative that scales to the twelfth site is twelve node runs. The
+# behavioural suite above proves the MECHANISM works on the real audio leaf;
+# this proves every leaf actually carries it.
+# ---------------------------------------------------------------------------
+
+def _generated_scripts(tmp_path):
+    """Every Chromium content script this subsystem ships, keyed by module.
+
+    Driven through the REAL builders rather than by reading the templates: the
+    guard is spliced at build time, so a template read would test the
+    placeholder and not the thing that ships.
+    """
+    from src.services.browser import (
+        audio_ext, canvas_ctx_ext, device_ext, geo_ext, gpu_ext, locale_ext,
+        measuretext_ext, mobile_ext, stealth_ext, voice_ext, webgl_ext,
+    )
+    from src.services.browser.engine_version import ChromiumVersion
+
+    d = pathlib.Path(tmp_path)
+
+    def js(build_dir):
+        found = sorted(pathlib.Path(build_dir).glob("*.js"))
+        assert len(found) == 1, f"expected one .js in {build_dir}, got {found}"
+        return found[0].read_text(encoding="utf-8")
+
+    return {
+        "audio": js(audio_ext.build_audio_extension(SEED, str(d / "audio"))),
+        # iOS is the arm whose leaf does the work; the guard must be in the
+        # script regardless, since the same file ships on every platform.
+        "canvas_ctx": js(canvas_ctx_ext.build_canvas_ctx_extension("ios", str(d / "canvas"))),
+        "device": js(device_ext.build_device_extension(SEED, str(d / "device"), 3, None, "windows")),
+        "geo": js(geo_ext.build_geo_extension(52.52, 13.40, str(d / "geo"))),
+        "gpu": js(gpu_ext.build_gpu_extension(SEED, "windows", str(d / "gpu"), 3)),
+        "locale": js(locale_ext.build_locale_extension("de-DE", str(d / "locale"))),
+        "measuretext": js(measuretext_ext.build_measuretext_extension(str(d / "mt"))),
+        "mobile": js(mobile_ext.build_mobile_extension(
+            str(d / "mobile"), is_ios=False, platform="Linux armv81", model="Pixel 7",
+            chromium_version=ChromiumVersion("140.0.7339.207"), css_width=412,
+            css_height=915, dpr=2.625, device_memory=8, hardware_concurrency=8,
+        )),
+        "stealth": js(stealth_ext.build_stealth_extension(str(d / "stealth"))),
+        "voice": js(voice_ext.build_voice_extension("en-US", str(d / "voice"), "windows")),
+        "webgl": js(webgl_ext.build_webgl_extension(SEED, str(d / "webgl"))),
+    }
+
+
+# (module file key, guard key, leaf indentation). Twelve guards across eleven
+# scripts: device.js carries TWO leaves (screen geometry and hardware
+# concurrency) and each needs its own slot, or one leaf's arrival would mark the
+# realm covered for the other. `voice_ext` indents its leaf body by 2 and every
+# other leaf by 4 — the helper takes that as a parameter, so a wrong indent here
+# is a real mismatch and not cosmetic.
+GUARD_SITES = [
+    ("audio", "audio", 4),
+    ("canvas_ctx", "canvas_ctx", 4),
+    ("device", "screen", 4),
+    ("device", "hw", 4),
+    ("geo", "geo", 4),
+    ("gpu", "gpu", 4),
+    ("locale", "locale", 4),
+    ("measuretext", "measuretext", 4),
+    ("mobile", "mobile", 4),
+    ("stealth", "stealth", 4),
+    ("voice", "voice", 2),
+    ("webgl", "webgl", 4),
+]
+
+
+@pytest.fixture(scope="module")
+def generated(tmp_path_factory):
+    return _generated_scripts(tmp_path_factory.mktemp("generated"))
+
+
+@pytest.mark.parametrize("script_key,guard_key,indent", GUARD_SITES)
+def test_every_generated_script_carries_the_spliced_guard(
+    generated, script_key, guard_key, indent
+):
+    script = generated[script_key]
+    expected = realm_guard_js(guard_key, indent)
+    assert expected in script, (
+        f"{script_key}.js does not contain the guard for key '{guard_key}'.\n"
+        f"The guard must be SPLICED from realm_guard_js at build time — if this "
+        f"leaf was hand-edited, or its placeholder was dropped from the "
+        f"builder's .replace() chain, it now has no per-realm idempotency and "
+        f"will re-apply its spoof on every independent invocation into a realm."
+    )
+
+
+@pytest.mark.parametrize("script_key,guard_key,indent", GUARD_SITES)
+def test_each_guard_appears_exactly_once_per_leaf(
+    generated, script_key, guard_key, indent
+):
+    # A guard spliced twice into one leaf is not harmless: the second copy sits
+    # AFTER the first has already recorded the realm, so it returns early every
+    # time and everything below it becomes unreachable.
+    assert generated[script_key].count(realm_guard_js(guard_key, indent)) == 1
+
+
+def test_no_generated_script_carries_an_unfilled_guard_placeholder(generated):
+    # The failure mode splicing introduces that hand-copying could not: a
+    # placeholder left in the template with no matching `.replace()` ships the
+    # literal token as JS. `__REALM_GUARD__` on its own line is a ReferenceError
+    # at document_start, which takes the WHOLE leaf down — an unmasked realm, in
+    # exchange for a typo.
+    offenders = {
+        name: [n for n, line in enumerate(script.splitlines(), 1)
+               if "REALM_GUARD__" in line]
+        for name, script in generated.items()
+    }
+    offenders = {k: v for k, v in offenders.items() if v}
+    assert not offenders, (
+        f"unfilled guard placeholder(s) shipped as JS: {offenders}"
+    )
+
+
+def test_the_helper_is_the_single_source_of_truth_for_every_site(generated):
+    # The drift check, stated as one assertion rather than twelve. If the guard
+    # body is ever hand-copied into a leaf again, the copy and the helper agree
+    # on the day it is written and diverge the first time the helper is edited —
+    # which is exactly what this test is here to make impossible to do quietly.
+    # Mutate `realm_guard_js` and ALL twelve parametrised cases above go red
+    # together; that fleet-wide redness is the signal that the splice is real.
+    total = sum(
+        generated[script_key].count(realm_guard_js(guard_key, indent))
+        for script_key, guard_key, indent in GUARD_SITES
+    )
+    assert total == len(GUARD_SITES), (
+        f"expected {len(GUARD_SITES)} spliced guards across the generated "
+        f"scripts, found {total}"
     )
