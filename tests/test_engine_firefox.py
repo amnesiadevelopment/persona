@@ -1,4 +1,5 @@
 import json
+import logging
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -310,19 +311,231 @@ def test_fetch_latest_incompatible_when_build_exceeds_pkg(monkeypatch):
     # asset (both 151.0) so the old asset-only gate said "compatible" and it got
     # auto-installed → broke FF. fetch_latest must report it incompatible (needs a
     # persona update that ships the matching driver), even though the asset matches.
+    #
+    # The invariant is "never report a build the shipped driver cannot drive as
+    # compatible". Serving firefox-19 ALONE tests exactly that, with nothing
+    # drivable to fall back to.
+    import invisible_core.constants as consts
+
+    monkeypatch.setattr(consts, "BINARY_VERSION", "firefox-18")
+    _serve(monkeypatch, [{"tag_name": "firefox-19", "assets": FULL_ASSETS}])
+    tag, compatible = ff.fetch_latest()
+    assert tag == "firefox-19"
+    assert compatible is False
+
+
+def test_fetch_latest_prefers_newest_drivable_over_newer_undrivable(monkeypatch):
+    # PS-112, THE DEFECT CASE. Upstream has moved above the driver pin, but a
+    # drivable build exists BELOW it. The old code maximised over ALL releases
+    # and applied the pin bound afterwards, so it returned ("firefox-20", False)
+    # and app.py's `not self._engine2_compatible` gate refused to offer any
+    # update at all — even though firefox-18 was present, drivable, and shipped
+    # the asset. Measured on main before the fix: ("firefox-20", False).
+    #
+    # Asserted on the TUPLE fetch_latest returns, not on any helper being
+    # called: reverting the selection change alone must turn this red.
     import invisible_core.constants as consts
 
     monkeypatch.setattr(consts, "BINARY_VERSION", "firefox-18")
     _serve(
         monkeypatch,
         [
-            {"tag_name": "firefox-19", "assets": FULL_ASSETS},
+            {"tag_name": "firefox-16", "assets": FULL_ASSETS},
+            {"tag_name": "firefox-18", "assets": FULL_ASSETS},
+            {"tag_name": "firefox-20", "assets": FULL_ASSETS},
+        ],
+    )
+    assert ff.fetch_latest() == ("firefox-18", True)
+
+
+def test_fetch_latest_reports_undrivable_tag_when_nothing_drivable(monkeypatch):
+    # PS-112 AC3, NON-WAIVABLE CONTROL. When the ONLY release is above the pin
+    # there is nothing to fall back to, and the pre-PS-112 behaviour must stand:
+    # return the undrivable tag with compatible=False rather than ("", False).
+    #
+    # This is the case the obvious implementation gets wrong. Skipping
+    # above-pin releases in-loop with a bare `continue` filters out the only
+    # candidate, leaving best_tag empty and returning ("", False) — and BOTH
+    # consumers guard on exactly that (`if tag:` in _check_engine2_async,
+    # `if not tag: return` in _auto_update_engine2), so the operator-facing
+    # "Firefox engine {tag} needs a newer persona" message is silenced and they
+    # are told nothing at all. The tag being non-empty here is what keeps that
+    # message reachable, so it is asserted explicitly.
+    import invisible_core.constants as consts
+
+    monkeypatch.setattr(consts, "BINARY_VERSION", "firefox-18")
+    _serve(monkeypatch, [{"tag_name": "firefox-20", "assets": FULL_ASSETS}])
+    tag, compatible = ff.fetch_latest()
+    assert (tag, compatible) == ("firefox-20", False)
+    assert tag, "empty tag silences the 'needs a newer persona' message"
+
+
+def test_fetch_latest_picks_newest_when_every_release_is_drivable(monkeypatch):
+    # PS-112 AC4, CONTROL A. Nothing upstream sits above the pin, so the
+    # highest release is also the highest drivable one and must still be
+    # chosen. Guards against the fix accidentally biasing DOWNWARD — e.g.
+    # preferring a build strictly below the pin, or capping at N-1.
+    import invisible_core.constants as consts
+
+    monkeypatch.setattr(consts, "BINARY_VERSION", "firefox-18")
+    _serve(
+        monkeypatch,
+        [
+            {"tag_name": "firefox-16", "assets": FULL_ASSETS},
             {"tag_name": "firefox-18", "assets": FULL_ASSETS},
         ],
     )
-    tag, compatible = ff.fetch_latest()
-    assert tag == "firefox-19"
-    assert compatible is False
+    assert ff.fetch_latest() == ("firefox-18", True)
+
+
+def test_fetch_latest_drivable_without_expected_asset_is_not_offered(monkeypatch):
+    # PS-112 edge: the fallback must not launder a build that is drivable by
+    # build number but does NOT ship this OS's asset. firefox-18 is under the
+    # pin yet carries a renamed upstream asset, so it is not installable and
+    # must not be announced as an update. Falls through to the report-only
+    # path on the overall winner, exactly as an asset mismatch does today.
+    import invisible_core.constants as consts
+
+    monkeypatch.setattr(consts, "BINARY_VERSION", "firefox-18")
+    _serve(
+        monkeypatch,
+        [
+            {
+                "tag_name": "firefox-18",
+                "assets": [
+                    {"name": "checksums.txt"},
+                    {"name": "firefox-151.0-stealth-win-x86_64.zip"},
+                ],
+            },
+            {"tag_name": "firefox-20", "assets": FULL_ASSETS},
+        ],
+    )
+    assert ff.fetch_latest() == ("firefox-20", False)
+
+
+def test_fetch_latest_logs_the_passed_over_undrivable_tag(monkeypatch, caplog):
+    # PS-112 §5, the LOG-FILE half. The operator-facing channel is the third
+    # return value (`capped_by`, covered by the fetch_latest_full tests below
+    # and by the two consumer tests); this line is the session log file, so the
+    # update trail reads in one place alongside the rest of it.
+    #
+    # It is NOT the mechanism the UI depends on, and must not be mistaken for
+    # it: the "persona" logger's console handler is WARNING (src/core/logging.py)
+    # and the sidebar is fed by AppUI._log, which this module cannot reach.
+    # Round 1 of PS-112 relied on this line alone and the audit failed for
+    # exactly that reason — a line in a file the operator has to go find does
+    # not offset a false "up to date" in the interface.
+    import invisible_core.constants as consts
+
+    monkeypatch.setattr(consts, "BINARY_VERSION", "firefox-18")
+    _serve(
+        monkeypatch,
+        [
+            {"tag_name": "firefox-18", "assets": FULL_ASSETS},
+            {"tag_name": "firefox-20", "assets": FULL_ASSETS},
+        ],
+    )
+    with caplog.at_level(logging.INFO, logger="persona"):
+        assert ff.fetch_latest() == ("firefox-18", True)
+    assert any(
+        "firefox-20" in r.getMessage() and "firefox-18" in r.getMessage()
+        for r in caplog.records
+    ), [r.getMessage() for r in caplog.records]
+
+
+def test_fetch_latest_does_not_log_when_nothing_was_passed_over(monkeypatch, caplog):
+    # The PS-112 log line means "something newer exists that you can't drive".
+    # When the chosen build IS the newest release there is nothing to report,
+    # and firing it anyway would tell the operator to update persona for a
+    # build that does not exist.
+    import invisible_core.constants as consts
+
+    monkeypatch.setattr(consts, "BINARY_VERSION", "firefox-18")
+    _serve(
+        monkeypatch,
+        [
+            {"tag_name": "firefox-16", "assets": FULL_ASSETS},
+            {"tag_name": "firefox-18", "assets": FULL_ASSETS},
+        ],
+    )
+    with caplog.at_level(logging.INFO, logger="persona"):
+        assert ff.fetch_latest() == ("firefox-18", True)
+    assert [
+        r.getMessage() for r in caplog.records if "newer persona" in r.getMessage()
+    ] == []
+
+
+def test_fetch_latest_full_names_the_capped_build(monkeypatch):
+    # PS-112 ROUND 2. `capped_by` is the third return value and it is the
+    # channel the operator-facing consumers actually read. Upstream [18, 20]
+    # with the pin at firefox-18: firefox-18 is offered as drivable, and
+    # firefox-20 is named as the build that was passed over.
+    #
+    # This is what makes the "capped" state expressible at all. Once
+    # compatible is True the consumers' `not compatible` branch is unreachable,
+    # and when the offered tag equals what is installed `is_newer` is False
+    # too — so without this value they have nothing left to say and report
+    # "up to date" while firefox-20 exists.
+    import invisible_core.constants as consts
+
+    monkeypatch.setattr(consts, "BINARY_VERSION", "firefox-18")
+    _serve(
+        monkeypatch,
+        [
+            {"tag_name": "firefox-18", "assets": FULL_ASSETS},
+            {"tag_name": "firefox-20", "assets": FULL_ASSETS},
+        ],
+    )
+    assert ff.fetch_latest_full() == ("firefox-18", True, "firefox-20")
+
+
+def test_fetch_latest_full_capped_by_is_empty_when_nothing_passed_over(monkeypatch):
+    # The other side of the distinction. `capped_by` means "a higher release
+    # exists that you cannot drive". When the drivable winner IS the newest
+    # release there is nothing to name, and reporting one would send the
+    # operator off to update persona for a build that does not exist.
+    #
+    # Both no-cap shapes are covered, because they reach '' by different
+    # routes: everything drivable (the offer path) and nothing drivable (the
+    # report-only path, where the tag returned is already the newest release).
+    import invisible_core.constants as consts
+
+    monkeypatch.setattr(consts, "BINARY_VERSION", "firefox-18")
+
+    _serve(
+        monkeypatch,
+        [
+            {"tag_name": "firefox-16", "assets": FULL_ASSETS},
+            {"tag_name": "firefox-18", "assets": FULL_ASSETS},
+        ],
+    )
+    assert ff.fetch_latest_full() == ("firefox-18", True, "")
+
+    # Nothing drivable: AC3's control. The tag IS the newest release, so there
+    # is nothing passed over — the existing `not compatible` branch speaks here.
+    _serve(monkeypatch, [{"tag_name": "firefox-20", "assets": FULL_ASSETS}])
+    assert ff.fetch_latest_full() == ("firefox-20", False, "")
+
+
+def test_fetch_latest_is_the_narrow_view_of_fetch_latest_full(monkeypatch):
+    # The 2-tuple wrapper must stay exactly that — the first two values of the
+    # 3-tuple, unchanged. Callers that only want the offer (and the test stubs
+    # shaped `lambda: (tag, compatible)`) keep working, exactly as
+    # updater.fetch_latest wraps updater.fetch_latest_full.
+    import invisible_core.constants as consts
+
+    monkeypatch.setattr(consts, "BINARY_VERSION", "firefox-18")
+    _serve(
+        monkeypatch,
+        [
+            {"tag_name": "firefox-18", "assets": FULL_ASSETS},
+            {"tag_name": "firefox-20", "assets": FULL_ASSETS},
+        ],
+    )
+    full = ff.fetch_latest_full()
+    assert ff.fetch_latest() == full[:2] == ("firefox-18", True)
+    # ...and the capped build is genuinely only visible through the wide view.
+    assert full[2] == "firefox-20"
 
 
 def test_active_build_ignores_unmarked_build(monkeypatch, tmp_path):
@@ -549,6 +762,9 @@ def test_update_engine2_downloads_tag(monkeypatch):
 def test_check_engine2_incompatible_says_update_persona(monkeypatch):
     import src.ui.app as app_mod
 
+    monkeypatch.setattr(
+        ff, "fetch_latest_full", lambda timeout=20: ("firefox-16", False, "")
+    )
     monkeypatch.setattr(ff, "fetch_latest", lambda timeout=20: ("firefox-16", False))
     monkeypatch.setattr(ff, "current_version", lambda: "firefox-15")
     monkeypatch.setattr(app_mod.threading, "Thread", InlineThread)
@@ -570,6 +786,60 @@ def test_check_engine2_incompatible_says_update_persona(monkeypatch):
     assert stub._engine2_checking is False
     assert stub._engine2_status == "update persona for the newest engine"
     assert any("newer persona" in m for m in logs)
+
+
+def test_check_engine2_capped_operator_at_max_drivable_is_still_told(monkeypatch):
+    # PS-112 ROUND 2, THE BLOCKING REGRESSION. The operator is ALREADY ON the
+    # highest drivable build and upstream sits above the pin: pin firefox-18,
+    # upstream [18, 20], installed firefox-18. fetch_latest_full offers
+    # firefox-18 with compatible=True and names firefox-20 as capped_by.
+    #
+    # This input reaches the SAME silence AC3 exists to prevent, by a route
+    # AC3's own payload does not touch. Both older branches fall through:
+    #   * _engine2_update_available() is False — the offered tag IS what is
+    #     installed, so is_newer says no.
+    #   * the `not compatible` branch is unreachable — compatible is True,
+    #     which is precisely what the PS-112 fix achieves.
+    # Before this round the row therefore went BLANK while firefox-20 existed.
+    #
+    # This is not a corner case: it is where the fix's own success path leads.
+    # An operator on firefox-16 is correctly offered firefox-18, installs it,
+    # and from that moment lands here on every check.
+    #
+    # Asserted on what the OPERATOR is told — the row status and the UI log
+    # line — not on capped_by being read or any helper being called.
+    import src.ui.app as app_mod
+
+    monkeypatch.setattr(
+        ff,
+        "fetch_latest_full",
+        lambda timeout=20: ("firefox-18", True, "firefox-20"),
+    )
+    monkeypatch.setattr(ff, "current_version", lambda: "firefox-18")
+    monkeypatch.setattr(app_mod.threading, "Thread", InlineThread)
+
+    logs = []
+    stub = SimpleNamespace(
+        _engine2_checking=False,
+        _engine2_latest="",
+        _engine2_compatible=False,
+        _engine2_status="",
+        # The operator is on the offered build: there is no update to advertise.
+        _engine2_update_available=lambda: False,
+        _refresh_engine_text=lambda *a: None,
+        _log=logs.append,
+    )
+    app_mod.App._check_engine2_async(stub)
+
+    assert stub._engine2_status == "update persona for the newest engine", (
+        "operator at the max drivable build with upstream above the pin was "
+        "told nothing — the row fell back to the bare version"
+    )
+    assert any("firefox-20" in m and "newer persona" in m for m in logs), (
+        f"the passed-over build was never named to the operator: {logs}"
+    )
+    # And it must name the build they cannot drive, not the one they are on.
+    assert not any("up to date" in m for m in logs), logs
 
 
 def test_prune_removes_old_builds_including_superseded_pinned(monkeypatch, tmp_path):

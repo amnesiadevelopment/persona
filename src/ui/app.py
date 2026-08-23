@@ -2012,7 +2012,7 @@ class App:
         def work() -> None:
             from ..services.browser.invisible_launch import pinned_build
 
-            tag, compatible = ff_engine.fetch_latest()
+            tag, compatible, capped_by = ff_engine.fetch_latest_full()
             if tag:
                 self._engine2_latest = tag
                 self._engine2_compatible = compatible
@@ -2029,6 +2029,15 @@ class App:
             elif self._engine2_update_available():
                 self._engine2_status = ""
                 self._log(f"Firefox engine update available ({tag})")
+                if capped_by:
+                    # The offer is real, but it is not the newest build that
+                    # exists — say so in the same breath rather than letting
+                    # the operator install it and only then discover they are
+                    # capped (which is the state the next branch handles).
+                    self._log(
+                        f"Firefox engine {capped_by} needs a newer persona — "
+                        "update the app to get it"
+                    )
             elif (
                 tag
                 and not compatible
@@ -2040,6 +2049,25 @@ class App:
                 self._engine2_status = "update persona for the newest engine"
                 self._log(
                     f"Firefox engine {tag} needs a newer persona — "
+                    "update the app to get it"
+                )
+            elif capped_by:
+                # PS-112: THE OPERATOR IS ALREADY ON THE HIGHEST DRIVABLE BUILD
+                # AND UPSTREAM IS ABOVE THE PIN. Nothing above reaches this
+                # state: `compatible` is True (so the branch above is
+                # unreachable) and the offered tag is what is already
+                # installed (so `is_newer` is False and no update is
+                # available). Without this branch the row would fall back to
+                # the bare version — blank — while firefox-NN exists upstream.
+                #
+                # This is where preferring the drivable build leads on its own
+                # success path: an operator offered the drivable build installs
+                # it and lands here permanently. Same sentence as the branch
+                # above, about `capped_by` rather than `tag`, because it is the
+                # same fact — a build exists that this persona cannot drive.
+                self._engine2_status = "update persona for the newest engine"
+                self._log(
+                    f"Firefox engine {capped_by} needs a newer persona — "
                     "update the app to get it"
                 )
             self._refresh_engine_text()
@@ -2128,7 +2156,7 @@ class App:
         except Exception:
             pass
         try:
-            tag, compatible = ff_engine.fetch_latest()
+            tag, compatible, capped_by = ff_engine.fetch_latest_full()
         except Exception:
             return
         if not tag:
@@ -2137,7 +2165,21 @@ class App:
         self._engine2_compatible = compatible
         current = ff_engine.current_version()
         if not ff_engine.is_newer(tag, current):
-            self._log(f"Firefox engine is up to date ({current})")
+            # PS-112: `tag` is now the newest DRIVABLE build, not the newest
+            # build that exists, so "not newer than installed" no longer means
+            # "up to date". When a higher release was passed over, saying "up
+            # to date" here is affirmatively FALSE — upstream has something,
+            # the operator simply cannot drive it until they update the app.
+            # This is the state the fix's own success path leads to: install
+            # the offered drivable build and you land here every startup.
+            if capped_by:
+                self._engine2_status = "update persona for the newest engine"
+                self._log(
+                    f"Firefox engine {capped_by} needs a newer persona — "
+                    "update the app to get it"
+                )
+            else:
+                self._log(f"Firefox engine is up to date ({current})")
             self._refresh_engine_text()
             return
         if not compatible:
@@ -2148,6 +2190,14 @@ class App:
             )
             self._refresh_engine_text()
             return
+        if capped_by:
+            # The build being fetched is a real update, but it is not the
+            # newest one upstream ships. Say both, in that order, so the
+            # download line still reads as success and the cap is not silent.
+            self._log(
+                f"Firefox engine {capped_by} needs a newer persona — "
+                "update the app to get it"
+            )
         self._log(f"Firefox engine {current} is out of date — fetching {tag}")
         self._update_engine2_async()
 
