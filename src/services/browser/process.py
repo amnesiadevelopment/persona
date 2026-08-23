@@ -21,7 +21,7 @@ from ..proxy.store import ProxyStore
 from .bookmarks_seed import seed_bookmarks
 from .audio_ext import build_audio_extension
 from .device_ext import build_device_extension
-from .env_policy import scrub_operator_identity
+from .env_policy import scrub_inherited_environment
 from .resolution import parse_resolution, resolve_resolution
 from .device_presets import is_mobile_os, pick_preset, pick_touch_points
 from .engine_version import (
@@ -765,22 +765,18 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
             args.append("--disable-features=" + ",".join(disabled_features))
 
         env = os.environ.copy()
-        # Fonts come from the system fontconfig. A FONTCONFIG_FILE override floods
-        # live sessions with "Cannot load default config file" errors from chromium
-        # child processes and makes pages render with the wrong fonts; the engine
-        # spoofs the JS-visible font list itself, so an override buys no
-        # anti-detect value. The app's own runtime can export FONTCONFIG_* into
-        # os.environ (an AppImage bundle points them into its mount, which is gone
-        # for the relaunched process after a self-update), so scrub them rather
-        # than trust the inherited environment.
-        for var in ("FONTCONFIG_FILE", "FONTCONFIG_PATH", "FONTCONFIG_SYSROOT"):
-            env.pop(var, None)
         # The browser executes untrusted remote code, so it inherits none of the
         # operator's identity — above all SSH_AUTH_SOCK, which is a live handle
-        # onto their ssh-agent rather than a passive label. `env` is a COPY, so
-        # this cannot touch persona's own environment. See env_policy.py for
-        # what is on the list and what is deliberately left off it.
-        scrub_operator_identity(env)
+        # onto their ssh-agent rather than a passive label — and none of the
+        # runtime paths persona's own process exported that no longer resolve
+        # for the child (FONTCONFIG_*, whose full rationale lives beside the
+        # list). `env` is a COPY, so this cannot touch persona's own
+        # environment. See env_policy.py for every name on the lists, what is
+        # deliberately left off them, and why. This is the SAME entry point the
+        # firefox fork child reaches via scrub_current_process_environ: an
+        # inline tuple here instead is exactly the divergence that left the
+        # firefox child inheriting stale FONTCONFIG_* mount paths.
+        scrub_inherited_environment(env)
         if _platform.IS_LINUX:
             env.setdefault("DISPLAY", ":0")
 
