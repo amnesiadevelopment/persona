@@ -980,8 +980,22 @@ def test_the_exit_proof_reads_raw_json_not_the_firefox_json_viewer():
 # --- a skipped tier, and the seed -------------------------------------------
 
 
-def _read(argv, tmp_path, monkeypatch, exit_country="PL"):
-    """Drive the real CLI `read` path with the network stubbed out."""
+def _read(argv, tmp_path, monkeypatch, exit_country="PL", expect_rc=3):
+    """Drive the real CLI `read` path with the network stubbed out.
+
+    ``expect_rc`` defaults to 3, not 0, and the default is the interesting
+    part. Every caller below passes ``--skip-browser`` and/or ``--skip-json``,
+    so these runs gather NO fingerprint evidence whatever — and since PS-110 a
+    run that gathered no evidence exits 3 (INCONCLUSIVE) instead of reporting
+    like a clean one. The assertion is kept rather than dropped, and kept
+    EXPLICIT rather than loosened to "non-2", because it is the thing PS-110
+    changed: a helper that shrugged at the exit code would let the floor
+    regress to 0 without a single test noticing.
+
+    These tests' SUBJECT is unaffected — a skipped tier keeps its full width,
+    the header names it, the seed is recorded. That is why they still assert on
+    the record and only the code moved.
+    """
     import src.services.verify.checker_cli as cli
     from src.services.verify.exit_guard import Exit
 
@@ -994,7 +1008,7 @@ def _read(argv, tmp_path, monkeypatch, exit_country="PL"):
     monkeypatch.setattr(cli, "read_json_tier", lambda *a, **k: [])
     target = tmp_path / "reading.json"
     rc = cli.main(["read", "-o", str(target)] + argv)
-    assert rc == 0
+    assert rc == expect_rc
     return json.loads(target.read_text())
 
 

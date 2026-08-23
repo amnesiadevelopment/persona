@@ -65,6 +65,70 @@ Besides the observed `exit`, the header carries:
   header-level statement of the same fact, so a later diff can tell *"the tier
   was skipped"* from *"those checkers were dropped"* from *"that schema had no
   such tier"*.
+- **`evidence`** (schema 4+) — **whether the record means anything.** See below.
+
+## `evidence` — the record saying whether it gathered enough to be read
+
+A record can be complete, correctly counted, written to disk, and describe
+nothing. PS-110 was filed off exactly that: `pixelscan.net` crashed the
+Chromium renderer, every checker sequenced after it died with the context, and
+the run recorded **two fingerprint-bearing rows out of 27**, printed
+`browser tier: 37 readings`, wrote the file and exited `0`. Nothing in the
+artifact distinguished it from a clean run — and the planner holding it
+reported *"zero adverse rows fired"* before looking closely. True, and
+meaningless: nothing was left to fire.
+
+`counts` could never close that hole, because every catalogued row is present
+by design, so a run that measured nothing has the same `total` as one that
+measured everything. `evidence` is the key that separates them:
+
+| field | meaning |
+|---|---|
+| `verdict` | `sufficient` or `inconclusive` |
+| `cause` | why it fell short — `session_died`, `tier_skipped`, `not_gathered`. Empty when sufficient |
+| `fingerprint_obtained` / `fingerprint_total` | the numerator and denominator behind the verdict |
+| `checkers_contributing` | which checkers the fingerprint evidence came from |
+| `never_asked` | rows the run never got to attempt at all |
+| `floor` | the thresholds actually applied |
+| `reasons` | the verdict in sentences |
+
+Every input is recorded beside the verdict so a reader can **re-derive** it
+rather than trust the word.
+
+**The floor is over `fingerprint` rows, not over all `read` rows**, and that is
+the trap worth knowing about: the `engine-exit` rows are proven *before* the
+browser tier runs, so they **survive a dead browser**, and the JSON tier is
+fetched by Python rather than the engine. Counting all read rows scores the
+dead PS-110 run at *seven* and clears any plausible floor. It has two terms —
+a **fraction** (0.20) and a **distinct-checker count** (2) — because rows
+within one checker are one page load, not independent evidence: CreepJS alone
+is 9 of 27 rows (33%), so a fraction-only floor is cleared by a single page
+answering.
+
+Both thresholds were derived from **real records at both ends**, not chosen:
+the committed control below is 7/18 fingerprint rows (38.9%) from 2 checkers
+and must pass; the dead run is 2/27 (7.4%) from 1 and must not.
+
+**`inconclusive` is never a verdict about persona.** It says the *run* failed
+to measure, not that the product failed anything — the same line `baseline.py`
+draws with *"an unobtainable reading is inconclusive, and inconclusive is never
+a pass"*. On the CLI it exits `3`.
+
+**A record without the block** (every generation ≤ 3, including the committed
+one here) reads as *inconclusive*, never as fine: the failure being guarded
+against is a run that could not say it measured nothing, so silence must not
+resolve to "clean". Older records are **not** re-tagged or backfilled — a
+verdict computed today from rows recorded before the question existed would be
+a claim about a run nobody assessed.
+
+### `never_asked` — one dead browser is one fact, not forty-five
+
+An unobtainable row means *nothing may be inferred*. But **"this checker was
+asked and could not answer"** and **"the browser died and nothing after it was
+ever asked"** are different facts about the run, and only the first is a
+reading about the checker. Rows in the second class carry `never_asked: true`
+and name the shared cause. Without it, 45 rows lost to a single crash read to a
+later comparison as **45 independently moved vectors**.
 
 ## Each tier proves its own exit
 
