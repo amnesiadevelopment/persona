@@ -26,7 +26,15 @@ def _lock_path() -> str:
     the parent) and wrote a live pid into a directory it never used; and two
     deliberately isolated homes resolved to the SAME lockfile, so the second was
     refused — the guard blocking precisely the configuration it exists to allow,
-    since two distinct homes share none of the state the docstring names.
+    since two distinct homes share none of the ON-DISK state named above:
+    profiles.json, settings.json and the engine caches all resolve through
+    _under_home (config.py:73-80). The port is the one exception, so the
+    isolation is not total: API_PORT is global rather than home-derived
+    (config.py:99 uses _port_env, not _under_home), and the MCP tools mount
+    into that same app, so two isolated homes still contend for it if both
+    enable the control server — which is off unless enabled (main.py:177).
+    That is a port-allocation concern, not state corruption, and this lockfile
+    was never what guarded it.
 
     RESOLVED AT CALL TIME, NOT AT IMPORT. `config.PERSONA_HOME` is baked at
     config import (deliberate — config.py:48), but `_under_home` reads its env
