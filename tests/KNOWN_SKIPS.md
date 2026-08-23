@@ -55,8 +55,8 @@ skip in the current CI. Nothing is wrong when they do.
 
 | Where | Reason given | Capability |
 |---|---|---|
-| `test_ff_language_override.py:512` (×2) | `playwright not installed` | `browser` |
-| `test_ff_language_override.py:527` | `playwright not installed` | `browser` |
+| `test_ff_language_override.py:512` (×2) | `playwright not installed` | `browser_firefox` |
+| `test_ff_language_override.py:527` | `playwright not installed` | `browser_firefox` |
 | `test_invisible_launch.py:718` | `could not import 'invisible_playwright'` | `engine` |
 | `test_invisible_launch.py:2051` | `could not import 'invisible_core'` | `engine` |
 | `test_invisible_launch.py:5203` | `could not import 'invisible_playwright'` | `engine` |
@@ -148,10 +148,47 @@ In that environment, a skip of the browser probes becomes a **failure** naming
 what was missing and how to provision it. Declaring nothing changes nothing:
 an ordinary developer run still skips and still passes.
 
-Capabilities: `browser`, `node`, `engine` (see `conftest.py`). Multiple are
-comma- or space-separated. A name that is not one of these is a hard error, not
-a silent no-op — a typo that quietly disabled the guard would be the original
-defect wearing a new hat.
+Capabilities: `browser`, `browser_firefox`, `browser_chromium`, `node`,
+`engine`, `ui_driver` (see `conftest.py`). Multiple are comma- or
+space-separated. A name that is not one of these is a hard error, not a silent
+no-op — a typo that quietly disabled the guard would be the original defect
+wearing a new hat.
+
+### `browser` is an umbrella, and what it leaves out is the point
+
+`browser` used to mean, verbatim, "a real Firefox the playwright API can
+launch" — one name for one engine, with no way to say anything about the other.
+It is now an UMBRELLA over `browser_firefox`, so it declares exactly what it
+declared before: `PERSONA_REQUIRED_CAPABILITIES=browser` and every existing
+`@pytest.mark.requires_capability("browser")` police the Firefox probes and
+nothing new.
+
+What the split buys is that the table can now SAY what is missing.
+**`browser_chromium` is deliberately not under the umbrella.** Chromium is not
+the secondary engine — `src/services/profile/coherence.py:78` reads
+`DEFAULT_ENGINE = "chromium"`, and it is the engine every impossible
+os_type/engine pair is reconciled toward (`:99`, `:162`). The engine the
+product defaults to is the one no gate ever launches. What rides on it:
+`src/services/browser/process.py` returns early for firefox (`:353-356`) before
+all 13 `extensions.append` calls — audio, WebGL, GPU, device, voice, locale,
+mobile, native-cloak, stealth, canvas-ctx, measuretext, search, geo. None is
+exercised by any gate on any platform.
+
+Every declared run now PRINTS that gap next to the green line it qualifies, so
+"ok browser" can never again be read as "both engines are covered". Folding
+chromium into the umbrella instead would turn every declaring job red for want
+of PROVISIONING rather than for want of correctness — a gate that fails for the
+wrong reason teaches its reader to ignore it.
+
+**This ships no new coverage, and the distinction is deliberate.** It converts
+a silent gap into a declared one, which is genuinely less than "chromium is now
+tested". Provisioning that engine is a separate, larger question: it is NOT
+`python -m playwright install chromium` (the product launches
+fingerprint-chromium, not playwright's build) — the binary arrives via the
+`download_engine` route `.github/workflows/engine-autoupdate.yml:104-115` uses
+against a pinned baseline tag, so which build, which pin and which runner are
+all open. `browser_chromium` is opt-in and declaring it today would be a
+promise no machine can keep.
 
 **Nothing infers support from the presence of the thing being checked.** A
 guard that reasoned "playwright imported, therefore this machine should run
@@ -162,12 +199,18 @@ structurally.
 
 ## Not yet wired
 
-Provisioning the browser in CI is a **follow-up** and lives entirely in
-`.github/workflows/`, which this change deliberately does not touch (the bot's
-GitHub App lacks the `workflows` permission; see PS-47 / PS-50). That slice
-needs `python -m playwright install firefox` plus a headless-capable
-environment, and should set `PERSONA_REQUIRED_CAPABILITIES=browser` so the
-provisioning cannot silently rot back to skipping.
+**Firefox is now provisioned in CI** — `.github/workflows/ci.yml:152` runs
+`python -m playwright install firefox` and `:320` declares
+`PERSONA_REQUIRED_CAPABILITIES: browser`, so the provisioning cannot silently
+rot back to skipping. (The paragraph that used to sit here called that a
+follow-up living entirely in `.github/workflows/`; it has since landed.)
+
+**The chromium engine is not, and that is the open one.** See the umbrella
+section above: `browser_chromium` exists as a NAMED capability precisely so the
+gap is attributable rather than invisible, but nothing provisions it and the
+umbrella deliberately does not cover it. Closing it is a separate slice —
+which build, which pin, which runner — and until then declaring
+`browser_chromium` is a promise no machine can keep.
 
 When those probes first run for real, `tells` may come back non-empty. That is
 a genuine finding and belongs to the masking direction as its own ticket —
