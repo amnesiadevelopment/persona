@@ -18,6 +18,8 @@ import json
 import os
 import threading
 
+import pytest
+
 import src.services.browser.invisible_launch as il
 import src.services.browser.process as process
 from src.models.profile import Profile
@@ -150,6 +152,32 @@ def test_chromium_scrub_leaves_unrelated_environment_alone(monkeypatch, tmp_path
 # --------------------------------------------------------------------------
 
 
+# Every test below drives `_child_environ_after_fork`, and that harness IS a
+# fork: it asserts on the environment a real forked child ends up owning. On
+# Windows `os.fork` does not exist, so without this guard these tests do not
+# skip — they CRASH with `AttributeError`. That distinction is the whole point
+# of the guard rather than a tidy-up: conftest.py exists to report every skip
+# and the reason it gave, so an absence is DECLARED and an operator can read
+# it. A crash is an absence too, but an undeclared one, and it is noise in the
+# same column that is supposed to carry signal.
+#
+# Guarded on the CAPABILITY (`hasattr(os, "fork")`) rather than on
+# `sys.platform == "win32"`, because fork is the thing the harness actually
+# needs; any future interpreter without it is then covered by construction.
+#
+# THIS SKIPS THE HARNESS, NOT THE COVERAGE IT PROVIDES. The behaviour these
+# tests pin is Linux-only BY DESIGN — `invisible_launch.py:2352` guards the
+# scrub on `not in_thread and _platform.IS_LINUX`, so on Windows/macOS the
+# same `_child` runs as a THREAD whose `os.environ` is persona's own and must
+# not be touched. That recorded, deliberate absence is asserted on Linux by
+# the two `test_thread_path_child_*` tests below, which hold IS_LINUX true to
+# isolate the `in_thread` half of the guard. Skipping here removes no gate
+# from any platform that could have run one.
+requires_fork = pytest.mark.skipif(
+    not hasattr(os, "fork"), reason="POSIX fork only"
+)
+
+
 def _child_environ_after_fork(tmp_path, in_thread=False, is_linux=True):
     """Fork for real, run ``_child``, and report the child's OWN os.environ back
     over a pipe.
@@ -203,6 +231,7 @@ def _child_environ_after_fork(tmp_path, in_thread=False, is_linux=True):
     return json.loads(payload)
 
 
+@requires_fork
 def test_forked_firefox_child_carries_no_operator_identity(monkeypatch, tmp_path):
     # AC2. The fork is real and the assertion is on the child's own environ,
     # not on the parent's and not on the shape of a call.
@@ -212,6 +241,7 @@ def test_forked_firefox_child_carries_no_operator_identity(monkeypatch, tmp_path
         assert child_env[var] is None, f"{var} reached the forked firefox child"
 
 
+@requires_fork
 def test_forked_firefox_child_does_not_disturb_the_parent(monkeypatch, tmp_path):
     # AC4 for the firefox half. A fork has separate memory, so the child's
     # scrub of its own os.environ must be invisible here.
@@ -221,6 +251,7 @@ def test_forked_firefox_child_does_not_disturb_the_parent(monkeypatch, tmp_path)
         assert os.environ.get(var) == POLLUTED_PARENT[var]
 
 
+@requires_fork
 def test_thread_path_child_leaves_its_process_environment_alone(monkeypatch, tmp_path):
     # THE HAZARD, asserted rather than assumed. On Windows/macOS this same
     # _child runs as a THREAD of the manager process, where os.environ IS
@@ -236,6 +267,7 @@ def test_thread_path_child_leaves_its_process_environment_alone(monkeypatch, tmp
         )
 
 
+@requires_fork
 def test_forked_firefox_child_carries_no_stale_runtime_paths(monkeypatch, tmp_path):
     # PS-85, THE DEFECT. The chromium seam scrubbed FONTCONFIG_* via an inline
     # tuple that the firefox seam never reached, so the forked child inherited
@@ -257,6 +289,7 @@ def test_forked_firefox_child_carries_no_stale_runtime_paths(monkeypatch, tmp_pa
         )
 
 
+@requires_fork
 def test_forked_firefox_child_stale_path_scrub_does_not_disturb_parent(
     monkeypatch, tmp_path
 ):
@@ -274,6 +307,7 @@ def test_forked_firefox_child_stale_path_scrub_does_not_disturb_parent(
         assert os.environ.get(var) == value
 
 
+@requires_fork
 def test_thread_path_child_leaves_stale_runtime_paths_alone(monkeypatch, tmp_path):
     # THE HAZARD for the second list, asserted rather than assumed. On
     # Windows/macOS this same _child runs as a THREAD of the manager process,
