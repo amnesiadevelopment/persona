@@ -210,3 +210,203 @@ def test_swap_bat_purges_flet_extraction(tmp_path):
     # bounded so a never-dying holder can't block the relaunch forever
     assert "purges" in content
     pathlib.Path(bat_path).unlink()
+
+
+# ---------------------------------------------------------------------------
+# PS-80: a way back from a release that verifies but does not boot.
+#
+# Before the swap the working code exists twice (install-dir app.zip + the flet
+# extraction) and the script destroys both in consecutive steps, while the
+# updater that would fetch a fix ships INSIDE app.zip. So the swap retains the
+# previous pair and the script can put it back.
+#
+# The emitters are pure string builders, but AC1/AC4 are claims about FILES ON
+# DISK, not about script text — so rather than grepping the .bat for a
+# filename, these tests parse the REAL emitted script and execute its file-op
+# lines against a real temp install dir. Executing the whole script needs
+# Windows (cmd, tasklist, start); what it does to the FILES is asserted here.
+# ---------------------------------------------------------------------------
+import re
+
+_IF_EXIST = re.compile(r'^if exist "([^"]+)"\s+(.*)$', re.I)
+_MOVE = re.compile(r'^move /Y "([^"]+)" "([^"]+)"', re.I)
+_COPY = re.compile(r'^copy /Y "([^"]+)" "([^"]+)"', re.I)
+_DEL = re.compile(r'^del /F /Q "([^"]+)"', re.I)
+
+
+def _section(bat: str, label: str) -> "list[str]":
+    """The emitted lines under :label, up to the next label."""
+    lines = bat.replace("\r\n", "\n").split("\n")
+    start = lines.index(f":{label}")
+    out = []
+    for line in lines[start + 1:]:
+        if line.startswith(":"):
+            break
+        out.append(line)
+    return out
+
+
+def _run_section(bat: str, label: str) -> int:
+    """Execute the file operations cmd would run under :label, for real.
+
+    Returns how many `start` (launch) lines the section carries. Anything that
+    needs Windows itself (tasklist/ping/goto/set) is not modelled — those are
+    asserted as script text, not executed.
+    """
+    launches = 0
+    for raw in _section(bat, label):
+        line = raw.strip()
+        if not line:
+            continue
+        if line.lower().startswith("start "):
+            launches += 1
+            continue
+        m = _IF_EXIST.match(line)
+        if m:
+            guard, line = m.group(1), m.group(2).strip()
+            if not os.path.exists(guard):
+                continue  # `if exist` false — cmd skips the line
+        m = _MOVE.match(line)
+        if m:
+            os.replace(m.group(1), m.group(2))
+            continue
+        m = _COPY.match(line)
+        if m:
+            with open(m.group(1), "rb") as src, open(m.group(2), "wb") as dst:
+                dst.write(src.read())
+            continue
+        m = _DEL.match(line)
+        if m:
+            os.remove(m.group(1))
+            continue
+    return launches
+
+
+def _install_dir(tmp_path):
+    """A real install dir holding the CURRENT (working) release, plus a staged
+    new release in a temp dir — the state the swap runs against."""
+    app = tmp_path / "app"
+    app.mkdir()
+    dst_zip = app / "app.zip"
+    dst_hash = app / "app.zip.hash"
+    dst_zip.write_bytes(b"WORKING-RELEASE-CODE")
+    dst_hash.write_text("oldsha")
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    new_zip = staged / "persona-fast-app.zip"
+    new_hash = staged / "persona-fast-app.zip.hash"
+    new_zip.write_bytes(b"NEW-RELEASE-CODE")
+    new_hash.write_text("newsha")
+    return dst_zip, dst_hash, new_zip, new_hash
+
+
+def _emit(tmp_path, dst_zip, dst_hash, new_zip, new_hash) -> str:
+    exe = tmp_path / "persona.exe"
+    exe.write_bytes(b"MZ")
+    path = fu._write_appzip_swap_bat(
+        str(exe), str(new_zip), str(new_hash),
+        str(dst_zip), str(dst_hash), 4242,
+    )
+    try:
+        with open(path, encoding="ascii", newline="") as f:
+            return f.read()
+    finally:
+        os.remove(path)
+
+
+def test_swap_retains_previous_appzip_in_install_dir(tmp_path):
+    # AC1 + AC7: after the swap the NEW pair is live and the PREVIOUS pair is
+    # still on disk in the install dir. On main today the stage is two bare
+    # `copy /Y` lines, so the old bytes are gone and this is RED.
+    dst_zip, dst_hash, new_zip, new_hash = _install_dir(tmp_path)
+    bat = _emit(tmp_path, dst_zip, dst_hash, new_zip, new_hash)
+
+    _run_section(bat, "swap")
+
+    # the new release is live
+    assert dst_zip.read_bytes() == b"NEW-RELEASE-CODE"
+    assert dst_hash.read_text() == "newsha"
+    # and the working one it replaced still EXISTS, beside it, on the same volume
+    prev_zip, prev_hash = fu.retained_paths(str(dst_zip), str(dst_hash))
+    assert os.path.isfile(prev_zip), "previous app.zip was destroyed by the swap"
+    assert os.path.isfile(prev_hash)
+    assert open(prev_zip, "rb").read() == b"WORKING-RELEASE-CODE"
+    assert open(prev_hash).read() == "oldsha"
+    # retained INSIDE the install dir (survives a reboot; atomic rename), not %TEMP%
+    assert os.path.dirname(prev_zip) == os.path.dirname(str(dst_zip))
+
+
+def test_exhausted_launch_budget_restores_and_relaunches_previous(tmp_path):
+    # AC3: when the post-swap confirm fails its FULL retry budget, the retained
+    # pair is put back and a launch is attempted from it — instead of falling
+    # through to a dead install whose own updater shipped inside app.zip.
+    dst_zip, dst_hash, new_zip, new_hash = _install_dir(tmp_path)
+    bat = _emit(tmp_path, dst_zip, dst_hash, new_zip, new_hash)
+    _run_section(bat, "swap")
+
+    # the emitted control flow: a spent budget goes to the restore arm
+    launch = bat.split(":launch")[1]
+    assert "if %boots% lss 5 goto launch" in launch
+    assert "goto recover" in launch, "spent launch budget does not reach a restore arm"
+
+    launches = _run_section(bat, "recover")
+
+    # the working release is live again, ON DISK
+    assert dst_zip.read_bytes() == b"WORKING-RELEASE-CODE"
+    # the hash goes back WITH the zip — that mismatch is what makes flet
+    # re-extract, since its marker now records the failed release
+    assert dst_hash.read_text() == "oldsha"
+    # and a launch is actually attempted from the restored pair
+    assert launches == 1, "restored the previous release but never launched it"
+
+
+def test_confirmed_boot_leaves_no_retained_pair(tmp_path):
+    # AC4: a confirmed-good boot drops the retained pair, so one previous
+    # version is kept and replaced per update rather than accumulating.
+    dst_zip, dst_hash, new_zip, new_hash = _install_dir(tmp_path)
+    bat = _emit(tmp_path, dst_zip, dst_hash, new_zip, new_hash)
+    _run_section(bat, "swap")
+    prev_zip, prev_hash = fu.retained_paths(str(dst_zip), str(dst_hash))
+    assert os.path.isfile(prev_zip)
+
+    _run_section(bat, "confirmed")
+
+    assert not os.path.exists(prev_zip), "retained pair accumulates across updates"
+    assert not os.path.exists(prev_hash)
+    # the release that booted stays live and untouched
+    assert dst_zip.read_bytes() == b"NEW-RELEASE-CODE"
+    assert dst_hash.read_text() == "newsha"
+
+
+def test_failed_boot_never_runs_the_confirmed_cleanup(tmp_path):
+    # The ordering hazard: :confirmed (drop the retained pair) is emitted
+    # between the confirm and :done. If the spent budget FELL THROUGH into it
+    # instead of jumping, a failed boot would delete exactly what recovery
+    # needs — restoring nothing. The jump must be explicit.
+    dst_zip, dst_hash, new_zip, new_hash = _install_dir(tmp_path)
+    bat = _emit(tmp_path, dst_zip, dst_hash, new_zip, new_hash)
+
+    # success goes to the cleanup arm; the exhausted budget goes to the restore arm
+    assert "if not errorlevel 1 goto confirmed" in bat
+    launch = bat.split(":launch")[1].split(":recover")[0]
+    assert "goto recover" in launch
+    # the restore arm ends by leaving, so it cannot fall into the cleanup below it
+    recover = bat.split(":recover")[1].split(":confirmed")[0]
+    assert "goto done" in recover
+    # and the cleanup targets ONLY the retained pair, never the live files
+    cleanup = "\n".join(_section(bat, "confirmed"))
+    assert ".prev" in cleanup
+    for line in _section(bat, "confirmed"):
+        if line.strip():
+            assert line.rstrip().endswith(">nul 2>&1")
+            assert ".prev" in line, "cleanup touches a file that is not the retained pair"
+
+
+def test_step_order_is_still_wait_stage_purge_launch(tmp_path):
+    # AC6: the retain/restore work must not have reordered the script. Every
+    # step of this order was a bug once (build_bat's docstring).
+    dst_zip, dst_hash, new_zip, new_hash = _install_dir(tmp_path)
+    bat = _emit(tmp_path, dst_zip, dst_hash, new_zip, new_hash)
+    assert bat.index(":wait") < bat.index(":swap") < bat.index(":purge") < bat.index(":launch")
+    # the purge is still there and still bounded
+    assert "rd /s /q" in bat and "purges" in bat
