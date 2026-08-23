@@ -33,8 +33,18 @@ from .diff import (
 )
 from .probes import ALL_REALMS, PROBES, WINDOW, WORKER, Probe, probes_for_realm
 from .runner import run_probes
+from .schema_ledger import (
+    SchemaLedgerViolation,
+    check_emitted_header,
+    generation_of,
+    header_keys,
+    mislabelled,
+)
 from .snapshot import (
+    HEADER_GENERATIONS,
+    POST_WRITER_ANNOTATIONS,
     SCHEMA_VERSION,
+    SNAPSHOT_BODY_KEY,
     build_snapshot,
     canonicalise,
     dumps,
@@ -45,9 +55,17 @@ from .snapshot import (
 
 __all__ = [
     "ALL_REALMS",
+    "HEADER_GENERATIONS",
     "INCONCLUSIVE",
+    "POST_WRITER_ANNOTATIONS",
     "PROBES",
     "SCHEMA_VERSION",
+    "SNAPSHOT_BODY_KEY",
+    "SchemaLedgerViolation",
+    "check_emitted_header",
+    "generation_of",
+    "header_keys",
+    "mislabelled",
     "WINDOW",
     "WORKER",
     "NotASnapshot",
