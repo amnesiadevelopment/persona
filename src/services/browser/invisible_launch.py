@@ -965,10 +965,26 @@ def _init_places_db(
     this warm-up does NOT. That is a considered omission, not an oversight —
     the warm-up loads no page and never constructs an RTCPeerConnection, so
     there is nothing for those prefs to constrain, and the extra_prefs here are
-    deliberately the minimal quiet-startup set. The DNS half arrives anyway:
-    invisible_core's `configure_proxy` writes
-    `network.proxy.socks_remote_dns = True` itself for any SOCKS server. If
-    this run ever grows a real page load, revisit and take the full set.
+    deliberately the minimal quiet-startup set. If this run ever grows a real
+    page load, revisit and take the full set.
+
+    The DNS guard is TWO prefs, and they arrive by DIFFERENT routes — do not
+    read "DNS is handled" off either one alone:
+      * `network.proxy.socks_remote_dns` arrives for free — invisible_core's
+        `configure_proxy` writes it itself for any SOCKS server. It routes the
+        SOCKS-resolved path through the tunnel.
+      * `network.trr.mode` does NOT arrive from anywhere: `configure_proxy`
+        supplies zero TRR prefs (grep `network.trr` across invisible_core and
+        invisible_playwright → no hits), and this warm-up never reaches
+        `_profile_prefs`, so the visible launch's pin does not cover it. It is
+        set explicitly in the extra_prefs below, gated on `proxy`.
+    The TRR pref crosses over where the ICE prefs do not, and the difference is
+    load-bearing: a resolver needs no page load to fire, so unlike
+    RTCPeerConnection there IS something here to constrain. That matters
+    precisely because of this run's own threat model above — an engine bump
+    flipping the TRR default is exactly the "whatever a future engine bump
+    adds" case, and it would otherwise land on a warm-up that is real Firefox
+    on this profile's identity while the visible launch alone is pinned.
 
     The caller must install `_install_geo_shortcircuit()` BEFORE invoking this
     with a proxy — see the call site in `_launch_and_watch`. The engine's
@@ -1127,6 +1143,16 @@ def _init_places_db(
                         # this run persists, so the first visible launch is dark
                         # with the bookmarks toolbar shown (#242).
                         **(_WARMUP_CHROME_PREFS if warmup_visible else {}),
+                        # The TRR half of the proxied DNS guard — see the
+                        # DELIBERATE ASYMMETRY note in the docstring for why
+                        # this one crosses over when the ICE prefs do not. A
+                        # resolver needs no page load to fire, so unlike
+                        # RTCPeerConnection there IS something here to
+                        # constrain. Same value and same reasoning as
+                        # `_profile_prefs`; gated on `proxy` for the same
+                        # reason, so a DIRECT profile's warm-up is
+                        # byte-identical to what it was before this existed.
+                        **({"network.trr.mode": 5} if proxy else {}),
                     },
                     # Route this run through the profile's assigned proxy, so a
                     # real Firefox on the profile's own identity never reaches

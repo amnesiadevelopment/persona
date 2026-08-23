@@ -108,12 +108,10 @@ def test_matrix_doh_trr_both_engines(monkeypatch, tmp_path):
     args = _chromium_proxied(monkeypatch, tmp_path)
     assert "--dns-over-https-mode=off" in args
 
+    # 5, not 0: 0 would be "off by default" — a no-op an engine bump silently
+    # overwrites. The pin only means anything if it is the explicit value.
     prefs = _firefox_proxied()
     assert prefs.get("network.trr.mode") == 5
-
-    # 0 would be "off by default" — a no-op an engine bump silently overwrites.
-    # The pin only means anything if it is the explicit value.
-    assert prefs.get("network.trr.mode") != 0
 
 
 def test_matrix_doh_trr_direct_profile_unpinned():

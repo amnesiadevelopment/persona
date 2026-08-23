@@ -5061,6 +5061,59 @@ def test_init_places_db_warmup_keeps_geo_shortcircuit_and_quiet_prefs(
     assert prefs["toolkit.shutdown.fastShutdownStage"] == 3
 
 
+def test_init_places_db_warmup_pins_trr_off_for_a_proxied_profile(
+    monkeypatch, tmp_path
+):
+    # PS-76. The warm-up is a REAL Firefox on the profile's own identity, and
+    # it never reaches `_profile_prefs` — so the visible launch's TRR pin does
+    # not cover it. Nothing else supplies the pref either: invisible_core's
+    # `configure_proxy` writes `network.proxy.socks_remote_dns` but ZERO TRR
+    # prefs (grep `network.trr` across invisible_core/invisible_playwright → no
+    # hits), and socks_remote_dns says nothing about a resolver that never asks
+    # SOCKS in the first place. Different mechanism, so the guard has to be set
+    # here explicitly or an engine bump flipping the TRR default lands on a
+    # warm-up that is unpinned while the visible launch is pinned.
+    #
+    # This is NOT the ICE case directly above: those prefs stay out because the
+    # warm-up constructs no RTCPeerConnection, so they constrain nothing. A
+    # resolver needs no page load to fire, so there IS something here to
+    # constrain. Asserts the extra_prefs dict the engine was actually handed.
+    captured, _ = _warmup_engine_rig(monkeypatch, tmp_path)
+
+    assert invisible_launch._init_places_db(
+        str(tmp_path), 5,
+        proxy=invisible_launch._proxy_dict("socks5://127.0.0.1:9050"),
+        proxy_declared=True,
+    ) is True
+
+    assert captured["extra_prefs"]["network.trr.mode"] == 5
+    # 5 ("off by explicit choice"), not 0 ("off by default") — 0 is the no-op a
+    # bumped default would overwrite, which is the whole scenario being pinned
+    # against. Same value the visible launch pins, so the two agree.
+    assert (
+        captured["extra_prefs"]["network.trr.mode"]
+        == invisible_launch._profile_prefs(
+            {"search_engine": "duckduckgo", "proxy_url": "socks5://127.0.0.1:9050"}
+        )["network.trr.mode"]
+    ), "the warm-up and the visible launch must pin the SAME TRR value"
+
+
+def test_init_places_db_warmup_leaves_trr_unset_for_a_direct_profile(
+    monkeypatch, tmp_path
+):
+    # PS-76, the other half of the gate. A DIRECT profile's warm-up must be
+    # byte-identical to what it was before the pin existed — the guard is
+    # scoped to a proxied profile exactly like every other guard in this path,
+    # and a direct profile has no tunnel for a resolver to bypass. This is what
+    # turns a future hoist of the pref out of the `if proxy` gate into a red
+    # test rather than a silent behaviour change.
+    captured, _ = _warmup_engine_rig(monkeypatch, tmp_path)
+
+    assert invisible_launch._init_places_db(str(tmp_path), 6) is True
+
+    assert "network.trr.mode" not in captured["extra_prefs"]
+
+
 def test_init_places_db_unproxied_profile_passes_no_proxy_key(
     monkeypatch, tmp_path
 ):
