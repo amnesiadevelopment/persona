@@ -230,45 +230,91 @@ def _observe_engine_exit(
     same. "The pages rendered" is not evidence the engine used the proxy, for
     the identical reason "it returned 200" is not.
     """
-    page = live.new_page()
-    try:
-        page.goto(
-            checker.url,
-            timeout=NAVIGATION_TIMEOUT_MS,
-            wait_until="domcontentloaded",
-        )
-        text = page.inner_text("body")
-    except Exception as exc:
-        raise ExitNotProvenInEngine(
-            f"the engine could not observe its own exit "
-            f"({type(exc).__name__}: {exc}). Refusing to read any checker "
-            "through an engine that has not been shown leaving through the "
-            "expected exit — the pages would render either way."
-        ) from exc
-    finally:
-        try:
-            page.close()
-        except Exception:
-            pass
-
-    # Extracted with the SAME pure function that reads every other browser row,
-    # so the proof and the recorded rows can never disagree about what the page
-    # said. Only the country is consumed here; the readings themselves are
-    # rebuilt downstream from the text.
-    by_id = {
-        item.id: extract_text_item(checker, item, text) for item in checker.items
-    }
-
-    country_reading = by_id.get("country")
+    # MORE THAN ONE PROVIDER, tried in order until one ANSWERS WITH A COUNTRY.
+    #
+    # PS-128 measured the single-oracle version failing closed on a healthy
+    # exit: ipinfo.io answered `HTTP 429 Rate limit hit` through the mobile
+    # exit (the limit attaches to the exit's SHARED address, so it is neither
+    # ours to clear nor retryable), and because this is the tier's
+    # PRECONDITION, all 37 browser rows in all 4 configurations went
+    # unobtainable. The run refused itself over a provably Polish exit.
+    #
+    # Redundant for REACHABILITY ONLY. A provider that answers WITH A COUNTRY
+    # is authoritative and the loop stops there — including when that country
+    # is wrong, which still ends the run below. Asking a second provider after
+    # a wrong-country answer would be shopping for a friendlier oracle, which
+    # is how a fallback turns into a way to launder a bad exit.
+    urls = tuple(getattr(checker, "urls", None) or (checker.url,))
+    text = ""
     country = ""
-    if country_reading is not None and country_reading.state == READ:
-        country = str(country_reading.value or "").upper()
+    failures = []
+    # Whether ANY provider's page loaded at all. This is what separates "the
+    # engine could not reach its exit" from "it reached one and got no country
+    # out of it" in the refusal below.
+    loaded_any = False
+    for url in urls:
+        page = live.new_page()
+        try:
+            page.goto(
+                url,
+                timeout=NAVIGATION_TIMEOUT_MS,
+                wait_until="domcontentloaded",
+            )
+            candidate_text = page.inner_text("body")
+        except Exception as exc:
+            failures.append(f"{url}: {type(exc).__name__}: {exc}")
+            continue
+        finally:
+            try:
+                page.close()
+            except Exception:
+                pass
+
+        loaded_any = True
+
+        # Extracted with the SAME pure function that reads every other browser
+        # row, so the proof and the recorded rows can never disagree about what
+        # the page said. Only the country is consumed here; the readings
+        # themselves are rebuilt downstream from the text.
+        by_id = {
+            item.id: extract_text_item(checker, item, candidate_text)
+            for item in checker.items
+        }
+        country_reading = by_id.get("country")
+        candidate_country = ""
+        if country_reading is not None and country_reading.state == READ:
+            candidate_country = str(country_reading.value or "").upper()
+
+        if not candidate_country:
+            # Loaded, but carried no country — a rate-limit body, an error
+            # page, or a dialect this row cannot read. Not an answer, so try
+            # the next provider rather than refusing the whole tier on it.
+            failures.append(f"{url}: answered, but carried no country")
+            continue
+
+        text = candidate_text
+        country = candidate_country
+        break
 
     if not country:
+        detail = f"{len(urls)} provider(s) tried: {'; '.join(failures)}"
+        # TWO DIFFERENT CAUSES, AND THE MESSAGE SAYS WHICH. "Nothing would
+        # load" and "it loaded and did not say" mean opposite things about
+        # whether the exit is usable — the first points at the proxy or the
+        # engine, the second at a rate-limit body or a dialect this row cannot
+        # read. Collapsing them into one sentence is what makes an operator
+        # chase the wrong half.
+        if not loaded_any:
+            raise ExitNotProvenInEngine(
+                "the engine could not observe its own exit "
+                f"({detail}). Refusing to read any checker through an engine "
+                "that has not been shown leaving through the expected exit — "
+                "the pages would render either way."
+            )
         raise ExitNotProvenInEngine(
             "the engine's exit observation carried no country, so the engine's "
             "exit is unproven. Recording the checker pages anyway would record "
-            "an address nobody has established."
+            f"an address nobody has established. {detail}"
         )
     if country != expected_country.upper():
         raise ExitNotProvenInEngine(

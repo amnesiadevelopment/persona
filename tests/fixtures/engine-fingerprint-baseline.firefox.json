@@ -8,7 +8,7 @@
         "value": {
           "length": 44100,
           "rate": 44100,
-          "sum": 35.749972
+          "sum": 35.749988
         }
       },
       "audio.sampleRate": {
@@ -93,7 +93,7 @@
         "value": "function getParameter() {\n    [native code]\n}"
       },
       "masking.workerConstructor": {
-        "value": "function Worker() {\n    [native code]\n}"
+        "value": "function (url, options) {\n          try {\n            var BOOT = fragment();\n            var s = String(url);\n            // Resolve a RELATIVE worker URL (e.g. creepjs's './creep.js') to an\n            // absolute one so it takes the http(s) importScripts path below. A\n            // relative URL matched none of the scheme tests and fell through to\n            // the native, UNSPOOFED construct — the real path creepjs uses to\n            // read the engine-default GPU from a worker.\n            if (!/^(https?:|blob:|data:)/i.test(s)) {\n              try {\n                var base = (G.location && G.location.href) || undefined;\n                var rs = new URL(s, base).href;\n                if (/^https?:/i.test(rs)) s = rs;\n              } catch (er) {}\n            }\n            if (options && options.type === \"module\") {\n              try {\n                var abs = s;\n                try { abs = new URL(s, (G.location && G.location.href) || undefined).href; } catch (e0) {}\n                var mbody = BOOT + \"\\nimport(\" + JSON.stringify(abs) + \").catch(function(e){});\";\n                return _Ref.construct(Orig, [mkurl(mbody), options], W);\n              } catch (em) {\n                return _Ref.construct(Orig, [url, options], W);\n              }\n            }\n            if (/^https?:/i.test(s)) {\n              var body = BOOT + \"\\ntry{importScripts(\" + JSON.stringify(s) + \");}catch(e){}\";\n              return _Ref.construct(Orig, [mkurl(body), options], W);\n            }\n            if (/^blob:|^data:/i.test(s)) {\n              try {\n                var x = new _XHR();\n                x.open(\"GET\", s, false);\n                x.send();\n                if (x.status === 0 || (x.status >= 200 && x.status < 300)) {\n                  return _Ref.construct(Orig, [mkurl(BOOT + \"\\n\" + x.responseText), options], W);\n                }\n              } catch (e) {}\n              return _Ref.construct(Orig, [url, options], W);\n            }\n            return _Ref.construct(Orig, [url, options], W);\n          } catch (e) { return _Ref.construct(Orig, [url, options], W); }\n        }"
       },
       "mobile.Touch": {
         "value": "undefined"
@@ -308,7 +308,7 @@
       "webgl.readback": {
         "value": {
           "bytes": 4096,
-          "digest": 3733647300,
+          "digest": 1121969883,
           "mid": 3072
         }
       },
