@@ -23,6 +23,24 @@ _LAST_VERSION_KEY = "last_seen_version"
 # normal state) means "launch the newest installed build" — the pin exists
 # only after an explicit revert, and clearing it resumes normal updating.
 _ENGINE_PIN_KEY = "engine_build_pin"
+# The Chromium TAG the operator deliberately went BACK to. Same idea as the key
+# above and deliberately NOT the same key, which is worth stating because
+# sharing one looks free and is not.
+#
+# This store is a single flat JSON dict — one key, one value, no namespace — so
+# a shared key is a shared VALUE SPACE, and these two hold different vocabularies:
+# _ENGINE_PIN_KEY holds a "firefox-NN" build directory name, this one holds an
+# upstream Chromium release tag like "148.0.7559.132". Four live readers of
+# _ENGINE_PIN_KEY would have silently mis-read a Chromium tag — engine_install's
+# active_build() (membership test fails, so the pin is IGNORED and the revert
+# does not hold), its prune-immunity number at :708, and the two UI sites that
+# suppress the FIREFOX update row and offer the FIREFOX resume gesture. Sharing
+# would have made "go back on Chromium" mute Firefox's updates, and Firefox's
+# "resume updates" silently clear Chromium's revert.
+#
+# Two engines, two pins. They are independent gestures and nothing should make
+# one engine's rollback observable in the other's UI.
+_CHROMIUM_PIN_KEY = "chromium_build_pin"
 # How PERSONA'S OWN requests should leave the machine (the release-metadata
 # polls it makes unattended at startup) — NOT a profile's proxy, which lives
 # per-profile in the proxy store. Empty means DIRECT, which is what every
@@ -190,6 +208,30 @@ def set_engine_build_pin(build: str) -> None:
     """Pin launches to `build`, or pass "" to clear the pin and resume normal
     updating (the operator saying "go forward again")."""
     set(_ENGINE_PIN_KEY, str(build or ""))
+
+
+def chromium_build_pin() -> str:
+    """The Chromium release TAG an operator deliberately reverted to, or "" when
+    they never did. "" is the normal state and means "install the newest
+    acceptable build" — the pin is written only by an explicit revert.
+
+    A pin is a STANDING instruction, not a one-off flag: it survives restarts
+    and it holds the hourly unattended check off. Without it a revert lasts
+    under an hour — the next check sees the build the operator just rejected as
+    "newer than installed" and puts them straight back on it, which is the whole
+    failure this exists to end.
+
+    Deliberately a DIFFERENT key from engine_build_pin(), which is the Firefox
+    engine's pin. See _CHROMIUM_PIN_KEY for why sharing one would have made a
+    Chromium revert mute Firefox's update row."""
+    v = get(_CHROMIUM_PIN_KEY, "")
+    return v if isinstance(v, str) else ""
+
+
+def set_chromium_build_pin(tag: str) -> None:
+    """Pin the Chromium engine to `tag`, or pass "" to clear the pin and resume
+    normal updating (the operator saying "go forward again")."""
+    set(_CHROMIUM_PIN_KEY, str(tag or ""))
 
 
 def app_egress_proxy() -> str:

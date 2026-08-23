@@ -8,6 +8,7 @@ running platform while the launcher always finds the binary at the path
 platform.fingerprint_chromium_filename() resolves to.
 """
 
+import json
 import os
 import shutil
 import threading
@@ -20,6 +21,7 @@ import urllib.request
 from ...core.config import ENGINE_DIR
 from ...core import platform as _platform
 from ...services import egress
+from ...utils.atomic import atomic_write_json
 from ...utils import httpdl
 from ...utils.httpdl import atomic_replace, resumable_download
 from . import policy
@@ -43,8 +45,39 @@ INSTALLING_NAME = ".engine-installing"
 # neither the ".staging" prefix _install_windows/_install_macos use (and whose
 # absence is asserted after a clean install) nor the marker/sentinel names above.
 BACKUP_NAME = ".engine-backup"
+# WHICH builds this machine has run, as identities rather than as trees: a JSON
+# record holding {"current": {tag, digest}, "previous": {tag, digest}}.
+#
+# This is the whole of what makes a SUCCESSFUL swap reversible, and it is a few
+# hundred bytes rather than a second ~300-600MB engine. The tree of the previous
+# build is still destroyed on the success path exactly as it always was (see
+# _promote_staging) — what survives is its NAME and the digest it was verified
+# against, which is enough to fetch it again.
+#
+# THE NAME WAS THE MISSING PIECE, NOT THE BYTES. version.txt has exactly one
+# slot: the moment a swap succeeds, write_version overwrites the tag of the
+# build that was working and it exists nowhere on the machine. So an operator
+# facing a bad unattended upgrade could not roll back — not because the old tree
+# was gone, but because nothing recorded WHICH build to go back to, and
+# "the previous one" had no referent.
+#
+# THE PAIR IS ONE UNIT. A tag without the digest it was verified against would
+# force the rollback to trust whatever a fresh API response advertises for that
+# tag, which is exactly the check PS-49 exists to prevent — so a record that
+# carries no digest is treated as no rollback target at all, not as a rollback
+# to be attempted unverified.
+#
+# DEPTH 1, deliberately. A second successful swap replaces "previous"; this is
+# not a version history and there is no way back to an arbitrary older build.
+# Matches the Firefox side's policy (engine_install.rollback_target).
+BUILDS_FILE = os.path.join(ENGINE_DIR, "builds.json")
 RELEASES_API = (
     "https://api.github.com/repos/adryfish/fingerprint-chromium/releases/latest"
+)
+# The by-tag sibling of RELEASES_API. Same document shape, so fetch_release_full
+# below is a variant of fetch_latest_full rather than a second mechanism.
+RELEASE_BY_TAG_API = (
+    "https://api.github.com/repos/adryfish/fingerprint-chromium/releases/tags/{tag}"
 )
 
 # Serialises concurrent installs (the UI update thread and ensure_engine can
@@ -120,6 +153,95 @@ def current_version() -> str:
             return f.read().strip()
     except OSError:
         return ""
+
+
+def _read_builds() -> dict:
+    """The build record, or {} when there is none / it is unreadable.
+
+    Degrades to {} rather than raising, on the same reasoning as
+    engine_install.pinned_build(): this is consulted on paths that must keep
+    working (the update check, the UI row), and an unreadable record must mean
+    "no rollback offered", never "every launch breaks"."""
+    try:
+        with open(BUILDS_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _entry(rec: dict, key: str) -> tuple[str, str]:
+    """(tag, digest) out of one slot of the record, or ("", "") when the slot is
+    absent or malformed.
+
+    BOTH OR NEITHER: a slot carrying a tag but no digest returns ("", ""), so a
+    caller can never end up fetching a tag it has nothing to verify against. See
+    BUILDS_FILE — that is the PS-49 check, enforced at the read rather than left
+    to each caller to remember."""
+    slot = rec.get(key)
+    if not isinstance(slot, dict):
+        return "", ""
+    tag = slot.get("tag") or ""
+    digest = slot.get("digest") or ""
+    if not isinstance(tag, str) or not isinstance(digest, str):
+        return "", ""
+    if not tag or httpdl.digest_missing(digest):
+        return "", ""
+    return tag, digest
+
+
+def record_installed_build(tag: str, digest: str) -> None:
+    """Record `tag` as the build now installed, demoting the one it replaced to
+    "previous" — the few bytes that make a SUCCESSFUL swap reversible.
+
+    CALL THIS BEFORE write_version, always. version.txt has one slot, so once it
+    is overwritten the identity of the build being replaced is gone from the
+    machine and there is nothing left to demote. The ordering is the whole
+    mechanism, not a detail of it.
+
+    What gets demoted is the record's OWN "current" slot, not current_version():
+    the pair (tag, digest) has to travel together, and version.txt holds no
+    digest. A machine that upgraded before this record existed therefore gets no
+    rollback target from its first swap — it has a version.txt but no digest for
+    it, and inventing one by asking upstream is exactly the fresh-API-response
+    trust PS-49 refuses. The second swap records normally.
+
+    DEPTH 1: the outgoing "previous" is dropped, not kept. A re-install of the
+    SAME tag is not a swap and must not demote a build over itself — that would
+    make the rollback target the build you are already on and quietly destroy
+    the real one.
+
+    Best-effort like write_version beside it: a failed record costs the ability
+    to roll back, whereas raising would turn a SUCCESSFUL install into a
+    reported failure."""
+    if not tag:
+        return
+    rec = _read_builds()
+    cur_tag, cur_digest = _entry(rec, "current")
+    out = {"current": {"tag": tag, "digest": httpdl.normalize_digest(digest)}}
+    if cur_tag and cur_tag != tag:
+        out["previous"] = {"tag": cur_tag, "digest": cur_digest}
+    else:
+        # Same tag re-installed (or nothing recorded yet): carry the existing
+        # previous through untouched rather than demoting a build over itself.
+        prev_tag, prev_digest = _entry(rec, "previous")
+        if prev_tag and prev_tag != tag:
+            out["previous"] = {"tag": prev_tag, "digest": prev_digest}
+    try:
+        atomic_write_json(BUILDS_FILE, out)
+    except OSError:
+        pass
+
+
+def rollback_target() -> tuple[str, str]:
+    """The (tag, digest) an operator can go BACK to, or ("", "") when there is
+    nothing to go back to.
+
+    This is the whole "can I undo this update?" question as one call, exactly as
+    engine_install.rollback_target is for Firefox: ("", "") means the gesture
+    must not be offered, because a revert with no recorded previous build is a
+    button that cannot work."""
+    return _entry(_read_builds(), "previous")
 
 
 def _binary_root() -> str:
@@ -241,6 +363,31 @@ def appimage_url_for(tag: str) -> str:
     )
 
 
+def _release_asset(data) -> tuple[str, str, str]:
+    """Pull (tag, asset_url, sha256_digest) for THIS OS out of one GitHub
+    release document, or ('','','') when it is not a usable document.
+
+    Shared by the latest-release fetch and the by-tag fetch below, which is the
+    point: the two endpoints return the SAME document shape, so the selection
+    rule — which asset is ours, where its digest lives, the Linux
+    predictable-URL fallback — must be one piece of code. Two copies of it is
+    how a rollback quietly starts picking a different asset than an install."""
+    if not isinstance(data, dict):
+        return "", "", ""
+    tag = data.get("tag_name", "")
+    url = ""
+    digest = ""
+    for asset in data.get("assets", []):
+        name = asset.get("name", "")
+        if _asset_matches(name):
+            url = asset.get("browser_download_url", "")
+            digest = asset.get("digest", "") or ""
+            break
+    if tag and not url and _platform.IS_LINUX:
+        url = appimage_url_for(tag)
+    return tag, url, digest
+
+
 def fetch_latest_full(timeout: int = 20) -> tuple[str, str, str]:
     """Return (tag, asset_url, sha256_digest) of the latest release for THIS OS,
     or ('','','') on failure. Picks the per-OS asset.
@@ -256,20 +403,34 @@ def fetch_latest_full(timeout: int = 20) -> tuple[str, str, str]:
         # said the application's traffic should leave. With no policy set that
         # is a direct send — byte-identical to what this line used to do.
         data = egress.fetch_json(RELEASES_API, timeout=timeout)
-        if not isinstance(data, dict):
-            return "", "", ""
-        tag = data.get("tag_name", "")
-        url = ""
-        digest = ""
-        for asset in data.get("assets", []):
-            name = asset.get("name", "")
-            if _asset_matches(name):
-                url = asset.get("browser_download_url", "")
-                digest = asset.get("digest", "") or ""
-                break
-        if tag and not url and _platform.IS_LINUX:
-            url = appimage_url_for(tag)
-        return tag, url, digest
+        return _release_asset(data)
+    except Exception:
+        return "", "", ""
+
+
+def fetch_release_full(tag: str, timeout: int = 20) -> tuple[str, str, str]:
+    """Return (tag, asset_url, sha256_digest) for ONE NAMED release, or
+    ('','','') when upstream does not serve it.
+
+    The by-tag sibling of fetch_latest_full: same egress authority, same
+    document shape, same per-OS asset selection (_release_asset). It exists
+    because a rollback needs the URL of a SPECIFIC older build, and the only
+    fetch this module had reported whatever upstream currently calls "latest" —
+    which is precisely the build being rolled back FROM.
+
+    ('','','') here is the honest answer to a YANKED OR DELETED RELEASE, and it
+    is the trade this whole mechanism was chosen for: persona no longer keeps a
+    copy of the previous engine, so if upstream stops hosting that release the
+    rollback target is genuinely unreachable and the operator is where they were
+    before this existed. The caller must REPORT that plainly — a rollback that
+    silently installs something else is worse than one that refuses."""
+    if not tag:
+        return "", "", ""
+    try:
+        data = egress.fetch_json(
+            RELEASE_BY_TAG_API.format(tag=tag), timeout=timeout
+        )
+        return _release_asset(data)
     except Exception:
         return "", "", ""
 
@@ -951,6 +1112,12 @@ def ensure_engine(
             # attempts, so burning them only delays the same answer.
             return False, message
         if installed:
+            # BEFORE write_version, always — version.txt has one slot, and once
+            # it is overwritten the identity of the build being replaced is gone
+            # from the machine. On a first install there is nothing to demote,
+            # so this simply records the starting point; on a re-install after a
+            # wipe it is the same. Either way the NEXT swap has a target.
+            record_installed_build(tag, digest)
             write_version(tag)
             return True, tag
         last = "download failed"
@@ -963,3 +1130,183 @@ def ensure_engine(
     if log:
         log(f"Engine download failed: {last}")
     return False, last
+
+
+def revert_to_previous_build(
+    progress=None, timeout: int = 600, log=None
+) -> tuple[bool, str]:
+    """Go BACK to the build that was working before the last successful swap, by
+    RE-DOWNLOADING it. Returns (ok, message).
+
+    This is the operator's undo for a bad engine update, and unlike the Firefox
+    side's revert it MOVES BYTES: Chromium keeps one un-versioned tree, so the
+    previous build's files are genuinely gone (the success path destroys them,
+    deliberately and unchanged — see _promote_staging). What survives a swap is
+    the previous build's IDENTITY, and that is enough to fetch it again.
+
+    The owner's call, 2026-08-23: keeping a second ~300-600MB engine tree on
+    every operator's disk forever, against an event that has never been
+    observed, is not worth it — a rollback re-downloads instead.
+
+    Verified against the RECORDED digest, never against whatever upstream
+    currently advertises for that tag. That is the point of storing the pair:
+    re-asking the API what this tag should hash to would make the rollback trust
+    a fresh response, which is the check PS-49 exists to prevent. The API is
+    asked only for the URL; the digest comes off the disk record.
+
+    Refused, with a plain message, in exactly three cases — and never silently:
+
+      * nothing recorded to go back to (rollback_target is empty). Includes the
+        machine that upgraded before this record existed, and any record whose
+        digest is missing, which _entry answers as no target at all.
+      * a profile is RUNNING. The install replaces the tree in place, so this
+        is the same guard the unattended update obeys, for the same reason.
+      * UPSTREAM NO LONGER SERVES THAT RELEASE. This is the honest limit of the
+        whole design and the trade the owner accepted: if the tag is yanked or
+        deleted the target is unreachable and the operator is where they were
+        before this existed. It is REPORTED, in those words — a rollback that
+        quietly installs something else instead would be worse than one that
+        refuses, and "the newest build" is exactly the thing being rolled back
+        from.
+
+    On success the pin is set, which is what makes the reversal SURVIVE: the
+    hourly unattended check would otherwise see the build just rejected as newer
+    than what is installed and re-install it within the hour.
+    """
+    tag, digest = rollback_target()
+    if not tag:
+        message = (
+            "Chromium engine: nothing to go back to — no previous build is "
+            "recorded on this machine"
+        )
+        if log:
+            log(message)
+        return False, message
+    # Fails CLOSED when no oracle is wired, exactly as the unattended install
+    # does — and that is the right default even for an explicit click, because
+    # the cost of a false "idle" is replacing a running browser's binary
+    # underneath it. `log` is passed so the unwired/faulty-oracle reason reaches
+    # the operator rather than being swallowed behind the message below.
+    if _engine_in_use(log=log):
+        message = (
+            "Chromium engine: close your running profiles before going back to "
+            f"{tag}"
+        )
+        if log:
+            log(message)
+        return False, message
+    # The URL only. The digest is the RECORDED one, above.
+    _t, url, _fresh_digest = fetch_release_full(tag, timeout=20)
+    if not url:
+        # The stated limit, reported plainly rather than papered over.
+        message = (
+            f"Chromium engine: {tag} is no longer available from upstream, so "
+            "persona cannot go back to it. Nothing has been changed — the "
+            "engine you have is still installed."
+        )
+        if log:
+            log(message)
+        return False, message
+    try:
+        ok = download_engine(
+            url,
+            timeout=timeout,
+            digest=digest,
+            progress=progress,
+            # ARMED, exactly as the unattended update arms it, and for the same
+            # TOCTOU reason: the check above is a cheap early exit made before a
+            # download that takes minutes, and a profile can launch inside that
+            # window. This is the binding guard — asked again under the install
+            # lock, immediately before the tree is replaced.
+            defer_if_in_use=True,
+            log=log,
+            tag=tag,
+        )
+    except EngineUnverifiable as e:
+        # Unreachable via the recorded digest (rollback_target refuses a
+        # digest-less record), so this can only mean the record was hand-edited.
+        # Reported as the refusal it is, not as a download failure.
+        message = str(e)
+        if log:
+            log(message)
+        return False, message
+    except InstallDeferred:
+        message = (
+            "Chromium engine: a profile started while the download was running "
+            f"— {tag} is on disk and going back will finish on the next try"
+        )
+        if log:
+            log(message)
+        return False, message
+    if not ok:
+        message = f"Chromium engine: going back to {tag} failed — download failed"
+        if log:
+            log(message)
+        return False, message
+    # ORDER MATTERS, exactly as it does on the way forward: record first (which
+    # demotes the build we just left), then overwrite the one-slot version.txt.
+    # Recording makes the swap we just performed reversible in its own right —
+    # an operator who reverts and then changes their mind can go forward again
+    # by the same gesture, because the build they reverted FROM is now the
+    # recorded previous one.
+    record_installed_build(tag, digest)
+    write_version(tag)
+    _set_pin(tag, log=log)
+    message = (
+        f"Chromium engine: went back to {tag} — automatic updates are paused "
+        "until you resume them"
+    )
+    if log:
+        log(message)
+    return True, message
+
+
+def _set_pin(tag: str, log=None) -> None:
+    """Write the standing "not that build" instruction, best-effort.
+
+    Read through a try for the same reason engine_install.pinned_build() is: a
+    settings file that cannot be written must not turn a COMPLETED revert into a
+    reported failure. The engine on disk is already the reverted one; a missing
+    pin costs the reversal its durability, not its correctness."""
+    try:
+        from ...core import settings
+
+        settings.set_chromium_build_pin(tag)
+    except Exception as e:
+        if log:
+            log(
+                f"Chromium engine: couldn't record the revert ({e}) — the "
+                "automatic update may put you back on the newer build"
+            )
+
+
+def pinned_build() -> str:
+    """The Chromium tag an operator deliberately reverted to, or "" when they
+    never did. Degrades to "" (normal updating) when settings are unreadable —
+    the same fail-soft shape as engine_install.pinned_build()."""
+    try:
+        from ...core import settings
+
+        return settings.chromium_build_pin()
+    except Exception:
+        return ""
+
+
+def resume_engine_updates(log=None) -> None:
+    """Clear the pin: the operator saying "go forward again". The next check
+    offers the newest acceptable build once more.
+
+    Unlike the Firefox side's resume this is NOT instant — the build they
+    reverted from is not on disk any more, so going forward is an ordinary
+    download on the next check rather than a change of which tree launches.
+    That asymmetry is the whole cost of not keeping a second engine tree."""
+    try:
+        from ...core import settings
+
+        settings.set_chromium_build_pin("")
+    except Exception as e:
+        if log:
+            log(f"Chromium engine: couldn't clear the pin ({e})")
+        return
+    if log:
+        log("Chromium engine: automatic updates resumed")
