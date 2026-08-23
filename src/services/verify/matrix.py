@@ -67,7 +67,7 @@ from .checkers import (
 )
 from .exit_guard import Exit
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # The body of the document — data, not header. See `schema_ledger.header_keys`.
 RECORD_BODY_KEY = "readings"
@@ -97,6 +97,21 @@ RECORD_BODY_KEY = "readings"
 #     is that a reading taken from now on says 2, so the two are distinguishable
 #     without a consumer sniffing for individual fields — which is precisely
 #     what PS-67 was forced to do.
+# 3 - PS-103 added `masking_layer`. This is the generation boundary that MATTERS
+#     MOST to a consumer, because it is the one that changes the record's
+#     SUBJECT rather than adding a field about it. Generations 1 and 2 describe
+#     **the packaged engines persona ships, configured with a seed and some
+#     flags**: the harness installed none of persona's own masking layer, so
+#     none of `webgl_ext`, `audio_ext`, `locale_ext`, `native_ext`,
+#     `stealth_ext`, `measuretext_ext`, `voice_ext`, `device_ext`, `gpu_ext` or
+#     `canvas_ctx_ext` was present in any reading. Generation 3 describes the
+#     engine WITH that layer on top - what an operator's profile presents.
+#
+#     Those older records are NOT re-tagged and NOT backfilled. They are a real
+#     measurement of the engines and the exit, and they keep saying what they
+#     are. The version is what lets a consumer tell the two subjects apart
+#     without knowing PS-103 exists - which is the whole reason the subject is
+#     stated in the header rather than in a note.
 HEADER_GENERATIONS: "dict[int, frozenset[str]]" = {
     1: frozenset({
         "schema_version",
@@ -117,6 +132,20 @@ HEADER_GENERATIONS: "dict[int, frozenset[str]]" = {
         "seed",
         "declared_machine",
         "declared_machine_honoured",
+        "skipped_tiers",
+        "exit",
+        "counts",
+        "notes",
+    }),
+    3: frozenset({
+        "schema_version",
+        "observed_at",
+        "environment",
+        "engine",
+        "seed",
+        "declared_machine",
+        "declared_machine_honoured",
+        "masking_layer",
         "skipped_tiers",
         "exit",
         "counts",
@@ -396,10 +425,27 @@ def build_record(
     seed: int = 0,
     declared_machine: str = "",
     declared_machine_honoured: bool = True,
+    masking_layer: "dict | None" = None,
     skipped_tiers: "list[str] | None" = None,
     notes: "list[str] | None" = None,
 ) -> dict:
     """Assemble the committed document.
+
+    THE MASKING LAYER IS THE HEADER'S STATEMENT OF ITS OWN SUBJECT, and it is
+    the reason this generation exists. Every record written before PS-103
+    describes **the packaged engines persona ships, configured with a seed and
+    some flags** — the harness installed none of persona's own masking layer,
+    so a reading could not move when persona's masking changed. Those records
+    are not deleted: they are a real measurement of the engines and the exit.
+    But a consumer must be able to tell WHICH SUBJECT a record describes without
+    knowing that ticket exists, and this key plus the schema version is where
+    that belongs.
+
+    ``None`` means the run did not say — which is what every generation-2 record
+    is, and it is recorded as ``null`` rather than as an empty layer. The two are
+    genuinely different findings: "no layer was installed" is a measurement,
+    "this run predates the question" is not, and collapsing them would let an
+    old engine-only record read as a deliberate control arm.
 
     The observed EXIT is a first-class part of the header, not a footnote: a
     fingerprint reading that moved when only the address moved is a coupling,
@@ -452,6 +498,7 @@ def build_record(
         "seed": seed,
         "declared_machine": declared_machine,
         "declared_machine_honoured": declared_machine_honoured,
+        "masking_layer": masking_layer,
         "skipped_tiers": list(skipped_tiers or []),
         "exit": exit_.as_record(),
         "counts": {
