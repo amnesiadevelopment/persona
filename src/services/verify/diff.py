@@ -292,6 +292,58 @@ def _unread(side: Any) -> bool:
     return side is None
 
 
+def _unread_for_unlinkability(side: Any) -> bool:
+    """:func:`_unread`, plus: a ``null`` reading is not evidence of an IDENTITY.
+
+    Scoped to :func:`compare_profiles` **deliberately**, and the scoping is the
+    whole design — this must NOT be folded into :func:`_unread`.
+
+    On the must-differ axis the question is "are these two profiles two
+    machines?", and it is answered by comparing seed-derived identity vectors.
+    A probe that returns ``null`` returned it because the API it reads was not
+    THERE — no context, no constructor, no such property. That is the absence
+    of a reading wearing a reading's clothes: ``snapshot`` records it as
+    ``{"value": null}``, and :func:`_unread` keys on the PRESENCE of ``value``,
+    so two profiles that both failed to read compare EQUAL and are reported
+    COLLIDING with ``inconclusive_count`` 0 — a false leak report on every
+    pair, from a run that does not even flag itself as resting on nothing.
+    Measured, not argued: the shipped ``webgl.readback`` expression was
+    observed reading ``null`` on a Firefox launch that reached no WebGL
+    context, and two DIFFERENT Firefox profiles were reported linkable on it.
+    Note the trigger is the CONTEXT being absent, which is a property of the
+    HOST rather than of the engine: on a host whose Firefox does have WebGL the
+    same expression reads a seed-derived digest (verified — the baseline
+    profile's own seed reproduces its recorded digest exactly). So this rule is
+    not about Firefox; it is about any run where an identity vector's API is
+    missing, whatever the reason.
+
+    **Why this cannot be a global rule.** On the CONTINUITY axis ``null`` is
+    frequently a real, load-bearing reading: this project's own Firefox
+    baseline carries nine of them (``navigator.webdriver``,
+    ``navigator.deviceMemory``, ``navigator.userAgentData``,
+    ``stealth.connection``, ...), where "this property does not exist" is
+    exactly what the profile is supposed to present. There, a drift from
+    ``null`` to a VALUE APPEARING is a hardware/automation tell showing up —
+    the single loudest thing :func:`diff_snapshots` can report — and treating
+    ``null`` as unread would silence it into "look again". So the two axes
+    genuinely disagree about what ``null`` means, and each gets the reading its
+    own question needs.
+
+    That the two never conflict is a property of the inventory rather than a
+    coincidence, and it is worth stating because it is what keeps this safe:
+    every probe recorded ``null`` in a baseline today is
+    :data:`probes.SHARED`/:data:`probes.POOLED`, i.e. never reaches this
+    predicate, and no :data:`probes.INDEPENDENT` probe has a legitimate
+    ``null`` reading — an identity vector that reads ``null`` HAS no identity
+    to compare, whatever the reason.
+    """
+    if _unread(side):
+        return True
+    if isinstance(side, dict):
+        return side.get("value") is None
+    return side is None
+
+
 def _status(entry: Any) -> "str | None":
     return entry.get("status") if isinstance(entry, dict) else None
 
@@ -522,6 +574,27 @@ def compare_profiles(
     Two probes that both errored are likewise INCONCLUSIVE and never
     "differing": that is the same failure twice, not two distinct identities.
 
+    **And a ``null`` READING is treated as unread here, unlike everywhere
+    else** — see :func:`_unread_for_unlinkability`. A probe returns ``null``
+    when the API it reads was not there, so on this axis it is an absence
+    wearing a reading's clothes: recorded as ``{"value": null}``, it satisfies
+    ``_unread``'s "carries a value" test, and two profiles that both failed to
+    read would compare EQUAL and be reported COLLIDING with an inconclusive
+    count of 0 — a false leak report on every pair, from a run that does not
+    flag itself as resting on nothing. Observed on ``webgl.readback``: a
+    Firefox launch that reached no WebGL context read ``null``, and without
+    this rule every pair of such profiles was reported linkable on a vector
+    neither of them read. WebGL AVAILABILITY on that launch path is
+    host-dependent, not an engine property — where the context IS present the
+    same expression reads a seed-derived digest — so this rule is not about
+    Firefox, and must not be narrowed to it: it covers any run where an
+    identity vector's API is missing, whatever the reason.
+    This is NOT the rule on the continuity axis,
+    where ``null`` is routinely a real reading ("this property does not exist"
+    is what the profile is supposed to present) and a ``null`` that becomes a
+    VALUE is a tell appearing — the loudest thing :func:`diff_snapshots`
+    reports.
+
     **A vector absent from either snapshot is INCONCLUSIVE too, never skipped.**
     The other two comparators iterate a UNION and report ``ADDED``/``REMOVED``,
     honouring the module rule at the top of this file: "the probe vanished" and
@@ -572,7 +645,7 @@ def compare_profiles(
         # see the docstring: one side read and one side missing is not evidence
         # of distinctness on THIS axis. ABSENT lands here too, which is the
         # whole reason the loop walks targets rather than an intersection.
-        if _unread(a_side) or _unread(b_side):
+        if _unread_for_unlinkability(a_side) or _unread_for_unlinkability(b_side):
             status = INCONCLUSIVE
         elif a_side == b_side:
             status = COLLIDING
