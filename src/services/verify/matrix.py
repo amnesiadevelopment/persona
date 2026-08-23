@@ -329,6 +329,29 @@ def extract_json_item(checker: Checker, item: JsonItem, payload: Any) -> Reading
     return read(checker.id, item, node)
 
 
+def _negated_at(text: str, start: int, negator: str) -> bool:
+    """Is the match at ``start`` introduced by ``negator``?
+
+    Looks BACKWARDS from the match over any run of whitespace and asks whether
+    the word immediately before it is the negator. Whitespace-insensitive by
+    construction, which is the whole point: this replaced a fixed-width
+    lookbehind that could only ever spell a single space.
+
+    Anchored on a word boundary, so "casino masking detected" is not read as a
+    negation of "masking detected" — the preceding word must BE the negator,
+    not merely end with it.
+    """
+    before = text[:start]
+    stripped = before.rstrip()
+    # Something must separate the negator from the phrase; a match glued
+    # directly onto the preceding word is not a negated verdict.
+    if stripped == before:
+        return False
+    return bool(
+        re.search(rf"(?:^|[^0-9A-Za-z]){re.escape(negator)}$", stripped, re.I)
+    )
+
+
 def extract_text_item(checker: Checker, item: TextItem, text: str) -> Reading:
     """Match ``item.pattern`` against a rendered page's visible text.
 
@@ -340,10 +363,26 @@ def extract_text_item(checker: Checker, item: TextItem, text: str) -> Reading:
     ``\\s+`` is applied to the haystack's runs of whitespace only in the sense
     that patterns are written against the text as the page renders it; nothing
     is normalised away here, because normalising the haystack is how a pattern
-    silently starts matching something it was not written for.
+    silently starts matching something it was not written for. That constraint
+    is why ``negated_by`` is enforced by WALKING the matches below rather than
+    by collapsing the haystack's whitespace first: the GPU patterns are
+    newline-anchored and a global collapse would break them.
+
+    THE NEGATION IS ENFORCED HERE, NOT IN THE PATTERN (PS-119). An item that
+    declares ``negated_by`` is matched against EVERY occurrence in the page, and
+    the ones a negator introduces are skipped. The first occurrence that is NOT
+    negated is the reading; if every occurrence is negated, the item is ABSENT —
+    which for an adverse item is the clean verdict.
+
+    This exists because the previous spelling, an inline ``(?<!no )``, is
+    FIXED-WIDTH: it matched a clean "No masking detected" the moment the page
+    put a newline, a tab or two spaces between the two — which is exactly what
+    ``inner_text`` yields when a checker renders its verdict as a component
+    tree. A clean page then read as a detection, with a real match and a real
+    quote behind it.
     """
     try:
-        match = re.search(item.pattern, text, re.IGNORECASE)
+        matches = list(re.finditer(item.pattern, text, re.IGNORECASE))
     except re.error as exc:
         # A malformed pattern is OUR defect, and it is unobtainable rather than
         # absent: we did not look, so we cannot say the page lacks the verdict.
@@ -353,10 +392,29 @@ def extract_text_item(checker: Checker, item: TextItem, text: str) -> Reading:
             f"the pattern is not a valid regular expression: {exc}",
             pattern=item.pattern,
         )
+
+    negator = getattr(item, "negated_by", "")
+    match = None
+    negated = 0
+    for candidate in matches:
+        if negator and _negated_at(text, candidate.start(), negator):
+            negated += 1
+            continue
+        match = candidate
+        break
+
     if match is None:
-        return absent(
-            checker.id, item, "the pattern did not match", pattern=item.pattern
+        # Distinguish "the page never says this" from "the page says it, and
+        # every time it does a negator introduces it". Both are ABSENT — the
+        # verdict is the same and must not read as "we could not look" — but
+        # only the second one tells a later reader that the guard did work.
+        reason = (
+            f"the pattern matched {negated} time(s), every one of them "
+            f"negated by {negator!r}"
+            if negated
+            else "the pattern did not match"
         )
+        return absent(checker.id, item, reason, pattern=item.pattern)
     whole = match.group(0)
     value: Any = True
     if item.capture:

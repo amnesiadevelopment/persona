@@ -347,7 +347,10 @@ def _record_name(engine: str, machine: str, seed: int) -> str:
 
 
 def _notes_for(
-    engine: str, requested_machine: str, allow_unsandboxed: bool = False
+    engine: str,
+    requested_machine: str,
+    allow_unsandboxed: bool = False,
+    install_layer: bool = True,
 ) -> "list[str]":
     notes = [
         "The GPU rows are PRODUCT rows, not environment notes. This container "
@@ -402,6 +405,19 @@ def _notes_for(
                 "sandboxed reading as possibly environmental until it is "
                 "reproduced on a host where the sandbox works."
             )
+    if not install_layer:
+        notes.append(
+            "THIS READING IS OF THE PACKAGED ENGINE ONLY, with none of "
+            "persona's masking layer (--no-masking-layer). It is the CONTROL "
+            "ARM of a differential, not a reading of the product. A verdict "
+            "here describes what the engine presents BEFORE persona's layer "
+            "reaches the page — so a clean row is not evidence the product is "
+            "clean, and an adverse row is not evidence the layer caused it. "
+            "Read it only ALONGSIDE the arm taken with the layer installed, "
+            "and only if both arms record the SAME exit address: the exit "
+            "rotates by design, and two arms taken through different addresses "
+            "are not a comparison."
+        )
     return notes
 
 
@@ -532,6 +548,7 @@ def _read_one(
                 declared_machine=requested_machine,
                 allow_unsandboxed=args.allow_unsandboxed_chromium,
                 layer_sink=_capture_layer,
+                install_layer=not args.no_masking_layer,
             )
         )
         print(
@@ -558,6 +575,7 @@ def _read_one(
             engine,
             requested_machine,
             allow_unsandboxed=args.allow_unsandboxed_chromium,
+            install_layer=not args.no_masking_layer,
         ),
     )
 
@@ -577,6 +595,16 @@ def _cmd_read(args: argparse.Namespace) -> int:
         ),
         file=sys.stderr,
     )
+
+    if args.no_masking_layer and args.skip_browser:
+        raise SystemExit(
+            "--no-masking-layer and --skip-browser contradict each other: the "
+            "layer is installed in the BROWSER tier, so a run that skips that "
+            "tier never installs it and never would have. The record would "
+            "claim to be a deliberate control arm while carrying no browser "
+            "reading to be the control arm OF — and a later comparison could "
+            "not tell that from a real engine-only reading. Drop one."
+        )
 
     if len(plan) > 1 and args.output == "-":
         raise SystemExit(
@@ -911,6 +939,20 @@ def build_parser() -> argparse.ArgumentParser:
             "and the record says so. Needed only on a host that forbids the "
             "unprivileged user namespace the sandbox requires, where chromium "
             "otherwise dies before opening a debug port"
+        ),
+    )
+    rd.add_argument(
+        "--no-masking-layer", action="store_true",
+        help=(
+            "read WITHOUT persona's own masking layer — the CONTROL ARM of a "
+            "differential, taken live through the proven exit. Off by default: "
+            "a reading without the layer does not describe the product. The "
+            "record says which arm it is, in masking_layer (route='none', with "
+            "the reason) and in a header note, so it can never be mistaken for "
+            "a reading of the product. Both arms of a comparison must be taken "
+            "close together and through the SAME exit — the address rotates by "
+            "design, and an arm that rotated is not a comparison. Refused with "
+            "--skip-browser, which is where the layer would have been installed"
         ),
     )
     rd.add_argument(
