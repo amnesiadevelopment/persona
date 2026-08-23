@@ -1493,9 +1493,9 @@ def test_a_must_differ_vector_this_engine_cannot_read_is_inconclusive_not_a_pass
     # reason it is safe to ship the probe on an engine that cannot read it.
     #
     # `webgl.readback` reads null on Firefox because that launch path reaches no
-    # WebGL context at all (MEASURED: `getParameter(VERSION)` is null too, and
-    # `invisible_launch.py` carries no webgl/readPixels spoof by any route). The
-    # honest answer for two such profiles is "this vector was not measured", and
+    # WebGL context at all (MEASURED: `getParameter(VERSION)` is null too, so
+    # there is no surface for a spoof to perturb). The honest answer for two
+    # such profiles is "this vector was not measured", and
     # the two wrong answers are opposite: COLLIDING invents a leak against
     # profiles that are fine, and a silent skip certifies unlinkability nobody
     # measured. Both are worse than INCONCLUSIVE, which denies the pass and says
