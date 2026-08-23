@@ -215,6 +215,193 @@ def test_rotation_within_poland_is_not_a_fault(monkeypatch):
     assert first.country == second.country == "PL"
 
 
+# --- PS-128: one dead oracle must not refuse a provably good exit -----------
+#
+# The Python twin of the engine-side rows in `test_verify_checkers.py`. Both
+# sites walk a provider list; both must advance on a NON-ANSWER and stop dead
+# on a wrong-country ANSWER. They are tested separately because they share no
+# code — a defect fixed in one is not fixed in the other, which is exactly how
+# the no-country branch below survived the first round.
+
+
+def _ipwho_payload(country_code="PL", ip="95.49.113.111"):
+    """The SECOND provider's dialect, matching the real body captured through
+    the mobile exit on 2026-08-23.
+
+    It differs from ipinfo's shape in three ways that all matter to the
+    normaliser: ``country`` is the full NAME with the code in ``country_code``,
+    the ISP is nested under ``connection``, and ``timezone`` is an OBJECT
+    rather than a string. A double that flattened these would prove the
+    normaliser works against a shape the provider never sends.
+    """
+    return {
+        "ip": ip,
+        "success": True,
+        "country": "Poland",
+        "country_code": country_code,
+        "region": "Masovian Voivodeship",
+        "city": "Warsaw",
+        "connection": {
+            "asn": 5617,
+            "org": "Orange Polska Spolka Akcyjna",
+            "isp": "Orange Polska Spolka Akcyjna",
+        },
+        "timezone": {"id": "Europe/Warsaw", "abbr": "CEST", "utc": "+02:00"},
+    }
+
+
+def _observe_scripted(monkeypatch, script):
+    """Answer each provider DIFFERENTLY, and record who was actually asked.
+
+    The `_observe` helper above hands the same payload to every provider, so
+    it cannot see the loop at all — it would pass identically against the
+    single-oracle version this replaced. `script` maps a substring of the
+    provider URL to either a payload (returned) or an exception (raised).
+
+    Returns `(result_or_exception, asked)` so a test can assert on the ANSWER
+    and on WHICH providers were consulted — the second is what tells a real
+    fall-through from a lucky identical payload.
+    """
+    asked = []
+
+    def fake_fetch_json(url, **kw):
+        asked.append(url)
+        for fragment, behaviour in script.items():
+            if fragment in url:
+                if isinstance(behaviour, Exception):
+                    raise behaviour
+                return behaviour
+        raise AssertionError(f"test script has no entry for {url}")
+
+    monkeypatch.setattr(exit_guard, "fetch_json", fake_fetch_json)
+    try:
+        return observe_exit("socks5h://127.0.0.1:9"), asked
+    except ExitNotProven as exc:
+        return exc, asked
+
+
+def test_a_rate_limited_first_provider_falls_through_to_the_second(monkeypatch):
+    """THE REGRESSION THIS EXISTS FOR.
+
+    ipinfo.io answered `HTTP 429 Rate limit hit` through the mobile exit — the
+    limit attaches to the exit's SHARED address, so it is not ours to clear
+    and cannot be retried around. Every reading that run was supposed to take
+    was refused over an exit that was provably Polish.
+
+    The assertion is that the observation SUCCEEDS and returns PL, not merely
+    that a second URL was visited — which would pass even if the country never
+    reached the caller.
+    """
+    observed, asked = _observe_scripted(
+        monkeypatch,
+        {
+            "ipinfo.io": FetchFailed("HTTP 429 Rate limit hit"),
+            "ipwho.is": _ipwho_payload(),
+        },
+    )
+
+    assert isinstance(observed, Exit), f"refused a healthy exit: {observed}"
+    assert observed.country == "PL"
+    assert observed.ip == "95.49.113.111"
+    # It really did fall through rather than reading the 429 as an answer.
+    assert len(asked) == 2
+
+
+def test_a_provider_that_answers_without_a_country_is_not_an_answer(
+    monkeypatch
+):
+    """A 200 carrying valid JSON and NO country is a NON-ANSWER, so the guard
+    must ask the next provider — the same rule the engine-side twin applies.
+
+    This is the sharper half of the 429 case and the one that is easy to miss.
+    The normaliser coerces a missing country to "", so without this branch the
+    body falls through to the country comparison and refuses a HEALTHY Polish
+    exit while reporting it as "(unknown)". That message is actively FALSE
+    rather than merely unhelpful, which makes it worse than the rate limit the
+    fallback was added to survive.
+    """
+    observed, asked = _observe_scripted(
+        monkeypatch,
+        {
+            # Shape of a rate-limit/error body: parses fine, says nothing.
+            "ipinfo.io": {"ip": "95.49.113.111", "error": "rate limited"},
+            "ipwho.is": _ipwho_payload(),
+        },
+    )
+
+    assert isinstance(observed, Exit), f"refused a healthy exit: {observed}"
+    assert observed.country == "PL"
+    assert len(asked) == 2
+
+
+def test_the_second_providers_dialect_is_normalised_not_read_as_Poland(
+    monkeypatch
+):
+    """ipwho.is says `"country": "Poland"` with the CODE in `country_code`.
+
+    Read with ipinfo's key layout that yields "POLAND", which does not equal
+    "PL" — so the guard would refuse a healthy Polish exit and say it was in
+    the wrong country. The nested fields are asserted too: they must be
+    REACHED rather than stringified, or the record beside every reading
+    silently carries `{'id': 'Europe/Warsaw', ...}` as its timezone.
+    """
+    observed, _ = _observe_scripted(
+        monkeypatch, {"ipinfo.io": _ipwho_payload()}
+    )
+
+    assert isinstance(observed, Exit), f"refused a healthy exit: {observed}"
+    assert observed.country == "PL"
+    assert observed.timezone == "Europe/Warsaw"
+    assert observed.org == "Orange Polska Spolka Akcyjna"
+    assert observed.city == "Warsaw"
+
+
+def test_a_wrong_country_is_NOT_retried_against_a_friendlier_provider(
+    monkeypatch
+):
+    """The fallback is redundancy for REACHABILITY, never a second opinion on
+    geography. A provider that answers is authoritative: if the first says US,
+    the run ends there. Asking the next one until a Polish answer turns up is
+    how a fallback becomes a way to launder a bad exit.
+    """
+    observed, asked = _observe_scripted(
+        monkeypatch,
+        {
+            "ipinfo.io": {"ip": "8.8.8.8", "country": "US"},
+            # Polish, and must never be consulted.
+            "ipwho.is": _ipwho_payload(),
+        },
+    )
+
+    assert isinstance(observed, ExitNotProven)
+    assert "US" in str(observed)
+    assert len(asked) == 1, "a wrong country was re-shopped to another provider"
+
+
+def test_every_provider_answering_without_a_country_refuses_the_run(
+    monkeypatch
+):
+    """The list is exhausted, so nothing may be recorded — and the message
+    says WHICH of the two causes it was. "Nothing could be reached" and "it
+    answered and did not say" point at opposite halves (the proxy/credential
+    vs. a rate-limit body), and collapsing them makes an operator chase the
+    wrong one.
+    """
+    observed, asked = _observe_scripted(
+        monkeypatch,
+        {
+            "ipinfo.io": {"ip": "95.49.113.111"},
+            "ipwho.is": {"ip": "95.49.113.111"},
+        },
+    )
+
+    assert isinstance(observed, ExitNotProven)
+    assert len(asked) == 2, "the guard stopped before exhausting the list"
+    assert "carried no country" in str(observed)
+    # NOT the unreachable message: both providers answered.
+    assert "could not observe the exit" not in str(observed)
+
+
 # --- the credential never reaches a message ---------------------------------
 
 

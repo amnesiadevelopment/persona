@@ -59,10 +59,6 @@ DEFAULT_CREDENTIAL_PATH = "/workspace/_secrets/test-proxy.txt"
 # geography cross-check on every checker page is taken against it.
 EXPECTED_COUNTRY = "PL"
 
-# Asked through the proxy. ipinfo answers the country directly and was the
-# endpoint the manual reconnaissance used, so a later run can compare.
-EXIT_OBSERVATION_URL = "https://ipinfo.io/json"
-
 # The SAME question, asked of more than one provider — because a single oracle
 # makes the guard's availability the run's availability.
 #
@@ -84,17 +80,25 @@ EXIT_OBSERVATION_URL = "https://ipinfo.io/json"
 #     reason to go and ask a friendlier provider until one agrees, which is
 #     how a multi-provider guard turns into a way to launder a bad exit.
 #   * only a provider that could not be reached, or that did not answer with
-#     a verdict at all (the 429 above), advances to the next one.
+#     a verdict at all, advances to the next one. There are two shapes of
+#     "no verdict" and BOTH advance: nothing came back (the 429 above), and
+#     something came back carrying no country. The second is easy to miss —
+#     the normaliser coerces a missing country to "", so a partial body that
+#     is not caught in the loop reaches the country comparison as empty and
+#     refuses a HEALTHY exit while reporting it as "(unknown)".
 #
 # Every entry is fetched through the proxy argument like every other fetch in
 # this module. Adding providers widens what can be OBSERVED; it does not widen
 # what is ACCEPTED, and there is still no path here that reaches the network
 # without the credential.
 # Only providers that can answer the GEOGRAPHY question belong here. An
-# address-only endpoint (api.ipify.org) was deliberately left out: it answers
-# 200 with a perfectly good `{"ip": ...}` and no country, which this guard
-# correctly treats as an unproven exit — so listing it would turn a healthy
-# run into a refusal for a reason that has nothing to do with the exit.
+# address-only endpoint (api.ipify.org) is left out because it can never
+# answer it: it returns 200 with a perfectly good `{"ip": ...}` and no
+# country, so it would occupy a slot in the order while being incapable of
+# proving anything. It is no longer DANGEROUS to list — since the no-country
+# branch above, such a body is treated as a non-answer and simply advances to
+# the next provider — but a provider that can only ever be skipped does not
+# belong in a list whose purpose is to answer.
 EXIT_OBSERVATION_URLS = (
     "https://ipinfo.io/json",
     "https://ipwho.is/",
@@ -257,36 +261,69 @@ def observe_exit(
     """
     candidates = (url,) if url else (urls or EXIT_OBSERVATION_URLS)
 
-    payload = None
+    observation = None
     failures = []
+    reached_any = False
     for candidate in candidates:
         try:
             payload = fetch_json(candidate, proxy_url=proxy_url, timeout=timeout)
-            break
         except (FetchFailed, ProxyRefused) as exc:
-            # Could not be reached, or did not answer with a verdict. This is
-            # the ONLY condition that advances to the next provider.
+            # Could not be reached at all.
             failures.append(f"{candidate}: {redact(str(exc))}")
+            continue
 
-    if payload is None:
+        reached_any = True
+
+        if not isinstance(payload, dict):
+            # Answered, but not with an object — so not with a verdict.
+            failures.append(
+                f"{candidate}: answered with {type(payload).__name__}, "
+                "not an object"
+            )
+            continue
+
+        candidate_observation = _normalise_observation(payload)
+
+        if not candidate_observation["country"]:
+            # Answered, but carried no country — a rate-limit body, an error
+            # page, or a dialect this normaliser cannot read. Not an answer,
+            # so try the next provider rather than refusing the run on it.
+            #
+            # This is the SECOND non-answer condition, and it is the one that
+            # is easy to miss: the normaliser coerces a missing country to
+            # "", so without this the run would fall through to the country
+            # comparison and refuse a HEALTHY Polish exit while reporting it
+            # as "(unknown)" — actively misleading rather than merely
+            # unhelpful, which is the worse failure this module warns about.
+            failures.append(f"{candidate}: answered, but carried no country")
+            continue
+
+        observation = candidate_observation
+        break
+
+    if observation is None:
+        detail = f"{len(failures)} provider(s) tried ({'; '.join(failures)})"
+        # TWO DIFFERENT CAUSES, AND THE MESSAGE SAYS WHICH — the engine-side
+        # twin draws the same distinction. "Nothing could be reached" and "it
+        # answered and did not say" mean opposite things about whether the
+        # exit is usable: the first points at the proxy or the credential, the
+        # second at a rate-limit body or an unreadable dialect. Collapsing
+        # them is what makes an operator chase the wrong half.
+        if not reached_any:
+            raise ExitNotProven(
+                f"could not observe the exit through the proxy — {detail}, "
+                "none answered. The connection may be refused, timed out, or "
+                "the credential unusable. Refusing to fall back to a direct "
+                "connection: rotation is the operator's, from the host."
+            )
         raise ExitNotProven(
-            "could not observe the exit through the proxy — "
-            f"{len(failures)} provider(s) tried, none answered "
-            f"({'; '.join(failures)}). The connection may be refused, timed "
-            "out, or the credential unusable. Refusing to fall back to a "
-            "direct connection: rotation is the operator's, from the host."
+            f"the exit could not be proven — {detail}, and every one that "
+            "answered carried no country. The exit is unproven, so nothing "
+            "may be recorded against it."
         )
 
-    if not isinstance(payload, dict):
-        raise ExitNotProven(
-            f"the exit observation endpoint answered with "
-            f"{type(payload).__name__}, not an object; the exit is unproven"
-        )
-
-    payload = _normalise_observation(payload)
-
-    country = str(payload.get("country") or "").upper()
-    ip = str(payload.get("ip") or "")
+    country = observation["country"].upper()
+    ip = observation["ip"]
     if not ip:
         raise ExitNotProven(
             "the exit observation carried no address, so the exit is unproven"
@@ -299,13 +336,16 @@ def observe_exit(
             "reading taken from the wrong country is not a worse reading, it "
             "is a meaningless one. Stopping rather than recording it."
         )
+    # Built from the NORMALISED observation, not from the raw payload: the
+    # raw one is whichever provider's dialect answered, so reading `timezone`
+    # off it would stringify ipwho.is's nested object rather than its `id`.
     return Exit(
         ip=ip,
         country=country,
-        region=str(payload.get("region") or ""),
-        city=str(payload.get("city") or ""),
-        org=str(payload.get("org") or ""),
-        timezone=str(payload.get("timezone") or ""),
+        region=observation["region"],
+        city=observation["city"],
+        org=observation["org"],
+        timezone=observation["timezone"],
     )
 
 
