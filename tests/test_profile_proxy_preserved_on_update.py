@@ -27,6 +27,7 @@ import pytest
 
 from src.models.profile import Profile
 from src.services.browser.process import _require_proxy_resolved
+from src.services.profile.coherence import IncoherentProfile
 from src.services.profile.manager import ProfileManager
 from src.services.profile.proxy_assignment import (
     PROXY_NONE,
@@ -72,9 +73,46 @@ def test_notes_edit_keeps_proxy(mgr):
 
 
 def test_device_type_edit_keeps_proxy(mgr):
-    mgr.add_profile("shopper", "PL-residential", "windows")
+    # PS-83 changed the VEHICLE here, never the assertion. This test's claim is
+    # "a device_type edit leaves the proxy alone", and that is unchanged and
+    # still asserted below. What changed is that `windows` + `mobile` is now a
+    # refused triple (coherence.py Rule 3: a profile that says "phone" must have
+    # a phone's OS), so the old setup could no longer perform a device_type edit
+    # at all — it raised before reaching the assertion, testing nothing.
+    # `android` is the smallest substitution that keeps this an APPLIED edit:
+    # the stored device_type is the "desktop" default, so desktop -> mobile is a
+    # real change to the field this test is named for, and it is coherent.
+    mgr.add_profile("shopper", "PL-residential", "android")
+    assert mgr.profiles["shopper"].device_type == "desktop"
+
     mgr.update_profile("shopper", "shopper", new_device_type="mobile")
+
     assert mgr.profiles["shopper"].proxy == "PL-residential"
+    # the edit really was applied — otherwise a no-op would satisfy the proxy
+    # assertion above and this test would pass without exercising anything.
+    assert mgr.profiles["shopper"].device_type == "mobile"
+
+
+def test_a_refused_device_type_edit_still_keeps_the_proxy(mgr):
+    """PS-83's other half of the same guarantee: a REFUSED edit must not clear
+    the proxy either.
+
+    PS-83 introduced the first edit that can be rejected mid-``update_profile``,
+    which is a path PS-44 could not have covered — before it, an edit either
+    applied or the profile did not exist. A refusal that had already clobbered a
+    field before raising would reintroduce exactly this ticket's defect (a
+    profile silently launching DIRECT on the operator's real IP) through a brand
+    new door, so it is pinned rather than assumed.
+    """
+    mgr.add_profile("shopper", "PL-residential", "windows")
+
+    with pytest.raises(IncoherentProfile):
+        mgr.update_profile("shopper", "shopper", new_device_type="mobile")
+
+    # the refusal is raised before ANY field is applied: nothing half-landed
+    assert mgr.profiles["shopper"].proxy == "PL-residential"
+    assert mgr.profiles["shopper"].device_type == "desktop"
+    assert mgr.profiles["shopper"].os_type == "windows"
 
 
 def test_os_edit_keeps_proxy(mgr):
