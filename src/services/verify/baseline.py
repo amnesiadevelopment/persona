@@ -109,6 +109,7 @@ ENV_SENSITIVE_PROBES: tuple[str, ...] = (
     "masking.webglGetParameter",
     "webgl.extensions",
     "webgl.parameters",
+    "webgl.readback",
     "webgl.unmasked",
 )
 

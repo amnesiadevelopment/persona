@@ -1170,6 +1170,29 @@ def _must_differ_probe():
     return sorted(targets)[0]
 
 
+def _unlinkable(tag, *, except_for=()):
+    """Per-profile values for every must-differ vector, so the vectors a test is
+    NOT manipulating read as this mode's silent pass.
+
+    Needed because `_fake_evaluate` answers an unnamed probe with the SAME
+    default for every profile, so each must-differ vector left at its default
+    collides. That is a fine model of one profile, and a wrong one for two: a
+    test isolating a single vector's handling would otherwise assert against
+    entries for its neighbours as well.
+
+    The tests below used to be written against an inventory where exactly ONE
+    probe was INDEPENDENT, so "the target's entry" and "the whole entry list"
+    were the same thing and the distinction was free. Adding a second one
+    separates them. Keyed off `must_differ_ids()` rather than a literal, so the
+    third classification costs nothing here either.
+    """
+    return {
+        pid: f"{tag}:{pid}"
+        for pid in probes.must_differ_ids()
+        if pid not in except_for
+    }
+
+
 # --- the classification -----------------------------------------------------
 
 
@@ -1298,8 +1321,16 @@ def test_a_vector_errored_on_both_sides_is_inconclusive_never_distinctness():
     # that distinctness would manufacture an unlinkability PASS out of evidence
     # nobody obtained.
     target = _must_differ_probe()
-    a = _profile_snapshot("alice", window_values={target: TypeError("no audio")})
-    b = _profile_snapshot("bob", window_values={target: TypeError("no audio")})
+    a = _profile_snapshot(
+        "alice",
+        window_values={**_unlinkable("alice", except_for=(target,)),
+                       target: TypeError("no audio")},
+    )
+    b = _profile_snapshot(
+        "bob",
+        window_values={**_unlinkable("bob", except_for=(target,)),
+                       target: TypeError("no audio")},
+    )
     entries = diff.compare_profiles(a, b)
     assert [e["status"] for e in entries] == [diff.INCONCLUSIVE]
     assert diff.inconclusive_count(entries) == len(entries)
@@ -1312,8 +1343,12 @@ def test_a_vector_read_for_one_profile_only_is_inconclusive_not_a_pass():
     # holding alice's digest and not holding bob's says nothing about whether
     # the two identities differ, so it must never read as distinctness.
     target = _must_differ_probe()
-    a = _profile_snapshot("alice")
-    b = _profile_snapshot("bob", window_values={target: TypeError("no audio")})
+    a = _profile_snapshot("alice", window_values=_unlinkable("alice"))
+    b = _profile_snapshot(
+        "bob",
+        window_values={**_unlinkable("bob", except_for=(target,)),
+                       target: TypeError("no audio")},
+    )
     entries = diff.compare_profiles(a, b)
     assert [e["status"] for e in entries] == [diff.INCONCLUSIVE]
 
@@ -1326,8 +1361,8 @@ def test_a_missing_probe_is_not_reported_as_the_profiles_differing():
     # ABSENT is one of the three cases `_unread` names; the comparator must
     # reach it, which means walking the INVENTORY rather than the intersection.
     target = _must_differ_probe()
-    a = _profile_snapshot("alice")
-    b = _profile_snapshot("bob")
+    a = _profile_snapshot("alice", window_values=_unlinkable("alice"))
+    b = _profile_snapshot("bob", window_values=_unlinkable("bob"))
     del b["probes"][probes.WINDOW][target]
     entries = diff.compare_profiles(a, b)
     assert [e["status"] for e in entries] == [diff.INCONCLUSIVE]
@@ -1347,8 +1382,8 @@ def test_a_target_recorded_in_NEITHER_snapshot_never_reads_as_a_pass(tmp_path):
     from src.services.verify import cli
 
     target = _must_differ_probe()
-    a = _profile_snapshot("alice")
-    b = _profile_snapshot("bob")
+    a = _profile_snapshot("alice", window_values=_unlinkable("alice"))
+    b = _profile_snapshot("bob", window_values=_unlinkable("bob"))
     for snap in (a, b):
         del snap["probes"][probes.WINDOW][target]
 
@@ -1440,14 +1475,14 @@ def test_cli_compare_exits_three_when_nothing_was_read(tmp_path):
     # that gap is exactly how a previous round shipped a demotion nobody saw.
     from src.services.verify import cli
 
-    target = _must_differ_probe()
+    # EVERY must-differ vector errors, not just one: the claim is about a
+    # comparison resting ONLY on unobtained readings, so a single readable
+    # neighbour would make the run a genuine finding (exit 1) and stop
+    # exercising the exit-3 path at all.
+    unread = {pid: TypeError("x") for pid in probes.must_differ_ids()}
     a, b = tmp_path / "a.json", tmp_path / "b.json"
-    snapshot.write(
-        _profile_snapshot("alice", window_values={target: TypeError("x")}), str(a)
-    )
-    snapshot.write(
-        _profile_snapshot("bob", window_values={target: TypeError("x")}), str(b)
-    )
+    snapshot.write(_profile_snapshot("alice", window_values=unread), str(a))
+    snapshot.write(_profile_snapshot("bob", window_values=unread), str(b))
     assert cli.main(["compare", str(a), str(b)]) == 3
 
 
@@ -1612,7 +1647,13 @@ def test_a_cross_engine_COLLISION_is_still_a_finding_once_allowed():
     a = _profile_snapshot("alice", engine="chromium")
     b = _profile_snapshot("bob", engine="firefox")
     entries = diff.compare_profiles(a, b, allow_cross_engine=True)
-    assert [e["status"] for e in entries] == [diff.COLLIDING]
+    # Both profiles carry the default reading for every must-differ vector, so
+    # every one of them collides. Asserted over the whole list rather than
+    # against a one-element literal: the claim is "a cross-engine collision is
+    # still reported", which is about the STATUS, not about how many vectors
+    # the inventory happens to classify as must-differ today.
+    assert entries, "a cross-engine collision must still be reported"
+    assert {e["status"] for e in entries} == {diff.COLLIDING}
 
 
 def test_the_refusal_is_raised_before_any_probe_is_read():

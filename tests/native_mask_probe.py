@@ -438,6 +438,123 @@ GL_OBSERVABLE_PROBE = r"""
 })()
 """
 
+# --------------------------------------------------------------------------
+# READBACK stubs (PS-90). A framebuffer faithful enough that the REAL
+# `webgl.readback` probe expression runs against it unmodified — the probe under
+# test is imported from `PROBES`, never retyped, so these cannot drift from what
+# ships.
+#
+# `GL_STUBS` above is not enough here: its `readPixels` is a no-op, so the
+# caller's buffer keeps whatever it was pre-filled with. That models the wrapper
+# fine (which is all it was built for) but not the DRAW, and this probe's whole
+# claim is about bytes that came out of a rendered surface.
+#
+# Faithful in the three ways that decide whether the probe works at all:
+#   * scissored clears actually write the rect, so the readback carries the
+#     probe's own MID-RANGE bands (0.30-0.70 -> 76-178). perturbBytes skips
+#     `v <= 1 || v >= 254`, so a stub that left the surface black would make a
+#     WORKING spoof read as a dead one.
+#   * alpha is written 255 and is therefore skipped, which is why `mid` comes
+#     out at exactly 3/4 of the buffer — the same ratio the real engine reports.
+#   * `getExtension('WEBGL_lose_context')` returns a working stub and RECORDS
+#     the release, so a probe that leaks the context is observable rather than
+#     merely disapproved of.
+# --------------------------------------------------------------------------
+
+GL_READBACK_STUBS = r"""
+globalThis.__released = 0;
+
+function WebGLRenderingContext() {}
+function WebGL2RenderingContext() {}
+
+(function () {
+  for (const C of [WebGLRenderingContext, WebGL2RenderingContext]) {
+    const P = C.prototype;
+    P.RGBA = 0x1908;
+    P.UNSIGNED_BYTE = 0x1401;
+    P.COLOR_BUFFER_BIT = 0x4000;
+    P.SCISSOR_TEST = 0x0C11;
+    P.DEPTH_TEST = 0x0B71;
+
+    P.enable = function enable() {};
+    P.disable = function disable() {};
+    P.scissor = function scissor(x, y, w, h) { this._sc = [x, y, w, h]; };
+    P.clearColor = function clearColor(r, g, b, a) { this._cc = [r, g, b, a]; };
+
+    P.clear = function clear() {
+      const W = this._w, fb = this._fb, cc = this._cc || [0, 0, 0, 1];
+      const sc = this._sc || [0, 0, this._w, this._h];
+      const to8 = (v) => Math.max(0, Math.min(255, Math.round(v * 255)));
+      const px = [to8(cc[0]), to8(cc[1]), to8(cc[2]), to8(cc[3])];
+      for (let y = sc[1]; y < sc[1] + sc[3]; y++) {
+        for (let x = sc[0]; x < sc[0] + sc[2]; x++) {
+          const i = (y * W + x) * 4;
+          fb[i] = px[0]; fb[i + 1] = px[1]; fb[i + 2] = px[2]; fb[i + 3] = px[3];
+        }
+      }
+    };
+
+    // Named `readPixels` so the wrapper inherits the name a detector reads.
+    P.readPixels = function readPixels(x, y, w, h, fmt, type, pixels) {
+      const W = this._w, fb = this._fb;
+      for (let j = 0; j < h; j++) {
+        for (let i = 0; i < w; i++) {
+          const src = ((y + j) * W + (x + i)) * 4;
+          const dst = (j * w + i) * 4;
+          pixels[dst] = fb[src]; pixels[dst + 1] = fb[src + 1];
+          pixels[dst + 2] = fb[src + 2]; pixels[dst + 3] = fb[src + 3];
+        }
+      }
+      // REARRANGEMENT HOOK: swap two bytes that hold DIFFERENT values, so the
+      // buffer's SUM is unchanged and only the arrangement moves. Lets a test
+      // ask the shipped probe the one question that separates a
+      // position-sensitive digest from a summing one. Off unless asked for.
+      if (globalThis.__swap) {
+        const i0 = 0, i1 = pixels.length - 4;
+        const t = pixels[i0]; pixels[i0] = pixels[i1]; pixels[i1] = t;
+      }
+    };
+
+    P.getExtension = function getExtension(name) {
+      if (name === 'WEBGL_lose_context') {
+        return { loseContext: function loseContext() { globalThis.__released++; } };
+      }
+      return null;
+    };
+  }
+})();
+
+globalThis.document = {
+  createElement: function (tag) {
+    if (tag !== 'canvas') return {};
+    const canvas = { width: 300, height: 150 };
+    canvas.getContext = function (kind) {
+      if (kind !== 'webgl' && kind !== 'experimental-webgl' && kind !== 'webgl2') {
+        return null;
+      }
+      const gl = Object.create(WebGLRenderingContext.prototype);
+      gl._w = canvas.width;
+      gl._h = canvas.height;
+      gl._fb = new Uint8Array(canvas.width * canvas.height * 4);
+      return gl;
+    };
+    return canvas;
+  },
+};
+"""
+
+# The same realm with NO WebGL available. AC#2: the probe must return null
+# rather than throw, matching the other GL probes.
+GL_NO_CONTEXT_STUBS = r"""
+function WebGLRenderingContext() {}
+function WebGL2RenderingContext() {}
+globalThis.document = {
+  createElement: function () {
+    return { width: 300, height: 150, getContext: function () { return null; } };
+  },
+};
+"""
+
 # The falsification (PS-63 AC#4): a spoof that DECLARES its seed and installs
 # nothing. This is what the replaced text assertions could not tell apart from
 # the real thing — `"987654" in js` passes on it, and two of these with

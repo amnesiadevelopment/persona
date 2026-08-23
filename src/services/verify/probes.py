@@ -320,6 +320,83 @@ PROBES: tuple[Probe, ...] = (
         "return out;})",
         note="Fixed pname list, hex-keyed so the snapshot is readable without a GL header.",
     ),
+    Probe(
+        "webgl.readback",
+        # WINDOW_ONLY, and this is a correctness constraint rather than a
+        # preference. MEASURED in a worker on this engine: OffscreenCanvas
+        # exists, but `getContext('webgl')` returns null and only 'webgl2'
+        # yields a context — so _JS_WITH_GL, which asks for 'webgl' then
+        # 'experimental-webgl', returns null there. A null is RECORDED as
+        # {"value": null}, and diff._unread keys on the PRESENCE of "value",
+        # so two profiles both reading null compare EQUAL and are reported
+        # COLLIDING. On a SHARED probe that is harmless (never compared); on
+        # an INDEPENDENT one it manufactures a false leak report on every
+        # pair. Declaring the realm we can actually read keeps the must-differ
+        # axis free of readings that are unobtainable by construction.
+        WINDOW_ONLY,
+        _JS_WITH_GL + "(function(gl){"
+        # A deterministic draw with NO shaders: scissored clears only. Shader
+        # compilation is the flakiest thing to depend on under a software
+        # renderer, and nothing here needs it — the vector is the readback,
+        # not the geometry.
+        "var W=32,H=32;"
+        "try{gl.disable(gl.DEPTH_TEST);}catch(e){}"
+        "gl.enable(gl.SCISSOR_TEST);"
+        # MID-RANGE colours, deliberately. webgl_ext's perturbBytes nudges a
+        # byte only `if (v > 1 && v < 254)` (webgl_ext.py:66), so a black or
+        # white surface is returned UNTOUCHED and this probe would read as a
+        # total spoof failure while the spoof is working perfectly. Four bands
+        # rather than one flat fill so the surface carries spatial structure
+        # for the position-sensitive digest below.
+        "var bands=[[0.30,0.45,0.60],[0.55,0.35,0.70],"
+        "[0.42,0.62,0.38],[0.66,0.50,0.28]];"
+        "for(var b=0;b<bands.length;b++){"
+        "gl.scissor(0,b*(H/4),W,H/4);"
+        "gl.clearColor(bands[b][0],bands[b][1],bands[b][2],1);"
+        "gl.clear(gl.COLOR_BUFFER_BIT);}"
+        "gl.disable(gl.SCISSOR_TEST);"
+        # Uint8Array / RGBA UNSIGNED_BYTE: perturbBytes returns early on any
+        # other destination type (webgl_ext.py:60-63), so a float readback
+        # would observe no seed variance at all.
+        "var px=new Uint8Array(W*H*4);"
+        "gl.readPixels(0,0,W,H,gl.RGBA,gl.UNSIGNED_BYTE,px);"
+        # FNV-1a over EVERY byte, not a sum and not a sample.
+        #   * Not a sample: _STRIDE is 17 (webgl_ext.py:24), so only every
+        #     17th byte is touched at all; a narrow sample reads a false "no
+        #     variance". 4096 bytes span ~241 touched indices.
+        #   * Not a sum: the deltas are +/-1 each, so a sum is a random walk
+        #     over a ~+/-40 range — small enough that two seeds collide by
+        #     ARITHMETIC rather than by identity. That is the pigeonhole
+        #     property which makes a vector POOLED, and it would have made
+        #     this probe INDEPENDENT by declaration and POOLED in behaviour.
+        #     A position-sensitive hash makes a collision a real collision.
+        "var h=2166136261,mid=0;"
+        "for(var i=0;i<px.length;i++){var v=px[i];"
+        "if(v>1&&v<254)mid++;"
+        "h=Math.imul(h^v,16777619);}"
+        # `mid` is the self-check that keeps a green from being empty: it is
+        # how many bytes were even ELIGIBLE for perturbation. If a future
+        # change makes the draw black or white, `mid` collapses toward the
+        # alpha-only floor and the digest stops varying — this says which of
+        # the two happened, rather than leaving "identical digests" to be read
+        # as a spoof failure. An integer, so no float formatting to defeat.
+        "return {digest:h>>>0,bytes:px.length,mid:mid};"
+        "})",
+        # THE SECOND must-differ vector. webgl_ext.py adds a deterministic
+        # per-(seed, byte-index) +/-1 delta to every 17th byte of a byte-typed
+        # readPixels result (webgl_ext.py:5-7, :59-70) precisely BECAUSE the
+        # GPU-less VM renders through SwiftShader, where the real pixels
+        # collide across profiles and link them. Continuous and seed-derived,
+        # not drawn from a pool, so two DISTINCT seeds agreeing here is not
+        # pigeonhole — it is linkability.
+        #
+        # OBSERVED, not argued (this is why the classification is safe to
+        # make): under ANGLE/SwiftShader with the extension loaded, seeds
+        # 111/222/333 produced three distinct digests, each distinct from the
+        # unspoofed baseline, and seed 111 reproduced bit-identically on a
+        # second fresh profile.
+        variance=INDEPENDENT,
+    ),
     # --- audio (window only: OfflineAudioContext is not exposed to workers) --
     Probe(
         "audio.sampleRate",
