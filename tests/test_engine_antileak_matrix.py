@@ -19,9 +19,15 @@ make the shape of the matrix visible and to turn a one-engine change red:
 * Close a known gap on purpose -> delete that cell's known-gap assertion in the
   same commit. That deletion IS the record that the gap was closed.
 
-Closing a gap here would change existing profiles' fingerprints, which the
-project's bit-stability invariant forbids — so gap-closing is deliberately
-separate follow-up work, not part of this file.
+Gap-closing was originally deferred here on the grounds that it "would change
+existing profiles' fingerprints, which the project's bit-stability invariant
+forbids". #76 measured that claim rather than inheriting it, and it does not
+hold for these three prefs: none of them is read by any probe in
+``src/services/verify/probes.py``, so closing one moves no recorded reading —
+confirmed by a byte-identical baseline recording before and after the TRR
+change. The remaining true part is narrower: a server can still observe that a
+client does not use a TRR resolver. Each cell still needs its own measurement
+before it is closed; the blanket deferral does not.
 
 Matrix pinned below, for ONE proxied profile:
 
@@ -29,7 +35,7 @@ Matrix pinned below, for ONE proxied profile:
 |----------------------|-------------------------------------------|-----------|
 | WebRTC non-proxied UDP | --force-webrtc-ip-handling-policy=...    | 5 ICE prefs |
 | proxied DNS          | --dns-over-https-mode=off + DnsOverHttps  | socks_remote_dns |
-| DoH / TRR            | present                                   | KNOWN GAP |
+| DoH / TRR            | --dns-over-https-mode=off                 | trr.mode=5 (#76) |
 | dns-prefetch         | --dns-prefetch-disable                    | KNOWN GAP |
 | QUIC / HTTP3         | --disable-quic + EnableQuic disabled      | KNOWN GAP |
 """
@@ -91,18 +97,30 @@ def test_matrix_proxied_dns_both_engines(monkeypatch, tmp_path):
     assert prefs.get("network.proxy.socks_remote_dns") is True
 
 
-def test_matrix_doh_trr_chromium_only(monkeypatch, tmp_path):
+def test_matrix_doh_trr_both_engines(monkeypatch, tmp_path):
+    # BOTH engines cover this one, as of #76. Gap closed: the known-gap
+    # assertions that used to sit here are deleted, which IS the record.
+    #
+    # Chromium switches DoH off outright; Firefox pins TRR to 5 ("off by
+    # explicit choice"). A TRR resolver talks straight to a DoH endpoint and
+    # never asks SOCKS, so without this the DNS test shows a country unrelated
+    # to the exit IP — a location disclosure, not a compatibility question.
     args = _chromium_proxied(monkeypatch, tmp_path)
     assert "--dns-over-https-mode=off" in args
 
-    # KNOWN GAP — Firefox has no DoH/TRR guard. Chromium's DoH is switched off
-    # for a proxied profile; Firefox's TRR is left at its default, so its
-    # resolver can still bypass the SOCKS proxy. Asserted-as-absent on purpose:
-    # a silent omission is what let this survive since the initial commit.
-    # When the gap is closed, delete this assertion in the same commit.
+    # 5, not 0: 0 would be "off by default" — a no-op an engine bump silently
+    # overwrites. The pin only means anything if it is the explicit value.
     prefs = _firefox_proxied()
-    assert "network.trr.mode" not in prefs
-    assert "network.trr.uri" not in prefs
+    assert prefs.get("network.trr.mode") == 5
+
+
+def test_matrix_doh_trr_direct_profile_unpinned():
+    # The parity above is scoped to a PROXIED profile, exactly like the ICE
+    # guards: a direct profile has no tunnel to bypass, so pinning its resolver
+    # would add a tell and buy nothing. Keeps the gate honest — a future edit
+    # that hoists the pref out of the `if cfg.get("proxy_url")` block turns
+    # this red rather than passing unnoticed.
+    assert "network.trr.mode" not in _profile_prefs({"search_engine": "duckduckgo"})
 
 
 def test_matrix_dns_prefetch_chromium_only(monkeypatch, tmp_path):

@@ -967,10 +967,26 @@ def _init_places_db(
     this warm-up does NOT. That is a considered omission, not an oversight —
     the warm-up loads no page and never constructs an RTCPeerConnection, so
     there is nothing for those prefs to constrain, and the extra_prefs here are
-    deliberately the minimal quiet-startup set. The DNS half arrives anyway:
-    invisible_core's `configure_proxy` writes
-    `network.proxy.socks_remote_dns = True` itself for any SOCKS server. If
-    this run ever grows a real page load, revisit and take the full set.
+    deliberately the minimal quiet-startup set. If this run ever grows a real
+    page load, revisit and take the full set.
+
+    The DNS guard is TWO prefs, and they arrive by DIFFERENT routes — do not
+    read "DNS is handled" off either one alone:
+      * `network.proxy.socks_remote_dns` arrives for free — invisible_core's
+        `configure_proxy` writes it itself for any SOCKS server. It routes the
+        SOCKS-resolved path through the tunnel.
+      * `network.trr.mode` does NOT arrive from anywhere: `configure_proxy`
+        supplies zero TRR prefs (grep `network.trr` across invisible_core and
+        invisible_playwright → no hits), and this warm-up never reaches
+        `_profile_prefs`, so the visible launch's pin does not cover it. It is
+        set explicitly in the extra_prefs below, gated on `proxy`.
+    The TRR pref crosses over where the ICE prefs do not, and the difference is
+    load-bearing: a resolver needs no page load to fire, so unlike
+    RTCPeerConnection there IS something here to constrain. That matters
+    precisely because of this run's own threat model above — an engine bump
+    flipping the TRR default is exactly the "whatever a future engine bump
+    adds" case, and it would otherwise land on a warm-up that is real Firefox
+    on this profile's identity while the visible launch alone is pinned.
 
     The caller must install `_install_geo_shortcircuit()` BEFORE invoking this
     with a proxy — see the call site in `_launch_and_watch`. The engine's
@@ -1129,6 +1145,16 @@ def _init_places_db(
                         # this run persists, so the first visible launch is dark
                         # with the bookmarks toolbar shown (#242).
                         **(_WARMUP_CHROME_PREFS if warmup_visible else {}),
+                        # The TRR half of the proxied DNS guard — see the
+                        # DELIBERATE ASYMMETRY note in the docstring for why
+                        # this one crosses over when the ICE prefs do not. A
+                        # resolver needs no page load to fire, so unlike
+                        # RTCPeerConnection there IS something here to
+                        # constrain. Same value and same reasoning as
+                        # `_profile_prefs`; gated on `proxy` for the same
+                        # reason, so a DIRECT profile's warm-up is
+                        # byte-identical to what it was before this existed.
+                        **({"network.trr.mode": 5} if proxy else {}),
                     },
                     # Route this run through the profile's assigned proxy, so a
                     # real Firefox on the profile's own identity never reaches
@@ -2007,6 +2033,35 @@ def _profile_prefs(cfg: dict) -> dict:
                 "media.peerconnection.ice.proxy_only_if_behind_proxy": True,
                 "media.peerconnection.use_document_iceservers": False,
                 "network.proxy.socks_remote_dns": True,
+                # DNS-over-HTTPS (TRR) guard for a PROXIED profile, mirroring
+                # the Chromium path's --dns-over-https-mode=off. The argument is
+                # LOCATION, not compatibility: a TRR resolver speaks straight to
+                # a DoH endpoint and never asks SOCKS, so the DNS test would
+                # show a country unrelated to the exit IP. socks_remote_dns
+                # above does NOT cover this — it routes the SOCKS-resolved path
+                # and says nothing about a resolver that bypasses SOCKS
+                # entirely. Different mechanism, hence a second pref.
+                #
+                # Measured on the bundled build (Firefox 151.0, fresh profile,
+                # read over Marionette in chrome scope): mode defaults to 0 and
+                # Services.dns.currentTrrMode is 0, i.e. TRR is already off. So
+                # this is a PIN against an engine bump flipping that default,
+                # not a fix for a live leak — the daily 06:00 UTC engine
+                # autobump lands a new build on main with nobody looking, and
+                # this pref is what keeps that from silently enabling DoH.
+                #
+                # 5 ("off by explicit choice") rather than 0 ("off by default"):
+                # 0 is a no-op that a bumped default would overwrite, which
+                # would defeat the entire point. The two are indistinguishable
+                # to a page — both emit zero DoH traffic, and content JS cannot
+                # read a pref (only privileged chrome code can), so the explicit
+                # value buys the pin without adding a masking tell.
+                #
+                # network.trr.uri is deliberately NOT set: measured with mode
+                # forced to 3 and uri="", the resolver adopts
+                # network.trr.default_provider_uri (Cloudflare) anyway, so
+                # pinning the uri is decorative. mode is the pref that carries.
+                "network.trr.mode": 5,
             }
         )
     # The chosen search engine feeds the Home button and the start page a
