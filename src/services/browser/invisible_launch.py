@@ -335,8 +335,22 @@ def _native_cloak_js() -> str:
         # Pin .name to the original's (non-enumerable + configurable, exactly the
         # descriptor a native function's own `name` carries) and record the name
         # to STRINGIFY as, which is `s` when it differs from `.name` (accessors).
-        "var __cloak=function(f,n,s){try{__nm.set(f,s===undefined?n:s);"
-        'Object.defineProperty(f,"name",{value:n,configurable:true});}'
+        #
+        # `l` pins .length, and it is NOT cosmetic: a wrapper written as
+        # `function(locales, options)` reports length 2 where EVERY native Intl
+        # constructor reports 0, and nothing else in this prelude touches it. That
+        # was a measured, zero-false-positive masking tell — PS-119 isolated
+        # pixelscan's `masking_detected` to this vector by live subtraction, and
+        # an integrity probe against the unpatched engine found the arity
+        # divergence on 11 built-ins at once. Callers pass the ORIGINAL's length
+        # rather than a literal so the pin cannot drift from what it is imitating.
+        # Omitted (undefined) leaves .length alone, which is right for the arrow
+        # accessors elsewhere in this module — they already report 0, like the
+        # native getters they replace.
+        "var __cloak=function(f,n,s,l){try{__nm.set(f,s===undefined?n:s);"
+        'Object.defineProperty(f,"name",{value:n,configurable:true});'
+        'if(l!==undefined)Object.defineProperty(f,"length",'
+        "{value:l,configurable:true});}"
         "catch(e){}return f;};"
         # Chain, don't flag-guard: __pts is whoever patched before us (native
         # toString on the first script to run in this realm).
@@ -424,18 +438,36 @@ def _language_override_script(locale: str) -> str:
         ":Orig(l,options);};"
         "Wrapped.prototype=Orig.prototype;"
         "__om.set(Wrapped,Orig);"
-        "__cloak(Wrapped,Orig.name);"
+        # Orig.length, not a literal: every native Intl constructor reports 0
+        # while this wrapper's (locales, options) signature reports 2, and that
+        # arity gap was the tell PS-119 measured. Reading it off the original
+        # keeps the pin true even if a future engine changes the arity.
+        "__cloak(Wrapped,Orig.name,undefined,Orig.length);"
+        # A native ctor's `prototype` is NON-writable and its
+        # `prototype.constructor` points back at the ctor. Plain assignment above
+        # leaves prototype writable:true and leaves constructor pointing at Orig,
+        # so `new Intl.DateTimeFormat().constructor === Intl.DateTimeFormat` reads
+        # false — an invariant that holds in every real browser. Both were
+        # measured divergences, not hypotheticals.
+        "try{Object.defineProperty(Wrapped,'prototype',"
+        "{value:Orig.prototype,writable:false,enumerable:false,"
+        "configurable:false});}catch(e){}"
+        "try{Object.defineProperty(Orig.prototype,'constructor',"
+        "{value:Wrapped,writable:true,enumerable:false,configurable:true});}"
+        "catch(e){}"
         # defineProperty, not assignment: an assignment creates an ENUMERABLE own
         # property, which is what put "supportedLocalesOf" into Object.keys. The
         # descriptor below is the one the native method carries.
         "if(Orig.supportedLocalesOf){"
         "const slo=__cloak(Orig.supportedLocalesOf.bind(Orig),"
-        "Orig.supportedLocalesOf.name);"
+        "Orig.supportedLocalesOf.name,undefined,"
+        "Orig.supportedLocalesOf.length);"
         "try{Object.defineProperty(Wrapped,'supportedLocalesOf',"
         "{value:slo,writable:true,configurable:true});}catch(e){}}"
         "const ro=Orig.prototype&&Orig.prototype.resolvedOptions;"
         "if(ro){Orig.prototype.resolvedOptions=__cloak(function(){"
-        "const o=ro.call(this);o.locale=L;return o;},ro.name);}"
+        "const o=ro.call(this);o.locale=L;return o;},ro.name,undefined,"
+        "ro.length);}"
         "return Wrapped;};"
         "['DateTimeFormat','NumberFormat','RelativeTimeFormat','Collator',"
         "'PluralRules','ListFormat','DisplayNames','Segmenter'].forEach(k=>{"
@@ -443,7 +475,8 @@ def _language_override_script(locale: str) -> str:
         # Date locale-aware methods default to L when no locale is passed.
         "const patchDate=(name)=>{const orig=Date.prototype[name];if(!orig)return;"
         "Date.prototype[name]=__cloak(function(locales,options){"
-        "return orig.call(this,locales===undefined?L:locales,options);},orig.name);};"
+        "return orig.call(this,locales===undefined?L:locales,options);},"
+        "orig.name,undefined,orig.length);};"
         "['toLocaleString','toLocaleDateString','toLocaleTimeString']"
         ".forEach(patchDate);"
         # Date.prototype.toString/toTimeString/toDateString render the timezone
@@ -460,9 +493,10 @@ def _language_override_script(locale: str) -> str:
         "return i<0||!zn?s:s.slice(0,i)+' '+OP+zn+CP;};"
         "const oTS=Date.prototype.toString,oTTS=Date.prototype.toTimeString;"
         "Date.prototype.toString=__cloak(function(){"
-        "return reZone(oTS.call(this),this);},oTS.name);"
+        "return reZone(oTS.call(this),this);},oTS.name,undefined,oTS.length);"
         "Date.prototype.toTimeString=__cloak(function(){"
-        "return reZone(oTTS.call(this),this);},oTTS.name);"
+        "return reZone(oTTS.call(this),this);},oTTS.name,undefined,"
+        "oTTS.length);"
         # Number/BigInt.toLocaleString use the host ICU locale internally (not the
         # wrapped Intl.NumberFormat), so a currency name leaked in the host locale
         # — creepjs's lang/timezone check read "1 US dollar" (en-US) under a pl-PL
@@ -471,7 +505,8 @@ def _language_override_script(locale: str) -> str:
         "if(!C||!C.prototype||!C.prototype.toLocaleString)return;"
         "const o=C.prototype.toLocaleString;"
         "C.prototype.toLocaleString=__cloak(function(l,opt){"
-        "return o.call(this,l===undefined?L:l,opt);},o.name);});"
+        "return o.call(this,l===undefined?L:l,opt);},o.name,undefined,"
+        "o.length);});"
         # Web Workers get a fresh Intl at the host locale (add_init_script only
         # runs in the page, not workers) — creepjs reads currency/list from a blob
         # worker and saw "1 US dollar"/en. Carry a compact locale patch into
@@ -486,9 +521,14 @@ def _language_override_script(locale: str) -> str:
         "const WP='(function(L){try{" + _native_cloak_js() +
         "var wrap=function(n){var C=Intl[n];if(!C)return;var W=function(a,o){"
         "return Reflect.construct(C,[a||L,o],W);};W.prototype=C.prototype;"
-        "__cloak(W,C.name);"
+        "__cloak(W,C.name,undefined,C.length);"
+        "try{Object.defineProperty(W,\"prototype\","
+        "{value:C.prototype,writable:false,enumerable:false,"
+        "configurable:false});}catch(e){}"
+        "try{Object.defineProperty(C.prototype,\"constructor\","
+        "{value:W,writable:true,enumerable:false,configurable:true});}catch(e){}"
         "if(C.supportedLocalesOf){var s=__cloak(C.supportedLocalesOf.bind(C),"
-        "C.supportedLocalesOf.name);"
+        "C.supportedLocalesOf.name,undefined,C.supportedLocalesOf.length);"
         "try{Object.defineProperty(W,\"supportedLocalesOf\","
         "{value:s,writable:true,configurable:true});}catch(e){}}"
         "Intl[n]=W;};"
@@ -498,7 +538,8 @@ def _language_override_script(locale: str) -> str:
         "if(!C||!C.prototype||!C.prototype.toLocaleString)return;"
         "var o=C.prototype.toLocaleString;C.prototype.toLocaleString=__cloak("
         "function(l,opt){"
-        "return o.call(this,l===undefined?L:l,opt);},o.name);});"
+        "return o.call(this,l===undefined?L:l,opt);},o.name,undefined,"
+        "o.length);});"
         "}catch(e){}})('+JSON.stringify(L)+');';"
         "var wrapW=function(Orig){if(typeof Orig!=='function')return Orig;"
         "var W=function(url,opt){try{"

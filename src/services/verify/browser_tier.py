@@ -407,6 +407,7 @@ def firefox_session(
     *,
     seed: int,
     install_layer: bool = True,
+    layer_vectors: "tuple[str, ...] | None" = None,
     layer_sink: "Callable[[LayerReport], None] | None" = None,
 ):
     """persona's Firefox engine, layer installed, as a context manager.
@@ -451,6 +452,14 @@ def firefox_session(
     other purpose: it produces the un-widened reading (engine only) so a caller
     can show the SAME harness reading differently with and without persona's
     masking. It is never the default and the record always says which it was.
+
+    ``layer_vectors`` narrows the layer to a SUBSET of persona's spoofs, and is
+    the third arm: not "product" and not "packaged engine", but the product with
+    one vector removed. It exists for PS-119 step 3 — when a live checker names
+    the layer, the way to find WHICH spoof it saw is to subtract them one at a
+    time and re-read, rather than to read the generated source for something
+    that looks suspicious. ``None`` is the full product set and is the default,
+    because a subset reading does not describe the product either.
     """
     from .masking_layer import (
         DEFAULT_LOCALE,
@@ -467,7 +476,31 @@ def firefox_session(
             f"{type(exc).__name__}: {exc}"
         ) from exc
 
-    kwargs: "dict[str, Any]" = {"headless": True, "humanize": False}
+    # THE HARNESS MUST DECLARE THE LOCALE THE WAY THE PRODUCT DOES, and this
+    # line is not cosmetic parity — its absence was a measured masking tell.
+    #
+    # `invisible_launch` sets `kwargs["locale"]` on every product launch
+    # (defaulting an unset profile to "en-US"), and that value is what reaches
+    # Firefox's `intl.accept_languages` — i.e. the ACCEPT-LANGUAGE HEADER. The
+    # harness passed no locale at all, so the header carried the HOST OS locale
+    # while the masking layer pinned navigator.language/Intl to DEFAULT_LOCALE.
+    #
+    # Header de-DE + JS en-US is precisely the "internal contradiction a scanner
+    # flags as masking" that `_language_override_script`'s own docstring exists
+    # to prevent — and PS-119 measured it: on a live pixelscan reading through a
+    # proven exit, `masking_detected` fired with the layer installed and went
+    # ABSENT when the locale vector alone was subtracted, while a 314-observable
+    # integrity sweep found the patched JS surface structurally IDENTICAL to the
+    # unpatched engine. The tell was never the spoof's shape; it was the harness
+    # asking the layer to spoof against a header the harness had not set.
+    #
+    # So a reading taken without this is a reading of the HARNESS's
+    # contradiction, not of the product's surface.
+    kwargs: "dict[str, Any]" = {
+        "headless": True,
+        "humanize": False,
+        "locale": DEFAULT_LOCALE,
+    }
     if proxy_url:
         # Only when there IS an exit. `_proxy_dict` refuses a value it cannot
         # parse, so an unusable credential fails here rather than launching an
@@ -491,7 +524,8 @@ def firefox_session(
             live, _context_note = context_for(live)
             if install_layer:
                 report = install_firefox_layer(
-                    live, seed, locale=DEFAULT_LOCALE
+                    live, seed, locale=DEFAULT_LOCALE,
+                    vectors=layer_vectors,
                 )
             else:
                 report = absent_layer(
@@ -520,6 +554,7 @@ def _read_page_texts_firefox(
     sleep: Callable[[float], None],
     layer_sink: "Callable[[LayerReport], None] | None" = None,
     install_layer: bool = True,
+    layer_vectors: "tuple[str, ...] | None" = None,
 ) -> "dict[str, dict]":
     """The Firefox half: construct the engine, install the layer, run the loop.
 
@@ -538,6 +573,7 @@ def _read_page_texts_firefox(
         proxy_url,
         seed=seed,
         install_layer=install_layer,
+        layer_vectors=layer_vectors,
         layer_sink=layer_sink,
     ) as live:
         return _read_open_session(live, checkers=checkers, sleep=sleep)
@@ -618,6 +654,7 @@ def read_page_texts(
     sleep: Callable[[float], None] = time.sleep,
     layer_sink: "Callable[[LayerReport], None] | None" = None,
     install_layer: bool = True,
+    layer_vectors: "tuple[str, ...] | None" = None,
 ) -> "dict[str, dict]":
     """Load every browser-tier checker once and return its visible text.
 
@@ -644,6 +681,11 @@ def read_page_texts(
     engine, and it defaults to True because a reading without it does not
     describe the product. Passing False produces the engine-only reading
     deliberately, as the control arm of a differential.
+
+    ``layer_vectors`` narrows that layer to a named SUBSET (firefox only), for
+    the subtraction arm that finds WHICH spoof a checker reacted to. ``None`` is
+    the full product set. Ignored on chromium, which takes its layer as unpacked
+    extensions built before the process starts — see :func:`firefox_session`.
 
     ``layer_sink`` receives the :class:`~.masking_layer.LayerReport` for the arm
     that ran. It is a callback rather than a second return value because this
@@ -673,6 +715,7 @@ def read_page_texts(
         sleep=sleep,
         layer_sink=layer_sink,
         install_layer=install_layer,
+        layer_vectors=layer_vectors,
     )
 
 
@@ -745,6 +788,7 @@ def read_browser_tier(
     allow_unsandboxed: bool = False,
     layer_sink: "Callable[[LayerReport], None] | None" = None,
     install_layer: bool = True,
+    layer_vectors: "tuple[str, ...] | None" = None,
 ) -> "list[Reading]":
     """The whole browser tier: launch, INSTALL THE LAYER, load, settle, read.
 
@@ -774,6 +818,7 @@ def read_browser_tier(
             allow_unsandboxed=allow_unsandboxed,
             layer_sink=layer_sink,
             install_layer=install_layer,
+            layer_vectors=layer_vectors,
         )
     except EngineUnavailable as exc:
         if layer_sink is not None:
