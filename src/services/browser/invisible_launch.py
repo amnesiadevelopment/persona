@@ -55,7 +55,11 @@ from .engine_install import (  # noqa: F401
     # is what makes the wiring visible to it.
     set_in_use_provider,
 )
-from .env_policy import chdir_current_process, scrub_current_process_environ
+from .env_policy import (
+    browser_child_cwd,
+    chdir_current_process,
+    scrub_current_process_environ,
+)
 from .firefox_bookmarks import places_ready
 # PS-78: the per-seed WebGL readPixels perturbation, shared with the Chromium
 # extension builder. Firefox loads no persona extension, so it takes the same
@@ -2516,12 +2520,28 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     # returns early whenever getcwd() works, so persona's cwd is normally just
     # wherever the operator started it from.
     #
-    # BEFORE the environment scrub below, deliberately. The chromium seam
-    # computes this value from the PARENT's environment (it scrubs a COPY, so
-    # its own os.environ is never touched), and expanduser("~") reads HOME.
-    # Taking the value before this child scrubs its own environ is what makes
-    # the two seams agree BY CONSTRUCTION rather than contingently on HOME
-    # never joining a scrub list.
+    # READ HERE, APPLIED BELOW — the two halves are split on purpose, because
+    # they have opposite constraints:
+    #
+    #   READ BEFORE THE SCRUB. The chromium seam computes this value from the
+    #   PARENT's environment (it scrubs a COPY, so its own os.environ is never
+    #   touched), and expanduser("~") reads HOME. Taking the value before this
+    #   child scrubs its own environ is what makes the two seams agree BY
+    #   CONSTRUCTION rather than contingently on HOME never joining a scrub
+    #   list.
+    #
+    #   APPLIED AFTER THE PIPE IS OPEN. os.chdir RAISES if the directory is
+    #   unreachable (an unmounted home — the fault case _ensure_valid_cwd
+    #   exists for). Done up here that exception would kill this child before
+    #   `out` exists, and the parent would see a bare EOF with no
+    #   BROWSER_STARTED and no BROWSER_CLOSED: a launch that dies without
+    #   saying anything. This seam previously set nothing and inherited a
+    #   directory that by construction worked, so this failure mode is NEW —
+    #   pinning a directory is what introduces it. It is not given a fallback
+    #   chain, because falling back means choosing a second directory and that
+    #   is a product decision held elsewhere (see browser_child_cwd); it is
+    #   made AUDIBLE instead. The chromium seam's asymmetry is real but benign:
+    #   Popen(cwd=) raises in the PARENT, where spawn_browser's caller sees it.
     #
     # FORK PATH ONLY, and the guard is the whole point — the same guard, for a
     # sharper version of the same hazard. When `stop_event` is set we are a
@@ -2532,8 +2552,8 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     # platform gap is a recorded absence rather than a guarantee that silently
     # doesn't hold. The chromium launcher, which passes cwd= to Popen and so
     # sets it in the child only, is pinned on all platforms.
-    if not in_thread and _platform.IS_LINUX:
-        chdir_current_process()
+    _apply_child_cwd = not in_thread and _platform.IS_LINUX
+    _child_cwd = browser_child_cwd() if _apply_child_cwd else None
 
     # The browser executes untrusted remote code, so it inherits none of the
     # operator's identity — above all SSH_AUTH_SOCK, which is a live handle onto
@@ -2575,6 +2595,22 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
             out.close()
         except Exception:
             pass
+
+    # The other half of the working-directory split above: the value was read
+    # before the environ scrub, and it is applied HERE, now that `out` exists
+    # and a failure can be said out loud. Reported on the pipe the same way an
+    # engine import error is, so the parent's monitor treats it as a failed
+    # launch instead of a silent EOF — then re-raised, because continuing would
+    # leave this child standing in persona's own directory, which is the exact
+    # divergence being closed.
+    if _apply_child_cwd:
+        try:
+            chdir_current_process(_child_cwd)
+        except OSError as e:
+            emit(f"LAUNCH_FAILED: browser working directory {_child_cwd!r}: {e}")
+            emit("BROWSER_CLOSED")
+            _finish()
+            return
 
     profile_dir = cfg.get("profile_dir", "")
     _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread)

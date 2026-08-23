@@ -224,7 +224,7 @@ def browser_child_cwd():
     return os.path.expanduser("~")
 
 
-def chdir_current_process():
+def chdir_current_process(target=None):
     """Move THIS process to the browser child's working directory.
 
     Only ever safe in a FORKED child, which has its own process-global state:
@@ -234,10 +234,28 @@ def chdir_current_process():
     function does not guess, it just does what it is told — the same division
     of labour as ``scrub_current_process_environ``.
 
+    RAISES ``OSError`` if the directory is unreachable — an unmounted home, the
+    fault case ``src/main.py:_ensure_valid_cwd`` exists for. It is deliberately
+    NOT caught here and NOT given a fallback chain: falling back would mean
+    choosing a second directory, which is exactly the product decision this
+    module declines to take (see ``browser_child_cwd``), and silently
+    continuing would restore the divergence — the firefox child would once
+    again be standing wherever persona happened to be. The chromium seam
+    behaves the same way by construction: ``Popen(cwd=...)`` raises rather than
+    launching somewhere else. What the caller owes is AUDIBILITY, not a
+    fallback; ``invisible_launch._child`` calls this only once its pipe is open
+    so the failure is reported rather than read by the parent as a bare EOF.
+
+    ``target`` lets the caller pass a value it already read from
+    ``browser_child_cwd``. The firefox seam does exactly that: it must read the
+    value BEFORE it scrubs its own environment (``expanduser`` reads ``HOME``)
+    but apply it AFTER its pipe exists. Omitted, the value is read now.
+
     Returns the directory it moved to, for the caller to log.
     """
     import os
 
-    target = browser_child_cwd()
+    if target is None:
+        target = browser_child_cwd()
     os.chdir(target)
     return target
