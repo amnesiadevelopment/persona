@@ -23,9 +23,10 @@ import urllib.request
 
 from ...services import egress
 
-# The same "persona" logger services/egress.py writes to, so a passed-over
-# undrivable build lands in the session log file alongside the rest of the
-# update trail. fetch_latest keeps its 2-tuple return (PS-112 §5).
+# The same "persona" logger services/egress.py writes to, so the update trail
+# reads in one place. The operator-facing channel is the RETURN VALUE, not this
+# logger — the console handler is WARNING (src/core/logging.py:45) and the UI
+# log is fed by AppUI._log, which this module cannot reach. See fetch_latest_full.
 logger = logging.getLogger("persona")
 
 RELEASES_API = (
@@ -84,9 +85,9 @@ def _expected_asset() -> str:
     return ARCHIVE_NAME(sys.platform, _pyplatform.machine())
 
 
-def fetch_latest(timeout: int = 20) -> tuple[str, bool]:
-    """Return (tag, compatible) for the newest usable firefox-NN release, or
-    ('', False) on failure.
+def fetch_latest_full(timeout: int = 20) -> tuple[str, bool, str]:
+    """Return (tag, compatible, capped_by) for the newest usable firefox-NN
+    release, or ('', False, '') on failure.
 
     Enumerates the repo's releases (the latest release isn't necessarily a
     firefox-NN tag — the repo also carries e.g. 'usage-counter'), skips
@@ -111,13 +112,28 @@ def fetch_latest(timeout: int = 20) -> tuple[str, bool]:
     silenced and the operator told nothing. The overall winner is retained
     precisely to keep that path reporting (tag, False) as it does today.
 
-    Preferring the drivable build means the return value no longer carries the
-    fact that upstream has something newer. That is NOT dropped silently: the
-    passed-over tag is logged to the "persona" logger from inside the offering
-    path. Logging here rather than widening the return keeps this a 2-tuple —
-    a `log=` parameter would have to be threaded through both app.py consumers
-    and broke four existing `lambda: (tag, compatible)` test stubs across three
-    other test files, which is the sprawl PS-112 §5 said to avoid."""
+    `capped_by` IS THE THIRD RETURN VALUE BECAUSE PREFERRING THE DRIVABLE BUILD
+    CHANGES WHAT `tag` MEANS. It used to be "the newest release that exists";
+    it is now "the newest release you can drive". Every reader that took the
+    old meaning needs the passed-over tag or it will say something false — and
+    the reader that matters is `is_newer(tag, current)` in BOTH app.py
+    consumers. An operator sitting on the highest drivable build with upstream
+    above the pin (pin 18, releases [18, 20], installed firefox-18) gets
+    is_newer == False, so without this the row goes blank and the startup path
+    affirmatively logs "Firefox engine is up to date" while firefox-20 exists.
+    That is the state this fix's OWN success path walks its beneficiaries into:
+    offer firefox-18, they install it, and from then on they are capped.
+
+    So `capped_by` carries the higher release that was passed over ('' when
+    nothing was), and the consumers use it to keep telling the operator the
+    truth. It is a RETURN VALUE and not a log line on purpose: the "persona"
+    logger's console handler is WARNING (src/core/logging.py:45) and the
+    operator-facing sidebar is fed by AppUI._log, which this module cannot
+    reach — a line in a file they have to go find does not offset a false
+    "up to date" in the interface (PS-112 §5).
+
+    `fetch_latest` below is the 2-tuple wrapper, kept for callers that only
+    want the offer, exactly as updater.fetch_latest wraps fetch_latest_full."""
     try:
         from invisible_playwright.constants import (
             BINARY_VERSION,
@@ -127,7 +143,7 @@ def fetch_latest(timeout: int = 20) -> tuple[str, bool]:
         asset = _expected_asset()
         pkg_num = build_number(BINARY_VERSION)
     except Exception:
-        return "", False
+        return "", False, ""
     try:
         # Same single authority the Chromium updater consults — this is the
         # other unattended startup poll, so it must not be able to leave a
@@ -135,7 +151,7 @@ def fetch_latest(timeout: int = 20) -> tuple[str, bool]:
         # before.
         releases = egress.fetch_json(RELEASES_API, timeout=timeout)
     except Exception:
-        return "", False
+        return "", False, ""
     # Track two candidates in one pass. `best_*` is the highest release
     # overall (today's winner, kept for the nothing-drivable path); `drivable_*`
     # is the highest release at or below the driver pin.
@@ -158,7 +174,7 @@ def fetch_latest(timeout: int = 20) -> tuple[str, bool]:
             drivable_tag = tag
             drivable_assets = assets
     if not best_tag:
-        return "", False
+        return "", False, ""
     # PREFER THE HIGHEST DRIVABLE RELEASE when it exists and ships this OS's
     # expected asset. That is the whole fix: the update the operator can
     # actually install is the one worth offering, even when upstream has moved
@@ -166,16 +182,22 @@ def fetch_latest(timeout: int = 20) -> tuple[str, bool]:
     # usable offer either, so it falls through to the report-only path below
     # rather than being announced as installable.
     if drivable_tag and asset in drivable_assets:
-        if drivable_tag != best_tag:
-            # Don't drop the fact that upstream has something newer. The return
-            # value stays a 2-tuple; this is where that information goes.
+        # `capped_by` is the higher release we passed over, or '' when the
+        # drivable winner IS the newest release. This is the ONLY channel that
+        # survives to the consumers: once compatible is True, their
+        # `not compatible` branch is unreachable by construction, and when the
+        # offered tag equals what is installed their `is_newer` gate is False
+        # too — so without this they have nothing left to say and would report
+        # "up to date" while a newer build exists.
+        capped_by = best_tag if drivable_tag != best_tag else ""
+        if capped_by:
             logger.info(
                 "Firefox engine %s needs a newer persona — offering the "
                 "newest drivable build %s instead",
-                best_tag,
+                capped_by,
                 drivable_tag,
             )
-        return drivable_tag, True
+        return drivable_tag, True, capped_by
     # Nothing drivable to fall back to: report the overall winner exactly as
     # before. Compatible only when the release ships this OS's expected asset
     # AND its build number does not exceed what the bundled driver can drive. A
@@ -183,8 +205,26 @@ def fetch_latest(timeout: int = 20) -> tuple[str, bool]:
     # juggler contract the shipped invisible_playwright can't drive, so it needs
     # a persona update that ships the matching driver — report it incompatible
     # rather than let the updater install an unlaunchable engine (#405).
+    #
+    # `capped_by` is '' here and that is not an omission: the tag being
+    # RETURNED is already the newest release that exists, so there is nothing
+    # passed over to name. The consumers' existing `not compatible` branch is
+    # what speaks on this path, exactly as it does today.
     compatible = (asset in best_assets) and build_number(best_tag) <= pkg_num
-    return best_tag, compatible
+    return best_tag, compatible, ""
+
+
+def fetch_latest(timeout: int = 20) -> tuple[str, bool]:
+    """Return (tag, compatible) for the newest usable firefox-NN release, or
+    ('', False) on failure — the narrow view of fetch_latest_full, for callers
+    that only want the offer and not the build it was capped by.
+
+    Kept as the 2-tuple it has always been so existing callers and test stubs
+    (`lambda: (tag, compatible)`) keep working, exactly as updater.fetch_latest
+    wraps updater.fetch_latest_full. The two app.py consumers that must tell the
+    operator the truth about a capped build call fetch_latest_full instead."""
+    tag, compatible, _capped_by = fetch_latest_full(timeout)
+    return tag, compatible
 
 
 def download_engine(tag: str, progress=None, log=None) -> bool:
