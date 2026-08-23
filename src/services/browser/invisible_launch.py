@@ -55,7 +55,7 @@ from .engine_install import (  # noqa: F401
     # is what makes the wiring visible to it.
     set_in_use_provider,
 )
-from .env_policy import scrub_current_process_environ
+from .env_policy import chdir_current_process, scrub_current_process_environ
 from .firefox_bookmarks import places_ready
 # PS-78: the per-seed WebGL readPixels perturbation, shared with the Chromium
 # extension builder. Firefox loads no persona extension, so it takes the same
@@ -2507,6 +2507,33 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     BROWSER_CLOSED) so the launcher can treat this like the chromium Popen.
     """
     in_thread = stop_event is not None
+
+    # The browser child's working directory comes from env_policy, the same one
+    # authority the chromium seam uses. Before that existed this seam set
+    # NOTHING — no cwd=, no chdir — so the child simply inherited whatever
+    # directory persona itself was sitting in, while its chromium sibling got a
+    # pinned one. That needs no fault to diverge: src/main.py:_ensure_valid_cwd
+    # returns early whenever getcwd() works, so persona's cwd is normally just
+    # wherever the operator started it from.
+    #
+    # BEFORE the environment scrub below, deliberately. The chromium seam
+    # computes this value from the PARENT's environment (it scrubs a COPY, so
+    # its own os.environ is never touched), and expanduser("~") reads HOME.
+    # Taking the value before this child scrubs its own environ is what makes
+    # the two seams agree BY CONSTRUCTION rather than contingently on HOME
+    # never joining a scrub list.
+    #
+    # FORK PATH ONLY, and the guard is the whole point — the same guard, for a
+    # sharper version of the same hazard. When `stop_event` is set we are a
+    # THREAD of the manager process (Windows/macOS, where re-exec can't work),
+    # and a working directory is process-global state exactly like os.environ:
+    # os.chdir there would move persona's OWN cwd and every concurrently-open
+    # profile's. That is strictly worse than the divergence being fixed, so the
+    # platform gap is a recorded absence rather than a guarantee that silently
+    # doesn't hold. The chromium launcher, which passes cwd= to Popen and so
+    # sets it in the child only, is pinned on all platforms.
+    if not in_thread and _platform.IS_LINUX:
+        chdir_current_process()
 
     # The browser executes untrusted remote code, so it inherits none of the
     # operator's identity — above all SSH_AUTH_SOCK, which is a live handle onto

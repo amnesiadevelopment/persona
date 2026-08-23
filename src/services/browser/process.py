@@ -21,7 +21,7 @@ from ..proxy.store import ProxyStore
 from .bookmarks_seed import seed_bookmarks
 from .audio_ext import build_audio_extension
 from .device_ext import build_device_extension
-from .env_policy import scrub_inherited_environment
+from .env_policy import browser_child_cwd, scrub_inherited_environment
 from .resolution import parse_resolution, resolve_resolution
 from .device_presets import is_mobile_os, pick_preset, pick_touch_points
 from .engine_version import (
@@ -790,7 +790,16 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
             args,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            cwd=os.path.expanduser("~"),
+            # The browser child's working directory comes from env_policy, not
+            # from a path written here. This line used to BE the pin — a bare
+            # os.path.expanduser("~") with no comment, so a reader could not
+            # tell deliberate isolation from an incidental default — while the
+            # firefox seam pinned nothing and its child inherited persona's own
+            # cwd. The VALUE is unchanged; what changed is that one place now
+            # owns it, so the next person to move it cannot fix one engine and
+            # forget the other. Popen(cwd=) sets the directory in the CHILD
+            # only, so this seam is safe on every platform by construction.
+            cwd=browser_child_cwd(),
             env=env,
             text=True,
             encoding="utf-8",
