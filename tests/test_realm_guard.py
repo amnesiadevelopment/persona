@@ -499,12 +499,35 @@ def test_no_generated_script_carries_an_unfilled_guard_placeholder(generated):
 
 
 def test_the_helper_is_the_single_source_of_truth_for_every_site(generated):
-    # The drift check, stated as one assertion rather than twelve. If the guard
-    # body is ever hand-copied into a leaf again, the copy and the helper agree
-    # on the day it is written and diverge the first time the helper is edited —
-    # which is exactly what this test is here to make impossible to do quietly.
-    # Mutate `realm_guard_js` and ALL twelve parametrised cases above go red
-    # together; that fleet-wide redness is the signal that the splice is real.
+    # The drift check, stated as one assertion rather than twelve: every
+    # generated script must carry the helper's CURRENT output. That catches any
+    # site that is not spliced — one whose placeholder was dropped, one whose
+    # builder was never wired to `realm_guard_js`, or one hand-copied and since
+    # DIVERGED because the helper moved and the copy did not.
+    #
+    # What it does NOT do, stated because the obvious guess is wrong and was
+    # believed here for a round: editing `realm_guard_js` alone does NOT turn
+    # these cases red. Both sides of the comparison are recomputed from that
+    # same helper at test time — the expected text here, and the script built
+    # by the real builders in `generated` — so a helper edit moves them
+    # together and is invariant BY CONSTRUCTION. Measured: rename the registry
+    # property and the file is still 54 passed.
+    #
+    # That invariance is the PROPERTY, not a gap. A pure splice SHOULD be
+    # insensitive to helper edits; insensitivity is what "spliced" means. The
+    # redness appears the moment a site stops tracking the helper:
+    #
+    #     all 12 spliced, helper mutated          -> green (54 passed)
+    #     one site hand-copied, helper unchanged   -> green (the copy still
+    #                                                 matches; see below)
+    #     one site hand-copied, THEN helper edited -> RED (3 failed)
+    #
+    # So the guarantee is DIRECTIONAL, and the middle row is its honest bound:
+    # a hand-copy is byte-identical to the splice on the day it is written, so
+    # this suite cannot tell a fresh paste from a real splice. It catches the
+    # paste on the next helper edit, and it catches a MISSING or unwired guard
+    # immediately. If you want the stronger claim, assert on the call graph —
+    # not on the emitted text.
     total = sum(
         generated[script_key].count(realm_guard_js(guard_key, indent))
         for script_key, guard_key, indent in GUARD_SITES
