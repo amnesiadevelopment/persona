@@ -29,7 +29,14 @@ need not look:
   logs it. An archive is closer to an already-stored legacy record than to a
   fresh request: it was written by an older build, and refusing would make it
   permanently unimportable at the one moment the operator cannot edit it into
-  shape. The record therefore lands coherent instead of being rejected.
+  shape. The PAIR therefore lands coherent instead of being rejected. Rule 3 is
+  NOT reconciled here: ``coherent_engine`` answers "which engine?", and Rule 3
+  has no engine remedy (a ``windows`` + ``mobile`` profile is contradictory on
+  chromium and on firefox alike), so an imported ``windows`` + ``mobile``
+  archive lands as a tolerated already-stored record — editable, never
+  stranded, exactly like a legacy record predating these rules. Reconciling it
+  would mean rewriting a field at launch, which is ``process.py``'s job and not
+  this module's. See ``device_type_error``.
 * ``ProfileManager.restore_profile`` — intentionally EXEMPT. Restore replays a
   record that already existed, so it introduces nothing; guarding it would
   strand a trashed profile behind a conflict it did not create.
