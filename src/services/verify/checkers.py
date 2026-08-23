@@ -504,9 +504,68 @@ BROWSER_CHECKERS: "tuple[Checker, ...]" = (
         tier=TIER_BROWSER,
         settle_seconds=30.0,
         items=(
-            TextItem("detected", r"\bdetected\b", FINGERPRINT, adverse=True,
-                     note="Covers the modern CDP leaks (runtime enable, "
+            # THIS CHECKER PUBLISHES NO ADVERSE PROSE — read its MARKER (PS-121).
+            #
+            # The pattern here was `\bdetected\b`, and measuring it against both
+            # captured pages showed it was not merely under-guarded, it was
+            # aimed at a token that carries NO VERDICT AT ALL. The word
+            # "detected" appears twice, in the same two places, on a CLEAN page
+            # and on a CAUGHT one — and both occurrences are GREEN rows:
+            #
+            #     🟢 runtimeEnableLeak   No leak detected.
+            #     🟢 pwInitScripts       No window.__pwInitScripts detected.
+            #
+            # while every RED row is prose that never uses the word:
+            #
+            #     🔴 navigatorWebdriver  navigator.webdriver = true indicates…
+            #     🔴 exposeFunctionLeak  You're using unpatched Playwright…
+            #     🔴 mainWorldExecution  You've called …ByClassName() in the…
+            #
+            # So the old reader returned READ on every page it ever saw, with
+            # `matched_text` byte-identical in both directions. It could not
+            # have reported a real detection and could not have reported a
+            # clean one: the row was decoration with an adverse label on it.
+            #
+            # A negative lookbehind cannot rescue that — there is no negator to
+            # anchor against ("No leak detected" puts it two words away, and the
+            # adverse rows lack the token entirely), which is why this is the
+            # one item in the catalogue that does NOT follow the sibling shape.
+            #
+            # What IS discriminating is the site's own per-row verdict icon,
+            # which its renderer assigns from the numeric rating: 🔴 for
+            # rating >= 1 (a real detection), 🟢 for rating < 0 (clean), 🟡 for
+            # 0.5 (inconclusive) and ⚪️ for 0 (the test was never triggered).
+            # Reading the red marker asks the checker for its VERDICT instead of
+            # guessing at its wording.
+            TextItem("detected",
+                     "\U0001F534" + r"\uFE0F?\s*(\w+)",
+                     FINGERPRINT, adverse=True, capture=True,
+                     note="Captures the NAME of the first red-flagged test "
+                          "(e.g. 'navigatorWebdriver'), because 'which test "
+                          "caught us' is the actionable half — a bare True "
+                          "would send someone back to the page to find out. "
+                          "Covers the modern CDP leaks (runtime enable, "
                           "source url, exposed function)."),
+            # The liveness half, and it is load-bearing rather than tidy.
+            #
+            # Reading a MARKER makes ABSENCE the clean verdict, so a page whose
+            # JavaScript never populated the table would read as a perfect
+            # browser. The static shell really does survive the tier's
+            # settle guard — it carries the title, the intro and the table
+            # HEADER, so `text.strip()` is non-empty and the row is not
+            # recorded unobtainable.
+            #
+            # This item matches a rendered verdict row of ANY colour, so it is
+            # READ exactly when the table exists. It is the "the instrument was
+            # working" arm: an adverse ABSENT beside this one ABSENT is not a
+            # clean page, it is a page that never rendered.
+            TextItem("verdicts_rendered",
+                     "[\U0001F534\U0001F7E1\U0001F7E2\u26AA]"
+                     + r"\uFE0F?\s*\w+\s*\t",
+                     FINGERPRINT, adverse=False,
+                     note="Proves the verdict table rendered at all. Without "
+                          "it an unsettled page reads as a clean one, because "
+                          "for a marker-based item ABSENT is the good news."),
         ),
         note_unreachable=(
             "Answered NS_ERROR_CONNECTION_REFUSED through the mobile exit on "
