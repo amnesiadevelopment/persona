@@ -781,6 +781,32 @@ def coverage_lost(entries: "list[dict]") -> "list[dict]":
     return [e for e in entries if e["classification"] == COVERAGE_LOST]
 
 
+def no_evidence(before: dict, after: dict) -> bool:
+    """True when NEITHER record carries a single obtained reading.
+
+    The AGGREGATE question, and it is a different one from
+    :data:`UNREAD_BOTH`. That per-row rule is settled and stays as it is: the
+    catalogue permanently carries click-gated checkers, a Cloudflare challenge
+    and a paywall, so 24 of 53 rows unreadable is this matrix's designed
+    STEADY STATE and a code firing on them would fire forever (see
+    :func:`coverage_lost`). Nought of 53 is not that. It is a run that did not
+    happen — and today both of them exit 0, which is the one thing a comparison
+    resting on nothing must never say.
+
+    Asked of the RECORDS rather than of the entry list, because the entry list
+    cannot tell the two apart: a pair of records whose ``readings`` are empty
+    compares to ``[]``, and so does the clean run where every row was read and
+    agreed. The evidence is in the rows, so the question is put to the rows.
+
+    :func:`_obtained` is reused rather than re-derived, so "what counts as
+    evidence" keeps ONE definition — notably that ``absent`` IS evidence (the
+    checker answered and did not say this), which is why an all-``absent``
+    record clears this floor and must.
+    """
+    rows = list(_rows(before).values()) + list(_rows(after).values())
+    return not any(_obtained(row) for row in rows)
+
+
 def observed_count(entries: "list[dict]") -> int:
     """How many entries name a movement someone actually observed.
 
@@ -1032,6 +1058,7 @@ __all__ = [
     "findings",
     "format_comparison",
     "header_notes",
+    "no_evidence",
     "observed_count",
     "require_comparable",
     "require_record",
