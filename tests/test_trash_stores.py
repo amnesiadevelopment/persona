@@ -10,6 +10,7 @@ record does NOT shred its secret.
 import os
 import pathlib
 import stat
+import sys
 
 import pytest
 
@@ -233,8 +234,18 @@ def test_trashing_a_proxy_does_not_remove_its_secret_from_disk(
     pstore.delete("exit-us")
     raw = pathlib.Path(os.environ["PERSONA_TRASH_FILE"]).read_text()
     assert "hunter2" in raw
-    mode = stat.S_IMODE(pathlib.Path(os.environ["PERSONA_TRASH_FILE"]).stat().st_mode)
-    assert mode == 0o600, oct(mode)
+    # The 0600 half is a POSIX guarantee, not a Windows one, and only this LINE
+    # is platform-specific — the "the secret is parked, not shredded" assertion
+    # above is the point of the test and runs everywhere. On Windows os.chmod
+    # only toggles the read-only bit and cannot restrict who reads a file
+    # (src/utils/atomic.py's module docstring); the protection there is the
+    # per-user ACL inherited from the .persona home. Asserting the mode bits
+    # unconditionally tested the platform, not the product.
+    if not sys.platform.startswith("win"):
+        mode = stat.S_IMODE(
+            pathlib.Path(os.environ["PERSONA_TRASH_FILE"]).stat().st_mode
+        )
+        assert mode == 0o600, oct(mode)
 
 
 def test_restoring_a_proxy_repoints_the_profiles_that_used_it(pstore, trash):

@@ -261,6 +261,13 @@ def _run_realm(tmp_path, scripts):
     proc = subprocess.run(
         [node, str(harness), str(cfg)],
         capture_output=True, text=True, timeout=120,
+        # node's console.log emits UTF-8, and PAGE_TITLE carries an em dash on
+        # purpose (a real page title is not ASCII). `text=True` alone decodes
+        # with locale.getencoding() — UTF-8 on Linux/macOS, cp1252 on Windows,
+        # which silently substitutes the em dash and fails the comparison on a
+        # difference this test is not about. Name the encoding node actually
+        # used; the assertion is then the same one on all three platforms.
+        encoding="utf-8",
     )
     if proc.returncode != 0:
         raise AssertionError(f"probe harness failed: {proc.stderr[-4000:]}")
