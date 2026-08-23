@@ -326,7 +326,17 @@ def test_a_marker_naming_an_unknown_capability_is_a_hard_error(sandbox: Path):
     # it locates the offender rather than leaving the reader to grep for it,
     # and offers the valid names
     assert "test_marked_with_a_typo" in output
-    assert "browser, engine, node" in output
+    # It offers the VALID NAMES — asserted as the whole known set, computed
+    # from the table rather than hardcoded. A literal list here went stale the
+    # moment `browser` was split by engine, and the tempting repair (drop the
+    # assertion, or pin one name) would stop checking the thing that matters:
+    # an operator who typo'd a capability must be shown what they COULD have
+    # typed, including any capability added after this test was written.
+    for known in persona_conftest.CAPABILITIES:
+        assert known in output, (
+            f"the error omits the valid capability {known!r}, so an operator "
+            "who mistyped is not shown the name they wanted"
+        )
     # The run must not have proceeded to report a confident green around it.
     assert "1 skipped" not in result.stdout
 
@@ -403,6 +413,180 @@ def test_the_cli_flag_and_the_env_var_are_the_same_declaration(sandbox: Path):
     assert "test_a_brand_new_browser_probe" in result.stdout
 
 
+#: A probe skipping for want of the CHROMIUM ENGINE — the engine
+#: `DEFAULT_ENGINE` names and that nothing in CI provisions. Prospective by
+#: construction: no such guard exists in `tests/` yet, which is exactly why the
+#: behaviour is pinned now rather than after the first one lands.
+_UNSEEN_CHROMIUM_ENGINE_TEST = '''
+import pytest
+
+@pytest.fixture
+def probe():
+    pytest.skip("chromium engine not runnable here: no fingerprint-chromium build")
+
+def test_a_brand_new_chromium_engine_probe(probe):
+    assert False, "must never execute: the fixture skips first"
+'''
+
+
+class TestTheUmbrellaKeepsTheOldDeclarationMeaningWhatItMeant:
+    """`browser` was split by engine. The name it was split OUT of still has to
+    work, or this change silently disarmed every gate that uses it."""
+
+    def test_declaring_the_umbrella_still_fails_a_firefox_skip(self, sandbox: Path):
+        """THE REGRESSION THIS WHOLE CLASS EXISTS FOR.
+
+        `ci.yml` declares `PERSONA_REQUIRED_CAPABILITIES=browser`, and the
+        Firefox reason patterns now live on `browser_firefox`. If declaring the
+        umbrella did not expand to its members, that CI job would police
+        NOTHING and report a confident green — the exact "looks like success,
+        verified nothing" defect this file exists to close, re-created by a
+        rename. Asserted end-to-end through a real run, not by inspecting the
+        expansion helper, because the helper being right is not the claim.
+        """
+        (sandbox / "test_probe.py").write_text(_UNSEEN_BROWSER_TEST)
+
+        result = _run_pytest(
+            sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser"}
+        )
+
+        assert result.returncode != 0, (
+            "declaring the umbrella policed nothing and the run reported "
+            "green: " + result.stdout + result.stderr
+        )
+        assert "test_a_brand_new_browser_probe" in result.stdout
+
+    def test_the_failure_names_the_engine_and_not_the_umbrella(self, sandbox: Path):
+        """An operator is handed an instruction, not a redirection.
+
+        Both the umbrella and its member qualify when `browser` is declared.
+        Reporting the umbrella would print "provision the engines this umbrella
+        covers", which tells the reader to go and look something up; the
+        engine-specific entry tells them to install the Firefox binary. The
+        whole point of splitting the name was to make the message specific.
+        """
+        (sandbox / "test_probe.py").write_text(_UNSEEN_BROWSER_TEST)
+
+        result = _run_pytest(
+            sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser"}
+        )
+
+        assert "browser_firefox" in result.stdout, result.stdout
+        assert "playwright install firefox" in result.stdout
+        assert "provision the engines this umbrella covers" not in result.stdout
+
+    def test_a_marker_naming_the_umbrella_expands_too(self, sandbox: Path):
+        """The other spelling of the same declaration.
+
+        `@pytest.mark.requires_capability("browser")` appears in the tree today.
+        If the marker path did not expand umbrellas, those markers would become
+        decoration the day the capability was split — a guard sitting in the
+        source looking exactly like protection while enforcing nothing.
+        """
+        (sandbox / "test_marked.py").write_text(
+            "import pytest\n"
+            "@pytest.mark.requires_capability('browser')\n"
+            "def test_marked_but_cryptic_reason():\n"
+            "    pytest.skip('conditions not met')\n"
+        )
+
+        result = _run_pytest(
+            sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser"}
+        )
+
+        assert result.returncode != 0, result.stdout
+        assert "test_marked_but_cryptic_reason" in result.stdout
+
+
+class TestTheChromiumGapIsNamedAndNotQuietlyCovered:
+    """The deliverable is an ADMITTED gap. These tests hold the line on both
+    halves of that: it must be stated, and it must not be faked."""
+
+    def test_declaring_the_umbrella_does_not_police_the_chromium_engine(
+        self, sandbox: Path
+    ):
+        """`browser` must NOT quietly start failing chromium-engine skips.
+
+        Nothing provisions that engine — not CI, not anywhere. Folding it into
+        the umbrella would turn every declaring job red for want of
+        PROVISIONING rather than for want of correctness, which is a gate that
+        fails for the wrong reason and teaches its reader to ignore it. The
+        capability is opt-in precisely because declaring it today would be a
+        promise no machine can keep.
+        """
+        (sandbox / "test_probe.py").write_text(_UNSEEN_CHROMIUM_ENGINE_TEST)
+
+        result = _run_pytest(
+            sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser"}
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "1 skipped" in result.stdout
+
+    def test_a_declared_run_states_what_the_declaration_does_not_cover(
+        self, sandbox: Path
+    ):
+        """The gap is PRINTED, next to the green line it qualifies.
+
+        "ok browser: no test declined to run" is true and, on its own,
+        misleading — a reader takes it as "real browsers are covered here" when
+        the engine the product DEFAULTS to is launched by nothing. Leaving that
+        to be discovered by diffing the capability table would make the gap
+        silent again, which is the whole defect this split removes.
+        """
+        (sandbox / "test_ok.py").write_text("def test_fine():\n    assert True\n")
+
+        result = _run_pytest(
+            sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser"}
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "ok browser" in result.stdout
+        # ...and immediately the honest qualification of that green line
+        assert "browser_chromium" in result.stdout, (
+            "a declared run reported the umbrella green without stating which "
+            "engine it does not cover: " + result.stdout
+        )
+        assert "does NOT cover" in result.stdout
+
+    def test_the_gap_notice_does_not_claim_the_engine_is_provisioned(
+        self, sandbox: Path
+    ):
+        """Naming a gap is not closing it, and the text must not blur the two.
+
+        The standing directive: a surface that cannot be driven yet is
+        "recorded as not covered with the reason — never as covered by a weaker
+        check standing in for it". A future edit that softened this into
+        "chromium: ok" while nothing launches chromium would be exactly the
+        false green the ticket set out to remove.
+        """
+        (sandbox / "test_ok.py").write_text("def test_fine():\n    assert True\n")
+
+        result = _run_pytest(
+            sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser"}
+        )
+
+        assert "ok browser_chromium" not in result.stdout
+        assert "NOTHING PROVISIONS THIS TODAY" in result.stdout
+
+    def test_the_chromium_capability_can_still_be_declared_deliberately(
+        self, sandbox: Path
+    ):
+        """Opt-in, not inert. Whoever provisions the engine gets a real gate on
+        the day they declare it — otherwise this table entry would be a comment
+        with no mechanism behind it, which is a different kind of lie."""
+        (sandbox / "test_probe.py").write_text(_UNSEEN_CHROMIUM_ENGINE_TEST)
+
+        result = _run_pytest(
+            sandbox,
+            "-q",
+            env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser_chromium"},
+        )
+
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert "test_a_brand_new_chromium_engine_probe" in result.stdout
+
+
 class TestSkipReportingIsOnByDefault:
     """The reporting half: no flag, no knowledge required of the reader."""
 
@@ -448,10 +632,26 @@ class TestCapabilityClassification:
     @pytest.mark.parametrize(
         "reason,expected",
         [
-            # both guards on the real-Firefox probes, in their real wording
-            ("playwright not installed", "browser"),
-            ("could not import 'playwright.sync_api': No module named 'playwright'", "browser"),
-            ("firefox not runnable here: Executable doesn't exist", "browser"),
+            # Both guards on the real-Firefox probes, in their real wording.
+            # They classify as the ENGINE-SPECIFIC capability, not the umbrella:
+            # "a browser did not run" is not an actionable sentence, "the
+            # Firefox binary is missing" is.
+            ("playwright not installed", "browser_firefox"),
+            ("could not import 'playwright.sync_api': No module named 'playwright'", "browser_firefox"),
+            ("firefox not runnable here: Executable doesn't exist", "browser_firefox"),
+            # The chromium engine the product DEFAULTS to. Prospective wording —
+            # no probe guards on it yet — pinned here so the partition is
+            # checked before the first such probe lands, not after.
+            ("chromium engine not runnable here: Executable doesn't exist", "browser_chromium"),
+            ("fingerprint-chromium not available", "browser_chromium"),
+            # THE COLLISION THIS SPLIT COULD HAVE CAUSED, pinned in both
+            # directions. `ui_driver` owns a DIFFERENT chromium — the system
+            # browser its UI driver attaches to — and matching is substring
+            # matching, so a careless engine pattern would have swallowed this
+            # reason (or been swallowed by it) and reported a skip about one
+            # chromium as a failure of the other.
+            ("chromium not runnable here: /usr/bin/chromium is absent", "ui_driver"),
+            ("flet not installed", "ui_driver"),
             ("node not available", "node"),
             ("could not import 'invisible_core': No module named 'invisible_core'", "engine"),
             ("could not import 'invisible_playwright': No module named x", "engine"),
@@ -472,8 +672,29 @@ class TestCapabilityClassification:
 
     def test_every_capability_says_how_to_provision_it(self):
         """A failure that names a missing capability without saying how to
-        supply it just relocates the dead end."""
+        supply it just relocates the dead end.
+
+        An UMBRELLA legitimately carries no reason_patterns — classification
+        must land on its engine-specific member, so "a browser did not run"
+        never reaches an operator in place of "the Firefox binary is missing".
+        The requirement is therefore that no capability is a DEAD END: it
+        either catches skips itself, or it delegates to members that do. That
+        is the original intent, widened to survive the split — not weakened:
+        a leaf with no patterns still fails here, and an umbrella whose
+        members do not exist fails too.
+        """
         for name, cap in persona_conftest.CAPABILITIES.items():
             assert cap.summary, name
             assert cap.provisioned_by, name
-            assert cap.reason_patterns, name
+            assert cap.reason_patterns or cap.includes, name
+            if cap.includes:
+                assert not cap.reason_patterns, (
+                    f"{name} is an umbrella AND matches reasons itself, so a "
+                    "skip could classify as the umbrella and hand the reader "
+                    "a redirection instead of the engine that was missing"
+                )
+            for member in (*cap.includes, *cap.excludes):
+                assert member in persona_conftest.CAPABILITIES, (
+                    f"{name} names {member!r}, which is not a capability — a "
+                    "declaration would expand to nothing and enforce nothing"
+                )
