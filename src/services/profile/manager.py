@@ -14,7 +14,9 @@ from ...utils.store_guard import StoreGuardMixin
 from ...utils.trashable import TrashableMixin
 from ...utils.validation import validate_profile_name
 from .coherence import (
+    DEFAULT_DEVICE_TYPE,
     assert_coherent,
+    assert_device_type_coherent,
     coherence_error,
     coherent_engine,
     normalize_engine,
@@ -480,11 +482,25 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
             # note or a tag fail on a conflict that edit did not create, and
             # leave the profile permanently uneditable — including the edit that
             # would FIX the pair.
+            # "Introduces" is judged PER RULE FAMILY, never with one flag for
+            # all three. The rules read different fields — the pair rules read
+            # (os_type, engine), Rule 3 reads (os_type, device_type) — so a
+            # single "something changed" gate in front of a single
+            # `assert_coherent(os, engine, device_type)` would submit EVERY
+            # field to judgement whenever ANY field moved. A device_type-only
+            # edit would then be refused by Rule 2 for a pair it never touched,
+            # and on a record violating both families (reachable via the exempt
+            # `restore_profile` and via `import_profile`, which reconciles only
+            # the pair) the edit that REPAIRS Rule 3 would be refused by Rule 2
+            # — the stranding this whole block exists to prevent, arriving
+            # through the door the exemption deliberately keeps open.
             _current = self.profiles[original_name]
-            _current_device_type = getattr(_current, "device_type", "desktop")
+            _current_engine = getattr(_current, "engine", "chromium")
+            _current_device_type = getattr(
+                _current, "device_type", DEFAULT_DEVICE_TYPE
+            )
             _resulting_engine = (
-                new_engine if new_engine is not None
-                else getattr(_current, "engine", "chromium")
+                new_engine if new_engine is not None else _current_engine
             )
             _resulting_os = new_os if new_os is not None else _current.os_type
             # device_type joins the resulting-value read for the same reason
@@ -496,14 +512,21 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                 new_device_type if new_device_type is not None
                 else _current_device_type
             )
-            _fields_changed = (
+            _pair_changed = (
                 _resulting_os != _current.os_type
-                or _resulting_engine != getattr(_current, "engine", "chromium")
-                or _resulting_device_type != _current_device_type
+                or _resulting_engine != _current_engine
             )
-            if _fields_changed:
-                assert_coherent(
-                    _resulting_os, _resulting_engine, _resulting_device_type
+            # Rule 3's inputs are (os_type, device_type), so an os_type edit can
+            # introduce it too — the two gates overlap on os_type by design.
+            _device_type_changed = (
+                _resulting_device_type != _current_device_type
+                or _resulting_os != _current.os_type
+            )
+            if _pair_changed:
+                assert_coherent(_resulting_os, _resulting_engine)
+            if _device_type_changed:
+                assert_device_type_coherent(
+                    _resulting_os, _resulting_device_type
                 )
 
             # Rename the data dir BEFORE touching any in-memory field, so a
