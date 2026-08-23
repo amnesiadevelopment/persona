@@ -71,24 +71,31 @@ def a_snapshot(**kwargs) -> dict:
 
 
 def a_generation_2_record(**kwargs) -> dict:
-    """A record in the shape PS-69 left behind — the REAL writer, minus the key
-    that made it generation 3.
+    """A record in the shape PS-69 left behind — the REAL writer, minus the keys
+    that made it generations 3 and 4.
 
     Derived from ``a_record()`` rather than hand-built, so it stays anchored to
-    what the writer really emits: only the ONE key that defines the generation
-    boundary is removed. Hand-building the dict would test these assertions
+    what the writer really emits: only the keys that define the generation
+    boundaries are removed. Hand-building the dict would test these assertions
     against themselves.
 
     This helper exists because the two tests below are about telling a
     PRE-PS-69 record from a POST-PS-69 one, and they used to get the second by
     calling today's writer. That was only ever true while generation 2 happened
     to be the newest: PS-103 added ``masking_layer`` and made it generation 3,
-    at which point "what the writer emits today" and "generation 2" stopped
-    being the same document. The tests' SUBJECT is the historical pair, so the
-    historical shape is what they must construct.
+    then PS-110 added ``evidence`` and made it generation 4 — at each of which
+    "what the writer emits today" and "generation 2" drifted further apart. The
+    tests' SUBJECT is the historical pair, so the historical shape is what they
+    must construct.
+
+    THE GROWING POP LIST IS THE MECHANISM WORKING, not a maintenance burden: a
+    new header key that did not need removing here would be a key that did not
+    change the generation, and this helper going stale is the same signal the
+    ledger itself raises.
     """
     record = a_record(**kwargs)
     record.pop("masking_layer")
+    record.pop("evidence")
     record["schema_version"] = 2
     return record
 

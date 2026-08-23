@@ -49,9 +49,34 @@ records as #211. So:
 
 Exit codes for ``read`` — the refusal is the interesting one:
 
-    0   every configuration asked for was read and recorded. NOT a claim that
-        every verdict was good: a recorded adverse verdict still exits 0,
-        because this tool reports and does not gate. Read the record.
+    0   every configuration asked for was read and recorded, AND each one
+        gathered enough fingerprint evidence to be read as a reading. NOT a
+        claim that every verdict was good: a recorded adverse verdict still
+        exits 0, because this tool reports and does not gate. Read the record.
+    3   INCONCLUSIVE — at least one configuration was read and written, and
+        did not gather enough to mean anything. The exit was proven, the file
+        exists and its counts are honest; what it does not contain is evidence.
+        PS-110 is the run that made this code necessary: pixelscan crashed the
+        Chromium renderer, every checker sequenced after it died with the
+        context, and the run recorded TWO fingerprint-bearing rows out of 27,
+        printed "browser tier: 37 readings", wrote the record and exited 0 —
+        indistinguishable, in every field it carried, from a clean run.
+
+        Not folded into 2, because nothing was refused: the exit WAS proven
+        and a record WAS written, and a caller that treats this as "I could
+        not look" would discard a record that is worth reading. Not folded
+        into 0 for the obvious reason, and never into 1 — the run did not
+        crash. It is deliberately the same code ``compare`` uses for "no
+        finding, but the coverage this rests on is not what you think",
+        because that is exactly what this is, one lane over.
+
+        THIS IS NOT A VERDICT ABOUT PERSONA. It says the RUN failed to
+        measure, never that the product failed anything — the same line
+        ``baseline.py`` draws with "an unobtainable reading is inconclusive,
+        and inconclusive is never a pass". A gate that read this as a product
+        regression would fire on a dead browser; one that read it as success
+        cannot fail for the reason it exists. The record carries the verdict
+        too, in ``evidence``, because the record outlives the terminal.
     2   REFUSED — the exit could not be proven for AT LEAST ONE configuration,
         so that configuration read nothing and wrote nothing. A missing
         credential, an unusable one, a refused connection, a timeout, or an
@@ -128,7 +153,11 @@ from .layer_differential import (
     DEFAULT_SEED as DIFF_DEFAULT_SEED,
 )
 from .exit_guard import DEFAULT_CREDENTIAL_PATH, ExitNotProven, prove_exit, redact
+from .evidence import is_inconclusive
 from .matrix import (
+    ABSENT,
+    READ,
+    UNOBTAINABLE,
     build_record,
     dumps,
     read_json_tier,
@@ -364,6 +393,31 @@ def _notes_for(
     return notes
 
 
+def _tally(readings, since: int = 0) -> str:
+    """What a tier gathered, with READINGS meaning rows that were read.
+
+    THE COUNT THAT USED TO LIE. This line was ``len(readings) - before`` — the
+    number of ROWS the tier appended, unobtainable ones included. Every unread
+    checker contributes its full width by design (see
+    ``matrix.readings_for_unread_checker``), so that figure GREW when nothing
+    was read: the PS-110 run printed ``browser tier: 37 readings`` having
+    obtained sixteen rows and two fingerprint-bearing ones. A number that goes
+    up when the browser dies is not a count of readings.
+
+    Unobtainable rows are still reported — they are useful, and dropping them
+    would hide that the tier kept its width — but they are reported BESIDE the
+    figure rather than summed into it.
+    """
+    rows = readings[since:]
+    read = sum(1 for r in rows if r.state == READ)
+    absent = sum(1 for r in rows if r.state == ABSENT)
+    unobtainable = sum(1 for r in rows if r.state == UNOBTAINABLE)
+    return (
+        f"{read} read, {absent} absent "
+        f"({unobtainable} unobtainable, {len(rows)} rows)"
+    )
+
+
 def _read_one(
     args: argparse.Namespace,
     engine: str,
@@ -429,7 +483,7 @@ def _read_one(
         )
     else:
         readings.extend(read_json_tier(proxy_url))
-        print(f"json tier: {len(readings)} readings", file=sys.stderr)
+        print(f"json tier: {_tally(readings)}", file=sys.stderr)
 
     before = len(readings)
     if args.skip_browser:
@@ -469,7 +523,7 @@ def _read_one(
             )
         )
         print(
-            f"browser tier: {len(readings) - before} readings",
+            f"browser tier: {_tally(readings, before)}",
             file=sys.stderr,
         )
 
@@ -522,6 +576,7 @@ def _cmd_read(args: argparse.Namespace) -> int:
 
     written: "list[str]" = []
     refused = 0
+    inconclusive = 0
 
     for engine, machine, seed in plan:
         record = _read_one(args, engine, machine, seed)
@@ -547,12 +602,43 @@ def _cmd_read(args: argparse.Namespace) -> int:
         write(record, path)
         written.append(path)
         counts = record["counts"]
+        evidence = record["evidence"]
         print(
-            f"wrote {path}: {counts['total']} readings "
-            f"({counts['read']} read, {counts['absent']} absent, "
-            f"{counts['unobtainable']} unobtainable)",
+            f"wrote {path}: {counts['read']} read, {counts['absent']} absent "
+            f"({counts['unobtainable']} unobtainable, {counts['total']} rows)",
             file=sys.stderr,
         )
+        # The verdict, on the console AND in the file. The console line is what
+        # a human watching sees; the record is what outlives the terminal and
+        # what a later comparison reads. A run that measured nothing has to be
+        # unmistakable on both, which is why neither is left to be inferred
+        # from the counts above.
+        if is_inconclusive(evidence):
+            inconclusive += 1
+            print(
+                f"  INCONCLUSIVE: {evidence['fingerprint_obtained']} of "
+                f"{evidence['fingerprint_total']} fingerprint-bearing rows "
+                f"were obtained, from "
+                f"{len(evidence['checkers_contributing'])} checker(s). "
+                "This run did not gather enough to be read as a reading of "
+                "the identity — it is NOT a clean result.",
+                file=sys.stderr,
+            )
+            for reason in evidence["reasons"]:
+                print(f"    - {reason}", file=sys.stderr)
+        else:
+            print(
+                f"  evidence: SUFFICIENT "
+                f"({evidence['fingerprint_obtained']}/"
+                f"{evidence['fingerprint_total']} fingerprint rows, "
+                f"{len(evidence['checkers_contributing'])} checkers)",
+                file=sys.stderr,
+            )
+            for reason in evidence["reasons"]:
+                # A run can clear the floor and still have lost a tail to a
+                # dead session. Saying so on a PASS is the point: it is the
+                # run worth looking at that nothing would otherwise flag.
+                print(f"    note: {reason}", file=sys.stderr)
 
     if refused:
         print(
@@ -562,6 +648,16 @@ def _cmd_read(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    if inconclusive:
+        print(
+            f"\nINCONCLUSIVE {inconclusive} of {len(written)} record(s): the "
+            "run did not gather enough fingerprint evidence to be read. The "
+            "record(s) were still written and say so — read the `evidence` "
+            "block. This is NOT a verdict about persona: it says the RUN "
+            "failed to measure, not that the product failed anything.",
+            file=sys.stderr,
+        )
+        return 3
     return 0
 
 

@@ -87,6 +87,7 @@ from typing import Any
 
 from .checkers import EXIT, FINGERPRINT, HARNESS, HOST
 from .diff import ComparisonNotControlled
+from .evidence import obtained
 from .matrix import ABSENT as STATE_ABSENT, READ, UNOBTAINABLE
 from .snapshot import quote_path
 
@@ -522,19 +523,21 @@ def _rows(record: dict) -> "dict[tuple[str, str], dict]":
 def _obtained(row: Any) -> bool:
     """True when this side carries a reading that was actually OBTAINED.
 
-    Two states count, and the second is the one that separates this module
-    from ``diff.py``. ``read`` is obviously evidence. ``absent`` is evidence
-    TOO: the checker answered and did not say this, which for an adverse item
-    (``proxy_detected``) is precisely the GOOD news. Folding absent in with
-    unobtainable would make every clean page look unread.
+    ONE DEFINITION, TWO LANES. The body lives in :func:`evidence.obtained` and
+    this is a delegation rather than a copy: ``compare``'s aggregate floor
+    (PS-92) and ``read``'s evidence floor (PS-110) are the same question asked
+    of two different artifacts, and the failure mode of writing it twice is
+    that the two lanes quietly come to disagree about what a reading IS — at
+    which point a record ``read`` called inconclusive can be compared as though
+    it were evidence.
 
-    ``unobtainable``, a missing row, and anything malformed are not evidence.
-    The safe default in this subsystem is to treat what we cannot recognise as
-    evidence we do not have.
+    The rule itself, which that function documents in full: ``read`` and
+    ``absent`` are evidence, and ``absent`` is the one that has to be argued
+    for — the checker answered and did not say this, which for an adverse item
+    is precisely the GOOD news. ``unobtainable``, a missing row and anything
+    malformed are not evidence.
     """
-    if not isinstance(row, dict):
-        return False
-    return row.get("state") in (READ, STATE_ABSENT)
+    return obtained(row)
 
 
 def _verdict(row: dict) -> tuple:
