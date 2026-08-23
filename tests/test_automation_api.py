@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 import pytest
 from fastapi import FastAPI
@@ -12,6 +13,12 @@ from src.api.dependencies import (
     get_profile_manager,
 )
 from src.models.profile import Profile
+from src.services.browser.refusal import classify_refusal
+from src.services.proxy.errors import (
+    GeographyDisprovenError,
+    GeographyUnknownError,
+    ProxyUnresolvedError,
+)
 
 GUID_WS = "ws://127.0.0.1:9333/devtools/browser/abc-123-guid"
 
@@ -20,6 +27,21 @@ class FakeLauncher:
     def __init__(self):
         self.launched = []
         self._running = set()
+        # The verdict the next start_thread attempt will record, as (exception,
+        # ) — set by a test to make that attempt a REFUSED one. The real
+        # launcher swallows the guard's exception, classifies it, stores it, and
+        # returns None; this double reproduces exactly that contract, through
+        # the SHIPPED classify_refusal rather than a hand-built Refusal, so a
+        # test cannot assert a kind the real classifier would never produce.
+        self.refuse_next_with = None
+        # name -> Refusal, mirroring the launcher's _last_refusal dict.
+        self._last_refusal = {}
+        # Clock the test controls. None means "use the real clock", which is
+        # what the launcher does (it stamps time.time() in its handler) — a
+        # frozen default would make every refusal look ancient to the route's
+        # staleness check and mask the very behaviour under test. A test that
+        # wants an explicitly OLD verdict sets this to a past value.
+        self.now = None
 
     def running_profile_names(self):
         return set(self._running)
@@ -31,10 +53,38 @@ class FakeLauncher:
         return 1000.0 if name in self._running else None
 
     def start_thread(self, profile, log, on_ready=None, on_stop=None):
+        if profile.name in self._running:
+            # The real launcher returns HERE, before the pop below — a duplicate
+            # is not an attempt and must not erase the verdict from the attempt
+            # that did run (launcher.py). Reproduced because AC4(a) turns on it.
+            if on_stop:
+                on_stop()
+            return
+        # A NEW attempt supersedes the previous verdict, dropped at the attempt
+        # rather than at its outcome (launcher.py).
+        self._last_refusal.pop(profile.name, None)
+        exc = self.refuse_next_with
+        if exc is not None:
+            self.refuse_next_with = None
+            # Swallowed, classified, recorded — and None returned, the same None
+            # a successful launch returns. That is the whole defect's shape.
+            # Stamped with the real clock unless a test pinned one, exactly as
+            # the launcher stamps time.time() at the instant it handles the
+            # failure.
+            at = time.time() if self.now is None else self.now
+            refusal = classify_refusal(exc, at)
+            if refusal is not None:
+                self._last_refusal[profile.name] = refusal
+            if on_stop:
+                on_stop()
+            return
         self.launched.append(profile)
         self._running.add(profile.name)
         if on_ready:
             on_ready()
+
+    def last_refusal(self, name):
+        return self._last_refusal.get(name)
 
     def stop_profile(self, name, timeout=2):
         self._running.discard(name)
@@ -270,3 +320,136 @@ def test_build_cdp_info_shape():
     assert info.debug_port == 9333
     assert info.ws.selenium == "127.0.0.1:9333"
     assert info.ws.puppeteer == GUID_WS
+
+
+# ---------------------------------------------------------------------------
+# PS-82: a launch the fail-closed guard REFUSED must not be reported as success.
+#
+# The launcher already computes this verdict: start_thread catches the guard's
+# exception, classifies it, records it under the profile name, and returns the
+# same None a successful launch returns. Before this slice both API lanes
+# composed success over that None — REST answered 202 {"success": true} for a
+# profile that never opened, and no follow-up call could recover the reason.
+#
+# These assertions bind to the REPORTED VERDICT (status code + kind + detail),
+# never to "the route is able to call the accessor" — an assertion that a
+# mechanism EXISTS passes against an implementation that does not work (PS-11).
+# Delete the last_refusal read from routes/browser.py and every test below goes
+# red on the response itself.
+# ---------------------------------------------------------------------------
+
+
+def _refusal_body(r):
+    """The refusal payload from a 409, whatever FastAPI wrapped it in."""
+    return r.json()["detail"]
+
+
+def test_launch_refused_by_unresolved_proxy_is_not_reported_as_success(client):
+    # AC1/AC3. On origin/main this returns 202 {"success": true} — the profile
+    # never opened, the guard fired, and the caller was told it worked.
+    client._launcher.refuse_next_with = ProxyUnresolvedError(
+        "Profile 'autobot' has proxy 'home' assigned but it could not be "
+        "resolved (deleted/renamed?). Refusing to launch DIRECT."
+    )
+    r = client.post("/api/browser/autobot/launch")
+
+    assert r.status_code == 409, "a refused launch must not answer the 202 success shape"
+    body = _refusal_body(r)
+    assert body["kind"] == "proxy_unresolved"
+    # The settled operator sentence, passed through untouched — asserted by its
+    # load-bearing content, not by restating the whole string here.
+    assert "Refusing to launch DIRECT" in body["detail"]
+    # The point is that nothing launched. Asserting only the 409 would pass even
+    # if the browser had come up.
+    assert client._launcher.launched == []
+    assert client._launcher.is_running("autobot") is False
+
+
+def test_geography_unknown_and_disproven_are_distinguishable_to_a_caller(client):
+    # AC2. GeographyDisprovenError is a SUBCLASS of GeographyUnknownError, so a
+    # lane that collapses them tells an operator the proxy was "never checked"
+    # when it WAS checked and the check FAILED — sending them to re-run a check
+    # that already ran. Assert on `kind`, never on prose.
+    client._launcher.refuse_next_with = GeographyUnknownError(
+        "Profile 'autobot' has proxy 'home' assigned but its geography could "
+        "not be established (the proxy has never been checked successfully)."
+    )
+    unknown = client.post("/api/browser/autobot/launch")
+
+    client._launcher.refuse_next_with = GeographyDisprovenError(
+        "Profile 'autobot' has proxy 'home' assigned, but that proxy's LAST "
+        "CHECK FAILED — the geography still on file is disproven."
+    )
+    disproven = client.post("/api/browser/autobot/launch")
+
+    assert unknown.status_code == 409
+    assert disproven.status_code == 409
+    assert _refusal_body(unknown)["kind"] == "geography_unknown"
+    assert _refusal_body(disproven)["kind"] == "geography_disproven"
+    assert _refusal_body(unknown)["kind"] != _refusal_body(disproven)["kind"], (
+        "the two causes have different remedies and must not collapse"
+    )
+
+
+def test_duplicate_launch_does_not_re_report_an_earlier_refusal(client):
+    # AC4(a) — THE TRAP. _last_refusal is keyed by profile name and is dropped
+    # at the START of an attempt, but a duplicate-launch call returns BEFORE
+    # that drop, deliberately ("a click that gets refused as a duplicate is not
+    # an attempt and must not erase the verdict from the attempt that did run").
+    # A lane that read the dict unconditionally would hand that older refusal to
+    # this caller as its own verdict.
+    client._launcher.refuse_next_with = ProxyUnresolvedError("first attempt refused")
+    first = client.post("/api/browser/autobot/launch")
+    assert first.status_code == 409, "precondition: the first attempt was refused"
+
+    # Put the profile in a running state so the NEXT call is a duplicate that
+    # returns early — while the earlier verdict is still on record.
+    client._launcher._running.add("autobot")
+    assert client._launcher.last_refusal("autobot") is not None, (
+        "precondition: the earlier verdict is still on record"
+    )
+
+    second = client.post("/api/browser/autobot/launch")
+
+    assert second.status_code == 409
+    # It must be refused as a DUPLICATE, not as the earlier proxy failure.
+    assert second.json()["detail"] == "Browser already running", (
+        "the second call re-reported a refusal that belonged to the first attempt"
+    )
+
+
+def test_a_successful_launch_after_a_refused_one_reports_success(client):
+    # AC4(b). The other direction of the same trap: once a real attempt
+    # succeeds, the stale verdict must not leak into its response.
+    client._launcher.refuse_next_with = ProxyUnresolvedError("refused once")
+    refused = client.post("/api/browser/autobot/launch")
+    assert refused.status_code == 409, "precondition: the first attempt was refused"
+
+    ok = client.post("/api/browser/autobot/launch")
+
+    assert ok.status_code == 202
+    assert ok.json()["success"] is True
+    assert client._launcher.last_refusal("autobot") is None
+    assert [p.name for p in client._launcher.launched] == ["autobot"]
+
+
+def test_profile_with_no_proxy_is_unchanged(client):
+    # AC5. That population never reaches the guard, so its response must be
+    # byte-identical to today's.
+    assert client._pm.profiles["autobot"].proxy in (None, "")
+    r = client.post("/api/browser/autobot/launch")
+    assert r.status_code == 202
+    assert r.json()["success"] is True
+    assert r.json()["cdp"]["debug_port"] == 9333
+
+
+def test_ordinary_spawn_failure_is_not_reported_as_a_refusal(client):
+    # AC6. classify_refusal returns None for anything that is not one of the
+    # three guard classes, so the response shape must not change. Routine noise
+    # has to stay quiet enough that a refusal reads as loud.
+    client._launcher.refuse_next_with = RuntimeError("engine binary exploded")
+    r = client.post("/api/browser/autobot/launch")
+
+    assert r.status_code == 202, "an ordinary failure must not become a 409 refusal"
+    assert r.json()["success"] is True
+    assert client._launcher.last_refusal("autobot") is None
