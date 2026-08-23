@@ -1172,8 +1172,14 @@ class App:
         try:
             pin = engine.pinned_build()
             target = "" if pin else engine.rollback_target()[0]
-        except Exception:
+        except Exception as e:
             # The panel must render even if the record/settings are unreadable.
+            # LOG THE REASON rather than only degrading: unlike the Firefox row
+            # this handler also covers `settings` being unreadable, and a
+            # corrupt settings file therefore takes the RESUME gesture away
+            # silently — leaving an operator pinned with no way back out of the
+            # pin, and nothing on screen saying why the control vanished.
+            self._log(f"Chromium engine: couldn't read the rollback state ({e})")
             return ft.Container(height=0)
 
         if pin:
@@ -1230,6 +1236,23 @@ class App:
         if self._engine_busy or self._engine_checking:
             return
         self._engine_busy = True
+        # ARM THE BAR BEFORE ANY BYTE MOVES, exactly as both sibling download
+        # paths do (_download_engine_fresh, _update_engine_async). Without this
+        # the revert inherits the LAST download's finished state: ProgressState
+        # is monotonic (progress_fmt.py `self.done = max(self.done, done)`) and
+        # resets only when `total` CHANGES, and the builds either side of a
+        # revert are
+        # sibling Chromium releases of near-identical size — so the reset branch
+        # usually never fires and the row sits pinned at "100% 189.0 MB of
+        # 189.0 MB" for the whole multi-minute re-download. When the server
+        # omits Content-Length (common over Tor, which is this row's operator)
+        # total is 0, never satisfies the reset condition under ANY
+        # circumstances, and the stale line is frozen there permanently.
+        # It also fixes what the operator sees AT THE CLICK: _refresh_sidebar()
+        # below re-inserts the bar/detail controls still holding the previous
+        # download's values, so a full 100% bar appeared instantly — reading as
+        # "already done" for a gesture that had not moved a byte.
+        self._engine_progress_start()
         self._engine_status = ""
         self._refresh_engine_text()
         self._refresh_sidebar()
@@ -1263,7 +1286,15 @@ class App:
                 self._log(f"Chromium engine: going back failed ({e})")
                 self._engine_status = "couldn't go back — see the log"
             finally:
+                # Clear the detail line here, mirroring _update_engine_async's
+                # finally. It matters MOST on the refusal paths (nothing to go
+                # back to / close your running profiles / the yanked-tag
+                # message), which are the likeliest outcomes and all return in
+                # milliseconds having moved no bytes — without this they leave
+                # the previous download's byte count sitting under a revert that
+                # never started.
                 self._engine_busy = False
+                self._engine_detail.value = ""
                 self._refresh_engine_text()
                 self._refresh_sidebar()
 
