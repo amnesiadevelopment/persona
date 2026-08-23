@@ -50,6 +50,37 @@ import pytest
 #: Comma- or space-separated capability names from ``CAPABILITIES`` below.
 REQUIRE_ENV_VAR = "PERSONA_REQUIRED_CAPABILITIES"
 
+#: The ini key ``pyproject.toml`` sets, and the plugin that ini key belongs to.
+#: Named here so the header below cannot drift from what is actually configured.
+_TIMEOUT_INI_KEY = "timeout"
+_TIMEOUT_PLUGIN = "timeout"
+
+
+def _timeout_bound_active(config: pytest.Config) -> bool:
+    """Is the per-test bound REALLY in force for THIS run?
+
+    Deliberately asks pytest's plugin manager rather than whether the module can
+    be imported. The two answers differ, and the difference is not academic: an
+    installed plugin disabled for a run (``-p no:timeout``) is importable and
+    yet enforces nothing. An import check calls that bounded, which is the same
+    false assurance this header exists to remove — one level subtler.
+    """
+    return config.pluginmanager.hasplugin(_TIMEOUT_PLUGIN)
+
+
+def _configured_timeout(config: pytest.Config) -> str:
+    """The configured bound, or ``"?"`` if the key is not registered.
+
+    ``timeout`` is registered BY the plugin, so ``getini`` RAISES where the
+    plugin is absent or disabled. Reading it unguarded crashed the run with an
+    INTERNALERROR — a header meant to report a missing safety net must not
+    become a way to fail the suite outright.
+    """
+    try:
+        return str(config.getini(_TIMEOUT_INI_KEY))
+    except (ValueError, KeyError):
+        return "?"
+
 
 @dataclass(frozen=True)
 class Capability:
@@ -321,6 +352,45 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             f"the {REQUIRE_ENV_VAR} environment variable."
         ),
     )
+
+
+def pytest_report_header(config: pytest.Config) -> list[str]:
+    """State, on every run, whether the configured per-test bound is REAL.
+
+    ``pyproject.toml`` sets ``timeout = 120`` under a comment promising that "a
+    blocking test must FAIL, not hang the whole run". That ini key belongs to
+    ``pytest-timeout``; where the plugin is absent pytest ignores the key, the
+    per-test bound silently does not exist, and the two environments disagree
+    about a load-bearing safety property with nothing saying so. CI installs
+    ``requirements-dev.txt`` and is bounded; an environment installing only the
+    project is not. PS-104 measured the consequence: a UI-driver test wedged for
+    25 minutes where two minutes was the documented promise.
+
+    A comment claiming a property the run does not have is worse than no
+    comment, because it is what stops the next person diagnosing. So the run
+    SAYS which of the two it is, every time, rather than leaving it to be
+    discovered by a hang.
+
+    This is a STATEMENT, not a gate — it changes no outcome and fails nothing.
+    It does not need to gate anything, because the UI-driver tests no longer
+    depend on the plugin at all: ``tests/ui_driver/watchdog.py`` bounds each
+    driver operation itself and reaps the children, which is what makes the
+    guarantee hold in both environments instead of only one.
+    """
+    if _timeout_bound_active(config):
+        return [
+            f"per-test timeout: ACTIVE (pytest-timeout, "
+            f"{_TIMEOUT_INI_KEY}={_configured_timeout(config)}s)"
+        ]
+    return [
+        "per-test timeout: INERT — pytest-timeout is not active in this run, "
+        f"so the `{_TIMEOUT_INI_KEY}` setting in pyproject.toml and every "
+        "`@pytest.mark.timeout(...)` in this suite are being IGNORED. A "
+        "blocking test will hang this run rather than fail it. Install it "
+        "with: pip install -r requirements-dev.txt (or drop `-p no:timeout`). "
+        "UI-driver tests bound themselves regardless — see "
+        "tests/ui_driver/watchdog.py.",
+    ]
 
 
 def pytest_configure(config: pytest.Config) -> None:
