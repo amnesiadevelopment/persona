@@ -576,9 +576,10 @@ def compare_profiles(
     read would compare EQUAL and be reported COLLIDING with an inconclusive
     count of 0 — a false leak report on every pair, from a run that does not
     flag itself as resting on nothing. Firefox reads ``null`` on
-    ``webgl.readback`` (that launch path has no WebGL spoof by any route), so
-    without this every pair of Firefox profiles is reported linkable on a
-    vector neither of them read. This is NOT the rule on the continuity axis,
+    ``webgl.readback`` (that engine reaches no WebGL context at all here, so
+    there is no surface for its spoof to perturb), so without this every pair
+    of Firefox profiles is reported linkable on a vector neither of them read.
+    This is NOT the rule on the continuity axis,
     where ``null`` is routinely a real reading ("this property does not exist"
     is what the profile is supposed to present) and a ``null`` that becomes a
     VALUE is a tell appearing — the loudest thing :func:`diff_snapshots`
