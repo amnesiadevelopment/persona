@@ -349,10 +349,103 @@ def test_rebrowser_caught_page_is_read_as_a_detection():
     reading = reading_for(REBROWSER, "detected", rebrowser_page("caught"))
     assert reading.state == READ
     assert reading.adverse is True
-    # ...and it names WHICH test caught us, not a bare True.
-    assert reading.value in (
-        "mainWorldExecution", "exposeFunctionLeak", "navigatorWebdriver"
+    # ...and it names EVERY test that caught us, not a bare True and not the
+    # first of three. The capture is sorted, so this is the whole value.
+    assert reading.value == (
+        "exposeFunctionLeak,mainWorldExecution,navigatorWebdriver"
     ), reading.value
+
+
+def test_rebrowser_records_every_red_row_not_just_the_first():
+    """A browser that gets CAUGHT MORE must not read as unchanged.
+
+    ``extract_text_item`` takes the first non-negated match and
+    ``matrix_diff._verdict`` compares ``(state, value)`` only — so a
+    first-match reading records the SAME value whether one row or three are
+    red, and the comparator's "read on both sides and agreed" branch returns
+    None. A detection count that triples in silence is exactly the regression
+    Level 3 exists to catch.
+
+    Asserted on the READER'S OUTPUT against row text, per the ticket: a test
+    on the pattern string would pass against the first-match spelling too.
+    """
+    one_red = (
+        "Test name\tTime since load\tNotes\n"
+        "\U0001F534 mainWorldExecution\t2 ms\tYou've called …ByClassName().\n"
+    )
+    three_reds = one_red + (
+        "\U0001F534 exposeFunctionLeak\t3 ms\tYou're using unpatched Playwright.\n"
+        "\U0001F534 navigatorWebdriver\t4 ms\tnavigator.webdriver = true.\n"
+    )
+
+    worse = reading_for(REBROWSER, "detected", three_reds)
+    fewer = reading_for(REBROWSER, "detected", one_red)
+
+    assert fewer.value == "mainWorldExecution"
+    assert worse.value == (
+        "exposeFunctionLeak,mainWorldExecution,navigatorWebdriver"
+    ), worse.value
+    # The verdict the comparator reads — (state, value) — must MOVE.
+    assert (fewer.state, fewer.value) != (worse.state, worse.value), (
+        "one detection and three record an identical verdict, so a browser "
+        "getting caught by two more tests reports no change at all"
+    )
+    # ...and the quote must back the value it sits beside, not one third of it.
+    for name in ("mainWorldExecution", "exposeFunctionLeak", "navigatorWebdriver"):
+        assert name in worse.matched_text, name
+
+
+def test_rebrowser_reading_does_not_depend_on_row_ORDER():
+    """The value must say WHICH tests fired, never in what order they rendered.
+
+    An unsorted join would report a reshuffled table as a changed verdict —
+    the same false-positive class this ticket is about, wearing new clothes.
+    """
+    rows = [
+        "\U0001F534 navigatorWebdriver\t4 ms\tnavigator.webdriver = true.\n",
+        "\U0001F534 mainWorldExecution\t2 ms\tYou've called …ByClassName().\n",
+        "\U0001F534 exposeFunctionLeak\t3 ms\tunpatched Playwright.\n",
+    ]
+    header = "Test name\tTime since load\tNotes\n"
+    forward = reading_for(REBROWSER, "detected", header + "".join(rows))
+    backward = reading_for(REBROWSER, "detected", header + "".join(reversed(rows)))
+
+    assert forward.value == backward.value, (
+        "the same three detections in a different row order read as two "
+        "different verdicts"
+    )
+
+
+@pytest.mark.parametrize(
+    "probe",
+    [
+        # A 🔴 in PROSE. The first spelling of this fix used `\s*`, which
+        # matches across the space here and reads 'means' as a caught test.
+        "Legend: \U0001F534 means the test caught you.",
+        # `\s*` also crosses NEWLINES, so a marker in a legend LIST fired too.
+        "Icons:\n\U0001F534\nfailed\n",
+        # A marker with no row structure behind it at all.
+        "Our \U0001F534 badge indicates a detection.",
+    ],
+)
+def test_a_red_marker_outside_a_verdict_ROW_is_not_a_detection(probe):
+    """The adverse arm must not manufacture a finding from a stray marker.
+
+    This item reads a MARKER rather than prose, so the thing that makes it a
+    verdict is the ROW it sits in — `<marker> <name>\\t<time>\\t<note>`. A 🔴
+    anywhere else on the page is decoration, and reading it would produce an
+    adverse FINGERPRINT row with a real match and a real quote behind it: the
+    exact failure the module docstring says this subsystem exists to prevent.
+
+    Latent rather than live — today's captures carry no 🔴 outside the table —
+    but "the current capture happens not to contain it" is the same reasoning
+    that left the bare `\\bdetected\\b` in place for as long as it survived.
+    """
+    reading = reading_for(REBROWSER, "detected", probe)
+    assert reading.state == ABSENT, (
+        f"a red marker in prose read as a detection (matched "
+        f"{reading.matched_text!r}, value {reading.value!r})"
+    )
 
 
 def test_the_two_captured_rebrowser_pages_really_are_different_verdicts():
@@ -416,6 +509,28 @@ def test_a_rebrowser_page_that_never_rendered_is_not_read_as_clean():
         "then be indistinguishable from a clean browser"
     )
     # ...whereas both REAL pages did render, whatever their verdict.
+    for which in ("clean", "caught"):
+        assert reading_for(
+            REBROWSER, "verdicts_rendered", rebrowser_page(which)
+        ).state == READ, which
+
+
+def test_the_liveness_arm_is_row_anchored_too():
+    """The quieter half of the same defect, and the worse one to get wrong.
+
+    ``verdicts_rendered`` was first written with ``\\s*`` as well, so a legend
+    rendered as a LIST satisfied it: ``'Legend:\\n🟢\\npassed\\n\\t'`` read as a
+    rendered verdict table. That direction manufactures a CLEAN verdict rather
+    than an adverse one — a shell page claiming its table rendered, sitting
+    beside an adverse ABSENT, is exactly the "perfect browser" this arm exists
+    to make impossible. It may not be the looser of the two patterns.
+    """
+    legend = "Legend:\n\U0001F7E2\npassed\n\tmeaning the test did not fire\n"
+    assert reading_for(REBROWSER, "verdicts_rendered", legend).state == ABSENT, (
+        "a colour legend read as a rendered verdict table; beside an adverse "
+        "ABSENT that is indistinguishable from a clean browser"
+    )
+    # ...and the real pages still prove the instrument was working.
     for which in ("clean", "caught"):
         assert reading_for(
             REBROWSER, "verdicts_rendered", rebrowser_page(which)
