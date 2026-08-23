@@ -88,13 +88,27 @@ DEFAULT_CONTROL_SEED = 1337
 
 @dataclass(frozen=True)
 class Arm:
-    """One side of a differential: a label, a reading, and what produced it."""
+    """One side of a differential: a label, a reading, and what produced it.
+
+    ``sandbox_waived`` is what the launch REALLY did, not what was asked for.
+    It is read back off the chromium command line (see
+    ``chromium_tier.ChromiumSession._start``) and it stays False on firefox,
+    which ignores the flag entirely — a record that echoed the REQUEST would
+    tag a firefox arm with a waiver that never applied to it, which is this
+    ticket's own defect in miniature.
+
+    It is per-ARM rather than per-record because the arms are separate
+    launches: an arm that refused before launching never ran anything to
+    disclose, and collapsing the pair into one flag would attribute a
+    condition to a reading that was never taken under it.
+    """
 
     label: str
     reading: ProbeReading
     layer: LayerReport
     seed: int
     error: str = ""
+    sandbox_waived: bool = False
 
     def as_record(self) -> dict:
         return {
@@ -103,6 +117,7 @@ class Arm:
             "layer": self.layer.as_record(),
             "reading": self.reading.as_record(),
             "error": self.error,
+            "sandbox_waived": self.sandbox_waived,
         }
 
 
@@ -182,6 +197,10 @@ def read_probe_once(
     label = f"{engine}/seed{seed}/layer={'on' if install_layer else 'off'}"
 
     captured: "list[LayerReport]" = []
+    # What the launch REALLY did about the sandbox, reported by the session
+    # itself. Stays empty on firefox and on a launch that never happened, so
+    # the arm cannot claim a condition no process ran under.
+    waived: "list[bool]" = []
     try:
         page_text = _drive_engine(
             url,
@@ -192,6 +211,7 @@ def read_probe_once(
             sleep=sleep,
             layer_sink=captured.append,
             allow_unsandboxed=allow_unsandboxed,
+            waiver_sink=waived.append,
         )
     except EngineUnavailable as exc:
         return Arm(
@@ -200,6 +220,7 @@ def read_probe_once(
             layer=captured[0] if captured else absent_layer(str(exc)),
             seed=seed,
             error=str(exc),
+            sandbox_waived=bool(waived and waived[0]),
         )
 
     return Arm(
@@ -209,6 +230,7 @@ def read_probe_once(
             "the engine ran but reported no layer"
         ),
         seed=seed,
+        sandbox_waived=bool(waived and waived[0]),
     )
 
 
@@ -222,6 +244,7 @@ def _drive_engine(
     sleep: "Callable[[float], None]",
     layer_sink: "Callable[[LayerReport], None]",
     allow_unsandboxed: bool = False,
+    waiver_sink: "Callable[[bool], None] | None" = None,
 ) -> str:
     """Open ``url`` in a persona engine with/without the layer, return its text.
 
@@ -231,6 +254,12 @@ def _drive_engine(
     rather than by omission — a launch that merely left the flag off would fall
     back to the system proxy, which is neither "no proxy" nor a proxy this run
     chose.
+
+    ``waiver_sink`` receives what the launch REALLY did about chromium's
+    sandbox, taken from the session that ran rather than from this function's
+    own argument. It is never called on the firefox arm, because firefox has no
+    sandbox flag to waive and a report there would be a claim about a condition
+    that does not exist on that engine.
     """
     from .browser_tier import CHROMIUM, EngineUnavailable, firefox_session
 
@@ -252,6 +281,9 @@ def _drive_engine(
             raise EngineUnavailable(str(exc)) from exc
         with session as live:
             layer_sink(session.layer_report)
+            if waiver_sink is not None:
+                # What the command line REALLY carried, not what was requested.
+                waiver_sink(session.sandbox_waived)
             return _load_and_read(live, url, settle_seconds, sleep)
 
     with firefox_session(
@@ -335,6 +367,42 @@ def run_differential(
     return build_differential_record(axis, engine, before, after)
 
 
+def _sandbox_notes(before: Arm, after: Arm) -> "list[str]":
+    """The prose disclosure for a reading taken without chromium's sandbox.
+
+    Mirrors ``checker_cli._notes_for``, which already tags the sibling ``read``
+    path's record with the same caveat. Two surfaces, one meaning: a consumer
+    who learns to read the note on a checker record reads the same note here.
+
+    Derived from what the LAUNCHES DID (``Arm.sandbox_waived``, read back off
+    the command line) rather than from what the run requested, and empty when
+    neither arm waived anything — so the note appears exactly when it is true.
+    A firefox record never carries it, because firefox has no such flag.
+    """
+    waived = [arm for arm in (before, after) if arm.sandbox_waived]
+    if not waived:
+        return []
+    which = " and ".join(arm.label for arm in waived)
+    both = len(waived) == 2
+    return [
+        f"THIS DIFFERENTIAL WAS TAKEN WITH --no-sandbox ({which}). The host "
+        "forbids the unprivileged user namespace chromium's sandbox needs, and "
+        "the operator waived it explicitly (--allow-unsandboxed-chromium). "
+        "persona's own launch path passes that flag NOWHERE, so this is NOT "
+        "the surface the product presents to a checker: treat any difference "
+        "against a sandboxed reading as possibly environmental until it is "
+        "reproduced on a host where the sandbox works."
+        + (
+            ""
+            if both
+            else " Only ONE arm waived it, so the sandbox is a SECOND axis "
+            "that moved alongside the one under test — and a difference seen "
+            "while two axes moved is attributable to neither. Read this "
+            "record's verdict as inconclusive about the axis it names."
+        )
+    ]
+
+
 def build_differential_record(
     axis: str, engine: str, before: Arm, after: Arm
 ) -> dict:
@@ -343,6 +411,14 @@ def build_differential_record(
     Split out from :func:`run_differential` so the reporting logic — which is
     where a wrong verdict would actually come from — is testable without
     launching a browser.
+
+    THE RECORD DISCLOSES THE CONDITIONS IT WAS TAKEN UNDER, and that is not
+    decoration: this whole ticket exists because a record described one subject
+    while a consumer read it as another. A differential taken under
+    ``--no-sandbox`` describes an engine surface persona never ships, so
+    ``sandbox_waived`` and the matching ``notes`` entry ride the document
+    itself — the durable thing that outlives the terminal it was printed in —
+    rather than only the help text of the flag that caused it.
     """
     # Compared on the vectors the page really COMPUTED. See _computed_vectors:
     # two sides agreeing on "unavailable:no-webgl-context" is not a spoof
@@ -391,6 +467,11 @@ def build_differential_record(
         "engine": engine,
         "verdict": verdict,
         "detail": detail,
+        # What the LAUNCHES did about chromium's sandbox. A plain boolean at
+        # the top of the document so a consumer scanning records cannot miss
+        # it, with the per-arm truth on each arm and the prose in `notes`.
+        "sandbox_waived": bool(before.sandbox_waived or after.sandbox_waived),
+        "notes": _sandbox_notes(before, after),
         "comparable_vectors": comparable,
         "diff": diff,
         "before": before.as_record(),

@@ -416,13 +416,16 @@ def test_an_absent_layer_reports_incomplete_with_a_reason():
 # --- the differential's reporting -------------------------------------------
 
 
-def _arm(label: str, vectors: dict, error: str = "") -> Arm:
+def _arm(
+    label: str, vectors: dict, error: str = "", sandbox_waived: bool = False
+) -> Arm:
     return Arm(
         label=label,
         reading=ProbeReading(vectors=vectors),
         layer=absent_layer("n/a") if error else LayerReport(route="init_scripts"),
         seed=SEED,
         error=error,
+        sandbox_waived=sandbox_waived,
     )
 
 
@@ -821,3 +824,169 @@ def test_a_credentialled_run_still_gets_its_proxy_AND_its_prefs():
     assert kwargs["proxy"]["username"] == "user"
     assert kwargs["extra_prefs"]["network.proxy.failover_direct"] is False
     assert kwargs["extra_prefs"]["network.proxy.socks_remote_dns"] is True
+
+
+# --- the differential record DISCLOSES ITS OWN CONDITIONS (C1) ----------------
+#
+# `--allow-unsandboxed-chromium`'s help text promised "a reading taken with it
+# is not the product's surface AND THE RECORD SAYS SO". The record did not say
+# so: no sandbox/waiver/no-sandbox key appeared anywhere in it, while the
+# sibling `read` path tagged the identical condition correctly via `_notes_for`.
+#
+# That is this ticket's own thesis landing on the artifact this ticket adds — a
+# record describing a subject (an engine running without the security boundary
+# the product keeps) that a consumer cannot tell apart from a clean one. So the
+# tests below are hostile in the direction that matters: not only "does a waived
+# run say so", but "can a record be made to claim a waiver that never happened".
+
+
+def test_a_waived_chromium_differential_SAYS_SO_in_the_record():
+    """The promise the help text makes, asserted on the record itself.
+
+    Checked on the DOCUMENT rather than on a log line or a stderr banner,
+    because the record is the durable thing: it outlives the terminal it was
+    printed in, and it is what a future reader diffs against.
+    """
+    record = build_differential_record(
+        AXIS_LAYER, "chromium",
+        _arm("off", {"audio_digest": "124.036605"}, sandbox_waived=True),
+        _arm("on", {"audio_digest": "124.036578"}, sandbox_waived=True),
+    )
+
+    assert record["sandbox_waived"] is True
+    assert record["before"]["sandbox_waived"] is True
+    assert record["after"]["sandbox_waived"] is True
+
+    note = "\n".join(record["notes"])
+    assert "--no-sandbox" in note
+    assert "NOT the surface the product presents" in note, (
+        "the note must say what the reading is NOT, which is the whole point"
+    )
+
+
+def test_an_UNWAIVED_run_never_claims_a_waiver_it_did_not_take():
+    """The direction that makes the disclosure worth anything.
+
+    A flag that is always on discloses nothing. If a clean sandboxed reading
+    also carried the note, a consumer would learn to ignore it — and the tag
+    would be decoration rather than information.
+    """
+    record = build_differential_record(
+        AXIS_LAYER, "firefox",
+        _arm("off", {"audio_digest": "35.749972"}),
+        _arm("on", {"audio_digest": "35.749964"}),
+    )
+
+    assert record["sandbox_waived"] is False
+    assert record["notes"] == []
+
+
+def test_a_firefox_arm_is_never_tagged_with_a_flag_firefox_IGNORES():
+    """TRYING TO MAKE THE RECORD LIE.
+
+    ``--allow-unsandboxed-chromium`` is accepted on the CLI whatever
+    ``--engine`` says, and is documented as "Ignored on firefox". A record that
+    echoed the REQUEST would therefore tag a firefox reading with a waiver that
+    was never applied to it — a record claiming a condition its subject never
+    ran under, which is precisely the defect class PS-103 exists to close.
+
+    The guard is structural, not textual: the flag is reported by the SESSION
+    that launched (read back off chromium's command line), and the firefox
+    launch has no such flag to report.
+    """
+    from src.services.verify import browser_tier, layer_differential
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def session(proxy_url, *, seed, install_layer=True, layer_sink=None):
+        if layer_sink is not None:
+            layer_sink(LayerReport(route="init_scripts", installed=("webgl",)))
+        yield object()
+
+    monkey = pytest.MonkeyPatch()
+    try:
+        monkey.setattr(browser_tier, "firefox_session", session)
+        monkey.setattr(
+            layer_differential, "_load_and_read", lambda *a, **k: '{"webgl": "1"}'
+        )
+        # The flag is passed, and the engine is one that cannot honour it.
+        arm = layer_differential.read_probe_once(
+            "http://127.0.0.1:1/", seed=SEED, engine="firefox",
+            allow_unsandboxed=True,
+        )
+    finally:
+        monkey.undo()
+
+    assert arm.sandbox_waived is False, (
+        "firefox has no sandbox flag to waive; reporting the REQUEST here "
+        "would tag a reading with a condition it was never taken under"
+    )
+    assert arm.as_record()["sandbox_waived"] is False
+
+
+def test_the_waiver_is_read_off_the_COMMAND_LINE_not_off_the_request():
+    """What the process REALLY ran with, not what the caller asked for.
+
+    These are the same value only as long as nothing between the request and
+    the launch changes its mind. Asserting on the request would make the record
+    a restatement of the caller's intent; asserting on argv makes it a fact
+    about the process that produced the reading.
+    """
+    from src.services.verify.chromium_tier import _launch_args
+
+    waived = _launch_args(
+        "/bin/chrome", "/tmp/p", seed=SEED, declared_machine="windows",
+        proxy_server="socks5://127.0.0.1:1080", allow_unsandboxed=True,
+    )
+    sandboxed = _launch_args(
+        "/bin/chrome", "/tmp/p", seed=SEED, declared_machine="windows",
+        proxy_server="socks5://127.0.0.1:1080", allow_unsandboxed=False,
+    )
+
+    assert "--no-sandbox" in waived
+    assert "--no-sandbox" not in sandboxed, (
+        "persona's own launch path passes this NOWHERE; it must never be a "
+        "default or a fallback"
+    )
+
+
+def test_a_HALF_waived_pair_warns_that_a_SECOND_AXIS_moved():
+    """One axis at a time, or the difference is attributable to neither.
+
+    If only one arm dropped the sandbox, the sandbox moved alongside the axis
+    under test. The record must not present that as a clean single-axis result
+    — this is the method QA imposed on PS-69 for exactly this reason.
+    """
+    record = build_differential_record(
+        AXIS_LAYER, "chromium",
+        _arm("off", {"audio_digest": "1"}, sandbox_waived=False),
+        _arm("on", {"audio_digest": "2"}, sandbox_waived=True),
+    )
+
+    assert record["sandbox_waived"] is True
+    note = "\n".join(record["notes"])
+    assert "SECOND axis" in note
+    assert "attributable to neither" in note
+
+
+def test_the_disclosure_SURVIVES_to_the_artifact_a_reader_actually_opens():
+    """A tag that exists only in memory discloses nothing to the next reader.
+
+    ``dumps`` is what the CLI writes to stdout and what ``matrix.write`` puts on
+    disk, so the round trip through JSON is the last place the disclosure could
+    be lost.
+    """
+    from src.services.verify.layer_differential import dumps
+
+    record = build_differential_record(
+        AXIS_LAYER, "chromium",
+        _arm("off", {"audio_digest": "124.036605"}, sandbox_waived=True),
+        _arm("on", {"audio_digest": "124.036578"}, sandbox_waived=True),
+    )
+
+    reloaded = json.loads(dumps(record))
+
+    assert reloaded["sandbox_waived"] is True
+    assert "--no-sandbox" in "\n".join(reloaded["notes"])
+    assert reloaded["before"]["sandbox_waived"] is True

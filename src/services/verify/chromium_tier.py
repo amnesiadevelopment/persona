@@ -443,6 +443,14 @@ class ChromiumSession:
         self.allow_unsandboxed = allow_unsandboxed
         self.allow_no_proxy = allow_no_proxy
         self.install_layer = install_layer
+        # Whether this launch REALLY dropped the sandbox, read back off the
+        # command line in :meth:`_start` rather than echoed from the request.
+        # The two can differ — a session that refuses before launching never
+        # ran anything to disclose — and a record that reported the REQUEST
+        # would be describing a surface that was never presented, which is the
+        # exact defect PS-103 exists to close. False until argv proves
+        # otherwise.
+        self.sandbox_waived = False
         # What persona's masking layer actually did, for the record header.
         # Initialised to an ABSENT report rather than to None, so a session that
         # dies during construction still hands the caller a truthful answer
@@ -526,6 +534,11 @@ class ChromiumSession:
             allow_unsandboxed=self.allow_unsandboxed,
             extension_dirs=extension_dirs,
         )
+        # Read back off the COMMAND LINE, not off the request. _launch_args is
+        # the single place that decides whether the flag is passed, so asking
+        # argv makes the disclosure a fact about the process that ran instead
+        # of a second copy of the decision that could drift from it.
+        self.sandbox_waived = "--no-sandbox" in args
         env = dict(os.environ, DISPLAY=display)
         try:
             self._proc = subprocess.Popen(
