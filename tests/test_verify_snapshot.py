@@ -878,10 +878,23 @@ def test_a_failed_write_leaves_no_temp_file_behind(tmp_path):
     assert [p.name for p in tmp_path.iterdir()] == ["ref.json"]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
 def test_an_unwritable_target_still_raises_oserror(tmp_path):
     """The CLI maps OSError from this call to "could not run" (exit 2). Going
     through a temp file must not swallow it into some other type, or that
-    mapping silently stops working."""
+    mapping silently stops working.
+
+    POSIX-ONLY STAGING, not a POSIX-only guarantee. `chmod(0o500)` is how a
+    directory is made unwritable on POSIX; Windows does not honour the mode bits
+    on a directory, so the chmod is a no-op there, the write SUCCEEDS, and the
+    test fails on `DID NOT RAISE` — reporting a difference in how the
+    UNWRITABLE STATE IS CREATED, not in how `snapshot.write` propagates errors.
+    Running it there asserted nothing about the product.
+
+    The contract itself — an OSError from this call reaches the caller AS an
+    OSError — is platform-independent and is asserted on every platform by
+    `test_a_failing_write_propagates_oserror_on_every_platform` below.
+    """
     unwritable = tmp_path / "ro"
     unwritable.mkdir()
     unwritable.chmod(0o500)
@@ -890,6 +903,25 @@ def test_an_unwritable_target_still_raises_oserror(tmp_path):
             snapshot.write({"probes": {}}, str(unwritable / "x.json"))
     finally:
         unwritable.chmod(0o700)
+
+
+def test_a_failing_write_propagates_oserror_on_every_platform(tmp_path):
+    """The WINDOWS-RUNNABLE half of the guarantee above.
+
+    What the CLI actually depends on is the TYPE that escapes: it maps OSError
+    to "could not run" (exit 2), so a write that fails must not have its error
+    swallowed into some other type by the temp-file-and-promote dance. That is
+    checkable without any permission model at all — a target directory that does
+    not exist fails the mkstemp on every platform, for a real filesystem reason
+    rather than a simulated one.
+    """
+    missing = tmp_path / "no-such-dir" / "x.json"
+    with pytest.raises(OSError):
+        snapshot.write({"probes": {}}, str(missing))
+
+    # ...and the failure left nothing behind to be mistaken for an artifact.
+    assert not missing.exists()
+    assert [p.name for p in tmp_path.iterdir()] == []
 
 
 def test_the_atomic_write_produces_the_same_canonical_bytes(tmp_path):

@@ -8,6 +8,7 @@ import hashlib
 import os
 import socket
 import ssl
+import sys
 import threading
 
 import pytest
@@ -562,6 +563,7 @@ def test_failed_terminator_construction_leaves_no_key_on_disk(tmp_path, monkeypa
         stop()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
 def test_unlistable_work_dir_does_not_abort_the_launch(tmp_path):
     # The sweep runs BEFORE the guarded block, so anything it raises escapes
     # start_cert_session entirely — through _cert_session_for (process.py:77)
@@ -572,6 +574,24 @@ def test_unlistable_work_dir_does_not_abort_the_launch(tmp_path):
     # product permits. start_cert_session's contract (manager.py:40-42) is to
     # degrade to "no mTLS", so an existing-but-unlistable .persona-mtls must
     # return None exactly as it does on main — never raise.
+    #
+    # SKIPPED ON WINDOWS, AND THE MARKER IS THE POINT — not the `os.geteuid()`
+    # line below, which does not EXIST on Windows and raised AttributeError
+    # before the root check could even be reached. The skip is not a
+    # convenience: the hostile case is STAGED with `os.chmod(work, 0o000)`, and
+    # Windows does not honour POSIX mode bits on a directory, so the directory
+    # stays perfectly listable and the "unlistable work dir" this test exists to
+    # exercise is never actually created. Running it there would assert nothing
+    # while looking green — strictly worse than declining to run.
+    #
+    # THE GUARANTEE IS NOT DROPPED ON WINDOWS. What is POSIX-only is the way
+    # this test STAGES an unenumerable directory, not the degradation contract
+    # itself. `test_unlistable_work_dir_degrades_on_every_platform` below stages
+    # the same condition at the seam that actually matters — os.listdir raising
+    # OSError, which is what sweep_key_material catches (terminator.py:356-359)
+    # — and runs everywhere, Windows included. Same guard as
+    # `test_cert_sweep_without_session.py:193`, which declines this identical
+    # case for this identical reason.
     import os
 
     from src.services.cert import manager as cm
@@ -596,6 +616,55 @@ def test_unlistable_work_dir_does_not_abort_the_launch(tmp_path):
         )
     finally:
         os.chmod(work, 0o700)
+        stop()
+
+
+def test_unlistable_work_dir_degrades_on_every_platform(tmp_path, monkeypatch):
+    # The WINDOWS-RUNNABLE half of the test above, and the reason that one may
+    # decline to run without dropping a guarantee. What is POSIX-only there is
+    # the STAGING (`chmod 0o000`), not the contract.
+    #
+    # sweep_key_material's degradation rests on exactly ONE seam: os.listdir
+    # raising OSError (terminator.py:356-359). So stage that seam directly
+    # instead of staging it through mode bits, and the same guarantee —
+    # start_cert_session degrades to "no mTLS" rather than letting the sweep's
+    # OSError escape and abort the launch (manager.py:40-42) — is enforced on
+    # every platform, including one whose permission model cannot express
+    # "exists but cannot be enumerated".
+    from src.services.cert import manager as cm
+
+    port, _, p12, pw, _, stop = _mtls_origin(tmp_path)
+    work = str(tmp_path / "profile" / ".persona-mtls")
+    os.makedirs(work)
+    # Pre-existing key material the sweep will NOT be able to enumerate.
+    key = os.path.join(work, "term_leaf.key")
+    with open(key, "w") as f:
+        f.write("-----BEGIN PRIVATE KEY-----\nstale\n-----END PRIVATE KEY-----\n")
+
+    real_listdir = os.listdir
+
+    def _unlistable(path, *a, **k):
+        if os.path.abspath(str(path)) == os.path.abspath(work):
+            raise OSError(13, "Permission denied")
+        return real_listdir(path, *a, **k)
+
+    monkeypatch.setattr(term.os, "listdir", _unlistable)
+
+    session = None
+    try:
+        cert = _cert_for(p12, pw, port)
+        # The assertion is the ABSENCE of a raise: pytest fails the test if
+        # start_cert_session propagates, which is precisely the regression.
+        session = cm.start_cert_session(cert, None, work, verify_upstream=False)
+        # ...and the honest outcome the docstring claims: unreadable is not
+        # clean, so nothing was swept. This is the half a bare "did not raise"
+        # would miss — a sweep that silently deleted nothing AND reported
+        # success would pass that alone.
+        assert os.path.isfile(key), "an unenumerable dir must be left alone, not 'swept'"
+    finally:
+        monkeypatch.undo()
+        if session is not None:
+            session.stop()
         stop()
 
 
