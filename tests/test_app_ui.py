@@ -407,13 +407,24 @@ def test_apply_update_keeps_staged_when_file_still_present(monkeypatch, tmp_path
     assert app._app_update_status == "ready"   # still offer restart
 
 
-def _make_engine2_app(monkeypatch, *, installed, current, latest, compatible):
+def _make_engine2_app(
+    monkeypatch, *, installed, current, latest, compatible, capped_by=""
+):
     """An App stub wired so _auto_update_engine2_async can run: fake the
-    engine module + record whether the download path was triggered."""
+    engine module + record whether the download path was triggered.
+
+    Stubs fetch_latest_full (the 3-tuple the consumers read), not fetch_latest:
+    PS-112 gave the consumers a third value, `capped_by`, naming a higher
+    release the driver pin passed over. It defaults to '' — no cap — so every
+    existing case reads exactly as it did before.
+    """
     from src.services.browser import invisible_launch as inv
     from src.services.engine import firefox as ff
 
     monkeypatch.setattr(inv, "is_invisible_installed", lambda: installed)
+    monkeypatch.setattr(
+        ff, "fetch_latest_full", lambda: (latest, compatible, capped_by)
+    )
     monkeypatch.setattr(ff, "fetch_latest", lambda: (latest, compatible))
     monkeypatch.setattr(ff, "current_version", lambda: current)
 
@@ -450,6 +461,54 @@ def test_auto_update_engine2_noop_when_current(monkeypatch):
     app._auto_update_engine2()
     assert downloaded == []
     assert any("up to date" in m for m in logs)
+
+
+def test_auto_update_engine2_capped_never_says_up_to_date(monkeypatch):
+    # PS-112 ROUND 2, THE BLOCKING REGRESSION, startup half. The operator is
+    # ALREADY ON the highest drivable build and upstream sits above the pin:
+    # pin firefox-18, upstream [18, 20], installed firefox-18. fetch_latest_full
+    # offers firefox-18 with compatible=True and names firefox-20 as capped_by.
+    #
+    # `tag` now means "the newest build you can DRIVE", not "the newest build
+    # that exists", so `is_newer(tag, current)` is False here and the old code
+    # took the no-op branch and affirmatively logged "Firefox engine is up to
+    # date (firefox-18)". That sentence is FALSE: firefox-20 exists, the
+    # operator simply cannot drive it until they update the app. Telling them
+    # they are current is worse than saying nothing, because it closes the
+    # question.
+    #
+    # Asserted on what the OPERATOR is told, not on capped_by being read.
+    app, logs, downloaded = _make_engine2_app(
+        monkeypatch, installed=True, current="firefox-18",
+        latest="firefox-18", compatible=True, capped_by="firefox-20",
+    )
+    app._auto_update_engine2()
+
+    # Still no download — firefox-20 is undrivable and firefox-18 is installed.
+    assert downloaded == []
+    assert not any("up to date" in m for m in logs), (
+        f"told 'up to date' while firefox-20 exists upstream: {logs}"
+    )
+    assert any("firefox-20" in m and "newer persona" in m for m in logs), (
+        f"the passed-over build was never named to the operator: {logs}"
+    )
+    assert app._engine2_status == "update persona for the newest engine"
+
+
+def test_auto_update_engine2_uncapped_still_says_up_to_date(monkeypatch):
+    # The other side of the distinction above: when NOTHING was passed over
+    # (capped_by == ''), the reassuring line is the truth and must still fire.
+    # Without this, "never say up to date" could be satisfied by never saying
+    # anything — which would regress the #183 no-op path instead of fixing it.
+    app, logs, downloaded = _make_engine2_app(
+        monkeypatch, installed=True, current="firefox-18",
+        latest="firefox-18", compatible=True, capped_by="",
+    )
+    app._auto_update_engine2()
+
+    assert downloaded == []
+    assert any("up to date" in m for m in logs), logs
+    assert app._engine2_status == ""
 
 
 def test_engine2_click_claims_busy_before_worker_and_second_click_is_noop(monkeypatch):
