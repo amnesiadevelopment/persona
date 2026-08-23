@@ -21,7 +21,10 @@ import threading
 import src.services.browser.invisible_launch as il
 import src.services.browser.process as process
 from src.models.profile import Profile
-from src.services.browser.env_policy import OPERATOR_IDENTITY_VARS
+from src.services.browser.env_policy import (
+    OPERATOR_IDENTITY_VARS,
+    STALE_RUNTIME_PATH_VARS,
+)
 
 # A parent polluted the way a real operator's shell is. The socket path is the
 # shape ssh-agent actually produces, so a reader can see what is at stake: it
@@ -32,6 +35,13 @@ POLLUTED_PARENT = {
     "LOGNAME": "operator",
     "HOSTNAME": "operator-laptop",
     "MAIL": "/var/mail/operator",
+}
+
+
+STALE_PARENT = {
+    "FONTCONFIG_FILE": "/tmp/.mount_personaXYZ/etc/fonts/fonts.conf",
+    "FONTCONFIG_PATH": "/tmp/.mount_personaXYZ/etc/fonts",
+    "FONTCONFIG_SYSROOT": "/tmp/.mount_personaXYZ",
 }
 
 
@@ -161,7 +171,13 @@ def _child_environ_after_fork(tmp_path, in_thread=False, is_linux=True):
 
             def _report(cfg, profile_dir, emit, _finish, stop_event, _in_thread):
                 payload = json.dumps(
-                    {k: os.environ.get(k) for k in OPERATOR_IDENTITY_VARS}
+                    {
+                        k: os.environ.get(k)
+                        for k in (
+                            *OPERATOR_IDENTITY_VARS,
+                            *STALE_RUNTIME_PATH_VARS,
+                        )
+                    }
                 )
                 with os.fdopen(report_w, "w") as fh:
                     fh.write(payload)
@@ -220,6 +236,63 @@ def test_thread_path_child_leaves_its_process_environment_alone(monkeypatch, tmp
         )
 
 
+def test_forked_firefox_child_carries_no_stale_runtime_paths(monkeypatch, tmp_path):
+    # PS-85, THE DEFECT. The chromium seam scrubbed FONTCONFIG_* via an inline
+    # tuple that the firefox seam never reached, so the forked child inherited
+    # paths into an AppImage mount that is GONE after a self-update.
+    #
+    # This test fails against the pre-PS-85 tree: all three names survive into
+    # the child with their stale values. The assertion is on the child's OWN
+    # environ after a real fork, not on whether a helper was called.
+    _pollute(monkeypatch)
+    for key, value in STALE_PARENT.items():
+        monkeypatch.setenv(key, value)
+
+    child_env = _child_environ_after_fork(tmp_path)
+
+    for var in STALE_RUNTIME_PATH_VARS:
+        assert child_env[var] is None, (
+            f"{var} reached the forked firefox child as "
+            f"{child_env[var]!r} — a path into a mount that no longer exists"
+        )
+
+
+def test_forked_firefox_child_stale_path_scrub_does_not_disturb_parent(
+    monkeypatch, tmp_path
+):
+    # The firefox half of the parent-safety guarantee, for the second list. A
+    # fork has separate memory, so the child scrubbing its own os.environ must
+    # be invisible here — persona's own runtime still needs these to resolve
+    # its bundled fonts.
+    _pollute(monkeypatch)
+    for key, value in STALE_PARENT.items():
+        monkeypatch.setenv(key, value)
+
+    _child_environ_after_fork(tmp_path)
+
+    for var, value in STALE_PARENT.items():
+        assert os.environ.get(var) == value
+
+
+def test_thread_path_child_leaves_stale_runtime_paths_alone(monkeypatch, tmp_path):
+    # THE HAZARD for the second list, asserted rather than assumed. On
+    # Windows/macOS this same _child runs as a THREAD of the manager process,
+    # where os.environ IS persona's own. Scrubbing FONTCONFIG_* there would
+    # strip the running app's own font configuration. IS_LINUX stays TRUE on
+    # purpose so a scrub gated on platform alone fails this test.
+    _pollute(monkeypatch)
+    for key, value in STALE_PARENT.items():
+        monkeypatch.setenv(key, value)
+
+    child_env = _child_environ_after_fork(tmp_path, in_thread=True, is_linux=True)
+
+    for var, value in STALE_PARENT.items():
+        assert child_env[var] == value, (
+            f"{var} was scrubbed on the thread path — that mutates persona's "
+            "own environment and every concurrently-open profile's"
+        )
+
+
 # --------------------------------------------------------------------------
 # The shared list itself
 # --------------------------------------------------------------------------
@@ -229,18 +302,36 @@ def test_both_engines_share_one_scrub_list():
     # Two divergent literal tuples in two launchers is the predictable
     # regression here: a name added at one seam and forgotten at the other is a
     # leak that looks fixed. Both launchers must reach the same object.
-    assert process.scrub_operator_identity.__module__ == (
+    #
+    # PS-85 changed WHICH symbol the chromium seam reaches — from
+    # `scrub_operator_identity` to `scrub_inherited_environment`, the single
+    # entry point that applies every list — because enumerating the scrubs at
+    # each seam is what left FONTCONFIG_* scrubbed for chromium and inherited
+    # by the forked firefox child. The assertion below is the same claim about
+    # a renamed seam, not a weakened one: it still pins that both launchers
+    # reach env_policy rather than a local literal.
+    assert process.scrub_inherited_environment.__module__ == (
         "src.services.browser.env_policy"
     )
     assert il.scrub_current_process_environ.__module__ == (
         "src.services.browser.env_policy"
     )
+    # The chromium seam must NOT have gone back to enumerating lists itself.
+    assert not hasattr(process, "scrub_operator_identity")
+    assert not hasattr(process, "scrub_stale_runtime_paths")
     assert set(OPERATOR_IDENTITY_VARS) == {
         "SSH_AUTH_SOCK",
         "USER",
         "LOGNAME",
         "HOSTNAME",
         "MAIL",
+    }
+    # The second list is pinned the same way, and for the same reason:
+    # widening it is a decision, not a tidy-up.
+    assert set(STALE_RUNTIME_PATH_VARS) == {
+        "FONTCONFIG_FILE",
+        "FONTCONFIG_PATH",
+        "FONTCONFIG_SYSROOT",
     }
 
 
