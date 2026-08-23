@@ -180,8 +180,14 @@ def test_cloak_emits_the_spidermonkey_native_form_not_v8s():
     # __cloak takes the stringified name apart from the pinned .name, because a
     # native accessor reports "get language" but stringifies as "function
     # language()". Both accessor call sites must pass the bare property name.
-    assert "var __cloak=function(f,n,s){" in cloak
+    # __cloak takes the stringified name apart from the pinned .name, and a
+    # FOURTH parameter `l` that pins .length. The arity pin is not cosmetic: a
+    # wrapper written as function(locales, options) reports length 2 where every
+    # native Intl constructor reports 0, which PS-119 measured as a live masking
+    # tell. Asserted behaviourally too — see test_no_override_betrays_itself_by_arity.
+    assert "var __cloak=function(f,n,s,l){" in cloak
     assert "__nm.set(f,s===undefined?n:s);" in cloak
+    assert 'if(l!==undefined)Object.defineProperty(f,"length"' in cloak
     both = il._language_override_script("en-US") + il._outer_size_override_script()
     assert both.count("__cloak(()=>v,'get '+k,k)") == 2
 
@@ -219,17 +225,27 @@ def test_override_scripts_cloak_every_installed_function():
     # navigator + window accessors carry the accessor's own "get <prop>" name,
     # and stringify under the bare property name (SpiderMonkey drops the prefix)
     assert js.count("__cloak(()=>v,'get '+k,k)") == 2
-    # Intl constructors, their supportedLocalesOf and resolvedOptions
-    assert "__cloak(Wrapped,Orig.name)" in js
+    # Intl constructors, their supportedLocalesOf and resolvedOptions. Each
+    # passes the ORIGINAL's .length as the 4th arg so the wrapper's arity
+    # matches the native it replaces (PS-119) — read off the original rather
+    # than written as a literal, so the pin cannot drift from what it imitates.
+    assert "__cloak(Wrapped,Orig.name,undefined,Orig.length)" in js
     assert "__cloak(Orig.supportedLocalesOf.bind(Orig)" in js
-    assert "ro.call(this);o.locale=L;return o;},ro.name)" in js
+    assert "Orig.supportedLocalesOf.length" in js
+    assert "ro.call(this);o.locale=L;return o;},ro.name,undefined," in js
+    # A native ctor's prototype is non-writable and its prototype.constructor
+    # points back at the ctor. Both were measured divergences (PS-119).
+    assert "{value:Orig.prototype,writable:false" in js
+    assert "{value:Wrapped,writable:true,enumerable:false,configurable:true}" in js
     # Date.toLocale* / toString / toTimeString, Number/BigInt, Worker wrappers
-    assert "locales===undefined?L:locales,options);},orig.name)" in js
+    assert "locales===undefined?L:locales,options);}," in js
+    assert "orig.name,undefined,orig.length)" in js
     assert "oTS.name" in js and "oTTS.name" in js
-    assert "l===undefined?L:l,opt);},o.name)" in js
+    assert "oTS.length" in js and "oTTS.length" in js
+    assert "l===undefined?L:l,opt);},o.name,undefined," in js
     assert "return __cloak(W,Orig.name);" in js
     # worker realm: Intl ctors, supportedLocalesOf, Number/BigInt
-    assert "__cloak(W,C.name);" in js
+    assert "__cloak(W,C.name,undefined,C.length);" in js
     assert "__cloak(C.supportedLocalesOf.bind(C)" in js
 
 
@@ -545,3 +561,130 @@ def test_no_function_in_the_realm_betrays_itself_by_shape(firefox_probe):
     # the generic scanner sweep: on main this returned exactly the 31 persona
     # overrides and nothing else — a 100%-precision detector list
     assert firefox_probe["page"]["tells"] == []
+
+
+# --- PS-119: arity and ctor invariants -------------------------------------
+#
+# A wrapper written as `function(locales, options)` reports `.length === 2`
+# where EVERY native Intl constructor reports 0, and nothing in the cloak
+# touched `.length` before PS-119. That is a one-read, zero-false-positive
+# masking tell over the whole patched surface — the same class as the
+# `.name === "Wrapped"` tell the cloak already existed to close.
+#
+# These capture the natives BEFORE the scripts run and compare AFTER, in the
+# same realm. So they cannot pass by agreeing with a literal this file made up:
+# the engine's own values are the oracle.
+
+_ARITY_HARNESS = r"""
+const fs = require("fs"), vm = require("vm");
+globalThis.Navigator = function Navigator() {};
+Object.defineProperty(globalThis, "navigator", {
+  value: Object.create(Navigator.prototype), writable: true, configurable: true });
+globalThis.self = globalThis;
+globalThis.window = globalThis;
+globalThis.innerWidth = 1200; globalThis.innerHeight = 800;
+globalThis.Blob = function (parts) {}; 
+globalThis.URL = { createObjectURL: () => "blob:stub" };
+class StubWorker { constructor(u, o) {} }
+Object.defineProperty(StubWorker, "name", { value: "Worker" });
+globalThis.Worker = StubWorker;
+
+const INTL = ["DateTimeFormat","NumberFormat","Collator","PluralRules",
+              "ListFormat","RelativeTimeFormat","DisplayNames","Segmenter"];
+const DATE = ["toLocaleString","toLocaleDateString","toLocaleTimeString",
+              "toString","toTimeString"];
+
+const snap = () => {
+  const o = {ctor:{}, slo:{}, ro:{}, date:{}, number:null,
+             protoWritable:{}, ctorBack:{}};
+  for (const k of INTL) {
+    if (!Intl[k]) continue;
+    o.ctor[k] = Intl[k].length;
+    if (Intl[k].supportedLocalesOf) o.slo[k] = Intl[k].supportedLocalesOf.length;
+    if (Intl[k].prototype && Intl[k].prototype.resolvedOptions)
+      o.ro[k] = Intl[k].prototype.resolvedOptions.length;
+    const d = Object.getOwnPropertyDescriptor(Intl[k], "prototype");
+    o.protoWritable[k] = d ? d.writable : null;
+    o.ctorBack[k] = Intl[k].prototype
+      ? Intl[k].prototype.constructor === Intl[k] : null;
+  }
+  for (const m of DATE) o.date[m] = Date.prototype[m].length;
+  o.number = Number.prototype.toLocaleString.length;
+  return o;
+};
+
+const before = snap();
+eval(fs.readFileSync(process.argv[2], "utf8"));
+const after = snap();
+console.log(JSON.stringify({before: before, after: after}));
+"""
+
+
+@pytest.fixture(scope="module")
+def arity_probe(tmp_path_factory):
+    """Native arities and ctor invariants, captured before AND after the patch."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    d = tmp_path_factory.mktemp("arity")
+    (d / "lang.js").write_text(il._language_override_script("pl-PL"), encoding="utf-8")
+    (d / "harness.js").write_text(_ARITY_HARNESS, encoding="utf-8")
+    out = subprocess.run(
+        [node, str(d / "harness.js"), str(d / "lang.js")],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def test_no_override_betrays_itself_by_arity(arity_probe):
+    """Every patched function reports the arity the native it replaced did.
+
+    The engine's own pre-patch values are the oracle, so this cannot pass by
+    matching a constant written here.
+    """
+    before, after = arity_probe["before"], arity_probe["after"]
+    for group in ("ctor", "slo", "ro", "date"):
+        assert after[group] == before[group], (
+            f"{group}: arity changed under the layer "
+            f"{before[group]!r} -> {after[group]!r}"
+        )
+    assert after["number"] == before["number"]
+
+
+def test_the_arity_probe_can_actually_SEE_the_tell():
+    """Guard the guard: the wrapper shape really does report 2 uncloaked.
+
+    Without this, the test above could pass on a tree where the arity pin was
+    removed AND the wrapper happened to be written with no declared parameters
+    — i.e. it could pass for the wrong reason.
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    out = subprocess.run(
+        [node, "-e",
+         "const W=function(locales,options){};"
+         "console.log(JSON.stringify({wrapper:W.length,"
+         "native:Intl.DateTimeFormat.length}))"],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert out.returncode == 0, out.stderr
+    got = json.loads(out.stdout)
+    assert got["native"] == 0
+    assert got["wrapper"] == 2, "the tell this guards is not reproducible"
+
+
+def test_the_wrapped_intl_ctors_keep_the_native_prototype_invariants(arity_probe):
+    """`prototype` non-writable and `prototype.constructor` pointing back.
+
+    Both hold on every real browser and both broke under the plain assignment
+    the wrapper used before PS-119 — measured, not theorised.
+    """
+    before, after = arity_probe["before"], arity_probe["after"]
+    assert after["protoWritable"] == before["protoWritable"]
+    assert after["ctorBack"] == before["ctorBack"]
+    # and the natives really are non-writable / self-referential, so the
+    # comparison above is not two identical wrong answers
+    assert set(before["protoWritable"].values()) == {False}
+    assert set(before["ctorBack"].values()) == {True}

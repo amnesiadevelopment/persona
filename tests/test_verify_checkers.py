@@ -135,6 +135,147 @@ def test_pixelscan_detection_is_read_when_the_page_really_says_it():
     assert reading.adverse is True
 
 
+# --- the negation trap, part two: the SEPARATOR (PS-119) --------------------
+#
+# The tests above all rest on the committed fixture, and the fixture renders
+# every clean verdict with a SINGLE SPACE ("No masking detected"). That is the
+# one separator the old fixed-width `(?<!no )` could express — so the fixture
+# could never have caught the case below, and passed while the reader was
+# capable of reporting a clean page as an antidetect detection.
+#
+# `inner_text` is what the browser tier reads with, and pixelscan renders each
+# verdict in a component tree: "No" and "masking detected" landing in different
+# elements is exactly what puts a NEWLINE between them.
+
+
+@pytest.mark.parametrize("separator", ["\n", "  ", "\t", " \n  ", "\n\n"])
+@pytest.mark.parametrize(
+    "item_id,phrase",
+    [
+        ("proxy_detected", "proxy detected"),
+        ("masking_detected", "masking detected"),
+        ("automation_detected", "automated behavior detected"),
+        ("timezone_spoofed", "timezone spoofed"),
+    ],
+)
+def test_a_clean_verdict_split_by_whitespace_is_still_clean(
+        item_id, phrase, separator):
+    """THE PS-119 REGRESSION, and the reason the negation is no longer spelled
+    as a lookbehind.
+
+    A clean "No <verdict>" whose separator is anything but one space must still
+    read ABSENT. Every one of these fired as a DETECTION before the fix — on
+    `masking_detected` that is the single verdict in the whole catalogue that
+    says "this browser is running an antidetect tool", reported off a page that
+    said the opposite.
+    """
+    reading = reading_for("pixelscan.net", item_id, f"No{separator}{phrase}")
+    assert reading.state == ABSENT, (
+        f"{item_id}: a CLEAN page separated by {separator!r} read as a "
+        f"detection (matched {reading.matched_text!r})"
+    )
+
+
+@pytest.mark.parametrize("separator", ["\n", "  ", "\t"])
+def test_the_old_lookbehind_really_did_misread_those_pages(separator):
+    """Guard the guard, in the same spirit as the naive-pattern test above: if
+    the old spelling did NOT misread a split page, the test above proves
+    nothing and would be deleted as noise."""
+    import re
+
+    old = re.search(
+        r"(?<!no )masking detected",
+        f"No{separator}masking detected",
+        re.IGNORECASE,
+    )
+    assert old is not None, (
+        "the old fixed-width lookbehind no longer misreads a split clean "
+        "page, so the regression above is not the one being pinned"
+    )
+    # ...and the shipped catalogue does NOT.
+    assert reading_for(
+        "pixelscan.net", "masking_detected", f"No{separator}masking detected"
+    ).state == ABSENT
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Masking detected",
+        "Foo\nMasking detected\nBar",
+        # The page says BOTH — a clean verdict somewhere and a real detection
+        # elsewhere. Skipping a negated occurrence must not stop the walk: the
+        # detection is the reading.
+        "No masking detected\n...\nMasking detected",
+    ],
+)
+def test_a_real_detection_still_fires_whatever_else_the_page_says(text):
+    """The fail-safe direction. A negation guard that suppressed everything
+    would pass every ABSENT test above while reading nothing at all — which is
+    the failure that would matter most here, because it reads as good news."""
+    reading = reading_for("pixelscan.net", "masking_detected", text)
+    assert reading.state == READ
+    assert reading.value is True
+    assert reading.adverse is True
+
+
+@pytest.mark.parametrize(
+    "text", ["casino masking detected", "unmasking detected"]
+)
+def test_a_word_merely_ENDING_in_the_negator_does_not_negate(text):
+    """The negator must be the preceding WORD, not any text ending in it.
+    Anchoring this loosely would silently suppress real detections — the same
+    fail-safe direction as above, arrived at from the other side."""
+    assert reading_for("pixelscan.net", "masking_detected", text).state == READ
+
+
+def test_an_all_negated_absence_says_so_rather_than_looking_unlooked_at():
+    """Both are ABSENT — the verdict is identical and must not read as "we
+    could not look" — but a later reader can tell the guard DID work from one
+    and not the other."""
+    guarded = reading_for(
+        "pixelscan.net", "masking_detected", "No\nmasking detected"
+    )
+    silent = reading_for("pixelscan.net", "masking_detected", "nothing here")
+
+    assert guarded.state == ABSENT and silent.state == ABSENT
+    assert "negated" in guarded.reason
+    assert "negated" not in silent.reason
+
+
+def test_the_bot_checker_is_NOT_exposed_to_the_separator_defect():
+    """The one place I expected the same defect and MEASURED that it is not.
+
+    deviceandbrowserinfo renders "You are NOT a bot", and its adverse pattern
+    carries the same fixed-width `(?<!not )`. The obvious move was to convert it
+    alongside pixelscan's four. Measured first, and the conversion would have
+    been theatre: the adverse pattern is `(?:you are|you're) (?:a )?(?:bot)`,
+    which CANNOT match "You are not a bot" whatever the whitespace — the
+    intervening "not" breaks the pattern itself, so the lookbehind never fires
+    and neither would a negated_by. Both guards are inert here.
+
+    Pinned as a test rather than left as a comment because the danger is a
+    later reader "fixing" this for symmetry and believing they closed a hole.
+    The assertion is on the BARE pattern with no guard at all: if that ever
+    starts matching a clean page, this checker really does need the guard and
+    this test fails loudly.
+    """
+    import re
+
+    bare = r"(?:you are|you're) (?:a )?(?:bot|robot)"
+    for clean in ["You are not a bot", "You are not\na bot",
+                  "You're not a robot", "You are\nnot a bot"]:
+        assert re.search(bare, clean, re.IGNORECASE) is None, (
+            f"{clean!r} now matches the UNGUARDED bot pattern — this checker "
+            "has acquired the separator defect and needs negated_by"
+        )
+
+    # ...and the real verdict is still read, via the shipped catalogue.
+    assert reading_for(
+        "deviceandbrowserinfo.com", "bot_verdict_positive", "You are a bot"
+    ).state == READ
+
+
 # --- the false ABSENT -------------------------------------------------------
 
 
@@ -1076,6 +1217,143 @@ def test_the_record_still_carries_the_exit_and_engine_beside_the_seed(
     assert record["exit"]["country"] == "PL"
     assert record["engine"]
     assert record["observed_at"]
+
+
+# --- the LIVE control arm (PS-119) ------------------------------------------
+#
+# The discriminating measurement for "is persona's masking layer what pixelscan
+# is reacting to?" is a live reading with the layer ON and one with it OFF. The
+# second arm had NO ROUTE before this: `read` installed the layer
+# unconditionally, and `differential --axis layer` only reads a LOCAL loopback
+# page, which publishes no verdict at all.
+#
+# These tests drive the real CLI. They assert on what the RECORD says about its
+# own subject, because that is the thing a later comparison reads — a record
+# that cannot say which arm it is, is not usable as an arm.
+
+
+def _browser_arm(argv, tmp_path, monkeypatch, expect_rc=3):
+    """Drive `read` through the BROWSER tier with the engine stubbed out.
+
+    The layer question lives in the browser tier, so unlike ``_read`` above
+    this one must actually reach it. The engine is replaced at the seam
+    ``_read_one`` imports, so no browser is launched and no network is touched;
+    what is exercised is the wiring from the flag through to the record.
+    """
+    import src.services.verify.checker_cli as cli
+    import src.services.verify.browser_tier as bt
+    from src.services.verify.exit_guard import Exit
+    from src.services.verify.masking_layer import LayerReport, absent_layer
+
+    monkeypatch.setattr(
+        cli, "prove_exit",
+        lambda **kw: ("socks5h://u:p@host:1080",
+                      Exit(ip="91.150.1.1", country="PL", city="Warsaw",
+                           org="AS9141 P4", timezone="Europe/Warsaw")),
+    )
+    monkeypatch.setattr(cli, "read_json_tier", lambda *a, **k: [])
+
+    seen = {}
+
+    def fake_read_browser_tier(proxy_url, *, layer_sink=None,
+                               install_layer=True, **kw):
+        # Record what the CLI asked for, and report the layer the SHIPPED code
+        # would report for that arm — including the real control-arm wording,
+        # which is the string the record has to carry.
+        seen["install_layer"] = install_layer
+        if layer_sink is not None:
+            layer_sink(
+                LayerReport(route="init_scripts",
+                            installed=("audio", "locale", "webgl"))
+                if install_layer
+                else absent_layer(
+                    "install_layer=False: this reading is of the PACKAGED "
+                    "ENGINE ONLY, with none of persona's masking layer. It is "
+                    "the control arm of a differential, not a reading of the "
+                    "product."
+                )
+            )
+        return []
+
+    monkeypatch.setattr(bt, "read_browser_tier", fake_read_browser_tier)
+
+    target = tmp_path / "reading.json"
+    rc = cli.main(["read", "-o", str(target), "--skip-json"] + argv)
+    assert rc == expect_rc
+    return json.loads(target.read_text()), seen
+
+
+def test_the_control_arm_reaches_the_engine_with_the_layer_suppressed(
+        tmp_path, monkeypatch):
+    """The flag must actually turn the layer OFF at the engine seam. A record
+    that SAID control-arm while the layer was still installed would be the
+    worst possible artefact for a differential."""
+    _, seen = _browser_arm(["--no-masking-layer"], tmp_path, monkeypatch)
+    assert seen["install_layer"] is False
+
+
+def test_the_product_arm_is_still_the_default(tmp_path, monkeypatch):
+    """Off by default and never inferred: a reading WITHOUT the layer does not
+    describe the product, so it has to be asked for."""
+    _, seen = _browser_arm([], tmp_path, monkeypatch)
+    assert seen["install_layer"] is True
+
+
+def test_the_control_arm_record_states_that_it_is_not_the_product(
+        tmp_path, monkeypatch):
+    """The record must be unmistakable on its own, without knowing which flags
+    were typed — it outlives the terminal, and a later reader comparing two
+    records is the consumer that matters."""
+    record, _ = _browser_arm(["--no-masking-layer"], tmp_path, monkeypatch)
+
+    assert record["masking_layer"]["route"] == "none"
+    assert record["masking_layer"]["installed"] == []
+    assert record["masking_layer"]["complete"] is False
+
+    notes = " ".join(record["notes"]).lower()
+    assert "packaged engine only" in notes
+    assert "control arm" in notes
+    assert "not a reading of the product" in notes
+
+
+def test_the_product_arm_record_is_not_labelled_as_a_control_arm(
+        tmp_path, monkeypatch):
+    """Guard the guard: if the note were emitted unconditionally, the test
+    above would pass while telling a reader nothing."""
+    record, _ = _browser_arm([], tmp_path, monkeypatch)
+
+    assert record["masking_layer"]["route"] == "init_scripts"
+    assert record["masking_layer"]["complete"] is True
+    assert "control arm" not in " ".join(record["notes"]).lower()
+
+
+def test_the_control_arm_still_records_the_exit_it_was_taken_through(
+        tmp_path, monkeypatch):
+    """Both arms must carry their address. An arm whose exit is unrecorded
+    cannot be checked against the other for rotation — and two arms taken
+    through different addresses are not a comparison."""
+    record, _ = _browser_arm(["--no-masking-layer"], tmp_path, monkeypatch)
+    assert record["exit"]["ip"] == "91.150.1.1"
+    assert record["exit"]["country"] == "PL"
+
+
+def test_suppressing_the_layer_while_skipping_the_browser_is_refused(
+        tmp_path, monkeypatch):
+    """The layer is installed in the BROWSER tier. A run that skips that tier
+    never installs it and never would have, so a record claiming to be a
+    deliberate control arm would be indistinguishable from a real engine-only
+    reading — while carrying no browser reading to be the control arm OF."""
+    import src.services.verify.checker_cli as cli
+
+    target = tmp_path / "reading.json"
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["read", "-o", str(target),
+                  "--no-masking-layer", "--skip-browser"])
+
+    assert "contradict" in str(excinfo.value).lower()
+    # And it refused BEFORE writing anything, rather than leaving a record
+    # behind that a later run would read as an arm.
+    assert not target.exists()
 
 
 # --- two catalogue defects the first live run through a ROTATING exit found --
