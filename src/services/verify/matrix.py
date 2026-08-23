@@ -380,6 +380,33 @@ def extract_text_item(checker: Checker, item: TextItem, text: str) -> Reading:
     ``inner_text`` yields when a checker renders its verdict as a component
     tree. A clean page then read as a detection, with a real match and a real
     quote behind it.
+
+    ``capture_all`` — WHEN THE COUNT OF MATCHES *IS* THE VERDICT (PS-121)
+    -------------------------------------------------------------------
+    The walk above takes the FIRST non-negated match, and for the checkers that
+    publish ONE answer per page (a score, a country) that is the whole reading.
+    It is wrong for a checker that renders ONE ROW PER TEST, because there the
+    number of adverse rows is the verdict: rebrowser's page carries a line per
+    probe, so "caught by one test" and "caught by three" are different results.
+
+    A first-match reading records the same name in both — and
+    :func:`~.matrix_diff._verdict` compares ``(state, value)`` only, so the two
+    compare EQUAL and ``_classify`` returns ``None``: its "read on both sides
+    and agreed" branch, the silent pass. A browser getting caught by two more
+    tests would report no change at all, on the one checker in the tier that
+    reads modern CDP leaks. That is the regression Level 3 exists to catch,
+    invisible to the instrument meant to catch it.
+
+    So an item may declare ``capture_all`` and take EVERY non-negated match,
+    deduplicated and SORTED — sorted because the value must depend on which
+    tests fired and never on the order the page rendered them, or a reshuffled
+    table reads as a changed verdict and we are back to manufacturing findings.
+    ``matched_text`` widens to quote every matched row for the same reason: a
+    quote that backs one third of the value beside it is not evidence.
+
+    Opt-in rather than the default, deliberately — joining the incidental
+    repeats of a single-answer item would corrupt the one value its comparator
+    is written to read.
     """
     try:
         matches = list(re.finditer(item.pattern, text, re.IGNORECASE))
@@ -394,14 +421,14 @@ def extract_text_item(checker: Checker, item: TextItem, text: str) -> Reading:
         )
 
     negator = getattr(item, "negated_by", "")
-    match = None
+    live = []
     negated = 0
     for candidate in matches:
         if negator and _negated_at(text, candidate.start(), negator):
             negated += 1
             continue
-        match = candidate
-        break
+        live.append(candidate)
+    match = live[0] if live else None
 
     if match is None:
         # Distinguish "the page never says this" from "the page says it, and
@@ -419,7 +446,26 @@ def extract_text_item(checker: Checker, item: TextItem, text: str) -> Reading:
     value: Any = True
     if item.capture:
         if match.groups():
-            value = match.group(1)
+            if getattr(item, "capture_all", False):
+                # EVERY non-negated match, not the first (PS-121). The
+                # comparator reads (state, value) only, so a first-match value
+                # on a page that renders one row per test records the same
+                # reading whether one row or five are adverse — a browser going
+                # from 1 detection to 3 then compares EQUAL and the diff
+                # returns None, its "read on both sides and agreed" branch.
+                #
+                # Sorted and deduplicated so the value depends on WHICH tests
+                # fired and never on the order the page rendered them: an
+                # unsorted join would report a reshuffled table as a changed
+                # verdict, which is the false positive this ticket is about
+                # wearing different clothes.
+                value = ",".join(sorted({m.group(1) for m in live}))
+                # The quote must cover what the value claims, so it is every
+                # matched row rather than the first — otherwise `matched_text`
+                # backs one third of the reading it sits beside.
+                whole = " | ".join(m.group(0).strip() for m in live)
+            else:
+                value = match.group(1)
         else:
             # Declared as capturing but the pattern has no group: our defect,
             # and recording `True` would quietly publish a boolean where a
