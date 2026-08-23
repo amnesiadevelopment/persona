@@ -236,6 +236,7 @@ def _launch_args(
     proxy_server: str,
     lang: str = "en-US",
     allow_unsandboxed: bool = False,
+    extension_dirs: "list[str] | None" = None,
 ) -> "list[str]":
     """The command line, mirroring the product's own chromium launch.
 
@@ -243,6 +244,19 @@ def _launch_args(
     reason a machine can be varied on this engine at all: chromium HONORS it
     (``services/browser/process.py`` records that the Firefox engine does not,
     reporting Windows regardless — #211).
+
+    ``extension_dirs`` is persona's MASKING LAYER, and its absence was the
+    defect PS-103 exists to fix: this tier used to launch the engine binary
+    with these flags and load no extension at all, so every reading described
+    the packaged engine rather than what an operator's profile presents. The
+    dirs are built by the shipped builders (see :mod:`masking_layer`) and are
+    loaded exactly as ``spawn_browser`` loads them.
+
+    ``--disable-extensions-except`` rides alongside ``--load-extension``
+    deliberately. Without it, chromium's extension-disabling machinery can drop
+    an unpacked extension that was nonetheless named on the command line — and
+    a masking layer that is silently not running while the flag says it is
+    would be the same wrong-subject reading in a new disguise.
 
     ``allow_unsandboxed`` adds ``--no-sandbox``, and it is OFF by default and
     never inferred. persona's own launch path passes that flag NOWHERE — a
@@ -306,6 +320,16 @@ def _launch_args(
             "--password-store=basic",
             "--use-mock-keychain",
         ]
+    # persona's masking layer. Appended last so it is the final thing before
+    # the start URL and reads as one block, exactly as it does in
+    # ``spawn_browser``. Both flags carry the SAME comma-joined list: the
+    # ``--disable-extensions-except`` half is what stops chromium quietly
+    # dropping an unpacked extension the other half named.
+    dirs = [d for d in (extension_dirs or []) if d]
+    if dirs:
+        joined = ",".join(dirs)
+        args.append(f"--disable-extensions-except={joined}")
+        args.append(f"--load-extension={joined}")
     args.append("about:blank")
     return args
 
@@ -356,12 +380,23 @@ class ChromiumSession:
         seed: int = 0,
         declared_machine: str = "windows",
         allow_unsandboxed: bool = False,
+        install_layer: bool = True,
     ) -> None:
         import asyncio
+
+        from .masking_layer import absent_layer
 
         self.seed = seed
         self.declared_machine = declared_machine
         self.allow_unsandboxed = allow_unsandboxed
+        self.install_layer = install_layer
+        # What persona's masking layer actually did, for the record header.
+        # Initialised to an ABSENT report rather than to None, so a session that
+        # dies during construction still hands the caller a truthful answer
+        # instead of a value every consumer has to special-case.
+        self.layer_report = absent_layer(
+            "the chromium session did not get as far as building the layer"
+        )
         self._closed = False
         self._proc = None
         self._bridge = None
@@ -399,6 +434,34 @@ class ChromiumSession:
         proxy_server, self._bridge = _proxy_server_and_bridge(proxy_url)
         self._profile_dir = tempfile.mkdtemp(prefix="persona-verify-chromium-")
 
+        # Imported here rather than at module scope for the same reason the
+        # engine itself is: `build_chromium_layer` reaches into
+        # `services/browser`, and importing an engine's spoof builders must not
+        # be a cost of merely importing this module or of printing --help.
+        from .masking_layer import absent_layer, build_chromium_layer
+
+        # persona's masking layer, BUILT BEFORE THE PROCESS STARTS because
+        # chromium takes it on the command line and has no post-launch
+        # equivalent of Firefox's add_init_script. The dirs live inside the
+        # session's own user-data-dir, so close() removes them with everything
+        # else rather than leaking a spoof set into /tmp.
+        if self.install_layer:
+            extension_dirs, self.layer_report = build_chromium_layer(
+                self._profile_dir,
+                self.seed,
+                os_type=self.declared_machine,
+            )
+        else:
+            # The differential's control arm: the packaged engine with NONE of
+            # persona's layer. Deliberate, never a fallback, and the record
+            # says which arm it was.
+            extension_dirs = []
+            self.layer_report = absent_layer(
+                "install_layer=False: this reading is of the PACKAGED ENGINE "
+                "ONLY, with none of persona's masking layer. It is the control "
+                "arm of a differential, not a reading of the product."
+            )
+
         args = _launch_args(
             binary,
             self._profile_dir,
@@ -406,6 +469,7 @@ class ChromiumSession:
             declared_machine=self.declared_machine,
             proxy_server=proxy_server,
             allow_unsandboxed=self.allow_unsandboxed,
+            extension_dirs=extension_dirs,
         )
         env = dict(os.environ, DISPLAY=display)
         try:

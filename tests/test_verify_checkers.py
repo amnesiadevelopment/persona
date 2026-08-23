@@ -720,10 +720,29 @@ class _FakePage:
 
 
 class _FakeLive:
+    """A BrowserContext-shaped double: what the Firefox arm actually drives.
+
+    ``add_init_script`` and ``pages`` are here because persona's masking layer
+    is installed through them (PS-103), and because the REAL object the arm
+    works on is a context. A double carrying only ``new_page`` would model an
+    engine this tier no longer has: `InvisiblePlaywright.__enter__` hands back a
+    playwright ``Browser``, which the arm converts to ONE explicit context via
+    ``masking_layer.context_for`` precisely because a Browser can carry no init
+    script and its ``new_page()`` opens a throwaway context per call.
+
+    The registered scripts are KEPT rather than discarded, so a test can assert
+    the layer really reached the context instead of trusting a report.
+    """
+
     def __init__(self, texts, fail_on=()):
         self.texts = texts
         self.visited = []
+        self.scripts = []
+        self.pages = []
         self._fail_on = fail_on
+
+    def add_init_script(self, js):
+        self.scripts.append(js)
 
     def new_page(self):
         return _FakePage(self.texts, self.visited, self._fail_on)

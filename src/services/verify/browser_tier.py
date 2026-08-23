@@ -55,6 +55,7 @@ from typing import Any, Callable
 
 from .checkers import BROWSER_CHECKERS, Checker, ENGINE_EXIT_CHECKER
 from .exit_guard import EXPECTED_COUNTRY
+from .masking_layer import LayerReport
 from .matrix import (
     READ,
     Reading,
@@ -352,8 +353,10 @@ def _read_page_texts_firefox(
     checkers: "tuple[Checker, ...]",
     seed: int,
     sleep: Callable[[float], None],
+    layer_sink: "Callable[[LayerReport], None] | None" = None,
+    install_layer: bool = True,
 ) -> "dict[str, dict]":
-    """The Firefox half: construct the engine, then run the shared loop.
+    """The Firefox half: construct the engine, install the layer, run the loop.
 
     Note what is NOT here: a declared machine. ``InvisiblePlaywright`` takes no
     OS/platform argument at all, and the engine reports Windows regardless —
@@ -361,7 +364,26 @@ def _read_page_texts_firefox(
     ("unlike stealth-Firefox, which reports Windows regardless (#211)"). The
     caller states the machine this engine actually declares rather than passing
     one in and pretending it was honoured.
+
+    THE LAYER IS INSTALLED AFTER ``__enter__`` AND BEFORE THE FIRST PAGE LOAD,
+    and both halves of that sentence are load-bearing. After, because
+    ``add_init_script`` needs the live context the engine only hands back on
+    entry. Before, because the very first thing the shared loop does is prove
+    the exit by loading a page — a spoof registered after that has already
+    missed a document the run reads.
+
+    ``install_layer=False`` is the differential's OTHER arm and exists for no
+    other purpose: it produces the un-widened reading (engine only) so a caller
+    can show the SAME harness reading differently with and without persona's
+    masking. It is never the default and the record always says which it was.
     """
+    from .masking_layer import (
+        DEFAULT_LOCALE,
+        absent_layer,
+        context_for,
+        install_firefox_layer,
+    )
+
     try:
         from invisible_playwright import InvisiblePlaywright
     except Exception as exc:  # pragma: no cover - import shape varies by env
@@ -387,6 +409,32 @@ def _read_page_texts_firefox(
 
     try:
         with engine as live:
+            # ONE context, and every page of the run is opened in it.
+            #
+            # NOT a refactor for tidiness — it is what makes the layer exist at
+            # all. `InvisiblePlaywright.__enter__` hands back a `Browser` here
+            # (no `profile_dir` is set), and a playwright Browser has NO
+            # `add_init_script`: registering the spoofs on it installs nothing,
+            # silently. Measured, by running the differential for real and
+            # reading `installed: []` off the report. A Browser's `new_page()`
+            # also opens a THROWAWAY context per call, so even a working
+            # registration would not survive to the page. `context_for` takes
+            # the one explicit context the spoofs can live in, and the shared
+            # loop runs against that.
+            live, _context_note = context_for(live)
+            if install_layer:
+                report = install_firefox_layer(
+                    live, seed, locale=DEFAULT_LOCALE
+                )
+            else:
+                report = absent_layer(
+                    "install_layer=False: this reading is of the PACKAGED "
+                    "ENGINE ONLY, with none of persona's masking layer. It is "
+                    "the control arm of a differential, not a reading of the "
+                    "product."
+                )
+            if layer_sink is not None:
+                layer_sink(report)
             return _read_open_session(live, checkers=checkers, sleep=sleep)
     except EngineUnavailable:
         raise
@@ -405,6 +453,8 @@ def _read_page_texts_chromium(
     declared_machine: str,
     sleep: Callable[[float], None],
     allow_unsandboxed: bool = False,
+    layer_sink: "Callable[[LayerReport], None] | None" = None,
+    install_layer: bool = True,
 ) -> "dict[str, dict]":
     """The Chromium half: the same loop, behind a session that sets itself up.
 
@@ -412,6 +462,13 @@ def _read_page_texts_chromium(
     to a SOCKS5 proxy so persona's hardened loopback relay carries the
     credential, it is reached over CDP on a port that must be opened, it needs
     a display — lives in :mod:`chromium_tier` and none of it reaches this loop.
+
+    The masking layer is installed there too, and for a structural reason
+    rather than a stylistic one: Chromium takes its layer as unpacked
+    extensions on ``--load-extension``, so it must be built BEFORE the process
+    starts. There is no post-launch equivalent of Firefox's
+    ``add_init_script``. The session therefore owns the build and reports what
+    it managed, which this function forwards.
 
     ``ChromiumUnavailable`` is re-raised as :class:`EngineUnavailable` so a
     caller keeps ONE way to say "the engine did not run, every row is
@@ -426,6 +483,7 @@ def _read_page_texts_chromium(
             seed=seed,
             declared_machine=declared_machine,
             allow_unsandboxed=allow_unsandboxed,
+            install_layer=install_layer,
         )
     except ChromiumUnavailable as exc:
         raise EngineUnavailable(str(exc)) from exc
@@ -437,6 +495,8 @@ def _read_page_texts_chromium(
 
     try:
         with session as live:
+            if layer_sink is not None:
+                layer_sink(session.layer_report)
             return _read_open_session(live, checkers=checkers, sleep=sleep)
     except EngineUnavailable:
         raise
@@ -458,6 +518,8 @@ def read_page_texts(
     declared_machine: str = "",
     allow_unsandboxed: bool = False,
     sleep: Callable[[float], None] = time.sleep,
+    layer_sink: "Callable[[LayerReport], None] | None" = None,
+    install_layer: bool = True,
 ) -> "dict[str, dict]":
     """Load every browser-tier checker once and return its visible text.
 
@@ -479,6 +541,17 @@ def read_page_texts(
     ``allow_unsandboxed`` is the chromium-only waiver for a host that forbids
     the user namespace its sandbox needs. Off by default and never inferred —
     see :func:`chromium_tier.sandbox_available`.
+
+    ``install_layer`` puts persona's OWN masking layer on top of the packaged
+    engine, and it defaults to True because a reading without it does not
+    describe the product. Passing False produces the engine-only reading
+    deliberately, as the control arm of a differential.
+
+    ``layer_sink`` receives the :class:`~.masking_layer.LayerReport` for the arm
+    that ran. It is a callback rather than a second return value because this
+    function's contract — a dict of page texts — is consumed in several places,
+    and the report must reach the record header on the runs that want it
+    without changing what every other caller unpacks.
     """
     if engine not in ENGINES:
         raise EngineUnavailable(
@@ -492,9 +565,16 @@ def read_page_texts(
             declared_machine=declared_machine or DEFAULT_DECLARED_MACHINE,
             allow_unsandboxed=allow_unsandboxed,
             sleep=sleep,
+            layer_sink=layer_sink,
+            install_layer=install_layer,
         )
     return _read_page_texts_firefox(
-        proxy_url, checkers=checkers, seed=seed, sleep=sleep
+        proxy_url,
+        checkers=checkers,
+        seed=seed,
+        sleep=sleep,
+        layer_sink=layer_sink,
+        install_layer=install_layer,
     )
 
 
@@ -553,8 +633,10 @@ def read_browser_tier(
     engine: str = FIREFOX,
     declared_machine: str = "",
     allow_unsandboxed: bool = False,
+    layer_sink: "Callable[[LayerReport], None] | None" = None,
+    install_layer: bool = True,
 ) -> "list[Reading]":
-    """The whole browser tier: launch, load, settle, read, extract.
+    """The whole browser tier: launch, INSTALL THE LAYER, load, settle, read.
 
     An engine that will not start makes every row unobtainable WITH THE REASON
     — the run continues and records that, rather than dying and recording
@@ -563,7 +645,15 @@ def read_browser_tier(
     That guarantee is why ``engine`` is safe to vary: a Chromium that cannot be
     provisioned on some host produces a full-width record of unobtainable rows
     naming the missing engine, never a narrower record and never a silent pass.
+
+    THE ENGINE-UNAVAILABLE PATH REPORTS AN ABSENT LAYER, and that is not
+    bookkeeping. If it stayed silent, the record header would carry whatever
+    the caller initialised it with — and a header claiming the product's layer
+    over a run where no browser started is the exact class of wrong record this
+    subsystem exists to prevent.
     """
+    from .masking_layer import absent_layer
+
     try:
         pages = read_page_texts(
             proxy_url,
@@ -572,8 +662,17 @@ def read_browser_tier(
             engine=engine,
             declared_machine=declared_machine,
             allow_unsandboxed=allow_unsandboxed,
+            layer_sink=layer_sink,
+            install_layer=install_layer,
         )
     except EngineUnavailable as exc:
+        if layer_sink is not None:
+            layer_sink(
+                absent_layer(
+                    f"the engine never started, so no masking layer was "
+                    f"installed: {exc}"
+                )
+            )
         out: "list[Reading]" = []
         for checker in checkers:
             out.extend(readings_for_unread_checker(checker, str(exc)))
