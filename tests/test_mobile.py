@@ -1,5 +1,6 @@
 import json
 import pathlib
+import re
 
 from src.services.browser.device_presets import (
     is_mobile_os,
@@ -117,6 +118,65 @@ def test_mobile_on_shared_recursive_registry(tmp_path):
     # params live inside the leaf so .toString() carries them per realm
     body = js.split("function applyMobilePatch(G)", 1)[1].split("__pnaInstall", 1)[0]
     assert "var IS_IOS" in body and "var HWC" in body
+
+
+def test_android_navigator_platform_is_upstream_frozen_armv81(tmp_path):
+    # DRIFT DETECTOR, NOT A CORRECTNESS PROOF. If this fails, suspect UPSTREAM
+    # CHANGE before suspecting a local regression.
+    #
+    # Android navigator.platform must be 'Linux armv81' — ending in a DIGIT ONE.
+    # It looks like a typo for the ARM kernel's 'armv8l' (letter, an endianness
+    # suffix) and it is not one: NavigatorID::platform()'s uname path is virtual
+    # and merely the fallback, while NavigatorBase::platform() overrides it and
+    # on Android returns GetReducedNavigatorPlatform()'s frozen "Linux armv81"
+    # whenever ReduceUserAgentMinorVersion is on — status:"stable" since M101,
+    # i.e. every shipping Android Chrome. So the value is correct because Google
+    # FROZE it, not because a kernel produces it. That makes it contingent on an
+    # upstream decision: if Google ever unfreezes the reduced platform string,
+    # this assertion is what surfaces it, and the fix is to re-derive the value
+    # from upstream — NOT to "correct" the digit. Emitting the kernel-plausible
+    # 'armv8l' would make persona the only Android browser on the internet
+    # reporting it: a unique, regex-detectable tell. (Refuted on cancelled PS-98,
+    # which would have asserted the exact opposite of this test.)
+    #
+    # Read out of the BUILT artifact, and parsed as a STATEMENT rather than
+    # grepped: the explanatory comment at the literal necessarily spells out
+    # 'armv8l' too, so a substring search over mobile.js would match the prose
+    # and pass even if the shipped value had flipped. Capturing the emitted
+    # def(nav,'platform',...) call also means a refactor that hoists the value
+    # into a renamed constant fails here rather than silently escaping coverage.
+    d = build_mobile_extension(
+        str(tmp_path / "m"), is_ios=False, platform="Android",
+        model="Pixel 8", chromium_version=V("149.0.8000.10"),
+        css_width=412, css_height=915, dpr=2.625,
+        device_memory=8, hardware_concurrency=8, touch_points=5,
+    )
+    js = (pathlib.Path(d) / "mobile.js").read_text()
+
+    m = re.search(
+        r"def\(\s*nav\s*,\s*'platform'\s*,\s*IS_IOS\s*\?\s*'([^']*)'\s*:\s*'([^']*)'\s*\)",
+        js,
+    )
+    assert m is not None, (
+        "could not find the emitted navigator.platform assignment in mobile.js; "
+        "if it was refactored (e.g. the value hoisted into a constant), update "
+        "this parse — do not delete the assertion, it is the only thing pinning "
+        "the platform string to upstream"
+    )
+    android_platform = m.group(2)
+
+    assert android_platform == "Linux armv81", (
+        f"Android navigator.platform is {android_platform!r}, expected "
+        "'Linux armv81' (digit one). If someone 'fixed' this to 'armv8l', "
+        "revert it: see the provenance comment at the literal and PS-98."
+    )
+    # Spelled out separately because the digit/letter distinction is the entire
+    # point and is invisible in a diff at a glance.
+    assert android_platform.endswith("armv81"), "must end in the DIGIT 1"
+    assert not android_platform.endswith("armv8l"), (
+        "ends in the LETTER l — this is the kernel-plausible value, not the "
+        "frozen upstream constant real Android Chrome reports"
+    )
 
 
 def test_touch_constructors_gated_behind_window(tmp_path):
