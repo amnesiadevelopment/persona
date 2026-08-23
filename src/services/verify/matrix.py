@@ -67,7 +67,7 @@ from .checkers import (
 )
 from .exit_guard import Exit
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # The body of the document — data, not header. See `schema_ledger.header_keys`.
 RECORD_BODY_KEY = "readings"
@@ -112,6 +112,20 @@ RECORD_BODY_KEY = "readings"
 #     are. The version is what lets a consumer tell the two subjects apart
 #     without knowing PS-103 exists - which is the whole reason the subject is
 #     stated in the header rather than in a note.
+# 4 - PS-110 added `evidence`. The generation that states whether the record
+#     MEANS anything. Generations 1-3 could describe a run whose browser died
+#     on the first heavy page — two fingerprint rows out of twenty-seven — in
+#     fields identical to a clean run's, because every catalogued row is
+#     present by design and `counts` counts rows. The block carries the
+#     verdict (`sufficient` / `inconclusive`), the numerator, the denominator,
+#     the contributing checkers and the floor that was applied, so a reader
+#     re-derives it rather than trusting it. See `evidence.assess`.
+#
+#     A generation-3 record is NOT re-tagged and NOT backfilled: it is a real
+#     measurement, and a verdict computed today from rows recorded before the
+#     question existed would be a claim about a run nobody assessed. It keeps
+#     saying 3, and a consumer reads the absence of the block as "this run did
+#     not ask", never as "sufficient".
 HEADER_GENERATIONS: "dict[int, frozenset[str]]" = {
     1: frozenset({
         "schema_version",
@@ -149,6 +163,21 @@ HEADER_GENERATIONS: "dict[int, frozenset[str]]" = {
         "skipped_tiers",
         "exit",
         "counts",
+        "notes",
+    }),
+    4: frozenset({
+        "schema_version",
+        "observed_at",
+        "environment",
+        "engine",
+        "seed",
+        "declared_machine",
+        "declared_machine_honoured",
+        "masking_layer",
+        "skipped_tiers",
+        "exit",
+        "counts",
+        "evidence",
         "notes",
     }),
 }
@@ -196,6 +225,17 @@ class Reading:
     matched_text: str = ""
     # Why this reading is not READ. Empty on a READ reading.
     reason: str = ""
+    # True when this row was NEVER ASKED — the session ended before the run
+    # reached this checker, so nothing was attempted here at all.
+    #
+    # NOT a synonym for unobtainable, and the difference is the whole of
+    # PS-110's second half. "This checker was asked and could not answer" is a
+    # reading about that checker. "The browser died and nothing after it was
+    # ever asked" is ONE fact about the run wearing the costume of forty-five
+    # independent ones — and a comparison against a healthy record reads those
+    # forty-five as forty-five moved vectors. The flag is what lets a reader
+    # attribute them to the single cause they actually share.
+    never_asked: bool = False
     # True when MATCHING this item is the bad news. Carried into the record so
     # a comparator never has to guess a pattern's polarity.
     adverse: bool = False
@@ -218,6 +258,11 @@ class Reading:
             out["matched_text"] = self.matched_text
         if self.reason:
             out["reason"] = self.reason
+        if self.never_asked:
+            # Emitted only when true, so every record written before this
+            # question existed keeps its exact shape and a reader treats a
+            # missing key as "not stated" rather than as "it was asked".
+            out["never_asked"] = True
         return out
 
 
@@ -337,14 +382,25 @@ def extract_text_item(checker: Checker, item: TextItem, text: str) -> Reading:
     )
 
 
-def readings_for_unread_checker(checker: Checker, reason: str) -> "list[Reading]":
+def readings_for_unread_checker(
+    checker: Checker, reason: str, *, never_asked: bool = False
+) -> "list[Reading]":
     """Every item of a checker that was not read, as UNOBTAINABLE rows.
 
     A checker that did not answer still occupies its full width in the record.
     Emitting one summary row instead would make the matrix silently narrower on
     exactly the runs where something went wrong.
+
+    ``never_asked`` marks the rows the run never got to ATTEMPT, as opposed to
+    the ones it attempted and could not obtain. Both are unobtainable — nothing
+    may be inferred from either — but they are different facts about the RUN,
+    and only one of them is a reading about the checker. See
+    :attr:`Reading.never_asked`.
     """
-    return [unobtainable(checker.id, item, reason) for item in checker.items]
+    return [
+        unobtainable(checker.id, item, reason, never_asked=never_asked)
+        for item in checker.items
+    ]
 
 
 # --- the run ----------------------------------------------------------------
@@ -428,8 +484,30 @@ def build_record(
     masking_layer: "dict | None" = None,
     skipped_tiers: "list[str] | None" = None,
     notes: "list[str] | None" = None,
+    evidence_floor: "dict | None" = None,
 ) -> dict:
     """Assemble the committed document.
+
+    THE EVIDENCE BLOCK IS THE RECORD'S STATEMENT OF WHETHER IT MEANS ANYTHING,
+    and it is why generation 4 exists. A record can be complete, correctly
+    counted, written to disk and describe nothing: PS-110 was filed off a run
+    whose browser died on the first heavy page, recorded 2 fingerprint rows out
+    of 27, and was indistinguishable from a clean run in every field this
+    header carried. ``counts`` could not close that hole and was never able to
+    — it counts ROWS, and the rows are all present by design (see
+    :func:`readings_for_unread_checker`), so a run that measured nothing has
+    exactly the same ``total`` as one that measured everything.
+
+    It is COMPUTED HERE, from the rows being written, rather than accepted from
+    the caller. The verdict must describe what the record actually contains,
+    and a caller that could pass it in is a caller that could pass in its own
+    optimism — the same argument that has always put ``counts`` here rather
+    than taking a tally from whoever ran the tiers.
+
+    ``evidence_floor`` overrides the thresholds for a caller that has grounds
+    to (a test inducing the condition, an operator reading a narrower matrix).
+    The floor that was actually APPLIED is recorded inside the block, so a
+    record is never judged against a threshold a reader has to guess.
 
     THE MASKING LAYER IS THE HEADER'S STATEMENT OF ITS OWN SUBJECT, and it is
     the reason this generation exists. Every record written before PS-103
@@ -487,9 +565,14 @@ def build_record(
     comparison can tell "the browser tier was skipped" from "those checkers did
     not exist in that schema" without inferring it from a row count.
     """
+    from .evidence import assess
+
     by_state: "dict[str, int]" = {READ: 0, ABSENT: 0, UNOBTAINABLE: 0}
     for reading in readings:
         by_state[reading.state] = by_state.get(reading.state, 0) + 1
+    rows = [r.as_record() for r in sorted(
+        readings, key=lambda r: (r.checker, r.item)
+    )]
     return {
         "schema_version": SCHEMA_VERSION,
         "observed_at": observed_at,
@@ -507,10 +590,15 @@ def build_record(
             "absent": by_state[ABSENT],
             "unobtainable": by_state[UNOBTAINABLE],
         },
+        # Asked of the EMITTED rows, not of the Reading objects, so the verdict
+        # is derived from the same document a later reader will re-derive it
+        # from. A block computed off richer in-memory state than the file
+        # carries could claim a verdict the record cannot support.
+        "evidence": assess(
+            rows, floor=evidence_floor, skipped_tiers=skipped_tiers
+        ),
         "notes": list(notes or []),
-        "readings": [r.as_record() for r in sorted(
-            readings, key=lambda r: (r.checker, r.item)
-        )],
+        "readings": rows,
     }
 
 
