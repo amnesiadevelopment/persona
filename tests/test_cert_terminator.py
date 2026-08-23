@@ -227,9 +227,74 @@ def test_terminator_presents_cert_to_admin_host(tmp_path):
         stop()
 
 
+def _tunnel_to_mtls_origin(pport, port, timeout=8):
+    """Reach an mTLS origin through the terminator's plain-tunnel path, presenting
+    NO client certificate, and report what the caller ended up with.
+
+    Returns (got_session, detail): ``got_session`` is True only if the origin
+    served real application bytes back — i.e. it accepted us. Every way of being
+    refused (an alert, a bare EOF, a reset, a timeout) maps to False.
+
+    A refusal is deliberately NOT asserted by exception type. The same correct
+    refusal surfaces differently across platforms and TLS versions, and the
+    variance is not cosmetic -- measured on this codebase:
+      * ssl.SSLError raised from recv()            (an alert record arrives)
+      * ssl.SSLEOFError raised from the HANDSHAKE  (origin closes with a clean FIN)
+      * ConnectionResetError                       (RST; NOT an ssl.SSLError subclass)
+      * recv() returning b'' with NO exception     (see below)
+      * TimeoutError                               (origin simply stops talking)
+    Under TLS 1.3 the client's handshake completes BEFORE the server has verified
+    the client certificate, so the rejection lands on the first read rather than
+    on wrap_socket(); and Python's ``suppress_ragged_eofs=True`` default silently
+    converts an unexpected TLS EOF into a plain ``recv() -> b''``. That last case
+    raises nothing at all, which is exactly the "DID NOT RAISE SSLError" that red
+    the Windows leg of CI (PS-130). Asserting on the surface tests the runner's
+    networking stack; asserting on admission tests the product.
+    """
+    raw = socket.create_connection(("127.0.0.1", pport), timeout=timeout)
+    raw.settimeout(timeout)  # bound every later read: a hang is a refusal, not a stall
+    try:
+        raw.sendall(
+            f"CONNECT localhost:{port} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode()
+        )
+        hdr = b""
+        while b"\r\n\r\n" not in hdr:
+            chunk = raw.recv(1024)
+            if not chunk:
+                return False, "tunnel closed before CONNECT response"
+            hdr += chunk
+
+        cctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        cctx.check_hostname = False
+        cctx.verify_mode = ssl.CERT_NONE
+        try:
+            s = cctx.wrap_socket(raw, server_hostname="localhost")
+        except (ssl.SSLError, OSError) as e:
+            return False, f"refused during handshake: {type(e).__name__}"
+        try:
+            s.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            body = s.recv(100)
+        except (ssl.SSLError, OSError) as e:
+            return False, f"refused on read: {type(e).__name__}"
+        if not body:
+            return False, "refused with a bare EOF (recv returned b'')"
+        return True, f"origin served {body!r}"
+    finally:
+        try:
+            raw.close()
+        except OSError:
+            pass
+
+
 def test_terminator_does_not_present_cert_to_other_host(tmp_path):
-    # an origin that also requires a client cert, but is NOT the admin host, must
-    # be reached as a plain tunnel with no certificate → its handshake fails.
+    """The client certificate is never offered to a host that is not the admin
+    host, so a non-admin mTLS origin never admits a certified session from us.
+
+    The oracle is the ORIGIN's own admission log, not the shape of the error the
+    client happens to see -- see _tunnel_to_mtls_origin for why the error shape
+    is not a stable fact. A control arm proves that log genuinely records
+    admissions, so an empty log is a real negative rather than a vacuous one.
+    """
     port, ca_pem, p12, pw, admits, stop = _mtls_origin(tmp_path)
     try:
         leaf = term.make_leaf("admin.example.com", tmp_path)  # admin != localhost
@@ -237,23 +302,58 @@ def test_terminator_does_not_present_cert_to_other_host(tmp_path):
         t = _claim(term.Terminator("admin.example.com", leaf, pem, verify_upstream=False))
         pport = t.start()
         try:
-            raw = socket.create_connection(("127.0.0.1", pport), timeout=8)
-            raw.sendall(
-                f"CONNECT localhost:{port} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode()
-            )
-            hdr = b""
-            while b"\r\n\r\n" not in hdr:
-                hdr += raw.recv(1024)
-            # plain tunnel to the mTLS origin, presenting NO client cert
-            cctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-            cctx.check_hostname = False
-            cctx.verify_mode = ssl.CERT_NONE
-            s = cctx.wrap_socket(raw, server_hostname="localhost")
-            with pytest.raises(ssl.SSLError):
-                s.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
-                s.recv(100)
+            got_session, detail = _tunnel_to_mtls_origin(pport, port)
         finally:
             t.stop()
+
+        # THE ASSERTION THAT CARRIES THE SECURITY CLAIM: the origin demands a
+        # client certificate and never got a usable one, so it admitted nobody.
+        assert admits == [], (
+            "the mTLS origin admitted a session through the plain tunnel — the "
+            f"client certificate leaked to a non-admin host ({detail})"
+        )
+        assert not got_session, f"non-admin origin served us content: {detail}"
+
+        # CONTROL ARM — without this, `admits == []` is unfalsifiable: it would
+        # also hold if the origin were unreachable, or if the terminator did
+        # nothing at all. Present the client certificate to the SAME origin
+        # directly; it must now admit, proving the log is a live signal.
+        control_pem = term.client_pem_from_p12(p12, pw, tmp_path / "control")
+        cctl = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        cctl.check_hostname = False
+        cctl.verify_mode = ssl.CERT_NONE
+        cctl.load_cert_chain(control_pem)
+        direct = socket.create_connection(("127.0.0.1", port), timeout=8)
+        direct.settimeout(8)
+        try:
+            # Any failure here means the CONTROL failed, not the security claim.
+            # Catch it and say so: a bare TimeoutError surfacing from this arm
+            # reads like a flaky network and would be misdiagnosed as exactly the
+            # kind of environment-sensitivity this test was rewritten to remove.
+            try:
+                cs = cctl.wrap_socket(direct, server_hostname="localhost")
+                cs.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                served = cs.recv(4096)
+            except (ssl.SSLError, OSError) as e:
+                raise AssertionError(
+                    "control arm broke: presenting the client certificate DIRECTLY "
+                    f"to the origin failed with {type(e).__name__}: {e}. The origin "
+                    "is unreachable or misconfigured, so `admits == []` above is "
+                    "VACUOUS and this test proved nothing about the terminator."
+                ) from e
+            assert b"200 OK" in served, (
+                "control arm broke: the origin did not serve the control request "
+                f"(got {served!r}), so `admits == []` above is VACUOUS."
+            )
+        finally:
+            try:
+                direct.close()
+            except OSError:
+                pass
+        assert admits, (
+            "control arm failed: the origin admitted nobody even when the client "
+            "certificate WAS presented, so `admits == []` above proved nothing"
+        )
     finally:
         stop()
 
