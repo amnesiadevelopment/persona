@@ -45,5 +45,25 @@ from __future__ import annotations
 
 from .driver import FletDriver, SemanticNode, TextField
 from .server import ServedApp, serve_app
+from .watchdog import (
+    DEFAULT_OP_TIMEOUT,
+    ChildWatchdog,
+    UiDriverTimeout,
+    child_pids,
+    reap_process_tree,
+    survivors,
+)
 
-__all__ = ["FletDriver", "SemanticNode", "TextField", "ServedApp", "serve_app"]
+__all__ = [
+    "FletDriver",
+    "SemanticNode",
+    "TextField",
+    "ServedApp",
+    "serve_app",
+    "ChildWatchdog",
+    "UiDriverTimeout",
+    "DEFAULT_OP_TIMEOUT",
+    "child_pids",
+    "reap_process_tree",
+    "survivors",
+]

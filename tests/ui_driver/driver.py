@@ -17,6 +17,13 @@ from __future__ import annotations
 import contextlib
 from dataclasses import dataclass
 
+from .watchdog import (
+    DEFAULT_OP_TIMEOUT,
+    ChildWatchdog,
+    child_pids,
+    reap_process_tree,
+)
+
 #: Path to a chromium the driver can launch. The playwright browser cache in
 #: this project's container carries firefox only, so the system binary is used
 #: explicitly rather than relying on a bundled download.
@@ -182,21 +189,75 @@ class FletDriver:
     a context manager.
     """
 
-    def __init__(self, url: str, width: int = 1500, height: int = 1000) -> None:
+    def __init__(
+        self,
+        url: str,
+        width: int = 1500,
+        height: int = 1000,
+        timeout_s: float = DEFAULT_OP_TIMEOUT,
+    ) -> None:
         self._url = url
         self._size = {"width": width, "height": height}
         self._pw = None
         self._browser = None
         self.page = None
+        #: Bounds ONE driver operation, without pytest-timeout. See
+        #: watchdog.py: a wedged synchronous playwright call cannot be
+        #: interrupted from this thread, so the bound is enforced by reaping
+        #: the node driver the call is blocked reading from.
+        self.watchdog = ChildWatchdog(timeout_s=timeout_s)
+        self._spawned: list[int] = []
 
     # ---- lifecycle ---------------------------------------------------
 
     def __enter__(self) -> "FletDriver":
-        self.start()
+        # If __enter__ raises, the context-manager protocol never calls
+        # __exit__ — so close(), which carries all the reaping, would not run
+        # and every child start() had already spawned would survive. That is
+        # not hypothetical: start() ends with wake_semantics(), which raises on
+        # two DOCUMENTED paths (no placeholder; the tree stayed empty), and
+        # page.goto can raise here too. Measured before this guard existed: ten
+        # surviving chromium processes and a watchdog thread that never stopped.
+        #
+        # The watchdog does not cover this case and cannot — the raise is
+        # PROMPT, so _op's finally calls rest(), the clock disarms and nothing
+        # ever expires. There is nothing wedged to reap; there is a failure
+        # unwinding past children nobody is going to collect.
+        #
+        # BaseException rather than Exception so a KeyboardInterrupt mid-launch
+        # does not leak a browser tree either. close() is idempotent and
+        # suppression-wrapped, so it is safe on the partially-constructed paths
+        # where _browser/_pw are still None.
+        try:
+            self.start()
+        except BaseException:
+            self.close()
+            raise
         return self
 
     def __exit__(self, *exc: object) -> None:
         self.close()
+
+    @contextlib.contextmanager
+    def _op(self, label: str):
+        """Run one driver operation under its own bound.
+
+        On expiry the watchdog has already reaped the children, so the wedged
+        call raises some driver-connection error on its way out. That error is
+        TRANSLATED here rather than propagated: "Connection closed while reading
+        from the driver" describes the reap, not the fault, and would send the
+        next reader looking for a browser crash. What actually happened is that
+        this operation exceeded its bound, so that is what the failure says.
+        """
+        self.watchdog.pet(label)
+        try:
+            yield
+        except BaseException:
+            if self.watchdog.expired:
+                raise self.watchdog.timeout_error(label) from None
+            raise
+        finally:
+            self.watchdog.rest()
 
     def start(self) -> "FletDriver":
         # Function-local, matching src/services/verify/transport.py: playwright
@@ -204,17 +265,44 @@ class FletDriver:
         # would make this package unimportable where its own guard should fire.
         from playwright.sync_api import sync_playwright
 
-        self._pw = sync_playwright().start()
-        self._browser = self._pw.chromium.launch(
-            executable_path=SYSTEM_CHROMIUM,
-            headless=True,
-            args=list(CHROMIUM_ARGS),
-        )
-        self.page = self._browser.new_page(viewport=self._size)
-        self.page.goto(self._url, wait_until="domcontentloaded")
-        self.page.wait_for_timeout(SETTLE_MS)
+        # Baseline BEFORE anything is spawned: the launch is itself a blocking
+        # call, so a wedge inside it hangs while there is still no pid to
+        # register. Anything that appears after this point is ours to reap.
+        self.watchdog.mark_baseline()
+        before = child_pids()
+        self.watchdog.start()
+
+        with self._op("the browser to launch"):
+            self._pw = sync_playwright().start()
+            self._browser = self._pw.chromium.launch(
+                executable_path=SYSTEM_CHROMIUM,
+                headless=True,
+                args=list(CHROMIUM_ARGS),
+            )
+            # The node driver's pid is not exposed by playwright's public API,
+            # so it is identified by difference rather than by reaching into
+            # _connection internals, which would break on a version bump.
+            self._spawned = sorted(child_pids() - before)
+            self.watchdog.register(*self._spawned)
+            self.page = self._browser.new_page(viewport=self._size)
+
+        with self._op(f"the page at {self._url} to load"):
+            self.page.goto(self._url, wait_until="domcontentloaded")
+        with self._op("the app to settle after load"):
+            self.page.wait_for_timeout(SETTLE_MS)
         self.wake_semantics()
         return self
+
+    @property
+    def spawned_pids(self) -> list[int]:
+        """The processes this driver started, so cleanup can be ASSERTED.
+
+        A test that fails its own bound and leaves a browser running has moved
+        the hang rather than fixed it, and "the finally block ran" is not
+        evidence that nothing survived. This exposes the pids so a test can
+        check the actual process table.
+        """
+        return list(self._spawned)
 
     def close(self) -> None:
         for obj, meth in ((self._browser, "close"), (self._pw, "stop")):
@@ -222,6 +310,16 @@ class FletDriver:
                 with contextlib.suppress(Exception):
                     getattr(obj, meth)()
         self._browser = self._pw = self.page = None
+        # Belt AND braces, deliberately. The graceful close above is the normal
+        # path; it is also exactly what does not happen when a call is wedged
+        # or a browser has crashed, and this method is reached on the failure
+        # path too. Reaping what is still alive is what makes "every spawned
+        # child is gone when the test ends" true on BOTH paths rather than only
+        # the happy one.
+        for pid in self._spawned:
+            reap_process_tree(pid, grace=2.0)
+        self._spawned = []
+        self.watchdog.stop()
 
     # ---- the crux ----------------------------------------------------
 
@@ -233,18 +331,19 @@ class FletDriver:
         proceeded with a dead tree would report "control not found" for every
         control on a perfectly healthy screen.
         """
-        result = self.page.evaluate(_WAKE_JS)
-        if result == "absent":
-            raise SemanticsNotAvailable(
-                "no <flt-semantics-placeholder> in the served page — flet did "
-                "not render a Flutter view here, so no control is addressable."
-            )
-        deadline = timeout_ms
-        while deadline > 0:
-            if any(n.role or n.label for n in self.nodes()):
-                return
-            self.page.wait_for_timeout(500)
-            deadline -= 500
+        with self._op("the accessibility tree to wake"):
+            result = self.page.evaluate(_WAKE_JS)
+            if result == "absent":
+                raise SemanticsNotAvailable(
+                    "no <flt-semantics-placeholder> in the served page — flet did "
+                    "not render a Flutter view here, so no control is addressable."
+                )
+            deadline = timeout_ms
+            while deadline > 0:
+                if any(n.role or n.label for n in self.nodes()):
+                    return
+                self.page.wait_for_timeout(500)
+                deadline -= 500
         raise SemanticsNotAvailable(
             "the accessibility tree stayed empty after activation; the UI is "
             "painting to canvas with no semantics, so nothing can be pressed."
@@ -253,6 +352,8 @@ class FletDriver:
     # ---- reading the screen ------------------------------------------
 
     def nodes(self) -> list[SemanticNode]:
+        with self._op("the semantics tree to be read"):
+            scraped = self.page.evaluate(_SCRAPE_JS)
         return [
             SemanticNode(
                 role=n["role"],
@@ -264,7 +365,7 @@ class FletDriver:
                 expanded=n["expanded"],
                 tappable=n["tappable"],
             )
-            for n in self.page.evaluate(_SCRAPE_JS)
+            for n in scraped
         ]
 
     def controls(self) -> list[SemanticNode]:
@@ -277,7 +378,8 @@ class FletDriver:
 
     def scrollers(self) -> list[dict]:
         """Regions whose content is taller than their box, so they scroll."""
-        return self.page.evaluate(_SCROLLERS_JS)
+        with self._op("the scrolling regions to be read"):
+            return self.page.evaluate(_SCROLLERS_JS)
 
     def describe(self) -> str:
         """A readable dump of the current screen — used in failure messages."""
@@ -297,16 +399,18 @@ class FletDriver:
         Deliberately loud. A press that silently no-ops when the control is
         missing turns every driven test into one that passes on a blank screen.
         """
-        loc = self._button(text)
-        if loc.count() == 0:
-            raise AssertionError(
-                f"no button matching {text!r} on screen. Present controls:\n"
-                f"{self.describe()}"
-            )
-        # Innermost match: filter() also matches ancestors that merely CONTAIN
-        # the text, and pressing an ancestor is not pressing the button.
-        loc.last.click(timeout=10_000)
-        self.page.wait_for_timeout(settle_ms)
+        with self._op(f"the button {text!r} to be pressed"):
+            loc = self._button(text)
+            if loc.count() == 0:
+                raise AssertionError(
+                    f"no button matching {text!r} on screen. Present controls:\n"
+                    f"{self.describe()}"
+                )
+            # Innermost match: filter() also matches ancestors that merely
+            # CONTAIN the text, and pressing an ancestor is not pressing the
+            # button.
+            loc.last.click(timeout=10_000)
+            self.page.wait_for_timeout(settle_ms)
 
     # ---- dropdowns ---------------------------------------------------
     #
@@ -431,24 +535,26 @@ class FletDriver:
         appear. A silent no-op here is precisely the failure that made this
         control look unreachable, so it raises loudly and says what it saw.
         """
-        node = self._scroll_into_view(self.find_dropdown(label), label)
-        # An ALREADY-OPEN menu must be closed first, or the click below lands
-        # on the control and shuts it — yielding zero new option nodes and a
-        # "did not open" failure on a dropdown that opens perfectly well.
-        # ``options()`` deliberately leaves the menu open, so composing it with
-        # ``select_option`` hits this immediately; handling it here rather than
-        # asking every caller to remember an Escape.
-        if node.is_open:
-            self.page.keyboard.press("Escape")
-            self.page.wait_for_timeout(800)
+        with self._op(f"the dropdown captioned {label!r} to open"):
             node = self._scroll_into_view(self.find_dropdown(label), label)
-        before = {n.node_id for n in self.nodes()}
+            # An ALREADY-OPEN menu must be closed first, or the click below
+            # lands on the control and shuts it — yielding zero new option
+            # nodes and a "did not open" failure on a dropdown that opens
+            # perfectly well. ``options()`` deliberately leaves the menu open,
+            # so composing it with ``select_option`` hits this immediately;
+            # handling it here rather than asking every caller to remember an
+            # Escape.
+            if node.is_open:
+                self.page.keyboard.press("Escape")
+                self.page.wait_for_timeout(800)
+                node = self._scroll_into_view(self.find_dropdown(label), label)
+            before = {n.node_id for n in self.nodes()}
 
-        x, y, w, h = node.box
-        self.page.mouse.click(x + w / 2, y + h / 2)
-        self.page.wait_for_timeout(settle_ms)
+            x, y, w, h = node.box
+            self.page.mouse.click(x + w / 2, y + h / 2)
+            self.page.wait_for_timeout(settle_ms)
 
-        after = self.nodes()
+            after = self.nodes()
         reopened = next((n for n in after if n.node_id == node.node_id), None)
         # Option nodes are the newly-arrived tappable ones carrying text. The
         # full-viewport wrappers Flutter adds around an open menu are excluded
@@ -499,11 +605,12 @@ class FletDriver:
             )
 
         chosen = hits[0]
-        ox, oy, ow, oh = chosen.box
-        self.page.mouse.click(ox + ow / 2, oy + oh / 2)
-        self.page.wait_for_timeout(settle_ms)
+        with self._op(f"option {chosen.text!r} in {label!r} to be selected"):
+            ox, oy, ow, oh = chosen.box
+            self.page.mouse.click(ox + ow / 2, oy + oh / 2)
+            self.page.wait_for_timeout(settle_ms)
 
-        still = [n for n in self.nodes() if n.node_id == chosen.node_id]
+            still = [n for n in self.nodes() if n.node_id == chosen.node_id]
         if still and still[0].text == chosen.text and still[0].tappable:
             raise AssertionError(
                 f"clicked option {chosen.text!r} in {label!r} but the menu is "
@@ -518,9 +625,11 @@ class FletDriver:
         whole field CLASS went missing without a signal. ``type_into`` indexes
         into exactly this list, so a census and an address can never disagree.
         """
+        with self._op("the text fields to be read"):
+            found = self.page.evaluate(_FIELDS_JS)
         return [
             TextField(tag=f["tag"], label=f["label"], value=f["value"])
-            for f in self.page.evaluate(_FIELDS_JS)
+            for f in found
         ]
 
     def type_into(self, target: int | str, value: str, settle_ms: int = 1200) -> str:
@@ -544,12 +653,13 @@ class FletDriver:
                 f"{[f.describe() for f in found]}).\nPresent controls:\n"
                 f"{self.describe()}"
             )
-        field = self.page.locator(_FIELD_SELECTOR).nth(index)
-        field.click()
-        self.page.wait_for_timeout(400)
-        self.page.keyboard.type(value)
-        self.page.wait_for_timeout(settle_ms)
-        return field.input_value()
+        with self._op(f"text field {target!r} to accept typing"):
+            field = self.page.locator(_FIELD_SELECTOR).nth(index)
+            field.click()
+            self.page.wait_for_timeout(400)
+            self.page.keyboard.type(value)
+            self.page.wait_for_timeout(settle_ms)
+            return field.input_value()
 
     @staticmethod
     def _field_index(label: str, found: list[TextField]) -> int:
@@ -574,5 +684,6 @@ class FletDriver:
         )
 
     def screenshot(self, path: str) -> str:
-        self.page.screenshot(path=path)
+        with self._op("a screenshot to be captured"):
+            self.page.screenshot(path=path)
         return path
