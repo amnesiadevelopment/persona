@@ -358,7 +358,6 @@ def pytest_configure(config: pytest.Config) -> None:
     # Umbrellas resolve HERE, once, so every consumer downstream sees the same
     # expanded set. Declaring `browser` must keep policing the Firefox probes
     # exactly as it did before those patterns moved to `browser_firefox`.
-    config._persona_declared_capabilities = requested  # type: ignore[attr-defined]
     config._persona_required_capabilities = expand_capabilities(  # type: ignore[attr-defined]
         requested
     )

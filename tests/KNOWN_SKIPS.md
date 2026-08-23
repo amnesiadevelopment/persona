@@ -200,7 +200,7 @@ structurally.
 ## Not yet wired
 
 **Firefox is now provisioned in CI** — `.github/workflows/ci.yml:152` runs
-`python -m playwright install firefox` and `:320` declares
+`python -m playwright install firefox` and `:364` declares
 `PERSONA_REQUIRED_CAPABILITIES: browser`, so the provisioning cannot silently
 rot back to skipping. (The paragraph that used to sit here called that a
 follow-up living entirely in `.github/workflows/`; it has since landed.)
