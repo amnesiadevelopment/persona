@@ -1,5 +1,6 @@
 import inspect
 import sys
+import threading
 
 import pytest
 
@@ -12,6 +13,39 @@ from src.services.browser.invisible_launch import (
     _remoting_name,
     installed_version,
 )
+
+
+def _completes(fn, wait_s):
+    """Run `fn()` on a daemon thread; return `(completed, result)`.
+
+    A WEDGE DETECTOR, not a stopwatch — and the difference is the whole point.
+    Callers below hand the call under test a deadline placed FAR beyond
+    `wait_s` (an hour, say), so that deadline can never be what ends the call:
+    the only way it returns is by resolving on its own signal. `completed` is
+    therefore False exactly when the product failed to resolve, and a broken
+    build fails by NOT TERMINATING rather than by being slow.
+
+    That is what makes these assertions deterministic. An `elapsed < N` bound
+    on a real call measures the machine, so a loaded CI runner reds `main` for
+    being slow rather than wrong (PS-120: a 5s bound blown at 5.78s by nothing
+    but suite growth). Here the passing path returns in well under a second
+    while `wait_s` is tens of seconds, and the failing path never returns at
+    all — no runner speed can move a verdict across that gap.
+
+    On timeout the thread is left running (daemon): it is wedged by
+    definition, and the assertion has already failed.
+    """
+    out = {}
+    done = threading.Event()
+
+    def run():
+        try:
+            out["result"] = fn()
+        finally:
+            done.set()
+
+    threading.Thread(target=run, daemon=True).start()
+    return done.wait(wait_s), out.get("result")
 
 
 def test_remoting_name_is_dbus_valid():
@@ -470,10 +504,13 @@ def test_enter_on_worker_bounded_abandons_wedged_launch_and_retries(
     # FRESH worker retries. The unbounded path hung the child forever — no
     # BROWSER_STARTED, no stop button.
     import threading
-    import time as _time
 
     kills = []
     attempts = []
+    # Set only if the wedged first attempt is ever allowed to RUN TO COMPLETION.
+    # The bound must abandon it long before that, so this staying clear is the
+    # deterministic proof — see the assertion at the end.
+    wedge_ran_to_completion = threading.Event()
 
     class Ctx:
         pages = [object()]
@@ -485,7 +522,8 @@ def test_enter_on_worker_bounded_abandons_wedged_launch_and_retries(
         def __enter__(self):
             attempts.append("enter")
             if len(attempts) == 1:
-                threading.Event().wait(30)  # wedged, never returns
+                threading.Event().wait(30)  # wedged, never returns in time
+                wedge_ran_to_completion.set()
             return Ctx()
 
         def __exit__(self, *a):
@@ -501,7 +539,6 @@ def test_enter_on_worker_bounded_abandons_wedged_launch_and_retries(
         lambda d, **k: settles.append(d) or True,
     )
 
-    t0 = _time.monotonic()
     session = invisible_launch._enter_on_worker(
         Engine, {}, str(tmp_path), attempts=2, per_try=0.3
     )
@@ -512,7 +549,13 @@ def test_enter_on_worker_bounded_abandons_wedged_launch_and_retries(
     # confirmed released before the retry (never relaunch over a dying one).
     assert str(tmp_path) in kills
     assert settles == [str(tmp_path)]
-    assert _time.monotonic() - t0 < 10
+    # The ABANDONMENT itself, asserted on the signal rather than on a
+    # wall-clock deadline: the retry succeeded while the wedged first enter was
+    # STILL BLOCKED in its 30s wait. An unbounded path would instead have waited
+    # that enter out, which is the only way this event can be set here. This is
+    # a deterministic wedge detector (per_try=0.3 vs a 30s wedge, ~100x), so it
+    # cannot be reddened by a slow CI runner the way `elapsed < 10` could.
+    assert not wedge_ran_to_completion.is_set()
 
 
 def test_enter_on_worker_surfaces_enter_error(monkeypatch, tmp_path):
@@ -551,9 +594,12 @@ def test_enter_on_worker_stop_event_aborts_without_retry(monkeypatch, tmp_path):
     # NOT retry. per_try is large to prove the abort came from STOP, not the
     # overrun bound.
     import threading
-    import time as _time
 
     attempts = []
+    # Set only if the wedged enter is ever allowed to RUN TO COMPLETION. The
+    # STOP must abandon it long before that, so this staying clear is the
+    # deterministic proof — see the assertion at the end.
+    wedge_ran_to_completion = threading.Event()
 
     class Engine:
         def __init__(self, **kw):
@@ -562,6 +608,7 @@ def test_enter_on_worker_stop_event_aborts_without_retry(monkeypatch, tmp_path):
         def __enter__(self):
             attempts.append("enter")
             threading.Event().wait(30)
+            wedge_ran_to_completion.set()
             raise RuntimeError("browser process exited")
 
         def __exit__(self, *a):
@@ -574,13 +621,19 @@ def test_enter_on_worker_stop_event_aborts_without_retry(monkeypatch, tmp_path):
 
     stop = threading.Event()
     threading.Timer(0.3, stop.set).start()
-    t0 = _time.monotonic()
     session = invisible_launch._enter_on_worker(
         Engine, {}, str(tmp_path), attempts=3, per_try=60, stop_event=stop
     )
     assert session is None
     assert attempts == ["enter"]  # no retry after a user cancel
-    assert _time.monotonic() - t0 < 10
+    # The ABORT itself, asserted on the signal rather than on a wall-clock
+    # deadline: the call returned while the wedged enter was STILL BLOCKED in
+    # its 30s wait. Waiting the enter out is the only way this event can be set
+    # here, and per_try=60 is far beyond that wait — so a return at all proves
+    # STOP cancelled it, exactly the property the docstring names. Deterministic
+    # (a ~100x margin over the 0.3s stop timer), so a slow CI runner cannot
+    # redden it the way `elapsed < 10` could.
+    assert not wedge_ran_to_completion.is_set()
 
 
 def test_worker_session_runs_ctx_calls_and_teardown_on_worker():
@@ -635,7 +688,13 @@ def test_teardown_bounded_when_exit_hangs():
     # would wait then time out. teardown must give up on the hung __exit__ and
     # return so the lock releases (the caller force-kills the Firefox after).
     import threading
-    import time
+
+    # The hung __exit__ blocks until the test releases it in the finally below —
+    # it CANNOT complete on its own. So an unbounded teardown does not merely
+    # "take a long time", it never returns at all, and the wait below is a wedge
+    # detector rather than a stopwatch on a real call.
+    release = threading.Event()
+    exit_returned = threading.Event()
 
     class Ctx:
         pages = [object()]
@@ -648,7 +707,8 @@ def test_teardown_bounded_when_exit_hangs():
             return self.ctx
 
         def __exit__(self, *a):
-            time.sleep(60)  # a wedged teardown that never completes in time
+            release.wait(300)  # a wedged teardown, held by the test
+            exit_returned.set()
             return False
 
     eng = Engine()
@@ -657,13 +717,31 @@ def test_teardown_bounded_when_exit_hangs():
         lambda **kw: eng, {}, "d", attempts=1, per_try=5
     )
     assert session is not None
-    t0 = time.monotonic()
-    done = threading.Event()
-    threading.Thread(target=lambda: (session.teardown(), done.set()), daemon=True).start()
-    # Bounded teardown (15s __exit__ wait + 10s join) returns well under the
-    # 60s hang; an unbounded one would block past it.
-    assert done.wait(40), "teardown blocked on the hung __exit__"
-    assert time.monotonic() - t0 < 40
+    try:
+        done = threading.Event()
+        threading.Thread(
+            target=lambda: (session.teardown(), done.set()), daemon=True
+        ).start()
+        # teardown's bound is a pair of fixed waits (15s __exit__ + 10s join),
+        # not work, so it returns in ~25s on any machine — while an UNBOUNDED
+        # teardown blocks forever on a __exit__ that never completes. This
+        # generous wait therefore separates the two by presence/absence, not by
+        # duration: it cannot be reddened by a slow runner the way the old
+        # `elapsed < 40` could.
+        #
+        # 60s is deliberate on BOTH sides: ~2.4x the ~25s healthy path (so a
+        # slow runner has room), and well under the 120s pytest-timeout ini
+        # bound (so a REGRESSION is reported by the message below rather than
+        # by the plugin killing the run first — verified: at 120 the plugin won
+        # the race and the failure read as a bare "Timeout (>120.0s)").
+        assert done.wait(60), "teardown blocked on the hung __exit__"
+        # The property itself, as a deterministic signal: teardown gave up and
+        # returned while __exit__ was STILL BLOCKED, releasing the per-profile
+        # launch lock (#154a). release is untouched until the finally, so this
+        # event can only be set by a teardown that waited the hang out.
+        assert not exit_returned.is_set()
+    finally:
+        release.set()
 
 
 def test_child_stop_during_wedged_launch_emits_cancelled(monkeypatch, tmp_path):
@@ -2458,12 +2536,20 @@ def test_init_places_db_macos_lock_does_not_burn_the_timeout(
         invisible_launch, "_wait_profile_released", lambda d, **k: True
     )
 
-    t0 = _time.monotonic()
-    ok = invisible_launch._init_places_db(str(tmp_path), 1, timeout=90)
-    elapsed = _time.monotonic() - t0
+    # The deadline is placed an HOUR out, so it CANNOT be what ends this call:
+    # the init can only return by resolving on the lock-free -wal settle, which
+    # is exactly the property #207/#208 added. A gate that waits on the
+    # locked-out places_ready read instead burns its whole deadline and never
+    # completes here. So this is a wedge detector, not a stopwatch on a real
+    # call: the healthy path returns in ~2s against a 60s wait, and the broken
+    # path never returns at all — no runner speed moves a verdict across that
+    # gap (PS-120: the old `elapsed < 15` measured the machine).
+    completed, ok = _completes(
+        lambda: invisible_launch._init_places_db(str(tmp_path), 1, timeout=3600),
+        60,
+    )
+    assert completed, "macOS init burned its deadline (lock-wait not fixed)"
     assert ok is True
-    # The whole point: no 90s burn. A few seconds of -wal settling, not 83s.
-    assert elapsed < 15, f"macOS init took {elapsed:.1f}s (lock-wait not fixed)"
 
 
 def test_init_places_db_locked_reader_does_not_burn_timeout_on_any_os(
@@ -2524,11 +2610,17 @@ def test_init_places_db_locked_reader_does_not_burn_timeout_on_any_os(
         invisible_launch, "_wait_profile_released", lambda d, **k: True
     )
 
-    t0 = _time.monotonic()
-    ok = invisible_launch._init_places_db(str(tmp_path), 1, timeout=90)
-    elapsed = _time.monotonic() - t0
+    # Deadline placed an HOUR out, so it cannot be what ends the call — the
+    # init can only return by falling back to the lock-free -wal settle on this
+    # NON-macOS platform, which is the #207/#208 property. A gate that waits on
+    # the locked-out places_ready read burns its whole deadline and never
+    # completes here. Wedge detector, not a stopwatch (PS-120).
+    completed, ok = _completes(
+        lambda: invisible_launch._init_places_db(str(tmp_path), 1, timeout=3600),
+        60,
+    )
+    assert completed, "non-macOS init burned its deadline (lock-wait not fixed)"
     assert ok is True
-    assert elapsed < 15, f"non-macOS init took {elapsed:.1f}s (lock-wait not fixed)"
 
 
 def test_init_places_db_prefers_fast_places_ready_when_unlocked(
@@ -2539,9 +2631,8 @@ def test_init_places_db_prefers_fast_places_ready_when_unlocked(
     # appear — WITHOUT waiting for the -wal to settle over two poll beats. So a
     # DB whose roots are readable early finishes fast even if its -wal keeps
     # changing.
+    import os
     import sys
-    import threading
-    import time as _time
     import types
 
     from tests.test_firefox_bookmarks import _make_places
@@ -2570,10 +2661,34 @@ def test_init_places_db_prefers_fast_places_ready_when_unlocked(
         invisible_launch, "_wait_profile_released", lambda d, **k: True
     )
 
-    t0 = _time.monotonic()
-    ok = invisible_launch._init_places_db(str(tmp_path), 1, timeout=90)
+    # THE ASSERTION THIS TEST EXISTS FOR, expressed on the signal its docstring
+    # names rather than in seconds (PS-120 — this exact bound is the one that
+    # reddened main at 5.78s against `< 5`, on a slow runner, with the product
+    # working perfectly).
+    #
+    # The fixture writes the roots and NO -wal at all, so `_wal_settled` can
+    # never fire here (it stats a file that does not exist) — asserted directly
+    # below. The ONLY signal that can resolve this gate is places_ready. With
+    # the deadline placed an hour out it cannot be the deadline that ends the
+    # call either, so COMPLETING AT ALL is precisely the guarantee: resolved on
+    # places_ready the instant the roots appeared, without waiting out a -wal
+    # settle over two poll beats. A gate that waits for the settle never
+    # returns here, so it fails by not terminating rather than by being slow —
+    # and no runner speed can move a verdict across that gap.
+    completed, ok = _completes(
+        lambda: invisible_launch._init_places_db(str(tmp_path), 1, timeout=3600),
+        60,
+    )
+    assert completed, (
+        "the gate did not resolve on places_ready — it waited for a -wal settle "
+        "that can never happen here"
+    )
     assert ok is True
-    assert _time.monotonic() - t0 < 5
+    # The -wal route was genuinely unavailable, so the completion above can only
+    # have come from places_ready. Asserted on the observable (no -wal on disk),
+    # never on a helper having been called.
+    assert not invisible_launch._wal_settled(db)
+    assert not os.path.exists(db + "-wal")
 
 
 def test_init_places_db_settles_profile_release_after_engine_exit(
@@ -2775,13 +2890,15 @@ def test_init_places_db_hung_close_bounded_by_close_grace(monkeypatch, tmp_path)
     # kills the leftovers) instead of sitting out the whole init timeout.
     import sys
     import threading
-    import time as _time
     import types
 
     from tests.test_firefox_bookmarks import _make_places
 
     release = threading.Event()
     settled = []
+    # Set only if the hung close is ever allowed to RUN TO COMPLETION. The init
+    # must abandon it, so this staying clear is the deterministic proof.
+    exit_returned = threading.Event()
 
     class FakeEngine:
         def __init__(self, **kwargs):
@@ -2792,7 +2909,11 @@ def test_init_places_db_hung_close_bounded_by_close_grace(monkeypatch, tmp_path)
             return self
 
         def __exit__(self, *a):
-            release.wait(30)  # a shutdown-blocker hang
+            # Held by the test until the finally below — a close that CANNOT
+            # complete on its own, so an init that waits it out never returns
+            # rather than merely taking a long time.
+            release.wait(300)
+            exit_returned.set()
             return False
 
     mod = types.ModuleType("invisible_playwright")
@@ -2805,12 +2926,22 @@ def test_init_places_db_hung_close_bounded_by_close_grace(monkeypatch, tmp_path)
     )
 
     try:
-        t0 = _time.monotonic()
-        ok = invisible_launch._init_places_db(
-            str(tmp_path), 1, timeout=60, close_grace=0.3
+        # The init deadline is placed an HOUR out, so it cannot be what ends
+        # this call: the only way it returns is by abandoning the hung close
+        # once the roots exist, which is the property. A wedge detector rather
+        # than a stopwatch on a real call (PS-120) — the healthy path returns in
+        # ~1s against a 60s wait, the broken path never returns at all.
+        completed, ok = _completes(
+            lambda: invisible_launch._init_places_db(
+                str(tmp_path), 1, timeout=3600, close_grace=0.3
+            ),
+            60,
         )
+        assert completed, "the init sat out its whole timeout on the hung close"
         assert ok is True
-        assert _time.monotonic() - t0 < 5
+        # It returned while __exit__ was STILL BLOCKED — the close was
+        # abandoned, not awaited — and the settle that kills the leftovers ran.
+        assert not exit_returned.is_set()
         assert settled == [str(tmp_path)]
     finally:
         release.set()
@@ -2897,8 +3028,6 @@ def test_wait_profile_released_no_verdict_uses_single_pid_probe(monkeypatch):
     # No WMI verdict (non-Windows, or the query failed): the pgrep/single-pid
     # probe is the fallback; no process found means released, immediately —
     # never a 20s dead wait on the fork path.
-    import time as _time
-
     monkeypatch.setattr(invisible_launch, "_profile_firefox_pids", lambda d: None)
     monkeypatch.setattr(invisible_launch, "_firefox_pid", lambda d: None)
 
@@ -2906,9 +3035,22 @@ def test_wait_profile_released_no_verdict_uses_single_pid_probe(monkeypatch):
         raise AssertionError("nothing to kill on a released profile")
 
     monkeypatch.setattr(invisible_launch, "_kill_profile_firefox", boom)
-    t0 = _time.monotonic()
-    assert invisible_launch._wait_profile_released(r"C:\p") is True
-    assert _time.monotonic() - t0 < 2
+    # grace and timeout are pushed an HOUR out — far beyond the defaults this
+    # test used to run at (grace=5.0, timeout=15.0, against a `< 2` bound that
+    # sat BELOW the first grace period and passed only because the fast path
+    # returns instantly). So neither period can be what ends this call: the
+    # only way it returns is the single-pid probe reading "released" on the
+    # first check, which is the property. A wedge detector rather than a
+    # stopwatch on a real call (PS-120) — the healthy path returns in
+    # microseconds against a 30s wait, a regressed one waits out the hour.
+    completed, released = _completes(
+        lambda: invisible_launch._wait_profile_released(
+            r"C:\p", grace=3600, timeout=3600
+        ),
+        30,
+    )
+    assert completed, "the probe did not resolve — it sat out the grace period"
+    assert released is True
 
 
 def test_seed_bookmarks_reinits_when_toolbar_root_missing(monkeypatch, tmp_path):
@@ -4320,7 +4462,6 @@ def test_init_places_db_cancels_on_stop(monkeypatch, tmp_path):
     # run its full ~90s deadline with the user staring at a dead card.
     import sys
     import threading
-    import time
     import types
 
     class FakeEngine:
@@ -4348,12 +4489,20 @@ def test_init_places_db_cancels_on_stop(monkeypatch, tmp_path):
 
     stop = threading.Event()
     threading.Timer(0.3, stop.set).start()
-    t0 = time.monotonic()
-    ok = invisible_launch._init_places_db(
-        str(tmp_path), 1, timeout=30.0, close_grace=1.0, stop_event=stop
+    # The deadline is placed an HOUR out and readiness NEVER fires (places_ready
+    # is pinned False), so nothing but the STOP can end this call: an init that
+    # ignores stop_event polls for the full hour. Completing at all is therefore
+    # exactly the property — the STOP aborted it — asserted as a wedge detector
+    # rather than as a stopwatch on a real call (PS-120). The healthy path
+    # returns in ~0.3s against a 60s wait; no runner speed spans that gap.
+    completed, ok = _completes(
+        lambda: invisible_launch._init_places_db(
+            str(tmp_path), 1, timeout=3600, close_grace=1.0, stop_event=stop
+        ),
+        60,
     )
+    assert completed, "the STOP did not abort the init — it ran its full deadline"
     assert ok is False
-    assert time.monotonic() - t0 < 10
 
 
 def test_init_places_db_retries_wedged_enter(monkeypatch, tmp_path):
