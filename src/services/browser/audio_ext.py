@@ -15,7 +15,13 @@ to read as hardware variance, large enough to survive a coarse sum-and-hash.
 import json
 import pathlib
 
-from .worker_wrap import realm_bootstrap_js, realm_guard_js
+from .worker_wrap import (
+    CHROMIUM_WORKER_CLOAK,
+    WorkerCloak,
+    firefox_worker_cloak,
+    realm_bootstrap_js,
+    realm_guard_js,
+)
 
 # Magnitude of the per-sample relative perturbation. Larger than the engine's
 # ~2e-7 sample-rate effect so it dominates the hash, small enough to stay a
@@ -216,20 +222,39 @@ _MANIFEST = {
 }
 
 
-def _audio_patch_js(seed: int, native_wrap: str) -> str:
-    """The shared patch body, with the engine's own native-cloak spliced in.
+def _audio_patch_js(
+    seed: int, native_wrap: str, worker_cloak: WorkerCloak = CHROMIUM_WORKER_CLOAK
+) -> str:
+    """The shared patch body, with the engine's cloak seams spliced in.
 
     One template, two engines: the perturbation, the per-(seed, index) sign, the
     readback overrides and the realm bootstrap are identical, because a Firefox
     profile and a Chromium profile with the same seed should perturb the same
-    way. Only `nativeWrap` differs — see the two constants above.
+    way.
+
+    TWO cloak seams, because there are TWO sets of wrappers — the distinction
+    this file got wrong until PS-131:
+
+    * ``native_wrap`` cloaks the LEAF's wrappers (the float-buffer readbacks);
+    * ``worker_cloak`` cloaks the wrappers the BOOTSTRAP installs (``Worker``,
+      ``SharedWorker``, the two ``HTMLIFrameElement`` accessors).
+
+    PS-73 passed the first and left the second at its Chromium default, so the
+    Firefox init script shipped ``__pnaName`` and NO ``toString`` cloak on an
+    engine with no extension to read that marker. ``webgl_ext._webgl_patch_js``
+    already had both seams and got this right; this signature is deliberately
+    its twin so the two Firefox init scripts cannot drift apart again.
+
+    Both default to the Chromium form so its bytes cannot move.
     """
     return (
         _CONTENT_SCRIPT
         .replace("__SEED__", str(int(seed) & 0xFFFFFFFF))
         .replace("__REL__", repr(_NOISE_REL))
         .replace("__NATIVE_WRAP__", native_wrap)
-        .replace("__REALM_BOOTSTRAP__", realm_bootstrap_js("applyAudioPatch"))
+        .replace(
+            "__REALM_BOOTSTRAP__", realm_bootstrap_js("applyAudioPatch", worker_cloak)
+        )
         .replace("__REALM_GUARD__", realm_guard_js("audio"))
     )
 
@@ -285,5 +310,30 @@ def firefox_audio_init_script(seed: int) -> str:
     Deliberately NOT shared with the Chromium builder beyond the patch body
     itself: the two differ only in how a wrapper is cloaked as native, and
     Chromium's cloak text is reproduced verbatim so its digests do not move.
+
+    BOTH CLOAK SEAMS ARE PASSED, which is the PS-131 fix. PS-73 passed only
+    ``_FIREFOX_NATIVE_WRAP`` — the LEAF's cloak — and left the BOOTSTRAP's
+    wrappers at :data:`CHROMIUM_WORKER_CLOAK`, the default. On Firefox that
+    default is not merely unnecessary, it is the tell: it stamps ``__pnaName``
+    (an own property no browser has, and nothing on this engine reads it) and
+    installs no ``toString`` cloak at all, so ``Worker.toString()`` in the
+    WINDOW realm returned 2109 characters of raw patch source where every real
+    engine returns ``[native code]``.
+
+    ``firefox_worker_cloak()`` also carries this engine's WORKER-BODY DELIVERY
+    (``blob_setup``/``blob_resolve``), and that half is load-bearing here for a
+    reason worth stating: without it the sync-XHR path is refused by the
+    ``connect-src`` of the DEFAULT start page (``_ensure_firefox_policies()``
+    pins DuckDuckGo), the wrapper's own ``catch`` falls back to the ORIGINAL
+    ``Worker``, and the audio leaf never reaches the worker realm at all. That
+    is why the worker realm appeared to PASS this probe while the window realm
+    leaked: the worker was reading ``[native code]`` off a wrapper that had
+    never been installed, i.e. an UNSPOOFED worker — a false pass sitting on
+    top of the very collision ``audio.digest`` exists to prevent. One object
+    closes both, which is precisely why the two travel together.
     """
-    return "(function(){" + _audio_patch_js(seed, _FIREFOX_NATIVE_WRAP) + "})();"
+    return (
+        "(function(){"
+        + _audio_patch_js(seed, _FIREFOX_NATIVE_WRAP, firefox_worker_cloak())
+        + "})();"
+    )
