@@ -22,6 +22,7 @@ from .worker_wrap import (
     firefox_native_wrap_js,
     firefox_worker_cloak,
     realm_bootstrap_js,
+    realm_guard_js,
 )
 
 # How many bytes we aim to nudge in any one readback, by +/-1.
@@ -103,8 +104,8 @@ _CONTENT_SCRIPT = r"""
   // into the worker realm (a var in the outer IIFE would be undefined there).
   function applyWebglPatch(G) {
    try {
-    if (!G || G.__personaWebgl) return;
-    G.__personaWebgl = true;
+    if (!G) return;
+__REALM_GUARD__
     var SEED = __SEED__;
     var BUDGET = __BUDGET__;
 
@@ -260,6 +261,7 @@ def _webgl_patch_js(
         .replace(
             "__REALM_BOOTSTRAP__", realm_bootstrap_js("applyWebglPatch", worker_cloak)
         )
+        .replace("__REALM_GUARD__", realm_guard_js("webgl"))
     )
 
 

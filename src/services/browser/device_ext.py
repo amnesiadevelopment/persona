@@ -17,7 +17,7 @@ import pathlib
 from dataclasses import dataclass
 
 from ...models.hardware_generation import normalize_generation, visible_entries
-from .worker_wrap import realm_bootstrap_js
+from .worker_wrap import realm_bootstrap_js, realm_guard_js
 
 
 @dataclass(frozen=True)
@@ -114,8 +114,8 @@ _CONTENT_SCRIPT = r"""
   // realm reuses the exact same values instead of re-measuring its own extent.
   function applyScreenPatch(G) {
    try {
-    if (!G || !G.screen || G.__personaScreen) return;
-    G.__personaScreen = true;
+    if (!G || !G.screen) return;
+__SCREEN_REALM_GUARD__
     var SEED = __SEED__;
     var FORCED = __FORCED_RES__;
     var OS = "__OS__";
@@ -302,8 +302,8 @@ __SCREEN_REALM_BOOTSTRAP__
   // the SAME pair in the worker realm.
   function applyHwPatch(G) {
    try {
-    if (!G || !G.navigator || G.__personaHw) return;
-    G.__personaHw = true;
+    if (!G || !G.navigator) return;
+__HW_REALM_GUARD__
     var SEED = __SEED__;
     function h(x){var v=SEED^(x|0);v=Math.imul(v^(v>>>16),0x85ebca6b);v=Math.imul(v^(v>>>13),0xc2b2ae35);return (v^(v>>>16))>>>0;}
     // Same pre-filtered pool as the page realm, rendered from the SAME
@@ -385,6 +385,10 @@ def build_device_extension(
         "__SCREEN_REALM_BOOTSTRAP__", realm_bootstrap_js("applyScreenPatch")
     ).replace(
         "__HW_REALM_BOOTSTRAP__", realm_bootstrap_js("applyHwPatch")  # noqa: E501
+    ).replace(
+        "__SCREEN_REALM_GUARD__", realm_guard_js("screen")
+    ).replace(
+        "__HW_REALM_GUARD__", realm_guard_js("hw")
     )
     (ext_dir / "device.js").write_text(script, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(

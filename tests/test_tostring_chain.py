@@ -446,11 +446,20 @@ def test_a_primitive_receiver_still_raises(realms, order):
 
 @pytest.mark.parametrize("order", _ORDERS)
 def test_boot_markers_strictly_shrank_and_gained_nothing(realms, flagged_realms, order):
-    # DELIBERATELY NOT `markers == []`. Fifteen enumerable /^__pna|^__persona/
-    # globals ship across 12 extension files; this slice removes one of them, and
-    # locale_ext writes __personaLocale in the very function it edits. Asserting
-    # an empty set would ship a knowingly-red gate. So: strict subset, the flag
-    # gone, nothing new.
+    # PS-68 asserted a strict SUBSET here, deliberately not `markers == []`,
+    # because fourteen `__persona*` per-module guards still shipped and asserting
+    # emptiness would have been a knowingly-red gate. PS-93 removed those guards,
+    # so this test's own stated premise has now changed — its failure message
+    # said to convert the comparison into "the equality gate it could not be
+    # while they shipped", and that is what this is.
+    #
+    # For THIS two-extension realm (native_ext + locale_ext) the honest gate is
+    # emptiness: `__pnaToStringPatched` went with PS-68, `__personaLocale` with
+    # PS-93, and neither file writes a cross-realm value channel. That is NOT a
+    # claim that `realm.bootMarkers` reads clean in a full browser — a realm
+    # carrying device_ext/measuretext_ext still legitimately reports
+    # `__personaScreenWH` / `__personaMtFactor`, which remain out of scope. The
+    # subset assertions for the full set live in tests/test_realm_guard.py.
     before = set(_realm(flagged_realms, order, "page")["bootMarkers"]["markers"])
     after = set(_realm(realms, order, "page")["bootMarkers"]["markers"])
 
@@ -461,23 +470,25 @@ def test_boot_markers_strictly_shrank_and_gained_nothing(realms, flagged_realms,
     assert "__pnaToStringPatched" not in after
     assert after < before, f"bootMarkers did not strictly shrink: {before} -> {after}"
     assert after - before == set(), f"a NEW marker appeared: {after - before}"
-    # and the honest bound, stated as an assertion so it cannot rot silently:
-    # this slice does not empty the set.
-    assert after, (
-        "bootMarkers is unexpectedly empty — if the __persona* per-module guards "
-        "have since been removed too, this test's premise has changed and the "
-        "strict-subset comparison should become the equality gate it could not "
-        "be while they shipped"
+    assert after == set(), (
+        f"this two-extension realm should now expose NO persona-family global: "
+        f"{after}. A name here means a guard came back, or a new coordination "
+        f"channel was introduced under the __pna/__persona prefix."
     )
 
 
 @pytest.mark.parametrize("order", _ORDERS)
 def test_the_surviving_markers_are_the_known_persona_family(realms, order):
-    # Names the residue explicitly rather than leaving it implied, so the
-    # follow-up slice (14 __persona* per-module guards -> closure WeakSet, 12
-    # files) has a starting inventory and this test goes red when it lands.
+    # PS-68 pinned `{"__personaLocale"}` as the residue and said this test would
+    # "go red when [the follow-up slice] lands". It landed (PS-93): locale_ext's
+    # guard moved into the non-enumerable per-realm registry with the other
+    # eleven, so the residue for this realm is now empty.
+    #
+    # Kept rather than deleted, and kept ASSERTING rather than loosened: its job
+    # is to name what survives, and "nothing survives here" is a stronger,
+    # checkable statement than a subset bound. If a later change reintroduces a
+    # coordination global in either file, this is what says so.
     after = set(_realm(realms, order, "page")["bootMarkers"]["markers"])
-    assert after == {"__personaLocale"}, (
+    assert after == set(), (
         f"the surviving markers in this two-extension realm changed: {after}"
     )
-    assert all(n.startswith("__persona") for n in after)

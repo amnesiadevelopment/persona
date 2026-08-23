@@ -13,7 +13,7 @@ import json
 import pathlib
 
 from .engine_version import ChromiumVersion
-from .worker_wrap import realm_bootstrap_js
+from .worker_wrap import realm_bootstrap_js, realm_guard_js
 
 _CONTENT_SCRIPT = r"""
 (function () {
@@ -27,8 +27,8 @@ _CONTENT_SCRIPT = r"""
   // worker-safe. All params live INSIDE the leaf so .toString() carries them.
   function applyMobilePatch(G) {
    try {
-    if (!G || !G.navigator || G.__personaMobile) return;
-    G.__personaMobile = true;
+    if (!G || !G.navigator) return;
+__MOBILE_REALM_GUARD__
     var IS_IOS   = __IS_IOS__;
     var MODEL    = "__MODEL__";
     var FULLVER  = "__FULLVER__";
@@ -287,6 +287,7 @@ def build_mobile_extension(
         .replace("__MEM__", str(int(device_memory)))
         .replace("__HWC__", str(int(hardware_concurrency)))
         .replace("__MOBILE_REALM_BOOTSTRAP__", realm_bootstrap_js("applyMobilePatch"))
+        .replace("__MOBILE_REALM_GUARD__", realm_guard_js("mobile"))
     )
     (ext_dir / "mobile.js").write_text(script, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(

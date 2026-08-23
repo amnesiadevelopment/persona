@@ -93,7 +93,7 @@ one-context-per-canvas caching all keep their native behaviour.
 import json
 import pathlib
 
-from .worker_wrap import realm_bootstrap_js
+from .worker_wrap import realm_bootstrap_js, realm_guard_js
 
 _CONTENT_SCRIPT = r"""
 (function () {
@@ -111,7 +111,7 @@ _CONTENT_SCRIPT = r"""
     // iOS ones. macOS included: persona's macOS profiles present Chrome-on-
     // macOS, not Safari. The alias is Safari's, not Apple's.
     if (OS !== "ios") return;
-    if (!G || G.__personaCanvasCtx) return;
+    if (!G) return;
 
     // A worker realm has no HTMLCanvasElement, so there is nothing to patch and
     // nothing to be inconsistent with — its OffscreenCanvas rejects the alias
@@ -121,7 +121,7 @@ _CONTENT_SCRIPT = r"""
     var proto = CE && CE.prototype;
     var orig = proto && proto.getContext;
     if (typeof orig !== "function") return;
-    G.__personaCanvasCtx = true;
+__REALM_GUARD__
 
     // WebKit's legacy name, and the modern name it resolves to. WebGL1 per
     // HTMLCanvasElement::toWebGLVersion — see the module docstring.
@@ -258,6 +258,7 @@ def build_canvas_ctx_extension(os_type: str, base_dir: str) -> str:
         _CONTENT_SCRIPT
         .replace("__OS__", os_norm)
         .replace("__REALM_BOOTSTRAP__", realm_bootstrap_js("applyCanvasCtxPatch"))
+        .replace("__REALM_GUARD__", realm_guard_js("canvas_ctx"))
     )
     (ext_dir / "canvas_ctx.js").write_text(script, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(
