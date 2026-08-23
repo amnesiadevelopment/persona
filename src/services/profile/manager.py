@@ -1118,8 +1118,17 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
             # into shape. So the incoherent pair is reconciled the same way a
             # stored one is at launch: fall back to the engine that HONORS
             # os_type, which makes the imported record match the machine it will
-            # actually present. The record lands coherent; nothing is lost but a
+            # actually present. The PAIR lands coherent; nothing is lost but a
             # claim that was never true.
+            #
+            # Rule 3 (device_type) is NOT reconciled here. coherent_engine
+            # answers "which engine?", and Rule 3 has no engine remedy — a
+            # windows + mobile profile is contradictory on chromium and on
+            # firefox alike — so an imported windows + mobile archive lands as a
+            # tolerated already-stored record: editable, never stranded, exactly
+            # like a legacy record predating these rules. Reconciling it would
+            # mean rewriting a field at launch, which is process.py's job and
+            # not this door's. See coherence.device_type_error.
             resolved = coherent_engine(profile.os_type, profile.engine)
             if resolved != normalize_engine(profile.engine):
                 logger.warning(
