@@ -33,12 +33,20 @@ _APP_EGRESS_KEY = "app_egress_proxy"
 
 def _path() -> str:
     # Derive from PERSONA_HOME like every other data file (profiles, proxies,
-    # certs, bookmarks, mcp token). settings.json was the lone exception that
-    # hardcoded ~/.persona, so a portable/isolated PERSONA_HOME layout split
-    # onboarding_done/last_seen_version off from the rest of the data — the
-    # instance re-ran onboarding and re-showed the changelog every launch, and
-    # two isolated instances clobbered each other (audit5 #3). An explicit
+    # certs, bookmarks, mcp token). settings.json hardcoded ~/.persona, so a
+    # portable/isolated PERSONA_HOME layout split onboarding_done/
+    # last_seen_version off from the rest of the data — the instance re-ran
+    # onboarding and re-showed the changelog every launch, and two isolated
+    # instances clobbered each other (audit5 #3). An explicit
     # PERSONA_SETTINGS_FILE still wins.
+    #
+    # THIS WAS NOT THE LONE EXCEPTION, though this comment claimed it was, and
+    # that claim is what kept the second one invisible: single_instance.py's
+    # lockfile hardcoded ~/.persona/persona.lock the same way, with the same two
+    # consequences (host residue under a relocated home, and two isolated
+    # installs falsely refusing to run together). Fixed in PS-86 through this
+    # same _under_home helper. If a third turns up, prefer grepping for
+    # expanduser("~/.persona") over trusting a comment like this one.
     return config._under_home("settings.json", "PERSONA_SETTINGS_FILE")
 
 
