@@ -85,6 +85,14 @@ CDP_READY_TIMEOUT = 90.0
 # Display numbers are probed from here upward when DISPLAY is unset.
 _DISPLAY_BASE = 90
 
+# The "this venue has no exit" sentinel, distinct from every real
+# ``--proxy-server`` value. It exists so a no-proxy launch is something the run
+# ASKED FOR and the command line STATES, rather than the absence of a flag:
+# chromium with no proxy flag at all falls back to the SYSTEM proxy, which is
+# neither "no proxy" nor a proxy this run chose. Only the loopback differential
+# uses it — see :func:`_proxy_server_and_bridge`.
+NO_PROXY = "__no_proxy__"
+
 
 class ChromiumUnavailable(RuntimeError):
     """persona's chromium engine could not be launched or reached here.
@@ -158,15 +166,42 @@ def _ensure_display() -> "tuple[str, subprocess.Popen | None]":
     raise ChromiumUnavailable("could not start an Xvfb display for chromium")
 
 
-def _proxy_server_and_bridge(proxy_url: str):
-    """``(--proxy-server value, bridge or None)``.
+def _proxy_server_and_bridge(proxy_url: str, *, allow_no_proxy: bool = False):
+    """``(--proxy-server value | NO_PROXY, bridge or None)``.
 
     Mirrors ``services/browser/process._proxy_arg``: a credentialled upstream
     gets persona's hardened loopback relay and the browser never sees the
     credential. Returns the bridge so the caller can claim its peer gate and
     stop it.
+
+    ``allow_no_proxy`` is the LOOPBACK-VENUE waiver, and it is off by default
+    for a reason that is the whole point of this tier: a checker run that went
+    out unproxied would read the operator's REAL address while every verdict
+    parsed and every row landed as READ — the silent wrong reading this module
+    exists to prevent. So an empty credential is refused unless the caller says
+    explicitly that there is no exit to use.
+
+    The one caller that says so is the local-page differential
+    (:mod:`layer_differential`), which serves its page from 127.0.0.1: there is
+    no exit in the picture, nothing to leak, and no credential in the container
+    (PS-10/PS-69). It returns :data:`NO_PROXY` rather than ``""`` so the flag
+    the launch emits is an explicit ``--no-proxy-server`` — chromium's default
+    with no flag at all is to read the SYSTEM proxy, which is neither "no
+    proxy" nor a proxy this run chose.
     """
     from ..proxy.bridge import ProxyBridge
+
+    if not proxy_url.strip():
+        if allow_no_proxy:
+            return NO_PROXY, None
+        raise ChromiumUnavailable(
+            "no proxy credential was given, and this run did not ask for a "
+            "no-proxy launch. A checker reading taken without the exit "
+            "describes the operator's REAL address while looking perfectly "
+            "clean, so it is refused rather than defaulted. Pass "
+            "allow_no_proxy=True only for a venue that has no exit at all "
+            "(the loopback differential)."
+        )
 
     parsed = urlparse(
         proxy_url if "://" in proxy_url else "socks5://" + proxy_url
@@ -291,7 +326,15 @@ def _launch_args(
         # The anti-leak block, copied from the product's launch. A reading
         # taken through an engine that resolves or streams past its proxy
         # describes the operator's real address while looking perfect.
-        f"--proxy-server={proxy_server}",
+        #
+        # NO_PROXY is the loopback venue saying there is no exit at all, and it
+        # is STATED rather than left off: chromium with no proxy flag reads the
+        # SYSTEM proxy, which is neither "no proxy" nor a proxy this run chose.
+        (
+            "--no-proxy-server"
+            if proxy_server == NO_PROXY
+            else f"--proxy-server={proxy_server}"
+        ),
         "--dns-over-https-mode=off",
         "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
         "--dns-prefetch-disable",
@@ -373,6 +416,14 @@ class ChromiumSession:
 
     engine = "chromium"
 
+    # ``allow_no_proxy`` is the loopback-venue waiver, forwarded to
+    # :func:`_proxy_server_and_bridge`. Off by default and never inferred, for
+    # the same reason ``allow_unsandboxed`` is: a checker reading taken without
+    # the exit describes the operator's REAL address while every verdict parses
+    # and every row lands as READ. The one caller that passes it is the
+    # local-page differential, whose page is served from 127.0.0.1 and has no
+    # exit in the picture at all.
+
     def __init__(
         self,
         proxy_url: str,
@@ -380,6 +431,7 @@ class ChromiumSession:
         seed: int = 0,
         declared_machine: str = "windows",
         allow_unsandboxed: bool = False,
+        allow_no_proxy: bool = False,
         install_layer: bool = True,
     ) -> None:
         import asyncio
@@ -389,6 +441,7 @@ class ChromiumSession:
         self.seed = seed
         self.declared_machine = declared_machine
         self.allow_unsandboxed = allow_unsandboxed
+        self.allow_no_proxy = allow_no_proxy
         self.install_layer = install_layer
         # What persona's masking layer actually did, for the record header.
         # Initialised to an ABSENT report rather than to None, so a session that
@@ -431,7 +484,9 @@ class ChromiumSession:
                 "its sandbox is not presenting the product's surface."
             )
         display, self._xvfb = _ensure_display()
-        proxy_server, self._bridge = _proxy_server_and_bridge(proxy_url)
+        proxy_server, self._bridge = _proxy_server_and_bridge(
+            proxy_url, allow_no_proxy=self.allow_no_proxy
+        )
         self._profile_dir = tempfile.mkdtemp(prefix="persona-verify-chromium-")
 
         # Imported here rather than at module scope for the same reason the

@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import re
 import time
+from contextlib import contextmanager
 from typing import Any, Callable
 
 from .checkers import BROWSER_CHECKERS, Checker, ENGINE_EXIT_CHECKER
@@ -347,30 +348,51 @@ def _read_open_session(
     return out
 
 
-def _read_page_texts_firefox(
+@contextmanager
+def firefox_session(
     proxy_url: str,
     *,
-    checkers: "tuple[Checker, ...]",
     seed: int,
-    sleep: Callable[[float], None],
-    layer_sink: "Callable[[LayerReport], None] | None" = None,
     install_layer: bool = True,
-) -> "dict[str, dict]":
-    """The Firefox half: construct the engine, install the layer, run the loop.
+    layer_sink: "Callable[[LayerReport], None] | None" = None,
+):
+    """persona's Firefox engine, layer installed, as a context manager.
 
-    Note what is NOT here: a declared machine. ``InvisiblePlaywright`` takes no
-    OS/platform argument at all, and the engine reports Windows regardless —
-    the same behaviour ``services/browser/process.py`` records for the product
-    ("unlike stealth-Firefox, which reports Windows regardless (#211)"). The
-    caller states the machine this engine actually declares rather than passing
-    one in and pretending it was honoured.
+    THE ONE COPY of the Firefox launch-and-install wiring. It is a shared
+    function rather than two similar blocks because a second copy of this
+    sequence is the exact hazard :mod:`masking_layer` names as load-bearing —
+    *"a second copy of the spoof set, drifting from the one the product
+    launches, would reproduce the very defect this module exists to close"* —
+    and the INSTALL wiring can drift the same way one level up. Both callers
+    reach the page through here:
+
+    * :func:`_read_page_texts_firefox`, the real checker run, and
+    * :mod:`layer_differential`, the local-page demonstration,
+
+    so a step added here tomorrow is a step both of them take. If the
+    differential had its own launch, it could keep passing while the harness's
+    own path lost the layer — proving something about a path no real run has.
+
+    Yields the live CONTEXT, never the Browser. That distinction is what makes
+    the layer exist at all: ``InvisiblePlaywright.__enter__`` hands back a
+    ``Browser`` here (no ``profile_dir`` is set), and a playwright Browser has
+    NO ``add_init_script`` — registering the spoofs on it installs nothing,
+    silently. Measured, by running the differential for real and reading
+    ``installed: []`` off the report. A Browser's ``new_page()`` also opens a
+    THROWAWAY context per call, so even a working registration would not
+    survive to the page. :func:`context_for` takes the one explicit context the
+    spoofs can live in.
 
     THE LAYER IS INSTALLED AFTER ``__enter__`` AND BEFORE THE FIRST PAGE LOAD,
-    and both halves of that sentence are load-bearing. After, because
-    ``add_init_script`` needs the live context the engine only hands back on
-    entry. Before, because the very first thing the shared loop does is prove
-    the exit by loading a page — a spoof registered after that has already
-    missed a document the run reads.
+    and both halves are load-bearing. After, because ``add_init_script`` needs
+    the live context the engine only hands back on entry. Before, because the
+    first thing the checker loop does is prove the exit by loading a page — a
+    spoof registered after that has already missed a document the run reads.
+
+    ``proxy_url`` empty means NO PROXY, and that is only ever right for a venue
+    with no exit (the loopback differential). A checker run always passes its
+    credential: a reading taken without the exit describes the operator's REAL
+    address while every verdict parses.
 
     ``install_layer=False`` is the differential's OTHER arm and exists for no
     other purpose: it produces the un-widened reading (engine only) so a caller
@@ -392,12 +414,16 @@ def _read_page_texts_firefox(
             f"{type(exc).__name__}: {exc}"
         ) from exc
 
-    kwargs: "dict[str, Any]" = {
-        "headless": True,
-        "humanize": False,
-        "proxy": _proxy_dict(proxy_url),
-        "extra_prefs": _prefs(),
-    }
+    kwargs: "dict[str, Any]" = {"headless": True, "humanize": False}
+    if proxy_url:
+        # Only when there IS an exit. `_proxy_dict` refuses a value it cannot
+        # parse, so an unusable credential fails here rather than launching an
+        # engine that quietly goes direct.
+        kwargs["proxy"] = _proxy_dict(proxy_url)
+        # The prefs are the browser-side half of the credential (remote DNS,
+        # no direct failover). They belong with it: on a loopback page there is
+        # no resolution to leak and nothing to fail over to.
+        kwargs["extra_prefs"] = _prefs()
     if seed:
         kwargs["seed"] = seed
     try:
@@ -409,18 +435,6 @@ def _read_page_texts_firefox(
 
     try:
         with engine as live:
-            # ONE context, and every page of the run is opened in it.
-            #
-            # NOT a refactor for tidiness — it is what makes the layer exist at
-            # all. `InvisiblePlaywright.__enter__` hands back a `Browser` here
-            # (no `profile_dir` is set), and a playwright Browser has NO
-            # `add_init_script`: registering the spoofs on it installs nothing,
-            # silently. Measured, by running the differential for real and
-            # reading `installed: []` off the report. A Browser's `new_page()`
-            # also opens a THROWAWAY context per call, so even a working
-            # registration would not survive to the page. `context_for` takes
-            # the one explicit context the spoofs can live in, and the shared
-            # loop runs against that.
             live, _context_note = context_for(live)
             if install_layer:
                 report = install_firefox_layer(
@@ -435,7 +449,7 @@ def _read_page_texts_firefox(
                 )
             if layer_sink is not None:
                 layer_sink(report)
-            return _read_open_session(live, checkers=checkers, sleep=sleep)
+            yield live
     except EngineUnavailable:
         raise
     except Exception as exc:
@@ -443,6 +457,37 @@ def _read_page_texts_firefox(
             f"persona's engine failed during the run: "
             f"{type(exc).__name__}: {exc}"
         ) from exc
+
+
+def _read_page_texts_firefox(
+    proxy_url: str,
+    *,
+    checkers: "tuple[Checker, ...]",
+    seed: int,
+    sleep: Callable[[float], None],
+    layer_sink: "Callable[[LayerReport], None] | None" = None,
+    install_layer: bool = True,
+) -> "dict[str, dict]":
+    """The Firefox half: construct the engine, install the layer, run the loop.
+
+    The launch and the layer install live in :func:`firefox_session`, which the
+    local-page differential drives too — see that function on why there is
+    exactly one copy of that sequence.
+
+    Note what is NOT here: a declared machine. ``InvisiblePlaywright`` takes no
+    OS/platform argument at all, and the engine reports Windows regardless —
+    the same behaviour ``services/browser/process.py`` records for the product
+    ("unlike stealth-Firefox, which reports Windows regardless (#211)"). The
+    caller states the machine this engine actually declares rather than passing
+    one in and pretending it was honoured.
+    """
+    with firefox_session(
+        proxy_url,
+        seed=seed,
+        install_layer=install_layer,
+        layer_sink=layer_sink,
+    ) as live:
+        return _read_open_session(live, checkers=checkers, sleep=sleep)
 
 
 def _read_page_texts_chromium(
