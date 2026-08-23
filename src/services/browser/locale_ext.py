@@ -1,7 +1,7 @@
 import json
 import pathlib
 
-from .worker_wrap import realm_bootstrap_js
+from .worker_wrap import realm_bootstrap_js, realm_guard_js
 
 # Injected in the MAIN world at document_start. Wrapped in an IIFE so no injected
 # name leaks as a page global (a page redeclaring the same const would throw and
@@ -23,8 +23,8 @@ CONTENT_SCRIPT = r"""
 // there).
 function applyLocalePatch(G) {
   try {
-    if (!G || G.__personaLocale) return;
-    G.__personaLocale = true;
+    if (!G) return;
+__LOCALE_REALM_GUARD__
     var LOCALE = %LOCALE%;
     // Make our wrapped built-ins read as native in THIS realm (page or worker):
     // a masking detector (creepjs) calls Function.prototype.toString on Intl in a
@@ -154,6 +154,8 @@ def build_locale_extension(locale: str, base_dir: str) -> str:
     ext_dir.mkdir(parents=True, exist_ok=True)
     js = CONTENT_SCRIPT.replace("%LOCALE%", json.dumps(locale)).replace(
         "__LOCALE_REALM_BOOTSTRAP__", realm_bootstrap_js("applyLocalePatch")
+    ).replace(
+        "__LOCALE_REALM_GUARD__", realm_guard_js("locale")
     )
     (ext_dir / "locale.js").write_text(js, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(

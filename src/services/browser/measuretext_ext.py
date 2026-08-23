@@ -27,7 +27,7 @@ throbber that also blocked every Sheets popover/overlay from painting.
 import json
 import pathlib
 
-from .worker_wrap import realm_bootstrap_js
+from .worker_wrap import realm_bootstrap_js, realm_guard_js
 
 # The same noise repair must hold in a fresh child frame and in a Web Worker's
 # OffscreenCanvas measureText, else a scanner measuring text in a pristine realm
@@ -39,11 +39,11 @@ CONTENT_SCRIPT = r"""
 (function () {
   function applyMtPatch(G) {
    try {
-    if (!G || G.__personaMt) return;
+    if (!G) return;
     var proto = (G.CanvasRenderingContext2D || {}).prototype;
     var off = (G.OffscreenCanvasRenderingContext2D || {}).prototype;
     if ((!proto || !proto.measureText) && (!off || !off.measureText)) return;
-    G.__personaMt = true;
+__MT_REALM_GUARD__
 
     // One-shot, un-noised true width of `text` in `font`, via a throwaway DOM
     // node measured and removed immediately (the bounding-rect read is not
@@ -143,6 +143,8 @@ def build_measuretext_extension(base_dir: str) -> str:
     ext_dir.mkdir(parents=True, exist_ok=True)
     js = CONTENT_SCRIPT.replace(
         "__MT_REALM_BOOTSTRAP__", realm_bootstrap_js("applyMtPatch")
+    ).replace(
+        "__MT_REALM_GUARD__", realm_guard_js("measuretext")
     )
     (ext_dir / "measuretext.js").write_text(js, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(

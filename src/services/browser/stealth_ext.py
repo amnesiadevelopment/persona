@@ -7,7 +7,7 @@ Only APIs a real desktop Chrome actually exposes are added; mobile-only APIs
 import json
 import pathlib
 
-from .worker_wrap import realm_bootstrap_js
+from .worker_wrap import realm_bootstrap_js, realm_guard_js
 
 # A fresh about:blank/srcdoc iframe (and a Web Worker) start without these
 # desktop-only APIs re-added, so a scanner reading such a pristine realm sees
@@ -17,8 +17,8 @@ CONTENT_SCRIPT = r"""
 (function () {
   function applyStealthPatch(G) {
    try {
-    if (!G || G.__personaStealth) return;
-    G.__personaStealth = true;
+    if (!G) return;
+__STEALTH_REALM_GUARD__
     try {
       // navigator.connection.downlinkMax — present on real Chrome, missing in
       // many headless/VM builds. CreepJS flags its absence as headless-like.
@@ -75,6 +75,8 @@ def build_stealth_extension(base_dir: str) -> str:
     ext_dir.mkdir(parents=True, exist_ok=True)
     js = CONTENT_SCRIPT.replace(
         "__STEALTH_REALM_BOOTSTRAP__", realm_bootstrap_js("applyStealthPatch")
+    ).replace(
+        "__STEALTH_REALM_GUARD__", realm_guard_js("stealth")
     )
     (ext_dir / "stealth.js").write_text(js, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(

@@ -700,23 +700,64 @@ def test_canvasless_realm_is_a_safe_noop_and_does_not_break_other_modules(tmp_pa
     # another. Load TWO modules (gpu + canvas_ctx) and drive the real carry path
     # into a canvas-less child realm: the canvas leaf must bail, AND the gpu
     # leaf must still arrive. That is the invariant the comment always claimed.
+    # PS-93: this used to read `__childRealm.__personaGpu === true` as the "gpu
+    # arrived" signal. That marker was a per-module idempotency guard sitting
+    # ENUMERABLE on the global, and it is gone. Asserting on it was always the
+    # weaker check anyway — it proved a flag had been set, not that the spoof
+    # WORKED. So the child realm now carries the surface gpu actually patches
+    # (a WebGL context, which is what a worker realm really has: no
+    # HTMLCanvasElement, but WebGL reachable all the same), and the assertion is
+    # on gpu's OWN OBSERVABLE — the UNMASKED_VENDOR/RENDERER strings its
+    # getParameter override returns. A bailing leaf that aborted the chain now
+    # shows up as the child reporting the HOST value, which is the real defect.
+    UNMASKED_VENDOR = 0x9245
+    UNMASKED_RENDERER = 0x9246
     got = _run(
         tmp_path, "ios",
         "(function(){"
-        # a child realm shaped like a worker: no HTMLCanvasElement at all
-        "globalThis.__childRealm={};"
+        # A child realm shaped like a worker: NO HTMLCanvasElement (so the
+        # canvas_ctx leaf must bail), but a WebGL context for gpu to patch.
+        "function ChildGL(){}"
+        "ChildGL.prototype.getParameter=function getParameter(){return 'HOST_VALUE_NOT_SPOOFED';};"
+        "ChildGL.prototype.getExtension=function getExtension(){return null;};"
+        "globalThis.__childRealm={WebGLRenderingContext:ChildGL};"
         "var threw=false;"
         "try{var w=new HTMLIFrameElement().contentWindow;}catch(e){threw=true;}"
+        "var cp=ChildGL.prototype.getParameter;"
+        "var tp=WebGLRenderingContext.prototype.getParameter;"
         "return {threw:threw,"
         " canvas:globalThis.__childRealm.HTMLCanvasElement===undefined,"
-        " otherModuleArrived:globalThis.__childRealm.__personaGpu===true};})()",
+        f" childVendor:cp.call(new ChildGL(),{UNMASKED_VENDOR}),"
+        f" childRenderer:cp.call(new ChildGL(),{UNMASKED_RENDERER}),"
+        f" topVendor:tp.call(new WebGLRenderingContext(),{UNMASKED_VENDOR}),"
+        f" topRenderer:tp.call(new WebGLRenderingContext(),{UNMASKED_RENDERER})}};}})()",
         with_gpu=True,
     )
     assert got["threw"] is False, "the carry path threw in a canvas-less realm"
     assert got["canvas"] is True, "the canvas leaf installed itself where it should have bailed"
-    assert got["otherModuleArrived"] is True, (
+
+    # The top realm is the control: it proves the gpu leaf spoofs at all, so a
+    # child mismatch below cannot be blamed on gpu simply being inert.
+    assert got["topVendor"] != "HOST_VALUE_NOT_SPOOFED", "gpu did not spoof the TOP realm"
+
+    # The invariant this test exists for: the canvas leaf bailing must not stop
+    # gpu's spoof reaching the child. Asserting the VALUE, not a marker.
+    assert got["childVendor"] != "HOST_VALUE_NOT_SPOOFED", (
         "the canvas leaf's bail aborted the chain: gpu's spoof never reached the "
-        "realm, which is the failure this test exists to catch"
+        "child realm, which is the failure this test exists to catch"
+    )
+    assert got["childRenderer"] != "HOST_VALUE_NOT_SPOOFED", (
+        "gpu's renderer spoof never reached the child realm"
+    )
+    # And it must be the SAME identity in both realms — a child reporting a
+    # DIFFERENT GPU than its parent is an unlinkability tell in its own right.
+    assert got["childVendor"] == got["topVendor"], (
+        f"child realm reports a different GPU vendor than the top realm: "
+        f"{got['childVendor']!r} vs {got['topVendor']!r}"
+    )
+    assert got["childRenderer"] == got["topRenderer"], (
+        f"child realm reports a different GPU renderer than the top realm: "
+        f"{got['childRenderer']!r} vs {got['topRenderer']!r}"
     )
 
 

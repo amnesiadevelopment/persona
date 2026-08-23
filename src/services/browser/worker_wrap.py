@@ -73,6 +73,8 @@ handed the assembled payload — the seed-bearing leaf source — as an argument
 which is the same disclosure PS-48 closes on the global object.
 """
 
+import json
+import textwrap
 from typing import NamedTuple
 
 
@@ -691,3 +693,107 @@ def firefox_native_wrap_js() -> str:
     differs.
     """
     return _FIREFOX_NATIVE_WRAP
+
+
+# ---------------------------------------------------------------------------
+# Per-realm idempotency guard (PS-93)
+# ---------------------------------------------------------------------------
+# Replaces the 11 `G.__personaX = true` markers that used to sit ENUMERABLE on
+# the global object, where `Object.getOwnPropertyNames(self)` — the sweep every
+# fingerprinter runs, and the one `realm.bootMarkers` encodes — reads them.
+#
+# THE CONSTRAINT SET, which is narrower than it looks. Dedup must be:
+#
+#   (a) per-realm    — one realm's state must not answer for another's, or a
+#                      child frame silently never gets the leaf;
+#   (b) shared across INDEPENDENT `__pnaInstall` invocations into the SAME
+#       realm — `all_frames:true` means a same-origin child runs the content
+#       script ITSELF *and* is installed into by the parent's `contentWindow`
+#       accessor, and Firefox re-evaluates whole leaves into open tabs
+#       (invisible_launch.py `_apply_audio_to_open_tabs`). Those two invocations
+#       share no closure AND hold DIFFERENT `LEAF` function objects, so neither
+#       a closure `WeakSet` nor a marker on the leaf can carry state between
+#       them;
+#   (c) carried into a worker AS TEXT — `fragment()` above serialises only
+#       `LEAF.toString()` + `__pnaInstall.toString()`, so anything defined in an
+#       enclosing scope is `undefined` in a worker and the leaf would silently
+#       never apply there.
+#
+# The closure `SEEN` WeakSet above satisfies (c) only. It is per-INVOCATION (it
+# is declared inside `__pnaInstall`'s body), so it cannot satisfy (b) and is NOT
+# a substitute for this guard — it stays where it is, guarding the iframe
+# accessor, which is the one place its per-invocation lifetime is correct.
+#
+# (b) is what forces the state to hang off an object resolved FROM `G`, and (c)
+# forces the whole thing to be inline text. So the registry lives on the realm's
+# own `Object` constructor, NON-ENUMERABLY, keyed per module:
+#
+#   * `G.Object` is per-realm, is present in every realm including a DOM-less
+#     worker, and is resolved identically by two independent invocations —
+#     which is exactly the trio (a)/(b)/(c) asks for;
+#   * one slot holds all 11 module keys, so this REPLACES eleven names with one.
+#
+# HONEST BOUND, stated rather than implied: this is not invisibility. It moves
+# the flag off the global sweep, but a detector that walks
+# `Object.getOwnPropertyNames(Object)` still finds `__pnaRealm`. That is the
+# same shape — and the same `__pna` family — as the `__pnaName` marker already
+# carried on every Chromium wrapper, which this ticket scopes out on exactly
+# that ground. Symbol keying was NOT chosen instead: this file's own standard
+# (see the Firefox cloak note) is that the registry must not be "enumerated OR
+# SWEPT FOR SYMBOLS", so a symbol would satisfy the probe's regex while
+# breaching the in-tree rule it encodes.
+#
+# FAIL OPEN, never closed. If `defineProperty` is refused the leaf RE-RUNS
+# rather than bailing — matching `fresh()`, which returns true when `WeakSet` is
+# unavailable. A re-run costs a double-applied spoof; a false bail costs an
+# UNMASKED realm, which is strictly worse.
+def realm_guard_js(module_key: str, indent: int = 4) -> str:
+    """Inline JS that returns early if ``module_key`` already ran in this realm.
+
+    THE ONLY SOURCE OF THIS TEXT. Every leaf that needs the guard carries a
+    ``*_REALM_GUARD__`` placeholder in its template and fills it from HERE in its
+    builder's ``.replace()`` chain, exactly as ``realm_bootstrap_js`` is already
+    consumed in those same files. Do NOT paste the emitted body into a leaf: it
+    was pasted into all twelve sites once, and the copies were coupled to this
+    function by nothing — editing the helper silently changed nothing that
+    shipped, and editing one copy silently diverged it from eleven others. The
+    structural suite in tests/test_realm_guard.py asserts every generated script
+    contains ``realm_guard_js(<its key>)``, so a dropped placeholder or an
+    unwired builder goes red per-site rather than becoming a leaf with no
+    idempotency at all.
+
+    Splice INSIDE the leaf (it emits a bare ``return``), AFTER the leaf's own
+    preconditions and before it patches anything. That ordering matters where a
+    leaf legitimately bails in some realms (canvas_ctx and measuretext bail
+    without a DOM): a realm where the leaf did no work must NOT be recorded as
+    covered, or a later invocation that COULD have patched it returns early
+    against an empty realm. Those two therefore keep their placeholder at the
+    point where the leaf is known to be doing work, not at the top of the body.
+
+    Emitted as text with no free variables other than ``G``, so it survives the
+    trip into a worker realm. ``indent`` is the leaf body's own indentation —
+    voice_ext.py indents its body by 2, every other leaf by 4 — and a wrong
+    value here is a real mismatch the structural suite catches, not cosmetic.
+    """
+    key = json.dumps(module_key)
+    body = (
+        "var __pnaReg = null;\n"
+        "try {\n"
+        "  var __pnaO = G.Object;\n"
+        "  if (__pnaO) {\n"
+        "    __pnaReg = __pnaO.__pnaRealm;\n"
+        "    if (!__pnaReg) {\n"
+        "      __pnaReg = {};\n"
+        "      __pnaO.defineProperty(__pnaO, '__pnaRealm',\n"
+        "                            { value: __pnaReg, configurable: true });\n"
+        "    }\n"
+        "  }\n"
+        "} catch (e) { __pnaReg = null; }\n"
+        "try {\n"
+        "  if (__pnaReg) {\n"
+        "    if (__pnaReg[" + key + "] === true) return;\n"
+        "    __pnaReg[" + key + "] = true;\n"
+        "  }\n"
+        "} catch (e) {}"
+    )
+    return textwrap.indent(body, " " * indent)

@@ -26,7 +26,7 @@ import json
 import pathlib
 
 from ...models.hardware_generation import normalize_generation
-from .worker_wrap import realm_bootstrap_js
+from .worker_wrap import realm_bootstrap_js, realm_guard_js
 
 _CONTENT_SCRIPT = r"""
 (function () {
@@ -38,8 +38,8 @@ _CONTENT_SCRIPT = r"""
   // into the worker realm (a var in the outer IIFE would be undefined there).
   function applyGpuPatch(G) {
    try {
-    if (!G || G.__personaGpu) return;
-    G.__personaGpu = true;
+    if (!G) return;
+__REALM_GUARD__
     var SEED = __SEED__;
     var OS = "__OS__";
     // The profile's frozen hardware generation. A GPU is only visible to a
@@ -704,6 +704,7 @@ def build_gpu_extension(
         .replace("__GEN__", str(normalize_generation(generation)))
         .replace("__OS__", os_norm)
         .replace("__REALM_BOOTSTRAP__", realm_bootstrap_js("applyGpuPatch"))
+        .replace("__REALM_GUARD__", realm_guard_js("gpu"))
     )
     (ext_dir / "gpu.js").write_text(script, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(
