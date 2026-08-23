@@ -2600,8 +2600,8 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     # before the environ scrub, and it is applied HERE, now that `out` exists
     # and a failure can be said out loud. Reported on the pipe the same way an
     # engine import error is, so the parent's monitor treats it as a failed
-    # launch instead of a silent EOF — then re-raised, because continuing would
-    # leave this child standing in persona's own directory, which is the exact
+    # launch instead of a silent EOF — then ends the child, because continuing
+    # would leave it standing in persona's own directory, which is the exact
     # divergence being closed.
     if _apply_child_cwd:
         try:
