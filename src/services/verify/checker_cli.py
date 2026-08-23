@@ -76,10 +76,21 @@ subcommand adopts rather than re-deciding:
     1   at least one FINDING — a fingerprint row moved, a host row moved on one
         machine, or an untagged row moved. This is what opens a triage, and it
         is deliberately the same code ``cli.py`` uses for drift
-    3   no finding, but COVERAGE WAS LOST: a row that was readable in the
-        earlier record is unobtainable in the later one. Never folded into 1,
-        because a run that failed is not the product moving — that conflation
-        is exactly what would train a reader to skim a red report
+    3   no finding, but THE COVERAGE THIS RESTS ON IS NOT WHAT YOU THINK. Two
+        ways in, sharing this code because they share that meaning and the
+        same response — look at the run, not at the product:
+          * COVERAGE WAS LOST: a row that was readable in the earlier record
+            is unobtainable in the later one
+          * NO EVIDENCE AT ALL: not one row was read or absent on EITHER side,
+            so nothing was compared. This is the AGGREGATE floor and it is a
+            different question from a row unreadable on both sides — 24 of 53
+            unreadable is this matrix's designed steady state (see
+            ``matrix_diff.coverage_lost``), 0 of 53 is a run that did not
+            happen. Both used to exit 0, which told a gate the product was
+            clean on a run that observed nothing
+        Never folded into 1, because a run that failed is not the product
+        moving — that conflation is exactly what would train a reader to skim
+        a red report
     2   REFUSED. A file that could not be read, a file that is not a record, or
         two records that cannot be compared at all (different seeds, different
         engine builds, different schema versions). Never 1: a refusal is not a
@@ -145,6 +156,7 @@ from .matrix_diff import (
     findings,
     format_comparison,
     header_notes,
+    no_evidence,
     require_record,
 )
 from .snapshot import quote_path
@@ -603,6 +615,36 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     if findings(entries):
         return 1
     if coverage_lost(entries):
+        return 3
+
+    # The AGGREGATE evidence floor, asked once, of the records rather than of
+    # the entries — and asked LAST on purpose. Neither rung above can be
+    # reached when nothing was obtained (a finding needs a reading on both
+    # sides, lost coverage needs one on exactly one), so this cannot change any
+    # verdict that exists today: it can only split the old 0 into "read and
+    # agreed" and "nothing was read". That is the whole change.
+    #
+    # It is NOT the per-row question and does not reopen it. UNREAD_BOTH stays
+    # out of the ladder for the reason `coverage_lost` documents: 24 of 53 rows
+    # permanently unreadable is this matrix's designed steady state, and a code
+    # firing on it would be ignored within a week. Nought of 53 is a different
+    # fact — a run that did not happen — and until now the two shared an exit
+    # code. `cli.py` already draws this exact line for the snapshot lane, and
+    # `baseline.py` refuses a zero-reading snapshot for the same reason.
+    #
+    # 3, not a new code: it already means "no finding, but the coverage this
+    # rests on is not what you think", which is precisely what this is. Never
+    # 0, and never folded into 1 — a run that did not happen is not the
+    # product moving.
+    if no_evidence(before, after):
+        print(
+            "\nNO EVIDENCE: not one reading was obtained on either side — no "
+            "row is 'read' or 'absent' in either record, so nothing was "
+            "compared. This is NOT agreement. That shape is what a REFUSED or "
+            "truncated recording leaves behind (an engine that would not "
+            "launch, a dead exit), not a clean matrix; check the recording "
+            "before reading anything into this comparison."
+        )
         return 3
     return 0
 
