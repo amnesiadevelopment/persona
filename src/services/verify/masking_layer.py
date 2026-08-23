@@ -112,6 +112,14 @@ DEVICE = "device"
 GPU = "gpu"
 CANVAS_CTX = "canvas_ctx"
 
+# The vectors persona's FIREFOX layer actually builds, in install order. Named
+# as data so a subtraction arm can be checked against the real set rather than
+# against a name someone typed — see ``firefox_layer_scripts(vectors=...)``.
+# Firefox reaches none of the Chromium extension builders (``spawn_browser``
+# returns on the Firefox arm ~150 lines before the extension list is assembled),
+# so this is deliberately three names and not the full vector vocabulary above.
+FIREFOX_VECTORS = (LOCALE, WEBGL, AUDIO)
+
 # The default locale a harness run declares. ``en-US`` matches what
 # ``spawn_browser`` uses for a profile with no proxy country
 # (``process.py``: ``lang = _locale_for(proxy.country_code) if proxy else
@@ -183,6 +191,7 @@ def firefox_layer_scripts(
     seed: int,
     *,
     locale: str = DEFAULT_LOCALE,
+    vectors: "tuple[str, ...] | None" = None,
 ) -> "list[tuple[str, str]]":
     """The per-profile spoof scripts ``invisible_launch`` installs, as data.
 
@@ -201,6 +210,19 @@ def firefox_layer_scripts(
     a launch of this shape would not install it either. Including it would make
     the harness present something the equivalent product profile does not.
 
+    ``vectors`` NARROWS the set to the named subset, and exists for exactly one
+    caller: the subtraction arm of a differential (PS-119 step 3). When a live
+    checker names the layer, the question "WHICH spoof did it see?" is answered
+    by removing one vector at a time and re-reading — a measurement, rather than
+    an argument about which line of generated source looks suspicious. ``None``
+    means the full product set and is the default, because a reading of a subset
+    does NOT describe the product and must never be reached by accident.
+
+    A name that is not a vector this engine builds is refused rather than
+    silently ignored: a typo that quietly produced the FULL layer would report a
+    subtraction that never happened, and the arm would look like an exoneration
+    of the vector the operator thought they had removed.
+
     Imported inside the function, not at module import: ``invisible_launch``
     pulls the whole browser stack, and a caller reading the JSON tier or printing
     ``--help`` must not be made to import an engine.
@@ -208,6 +230,18 @@ def firefox_layer_scripts(
     from ..browser.audio_ext import firefox_audio_init_script
     from ..browser.invisible_launch import _language_override_script
     from ..browser.webgl_ext import firefox_webgl_init_script
+
+    if vectors is not None:
+        unknown = sorted(set(vectors) - set(FIREFOX_VECTORS))
+        if unknown:
+            raise ValueError(
+                f"not vector(s) persona's firefox layer builds: "
+                f"{', '.join(unknown)}. This engine builds "
+                f"{', '.join(FIREFOX_VECTORS)}. Refusing rather than ignoring "
+                f"the name: a subtraction arm that silently installed the FULL "
+                f"layer would read as an exoneration of the vector you meant "
+                f"to remove."
+            )
 
     scripts: "list[tuple[str, str]]" = []
     # An empty locale makes _language_override_script a documented no-op; keep
@@ -218,6 +252,9 @@ def firefox_layer_scripts(
         scripts.append((LOCALE, locale_js))
     scripts.append((WEBGL, firefox_webgl_init_script(seed)))
     scripts.append((AUDIO, firefox_audio_init_script(seed)))
+    if vectors is not None:
+        keep = set(vectors)
+        scripts = [(v, js) for v, js in scripts if v in keep]
     return [(vector, js) for vector, js in scripts if js]
 
 
@@ -270,6 +307,7 @@ def install_firefox_layer(
     *,
     locale: str = DEFAULT_LOCALE,
     scripts: "list[tuple[str, str]] | None" = None,
+    vectors: "tuple[str, ...] | None" = None,
 ) -> LayerReport:
     """Install persona's Firefox masking layer onto a live CONTEXT.
 
@@ -300,7 +338,7 @@ def install_firefox_layer(
 
     try:
         pairs = scripts if scripts is not None else firefox_layer_scripts(
-            seed, locale=locale
+            seed, locale=locale, vectors=vectors
         )
     except Exception as exc:
         return absent_layer(

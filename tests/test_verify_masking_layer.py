@@ -990,3 +990,114 @@ def test_the_disclosure_SURVIVES_to_the_artifact_a_reader_actually_opens():
     assert reloaded["sandbox_waived"] is True
     assert "--no-sandbox" in "\n".join(reloaded["notes"])
     assert reloaded["before"]["sandbox_waived"] is True
+
+
+# --- PS-119: the harness must declare the locale the way the product does ----
+#
+# The defect these guard was NOT in the spoof. A live pixelscan reading through
+# a proven exit returned `masking_detected` with the layer installed and ABSENT
+# with the locale vector subtracted — while a 314-observable integrity sweep
+# found the patched JS surface structurally IDENTICAL to the unpatched engine.
+#
+# The cause was one missing launch argument. `invisible_launch` sets
+# `kwargs["locale"]` on every product launch, and that value drives Firefox's
+# `intl.accept_languages` — the ACCEPT-LANGUAGE HEADER. The harness passed none,
+# so the header carried the HOST OS locale while the layer pinned
+# navigator.language/Intl to DEFAULT_LOCALE. Header de-DE + JS en-US is exactly
+# the "internal contradiction a scanner flags as masking" that
+# `_language_override_script`'s own docstring exists to prevent.
+#
+# Asserted on the kwargs REALLY handed to the engine constructor, not on source
+# text: a source assertion would pass on a tree where the value never reached
+# the launch.
+
+
+def _kwargs_handed_to_the_engine(**session_kwargs):
+    """Run ``firefox_session`` against a stub engine and return its kwargs."""
+    import sys as _sys
+    import types
+
+    from src.services.verify import browser_tier as bt
+
+    seen: "list[dict]" = []
+
+    class _Engine:
+        def __enter__(self):
+            return _Ctx()
+
+        def __exit__(self, *a):
+            return False
+
+    class _Ctx:
+        pages = ()
+
+        def add_init_script(self, js):
+            return None
+
+    def _construct(**kw):
+        seen.append(kw)
+        return _Engine()
+
+    fake = types.SimpleNamespace(InvisiblePlaywright=_construct)
+    saved = _sys.modules.get("invisible_playwright")
+    _sys.modules["invisible_playwright"] = fake
+    try:
+        with bt.firefox_session("", seed=SEED, **session_kwargs):
+            pass
+    finally:
+        if saved is None:
+            _sys.modules.pop("invisible_playwright", None)
+        else:
+            _sys.modules["invisible_playwright"] = saved
+    assert seen, "the engine constructor was never called"
+    return seen[0]
+
+
+def test_the_harness_declares_a_locale_to_the_engine_like_the_product_does():
+    """Without this the Accept-Language header carries the HOST locale.
+
+    The header is what the engine derives from this argument; the masking layer
+    pins the JS side to the SAME constant. Passing nothing here is what made the
+    two disagree, which is the tell pixelscan named.
+    """
+    kwargs = _kwargs_handed_to_the_engine()
+
+    assert "locale" in kwargs, (
+        "firefox_session handed the engine no locale, so Accept-Language falls "
+        "back to the HOST OS locale while the masking layer pins JS to "
+        "DEFAULT_LOCALE — the header/JS contradiction PS-119 measured as "
+        "pixelscan's masking_detected"
+    )
+    assert kwargs["locale"] == masking_layer.DEFAULT_LOCALE
+
+
+def test_the_engine_locale_is_the_SAME_constant_the_layer_pins_the_js_side_to():
+    """One constant on both sides, or the two can drift back apart.
+
+    This is the invariant that actually matters: it is not that a locale is
+    passed, it is that the header and the JS getters carry the same value. Two
+    independently-chosen literals would satisfy the test above and still be
+    detectable.
+    """
+    kwargs = _kwargs_handed_to_the_engine()
+
+    installed = firefox_layer_scripts(SEED, locale=masking_layer.DEFAULT_LOCALE)
+    locale_js = dict(installed)[masking_layer.LOCALE]
+
+    assert kwargs["locale"] == masking_layer.DEFAULT_LOCALE
+    # the value the layer actually writes into the page realm
+    assert json.dumps(masking_layer.DEFAULT_LOCALE) in locale_js
+
+
+def test_the_control_arm_ALSO_declares_the_locale():
+    """The engine-only arm needs it too, and for a subtler reason.
+
+    ``--no-masking-layer`` installs no spoof, so nothing pins the JS side — but
+    the header still comes from this argument. If the control arm took the host
+    locale while the product arm took DEFAULT_LOCALE, the two arms would differ
+    by the HOST's identity as well as by the layer, and the differential would
+    be attributing a difference the layer did not cause.
+    """
+    kwargs = _kwargs_handed_to_the_engine(install_layer=False)
+
+    assert kwargs["locale"] == masking_layer.DEFAULT_LOCALE

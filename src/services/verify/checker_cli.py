@@ -157,6 +157,7 @@ from .browser_tier import (
     honours_declared_machine,
 )
 from .checkers import BROWSER_CHECKERS, JSON_CHECKERS, UNREADABLE_CHECKERS
+from .masking_layer import FIREFOX_VECTORS as FIREFOX_LAYER_VECTORS
 from .layer_differential import (
     AXIS_LAYER,
     AXIS_SEED,
@@ -309,6 +310,51 @@ def _resolve_seeds(raw: "list[str] | None") -> "list[int]":
     return out
 
 
+def _resolve_layer_vectors(args: argparse.Namespace) -> "tuple[str, ...] | None":
+    """The layer subset for a subtraction arm, or None for the full product set.
+
+    ``--layer-vectors`` and ``--drop-layer-vector`` are two spellings of one
+    question ("which spoofs are installed?") and are mutually exclusive: given
+    both, the operator has stated the subset twice and there is no reading that
+    honours both spellings, so the run is refused rather than resolved by a
+    precedence rule nobody would remember.
+
+    Returns ``None`` when neither was passed, which is the full product set —
+    the arm that actually describes what an operator presents.
+    """
+    keep = _split_list(getattr(args, "layer_vectors", None), [])
+    drop = _split_list(getattr(args, "drop_layer_vector", None), [])
+    if keep and drop:
+        raise SystemExit(
+            "--layer-vectors and --drop-layer-vector contradict each other: "
+            "both name the subset to install, one by what stays and one by "
+            "what goes. Pass one."
+        )
+    if not keep and not drop:
+        return None
+    if getattr(args, "no_masking_layer", False):
+        raise SystemExit(
+            "--no-masking-layer removes the WHOLE layer, so naming a subset of "
+            "it with --layer-vectors/--drop-layer-vector asks for two different "
+            "arms at once. Drop one: --no-masking-layer for the control arm, "
+            "the subset flags for a subtraction arm."
+        )
+    known = set(FIREFOX_LAYER_VECTORS)
+    named = keep or drop
+    unknown = sorted(set(named) - known)
+    if unknown:
+        raise SystemExit(
+            f"not vector(s) persona's firefox layer builds: "
+            f"{', '.join(unknown)}. This engine builds "
+            f"{', '.join(FIREFOX_LAYER_VECTORS)}. Refused rather than ignored: "
+            f"a subtraction arm that silently installed the FULL layer would "
+            f"read as an exoneration of the vector you meant to remove."
+        )
+    if keep:
+        return tuple(v for v in FIREFOX_LAYER_VECTORS if v in set(keep))
+    return tuple(v for v in FIREFOX_LAYER_VECTORS if v not in set(drop))
+
+
 def _plan(
     engines: "list[str]", machines: "list[str]", seeds: "list[int]"
 ) -> "tuple[list[tuple[str, str, int]], list[str]]":
@@ -351,6 +397,7 @@ def _notes_for(
     requested_machine: str,
     allow_unsandboxed: bool = False,
     install_layer: bool = True,
+    layer_vectors: "tuple[str, ...] | None" = None,
 ) -> "list[str]":
     notes = [
         "The GPU rows are PRODUCT rows, not environment notes. This container "
@@ -417,6 +464,24 @@ def _notes_for(
             "and only if both arms record the SAME exit address: the exit "
             "rotates by design, and two arms taken through different addresses "
             "are not a comparison."
+        )
+    if install_layer and layer_vectors is not None:
+        kept = ", ".join(layer_vectors) or "(none)"
+        print_removed = ", ".join(
+            v for v in FIREFOX_LAYER_VECTORS if v not in layer_vectors
+        ) or "(none)"
+        notes.append(
+            f"THIS READING IS OF A DELIBERATELY INCOMPLETE LAYER "
+            f"(--layer-vectors), NOT OF THE PRODUCT. Installed: {kept}. "
+            f"REMOVED: {print_removed}. It is a SUBTRACTION ARM — the point is "
+            f"to find which spoof a checker reacts to by removing them one at a "
+            f"time, so a clean row here means only that the REMAINING vectors "
+            f"did not trigger it, and an adverse row does not implicate any "
+            f"single one of them. The product installs the full set, so no "
+            f"verdict in this record describes what an operator presents. Read "
+            f"it only ALONGSIDE the full-layer arm, and only if both arms "
+            f"record the SAME exit address: the exit rotates by design, and "
+            f"two arms taken through different addresses are not a comparison."
         )
     return notes
 
@@ -549,6 +614,7 @@ def _read_one(
                 allow_unsandboxed=args.allow_unsandboxed_chromium,
                 layer_sink=_capture_layer,
                 install_layer=not args.no_masking_layer,
+                layer_vectors=_resolve_layer_vectors(args),
             )
         )
         print(
@@ -576,6 +642,7 @@ def _read_one(
             requested_machine,
             allow_unsandboxed=args.allow_unsandboxed_chromium,
             install_layer=not args.no_masking_layer,
+            layer_vectors=_resolve_layer_vectors(args),
         ),
     )
 
@@ -953,6 +1020,35 @@ def build_parser() -> argparse.ArgumentParser:
             "close together and through the SAME exit — the address rotates by "
             "design, and an arm that rotated is not a comparison. Refused with "
             "--skip-browser, which is where the layer would have been installed"
+        ),
+    )
+    rd.add_argument(
+        "--layer-vectors", action="append",
+        help=(
+            "install ONLY these vectors of persona's masking layer, as the "
+            "SUBTRACTION ARM of a differential (firefox: "
+            + ", ".join(FIREFOX_LAYER_VECTORS) + "). Repeatable or "
+            "comma-separated. This is how you find WHICH spoof a checker "
+            "reacted to — remove them one at a time and re-read, rather than "
+            "reading the generated source for something that looks suspicious. "
+            "A reading of a subset does NOT describe the product (the product "
+            "installs the full set), and the record says so in a header note "
+            "naming what was kept and what was removed. A name that is not a "
+            "vector is REFUSED rather than ignored: an arm that silently "
+            "installed the full layer would read as an exoneration of the "
+            "vector you meant to remove. Contradicts --no-masking-layer, which "
+            "removes the whole layer"
+        ),
+    )
+    rd.add_argument(
+        "--drop-layer-vector", action="append",
+        help=(
+            "the same subtraction arm named the other way round: install the "
+            "whole layer EXCEPT these. Repeatable or comma-separated. "
+            "'--drop-layer-vector webgl' is the one-at-a-time subtraction step "
+            "and is usually what you want; --layer-vectors is the complement. "
+            "Contradicts --layer-vectors (both name the subset) and "
+            "--no-masking-layer"
         ),
     )
     rd.add_argument(
