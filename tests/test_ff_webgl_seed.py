@@ -125,7 +125,7 @@ def test_firefox_and_chromium_share_the_perturbation():
     ).read_text()
     for shared in (
         "var SEED = 4242;",
-        "var STRIDE = 17;",
+        "var BUDGET = 512;",
         "function perturbBytes(buf)",
         "proto.readPixels = nativeWrap(orig,",
     ):
