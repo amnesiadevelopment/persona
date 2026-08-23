@@ -106,6 +106,83 @@ def can_fast_update() -> bool:
     return bool(zip_path and hash_path)
 
 
+# The retained previous release, kept beside the live pair INSIDE the install
+# dir. Same volume, so moving it aside is an atomic rename rather than a 1MB
+# copy — and unlike %TEMP% it survives a reboot mid-update, which is exactly the
+# window this exists for. One previous version, overwritten by each update.
+RETAINED_SUFFIX = ".prev"
+
+
+def retained_paths(dst_zip: str, dst_hash: str) -> "tuple[str, str]":
+    """(app.zip.prev, app.zip.hash.prev) beside the live pair."""
+    return dst_zip + RETAINED_SUFFIX, dst_hash + RETAINED_SUFFIX
+
+
+# A file step is (kind, src, dst): "move" and "del" are conditional on src
+# existing, "copy" is not (its source is the freshly staged download, which the
+# caller has already verified). Steps exist as DATA rather than as batch text so
+# the same sequence that renders into the .bat can be executed directly against
+# a real install dir in a test — the swap runs on Windows, but what it does to
+# the files is asserted here rather than taken on faith from a grep of the
+# script text.
+def stage_steps(new_zip: str, new_hash: str,
+                dst_zip: str, dst_hash: str) -> "list[tuple[str, str, str]]":
+    """Retain the live pair, then put the new pair in place.
+
+    The retain is what makes a bad release survivable. Before this swap the
+    working code exists twice — as this app.zip and as the flet extraction — and
+    the script destroys both in consecutive steps (the purge is load-bearing for
+    its own reason and stays). Since the updater itself ships INSIDE app.zip, a
+    release that verifies but does not boot would otherwise leave no persona and
+    no way to fetch a fix.
+    """
+    prev_zip, prev_hash = retained_paths(dst_zip, dst_hash)
+    return [
+        ("move", dst_zip, prev_zip),
+        ("move", dst_hash, prev_hash),
+        ("copy", new_zip, dst_zip),
+        ("copy", new_hash, dst_hash),
+    ]
+
+
+def restore_steps(dst_zip: str, dst_hash: str) -> "list[tuple[str, str, str]]":
+    """Put the retained pair back over the failed release.
+
+    `move`, not `copy`: the retained pair is consumed by the restore, so a
+    recovered install is left holding exactly one good pair and no leftovers.
+    The hash goes back with the zip, which is what makes flet re-extract — its
+    extracted marker now records the FAILED release, so a differing
+    app.zip.hash is precisely the signal it acts on.
+    """
+    prev_zip, prev_hash = retained_paths(dst_zip, dst_hash)
+    return [
+        ("move", prev_zip, dst_zip),
+        ("move", prev_hash, dst_hash),
+    ]
+
+
+def drop_retained_steps(dst_zip: str, dst_hash: str) -> "list[tuple[str, str, str]]":
+    """Discard the retained pair — the new release booted, so it has earned the
+    slot. Nothing accumulates across updates."""
+    prev_zip, prev_hash = retained_paths(dst_zip, dst_hash)
+    return [("del", prev_zip, ""), ("del", prev_hash, "")]
+
+
+def render_steps_bat(steps: "list[tuple[str, str, str]]") -> str:
+    """File steps as cmd lines. `move`/`del` are guarded by `if exist` so a
+    missing file is a no-op rather than an error written to a console nobody is
+    watching; every line is silenced and none of them can fail the script."""
+    out = ""
+    for kind, src, dst in steps:
+        if kind == "move":
+            out += f'if exist "{src}" move /Y "{src}" "{dst}" >nul 2>&1\r\n'
+        elif kind == "copy":
+            out += f'copy /Y "{src}" "{dst}" >nul 2>&1\r\n'
+        elif kind == "del":
+            out += f'if exist "{src}" del /F /Q "{src}" >nul 2>&1\r\n'
+    return out
+
+
 def _write_appzip_swap_bat(exe: str, new_zip: str, new_hash: str,
                            dst_zip: str, dst_hash: str, old_pid: int) -> str:
     """A temp .bat that waits for THIS persona to exit, swaps the new app.zip +
@@ -127,13 +204,20 @@ def _write_appzip_swap_bat(exe: str, new_zip: str, new_hash: str,
         exe,
         wait_checks=checks,
         stage_label="swap",
-        # copy the new code + hash over the install-dir originals. /Y overwrites.
-        # Only now that every holder is gone: replacing app.zip under a live flet
-        # is the errno-32 white screen (#195).
-        stage_body=(
-            f'copy /Y "{new_zip}" "{dst_zip}" >nul 2>&1\r\n'
-            f'copy /Y "{new_hash}" "{dst_hash}" >nul 2>&1\r\n'
+        # Retain the live pair, then copy the new code + hash over the
+        # install-dir originals. /Y overwrites. Only now that every holder is
+        # gone: replacing app.zip under a live flet is the errno-32 white
+        # screen (#195).
+        stage_body=render_steps_bat(
+            stage_steps(new_zip, new_hash, dst_zip, dst_hash)
         ),
+        # The confirm has failed its whole re-launch budget, so this release
+        # does not come up. Put the retained pair back and launch it — without
+        # this the script falls through to a dead install whose own updater
+        # shipped inside the file it just overwrote.
+        recover_body=render_steps_bat(restore_steps(dst_zip, dst_hash)),
+        # It booted: the retained pair has been superseded, so drop it.
+        confirm_body=render_steps_bat(drop_retained_steps(dst_zip, dst_hash)),
     )
     return relaunch_bat.write_bat(content, prefix="persona-fastswap-")
 

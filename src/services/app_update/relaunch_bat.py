@@ -100,7 +100,8 @@ def image_check(image: str) -> str:
 
 
 def build_bat(exe: str, wait_checks: str, stage_label: str,
-              stage_body: str = "") -> str:
+              stage_body: str = "", recover_body: str = "",
+              confirm_body: str = "") -> str:
     """The whole script: wait for every holder to exit, run the caller's stage,
     purge the stale flet extraction, launch, confirm, self-delete.
 
@@ -130,9 +131,45 @@ def build_bat(exe: str, wait_checks: str, stage_label: str,
        confirm, count re-launches on their OWN counter (the wait loop's `tries`
        is already near its cap by then), and retry only a handful of times.
     5. SELF-DELETE, whether the launch stuck or not.
+
+    `recover_body` and `confirm_body` are the caller's OPT-IN arms on that last
+    step, and they default to "" exactly as `stage_body` does — a caller that
+    passes neither gets a byte-identical script to before they existed, which is
+    what keeps the full installer's relauncher (updater.py) untouched. This
+    module stays ignorant of WHAT is being swapped:
+
+      * `confirm_body` runs once the confirm SUCCEEDED — the caller's chance to
+        drop whatever it retained in its stage, so nothing accumulates.
+      * `recover_body` runs once the confirm has failed its whole re-launch
+        budget — the caller's chance to put back what its stage moved aside.
+        One more `start` follows it and then the script is done: the recovered
+        launch is deliberately NOT re-confirmed and NOT re-recovered, because a
+        second recovery has nothing left to restore and would only re-enter the
+        loop we just exhausted.
     """
     image = os.path.basename(exe)
     stage = f":{stage_label}\r\n" + (stage_body or "")
+    # Route the confirm's success edge through the caller's arm only when there
+    # IS one — otherwise the jump target stays :done, unchanged.
+    confirmed_target = "confirmed" if confirm_body else "done"
+    recover = (
+        ":recover\r\n"
+        + recover_body
+        + f'start "" /D "{os.path.dirname(exe)}" "{exe}"\r\n'
+        + "goto done\r\n"
+    ) if recover_body else ""
+    confirmed = (":confirmed\r\n" + confirm_body) if confirm_body else ""
+    # Where the spent re-launch budget lands. With NO arms this is "" and the
+    # confirm falls straight through to :done exactly as it always has — that
+    # empty string is what makes the full installer's script byte-identical.
+    if recover:
+        exhausted_jump = "goto recover\r\n"
+    elif confirmed:
+        # Nothing to restore, but :confirmed sits between here and :done and
+        # must be jumped OVER, not fallen into.
+        exhausted_jump = "goto done\r\n"
+    else:
+        exhausted_jump = ""
     return (
         "@echo off\r\n"
         'cd /d "%~dp0" >nul 2>&1\r\n'
@@ -168,9 +205,16 @@ def build_bat(exe: str, wait_checks: str, stage_label: str,
         "ping -n 4 127.0.0.1 >nul\r\n"
         f'tasklist /FI "IMAGENAME eq {image}" /FO CSV /NH 2>nul'
         f' | find /I "{image}" >nul\r\n'
-        "if not errorlevel 1 goto done\r\n"
+        f"if not errorlevel 1 goto {confirmed_target}\r\n"
         "set /a boots+=1\r\n"
         f"if %boots% lss {_LAUNCH_TRIES} goto launch\r\n"
+        # The budget is spent. Where that falls to depends on which arms exist,
+        # and the jump is explicit rather than a fall-through because falling
+        # into :confirmed here would run the caller's SUCCESS cleanup on a boot
+        # that never succeeded — dropping exactly what recovery needs.
+        + exhausted_jump
+        + recover
+        + confirmed +
         ":done\r\n"
         '(goto) 2>nul & del "%~f0"\r\n'
     )
