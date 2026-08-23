@@ -116,10 +116,17 @@ class _CrashingSession:
         self.visited: "list[str]" = []
         self.pages: "list[_CrashingPage]" = []
         self.new_page_calls = 0
+        # Attempts made AFTER the session was already dead. Exactly one is
+        # correct and unavoidable — the call that DISCOVERS the death. Every
+        # further one is the cascade this fix exists to stop, so this counter
+        # is what separates a contained run from an uncontained one. A bound
+        # on the total call count cannot: see the test that reads it.
+        self.calls_while_dead = 0
 
     def new_page(self):
         self.new_page_calls += 1
         if self.dead:
+            self.calls_while_dead += 1
             raise RuntimeError(CONTEXT_DEAD)
         page = _CrashingPage(self)
         self.pages.append(page)
@@ -158,19 +165,61 @@ def _pages_after_a_crash(crash_id="iphey.com"):
     return session, pages
 
 
+def _healthy_readings():
+    """The counterpart to :func:`_pages_after_a_crash` — a run where every
+    heavy checker answers with its real captured page.
+
+    ONE definition of "a healthy run", shared by the count test and the floor
+    override test. Two copies is how the control the floor is measured against
+    drifts away from the control the count is compared against, at which point
+    each test is still green about a different matrix.
+    """
+    pages = {c.id: {"text": _EXIT_JSON} for c in BROWSER_CHECKERS}
+    for cid, name in (
+        ("creepjs", "creepjs.txt"),
+        ("iphey.com", "iphey.txt"),
+        ("pixelscan.net", "pixelscan.txt"),
+        ("bot.sannysoft.com", "sannysoft.txt"),
+    ):
+        pages[cid] = {"text": (PAGES / name).read_text(encoding="utf-8")}
+    return bt.readings_from_texts(pages, checkers=BROWSER_CHECKERS)
+
+
 # --- the cascade is contained -----------------------------------------------
 
 
 def test_a_dead_session_stops_the_run_instead_of_being_asked_forty_more_times():
     """The loop must not keep calling new_page() on a context that cannot
     make pages. Measured on main: it called it once per remaining checker and
-    wrote each identical failure as that checker's own reading."""
+    wrote each identical failure as that checker's own reading.
+
+    ASSERTED AS "NEVER ASKED AGAIN", NOT AS A CALL-COUNT BOUND, and the
+    distinction is the whole test. The obvious assertion here —
+    ``new_page_calls <= len(BROWSER_CHECKERS)`` — is a TAUTOLOGY: the loop
+    calls ``new_page()`` at most once per iteration and ``continue``s past
+    ``engine-exit`` before reaching it, so the total is structurally under
+    that bound on EVERY implementation, including the unfixed one. It was
+    measured passing on all three of: main with no fix (7), a tree that marks
+    ``never_asked`` but never stops the loop (7), and this one (6). An
+    assertion satisfied by the defect is not coverage of the fix.
+
+    So the property is put the only way that can fail: once the session is
+    dead, the call that DISCOVERED the death is the last one. This is knowledge
+    article PS-11's failure class — asserting on the value the code happens to
+    produce instead of the behaviour claimed — which is worth avoiding
+    especially here, in the test for a fix to a number that grew when nothing
+    was read.
+    """
     session, pages = _pages_after_a_crash()
 
-    # One call per checker actually attempted, plus the one that discovered
-    # the death. Never one per catalogue entry.
-    assert session.new_page_calls <= len(BROWSER_CHECKERS)
     assert session.dead, "the induced crash must really have killed the session"
+    # Exactly one attempt lands on a dead session: the one that finds it dead.
+    # Anything further is the cascade — one identical failure per remaining
+    # catalogue entry, each written as that checker's own reading.
+    assert session.calls_while_dead == 1, (
+        "the browser was asked for a page after it was known to be dead — "
+        "that is the cascade this fix exists to stop"
+    )
 
 
 def test_rows_lost_to_one_dead_browser_are_marked_never_asked():
@@ -254,17 +303,7 @@ def test_the_reported_reading_count_does_not_grow_when_nothing_is_read():
     _session, crashed_pages = _pages_after_a_crash()
     crashed = bt.readings_from_texts(crashed_pages, checkers=BROWSER_CHECKERS)
 
-    healthy_pages = {
-        c.id: {"text": _EXIT_JSON} for c in BROWSER_CHECKERS
-    }
-    for cid, name in (
-        ("creepjs", "creepjs.txt"),
-        ("iphey.com", "iphey.txt"),
-        ("pixelscan.net", "pixelscan.txt"),
-        ("bot.sannysoft.com", "sannysoft.txt"),
-    ):
-        healthy_pages[cid] = {"text": (PAGES / name).read_text(encoding="utf-8")}
-    healthy = bt.readings_from_texts(healthy_pages, checkers=BROWSER_CHECKERS)
+    healthy = _healthy_readings()
 
     # Same row count — the record keeps its full width either way, which is
     # precisely why a row count could never separate these two runs.
@@ -513,3 +552,56 @@ def test_read_and_compare_cannot_disagree_about_what_a_reading_is():
     ):
         assert matrix_diff._obtained(row) is expected
         assert ev.obtained(row) is expected
+
+
+# --- the floor override is a real seam, not a decorative parameter ----------
+
+
+def _build(readings, **kw):
+    from src.services.verify.matrix import build_record
+
+    return build_record(
+        readings,
+        exit_=Exit(ip="83.6.13.226", country="PL", city="Warsaw",
+                   org="AS5617 Orange Polska", timezone="Europe/Warsaw"),
+        engine="invisible_playwright/chromium-20",
+        observed_at="2026-08-23T09:00:00Z",
+        environment="linux-x86_64 (agent sandbox)",
+        **kw,
+    )
+
+
+def test_a_caller_supplied_floor_is_APPLIED_not_merely_recorded():
+    """``build_record(evidence_floor=...)`` must reach the verdict, not just the
+    header.
+
+    ASSERTED BY FLIPPING THE VERDICT, because the failure mode this guards is
+    specifically a threshold that is *stored* correctly and *applied* never: a
+    kwarg feeding two consumers, where the one that records it gets it and the
+    one that decides with it silently keeps the default. A test that only read
+    back ``evidence["floor"]`` would pass on exactly that tree — the record
+    would advertise a floor it had not been judged against, which is the one
+    thing the block's docstring promises cannot happen ("a record is never
+    judged against a threshold a reader has to guess").
+
+    So: same readings, two floors, and the verdict must move.
+    """
+    readings = _healthy_readings()
+
+    default = _build(readings)["evidence"]
+    assert default["verdict"] == ev.SUFFICIENT, (
+        "the baseline must CLEAR the default floor, or a stricter floor "
+        "proves nothing"
+    )
+
+    strict = {"fraction": 0.99, "checkers": 99}
+    block = _build(readings, evidence_floor=strict)["evidence"]
+
+    # Applied — the verdict moved on identical rows.
+    assert block["verdict"] == ev.INCONCLUSIVE
+    assert ev.is_inconclusive(block)
+    # Recorded — and it is the floor that was actually used, not the default.
+    assert block["floor"] == strict
+    assert block["floor"] != ev.DEFAULT_FLOOR
+    # The counts are untouched: the rows did not change, only the bar did.
+    assert block["fingerprint_obtained"] == default["fingerprint_obtained"]
