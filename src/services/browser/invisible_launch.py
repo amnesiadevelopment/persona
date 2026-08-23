@@ -1537,6 +1537,99 @@ def _migrate_profile_for_engine_build(profile_dir: str, engine_dir: str) -> list
     return out
 
 
+def _resolve_engine_dir_for_migration(emit) -> str:
+    """Resolve the engine cache dir the profile migration keys off, or "".
+
+    FAIL-OPEN IS DELIBERATE AND UNCHANGED: every failure here returns "", which
+    makes _migrate_profile_for_engine_build a no-op and lets the launch carry
+    on. Refusing the launch on an unresolvable engine dir would convert a rare
+    unknown into a hard stop on the launch path — a product decision this does
+    not take.
+
+    What changes is that the skip is AUDIBLE. Both INNER failure paths of this
+    migration already log loudly (_clear_downgrade_guard, and
+    _reset_prefs_on_engine_build_change on its own remove failure) precisely
+    because "the symptom is otherwise a silent launch that never paints". This
+    OUTER arm skips BOTH migrations rather than one, and was the only arm with
+    no logger and no emit — so a profile that then SIGSEGVs the new build (the
+    live-proven fx-18 -> fx-19 crash the reset exists to prevent) arrived with
+    nothing in the log connecting the two, and nobody could tell "this arm
+    never fires" from "it fires and we cannot see it".
+
+    The three ways resolution fails are reported DISTINGUISHABLY, because they
+    call for different responses:
+
+      1. the import of the cache-path helper raises — the engine package is
+         missing or broken;
+      2. resolving the build/path raises;
+      3. active_build() returns falsy. This is NOT an exception — no build is
+         installed and the BINARY_VERSION fallback did not resolve — so it is
+         logged at warning, never as one.
+
+    The broad `except Exception` is KEPT ON PURPOSE. The call reaches through a
+    back-compat shim that reassigns sys.modules to invisible_core.download, on
+    into seal loading, which does file I/O and JSON parsing and raises its own
+    SealError. That surface is third-party and not safely enumerable from here,
+    and a wrong narrow catch would be worse than the broad one: it would let an
+    unrelated error escape onto the launch path that today survives it. The
+    catch stays broad; the SPLIT into separate blocks is what stops an import
+    failure and a call failure from being conflated."""
+    try:
+        from invisible_playwright.download import cache_dir_for_version
+    except Exception:
+        logger.exception(
+            "engine-build migration skipped: could not import "
+            "invisible_playwright.download.cache_dir_for_version"
+        )
+        emit(
+            "ENGINE_MIGRATION_SKIPPED: engine dir unresolved (cache-path helper "
+            "import failed) - stale-prefs reset and downgrade-guard clear did "
+            "not run"
+        )
+        return ""
+
+    try:
+        build = active_build()
+    except Exception:
+        logger.exception(
+            "engine-build migration skipped: active_build() raised"
+        )
+        emit(
+            "ENGINE_MIGRATION_SKIPPED: engine dir unresolved (resolving the "
+            "active build failed) - stale-prefs reset and downgrade-guard "
+            "clear did not run"
+        )
+        return ""
+
+    if not build:
+        # NOT an exception path: active_build() returns "" when no build is
+        # installed AND its BINARY_VERSION fallback did not resolve. Logging
+        # this as an exception would invent a traceback that does not exist.
+        logger.warning(
+            "engine-build migration skipped: active_build() resolved no engine "
+            "build (none installed and no BINARY_VERSION fallback)"
+        )
+        emit(
+            "ENGINE_MIGRATION_SKIPPED: engine dir unresolved (no active engine "
+            "build) - stale-prefs reset and downgrade-guard clear did not run"
+        )
+        return ""
+
+    try:
+        return str(cache_dir_for_version(build))
+    except Exception:
+        logger.exception(
+            "engine-build migration skipped: cache_dir_for_version(%r) raised",
+            build,
+        )
+        emit(
+            "ENGINE_MIGRATION_SKIPPED: engine dir unresolved (resolving the "
+            "engine cache dir failed) - stale-prefs reset and downgrade-guard "
+            "clear did not run"
+        )
+        return ""
+
+
 def _engine_lib_dir():
     """Directory of the active engine's NSS shared libraries (the Firefox
     executable's parent). certutil links against them, so the loader is pointed
@@ -2432,15 +2525,9 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     # firefox-19 on startup. Drop the stale prefs.js (Firefox regenerates it; all
     # user data is in the sqlite/db files) before any seeding writes to it. The
     # engine dir is the profile's LastPlatformDir — see the compatibility.ini check.
-    _engine_dir = ""
-    try:
-        from invisible_playwright.download import cache_dir_for_version
-
-        _build = active_build()
-        if _build:
-            _engine_dir = str(cache_dir_for_version(_build))
-    except Exception:
-        _engine_dir = ""
+    # Resolution failure is FAIL-OPEN (returns "" and the migration no-ops) but
+    # no longer SILENT — see _resolve_engine_dir_for_migration.
+    _engine_dir = _resolve_engine_dir_for_migration(emit)
     for _line in _migrate_profile_for_engine_build(profile_dir, _engine_dir):
         emit(_line)
 

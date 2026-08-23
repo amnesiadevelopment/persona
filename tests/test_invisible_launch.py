@@ -5396,3 +5396,211 @@ def test_child_installs_geo_shortcircuit_before_the_proxied_warmup(
         f"({egress_calls!r}) — _install_geo_shortcircuit must run BEFORE the "
         "warm-up, not just before the visible launch (#207/#208)"
     )
+
+
+# ---------------------------------------------------------------------------
+# PS-109: the OUTER arm of the engine-build migration — engine-dir resolution.
+#
+# Both INNER failure paths of this migration already log loudly, and one says
+# why in place: "the symptom is otherwise a silent launch that never paints".
+# The OUTER arm skips BOTH migrations rather than one, and had no logger, no
+# emit, and a bare `except Exception`. A profile that then SIGSEGVs the new
+# build arrived with nothing in the log connecting the two, and nobody could
+# tell "this arm never fires" from "it fires and we cannot see it".
+#
+# These pin the OUTPUT (emitted lines + log records), never that a helper was
+# called. The fail-open is deliberate and is pinned here too, unchanged.
+# ---------------------------------------------------------------------------
+
+STALE_KEY = "stale.marker.key"
+
+
+def _resolution_rig(monkeypatch, *, import_ok=True, build="firefox-19",
+                    build_raises=False, cache_raises=False):
+    """Drive the three resolution arms independently.
+
+    Nothing here is pre-seeded into the emit list, so "nothing was said" is a
+    real assertion rather than an artifact of the rig.
+    """
+    import types
+
+    if import_ok:
+        mod = types.ModuleType("invisible_playwright.download")
+
+        def cache_dir_for_version(v):
+            if cache_raises:
+                raise RuntimeError("seal unreadable")
+            return f"/cache/{v}"
+
+        mod.cache_dir_for_version = cache_dir_for_version
+    else:
+        # A module with no such attribute IS an ImportError for
+        # `from ... import cache_dir_for_version` — a genuine import failure,
+        # not a stubbed-out one.
+        mod = types.ModuleType("invisible_playwright.download")
+    monkeypatch.setitem(sys.modules, "invisible_playwright.download", mod)
+
+    def _active_build():
+        if build_raises:
+            raise RuntimeError("engine registry unreadable")
+        return build
+
+    monkeypatch.setattr(invisible_launch, "active_build", _active_build)
+
+    emitted = []
+    return emitted
+
+
+def _skip_lines(emitted):
+    return [ln for ln in emitted if "ENGINE_MIGRATION_SKIPPED" in ln]
+
+
+def test_engine_dir_resolution_says_nothing_when_it_succeeds(monkeypatch, caplog):
+    # The control. A resolvable engine dir must stay SILENT on this channel —
+    # otherwise "skipped" appears on every healthy launch and means nothing.
+    import logging
+
+    emitted = _resolution_rig(monkeypatch, build="firefox-19")
+    with caplog.at_level(logging.DEBUG, logger="persona.browser.invisible"):
+        got = invisible_launch._resolve_engine_dir_for_migration(emitted.append)
+
+    assert got == "/cache/firefox-19", got
+    assert _skip_lines(emitted) == [], (
+        f"a healthy resolution announced a skip: {emitted!r}"
+    )
+    assert [r for r in caplog.records if "migration skipped" in r.getMessage()] == []
+
+
+@pytest.mark.parametrize(
+    "kwargs, needle",
+    [
+        (dict(import_ok=False), "import failed"),
+        (dict(build_raises=True), "resolving the active build failed"),
+        (dict(cache_raises=True), "resolving the engine cache dir failed"),
+        (dict(build=""), "no active engine build"),
+    ],
+    ids=["import-failure", "active_build-raises", "cache_dir-raises",
+         "active_build-falsy"],
+)
+def test_engine_dir_resolution_failure_is_audible(monkeypatch, caplog, kwargs,
+                                                  needle):
+    # AC1/AC2: every arm reaches the operator-visible launch log AND the file
+    # log, and the four are distinguishable from each other by their text.
+    import logging
+
+    emitted = _resolution_rig(monkeypatch, **kwargs)
+    with caplog.at_level(logging.DEBUG, logger="persona.browser.invisible"):
+        got = invisible_launch._resolve_engine_dir_for_migration(emitted.append)
+
+    # Fail-open (AC5): the arm resolves to "" rather than raising.
+    assert got == "", got
+
+    skips = _skip_lines(emitted)
+    assert len(skips) == 1, f"expected exactly one skip line, got {emitted!r}"
+    assert needle in skips[0], f"{needle!r} not in emitted line {skips[0]!r}"
+    # The line must name the CONSEQUENCE, not merely that something failed:
+    # this is what connects a later never-painting launch to a skipped migration.
+    assert "did not run" in skips[0], skips[0]
+
+    logged = [r for r in caplog.records if "migration skipped" in r.getMessage()]
+    assert len(logged) == 1, f"expected one log record, got {logged!r}"
+
+
+def test_engine_dir_arms_are_distinguishable_from_each_other(monkeypatch,
+                                                             caplog):
+    # AC2 stated positively: the four arms must not collapse onto one message.
+    # A single shared "resolution failed" line would satisfy every assertion
+    # above individually and still leave an operator unable to tell a missing
+    # engine package from an unreadable seal.
+    seen = []
+    for kwargs in (dict(import_ok=False), dict(build_raises=True),
+                   dict(cache_raises=True), dict(build="")):
+        mp = pytest.MonkeyPatch()
+        try:
+            emitted = _resolution_rig(mp, **kwargs)
+            invisible_launch._resolve_engine_dir_for_migration(emitted.append)
+            seen.append(_skip_lines(emitted)[0])
+        finally:
+            mp.undo()
+
+    assert len(set(seen)) == 4, f"arms are not distinguishable: {seen!r}"
+
+
+def test_falsy_active_build_is_not_logged_as_an_exception(monkeypatch, caplog):
+    # AC2, the specific half that is easy to get wrong: active_build() returning
+    # "" is a RETURN VALUE, not a raise. Logging it via logger.exception would
+    # attach a traceback that does not exist and send a reader hunting a crash
+    # that never happened.
+    import logging
+
+    emitted = _resolution_rig(monkeypatch, build="")
+    with caplog.at_level(logging.DEBUG, logger="persona.browser.invisible"):
+        invisible_launch._resolve_engine_dir_for_migration(emitted.append)
+
+    rec = [r for r in caplog.records if "migration skipped" in r.getMessage()]
+    assert len(rec) == 1, rec
+    assert rec[0].exc_info is None, (
+        "the falsy-active_build arm was logged with exception info — it is not "
+        "an exception path"
+    )
+    assert rec[0].levelno == logging.WARNING, logging.getLevelName(rec[0].levelno)
+
+    # ...while a genuinely raising arm DOES carry the traceback, so the two are
+    # not merely differently worded but differently typed.
+    caplog.clear()
+    emitted2 = _resolution_rig(monkeypatch, cache_raises=True)
+    with caplog.at_level(logging.DEBUG, logger="persona.browser.invisible"):
+        invisible_launch._resolve_engine_dir_for_migration(emitted2.append)
+    rec2 = [r for r in caplog.records if "migration skipped" in r.getMessage()]
+    assert rec2[0].exc_info is not None, "a raising arm lost its traceback"
+
+
+def test_unresolvable_engine_dir_neither_raises_nor_aborts_the_migration(
+    monkeypatch, tmp_path, caplog
+):
+    # AC5: fail-open preserved END TO END. The skip is now audible, but the
+    # launch still proceeds — the migration simply no-ops, exactly as before.
+    #
+    # Asserts on prefs.js CONTENT, never on the file's existence: the migration
+    # RE-WRITES prefs.js after removing it (_upsert_prefs_js), so an existence
+    # check reports the healthy control as broken.
+    import logging
+
+    prof = tmp_path
+    (prof / "prefs.js").write_text(f'user_pref("{STALE_KEY}", 1);\n')
+    _write_compat(prof, "/cache/firefox-18")
+
+    emitted = _resolution_rig(monkeypatch, import_ok=False)
+    with caplog.at_level(logging.DEBUG, logger="persona.browser.invisible"):
+        engine_dir = invisible_launch._resolve_engine_dir_for_migration(
+            emitted.append
+        )
+        lines = invisible_launch._migrate_profile_for_engine_build(
+            str(prof), engine_dir
+        )
+
+    assert engine_dir == ""
+    assert list(lines) == [], "an unresolved engine dir must no-op the migration"
+    # The stale pref survives — that IS the fail-open, and it is why the skip
+    # has to be audible.
+    assert STALE_KEY in (prof / "prefs.js").read_text()
+    assert len(_skip_lines(emitted)) == 1, emitted
+
+
+def test_resolvable_engine_dir_still_migrates_byte_identically(tmp_path):
+    # AC4: behaviour unchanged on the healthy path. The stale pref goes and the
+    # existing emit line is byte-identical to what it has always been.
+    prof = tmp_path
+    (prof / "prefs.js").write_text(f'user_pref("{STALE_KEY}", 1);\n')
+    _write_compat(prof, "/cache/firefox-18")
+
+    lines = list(invisible_launch._migrate_profile_for_engine_build(
+        str(prof), "/cache/firefox-19"
+    ))
+
+    assert lines == [
+        "ENGINE_BUILD_CHANGED: reset prefs for the new Firefox build"
+    ], lines
+    assert STALE_KEY not in (prof / "prefs.js").read_text(), (
+        "the stale pref survived a resolvable build change"
+    )
