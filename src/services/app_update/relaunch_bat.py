@@ -99,8 +99,36 @@ def image_check(image: str) -> str:
     )
 
 
+def _purge_block(label: str, done_label: str, counter: str) -> str:
+    """The bounded flet-extraction purge, as an addressable block.
+
+    Emitted once per LAUNCH ROUTE rather than once per script. The rule the
+    whole module is built on is that a launch must never hand a stale
+    extraction to the new persona's bootstrap — whose delete runs before any of
+    our Python and therefore cannot retry (#195). A second route to a `start`
+    is a second place that rule has to hold, so the purge is a generator and
+    both routes render from it: they cannot drift, and a fix lands in one place
+    exactly as this module's whole existence argues for.
+
+    `counter` is per-block on purpose. Sharing `purges` across routes would let
+    a first route that spent the budget leave the second with none.
+    """
+    return (
+        f":{label}\r\n"
+        f'if not exist "{FLET_APP_DIR}" goto {done_label}\r\n'
+        f'rd /s /q "{FLET_APP_DIR}" >nul 2>&1\r\n'
+        f'if not exist "{FLET_APP_DIR}" goto {done_label}\r\n'
+        f"set /a {counter}+=1\r\n"
+        f"if %{counter}% geq {_PURGE_TRIES} goto {done_label}\r\n"
+        # Recheck near-instantly — the exists probe is the throttle, not the ping.
+        "ping -n 1 127.0.0.1 >nul\r\n"
+        f"goto {label}\r\n"
+    )
+
+
 def build_bat(exe: str, wait_checks: str, stage_label: str,
-              stage_body: str = "") -> str:
+              stage_body: str = "", recover_body: str = "",
+              confirm_body: str = "") -> str:
     """The whole script: wait for every holder to exit, run the caller's stage,
     purge the stale flet extraction, launch, confirm, self-delete.
 
@@ -130,9 +158,72 @@ def build_bat(exe: str, wait_checks: str, stage_label: str,
        confirm, count re-launches on their OWN counter (the wait loop's `tries`
        is already near its cap by then), and retry only a handful of times.
     5. SELF-DELETE, whether the launch stuck or not.
+
+    `recover_body` and `confirm_body` are the caller's OPT-IN arms on that last
+    step, and they default to "" exactly as `stage_body` does — a caller that
+    passes neither gets a byte-identical script to before they existed, which is
+    what keeps the full installer's relauncher (updater.py) untouched. This
+    module stays ignorant of WHAT is being swapped:
+
+      * `confirm_body` runs once the confirm SUCCEEDED — the caller's chance to
+        drop whatever it retained in its stage, so nothing accumulates.
+      * `recover_body` runs once the confirm has failed its whole re-launch
+        budget — the caller's chance to put back what its stage moved aside.
+        A PURGE and one more `start` follow it, and then the script is done.
+
+        The purge is not optional decoration on that arm. `goto recover` is a
+        SECOND route to a `start`, and step 3 above is a property of every
+        route to a launch, not of one section: :launch gets away with carrying
+        no purge of its own only because every route into it passes through
+        :purge first. So the recovery arm renders its own from the same
+        `_purge_block` generator, on its own counter — the normal route may
+        have spent `purges` down to nothing before the boots budget ran out.
+
+        The recovered launch is deliberately NOT re-confirmed and NOT
+        re-recovered: a second recovery has nothing left to restore and would
+        only re-enter the loop we just exhausted (and, since `boots` is already
+        at its cap by then, a bare `goto purge` here would fall back into
+        :recover a second time and fire a stray extra `start`).
     """
     image = os.path.basename(exe)
     stage = f":{stage_label}\r\n" + (stage_body or "")
+    # Route the confirm's success edge through the caller's arm only when there
+    # IS one — otherwise the jump target stays :done, unchanged.
+    confirmed_target = "confirmed" if confirm_body else "done"
+    recover = (
+        ":recover\r\n"
+        # Its OWN purge budget: the normal route may have spent `purges` down to
+        # nothing, and the recovery launch must not inherit an exhausted counter.
+        "set rpurges=0\r\n"
+        + recover_body
+        # Falls through into the recovery purge exactly as the stage falls into
+        # the normal one. The restore has just put the OLD zip + OLD hash back
+        # while the extraction on disk is the NEW (bad) one, so the bootstrap
+        # WILL delete and re-extract — this route depends on that delete more
+        # than any other, and it is precisely the delete that cannot retry
+        # (#195). Skipping the purge here would hand the last-resort launch the
+        # one hazard the whole script exists to remove. It is not "safe because
+        # the confirm failed": the confirm is a tasklist probe ~3s after
+        # `start`, so a persona slow to register (#229) fails it while alive and
+        # mid-extraction, and five such attempts leave more holders open here,
+        # not fewer.
+        + _purge_block("rpurge", "rlaunch", "rpurges")
+        + ":rlaunch\r\n"
+        + f'start "" /D "{os.path.dirname(exe)}" "{exe}"\r\n'
+        + "goto done\r\n"
+    ) if recover_body else ""
+    confirmed = (":confirmed\r\n" + confirm_body) if confirm_body else ""
+    # Where the spent re-launch budget lands. With NO arms this is "" and the
+    # confirm falls straight through to :done exactly as it always has — that
+    # empty string is what makes the full installer's script byte-identical.
+    if recover:
+        exhausted_jump = "goto recover\r\n"
+    elif confirmed:
+        # Nothing to restore, but :confirmed sits between here and :done and
+        # must be jumped OVER, not fallen into.
+        exhausted_jump = "goto done\r\n"
+    else:
+        exhausted_jump = ""
     return (
         "@echo off\r\n"
         'cd /d "%~dp0" >nul 2>&1\r\n'
@@ -147,30 +238,29 @@ def build_bat(exe: str, wait_checks: str, stage_label: str,
         f"if %tries% geq {_WAIT_BEATS} goto launch\r\n"
         "ping -n 1 127.0.0.1 >nul\r\n"
         "goto wait\r\n"
-        + stage +
+        + stage
         # No sleep before the purge: the wait loop already proved every holder is
         # gone, so handle release is done, and the purge below retries rd on the
         # rare straggler. A settle ping was a full second of dead time between
         # the update closing persona and reopening it (#205).
-        ":purge\r\n"
-        f'if not exist "{FLET_APP_DIR}" goto launch\r\n'
-        f'rd /s /q "{FLET_APP_DIR}" >nul 2>&1\r\n'
-        f'if not exist "{FLET_APP_DIR}" goto launch\r\n'
-        "set /a purges+=1\r\n"
-        f"if %purges% geq {_PURGE_TRIES} goto launch\r\n"
-        # Recheck near-instantly — the exists probe is the throttle, not the ping.
-        "ping -n 1 127.0.0.1 >nul\r\n"
-        "goto purge\r\n"
-        ":launch\r\n"
+        + _purge_block("purge", "launch", "purges")
+        + ":launch\r\n"
         # empty title + quoted path: `start` treats the first quoted token as a
         # window title, so a bare path with spaces would launch nothing
         f'start "" /D "{os.path.dirname(exe)}" "{exe}"\r\n'
         "ping -n 4 127.0.0.1 >nul\r\n"
         f'tasklist /FI "IMAGENAME eq {image}" /FO CSV /NH 2>nul'
         f' | find /I "{image}" >nul\r\n'
-        "if not errorlevel 1 goto done\r\n"
+        f"if not errorlevel 1 goto {confirmed_target}\r\n"
         "set /a boots+=1\r\n"
         f"if %boots% lss {_LAUNCH_TRIES} goto launch\r\n"
+        # The budget is spent. Where that falls to depends on which arms exist,
+        # and the jump is explicit rather than a fall-through because falling
+        # into :confirmed here would run the caller's SUCCESS cleanup on a boot
+        # that never succeeded — dropping exactly what recovery needs.
+        + exhausted_jump
+        + recover
+        + confirmed +
         ":done\r\n"
         '(goto) 2>nul & del "%~f0"\r\n'
     )
