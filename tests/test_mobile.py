@@ -170,13 +170,6 @@ def test_android_navigator_platform_is_upstream_frozen_armv81(tmp_path):
         "'Linux armv81' (digit one). If someone 'fixed' this to 'armv8l', "
         "revert it: see the provenance comment at the literal and PS-98."
     )
-    # Spelled out separately because the digit/letter distinction is the entire
-    # point and is invisible in a diff at a glance.
-    assert android_platform.endswith("armv81"), "must end in the DIGIT 1"
-    assert not android_platform.endswith("armv8l"), (
-        "ends in the LETTER l — this is the kernel-plausible value, not the "
-        "frozen upstream constant real Android Chrome reports"
-    )
 
 
 def test_touch_constructors_gated_behind_window(tmp_path):
