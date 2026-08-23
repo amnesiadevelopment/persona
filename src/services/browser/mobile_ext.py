@@ -56,6 +56,18 @@ _CONTENT_SCRIPT = r"""
 
     // --- platform + vendor (WorkerNavigator has platform; vendor is Window-only
     //     but guarded harmlessly) ---
+    // 'Linux armv81' ends in a DIGIT ONE, not a lowercase 'l'. Not a typo, and
+    // not to be "corrected": it is byte-exact with upstream Chromium and is what
+    // every real Android Chrome emits. The uname reading is the WRONG PATH —
+    // NavigatorID::platform() (sysname + machine, whose arm endianness suffix is
+    // a LETTER, hence the plausible-looking 'armv8l') is virtual and merely the
+    // FALLBACK. NavigatorBase::platform() overrides it and on Android returns
+    // GetReducedNavigatorPlatform()'s frozen "Linux armv81", consulting uname
+    // only when ReduceUserAgentMinorVersion is off (Android WebView) — and that
+    // feature is status:"stable" since M101. So shipping the kernel-plausible
+    // value would make us the ONLY Android browser on the internet reporting it:
+    // a unique, regex-detectable tell manufactured by a confident fix. Full
+    // refutation on cancelled PS-98; pinned by tests/test_mobile.py.
     try { def(nav, 'platform', IS_IOS ? 'iPhone' : 'Linux armv81'); } catch (e) {}
     if (IS_IOS) {
       try { def(nav, 'vendor', 'Apple Computer, Inc.'); } catch (e) {}
