@@ -1,13 +1,16 @@
 import json
 import pathlib
 
-from src.services.browser.webgl_ext import build_webgl_extension
+from src.services.browser.webgl_ext import _BUDGET, build_webgl_extension
 from tests.native_mask_probe import (
+    GL_CREEPJS_OBSERVABLE_PROBE,
     GL_OBSERVABLE_PROBE,
     GL_STUBS,
     assert_profiles_unlinkable,
     assert_reads_native,
     assert_seed_changes_observable,
+    gl_budget_probe,
+    observe_in_realm,
 )
 
 
@@ -34,9 +37,14 @@ def test_seed_changes_the_observable_output(tmp_path):
     #
     # Asserted by EXECUTION: two seeds are run in isolated realms and the pixel
     # bytes read back through readPixels must differ. The whole 512-byte buffer
-    # is compared, never a sample: STRIDE is 17, so only 31 indices are touched
-    # at all and two seeds agree at several of them (index 0 agrees for
-    # 111/222) — a narrow probe reports a false "no divergence".
+    # is compared, never a sample: only a bounded subset of indices is touched
+    # at all (`_BUDGET` caps it at 512) and two seeds agree at some of them by
+    # chance — a narrow probe reports a false "no divergence".
+    #
+    # NOTE this buffer is 512 bytes ALL set to 128, so every byte is eligible
+    # and — being exactly at `_BUDGET` — every byte moves. That is what makes it
+    # a poor regression seat on its own and why the CreepJS-geometry seat below
+    # exists: any selection scheme whatsoever lands on content here.
     # assert_seed_changes_observable also runs the counterfactual: the same
     # probe against a neutered spoof must observe the SAME bytes for both seeds.
     assert_seed_changes_observable(
@@ -46,6 +54,107 @@ def test_seed_changes_the_observable_output(tmp_path):
         GL_STUBS,
         GL_OBSERVABLE_PROBE,
     )
+
+
+def test_seed_changes_the_observable_output_at_creepjs_geometry(tmp_path):
+    # THE REGRESSION SEAT FOR PS-97, and the reason the test above was not
+    # enough. That probe reads 512 bytes ALL of which are 128 — every byte is
+    # perturbable, so any selection scheme at all lands on content. It was green
+    # for months while two profiles handed CreepJS a byte-identical `pixels:`
+    # hash (`51df3565`, measured live through a Polish exit on two seeds that
+    # differed on every other rendered vector).
+    #
+    # Same vector, read at the geometry a real fingerprinter uses:
+    # `readPixels(0, 0, drawingBufferWidth/15, drawingBufferHeight/6)`
+    # (creepjs `src/webgl/index.ts:355`) — 17x42 off a 256x256 canvas, cleared to
+    # zero, with only the antialiased edge of a LINE_LOOP in it.
+    #
+    # It is hostile in two independent ways and the fixture reproduces both:
+    # the 68-byte row is exactly 4x the old 17-byte stride, so a byte-offset comb
+    # aliased onto four columns and scored ZERO hits on content; and 16 eligible
+    # bytes in 2856 means a sparse selector expects ~1 hit even unaliased.
+    #
+    # Measured before the fix: both seeds observed identical bytes here. So this
+    # test fails on the old implementation, which is what makes it a regression
+    # test rather than a restatement of the one above.
+    assert_seed_changes_observable(
+        tmp_path,
+        build_webgl_extension,
+        "webgl.js",
+        GL_STUBS,
+        GL_CREEPJS_OBSERVABLE_PROBE,
+    )
+
+
+def test_different_seeds_are_unlinkable_at_creepjs_geometry(tmp_path):
+    # The Level-2 unlinkability claim, asserted at the geometry the checker
+    # actually reads rather than only at a fully-perturbable buffer. Three
+    # profiles must be pairwise distinct HERE too — a scheme that separates two
+    # seeds on a dense buffer can still collapse three onto one value on a buffer
+    # holding sixteen usable bytes, and that collapse is exactly what a checker
+    # sees.
+    assert_profiles_unlinkable(
+        tmp_path,
+        build_webgl_extension,
+        "webgl.js",
+        GL_STUBS,
+        GL_CREEPJS_OBSERVABLE_PROBE,
+    )
+
+
+def test_budget_is_a_ceiling_across_the_doubling_boundaries(tmp_path):
+    # THE INVARIANT: `_BUDGET` is a CAP on how many bytes any one readback
+    # moves. Every other seat in this file asks whether the value CHANGED; none
+    # of them can see how LOUD the change is, and that gap shipped a real defect
+    # green. Round 1 of PS-97 computed `step = Math.floor(eligible / BUDGET)`,
+    # which is 1 for every `eligible` in [BUDGET, 2*BUDGET) — so at 1023
+    # eligible bytes it moved all 1023 while the module documented a cap of 512.
+    # Divergence stayed green throughout: the bytes still differed per seed,
+    # there were simply twice as many of them as intended.
+    #
+    # It is a two-sided constraint and this is the second side. Too few bytes
+    # moved and two profiles publish one hash (the linkability defect this
+    # ticket exists for); too many and the perturbation is itself the tell, on
+    # the very vector it is spent to keep unremarkable.
+    #
+    # The values straddle both doubling boundaries deliberately. 513 and 1023
+    # are where floor-division overshoots worst (1023 was measured at exactly
+    # 2.00x), and 512/1024 are the aligned cases that looked fine and hid it.
+    d = build_webgl_extension(4242, str(tmp_path / "ext"))
+    js = pathlib.Path(d) / "webgl.js"
+    for eligible in (16, 512, 513, 700, 1023, 1024, 1025, 2047, 4096):
+        moved = observe_in_realm(
+            tmp_path / f"run-{eligible}", js, GL_STUBS, gl_budget_probe(eligible)
+        )
+        assert moved <= _BUDGET, (
+            f"{eligible} eligible bytes moved {moved} of them, over the "
+            f"_BUDGET of {_BUDGET}. The perturbation is louder than the module "
+            f"claims, on a vector whose purpose is not being noticed."
+        )
+
+
+def test_every_eligible_byte_moves_when_content_is_under_budget(tmp_path):
+    # The OTHER side of the same constraint, and the reason the cap above cannot
+    # simply be made small. A starved readback — CreepJS's cleared corner has 16
+    # usable bytes in 2856 — must spend the budget on ALL of them, because
+    # anything less reintroduces the lottery this ticket was filed for: the old
+    # comb visited 172 offsets, hit zero eligible bytes, and two profiles
+    # published the identical `pixels:` hash `51df3565`.
+    #
+    # So this pins the floor (under budget => everything moves) where the test
+    # above pins the ceiling (over budget => never more than _BUDGET). A change
+    # that satisfied one by sacrificing the other would be caught here.
+    d = build_webgl_extension(4242, str(tmp_path / "ext"))
+    js = pathlib.Path(d) / "webgl.js"
+    for eligible in (16, 64, 512):
+        moved = observe_in_realm(
+            tmp_path / f"run-{eligible}", js, GL_STUBS, gl_budget_probe(eligible)
+        )
+        assert moved == eligible, (
+            f"only {moved} of {eligible} eligible bytes moved, though they fit "
+            f"inside the _BUDGET of {_BUDGET}. A starved readback that spends "
+            f"less than its full content is how two profiles collide."
+        )
 
 
 def test_patches_both_webgl_versions(tmp_path):
@@ -108,7 +217,7 @@ def test_carries_readpixels_noise_into_workers(tmp_path):
     assert "G.Worker" in js
     body = js.split("function applyWebglPatch(G)", 1)[1].split("__pnaBoot", 1)[0]
     assert "var SEED =" in body
-    assert "var STRIDE =" in body
+    assert "var BUDGET =" in body
 
 
 def test_only_byte_buffers_touched(tmp_path):
