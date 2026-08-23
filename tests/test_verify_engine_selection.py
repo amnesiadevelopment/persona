@@ -446,7 +446,12 @@ def test_a_host_without_the_sandbox_refuses_rather_than_dying_obscurely(
     assert "--no-sandbox" in str(exc.value)
 
 
-def _record_from_read(monkeypatch, argv: "list[str]") -> dict:
+def _record_from_read(
+    monkeypatch,
+    argv: "list[str]",
+    engine: str = bt.CHROMIUM,
+    browser_stub=None,
+) -> dict:
     """Drive ``_read_one`` through the REAL parser, with the tiers stubbed.
 
     The point of going through ``build_parser`` rather than constructing a
@@ -472,11 +477,17 @@ def _record_from_read(monkeypatch, argv: "list[str]") -> dict:
     )
     monkeypatch.setattr(cli, "read_json_tier", lambda *_a, **_k: [])
     monkeypatch.setattr(cli, "read_unreadable_tier", lambda *_a, **_k: [])
-    # Deferred import inside _read_one, so it resolves off the module.
-    monkeypatch.setattr(bt, "read_browser_tier", lambda *_a, **_k: [])
+    # Deferred import inside _read_one, so it resolves off the module. A caller
+    # that wants to inspect what the tier was HANDED passes its own stub here:
+    # patching it outside this helper would be clobbered by this line.
+    monkeypatch.setattr(
+        bt,
+        "read_browser_tier",
+        browser_stub if browser_stub is not None else lambda *_a, **_k: [],
+    )
 
     record = cli._read_one(
-        args, bt.CHROMIUM, "windows", seed=4242
+        args, engine, "windows", seed=4242
     )
     assert record is not None
     return record
@@ -570,3 +581,182 @@ def test_socks5h_is_normalised_for_chromium_which_rejects_it():
     )
     assert server.startswith("socks5://")
     assert "socks5h" not in server
+
+
+# --- the subtraction flags, and the engine that cannot honour them ----------
+#
+# `--layer-vectors` / `--drop-layer-vector` narrow the masking layer to a
+# SUBSET so a subtraction arm can name which spoof a checker reacts to. Only
+# the firefox layer can be narrowed: `build_chromium_layer` takes no vectors
+# parameter and assembles the full extension set, and `read_browser_tier` does
+# not forward the subset down the chromium branch.
+#
+# The defect these tests pin is not "the flag did nothing". It is that the flag
+# did nothing WHILE THE RECORD SAID IT HAD: `_notes_for` stamped
+# "REMOVED: locale" on a reading taken with locale installed. An adverse row on
+# such an arm exonerates the very vector the operator meant to remove — the one
+# inference the subtraction method exists to make safely, inverted silently.
+#
+# Asserted through the REAL parser and on the RECORD, for the reason the
+# helper's own docstring gives: the shipped path is what can be wrong.
+
+
+def test_a_subtraction_arm_is_refused_on_chromium(monkeypatch):
+    """The blocking case: a CORRECTLY-SPELLED vector on the engine that cannot
+    remove it.
+
+    An unknown NAME was already refused; this is the same false exoneration
+    reached by spelling the name right, which is strictly the more likely
+    operator error and was the one left open.
+    """
+    with pytest.raises(SystemExit) as exc:
+        _record_from_read(
+            monkeypatch,
+            [
+                "read", "--engine", "chromium", "--seed", "4242",
+                "--drop-layer-vector", "locale",
+            ],
+            engine=bt.CHROMIUM,
+        )
+    message = str(exc.value)
+    assert "chromium" in message
+    assert bt.FIREFOX in message
+
+
+def test_the_keep_spelling_is_refused_on_chromium_too(monkeypatch):
+    """Both spellings name a subset, so both must be refused — a guard that
+    caught only ``--drop-layer-vector`` would leave the identical falsified
+    record reachable by the other flag."""
+    with pytest.raises(SystemExit):
+        _record_from_read(
+            monkeypatch,
+            [
+                "read", "--engine", "chromium", "--seed", "4242",
+                "--layer-vectors", "webgl",
+            ],
+            engine=bt.CHROMIUM,
+        )
+
+
+def test_chromium_still_reads_when_no_subset_is_named(monkeypatch):
+    """Guard the guard, in the direction that matters: the refusal must be
+    about the SUBSET FLAGS, not about chromium.
+
+    Without this, a guard that refused every chromium reading outright would
+    satisfy the tests above while removing the engine from the matrix.
+    """
+    record = _record_from_read(
+        monkeypatch,
+        ["read", "--engine", "chromium", "--seed", "4242"],
+        engine=bt.CHROMIUM,
+    )
+    assert not any("DELIBERATELY INCOMPLETE" in n for n in record["notes"])
+
+
+def test_a_subtraction_arm_is_honoured_on_firefox_and_the_record_says_so(
+    monkeypatch,
+):
+    """The other half of the guard-the-guard: the capability still WORKS where
+    it is real, and the record discloses the arm.
+
+    Paired with the chromium refusals this pins the actual rule — subsets are a
+    firefox capability — rather than "subsets are refused", which a blanket
+    refusal would also satisfy while quietly deleting the method PS-119 used to
+    find its root cause.
+    """
+    record = _record_from_read(
+        monkeypatch,
+        [
+            "read", "--engine", "firefox", "--seed", "4242",
+            "--drop-layer-vector", "locale",
+        ],
+        engine=bt.FIREFOX,
+    )
+    note = next(n for n in record["notes"] if "DELIBERATELY INCOMPLETE" in n)
+    assert "REMOVED: locale" in note
+    assert "Installed: webgl, audio" in note
+
+
+def test_the_subset_actually_reaches_the_engine_on_firefox(monkeypatch):
+    """The record's claim and the arm that ran must be the SAME subset.
+
+    The chromium defect was exactly this disagreement — a note asserting a
+    removal the reader never performed — so the note alone is not evidence.
+    This captures the ``layer_vectors`` handed to ``read_browser_tier`` and
+    asserts it matches what the note claims.
+    """
+    seen = {}
+
+    def _capture(*_a, **kw):
+        seen.update(kw)
+        return []
+
+    record = _record_from_read(
+        monkeypatch,
+        [
+            "read", "--engine", "firefox", "--seed", "4242",
+            "--drop-layer-vector", "locale",
+        ],
+        engine=bt.FIREFOX,
+        browser_stub=_capture,
+    )
+    assert seen["layer_vectors"] == ("webgl", "audio")
+    assert "locale" not in seen["layer_vectors"]
+    note = next(n for n in record["notes"] if "DELIBERATELY INCOMPLETE" in n)
+    assert "REMOVED: locale" in note
+
+
+def test_a_mixed_engine_run_is_refused_before_any_browser_starts(
+    monkeypatch, tmp_path
+):
+    """``--engine both`` with a subset must be refused up front, not on the
+    chromium leg after a full firefox reading has been taken.
+
+    A subtraction arm is only meaningful beside its pair, so a run that
+    produced the firefox half and then died would have spent a live browser run
+    and a proven exit to produce half a comparison.
+
+    ``--output`` is a directory here deliberately. Without it this test PASSED
+    with the refusal removed, satisfied by the unrelated multi-configuration
+    ``--output '-'`` rule — a false green caught by re-running it against a
+    reverted fix. The message is asserted for the same reason: "some SystemExit
+    was raised" is not evidence that THIS refusal fired.
+    """
+    def _never(*_a, **_k):
+        raise AssertionError("a browser tier ran before the refusal")
+
+    monkeypatch.setattr(bt, "read_browser_tier", _never)
+    monkeypatch.setattr(cli, "read_json_tier", lambda *_a, **_k: [])
+    monkeypatch.setattr(cli, "read_unreadable_tier", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        cli,
+        "prove_exit",
+        lambda **_k: (
+            "socks5h://u:p@host:1080",
+            Exit(ip="192.0.2.1", country="PL", city="Warsaw", org="stub"),
+        ),
+    )
+
+    args = cli.build_parser().parse_args(
+        [
+            "read", "--engine", "both", "--seed", "4242",
+            "--drop-layer-vector", "locale",
+            "--output", str(tmp_path),
+        ]
+    )
+    with pytest.raises(SystemExit) as exc:
+        cli._cmd_read(args)
+    assert "--drop-layer-vector" in str(exc.value)
+    assert "chromium" in str(exc.value)
+
+
+def test_the_incomplete_layer_note_names_both_spellings():
+    """The note is the operator's record of what they typed. Naming only
+    ``--layer-vectors`` on a run produced by ``--drop-layer-vector`` reads as
+    though a different flag was passed than the one that produced it."""
+    notes = cli._notes_for(
+        bt.FIREFOX, "windows", install_layer=True, layer_vectors=("webgl",)
+    )
+    note = next(n for n in notes if "DELIBERATELY INCOMPLETE" in n)
+    assert "--layer-vectors" in note
+    assert "--drop-layer-vector" in note
