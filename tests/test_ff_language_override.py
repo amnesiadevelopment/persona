@@ -22,12 +22,30 @@ def test_override_script_pins_language_to_locale():
 
 
 def test_override_script_languages_mirrors_the_single_header_tag():
-    # PS-124: navigator.languages must mirror the Accept-Language header this
-    # launch path actually SENDS. Playwright's locale kwarg writes
-    # intl.accept_languages VERBATIM, so the header is the single tag with no
-    # q-values — a [full, base] pair advertised a base tag the wire never sent,
-    # which is PS-119's header-vs-JS contradiction one channel over. Measured
-    # disagreeing on the real persistent-context path for en-US/de-DE/uk-UA.
+    """The requested locale actually reaches the JS side — the LITERAL half.
+
+    PS-124: navigator.languages must mirror the Accept-Language header this
+    launch path actually SENDS. Playwright's locale kwarg writes
+    intl.accept_languages VERBATIM, so the header is the single tag with no
+    q-values — a [full, base] pair advertised a base tag the wire never sent,
+    which is PS-119's header-vs-JS contradiction one channel over. Measured
+    disagreeing on the real persistent-context path for en-US/de-DE/uk-UA.
+
+    THIS TEST IS LOAD-BEARING, not documentation, and the reason is worth
+    stating because it is the opposite of the usual advice. Pinning a literal
+    is exactly what catches the one failure the cross-channel binding test
+    cannot see: both channels moving off the requested locale TOGETHER. That
+    build is internally consistent, so `js_tags == header_tags` holds and the
+    binding test passes — correctly. Measured: forcing both sides to "zz-ZZ"
+    left both binding tests green and turned this one red.
+
+    So do not "simplify" this away as redundant with
+    test_the_header_and_navigator_languages_carry_the_SAME_tags. The two
+    families cover different failure modes:
+
+        this one     the value is the REQUESTED one
+        binding one  the two channels AGREE with each other
+    """
     assert '["de-DE"]' in il._language_override_script("de-DE")
     assert '["en-US"]' in il._language_override_script("en-US")
     # a bare tag was already single and stays that way
@@ -35,13 +53,189 @@ def test_override_script_languages_mirrors_the_single_header_tag():
 
 
 def test_override_script_never_advertises_an_unsent_base_tag():
-    # The regression guard, stated as the property rather than the literal: for
-    # a region-qualified locale the languages array must not carry the bare base
-    # tag, because the header does not.
+    """No bare base tag for a region-qualified locale, because the header sends
+    none — the original PS-124 defect, stated as a property over several
+    locales rather than as one literal.
+
+    Complementary to the cross-channel binding test in the same way as the test
+    directly above: this one constrains the SHAPE the JS side emits on its own,
+    so it still fires on a build where the header was moved to match a wrong
+    JS side. See that test's docstring for the measured matrix.
+    """
     for locale, base in (("de-DE", "de"), ("uk-UA", "uk"), ("pl-PL", "pl")):
         js = il._language_override_script(locale)
         assert f'["{locale}"]' in js
         assert f'["{locale}", "{base}"]' not in js
+
+
+# Sentinel for "the profile declares no locale key at all", which is a different
+# case from declaring an empty one and exercises the default fallback.
+_UNSET = object()
+
+
+def _both_locale_channels_from_one_launch(monkeypatch, tmp_path, cfg_locale):
+    """Drive the REAL product launch path once and return what each of the two
+    locale channels actually carried.
+
+    Both channels are emitted by ``_launch_and_watch`` from the same ``cfg``:
+    the header through ``kwargs["locale"]`` handed to the engine (Playwright
+    writes it verbatim into ``intl.accept_languages``), and the JS through
+    ``_install_spoof("locale", _language_override_script(...))``, which lands on
+    ``ctx.add_init_script``. Capturing them from ONE launch is the whole point —
+    reading either alone is what let a header-side regression walk past the
+    previous guard.
+
+    ``cfg_locale`` is placed in the cfg exactly as a profile would; pass the
+    sentinel ``_UNSET`` to omit the key and exercise the default.
+    """
+    captured: dict = {"engine_kwargs": None, "scripts": []}
+
+    class FakeCtx:
+        @property
+        def pages(self):
+            return []
+
+        def add_init_script(self, script, *_a, **_k):
+            captured["scripts"].append(script)
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            captured["engine_kwargs"] = kwargs
+
+        def _default_context_kwargs(self):
+            return {}
+
+        def __enter__(self):
+            return FakeCtx()
+
+        def __exit__(self, *a):
+            return False
+
+    import os
+    import signal
+    import sys
+    import types
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+
+    # Fork path, closed immediately: this test is about what the launch DECLARES,
+    # so the window's whole lifetime is out of scope.
+    monkeypatch.setattr(il, "_fork_close_watch", lambda d, closed, **k: {10})
+    monkeypatch.setattr(
+        il, "_kill_profile_firefox", lambda d, pids=None, rescan=True: None
+    )
+    monkeypatch.setattr(il.os, "_exit", lambda code: None)
+    monkeypatch.setattr(il, "_raise_profile_window", lambda *a, **k: None)
+
+    cfg = {"profile_dir": str(tmp_path), "profile_name": "t", "seed": 1}
+    if cfg_locale is not _UNSET:
+        cfg["locale"] = cfg_locale
+
+    old_term = signal.getsignal(signal.SIGTERM)
+    r, w = os.pipe()
+    try:
+        il._child(cfg, w)
+    finally:
+        signal.signal(signal.SIGTERM, old_term)
+    os.read(r, 65536)
+    os.close(r)
+
+    # The header, as the engine received it. Playwright writes this verbatim, so
+    # the tags on the wire are this string split on commas (q-values stripped if
+    # any were ever present — they are not today, and this survives it if so).
+    header = captured["engine_kwargs"]["locale"]
+    header_tags = [t.split(";")[0].strip() for t in header.split(",") if t.strip()]
+
+    # The JS, as it was actually registered on the context by this same launch.
+    locale_scripts = [
+        s for s in captured["scripts"]
+        if "Navigator.prototype" in s and "languages" in s
+    ]
+    assert len(locale_scripts) == 1, (
+        f"expected exactly one locale spoof registered, got "
+        f"{len(locale_scripts)} — the rig is reading the wrong script"
+    )
+    match = re.search(r"LS=(\[.*?\])", locale_scripts[0])
+    assert match, "no languages array found in the registered locale spoof"
+    js_tags = json.loads(match.group(1))
+
+    return header_tags, js_tags
+
+
+_UNSET = object()
+
+
+def test_the_header_and_navigator_languages_carry_the_SAME_tags(
+    monkeypatch, tmp_path
+):
+    """The invariant itself: the two channels agree with EACH OTHER.
+
+    This is the guard PS-124 actually needs, and it deliberately contains no
+    locale literal. The defect was never "the languages array has two entries" —
+    two entries is correct when the header sends two. The defect was the two
+    channels DISAGREEING, which is PS-119's shape one channel over.
+
+    A literal-pinned assertion on ONE channel cannot catch that: it stays green
+    on a regression introduced through the channel it does not read. Measured,
+    not assumed — with the header widened to ``locale,base`` and the JS left at
+    the single tag (PS-119's contradiction, live on the product launch path),
+    every literal-pinned test in this file passed and only the two binding
+    tests went red.
+
+    WHAT THIS TEST DOES **NOT** CATCH, stated because the obvious reading of
+    "cross-surface agreement" over-claims it. Pin BOTH channels to some locale
+    nobody asked for and this test passes — correctly, because the surfaces do
+    then agree, and agreement is the whole property it asserts. Measured:
+    forcing both sides to ``zz-ZZ`` left both binding tests green and turned
+    four literal-pinned tests red.
+
+    So the two families are COMPLEMENTARY, not redundant, and neither is
+    decoration:
+
+        this test        catches the two channels DIVERGING, on either side
+        the literal ones catch both channels moving off the requested locale
+                         TOGETHER — which, being self-consistent, is invisible
+                         here by construction
+
+    Delete either family and one real failure mode stops being covered.
+    """
+    for cfg_locale in ("de-DE", "uk-UA", "fr", "pl-PL", "en-US", "pt-BR"):
+        header_tags, js_tags = _both_locale_channels_from_one_launch(
+            monkeypatch, tmp_path, cfg_locale
+        )
+        assert js_tags == header_tags, (
+            f"locale {cfg_locale!r}: navigator.languages {js_tags} does not "
+            f"match the Accept-Language tags actually sent {header_tags} — an "
+            f"internal contradiction is what a scanner flags as masking"
+        )
+
+
+def test_the_two_channels_agree_for_a_profile_that_declares_NO_locale(
+    monkeypatch, tmp_path
+):
+    """The unset-locale profile is the same invariant on the default path.
+
+    It gets its own test because it is a genuinely different code path — both
+    channels independently fall back through ``cfg.get("locale") or "en-US"``,
+    so a fix applied to only one of the two fallbacks would leave the default
+    profile contradicting itself while every explicit locale agreed. That is
+    the majority of profiles, so the blast radius of missing it is universal
+    rather than marginal.
+
+    Still no literal: the two fallbacks are compared to each other, not to
+    "en-US". A build that defaults both sides to some other tag together is
+    consistent, and consistency is what this file is about.
+    """
+    header_tags, js_tags = _both_locale_channels_from_one_launch(
+        monkeypatch, tmp_path, _UNSET
+    )
+    assert header_tags, "an unset-locale profile declared no header locale at all"
+    assert js_tags == header_tags, (
+        f"a profile with no declared locale sent header {header_tags} while "
+        f"navigator.languages reported {js_tags} — the two fallbacks disagree"
+    )
 
 
 def test_override_script_empty_locale_is_noop():
