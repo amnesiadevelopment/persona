@@ -252,14 +252,29 @@ The **declared machine** guard is the PS-69 half of that same argument: the
 declared machine is the spine of a presented identity (GPU strings, voices,
 fonts, screen conventions, platform flags, UA and client hints), so two records
 that declared different machines were never supposed to match on fingerprint
-rows. One seam is worth knowing about — **PS-69 added `declared_machine`
-without bumping `schema_version`**, so a pre-PS-69 record and a post-PS-69 one
-both say `1` and the schema guard cannot separate them. The comparator
-therefore handles the field's absence per side: both missing compares fine (the
-committed record above has no such field), both present and differing needs the
-override, and **present on only one side is refused** — treating "no field" as
-"same machine" is exactly how a configuration change would get reported as a
-coupling.
+rows. The comparator handles the field's absence per side: both missing
+compares fine (the committed record above has no such field), both present and
+differing needs the override, and **present on only one side is refused** —
+treating "no field" as "same machine" is exactly how a configuration change
+would get reported as a coupling.
+
+That per-side handling exists because of a seam PS-81 has since closed at the
+source, and the seam is worth understanding because **it is not retroactive**.
+PS-69 added `declared_machine` *without* bumping `schema_version`, so for a
+window every record said `1` whether or not it carried the field, and the
+schema guard could not separate the two generations at all. PS-81 recorded what
+each generation's header actually contains (`matrix.HEADER_GENERATIONS`) and
+bumped the writer to **`2`**, so a reading taken from now on is distinguishable
+by its version alone.
+
+What that does *not* do is fix records already written. The committed reading
+above is genuinely generation `1` and still says so — nothing was re-tagged —
+but any record written during the drift window claims `1` while carrying
+generation `2`'s keys. `schema_ledger.generation_of` reads the generation from
+the **keys**, not from the claimed version, so such a record can be identified
+(`schema_ledger.mislabelled` reports exactly that disagreement) rather than
+trusted. **The per-side absence handling therefore stays**, and so does the
+machine guard: they are what covers the records the bump arrived too late for.
 
 Do not confuse the two "machine" words: `environment` is the **host** the
 reading was taken *on* (it governs `host`-sorted rows), while
