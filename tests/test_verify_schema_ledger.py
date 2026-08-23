@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import copy
 import json
+import pathlib
 
 import pytest
 
@@ -37,8 +38,15 @@ from src.services.verify.schema_ledger import (
     mislabelled,
 )
 
-MATRIX_FIXTURE = "tests/fixtures/checker-matrix-reading.sandbox.json"
-SNAPSHOT_FIXTURE = "tests/fixtures/engine-fingerprint-baseline.firefox.json"
+# Resolved from THIS file's location, never from the CWD: other tests in the
+# suite chdir into tmp dirs, so a relative path here passes in isolation and
+# fails in a full run (it did — 3 FileNotFoundError on all three CI platforms).
+# The two tests these feed are the ones covering "existing committed records
+# still read", so a CWD-dependent path made that requirement's guard an error
+# rather than an assertion.
+_FIXTURES = pathlib.Path(__file__).resolve().parent / "fixtures"
+MATRIX_FIXTURE = _FIXTURES / "checker-matrix-reading.sandbox.json"
+SNAPSHOT_FIXTURE = _FIXTURES / "engine-fingerprint-baseline.firefox.json"
 
 
 # --- calling the real writers ----------------------------------------------
@@ -126,7 +134,7 @@ def test_a_pre_PS69_and_a_post_PS69_record_are_DIFFERENT_generations():
     — precisely because both generations said ``schema_version: 1``. A consumer
     can now ask the version instead.
     """
-    committed = json.load(open(MATRIX_FIXTURE, encoding="utf-8"))
+    committed = json.loads(MATRIX_FIXTURE.read_text(encoding="utf-8"))
     today = a_record(declared_machine="windows", declared_machine_honoured=True)
 
     assert committed["schema_version"] != today["schema_version"]
@@ -187,7 +195,7 @@ def test_an_unrecognised_shape_reports_None_never_a_guess():
 def test_the_committed_checker_reading_is_a_RECOGNISED_generation():
     """A version scheme that refuses every record on disk has broken more than
     it fixed. This file is the entire checker-matrix test corpus."""
-    committed = json.load(open(MATRIX_FIXTURE, encoding="utf-8"))
+    committed = json.loads(MATRIX_FIXTURE.read_text(encoding="utf-8"))
 
     assert generation_of(
         committed,
@@ -205,7 +213,7 @@ def test_the_committed_snapshot_baseline_is_a_RECOGNISED_generation():
     """It says version 1 and ALREADY carries ``engine_build`` — which is why
     the snapshot side records that shape as generation 1 rather than bumping.
     Nothing on disk is re-tagged and nothing is re-interpreted."""
-    committed = json.load(open(SNAPSHOT_FIXTURE, encoding="utf-8"))
+    committed = json.loads(SNAPSHOT_FIXTURE.read_text(encoding="utf-8"))
 
     assert generation_of(
         committed,
