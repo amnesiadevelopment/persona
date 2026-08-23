@@ -351,15 +351,21 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
         valid, _ = validate_profile_name(name)
         if not valid:
             return False
-        # The os_type/engine coherence rules live below every door (see
-        # coherence.py). They used to live only in the profile dialog, so the
-        # REST lane composed profiles the dialog exists to prevent — a macOS
-        # record on the Firefox engine, which launches presenting Windows.
-        # Raised rather than returned False: False here means "already exists"
-        # (409), while an incoherent pair is a different refusal with a reason
-        # the caller can act on, and a door that forgets to handle it fails
-        # loudly instead of silently storing a lie.
-        assert_coherent(os_type, engine)
+        # The coherence rules live below every door (see coherence.py). They
+        # used to live only in the profile dialog, so the REST lane composed
+        # profiles the dialog exists to prevent — a macOS record on the Firefox
+        # engine, which launches presenting Windows. Raised rather than returned
+        # False: False here means "already exists" (409), while an incoherent
+        # profile is a different refusal with a reason the caller can act on, and
+        # a door that forgets to handle it fails loudly instead of silently
+        # storing a lie.
+        #
+        # device_type is passed too (Rule 3). The dialog has no control for it,
+        # so the ONLY way a `windows` + `mobile` profile can be composed is a
+        # door that inherits none of the dialog's narrowing — which is precisely
+        # the class of caller this module exists for. A create composes a new
+        # machine from whole cloth, so it is judged on all three fields.
+        assert_coherent(os_type, engine, device_type)
         # Hold the lock across the check-then-insert so two concurrent adds of
         # the same name can't both pass the `name in self.profiles` check and one
         # silently overwrite the other (RLock: save_profiles below re-enters it).
@@ -475,17 +481,30 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
             # leave the profile permanently uneditable — including the edit that
             # would FIX the pair.
             _current = self.profiles[original_name]
+            _current_device_type = getattr(_current, "device_type", "desktop")
             _resulting_engine = (
                 new_engine if new_engine is not None
                 else getattr(_current, "engine", "chromium")
             )
             _resulting_os = new_os if new_os is not None else _current.os_type
-            _pair_changed = (
+            # device_type joins the resulting-value read for the same reason
+            # os_type and engine did: a PATCH carrying only device_type must be
+            # judged against the os_type already stored, or
+            # `PATCH {"device_type": "mobile"}` would sail through on a windows
+            # profile — which is the exact door this rule was added to close.
+            _resulting_device_type = (
+                new_device_type if new_device_type is not None
+                else _current_device_type
+            )
+            _fields_changed = (
                 _resulting_os != _current.os_type
                 or _resulting_engine != getattr(_current, "engine", "chromium")
+                or _resulting_device_type != _current_device_type
             )
-            if _pair_changed:
-                assert_coherent(_resulting_os, _resulting_engine)
+            if _fields_changed:
+                assert_coherent(
+                    _resulting_os, _resulting_engine, _resulting_device_type
+                )
 
             # Rename the data dir BEFORE touching any in-memory field, so a
             # locked/failed dir-rename (routine on Windows when the browser is

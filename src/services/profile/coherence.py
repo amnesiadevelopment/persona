@@ -34,8 +34,8 @@ need not look:
   record that already existed, so it introduces nothing; guarding it would
   strand a trashed profile behind a conflict it did not create.
 
-The two rules
--------------
+The rules
+---------
 
 **Rule 1 — a mobile OS forces the Chromium engine.** The Firefox engine is
 desktop-only (no mobile mode), and only chromium carries the device presets that
@@ -47,10 +47,47 @@ profile is an inconsistent lie. Changing what the engine REPORTS is a
 masking-direction question and deliberately not attempted here; this module
 stops the product from CLAIMING otherwise.
 
-Both reduce to one predicate — the Firefox engine requires ``os_type ==
+Rules 1 and 2 reduce to one predicate — the Firefox engine requires ``os_type ==
 "windows"`` — because chromium is the only other engine and it honors
 ``os_type``. They are kept as distinct messages because the REASONS differ and
 the caller acts on the reason.
+
+**Rule 3 — ``device_type == "mobile"`` requires a mobile ``os_type``.** The
+launch path derives "is this a phone?" from BOTH fields
+(``services.browser.process``: ``is_mobile_os(os_type) or device_type ==
+"mobile"``) while every other half of the same launch reads ``os_type`` alone.
+So a stored ``windows`` + ``mobile`` profile launches one machine that answers
+"what OS am I?" four different ways: an **android** device preset drives the UA
+and screen (a Pixel 7 / SM-S911B, ``platform: "Android"``), while the GPU
+extension is built for **windows** and reports a Direct3D11 renderer, the voice
+roster is built for **windows** and carries Microsoft desktop voices, and the
+engine is launched with ``--fingerprint-platform=linux``. Any one of those pairs
+is a contradiction a checker reads directly.
+
+The rule is DELIBERATELY ONE-DIRECTIONAL: it refuses ``device_type == "mobile"``
+beside a desktop ``os_type``, and says nothing about ``device_type ==
+"desktop"`` beside a mobile ``os_type``. That asymmetry is not an oversight:
+
+* ``"desktop"`` is the model's DEFAULT (``models.profile.Profile``), and the
+  profile dialog carries no ``device_type`` control at all — so every android
+  profile the UI has ever created is stored ``android`` + ``desktop``. Refusing
+  that pair would refuse the normal case.
+* It also is not a lie. ``os_type`` already flips ``is_mobile`` on its own, so
+  an ``android`` + ``desktop`` record launches as the phone its ``os_type``
+  claims; the defaulted field makes no competing claim for the launch to honor.
+  Only an explicit ``"mobile"`` does.
+
+Which way it reconciles: ``os_type`` WINS and ``device_type`` is reconciled to
+it — the same principle ``coherent_engine`` already applies for the pair ("in
+favour of the record rather than in favour of the engine"), and the one
+``process.py`` itself already claims is true two lines above the code that
+breaks it: *"the OS is the source of truth so the UI only needs the OS
+dropdown."*
+
+Note the SET this rule refuses is exactly the set that flips that launch
+derivation — the literal string ``"mobile"``, matched as ``process.py`` matches
+it. A value that would not flip ``is_mobile`` produces no contradiction and is
+not this module's business to refuse.
 
 Already-stored incoherent records
 ---------------------------------
@@ -80,9 +117,19 @@ DEFAULT_ENGINE = "chromium"
 #: The only OS the Firefox engine can honestly claim (Rule 2).
 FIREFOX_OS = "windows"
 
+#: The ``device_type`` the model stores when nobody says otherwise, and the only
+#: value the profile dialog can produce (it carries no device_type control).
+DEFAULT_DEVICE_TYPE = "desktop"
+
+#: The ``device_type`` that flips the launch path onto the mobile preset arm.
+#: Matched as ``services.browser.process`` matches it — an exact string compare
+#: against the same literal — so this rule refuses exactly the set that causes
+#: the contradiction, no wider.
+MOBILE_DEVICE_TYPE = "mobile"
+
 
 class IncoherentProfile(ValueError):
-    """A profile whose os_type/engine pair describes a machine that cannot exist.
+    """A profile whose fields describe a machine that cannot exist.
 
     Raised by the model, not by a route, so every door hits it.
     """
@@ -100,20 +147,62 @@ def normalize_engine(engine: str | None) -> str:
     return "firefox" if engine == "camoufox" else engine
 
 
-def coherence_error(os_type: str, engine: str | None) -> str | None:
-    """The reason this os_type/engine pair cannot exist, or None if it can.
+def _device_type_error(os_type: str, device_type: str | None) -> str | None:
+    """Rule 3's reason, or None. See the module docstring for the asymmetry.
+
+    ``None`` means the caller did not supply the field, which is NOT the same as
+    supplying the default: a caller with nothing to say gets no verdict.
+    """
+    if device_type is None:
+        return None
+    if device_type != MOBILE_DEVICE_TYPE:
+        # Only the literal that flips `is_mobile` at launch can contradict
+        # os_type. Anything else (including the "desktop" default beside a
+        # mobile os_type) makes no competing claim.
+        return None
+    if is_mobile_os(os_type):
+        # The two fields agree — this is a phone that says it is a phone.
+        return None
+    return (
+        f"device_type '{MOBILE_DEVICE_TYPE}' cannot be combined with os_type "
+        f"{os_type!r}: {os_type!r} is not a mobile OS, so this profile would "
+        f"launch on a mobile device preset (an Android UA, screen and touch "
+        f"support) while its GPU renderer, voice roster and engine platform are "
+        f"all built from os_type {os_type!r} — the same machine answering "
+        f"'what OS am I?' more than one way. Use a mobile os_type ('android' or "
+        f"'ios') with device_type '{MOBILE_DEVICE_TYPE}', or device_type "
+        f"'{DEFAULT_DEVICE_TYPE}' with os_type {os_type!r}"
+    )
+
+
+def coherence_error(
+    os_type: str,
+    engine: str | None,
+    device_type: str | None = None,
+) -> str | None:
+    """The reason this profile cannot exist, or None if it can.
 
     The message is written for the caller to act on: it names both fields, the
     conflict, and which way to resolve it.
 
-    The mobile branch is read first purely to SELECT THE REASON, not because the
-    two rules interact: both forbid exactly ``firefox`` + non-Windows, and a
-    mobile os_type is already non-Windows, so the verdict is identical either
-    way. The order only decides whether the caller is told "the Firefox engine
-    has no mobile mode" (the actionable reason for android/ios) or "Firefox
-    reports Windows regardless of os_type". Reordering changes the wording, not
-    the correctness.
+    ``device_type`` is optional and defaults to None = "not supplied, so do not
+    judge Rule 3". Every pre-existing caller passes the pair and keeps its exact
+    behaviour; a caller that has the third field in hand supplies it and gets the
+    third rule as well. That default is what keeps this change additive across a
+    signature shared by ``is_coherent``, ``assert_coherent`` and
+    ``coherent_engine`` — and it is safe rather than merely convenient, because
+    an omitted ``device_type`` is genuinely unknown here, not assumed innocent:
+    the two callers that write a profile (``add_profile``, ``update_profile``)
+    both resolve the field first and always pass it.
+
+    Rule 3 is checked BEFORE the engine rules because it is the only one that can
+    fire on a chromium profile, and the early return below exits on chromium.
     """
+    device_error = _device_type_error(os_type, device_type)
+    if device_error is not None:
+        # Rule 3 — read first because the chromium early-return below would
+        # otherwise skip it for exactly the engine this defect lives on.
+        return device_error
     if normalize_engine(engine) != "firefox":
         # chromium honors os_type, mobile included — nothing to refuse.
         return None
@@ -137,14 +226,22 @@ def coherence_error(os_type: str, engine: str | None) -> str | None:
     return None
 
 
-def is_coherent(os_type: str, engine: str | None) -> bool:
-    """True when this os_type/engine pair describes a machine that could exist."""
-    return coherence_error(os_type, engine) is None
+def is_coherent(
+    os_type: str,
+    engine: str | None,
+    device_type: str | None = None,
+) -> bool:
+    """True when these fields describe a machine that could exist."""
+    return coherence_error(os_type, engine, device_type) is None
 
 
-def assert_coherent(os_type: str, engine: str | None) -> None:
-    """Raise IncoherentProfile (with the reason) if this pair cannot exist."""
-    reason = coherence_error(os_type, engine)
+def assert_coherent(
+    os_type: str,
+    engine: str | None,
+    device_type: str | None = None,
+) -> None:
+    """Raise IncoherentProfile (with the reason) if this profile cannot exist."""
+    reason = coherence_error(os_type, engine, device_type)
     if reason is not None:
         raise IncoherentProfile(reason)
 
@@ -156,6 +253,14 @@ def coherent_engine(os_type: str, engine: str | None) -> str:
     falls back to chromium, which honors ``os_type`` and so makes the launched
     machine match the record instead of contradicting it. A coherent pair is
     returned unchanged (with the legacy engine name mapped forward).
+
+    Deliberately still a PAIR question, and it takes no ``device_type``: it
+    answers "which engine?", and Rule 3 has no engine remedy — a windows +
+    mobile profile is contradictory on chromium and on firefox alike, so
+    feeding the third field in here could only make this function return
+    chromium for a record it cannot repair. Rule 3's reconciliation at launch
+    belongs on the launch path (``process.py``), which is out of scope for this
+    slice; see the PR.
     """
     normalized = normalize_engine(engine)
     if not is_coherent(os_type, normalized):
