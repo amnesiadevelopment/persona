@@ -204,9 +204,41 @@ class TextItem:
     a real match and a real quote to back it up. A wrong reading that looks
     like data is the exact failure this subsystem exists to prevent.
 
-    So an adverse pattern that has a "No ..." form on the real page carries a
-    negative lookbehind, and ``tests/test_verify_checkers.py`` asserts against
-    the MEASURED page text that the negated form does not match.
+    So an adverse pattern that has a "No ..." form on the real page declares its
+    negator in ``negated_by``, and ``tests/test_verify_checkers.py`` asserts
+    against the MEASURED page text that the negated form does not match.
+
+    ``negated_by`` REPLACED A NEGATIVE LOOKBEHIND — a measured fix, not a
+    refactor (PS-119)
+    ------------------------------------------------------------------
+    These patterns used to spell the guard inline as ``(?<!no )``. Python's
+    lookbehind is FIXED-WIDTH, so that construction can express exactly ONE
+    separator — a single space — and the clean page is only safe if the page
+    happens to render it that way. Measured against the shipped patterns:
+
+        'No masking detected'     -> absent  (correct)
+        'Masking detected'        -> MATCH   (correct)
+        'No\\nmasking detected'    -> MATCH   <- FALSE FIRE
+        'No  masking detected'    -> MATCH   <- FALSE FIRE
+        'No\\tmasking detected'    -> MATCH   <- FALSE FIRE
+
+    All FOUR pixelscan verdicts carried it. The whitespace is not hypothetical:
+    the browser tier reads pages with ``inner_text``, and pixelscan renders each
+    verdict in a component tree, so "No" and "masking detected" landing in
+    different elements is precisely what puts a NEWLINE between them. The
+    committed fixture carries the single-space form, which is why the existing
+    tests pass and could never have caught this.
+
+    The failure mode is the worst this subsystem has: a CLEAN page read as
+    ``masking_detected`` — the one verdict in the catalogue that says "this
+    browser is running an antidetect tool" — reported with a real match and a
+    real quote behind it.
+
+    So the negation is declared as DATA and enforced in
+    :func:`~.matrix.extract_text_item`, which walks every occurrence and skips
+    the ones a negator introduces, whatever whitespace separates them. The
+    haystack is still never normalised (see that function): the GPU patterns are
+    newline-anchored, and collapsing whitespace globally would break them.
     """
 
     id: str
@@ -215,6 +247,11 @@ class TextItem:
     adverse: bool = True
     capture: bool = False
     note: str = ""
+    # The word that, sitting immediately before a match, INVERTS it — "no" for
+    # pixelscan's "No masking detected". Whitespace-insensitive and anchored on
+    # a word boundary, so "casino masking detected" is not read as a negation.
+    # Empty for every pattern that has no negated form on the real page.
+    negated_by: str = ""
     # Which GPU question this row answers, when it answers one at all:
     # GPU_CLAIMED (the declared strings) or GPU_RENDERED (hashes computed from
     # actual pixels). Empty on every row that is not about the GPU. Carried
@@ -510,15 +547,23 @@ BROWSER_CHECKERS: "tuple[Checker, ...]" = (
             TextItem("fingerprint_consistent",
                      r"your browser fingerprint is consistent", FINGERPRINT,
                      adverse=False),
-            # The four "No X detected" verdicts. Each adverse pattern carries a
-            # negative lookbehind because the CLEAN page contains the adverse
-            # phrase verbatim, prefixed by "No".
-            TextItem("proxy_detected", r"(?<!no )proxy detected", EXIT),
-            TextItem("masking_detected", r"(?<!no )masking detected",
-                     FINGERPRINT),
+            # The four "No X detected" verdicts. Each adverse pattern declares
+            # its negator, because the CLEAN page contains the adverse phrase
+            # verbatim, prefixed by "No". Declared as DATA rather than spelled
+            # inline as `(?<!no )`: the lookbehind is fixed-width and so could
+            # only ever match a SINGLE SPACE, which made all four of these fire
+            # on a clean page whose "No" was split off by a newline — exactly
+            # what inner_text produces from pixelscan's component tree. See the
+            # negation trap on TextItem for the measurement (PS-119).
+            TextItem("proxy_detected", r"proxy detected", EXIT,
+                     negated_by="no"),
+            TextItem("masking_detected", r"masking detected",
+                     FINGERPRINT, negated_by="no"),
             TextItem("automation_detected",
-                     r"(?<!no )automated behaviou?r detected", FINGERPRINT),
-            TextItem("timezone_spoofed", r"(?<!no )timezone spoofed", EXIT,
+                     r"automated behaviou?r detected", FINGERPRINT,
+                     negated_by="no"),
+            TextItem("timezone_spoofed", r"timezone spoofed", EXIT,
+                     negated_by="no",
                      note="A timezone-vs-IP COMPARISON, so it is exit-driven: "
                           "it moves when the exit moves."),
             # CAPTURED, not asserted — and the fix for a defect the first live
