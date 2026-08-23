@@ -1147,6 +1147,147 @@ class App:
         self._refresh_engine_text()
         self._refresh_sidebar()
 
+    def _engine_rollback_row(self) -> ft.Control:
+        """The undo gesture for a bad CHROMIUM update, and its way back.
+
+        Three states, and only one is ever shown — the same shape as
+        _engine2_rollback_row next door, deliberately, because the two engines
+        must not describe the same situation differently:
+          * PINNED — the operator already went back. Offer "resume updates",
+            because a pin holds the automatic update off and there must be a
+            way out of that state from the same place they entered it.
+          * a previous build is RECORDED — offer "go back to <tag>".
+          * nothing recorded — render nothing at all. A revert with no recorded
+            previous build cannot work, and a button that cannot work is worse
+            than no button: it promises an undo the machine cannot perform.
+
+        THE ONE PLACE THIS DIFFERS FROM THE FIREFOX ROW IS THE TOOLTIP, and the
+        difference is the whole of PS-79's trade. Firefox's revert moves no
+        bytes — both builds are already unpacked in versioned cache dirs. This
+        one RE-DOWNLOADS, because Chromium keeps a single un-versioned tree and
+        the previous build's files are genuinely gone. Saying so on the control
+        is not a detail: an operator on Tor deserves to know the gesture costs
+        hundreds of megabytes before they click it, not after.
+        """
+        try:
+            pin = engine.pinned_build()
+            target = "" if pin else engine.rollback_target()[0]
+        except Exception:
+            # The panel must render even if the record/settings are unreadable.
+            return ft.Container(height=0)
+
+        if pin:
+            label, tip, action = (
+                f"resume updates (pinned to {pin})",
+                "Clear the pin and let the Chromium engine update again",
+                self._on_engine_resume,
+            )
+        elif target:
+            label, tip, action = (
+                f"go back to {target}",
+                f"Re-download the {target} build and install it — the engine "
+                "you have now is replaced",
+                self._on_engine_rollback,
+            )
+        else:
+            return ft.Container(height=0)
+
+        return ft.Container(
+            padding=ft.Padding.only(left=36, right=10, top=4, bottom=2),
+            on_click=lambda _: action(),
+            ink=True,
+            tooltip=tip,
+            content=ft.Row(
+                spacing=6,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Icon(
+                        ft.Icons.HISTORY if not pin else ft.Icons.PLAY_ARROW,
+                        size=13,
+                        color=COLORS["text_dim"],
+                    ),
+                    ft.Text(
+                        label, size=10, color=COLORS["text_dim"],
+                        font_family="monospace",
+                    ),
+                ],
+            ),
+        )
+
+    def _on_engine_rollback(self) -> None:
+        """Go back to the previous Chromium build by re-downloading it.
+
+        UNLIKE THE FIREFOX REVERT THIS IS A DOWNLOAD, so it runs on a background
+        thread with the row's progress bar, exactly as an update does — running
+        it inline would freeze the UI for minutes. It also claims _engine_busy
+        the same way _update_engine_async does, so a revert and an update can
+        never race into ENGINE_DIR together.
+
+        A REFUSAL MUST BE VISIBLE ON THE ROW, not only in the log — the operator
+        is looking at the status line, not necessarily at the log. The service
+        owns every refusal decision and its wording; this only renders it.
+        """
+        if self._engine_busy or self._engine_checking:
+            return
+        self._engine_busy = True
+        self._engine_status = ""
+        self._refresh_engine_text()
+        self._refresh_sidebar()
+
+        def work() -> None:
+            # _engine_busy cleared in finally so a raise can't wedge it True and
+            # dead-end every later engine action this session.
+            try:
+                ok, message = engine.revert_to_previous_build(
+                    progress=self._engine_progress_cb, log=self._log
+                )
+                if ok:
+                    # current_version() is now the restored build, so the row's
+                    # own text is correct again; clear any stale status over it.
+                    self._engine_status = ""
+                    # The build we just left is the recorded "previous" now, and
+                    # _engine_latest still names it — but the pin means no
+                    # update is offered until the operator resumes. Leave the
+                    # refusal/deferral trackers alone: they are keyed by tag and
+                    # a revert does not resolve them.
+                else:
+                    # The service's message is the operator-facing one; the row
+                    # gets a short form of the same thing rather than a second
+                    # vocabulary for the same outcome.
+                    self._engine_status = (
+                        "couldn't go back — see the log"
+                        if message
+                        else "nothing to go back to"
+                    )
+            except Exception as e:
+                self._log(f"Chromium engine: going back failed ({e})")
+                self._engine_status = "couldn't go back — see the log"
+            finally:
+                self._engine_busy = False
+                self._refresh_engine_text()
+                self._refresh_sidebar()
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_engine_resume(self) -> None:
+        """Clear the Chromium pin and resume automatic updates.
+
+        Instant and moves nothing — but note the asymmetry with the Firefox
+        resume: the build reverted FROM is not on disk any more, so going
+        forward is an ordinary download on the next check rather than a change
+        of which tree launches. That is the cost of not keeping a second engine.
+        """
+        if self._engine_busy or self._engine_checking:
+            return
+        try:
+            engine.resume_engine_updates(log=self._log)
+        except Exception as e:
+            self._log(f"Chromium engine: couldn't resume updates ({e})")
+            return
+        self._engine_status = ""
+        self._refresh_engine_text()
+        self._refresh_sidebar()
+
     def _assign_tag(self, names: list[str], tag: str) -> None:
         n = self.pm.assign_tag(names, tag)
         if n:
@@ -1518,6 +1659,24 @@ class App:
         forever. That is precisely the failure this docstring warns about two
         paragraphs up.
         """
+        # A DELIBERATE REVERT IS A STANDING "NOT THIS BUILD" (PS-79), and this
+        # is the one place "is there an update to offer?" is decided — the row's
+        # text, its update dot, the click handler AND _auto_update_engine all
+        # read this predicate and nothing else. So the pin belongs here rather
+        # than only on the unattended path.
+        #
+        # Without it the reversal lasts under an hour. The operator goes back to
+        # the build that was working; the very next hourly check sees the build
+        # they just rejected as newer than what is now installed, and puts them
+        # straight back on it, unattended, with no operator present. That is the
+        # whole failure the pin exists to end.
+        #
+        # Mirrors _engine2_update_available's `if pinned_build(): return False`,
+        # but reads the CHROMIUM pin — a different settings key from Firefox's,
+        # deliberately: sharing one flat-store key would make a revert on either
+        # engine mute the other engine's update row.
+        if engine.pinned_build():
+            return False
         if not engine.is_newer(self._engine_latest, engine.current_version()):
             return False
         if self._engine_unverifiable_tag == self._engine_latest:
@@ -1710,6 +1869,13 @@ class App:
             # bytes from a past download).
             if self._engine_busy:
                 body.append(_bar_block(self._engine_bar, self._engine_detail))
+            # Going BACK, for Chromium. Same three-state slot as the Firefox row
+            # further down and for the same reasons — except this one DOWNLOADS
+            # (PS-79): Chromium keeps one un-versioned tree, so the previous
+            # build's files are genuinely gone and only its identity survives.
+            # The tooltip says so, because "go back" that costs hundreds of
+            # megabytes over Tor must not look like the instant Firefox gesture.
+            body.append(self._engine_rollback_row())
             body.append(ft.Container(height=8))
             # firefox engine row, with its own progress bar directly beneath it
             self._engine2_text.value = self._engine2_status_text()
@@ -2915,6 +3081,15 @@ class App:
                     # stale value there labels a snapshot with an engine build it
                     # was not taken under, and can make the NEXT real update look
                     # already-installed.
+                    # BEFORE write_version, always. version.txt has ONE slot, so
+                    # the moment it is overwritten the tag of the build being
+                    # replaced is gone from the machine — and that name, not the
+                    # bytes, is what a rollback needs. Recording first demotes
+                    # the outgoing build to "previous" while it can still be
+                    # read. The digest is the one THESE BYTES verified against,
+                    # so a later revert checks against it rather than trusting
+                    # whatever upstream advertises for that tag by then (PS-49).
+                    engine.record_installed_build(tag, digest)
                     engine.write_version(tag)
                     self._engine_latest = tag
                     # The deferral (if any) is resolved — clear it so a LATER
