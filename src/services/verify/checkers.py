@@ -246,6 +246,28 @@ class TextItem:
     sort: str
     adverse: bool = True
     capture: bool = False
+    # Record EVERY non-negated match's group 1, deduplicated and sorted, joined
+    # with commas — rather than the first match alone. Requires ``capture``.
+    #
+    # WHY THIS IS NOT A CONVENIENCE (PS-121). ``extract_text_item`` takes the
+    # FIRST non-negated match, and ``matrix_diff._verdict`` compares
+    # ``(state, value)`` only. So on a page that renders one row per test, an
+    # item that captures the first match records the SAME value whether one row
+    # or five are adverse — and a browser going from 1 detection to 3 compares
+    # equal and returns None, the branch documented as "read on both sides and
+    # agreed". The silent pass. A detection count that can triple invisibly is
+    # a regression the matrix exists to catch and cannot see.
+    #
+    # Sorted so the value depends on WHICH tests fired, never on the order the
+    # page happened to render them in — otherwise a reshuffled table reads as a
+    # changed verdict. Deduplicated because a name repeated on the page is
+    # still one test that caught us.
+    #
+    # Opt-in, and deliberately not the default: the capturing items that read a
+    # SCORE or a COUNTRY ("0% headless", "Poland / Nowy Sacz") publish one
+    # answer per page, and joining their incidental repeats would corrupt the
+    # single value a comparator is meant to read.
+    capture_all: bool = False
     note: str = ""
     # The word that, sitting immediately before a match, INVERTS it — "no" for
     # pixelscan's "No masking detected". Whitespace-insensitive and anchored on
@@ -504,9 +526,103 @@ BROWSER_CHECKERS: "tuple[Checker, ...]" = (
         tier=TIER_BROWSER,
         settle_seconds=30.0,
         items=(
-            TextItem("detected", r"\bdetected\b", FINGERPRINT, adverse=True,
-                     note="Covers the modern CDP leaks (runtime enable, "
-                          "source url, exposed function)."),
+            # THIS CHECKER PUBLISHES NO ADVERSE PROSE — read its MARKER (PS-121).
+            #
+            # The pattern here was `\bdetected\b`, and measuring it against both
+            # captured pages showed it was not merely under-guarded, it was
+            # aimed at a token that carries NO VERDICT AT ALL. The word
+            # "detected" appears twice, in the same two places, on a CLEAN page
+            # and on a CAUGHT one — and both occurrences are GREEN rows:
+            #
+            #     🟢 runtimeEnableLeak   No leak detected.
+            #     🟢 pwInitScripts       No window.__pwInitScripts detected.
+            #
+            # while every RED row is prose that never uses the word:
+            #
+            #     🔴 navigatorWebdriver  navigator.webdriver = true indicates…
+            #     🔴 exposeFunctionLeak  You're using unpatched Playwright…
+            #     🔴 mainWorldExecution  You've called …ByClassName() in the…
+            #
+            # So the old reader returned READ on every page it ever saw, with
+            # `matched_text` byte-identical in both directions. It could not
+            # have reported a real detection and could not have reported a
+            # clean one: the row was decoration with an adverse label on it.
+            #
+            # A negative lookbehind cannot rescue that — there is no negator to
+            # anchor against ("No leak detected" puts it two words away, and the
+            # adverse rows lack the token entirely), which is why this is the
+            # one item in the catalogue that does NOT follow the sibling shape.
+            #
+            # What IS discriminating is the site's own per-row verdict icon,
+            # which its renderer assigns from the numeric rating: 🔴 for
+            # rating >= 1 (a real detection), 🟢 for rating < 0 (clean), 🟡 for
+            # 0.5 (inconclusive) and ⚪️ for 0 (the test was never triggered).
+            # Reading the red marker asks the checker for its VERDICT instead of
+            # guessing at its wording.
+            #
+            # ANCHORED TO A VERDICT ROW, not to the character. The first
+            # spelling of this was `\uFE0F?\s*(\w+)`, and `\s*` crosses
+            # NEWLINES — so a 🔴 anywhere on the page read as a detection:
+            #
+            #     'Legend: 🔴 means the test caught you.' -> READ 'means'
+            #     'Icons:\n🔴\nfailed\n'                  -> READ 'failed'
+            #
+            # An adverse FINGERPRINT row, READ, with a real match and a real
+            # quote behind it — the exact failure this file's docstring says
+            # the subsystem exists to prevent, reintroduced by the fix for it.
+            # Today's captures carry no 🔴 outside the table, so it was latent
+            # rather than live; "the current capture happens not to contain
+            # the character" is the same reasoning that left `\bdetected\b` in
+            # place, and it is not a reason to leave a reader able to invent a
+            # verdict from wording it was not written for.
+            #
+            # The row shape is `<marker> <name>\t<time>\t<note>`, so the
+            # trailing `\t` is what makes this a ROW rather than a sighting.
+            # `[ \t]` and NOT `\s` for the intra-row separators, so a match can
+            # never span two rows.
+            TextItem("detected",
+                     "\U0001F534" + r"\uFE0F?[ \t]*(\w+)[ \t]*\t",
+                     FINGERPRINT, adverse=True, capture=True, capture_all=True,
+                     note="Captures the NAMES of EVERY red-flagged test "
+                          "(e.g. 'exposeFunctionLeak,mainWorldExecution'), "
+                          "because 'which tests caught us' is the actionable "
+                          "half — a bare True would send someone back to the "
+                          "page to find out. ALL of them and not the first: "
+                          "the comparator reads (state, value), so a first-"
+                          "match value would report a browser going from one "
+                          "detection to three as no change at all. Covers the "
+                          "modern CDP leaks (runtime enable, source url, "
+                          "exposed function)."),
+            # The liveness half, and it is load-bearing rather than tidy.
+            #
+            # Reading a MARKER makes ABSENCE the clean verdict, so a page whose
+            # JavaScript never populated the table would read as a perfect
+            # browser. The static shell really does survive the tier's
+            # settle guard — it carries the title, the intro and the table
+            # HEADER, so `text.strip()` is non-empty and the row is not
+            # recorded unobtainable.
+            #
+            # This item matches a rendered verdict row of ANY colour, so it is
+            # READ exactly when the table exists. It is the "the instrument was
+            # working" arm: an adverse ABSENT beside this one ABSENT is not a
+            # clean page, it is a page that never rendered.
+            #
+            # Row-anchored with `[ \t]` for the same reason the adverse arm is
+            # (PS-121): this was first written with `\s*`, which crosses
+            # NEWLINES, so a legend rendered as a LIST satisfied it —
+            # `'Legend:\n🟢\npassed\n\t'` read as a rendered verdict table.
+            # That direction is quieter than the adverse one and worse to
+            # trust: a shell page claiming its table rendered, sitting beside
+            # an adverse ABSENT, is read as a CLEAN browser. This arm's whole
+            # job is to be the reading you can believe when the other one is
+            # silent, so it may not be the looser of the two.
+            TextItem("verdicts_rendered",
+                     "[\U0001F534\U0001F7E1\U0001F7E2\u26AA]"
+                     + r"\uFE0F?[ \t]*\w+[ \t]*\t",
+                     FINGERPRINT, adverse=False,
+                     note="Proves the verdict table rendered at all. Without "
+                          "it an unsettled page reads as a clean one, because "
+                          "for a marker-based item ABSENT is the good news."),
         ),
         note_unreachable=(
             "Answered NS_ERROR_CONNECTION_REFUSED through the mobile exit on "

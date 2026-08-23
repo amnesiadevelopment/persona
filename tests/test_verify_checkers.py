@@ -21,6 +21,27 @@ The two that matter most, both pinned below:
 * **The false ABSENT.** Sannysoft renders ``WebDriver\\n(New)\\n\\tmissing
   (passed)``. A pattern that assumed one line read that page as ABSENT — the
   page said "passed" and the reader recorded "the page did not say this".
+
+* **The token that is not a verdict (PS-121).** Worse than the negation trap
+  and found inside it: ``bot-detector.rebrowser.net`` was read with a bare
+  ``\\bdetected\\b``, but that word appears ONLY on that checker's GREEN rows
+  ("No leak detected.") and never on a red one, identically on a clean page and
+  a caught one. The reader therefore returned READ on every page it ever saw,
+  with a byte-identical capture — it could report neither a real detection nor
+  a clean result. ``test_rebrowser_*`` pins both directions.
+
+PROVENANCE OF THE FIXTURES — they are not all one capture
+---------------------------------------------------------
+``sannysoft/iphey/pixelscan/creepjs.txt`` are the 2026-08-21 mobile-exit run.
+The two ``rebrowser-*.txt`` files are a SEPARATE capture (2026-08-23, this
+container's Firefox, no proxy), because that checker refused the mobile exit —
+which is why it had no fixture, and why the defect survived. They are real
+``inner_text("body")`` captures rather than hand-written text, taken in both
+directions: ``rebrowser-clean.txt`` from a browser with the webdriver tell
+hidden on the PROTOTYPE and a non-default viewport, ``rebrowser-caught.txt``
+after firing the leaks the page itself asks an automation script to trigger.
+The exit does not matter to either: every row this checker publishes is
+fingerprint-driven, and none of them is about the address.
 """
 
 from __future__ import annotations
@@ -63,11 +84,18 @@ from src.services.verify.matrix import (
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures", "checker-pages")
 
 # Which fixture file carries which checker's captured page.
+#
+# The rebrowser entry is the CLEAN capture on purpose: this mapping feeds
+# ``test_no_adverse_row_matched_on_the_clean_captured_pages``, so a checker
+# listed here is one whose clean page is asserted to produce no adverse row.
+# Its CAUGHT twin is loaded explicitly by the tests that need the other
+# direction — see ``rebrowser_page``.
 PAGES = {
     "bot.sannysoft.com": "sannysoft.txt",
     "iphey.com": "iphey.txt",
     "pixelscan.net": "pixelscan.txt",
     "creepjs": "creepjs.txt",
+    "bot-detector.rebrowser.net": "rebrowser-clean.txt",
 }
 
 
@@ -274,6 +302,258 @@ def test_the_bot_checker_is_NOT_exposed_to_the_separator_defect():
     assert reading_for(
         "deviceandbrowserinfo.com", "bot_verdict_positive", "You are a bot"
     ).state == READ
+
+
+# --- the negation trap, part three: A TOKEN THAT IS NOT A VERDICT (PS-121) --
+#
+# The two sections above are about a pattern that matches its own NEGATION.
+# This one is worse and was found inside it: a pattern aimed at a token that
+# carries NO VERDICT AT ALL, so it matched every page in both directions.
+#
+# `bot-detector.rebrowser.net` was read with a bare `\bdetected\b`. Measured
+# against both captured pages, the word "detected" appears TWICE, in the same
+# two places, on a clean page AND on a caught one — and both are GREEN rows
+# ("No leak detected.", "No window.__pwInitScripts detected."). Every RED row
+# is prose that never uses the word at all.
+#
+# So the old reader returned READ on both, with byte-identical `matched_text`.
+# It could not report a real detection and could not report a clean one. The
+# fixtures below are real `inner_text("body")` captures of both directions,
+# and they are the reason this is asserted on the READER'S OUTPUT rather than
+# on the pattern: every table above passes against the broken pattern too.
+
+REBROWSER = "bot-detector.rebrowser.net"
+
+
+def rebrowser_page(which: str) -> str:
+    """A real capture of the rebrowser page. ``which`` is 'clean' or 'caught'."""
+    with open(
+        os.path.join(FIXTURES, f"rebrowser-{which}.txt"), encoding="utf-8"
+    ) as fh:
+        return fh.read()
+
+
+def test_rebrowser_clean_page_does_not_read_as_a_detection():
+    """The defect, stated in the direction that manufactured findings."""
+    reading = reading_for(REBROWSER, "detected", rebrowser_page("clean"))
+    assert reading.state == ABSENT, (
+        "a page whose every row is green/white read as a DETECTION "
+        f"(matched {reading.matched_text!r}) — an adverse verdict "
+        "manufactured by the reader"
+    )
+
+
+def test_rebrowser_caught_page_is_read_as_a_detection():
+    """The other direction, and the half whose absence let this survive: a
+    reader that never fires looks exactly as healthy as a correct one."""
+    reading = reading_for(REBROWSER, "detected", rebrowser_page("caught"))
+    assert reading.state == READ
+    assert reading.adverse is True
+    # ...and it names EVERY test that caught us, not a bare True and not the
+    # first of three. The capture is sorted, so this is the whole value.
+    assert reading.value == (
+        "exposeFunctionLeak,mainWorldExecution,navigatorWebdriver"
+    ), reading.value
+
+
+def test_rebrowser_records_every_red_row_not_just_the_first():
+    """A browser that gets CAUGHT MORE must not read as unchanged.
+
+    ``extract_text_item`` takes the first non-negated match and
+    ``matrix_diff._verdict`` compares ``(state, value)`` only — so a
+    first-match reading records the SAME value whether one row or three are
+    red, and the comparator's "read on both sides and agreed" branch returns
+    None. A detection count that triples in silence is exactly the regression
+    Level 3 exists to catch.
+
+    Asserted on the READER'S OUTPUT against row text, per the ticket: a test
+    on the pattern string would pass against the first-match spelling too.
+    """
+    one_red = (
+        "Test name\tTime since load\tNotes\n"
+        "\U0001F534 mainWorldExecution\t2 ms\tYou've called …ByClassName().\n"
+    )
+    three_reds = one_red + (
+        "\U0001F534 exposeFunctionLeak\t3 ms\tYou're using unpatched Playwright.\n"
+        "\U0001F534 navigatorWebdriver\t4 ms\tnavigator.webdriver = true.\n"
+    )
+
+    worse = reading_for(REBROWSER, "detected", three_reds)
+    fewer = reading_for(REBROWSER, "detected", one_red)
+
+    assert fewer.value == "mainWorldExecution"
+    assert worse.value == (
+        "exposeFunctionLeak,mainWorldExecution,navigatorWebdriver"
+    ), worse.value
+    # The verdict the comparator reads — (state, value) — must MOVE.
+    assert (fewer.state, fewer.value) != (worse.state, worse.value), (
+        "one detection and three record an identical verdict, so a browser "
+        "getting caught by two more tests reports no change at all"
+    )
+    # ...and the quote must back the value it sits beside, not one third of it.
+    for name in ("mainWorldExecution", "exposeFunctionLeak", "navigatorWebdriver"):
+        assert name in worse.matched_text, name
+
+
+def test_rebrowser_reading_does_not_depend_on_row_ORDER():
+    """The value must say WHICH tests fired, never in what order they rendered.
+
+    An unsorted join would report a reshuffled table as a changed verdict —
+    the same false-positive class this ticket is about, wearing new clothes.
+    """
+    rows = [
+        "\U0001F534 navigatorWebdriver\t4 ms\tnavigator.webdriver = true.\n",
+        "\U0001F534 mainWorldExecution\t2 ms\tYou've called …ByClassName().\n",
+        "\U0001F534 exposeFunctionLeak\t3 ms\tunpatched Playwright.\n",
+    ]
+    header = "Test name\tTime since load\tNotes\n"
+    forward = reading_for(REBROWSER, "detected", header + "".join(rows))
+    backward = reading_for(REBROWSER, "detected", header + "".join(reversed(rows)))
+
+    assert forward.value == backward.value, (
+        "the same three detections in a different row order read as two "
+        "different verdicts"
+    )
+
+
+@pytest.mark.parametrize(
+    "probe",
+    [
+        # A 🔴 in PROSE. The first spelling of this fix used `\s*`, which
+        # matches across the space here and reads 'means' as a caught test.
+        "Legend: \U0001F534 means the test caught you.",
+        # `\s*` also crosses NEWLINES, so a marker in a legend LIST fired too.
+        "Icons:\n\U0001F534\nfailed\n",
+        # A marker with no row structure behind it at all.
+        "Our \U0001F534 badge indicates a detection.",
+    ],
+)
+def test_a_red_marker_outside_a_verdict_ROW_is_not_a_detection(probe):
+    """The adverse arm must not manufacture a finding from a stray marker.
+
+    This item reads a MARKER rather than prose, so the thing that makes it a
+    verdict is the ROW it sits in — `<marker> <name>\\t<time>\\t<note>`. A 🔴
+    anywhere else on the page is decoration, and reading it would produce an
+    adverse FINGERPRINT row with a real match and a real quote behind it: the
+    exact failure the module docstring says this subsystem exists to prevent.
+
+    Latent rather than live — today's captures carry no 🔴 outside the table —
+    but "the current capture happens not to contain it" is the same reasoning
+    that left the bare `\\bdetected\\b` in place for as long as it survived.
+    """
+    reading = reading_for(REBROWSER, "detected", probe)
+    assert reading.state == ABSENT, (
+        f"a red marker in prose read as a detection (matched "
+        f"{reading.matched_text!r}, value {reading.value!r})"
+    )
+
+
+def test_the_two_captured_rebrowser_pages_really_are_different_verdicts():
+    """Guard the guard. If both fixtures carried the same verdict, the pair of
+    tests above could both pass while proving nothing."""
+    clean, caught = rebrowser_page("clean"), rebrowser_page("caught")
+    assert "\U0001F534" not in clean, "the 'clean' capture contains a red row"
+    assert "\U0001F534" in caught, "the 'caught' capture has no red row"
+
+
+def test_the_old_bare_pattern_read_BOTH_rebrowser_pages_as_adverse():
+    """Guard the guard, part two — and the whole argument for this ticket.
+
+    The old pattern is run against both real captures here. It matches both,
+    and its capture is IDENTICAL in both directions, so an adverse verdict
+    from it was unfalsifiable: no reader of the record could tell a real
+    detection from a clean page.
+    """
+    import re
+
+    hits = [
+        re.search(r"\bdetected\b", rebrowser_page(w), re.IGNORECASE)
+        for w in ("clean", "caught")
+    ]
+    assert all(h is not None for h in hits), (
+        "the old pattern no longer matches both pages, so this guard proves "
+        "nothing and the tests above are pinning a defect that moved"
+    )
+    assert hits[0].group(0) == hits[1].group(0), (
+        "the old pattern's capture now differs between a clean and a caught "
+        "page; it was byte-identical when this was measured"
+    )
+    # Both occurrences it matched are on GREEN rows — the token is not a
+    # verdict, which is why no lookbehind could have fixed it.
+    assert "No leak detected." in rebrowser_page("clean")
+    assert "No window.__pwInitScripts detected." in rebrowser_page("clean")
+
+
+def test_a_rebrowser_page_that_never_rendered_is_not_read_as_clean():
+    """The failure direction this fix INTRODUCES, closed in the same change.
+
+    Reading a marker makes ABSENCE the clean verdict, so an unsettled page —
+    one whose JavaScript never populated the table — would read as a perfect
+    browser. The static shell survives the tier's settle guard, because it
+    carries the title and the table HEADER and so is not blank.
+
+    ``verdicts_rendered`` is READ exactly when the table exists, so an adverse
+    ABSENT beside THIS absent is "the page never rendered", not "clean".
+    """
+    shell = (
+        "\U0001F575\uFE0F rebrowser-bot-detector\n"
+        "Modern tests to detect automated browser behavior. See github repo "
+        "for more details. How to properly run the tests?\n"
+        "Test name\tTime since load\tNotes\n"
+        "JSON\nSponsored by rebrowser.net\n"
+    )
+    assert shell.strip(), "this shell must survive the settle guard to be a trap"
+    assert reading_for(REBROWSER, "detected", shell).state == ABSENT
+    assert reading_for(REBROWSER, "verdicts_rendered", shell).state == ABSENT, (
+        "an unrendered page claims its verdict table rendered; a shell would "
+        "then be indistinguishable from a clean browser"
+    )
+    # ...whereas both REAL pages did render, whatever their verdict.
+    for which in ("clean", "caught"):
+        assert reading_for(
+            REBROWSER, "verdicts_rendered", rebrowser_page(which)
+        ).state == READ, which
+
+
+def test_the_liveness_arm_is_row_anchored_too():
+    """The quieter half of the same defect, and the worse one to get wrong.
+
+    ``verdicts_rendered`` was first written with ``\\s*`` as well, so a legend
+    rendered as a LIST satisfied it: ``'Legend:\\n🟢\\npassed\\n\\t'`` read as a
+    rendered verdict table. That direction manufactures a CLEAN verdict rather
+    than an adverse one — a shell page claiming its table rendered, sitting
+    beside an adverse ABSENT, is exactly the "perfect browser" this arm exists
+    to make impossible. It may not be the looser of the two patterns.
+    """
+    legend = "Legend:\n\U0001F7E2\npassed\n\tmeaning the test did not fire\n"
+    assert reading_for(REBROWSER, "verdicts_rendered", legend).state == ABSENT, (
+        "a colour legend read as a rendered verdict table; beside an adverse "
+        "ABSENT that is indistinguishable from a clean browser"
+    )
+    # ...and the real pages still prove the instrument was working.
+    for which in ("clean", "caught"):
+        assert reading_for(
+            REBROWSER, "verdicts_rendered", rebrowser_page(which)
+        ).state == READ, which
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        "No leak detected.",
+        "No window.__pwInitScripts detected.",
+        # The wordings the ticket ASSUMED this checker renders. It does not —
+        # but a reader keyed on the word would misread them too, so they are
+        # pinned as the class rather than as observed strings.
+        "not detected",
+        "no bots detected",
+    ],
+)
+def test_no_clean_rebrowser_wording_reads_as_a_detection(note):
+    """The class, not just the two observed strings: no CLEAN note may fire
+    this item, whatever the checker's wording does next."""
+    green = f"\U0001F7E2 someTest\t2 ms\t{note}\n"
+    assert reading_for(REBROWSER, "detected", green).state == ABSENT, note
 
 
 # --- the false ABSENT -------------------------------------------------------

@@ -393,6 +393,65 @@ def test_a_reworded_page_is_not_a_changed_verdict(record):
     assert findings(entries) == []
 
 
+# --- a verdict that moved WITHIN one reading (PS-121) -----------------------
+
+
+def test_a_browser_caught_by_MORE_tests_is_not_a_silent_pass(record):
+    """The defect this pins is invisible from the reader alone.
+
+    ``bot-detector.rebrowser.net`` renders one row per test, so "how many
+    tests caught us" lives in the NUMBER of adverse rows. A reader that
+    records the first match alone collapses that to one name — and because
+    ``_verdict`` compares ``(state, value)`` only, a browser going from one
+    detection to three lands in the "read on both sides and agreed" branch and
+    is classified ``None``. Nothing is reported at all.
+
+    So this drives the SHIPPED reader over both pages and compares the two
+    readings through the real comparator, rather than asserting on the value
+    it happens to produce. Level 3's contract is "the result may not regress";
+    a detection count that can triple in silence is a regression the matrix
+    cannot see.
+    """
+    from src.services.verify.checkers import checker_by_id
+    from src.services.verify.matrix import extract_text_item
+
+    checker = checker_by_id("bot-detector.rebrowser.net")
+    item = next(i for i in checker.items if i.id == "detected")
+    header = "Test name\tTime since load\tNotes\n"
+    one_red = header + (
+        "\U0001F534 mainWorldExecution\t2 ms\tYou've called …ByClassName().\n"
+    )
+    three_reds = one_red + (
+        "\U0001F534 exposeFunctionLeak\t3 ms\tunpatched Playwright.\n"
+        "\U0001F534 navigatorWebdriver\t4 ms\tnavigator.webdriver = true.\n"
+    )
+
+    key = ("bot-detector.rebrowser.net", "detected")
+    before, after = mutate(record), mutate(record)
+    for target, text in ((before, one_red), (after, three_reds)):
+        reading = row(target, key)
+        result = extract_text_item(checker, item, text)
+        assert result.state == "read", text
+        reading["state"] = "read"
+        reading["value"] = result.value
+        reading["pattern"] = result.pattern
+        reading["matched_text"] = result.matched_text
+        reading.pop("reason", None)
+
+    entries = compare_records(before, after)
+    entry = entry_for(entries, key)
+
+    assert entry["classification"] == FINGERPRINT_MOVED, (
+        "a browser caught by two MORE tests reported "
+        f"{entry['classification']!r} — the detection count grew and the "
+        "comparator saw no change"
+    )
+    assert entry["section"] == FINDINGS
+    assert entry["observed"] is True
+    # ...and it is a real verdict movement, NOT merely the page rewording.
+    assert entry["classification"] != REWORDED
+
+
 # --- the catalogue moving ---------------------------------------------------
 
 
