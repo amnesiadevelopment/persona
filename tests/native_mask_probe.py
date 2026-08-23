@@ -380,10 +380,18 @@ def assert_reads_native(tmp_path, scripts, stubs, probe, name, *, native_first=T
 #      zero-filled by design for the toString probe, which needs no values; the
 #      observable probes use their own non-zero buffers and leave it alone.
 #
-#   2. Read the WHOLE buffer, never a sample. webgl_ext's STRIDE is 17, so only
-#      indices 0, 17, 34, … are touched at all, and two seeds agree at many of
-#      them (index 0 agrees for 111/222). A probe that samples narrowly reports
-#      a false negative.
+#   2. Read the WHOLE buffer, never a sample. `perturbBytes` moves at most
+#      `_BUDGET` (512) bytes and picks WHICH ones by ordinal among the eligible
+#      bytes, so on any buffer with more content than that the touched offsets
+#      are spread thinly and unpredictably across the whole array. Two seeds
+#      also agree at some of them by chance. A probe that samples narrowly
+#      reports a false negative.
+#
+#      This used to read "STRIDE is 17, so only indices 0, 17, 34, … are
+#      touched". That stride is gone — PS-97 removed it precisely BECAUSE a
+#      fixed byte comb is aliased away by a row width the caller chooses, which
+#      is how two profiles came to publish one `pixels:` hash. The trap it
+#      described is unchanged; only the reason the touched set is sparse is.
 # --------------------------------------------------------------------------
 
 # Non-zero float samples: `perturbFloat` skips zeros, so the zero-filled
@@ -605,6 +613,42 @@ GL_CREEPJS_OBSERVABLE_PROBE = r"""
   return Array.prototype.join.call(px, ',');
 })()
 """
+
+
+def gl_budget_probe(eligible: int) -> str:
+    """A probe that returns HOW MANY bytes the readback perturbation moved.
+
+    Every other probe here asks WHETHER the value changed. None of them can see
+    how LOUD the change is, and that gap is not hypothetical: PS-97 round 1
+    shipped a 2x budget overshoot green, because `floor(eligible / BUDGET)`
+    collapses to a stride of 1 for every `eligible` in [BUDGET, 2*BUDGET) and
+    then moves EVERY eligible byte while claiming a cap. At 1023 eligible bytes
+    it moved 1023 of them. No divergence assertion goes red for that — the bytes
+    still differ per seed, just far more of them than intended.
+
+    That matters because the module's constraint is two-sided. Too FEW bytes
+    moved and two profiles collide (the linkability defect this ticket exists
+    for); too MANY and the perturbation is itself the tell, on the very vector
+    being perturbed to avoid being noticed. `_BUDGET` is the ceiling on the
+    second side, so it needs a seat of its own.
+
+    The buffer is all-128 so every byte is eligible and `eligible` is exactly
+    the buffer length — the count is then unambiguous rather than a function of
+    the fixture's histogram.
+    """
+    return r"""
+(function () {
+  var gl = Object.create(WebGLRenderingContext.prototype);
+  var n = %d;
+  var px = new Uint8Array(n);
+  px.fill(128);
+  gl.readPixels(0, 0, n / 4, 1, 0, 0, px);
+  var moved = 0;
+  for (var i = 0; i < n; i++) { if (px[i] !== 128) moved++; }
+  return moved;
+})()
+""" % int(eligible)
+
 
 # The falsification (PS-63 AC#4): a spoof that DECLARES its seed and installs
 # nothing. This is what the replaced text assertions could not tell apart from

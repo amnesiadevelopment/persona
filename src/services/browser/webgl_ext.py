@@ -52,9 +52,26 @@ from .worker_wrap import (
 # publishes `pixels:` as a SHA-256 over the raw array (`utils/crypto.ts:23`) with
 # no rounding anywhere in its WebGL path, so ONE changed byte moves the hash.
 # The +/-1 nudge and the mid-range guard are untouched; only the CHOICE of which
-# bytes to spend it on changes. On a large readback this is strictly SPARSER
-# than the stride was (~512 bytes instead of length/17), so it is a smaller tell,
-# not a louder one.
+# bytes to spend it on changes.
+#
+# WHAT THIS COSTS AS A TELL, stated in both directions rather than from the
+# favourable case only. Against the old `length/17` comb this is:
+#
+#   SPARSER on a large readback — a 1920x1080 frame moves 512 bytes where the
+#   comb moved ~488k, three orders of magnitude fewer.
+#   DENSER on a small one — up to `_BUDGET` eligible bytes means EVERY eligible
+#   byte moves. On this repo's own 512-byte all-128 `GL_OBSERVABLE_PROBE` that
+#   is 512 bytes against the comb's 31.
+#
+# The crossover is `eligible == _BUDGET`. The dense side is accepted knowingly:
+# it is the same property that rescues the starved CreepJS readback, where all
+# 16 eligible bytes in 2856 must move or the vector delivers nothing. A +/-1
+# nudge on every mid-range byte of a sub-kilobyte buffer is sub-pixel dither;
+# a readback that publishes the SAME hash for two profiles is a link. Between
+# those two, the link is the worse outcome. `_BUDGET` is what stops that
+# reasoning from generalising to a full frame, where moving every eligible byte
+# WOULD be a visible tell — and it is enforced structurally (see `perturbBytes`)
+# rather than by an arithmetic that can overshoot.
 _BUDGET = 512
 
 # The ONLY engine-specific part of the patch, kept as a seam rather than a
@@ -110,45 +127,69 @@ __NATIVE_WRAP__
     // offsets. A fixed byte stride is a function of the buffer's row geometry,
     // and the caller chooses that geometry — CreepJS's 17x42 corner has a
     // 68-byte row, so the old `i += 17` hit four columns of every row forever
-    // and never once landed on a byte this guard admits. Counting eligible
-    // bytes first makes the selection depend on the IMAGE instead, which no row
-    // width can alias away, and gives a sparse readback a guaranteed floor
-    // rather than a ~1-hit lottery.
+    // and never once landed on a byte this guard admits. Selecting by ORDINAL
+    // AMONG ELIGIBLE BYTES makes the choice depend on the IMAGE instead, which
+    // no row width can alias away, and gives a sparse readback a guaranteed
+    // floor rather than a ~1-hit lottery.
     //
-    // The guard is the original one and is applied IDENTICALLY in both passes:
-    // skip fully transparent/black and fully opaque/white edges so we don't make
-    // obviously-wrong pixels; nudge mid-range bytes only. Both passes must agree
-    // exactly, or the ordinals counted in pass 1 do not address the same bytes
-    // in pass 2.
-    var eligible = 0;
-    var i;
-    for (i = 0; i < buf.length; i++) {
-      var p = buf[i];
-      if (p > 1 && p < 254) eligible++;
-    }
-    if (!eligible) return;
-
-    // Take every `step`-th eligible byte so the budget is spread across the
-    // whole image rather than exhausted on the first run of content. When there
-    // is less content than budget, step is 1 and every eligible byte moves —
-    // which is what rescues the starved CreepJS readback.
-    var step = Math.floor(eligible / BUDGET);
-    if (step < 1) step = 1;
-    // Where the walk starts is seed-derived, so two seeds differ by WHICH bytes
-    // move as well as by which direction they move. With step 1 the phase is
-    // necessarily 0 and the seed still separates the profiles through bit().
-    var phase = step > 1 ? (SEED >>> 0) % step : 0;
-
+    // ONE pass, and the budget is a HARD bound rather than an arithmetic aim.
+    // The obvious way to write this — count the eligible bytes, then divide to
+    // get a stride — needs a second full pass over the buffer AND overshoots:
+    // `floor(eligible / BUDGET)` is 1 for every `eligible` in [BUDGET, 2*BUDGET),
+    // so at 1023 eligible bytes it moves all 1023 while claiming a cap of 512.
+    // Both faults are removed by never computing a stride at all.
+    //
+    // Instead the eligible offsets stream into a reservoir capped at BUDGET.
+    // When it fills, HALF the entries are dropped and the spacing doubles —
+    // which is exactly a stride of 2, then 4, then 8, discovered as the content
+    // arrives instead of guessed in advance. The invariant is that `sel` always
+    // holds the eligible ordinals congruent to `phase` modulo `step`, in order,
+    // so decimating to every second entry IS the next power-of-two stride.
+    //
+    // WHICH half survives is seed-derived, so two seeds differ by WHICH bytes
+    // move as well as by which direction they move. On a buffer with no more
+    // than BUDGET eligible bytes `step` never leaves 1 and EVERY eligible byte
+    // moves — the property that rescues the starved CreepJS readback, where all
+    // 16 usable bytes of 2856 must move or the vector delivers nothing.
+    //
+    // The guard is the original one: skip fully transparent/black and fully
+    // opaque/white edges so we don't make obviously-wrong pixels; nudge
+    // mid-range bytes only. It is applied in ONE place now, so the two-pass
+    // hazard of the passes disagreeing cannot arise.
+    var sel = [];
+    var count = 0;
+    var step = 1;
+    var phase = 0;
+    var lvl = 0;
     var ord = 0;
+    var i;
     for (i = 0; i < buf.length; i++) {
       var v = buf[i];
       if (v <= 1 || v >= 254) continue;
       if (ord % step === phase) {
-        // Keyed by byte offset, not by ordinal: the offset is stable under a
-        // change of content, so the same pixel keeps the same direction.
-        buf[i] = v + bit(i);
+        if (count === BUDGET) {
+          var takeOdd = (SEED >>> (lvl & 31)) & 1;
+          var w = 0;
+          for (var j = takeOdd ? 1 : 0; j < count; j += 2) { sel[w++] = sel[j]; }
+          count = w;
+          if (takeOdd) phase += step;
+          step *= 2;
+          lvl++;
+        }
+        // Re-tested because the decimation above may have just moved this
+        // ordinal off the lattice.
+        if (ord % step === phase) { sel[count++] = i; }
       }
       ord++;
+    }
+
+    // Touch only the selected offsets — at most BUDGET of them, so this pass is
+    // bounded by the budget and not by the buffer.
+    for (var k = 0; k < count; k++) {
+      var at = sel[k];
+      // Keyed by byte offset, not by ordinal: the offset is stable under a
+      // change of content, so the same pixel keeps the same direction.
+      buf[at] = buf[at] + bit(at);
     }
   }
 
