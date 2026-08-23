@@ -29,14 +29,19 @@ say what is missing.
 
 from __future__ import annotations
 
+import contextlib
 import os
+import socket
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 
 import pytest
 
+from tests.ui_driver import driver as driver_module
+from tests.ui_driver.driver import SYSTEM_CHROMIUM, FletDriver, SemanticsNotAvailable
 from tests.ui_driver.watchdog import (
     ChildWatchdog,
     UiDriverTimeout,
@@ -310,7 +315,7 @@ def test_a_wedged_operation_fails_instead_of_hanging():
 '''
 
 
-def test_the_bound_still_fires_with_pytest_timeout_disabled():
+def test_the_bound_still_fires_with_pytest_timeout_disabled(tmp_path):
     """The property the ticket is actually about, proven the only honest way.
 
     The inner run disables the plugin outright (``-p no:timeout``), so the ini
@@ -323,8 +328,15 @@ def test_the_bound_still_fires_with_pytest_timeout_disabled():
     timeout killed it, and that is what the ``timeout=`` below distinguishes —
     a subprocess timeout is an OUTER bound, so if the inner bound did not work
     we get a TimeoutExpired rather than a false pass.
+
+    The inner file is written to ``tmp_path``, NOT into ``tests/``. This case
+    deliberately provokes hangs and hard kills, and a kill between writing the
+    file and the cleanup in ``finally`` would leave a real, collectable test
+    file in the suite for every later run. The inner run still uses
+    ``cwd=REPO_ROOT``, so ``tests.ui_driver`` imports resolve from a temp
+    location exactly as they did from the repo.
     """
-    inner = os.path.join(REPO_ROOT, "tests", "test_ps104_inner_wedge.py")
+    inner = str(tmp_path / "test_ps104_inner_wedge.py")
     with open(inner, "w") as handle:
         handle.write(_INNER_TEST)
     try:
@@ -419,4 +431,104 @@ def test_an_app_that_starts_but_never_serves_fails_and_leaves_nothing_running(
         f"{len(left)} served process(es) survived the failure: {left}. The "
         f"startup bound fired and left the app running, which is the hang "
         f"relocated rather than removed."
+    )
+
+
+# --------------------------------------------------------------------------
+# 6. The other failure path: start() itself raising must not leak the browser
+# --------------------------------------------------------------------------
+
+#: A page that is valid HTML and is NOT a flet app. Serving this drives
+#: wake_semantics() down its documented "no <flt-semantics-placeholder>" path,
+#: which raises from INSIDE start(). That is the induction: a real chromium is
+#: really launched, and the failure is a real one the driver already declares.
+_NOT_A_FLET_APP = b"<!doctype html><html><body><h1>not a flet app</h1></body></html>"
+
+
+@contextlib.contextmanager
+def _serve_static_page(payload: bytes):
+    """Serve one fixed page on a free port, in-thread. No flet required."""
+    import http.server
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - stdlib's spelling
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):  # keep the test output readable
+            pass
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    httpd = http.server.HTTPServer(("127.0.0.1", port), _Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+
+def test_a_driver_whose_start_fails_leaves_no_browser_behind(monkeypatch):
+    """``with FletDriver(...)`` must not leak children when start() RAISES.
+
+    The context-manager protocol does not call ``__exit__`` when ``__enter__``
+    raises, so ``close()`` — which carries all of the reaping — does not run on
+    this path unless ``__enter__`` arranges it. ``start()`` ends with
+    ``wake_semantics()``, which raises on two documented paths, so this is a
+    path the real suite takes, not a contrived one: all of the driven call
+    sites use ``with serve_app(...) as app, FletDriver(app.url) as drv:``.
+
+    The watchdog does NOT cover this case and is not expected to: the raise is
+    prompt, so ``_op``'s finally disarms the clock and nothing ever expires.
+    There is nothing wedged to reap — there is a failure unwinding past
+    children nobody is going to collect.
+
+    Measured before the fix: **ten** surviving chromium processes and a
+    watchdog thread that never stopped. The assertion is on the process table,
+    not on whether a finally block ran.
+    """
+    pytest.importorskip("playwright", reason="playwright not installed")
+    if not os.path.exists(SYSTEM_CHROMIUM):
+        pytest.skip(f"chromium not runnable here: {SYSTEM_CHROMIUM} is absent")
+
+    # The real 25s settle is headroom for the real app painting a splash. This
+    # page is static and the mechanism under test is the unwind, not the wait.
+    monkeypatch.setattr(driver_module, "SETTLE_MS", 1_000)
+
+    before = child_pids()
+    with _serve_static_page(_NOT_A_FLET_APP) as url:
+        drv = FletDriver(url)
+        with pytest.raises(SemanticsNotAvailable) as caught:
+            with drv:
+                pytest.fail(
+                    "start() succeeded against a page that is not a flet app, "
+                    "so no failure was induced and this proves nothing."
+                )
+
+    assert "placeholder" in str(caught.value), (
+        f"the failure came from somewhere other than the induced path, so the "
+        f"leak this guards was not the one exercised: {str(caught.value)[:300]!r}"
+    )
+
+    # Give a reaped tree a moment to actually leave the process table, so a
+    # slow exit is not read as a survivor.
+    time.sleep(2)
+    leaked = survivors(sorted(child_pids() - before))
+    assert leaked == [], (
+        f"{len(leaked)} process(es) survived a FAILED start(): {leaked}. "
+        f"__enter__ raised without close() ever running, so the browser tree "
+        f"outlived the test — the hang relocated rather than removed."
+    )
+
+    assert not [t for t in threading.enumerate() if t.name == "ui-driver-watchdog"], (
+        "the watchdog thread outlived a failed start(); close() never ran, so "
+        "the driver leaked its thread as well as its children."
     )

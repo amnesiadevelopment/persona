@@ -211,7 +211,28 @@ class FletDriver:
     # ---- lifecycle ---------------------------------------------------
 
     def __enter__(self) -> "FletDriver":
-        self.start()
+        # If __enter__ raises, the context-manager protocol never calls
+        # __exit__ — so close(), which carries all the reaping, would not run
+        # and every child start() had already spawned would survive. That is
+        # not hypothetical: start() ends with wake_semantics(), which raises on
+        # two DOCUMENTED paths (no placeholder; the tree stayed empty), and
+        # page.goto can raise here too. Measured before this guard existed: ten
+        # surviving chromium processes and a watchdog thread that never stopped.
+        #
+        # The watchdog does not cover this case and cannot — the raise is
+        # PROMPT, so _op's finally calls rest(), the clock disarms and nothing
+        # ever expires. There is nothing wedged to reap; there is a failure
+        # unwinding past children nobody is going to collect.
+        #
+        # BaseException rather than Exception so a KeyboardInterrupt mid-launch
+        # does not leak a browser tree either. close() is idempotent and
+        # suppression-wrapped, so it is safe on the partially-constructed paths
+        # where _browser/_pw are still None.
+        try:
+            self.start()
+        except BaseException:
+            self.close()
+            raise
         return self
 
     def __exit__(self, *exc: object) -> None:
