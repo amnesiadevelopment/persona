@@ -64,6 +64,39 @@ _BLOCKING_CHILD = "import time; time.sleep(600)"
 FAST_TIMEOUT = 2.0
 
 
+def _await_gone(pids, timeout: float = 10.0) -> list[int]:
+    """Which of ``pids`` are still running, once the table has had time to catch up.
+
+    WHY A POLL AND NOT A BARE ``survivors()``: a reaped process does not leave
+    the process table at the instant the thing we were waiting on returns. The
+    two are not the same event, and on the paths below they are not even on the
+    same THREAD — ``proc.stdout.read()`` returns as soon as the pipe CLOSES,
+    while the reap that closed it is still running in the watchdog thread. So
+    reading the table immediately asks "is it gone yet?" a moment too early.
+
+    On POSIX that gap is invisible, which is why this went unnoticed for two
+    rounds: a terminated child becomes a zombie until it is waited on, and
+    :func:`survivors` deliberately does not count a zombie as running. Windows
+    has no zombie state and no equivalent filter, so the same in-between moment
+    reads as a live SURVIVOR and the assertion fails — intermittently, only on
+    ``windows-latest``, and never on a Linux container. That is exactly the
+    shape the CI matrix exists to catch.
+
+    This does NOT weaken the assertion it serves. It returns the moment nothing
+    is left, so a correct reap pays only the poll interval; a process that
+    genuinely survives is still reported, just ``timeout`` later. A leak fails
+    the test either way — the only thing bought here is that a slow exit is no
+    longer mistaken for one.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        left = survivors(pids)
+        if not left:
+            return []
+        time.sleep(0.1)
+    return survivors(pids)
+
+
 def _spawn_blocking_child() -> subprocess.Popen:
     return subprocess.Popen(
         [sys.executable, "-c", _BLOCKING_CHILD],
@@ -107,7 +140,7 @@ def test_reaping_a_tree_kills_grandchildren_rather_than_orphaning_them():
 
         reap_process_tree(parent.pid, grace=2.0)
 
-        left = survivors(family)
+        left = _await_gone(family)
         assert left == [], (
             f"{len(left)} process(es) survived the reap: {left}. A grandchild "
             f"outliving its parent is how a 'successful' cleanup leaves a flet "
@@ -147,7 +180,7 @@ def test_a_blocking_read_on_a_child_ends_itself_instead_of_hanging():
             f"Terminating LATE is still terminating, but this is meant to be "
             f"comparable to the bound, not merely finite."
         )
-        assert survivors([proc.pid]) == [], (
+        assert _await_gone([proc.pid]) == [], (
             "the read returned but the child is still running — the bound fired "
             "and left the process behind, which moves the hang instead of "
             "fixing it."
@@ -275,7 +308,7 @@ def test_a_child_spawned_after_the_baseline_is_reaped_even_if_never_registered()
         proc.stdout.read()
 
         assert watchdog.expired
-        assert survivors([proc.pid]) == [], (
+        assert _await_gone([proc.pid]) == [], (
             "a process spawned during the wedged operation survived — a hang "
             "inside launch() would leave a browser running"
         )
@@ -426,7 +459,7 @@ def test_an_app_that_starts_but_never_serves_fails_and_leaves_nothing_running(
         f"the readiness wait took {elapsed:.0f}s against an 8s bound — it "
         f"terminated, but not on its bound."
     )
-    left = survivors(seen) if seen else []
+    left = _await_gone(seen) if seen else []
     assert left == [], (
         f"{len(left)} served process(es) survived the failure: {left}. The "
         f"startup bound fired and left the app running, which is the hang "
@@ -518,10 +551,7 @@ def test_a_driver_whose_start_fails_leaves_no_browser_behind(monkeypatch):
         f"leak this guards was not the one exercised: {str(caught.value)[:300]!r}"
     )
 
-    # Give a reaped tree a moment to actually leave the process table, so a
-    # slow exit is not read as a survivor.
-    time.sleep(2)
-    leaked = survivors(sorted(child_pids() - before))
+    leaked = _await_gone(sorted(child_pids() - before))
     assert leaked == [], (
         f"{len(leaked)} process(es) survived a FAILED start(): {leaked}. "
         f"__enter__ raised without close() ever running, so the browser tree "
