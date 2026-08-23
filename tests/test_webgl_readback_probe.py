@@ -27,11 +27,18 @@ test that pretended to would be the false green again. That question was settled
 by MEASUREMENT on a live chromium under ANGLE/SwiftShader before this probe was
 written, and the numbers are recorded on the ticket:
 
-    unspoofed baseline 3192686533
-    seed 111  1296905148     seed 222  2139043386
-    seed 333  3447875548     seed 444  2544399124
-    seed 111, second fresh profile: 1296905148  (bit-identical)
+    renderer: ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero)),
+              SwiftShader driver)
+
+    unspoofed baseline 2952899525
+    seed 111  1740593518     seed 222  4130721308
+    seed 333  4113095414     seed 444    48192398
+    seed 111, second fresh profile: 1740593518  (bit-identical)
     mid: 3072 of 4096 bytes eligible for perturbation
+
+These were RE-MEASURED after the palette was nudged off the .5 byte boundaries
+(see the `bands` comment in `probes.py`); the earlier run's numbers are not
+kept, because a recorded reading that no longer reproduces is worse than none.
 
 The live re-measurement lives with the behavioural harness
 (`src.services.verify.behaviour_cli`), which launches real profiles; these are
@@ -42,7 +49,10 @@ import pathlib
 
 import pytest
 
-from src.services.browser.webgl_ext import build_webgl_extension
+from src.services.browser.webgl_ext import (
+    build_webgl_extension,
+    firefox_webgl_init_script,
+)
 from src.services.verify import probes
 from tests.native_mask_probe import (
     GL_NO_CONTEXT_STUBS,
@@ -293,31 +303,89 @@ def test_the_probe_returns_null_rather_than_throwing_without_webgl(tmp_path):
     assert reading is None
 
 
-# --- the Firefox gap this probe is the instrument for -----------------------
+# --- Firefox: the gap PS-78 closed, now pinned behaviourally ----------------
+#
+# This file previously carried `test_firefox_has_no_webgl_readback_spoof_by_any
+# _route`, a regression-direction marker that PASSED on the gap and went RED
+# when somebody closed it. PS-78 closed it (`invisible_launch.py:2904` installs
+# `firefox_webgl_init_script`), the marker went red exactly as designed, and its
+# own failure message said what to do next: delete it and pin the vector the way
+# `test_ff_audio_seed.py` pins audio. That is what follows.
+#
+# Asserted on the OBSERVABLE, never on the script text: `"readPixels" in js`
+# passes against a script that declares a seed and installs nothing, which is
+# precisely the state Firefox was in before PS-78 — a seed and no perturbation.
 
 
-def test_firefox_has_no_webgl_readback_spoof_by_any_route():
-    # NOT a fix, and deliberately not a skip: a REGRESSION-DIRECTION marker for
-    # a gap this ticket is scoped out of closing.
-    #
-    # `spawn_browser` returns on the Firefox arm (process.py:353) ~100 lines
-    # before the extension list is assembled, so `build_webgl_extension` never
-    # runs for Firefox — exactly the shape of the defect PS-73 fixed for audio.
-    # PS-73 landed audio-ONLY, so Firefox today has no WebGL readback spoof by
-    # any route, and this probe is the instrument that would have caught it.
-    #
-    # This test PASSES on today's gap and goes RED when somebody closes it, at
-    # which point the correct action is to delete this test and give Firefox the
-    # coverage `tests/test_ff_audio_seed.py` gives audio. Written this way round
-    # because the alternative — a silent absence — is what let the gap persist.
-    # Resolved from THIS FILE, never from the cwd: another test in the suite
-    # chdirs, so a relative path here passes when this file runs alone and fails
-    # in a full run. Same idiom as test_verify_baseline.py's `_artifact()`.
-    root = pathlib.Path(__file__).resolve().parents[1]
-    launch = (root / "src/services/browser/invisible_launch.py").read_text()
-    assert "readPixels" not in launch, (
-        "Firefox appears to have gained a WebGL readback spoof. That is GOOD "
-        "news and this marker is now stale: delete this test and pin the "
-        "Firefox readback vector behaviourally, the way test_ff_audio_seed.py "
-        "pins audio."
+def _ff_script(tmp_path, seed, name="ff-webgl.js"):
+    """The Firefox init script on disk, so the shared realm probe can run it."""
+    d = pathlib.Path(tmp_path) / f"ff-{seed}"
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / name
+    p.write_text(firefox_webgl_init_script(seed), encoding="utf-8")
+    return p
+
+
+def _ff_observe(tmp_path, seed, tag, name="ff-webgl.js"):
+    import json
+
+    return json.loads(
+        observe_in_realm(
+            pathlib.Path(tmp_path) / f"ffrun-{tag}",
+            _ff_script(tmp_path, seed, name),
+            GL_READBACK_STUBS,
+            PROBE,
+        )
+    )
+
+
+def test_the_firefox_script_perturbs_the_readback_a_page_reads(tmp_path):
+    # The PS-78 fix, asserted through THIS probe — which is the instrument the
+    # ticket said would have caught the gap. The counterfactual is the
+    # load-bearing half: with the spoof neutered the same probe must read the
+    # unperturbed digest, so the divergence is evidence about the perturbation
+    # rather than about the test.
+    spoofed = _ff_observe(tmp_path, 111, "spoofed")
+    dead = _observe_unspoofed(tmp_path, "ff-dead", seed=111)
+    assert spoofed["digest"] != dead["digest"], (
+        "the Firefox init script left the readback untouched — this is the "
+        "pre-PS-78 defect, where the engine had a seed and no perturbation"
+    )
+
+
+def test_two_firefox_profiles_are_unlinkable_on_the_readback(tmp_path):
+    # Level 2 on the Firefox engine, stated about what a page reads. Before
+    # PS-78 the two sides of this were byte-identical.
+    a = _ff_observe(tmp_path, 111, "a")
+    b = _ff_observe(tmp_path, 222, "b")
+    assert a["digest"] != b["digest"], (
+        f"two Firefox seeds read the SAME readback digest ({a['digest']}), so a "
+        f"page can link the two profiles on this vector"
+    )
+
+
+def test_one_firefox_profile_reads_the_same_digest_twice(tmp_path):
+    # The other half, which divergence alone cannot establish: a vector that
+    # varies per LAUNCH satisfies "two profiles differ" while making a profile
+    # unrecognisable to itself — a different leak, not a fix.
+    first = _ff_observe(tmp_path, 777, "one", name="a.js")
+    again = _ff_observe(tmp_path, 777, "two", name="b.js")
+    assert first == again, (
+        f"one Firefox profile observed two different readings ({first} then "
+        f"{again}) — the vector is random rather than per-profile"
+    )
+
+
+def test_chromium_and_firefox_agree_on_the_perturbation_itself(tmp_path):
+    # A profile's WebGL identity must not depend on which engine launched it.
+    # The two builders share `_webgl_patch_js` and differ ONLY in the cloak
+    # seam, so the same seed must produce the same DIGEST on both — and this is
+    # what would go red if someone copied the perturbation instead of sharing
+    # it, letting the engines drift apart.
+    chromium = _observe(tmp_path, 111, "cross-chromium")
+    firefox = _ff_observe(tmp_path, 111, "cross-firefox")
+    assert chromium["digest"] == firefox["digest"], (
+        f"seed 111 reads {chromium['digest']} on the Chromium extension and "
+        f"{firefox['digest']} on the Firefox init script — the two engines have "
+        f"drifted apart on the perturbation, so one profile has two identities"
     )

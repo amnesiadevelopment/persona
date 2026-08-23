@@ -14,6 +14,7 @@ instead of skipping them.
 
 import copy
 import json
+import pathlib
 import re
 import sys
 
@@ -1193,6 +1194,55 @@ def _unlinkable(tag, *, except_for=()):
     }
 
 
+# A must-differ vector the recorded engine CANNOT READ, with the reason. This is
+# a register of known gaps, not a suppression list: nothing here is exempted
+# from any assertion. It buys exactly one thing — that such a gap must be
+# DECLARED rather than discovered, so a vector silently becoming unreadable is
+# still a red.
+#
+# `webgl.readback` on Firefox: the recorded reading is null because that engine
+# reaches no WebGL context at all here — MEASURED, headless Firefox on this
+# host: `getParameter(VERSION)` reads null too, so there is no surface for a
+# spoof to perturb. Note this is NOT the missing-spoof gap the first draft of
+# this ticket reported: PS-78 landed `firefox_webgl_init_script` via
+# `add_init_script` (`invisible_launch.py:2904`), and it is verified
+# behaviourally in `tests/test_webgl_readback_probe.py`. The spoof is present
+# and correct; the CONTEXT is absent. Re-record this baseline on a Firefox
+# build that has WebGL and the entry should be deleted — the test below starts
+# passing on its own, and the entry going stale is itself a red.
+_KNOWN_UNREADABLE_ON_ENGINE: dict[str, tuple[str, ...]] = {
+    "engine-fingerprint-baseline.firefox.json": ("webgl.readback",),
+}
+
+
+def _recorded_nulls():
+    """Every ``{"value": null}`` reading in every committed baseline, as
+    ``(path, realm, probe_id)``.
+
+    Read out of the ARTIFACTS rather than listed here, so a null that appears in
+    a future re-record is picked up without anyone remembering to update a
+    literal — which is the failure mode a hand-maintained list has.
+    """
+    # Resolved from THIS FILE, never from the cwd: another test in the suite
+    # chdirs, so a relative path here passes when this file runs alone and
+    # fails in a full run. Same idiom as test_verify_baseline.py's `_artifact()`.
+    fixtures = pathlib.Path(__file__).resolve().parents[1] / "tests" / "fixtures"
+    out = []
+    for path in sorted(
+        fixtures.glob("engine-fingerprint-baseline.*.json")
+    ):
+        recorded = json.loads(path.read_text(encoding="utf-8"))
+        for realm, entries in (recorded.get("probes") or {}).items():
+            for pid, entry in entries.items():
+                if isinstance(entry, dict) and "value" in entry and entry["value"] is None:
+                    out.append((path, realm, pid))
+    assert out, (
+        "no committed baseline records a null reading — these tests would be "
+        "vacuously green, so the fixtures or this helper have moved"
+    )
+    return out
+
+
 # --- the classification -----------------------------------------------------
 
 
@@ -1334,6 +1384,144 @@ def test_a_vector_errored_on_both_sides_is_inconclusive_never_distinctness():
     entries = diff.compare_profiles(a, b)
     assert [e["status"] for e in entries] == [diff.INCONCLUSIVE]
     assert diff.inconclusive_count(entries) == len(entries)
+
+
+def test_two_profiles_that_both_read_NULL_are_inconclusive_never_colliding():
+    # THE REVIEWER'S BLOCKER on PS-90, and the sharpest false-positive this mode
+    # can produce: it does not merely fail to detect a leak, it MANUFACTURES one
+    # against profiles that are fine.
+    #
+    # A probe returns null when the API it reads was not THERE — no context, no
+    # constructor, no such property. `snapshot` records that as {"value": null},
+    # and `_unread` keys on the PRESENCE of "value", not its content. So without
+    # `_unread_for_unlinkability` the two sides compare EQUAL and are reported
+    # COLLIDING with `inconclusive_count` 0 — the run does not even flag itself
+    # as resting on nothing, which is what makes it dangerous rather than noisy.
+    #
+    # MEASURED, not hypothetical: the shipped `webgl.readback` expression reads
+    # null on Firefox (that engine reaches no WebGL context at all on this
+    # launch path — `getParameter(VERSION)` is null too), so every pair of
+    # Firefox profiles was reported linkable on a vector NEITHER of them read.
+    target = _must_differ_probe()
+    a = _profile_snapshot(
+        "alice",
+        window_values={**_unlinkable("alice", except_for=(target,)), target: None},
+    )
+    b = _profile_snapshot(
+        "bob",
+        window_values={**_unlinkable("bob", except_for=(target,)), target: None},
+    )
+    # The premise: both sides really do carry a reading-shaped entry whose value
+    # is null. If this stops being true the test below passes for a free reason.
+    assert a["probes"][probes.WINDOW][target] == {"value": None}
+    assert b["probes"][probes.WINDOW][target] == {"value": None}
+
+    entries = diff.compare_profiles(a, b)
+    statuses = {e["probe_id"]: e["status"] for e in entries}
+    assert statuses.get(target) == diff.INCONCLUSIVE, (
+        f"two profiles that BOTH failed to read {target} were reported "
+        f"{statuses.get(target)!r} — a leak finding invented out of two "
+        f"non-readings"
+    )
+    # And it must COUNT as no-evidence, so the CLI exits 3 rather than 0: an
+    # entry list that is inconclusive-but-uncounted still reads as a pass.
+    assert diff.inconclusive_count(entries) == len(entries)
+
+
+def test_a_null_reading_is_still_a_REAL_reading_on_the_continuity_axis():
+    # The other half of the rule above, and the reason it is scoped to
+    # `compare_profiles` instead of living in `_unread`. The two axes genuinely
+    # disagree about what null MEANS, so each gets the reading its own question
+    # needs.
+    #
+    # On the continuity axis null is routinely a real, load-bearing reading:
+    # this project's own Firefox baseline carries nine of them
+    # (`navigator.webdriver`, `navigator.deviceMemory`, `navigator.vendor`, ...)
+    # where "this property does not exist" is exactly what the profile is
+    # supposed to present. A drift from null to a VALUE APPEARING is an
+    # automation/hardware tell surfacing — the loudest thing `diff_snapshots`
+    # reports. Treating null as unread globally would demote it to "look again",
+    # which is a real leak going quiet.
+    before = _snapshot(window_values={"navigator.webdriver": None})
+    after = _snapshot(window_values={"navigator.webdriver": True})
+    entries = diff.diff_snapshots(before, after)
+    entry = next(e for e in entries if e["probe_id"] == "navigator.webdriver")
+    assert entry["status"] == diff.CHANGED, (
+        "a null reading that became a VALUE is a tell appearing, not a "
+        "non-reading — the continuity axis must still call it CHANGED"
+    )
+    assert diff.inconclusive_count(entries) == 0
+
+    # And the null-to-null case stays a silent agreement, not a fabricated
+    # inconclusive: null IS the reading here, and two of them agree.
+    assert diff.diff_snapshots(before, _snapshot(
+        window_values={"navigator.webdriver": None})) == []
+
+
+def test_the_null_rule_never_reaches_a_probe_where_null_is_a_REAL_reading():
+    # WHY the scoping is SAFE, stated as a property of the inventory rather than
+    # left as a coincidence nobody re-checks. Every probe that records a null in
+    # a committed baseline because the property genuinely does not exist
+    # (`navigator.webdriver`, `navigator.deviceMemory`, ...) is SHARED/POOLED, so
+    # it is never compared on this axis and never meets
+    # `_unread_for_unlinkability` at all. That is what lets the must-differ axis
+    # treat null as "no reading" without touching the continuity axis, where the
+    # same null is load-bearing evidence.
+    #
+    # This goes red if someone classifies one of those vectors INDEPENDENT — at
+    # which point the two rules WOULD meet and the decision needs making
+    # deliberately, not discovering as a permanent INCONCLUSIVE on the gate.
+    for path, realm, pid in _recorded_nulls():
+        probe = next((p for p in probes.PROBES if p.id == pid), None)
+        if probe is None or probe.variance != probes.INDEPENDENT:
+            continue
+        # An INDEPENDENT probe reading null is allowed ONLY as a known engine
+        # gap, and the next test pins what it must then do. What is never
+        # allowed is it going unnoticed, so name it here.
+        assert pid in _KNOWN_UNREADABLE_ON_ENGINE.get(path.name, ()), (
+            f"{path.name} records {pid} ({realm}) as null and the inventory "
+            f"classifies it INDEPENDENT, but it is not a documented engine gap. "
+            f"On the must-differ axis that null is treated as NO reading, so "
+            f"this vector can only ever report INCONCLUSIVE on this engine. "
+            f"Either give the probe a reading it can obtain here, or say so in "
+            f"_KNOWN_UNREADABLE_ON_ENGINE with the reason."
+        )
+
+
+def test_a_must_differ_vector_this_engine_cannot_read_is_inconclusive_not_a_pass():
+    # THE FIREFOX GAP, pinned as an OUTCOME rather than suppressed — and the
+    # reason it is safe to ship the probe on an engine that cannot read it.
+    #
+    # `webgl.readback` reads null on Firefox because that launch path reaches no
+    # WebGL context at all (MEASURED: `getParameter(VERSION)` is null too, and
+    # `invisible_launch.py` carries no webgl/readPixels spoof by any route). The
+    # honest answer for two such profiles is "this vector was not measured", and
+    # the two wrong answers are opposite: COLLIDING invents a leak against
+    # profiles that are fine, and a silent skip certifies unlinkability nobody
+    # measured. Both are worse than INCONCLUSIVE, which denies the pass and says
+    # why.
+    #
+    # This test does NOT approve of the gap — it holds the gap to reporting
+    # itself. It goes green again on its own the day Firefox gets a readback
+    # spoof and the vector starts reading.
+    for path, _realm, pid in _recorded_nulls():
+        if pid not in _KNOWN_UNREADABLE_ON_ENGINE.get(path.name, ()):
+            continue
+        a = _profile_snapshot(
+            "alice",
+            window_values={**_unlinkable("alice", except_for=(pid,)), pid: None},
+        )
+        b = _profile_snapshot(
+            "bob",
+            window_values={**_unlinkable("bob", except_for=(pid,)), pid: None},
+        )
+        entry = next(
+            e for e in diff.compare_profiles(a, b) if e["probe_id"] == pid
+        )
+        assert entry["status"] == diff.INCONCLUSIVE, (
+            f"{pid} is unreadable on the engine {path.name} records, so two "
+            f"profiles must compare INCONCLUSIVE on it — got {entry['status']!r}"
+        )
 
 
 def test_a_vector_read_for_one_profile_only_is_inconclusive_not_a_pass():

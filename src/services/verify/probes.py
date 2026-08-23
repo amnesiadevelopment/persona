@@ -348,8 +348,17 @@ PROBES: tuple[Probe, ...] = (
         # total spoof failure while the spoof is working perfectly. Four bands
         # rather than one flat fill so the surface carries spatial structure
         # for the position-sensitive digest below.
-        "var bands=[[0.30,0.45,0.60],[0.55,0.35,0.70],"
-        "[0.42,0.62,0.38],[0.66,0.50,0.28]];"
+        #
+        # Every channel is chosen to land OFF a .5 byte boundary once scaled by
+        # 255. A float->byte conversion that lands exactly on .5 (0.30 -> 76.5,
+        # 0.70 -> 178.5, 0.50 -> 127.5) is a tie, and tie-breaking is not
+        # guaranteed to be the same rule on every renderer — so a boundary
+        # channel makes the digest look more renderer-portable than it is, and
+        # each band here covers 1024 bytes. It does not threaten AC3/AC4 (both
+        # sides of a comparison move together), but it costs nothing to remove
+        # the ambiguity, so none of these twelve is a tie.
+        "var bands=[[0.31,0.45,0.60],[0.55,0.35,0.69],"
+        "[0.42,0.62,0.38],[0.66,0.51,0.28]];"
         "for(var b=0;b<bands.length;b++){"
         "gl.scissor(0,b*(H/4),W,H/4);"
         "gl.clearColor(bands[b][0],bands[b][1],bands[b][2],1);"
