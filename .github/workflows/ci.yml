@@ -169,6 +169,50 @@ jobs:
         # the presence of the thing being checked.
         #
         # ---------------------------------------------------------------------
+        # WHAT THIS JOB PROVISIONS, AND WHAT IT DOES NOT — STATED, NOT IMPLIED
+        # ---------------------------------------------------------------------
+        # `browser` is an UMBRELLA capability, and it covers ONE engine:
+        #
+        #   PROVISIONED HERE : browser_firefox — the step above runs
+        #     `python -m playwright install firefox` (:152), which is the only
+        #     `playwright install` line in this file. Declaring `browser`
+        #     expands to it, so a Firefox probe that declines to run on this
+        #     job is a FAILURE. That is the whole of what the declaration buys.
+        #
+        #   NOT PROVISIONED ANYWHERE : browser_chromium — and this is the
+        #     honest half. Measured at this commit, not assumed:
+        #       * src/services/profile/coherence.py:78 -> DEFAULT_ENGINE =
+        #         "chromium". It is also the engine every impossible
+        #         os_type/engine pair is reconciled TOWARD (:99, :162). THE
+        #         ENGINE THE PRODUCT DEFAULTS TO IS THE ONE NO GATE LAUNCHES.
+        #       * src/services/browser/process.py returns early for firefox
+        #         (:353-356) BEFORE all 13 `extensions.append` calls
+        #         (`grep -c "extensions.append" src/services/browser/process.py`
+        #         -> 13): audio, WebGL, GPU, device, voice, locale, mobile,
+        #         native-cloak, stealth, canvas-ctx, measuretext, search, geo.
+        #         None of the 13 is exercised by any gate on any platform.
+        #
+        # WHY CHROMIUM IS NOT SIMPLY ADDED TO THE UMBRELLA. Folding it in would
+        # turn this job red for want of PROVISIONING rather than for want of
+        # correctness — a gate that fails for the wrong reason teaches its
+        # reader to ignore it. So the gap is NAMED instead: `browser_chromium`
+        # is a real capability nothing declares, and every declared run PRINTS
+        # what the declaration does not cover, next to the green line it
+        # qualifies. "ok browser" can no longer be misread as "both engines".
+        #
+        # CLOSING IT IS A SEPARATE SLICE, AND IT IS NOT ONE LINE. It is NOT
+        # `python -m playwright install chromium`: the product launches
+        # fingerprint-chromium, not playwright's chromium build. That binary
+        # arrives through the `download_engine` route
+        # .github/workflows/engine-autoupdate.yml:104-115 uses against a pinned
+        # baseline tag — so which build, which pin and which runner are all open
+        # questions. Naming them here is not the same as promising them.
+        #
+        # (engine-autoupdate.yml's own gate stays firefox-only for a recorded
+        # reason — :80-87, one host and one job, so host variance is not read as
+        # engine drift — and is correctly fail-closed at :230.)
+        #
+        # ---------------------------------------------------------------------
         # THE FAILURE FLOOR, MEASURED PER PLATFORM, WITH ITS PROVENANCE ATTACHED
         # ---------------------------------------------------------------------
         # A floor figure without provenance is the defect this section exists to
