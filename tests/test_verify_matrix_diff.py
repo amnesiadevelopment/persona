@@ -62,6 +62,7 @@ from src.services.verify.matrix_diff import (
     findings,
     format_comparison,
     header_notes,
+    no_evidence,
     observed_count,
     require_record,
 )
@@ -835,6 +836,276 @@ def test_a_finding_outranks_lost_coverage(record, tmp_path):
             ]
         )
         == 1
+    )
+
+
+# --- PS-92: the AGGREGATE evidence floor ------------------------------------
+#
+# A DIFFERENT question from UNREAD_BOTH, and the tests above pin that the
+# per-row rule did not move. Per-row: "is THIS row unreadable?" — settled, and
+# deliberately absent from the ladder, because 24 of 53 permanently unreadable
+# is this matrix's designed steady state. Aggregate: "did this comparison rest
+# on ANY evidence?" — 0 of 53 is a run that did not happen, and it used to
+# share exit 0 with a clean run.
+#
+# Every case here asserts on the exit code of a real ``main(["compare", ...])``
+# and never that a helper was called: the exit code is the half a CI gate
+# reads, and a helper-level assertion cannot catch a ladder that never adopts
+# the helper.
+
+
+def all_rows_unobtainable(record: dict) -> dict:
+    """A record in which nothing was obtained — the shape a refused run leaves.
+
+    Built by mutating the COMMITTED record rather than by hand, which is this
+    file's rule and here also a trap-avoidance measure: the row key is
+    ``state``, not ``status``, and a hand-built row using ``status=`` reads as
+    unrecognised — producing zero obtained rows for the WRONG reason and so
+    passing these tests without the fix. ``test_the_probe_records_are_the_shape_
+    they_claim`` below is the control that must come back empty.
+    """
+    out = mutate(record)
+    for reading in out["readings"]:
+        make_unobtainable(reading)
+    return out
+
+
+def all_rows_absent(record: dict) -> dict:
+    """Every row ABSENT — evidence, not the absence of it. The control."""
+    out = mutate(record)
+    for reading in out["readings"]:
+        reading["state"] = "absent"
+        reading.pop("value", None)
+        reading["reason"] = "the checker did not say this"
+    return out
+
+
+def test_the_probe_records_are_the_shape_they_claim(record):
+    """The control the ticket asks for, and it must come back EMPTY.
+
+    Without this, every assertion below could pass for a reason that has
+    nothing to do with the floor: rows carrying an unrecognised state read as
+    "not evidence" exactly like unobtainable ones do, so a typo in the mutation
+    helpers would produce the expected exit codes while proving nothing. This
+    pins that the probe records really do carry the committed record's 53 rows
+    with a RECOGNISED state — and, for the absent record, that those rows are
+    evidence.
+    """
+    unobtainable = all_rows_unobtainable(record)
+    absent = all_rows_absent(record)
+
+    assert len(unobtainable["readings"]) == len(record["readings"]) == 53
+    assert {r["state"] for r in unobtainable["readings"]} == {"unobtainable"}
+    assert {r["state"] for r in absent["readings"]} == {"absent"}
+    # The one that would silently break the suite: a row keyed on `status`
+    # instead of `state`. Nothing here may carry an unrecognised state.
+    assert [r for r in unobtainable["readings"] if "state" not in r] == []
+    # And `absent` IS evidence — so the absent record must NOT trip the floor.
+    assert not no_evidence(absent, mutate(absent))
+    assert no_evidence(unobtainable, mutate(unobtainable))
+
+
+def test_cli_does_not_exit_0_when_NOTHING_was_read_on_either_side(
+    record, tmp_path, capsys
+):
+    """AC1. The defect: a comparison resting on no evidence returned 0.
+
+    Both records are structurally perfect and every row failed to be obtained
+    — the shape an engine that would not launch plus a dead exit leaves behind.
+    The printed report was already honest about this; only the exit code lied,
+    and the exit code is what a CI gate reads.
+
+    Asserted as "3, and not 0, and not the finding code" rather than merely
+    "non-zero", because a run that did not happen must not be reported as the
+    product moving either.
+    """
+    before = all_rows_unobtainable(record)
+    after = mutate(before)
+
+    code = main(
+        [
+            "compare",
+            write_record(tmp_path, "before.json", before),
+            write_record(tmp_path, "after.json", after),
+        ]
+    )
+
+    assert code != 0, "a comparison that observed nothing must not read as clean"
+    assert code != 1, "nothing was read; the product did not move"
+    assert code == 3
+
+
+def test_cli_does_not_exit_0_on_a_present_but_EMPTY_readings_list(
+    record, tmp_path
+):
+    """AC2. The same hole by a narrower door, and it needs its own case.
+
+    ``require_record`` accepts this: ``readings`` is present and IS a list, so
+    the record is a record and nothing refuses. It simply has nothing in it —
+    which is what a truncated recording leaves behind. It reaches the ladder
+    with an entry list of ``[]``, indistinguishable from the clean run unless
+    the question is put to the RECORDS.
+    """
+    empty = mutate(record)
+    empty["readings"] = []
+
+    code = main(
+        [
+            "compare",
+            write_record(tmp_path, "before.json", empty),
+            write_record(tmp_path, "after.json", mutate(empty)),
+        ]
+    )
+
+    assert code != 0
+    assert code == 3
+
+
+def test_one_obtained_row_clears_the_floor(record, tmp_path):
+    """AC4. The floor is at ZERO evidence, not at a quorum.
+
+    11 rows nobody could read and 1 that was read and agreed exits 0. This is
+    the boundary that keeps this slice from becoming the threshold policy it is
+    explicitly not: "fewer than N read is a fail" is a judgement this floor has
+    no grounds to make, and the single agreeing row is what pins that it does
+    not make it.
+    """
+    before = mutate(record)
+    before["readings"] = copy.deepcopy(record["readings"][:12])
+    for reading in before["readings"][1:]:
+        make_unobtainable(reading)
+    make_read(before["readings"][0], "the one thing anybody managed to read")
+    assert sum(1 for r in before["readings"] if r["state"] == "read") == 1
+
+    assert (
+        main(
+            [
+                "compare",
+                write_record(tmp_path, "before.json", before),
+                write_record(tmp_path, "after.json", mutate(before)),
+            ]
+        )
+        == 0
+    )
+
+
+def test_a_record_of_only_ABSENT_rows_is_evidence_and_exits_0(record, tmp_path):
+    """AC5's fourth control, and the one that could most easily regress.
+
+    ``absent`` means the checker ANSWERED and did not say this — for an adverse
+    item (``proxy_detected``) that is the GOOD news, and it is the whole reason
+    ``_obtained`` counts two states rather than one. A floor that keyed off
+    ``read`` alone would report a perfectly clean matrix as a run that never
+    happened.
+    """
+    before = all_rows_absent(record)
+
+    assert (
+        main(
+            [
+                "compare",
+                write_record(tmp_path, "before.json", before),
+                write_record(tmp_path, "after.json", mutate(before)),
+            ]
+        )
+        == 0
+    )
+
+
+def test_the_zero_evidence_report_says_it_is_not_agreement(
+    record, tmp_path, capsys
+):
+    """AC6. The exit code is for the gate; this line is for the human.
+
+    It has to say two things a reader will otherwise supply wrongly: that
+    nothing was read, and that this is NOT agreement. It also names the likely
+    CAUSE — a refused or truncated recording — as ``baseline.py`` does for the
+    same shape, because "no evidence" without "check your recording" sends the
+    reader looking at the product instead of at the run.
+    """
+    before = all_rows_unobtainable(record)
+    main(
+        [
+            "compare",
+            write_record(tmp_path, "before.json", before),
+            write_record(tmp_path, "after.json", mutate(before)),
+        ]
+    )
+
+    out = capsys.readouterr().out
+    assert "NOT agreement" in out
+    assert "nothing was compared" in out.lower()
+    assert "refused" in out.lower() or "truncated" in out.lower()
+
+
+def test_the_standing_state_still_exits_0_with_its_24_unread_rows(
+    record, tmp_path, capsys
+):
+    """AC3. This test protects the ``coverage_lost`` docstring's argument.
+
+    The committed record against a mutation of itself carries 24 rows nobody
+    could read — the designed steady state — and must still exit 0 with those
+    rows reported as coverage. If this ever needs editing to accommodate a
+    change to the floor, the PER-ROW rule has moved, which is out of scope and
+    a reason to stop rather than to adjust the number.
+    """
+    entries = compare_records(record, mutate(record))
+    unread = [e for e in entries if e["classification"] == UNREAD_BOTH]
+    assert len(unread) == 24
+
+    assert (
+        main(
+            [
+                "compare",
+                write_record(tmp_path, "before.json", record),
+                write_record(tmp_path, "after.json", mutate(record)),
+            ]
+        )
+        == 0
+    )
+    assert "unread-both" in capsys.readouterr().out
+
+
+def test_the_floor_is_asked_of_the_records_not_of_the_entry_list(record):
+    """Why ``no_evidence`` takes two RECORDS, pinned as behaviour.
+
+    Both of these comparisons produce entries a reader would call "nothing to
+    triage", and one of them rests on 22 readings while the other rests on
+    none. The entry list cannot tell them apart — the empty-``readings`` pair
+    compares to ``[]`` exactly like a clean run — so a floor derived from
+    entries is structurally incapable of answering this, whatever it asserts.
+    """
+    clean = mutate(record)
+    starved = mutate(record)
+    starved["readings"] = []
+
+    assert compare_records(starved, mutate(starved)) == []
+    assert not no_evidence(record, clean)
+    assert no_evidence(starved, mutate(starved))
+
+
+def test_the_floor_does_not_fire_when_one_side_alone_has_evidence(
+    record, tmp_path
+):
+    """"Either side", not "both sides" — the asymmetric case.
+
+    A run in which the LATER recording was refused wholesale still has the
+    earlier record's 22 readings, so this comparison did rest on evidence. It
+    is already reported, correctly and loudly, as lost coverage (3). The floor
+    must not claim it observed nothing, and must not reclassify it.
+    """
+    after = all_rows_unobtainable(record)
+
+    assert not no_evidence(record, after)
+    assert (
+        main(
+            [
+                "compare",
+                write_record(tmp_path, "before.json", record),
+                write_record(tmp_path, "after.json", after),
+            ]
+        )
+        == 3
     )
 
 
