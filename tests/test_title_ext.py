@@ -497,14 +497,24 @@ def test_no_new_page_reachable_global_carries_profile_identity(
 
     # and no title-carrying global was added as a replacement channel.
     #
-    # Scoped to "title" deliberately. The realm legitimately gains a set of
+    # Scoped to "title" deliberately, and the reason is narrower than it used to
+    # be. This comment previously said the realm "legitimately gains a set of
     # `__persona*` globals from the OTHER masking extensions (audio, gpu, hw,
-    # locale, stealth, webgl) — those are pre-existing and out of scope here, and
-    # a blanket /persona/ match would fire on all of them and pin an unrelated
-    # invariant. What AC 7 forbids is this slice trading the title prefix for a
-    # new page-reachable surface, and the two checks above already cover that
-    # generally: a per-profile tag would either differ in NAME between the two
-    # profiles (first assert) or hold the label as a VALUE (second).
+    # locale, stealth, webgl)", and justified the narrow match as avoiding them.
+    # PS-93 DELETED those per-module marker globals — the idempotency guard they
+    # served now lives in a non-enumerable per-realm registry instead — so that
+    # justification described globals which no longer exist. Measured on this
+    # very test after the change: the added-globals set is EMPTY for both
+    # profiles.
+    #
+    # The narrow match is kept anyway, because its real warrant never depended
+    # on those markers: what AC 7 forbids is THIS slice trading the title prefix
+    # for a new page-reachable surface, and the two checks above already cover
+    # that generally — a per-profile tag would either differ in NAME between the
+    # two profiles (first assert) or hold the label as a VALUE (second). A
+    # blanket /persona/ match here would additionally pin an invariant this
+    # slice does not own; the marker probe in src/services/verify/probes.py is
+    # what owns the global-namespace rule.
     for run in (a, b):
         added = set(run["globalsAfter"]) - set(run["globalsBefore"])
         assert not any(re.search(r"title", name, re.I) for name in added), added

@@ -21,8 +21,25 @@ CONTENT_SCRIPT = r"""
 (function () {
   function applyGeoPatch(G) {
    try {
-    if (!G || !G.navigator || G.__personaGeo) return;
-    G.__personaGeo = true;
+    if (!G || !G.navigator) return;
+    var __pnaReg = null;
+    try {
+      var __pnaO = G.Object;
+      if (__pnaO) {
+        __pnaReg = __pnaO.__pnaRealm;
+        if (!__pnaReg) {
+          __pnaReg = {};
+          __pnaO.defineProperty(__pnaO, '__pnaRealm',
+                                { value: __pnaReg, configurable: true });
+        }
+      }
+    } catch (e) { __pnaReg = null; }
+    try {
+      if (__pnaReg) {
+        if (__pnaReg["geo"] === true) return;
+        __pnaReg["geo"] = true;
+      }
+    } catch (e) {}
     var LAT = __LAT__;
     var LON = __LON__;
     var ACC = 100;

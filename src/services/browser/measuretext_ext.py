@@ -39,11 +39,28 @@ CONTENT_SCRIPT = r"""
 (function () {
   function applyMtPatch(G) {
    try {
-    if (!G || G.__personaMt) return;
+    if (!G) return;
     var proto = (G.CanvasRenderingContext2D || {}).prototype;
     var off = (G.OffscreenCanvasRenderingContext2D || {}).prototype;
     if ((!proto || !proto.measureText) && (!off || !off.measureText)) return;
-    G.__personaMt = true;
+    var __pnaReg = null;
+    try {
+      var __pnaO = G.Object;
+      if (__pnaO) {
+        __pnaReg = __pnaO.__pnaRealm;
+        if (!__pnaReg) {
+          __pnaReg = {};
+          __pnaO.defineProperty(__pnaO, '__pnaRealm',
+                                { value: __pnaReg, configurable: true });
+        }
+      }
+    } catch (e) { __pnaReg = null; }
+    try {
+      if (__pnaReg) {
+        if (__pnaReg["measuretext"] === true) return;
+        __pnaReg["measuretext"] = true;
+      }
+    } catch (e) {}
 
     // One-shot, un-noised true width of `text` in `font`, via a throwaway DOM
     // node measured and removed immediately (the bounding-rect read is not

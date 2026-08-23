@@ -114,8 +114,25 @@ _CONTENT_SCRIPT = r"""
   // realm reuses the exact same values instead of re-measuring its own extent.
   function applyScreenPatch(G) {
    try {
-    if (!G || !G.screen || G.__personaScreen) return;
-    G.__personaScreen = true;
+    if (!G || !G.screen) return;
+    var __pnaReg = null;
+    try {
+      var __pnaO = G.Object;
+      if (__pnaO) {
+        __pnaReg = __pnaO.__pnaRealm;
+        if (!__pnaReg) {
+          __pnaReg = {};
+          __pnaO.defineProperty(__pnaO, '__pnaRealm',
+                                { value: __pnaReg, configurable: true });
+        }
+      }
+    } catch (e) { __pnaReg = null; }
+    try {
+      if (__pnaReg) {
+        if (__pnaReg["screen"] === true) return;
+        __pnaReg["screen"] = true;
+      }
+    } catch (e) {}
     var SEED = __SEED__;
     var FORCED = __FORCED_RES__;
     var OS = "__OS__";
@@ -302,8 +319,25 @@ __SCREEN_REALM_BOOTSTRAP__
   // the SAME pair in the worker realm.
   function applyHwPatch(G) {
    try {
-    if (!G || !G.navigator || G.__personaHw) return;
-    G.__personaHw = true;
+    if (!G || !G.navigator) return;
+    var __pnaReg = null;
+    try {
+      var __pnaO = G.Object;
+      if (__pnaO) {
+        __pnaReg = __pnaO.__pnaRealm;
+        if (!__pnaReg) {
+          __pnaReg = {};
+          __pnaO.defineProperty(__pnaO, '__pnaRealm',
+                                { value: __pnaReg, configurable: true });
+        }
+      }
+    } catch (e) { __pnaReg = null; }
+    try {
+      if (__pnaReg) {
+        if (__pnaReg["hw"] === true) return;
+        __pnaReg["hw"] = true;
+      }
+    } catch (e) {}
     var SEED = __SEED__;
     function h(x){var v=SEED^(x|0);v=Math.imul(v^(v>>>16),0x85ebca6b);v=Math.imul(v^(v>>>13),0xc2b2ae35);return (v^(v>>>16))>>>0;}
     // Same pre-filtered pool as the page realm, rendered from the SAME

@@ -24,8 +24,25 @@ CONTENT_SCRIPT = r"""
 // carries it into every realm.
 function applyVoicePatch(G) {
  try {
-  if (!G || G.__personaVoice || !G.speechSynthesis) return;
-  G.__personaVoice = true;
+  if (!G || !G.speechSynthesis) return;
+  var __pnaReg = null;
+  try {
+    var __pnaO = G.Object;
+    if (__pnaO) {
+      __pnaReg = __pnaO.__pnaRealm;
+      if (!__pnaReg) {
+        __pnaReg = {};
+        __pnaO.defineProperty(__pnaO, '__pnaRealm',
+                              { value: __pnaReg, configurable: true });
+      }
+    }
+  } catch (e) { __pnaReg = null; }
+  try {
+    if (__pnaReg) {
+      if (__pnaReg["voice"] === true) return;
+      __pnaReg["voice"] = true;
+    }
+  } catch (e) {}
   const LANG = %LANG%;
   const OS = "%OS%";  // "windows" | "macos" | "linux" | "android"
   const base = (LANG.split('-')[0] || 'en');

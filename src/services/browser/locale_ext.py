@@ -23,8 +23,25 @@ CONTENT_SCRIPT = r"""
 // there).
 function applyLocalePatch(G) {
   try {
-    if (!G || G.__personaLocale) return;
-    G.__personaLocale = true;
+    if (!G) return;
+    var __pnaReg = null;
+    try {
+      var __pnaO = G.Object;
+      if (__pnaO) {
+        __pnaReg = __pnaO.__pnaRealm;
+        if (!__pnaReg) {
+          __pnaReg = {};
+          __pnaO.defineProperty(__pnaO, '__pnaRealm',
+                                { value: __pnaReg, configurable: true });
+        }
+      }
+    } catch (e) { __pnaReg = null; }
+    try {
+      if (__pnaReg) {
+        if (__pnaReg["locale"] === true) return;
+        __pnaReg["locale"] = true;
+      }
+    } catch (e) {}
     var LOCALE = %LOCALE%;
     // Make our wrapped built-ins read as native in THIS realm (page or worker):
     // a masking detector (creepjs) calls Function.prototype.toString on Intl in a
