@@ -370,9 +370,22 @@ PROBES: tuple[Probe, ...] = (
         "var px=new Uint8Array(W*H*4);"
         "gl.readPixels(0,0,W,H,gl.RGBA,gl.UNSIGNED_BYTE,px);"
         # FNV-1a over EVERY byte, not a sum and not a sample.
-        #   * Not a sample: _STRIDE is 17 (webgl_ext.py:24), so only every
-        #     17th byte is touched at all; a narrow sample reads a false "no
-        #     variance". 4096 bytes span ~241 touched indices.
+        #   * Not a sample: `perturbBytes` moves at most `_BUDGET` (512) bytes
+        #     (webgl_ext.py:75, :121), and it picks WHICH ones by ordinal among
+        #     the bytes that pass the mid-range guard — so the touched offsets
+        #     are spread thinly and unpredictably across the whole array rather
+        #     than sitting on a fixed comb. A narrow sample reads a false "no
+        #     variance". Measured on THIS probe's own 32x32 draw: 3072 of 4096
+        #     bytes are eligible and 384 of them move.
+        #
+        #     This used to read "_STRIDE is 17, so only every 17th byte is
+        #     touched at all; 4096 bytes span ~241 touched indices". PS-97
+        #     deleted that stride, precisely BECAUSE selecting by BYTE OFFSET is
+        #     aliased away by a row width the CALLER chooses: CreepJS's 17x42
+        #     corner has a 68-byte row = exactly 4 x 17, so the comb visited four
+        #     columns forever and moved ZERO eligible bytes, and two profiles
+        #     published one `pixels:` hash. The reason a narrow sample lies is
+        #     unchanged; only the reason the touched set is sparse is.
         #   * Not a sum: the deltas are +/-1 each, so a sum is a random walk
         #     over a ~+/-40 range — small enough that two seeds collide by
         #     ARITHMETIC rather than by identity. That is the pigeonhole
@@ -392,8 +405,9 @@ PROBES: tuple[Probe, ...] = (
         "return {digest:h>>>0,bytes:px.length,mid:mid};"
         "})",
         # THE SECOND must-differ vector. webgl_ext.py adds a deterministic
-        # per-(seed, byte-index) +/-1 delta to every 17th byte of a byte-typed
-        # readPixels result (webgl_ext.py:5-7, :59-70) precisely BECAUSE the
+        # per-(seed, byte-offset) +/-1 delta to a bounded, content-selected set
+        # of bytes in a byte-typed readPixels result (webgl_ext.py:5-7,
+        # :121-194) precisely BECAUSE the
         # GPU-less VM renders through SwiftShader, where the real pixels
         # collide across profiles and link them. Continuous and seed-derived,
         # not drawn from a pool, so two DISTINCT seeds agreeing here is not
