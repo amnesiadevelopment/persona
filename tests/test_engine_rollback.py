@@ -390,6 +390,11 @@ def _engine2_app(monkeypatch, *, current, latest, pin):
 
     monkeypatch.setattr(inv, "is_invisible_installed", lambda: True)
     monkeypatch.setattr(inv, "pinned_build", lambda: pin)
+    # BOTH must be stubbed. _auto_update_engine2 reads fetch_latest_full (the
+    # 3-tuple, PS-112); stubbing only the 2-tuple wrapper leaves the pin=""
+    # cases calling the REAL function, which hits the network and makes the
+    # test's outcome depend on what upstream happens to be publishing.
+    monkeypatch.setattr(ff, "fetch_latest_full", lambda: (latest, True, ""))
     monkeypatch.setattr(ff, "fetch_latest", lambda: (latest, True))
     monkeypatch.setattr(ff, "current_version", lambda: current)
     # Pruning is a disk operation with no bearing on the decision under test.
@@ -460,6 +465,13 @@ def _engine2_row_app(monkeypatch, *, current, latest, pin, fetched=None):
     monkeypatch.setattr(inv, "is_invisible_installed", lambda: True)
     monkeypatch.setattr(inv, "pinned_build", lambda: pin)
     monkeypatch.setattr(ff, "current_version", lambda: current)
+    # BOTH, and the pin does NOT save us here: _check_engine2_async fetches
+    # BEFORE it reads pinned_build(), so even the pinned cases reach this.
+    # Stubbing only the 2-tuple wrapper leaves them calling the real
+    # fetch_latest_full — a live network call inside a unit test.
+    monkeypatch.setattr(
+        ff, "fetch_latest_full", lambda: (fetched or latest, True, "")
+    )
     monkeypatch.setattr(ff, "fetch_latest", lambda: (fetched or latest, True))
 
     app = make_app(None)
