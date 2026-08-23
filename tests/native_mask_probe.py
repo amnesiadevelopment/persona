@@ -380,10 +380,18 @@ def assert_reads_native(tmp_path, scripts, stubs, probe, name, *, native_first=T
 #      zero-filled by design for the toString probe, which needs no values; the
 #      observable probes use their own non-zero buffers and leave it alone.
 #
-#   2. Read the WHOLE buffer, never a sample. webgl_ext's STRIDE is 17, so only
-#      indices 0, 17, 34, … are touched at all, and two seeds agree at many of
-#      them (index 0 agrees for 111/222). A probe that samples narrowly reports
-#      a false negative.
+#   2. Read the WHOLE buffer, never a sample. `perturbBytes` moves at most
+#      `_BUDGET` (512) bytes and picks WHICH ones by ordinal among the eligible
+#      bytes, so on any buffer with more content than that the touched offsets
+#      are spread thinly and unpredictably across the whole array. Two seeds
+#      also agree at some of them by chance. A probe that samples narrowly
+#      reports a false negative.
+#
+#      This used to read "STRIDE is 17, so only indices 0, 17, 34, … are
+#      touched". That stride is gone — PS-97 removed it precisely BECAUSE a
+#      fixed byte comb is aliased away by a row width the caller chooses, which
+#      is how two profiles came to publish one `pixels:` hash. The trap it
+#      described is unchanged; only the reason the touched set is sparse is.
 # --------------------------------------------------------------------------
 
 # Non-zero float samples: `perturbFloat` skips zeros, so the zero-filled
@@ -554,6 +562,93 @@ globalThis.document = {
   },
 };
 """
+
+# The SAME vector as GL_OBSERVABLE_PROBE, at the geometry a real fingerprinter
+# actually reads it with. PS-97 measured why the difference matters: the probe
+# above is 512 bytes ALL of which are 128, so every byte is perturbable and any
+# selection scheme whatsoever lands on content. It passed green for months while
+# two profiles published a byte-identical `pixels:` hash to CreepJS.
+#
+# CreepJS reads `readPixels(0, 0, drawingBufferWidth/15, drawingBufferHeight/6)`
+# (`src/webgl/index.ts:355`). Off its 256x256 OffscreenCanvas that truncates to
+# 17x42 — a 68-byte row — and it clears to (0,0,0,0) because its `clearColor` is
+# commented out, so the region is 98.9% zeros with only the antialiased edge of a
+# LINE_LOOP in it. Measured on a real engine: 2856 bytes, 32 non-zero, and just
+# 16 that pass the `1 < v < 254` guard.
+#
+# That geometry is hostile in two independent ways, and this fixture reproduces
+# BOTH so a regression in either is caught:
+#
+#   ALIASING — the 68-byte row is exactly 4x the old `_STRIDE` of 17, so a fixed
+#   byte-comb visited pixel 0/4/8/12 of every row forever and never reached the
+#   content at x=13..16. Any scheme that selects by BYTE OFFSET can be aliased
+#   away by a row width chosen by the caller.
+#
+#   STARVATION — with 16 eligible bytes in 2856, a sparse selector expects about
+#   ONE hit. A vector that depends on winning that lottery is not delivering
+#   per-profile entropy even on the runs where it happens to work.
+#
+# Values are the real histogram from that measurement, not invented ones: a run
+# of mid-range edge bytes, saturated 255s that the guard must skip, and zeros
+# everywhere else.
+GL_CREEPJS_OBSERVABLE_PROBE = r"""
+(function () {
+  var gl = Object.create(WebGLRenderingContext.prototype);
+  var W = 17, H = 42;
+  var px = new Uint8Array(W * H * 4);
+  // Mostly-zero, exactly as CreepJS's cleared corner comes back.
+  var edge = [25, 27, 27, 29, 29, 30, 31, 33, 76, 76, 76, 76, 76, 79, 81, 83];
+  // Put the content where the drawn edge really is: the last rows, at x=13..16,
+  // i.e. precisely the columns a 17-byte comb over a 68-byte row cannot reach.
+  var at = 0;
+  for (var row = H - 4; row < H; row++) {
+    for (var col = 13; col < 17; col++) {
+      var base = (row * W + col) * 4;
+      px[base] = edge[at % edge.length];
+      px[base + 1] = 255;  // saturated: the guard must skip these
+      at++;
+    }
+  }
+  gl.readPixels(0, 0, W, H, 0, 0, px);
+  return Array.prototype.join.call(px, ',');
+})()
+"""
+
+
+def gl_budget_probe(eligible: int) -> str:
+    """A probe that returns HOW MANY bytes the readback perturbation moved.
+
+    Every other probe here asks WHETHER the value changed. None of them can see
+    how LOUD the change is, and that gap is not hypothetical: PS-97 round 1
+    shipped a 2x budget overshoot green, because `floor(eligible / BUDGET)`
+    collapses to a stride of 1 for every `eligible` in [BUDGET, 2*BUDGET) and
+    then moves EVERY eligible byte while claiming a cap. At 1023 eligible bytes
+    it moved 1023 of them. No divergence assertion goes red for that — the bytes
+    still differ per seed, just far more of them than intended.
+
+    That matters because the module's constraint is two-sided. Too FEW bytes
+    moved and two profiles collide (the linkability defect this ticket exists
+    for); too MANY and the perturbation is itself the tell, on the very vector
+    being perturbed to avoid being noticed. `_BUDGET` is the ceiling on the
+    second side, so it needs a seat of its own.
+
+    The buffer is all-128 so every byte is eligible and `eligible` is exactly
+    the buffer length — the count is then unambiguous rather than a function of
+    the fixture's histogram.
+    """
+    return r"""
+(function () {
+  var gl = Object.create(WebGLRenderingContext.prototype);
+  var n = %d;
+  var px = new Uint8Array(n);
+  px.fill(128);
+  gl.readPixels(0, 0, n / 4, 1, 0, 0, px);
+  var moved = 0;
+  for (var i = 0; i < n; i++) { if (px[i] !== 128) moved++; }
+  return moved;
+})()
+""" % int(eligible)
+
 
 # The falsification (PS-63 AC#4): a spoof that DECLARES its seed and installs
 # nothing. This is what the replaced text assertions could not tell apart from
