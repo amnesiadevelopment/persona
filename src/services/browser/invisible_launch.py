@@ -2159,6 +2159,44 @@ def _profile_prefs(cfg: dict) -> dict:
                 # network.trr.default_provider_uri (Cloudflare) anyway, so
                 # pinning the uri is decorative. mode is the pref that carries.
                 "network.trr.mode": 5,
+                # Speculative DNS-prefetch guard for a PROXIED profile,
+                # mirroring the Chromium path's --dns-prefetch-disable
+                # (process.py). Same LOCATION argument as the two prefs above:
+                # a speculative lookup that skips the tunnel resolves names the
+                # exit IP never asked for.
+                #
+                # This is a PIN, not a fix for a live leak — measured on the
+                # bundled build (Firefox 151.0, fresh profile, page carrying a
+                # <link rel="dns-prefetch"> plus anchors, watching BOTH paths
+                # at once: an LD_PRELOAD getaddrinfo shim for the system
+                # resolver and a logging SOCKS5 server for the tunnel):
+                #
+                #   * direct profile, no guard -> prefetch FIRES, and all three
+                #     probe hostnames go to the SYSTEM RESOLVER, never through
+                #     SOCKS. So when it fires it does bypass the tunnel.
+                #   * direct profile, guard on -> 3 lookups become 0. The pref
+                #     demonstrably suppresses it; it is not decorative.
+                #   * proxied profile -> nothing on EITHER path, and that
+                #     silence does NOT depend on socks_remote_dns (measured
+                #     with it both on and off). So today the proxied case is
+                #     already quiet, and socks_remote_dns is not what covers
+                #     this cell.
+                #
+                # WHY the proxied case is quiet is deliberately not claimed
+                # here: the behaviour was observed, the Gecko mechanism was
+                # not, and this tree states nowhere whether the speculative
+                # resolver takes the SOCKS path or its own. That undocumented
+                # default is exactly what the pin is for — the daily 06:00 UTC
+                # engine autobump lands a new build on main with nobody
+                # looking, and the first measurement above is what such a flip
+                # would cost: lookups on the system resolver, outside the
+                # tunnel. Same reasoning as network.trr.mode above.
+                #
+                # Both keys, because they cover different origins: the plain
+                # pref governs prefetch generally and the FromHTTPS one governs
+                # it from HTTPS documents, which is where a real session lives.
+                "network.dns.disablePrefetch": True,
+                "network.dns.disablePrefetchFromHTTPS": True,
             }
         )
     # The chosen search engine feeds the Home button and the start page a
