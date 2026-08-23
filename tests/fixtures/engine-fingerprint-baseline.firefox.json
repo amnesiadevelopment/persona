@@ -306,7 +306,11 @@
         }
       },
       "webgl.readback": {
-        "value": null
+        "value": {
+          "bytes": 4096,
+          "digest": 3733647300,
+          "mid": 3072
+        }
       },
       "webgl.unmasked": {
         "value": {

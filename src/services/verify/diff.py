@@ -307,9 +307,15 @@ def _unread_for_unlinkability(side: Any) -> bool:
     so two profiles that both failed to read compare EQUAL and are reported
     COLLIDING with ``inconclusive_count`` 0 — a false leak report on every
     pair, from a run that does not even flag itself as resting on nothing.
-    Measured, not argued: the shipped ``webgl.readback`` expression reads
-    ``null`` on Firefox (no WebGL context on that launch path at all) and a
-    digest on Chromium. Two DIFFERENT Firefox profiles were reported linkable.
+    Measured, not argued: the shipped ``webgl.readback`` expression was
+    observed reading ``null`` on a Firefox launch that reached no WebGL
+    context, and two DIFFERENT Firefox profiles were reported linkable on it.
+    Note the trigger is the CONTEXT being absent, which is a property of the
+    HOST rather than of the engine: on a host whose Firefox does have WebGL the
+    same expression reads a seed-derived digest (verified — the baseline
+    profile's own seed reproduces its recorded digest exactly). So this rule is
+    not about Firefox; it is about any run where an identity vector's API is
+    missing, whatever the reason.
 
     **Why this cannot be a global rule.** On the CONTINUITY axis ``null`` is
     frequently a real, load-bearing reading: this project's own Firefox
@@ -575,10 +581,14 @@ def compare_profiles(
     ``_unread``'s "carries a value" test, and two profiles that both failed to
     read would compare EQUAL and be reported COLLIDING with an inconclusive
     count of 0 — a false leak report on every pair, from a run that does not
-    flag itself as resting on nothing. Firefox reads ``null`` on
-    ``webgl.readback`` (that engine reaches no WebGL context at all here, so
-    there is no surface for its spoof to perturb), so without this every pair
-    of Firefox profiles is reported linkable on a vector neither of them read.
+    flag itself as resting on nothing. Observed on ``webgl.readback``: a
+    Firefox launch that reached no WebGL context read ``null``, and without
+    this rule every pair of such profiles was reported linkable on a vector
+    neither of them read. WebGL AVAILABILITY on that launch path is
+    host-dependent, not an engine property — where the context IS present the
+    same expression reads a seed-derived digest — so this rule is not about
+    Firefox, and must not be narrowed to it: it covers any run where an
+    identity vector's API is missing, whatever the reason.
     This is NOT the rule on the continuity axis,
     where ``null`` is routinely a real reading ("this property does not exist"
     is what the profile is supposed to present) and a ``null`` that becomes a

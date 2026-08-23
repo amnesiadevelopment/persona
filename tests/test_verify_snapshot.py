@@ -1200,19 +1200,24 @@ def _unlinkable(tag, *, except_for=()):
 # DECLARED rather than discovered, so a vector silently becoming unreadable is
 # still a red.
 #
-# `webgl.readback` on Firefox: the recorded reading is null because that engine
-# reaches no WebGL context at all here — MEASURED, headless Firefox on this
-# host: `getParameter(VERSION)` reads null too, so there is no surface for a
-# spoof to perturb. Note this is NOT the missing-spoof gap the first draft of
-# this ticket reported: PS-78 landed `firefox_webgl_init_script` via
-# `add_init_script` (`invisible_launch.py:2904`), and it is verified
-# behaviourally in `tests/test_webgl_readback_probe.py`. The spoof is present
-# and correct; the CONTEXT is absent. Re-record this baseline on a Firefox
-# build that has WebGL and the entry should be deleted — the test below starts
-# passing on its own, and the entry going stale is itself a red.
-_KNOWN_UNREADABLE_ON_ENGINE: dict[str, tuple[str, ...]] = {
-    "engine-fingerprint-baseline.firefox.json": ("webgl.readback",),
-}
+# EMPTY, and deliberately kept rather than deleted — see the guard below, which
+# is what stops an entry outliving the gap it describes.
+#
+# `webgl.readback` USED to be listed here, on the stated grounds that Firefox
+# "reaches no WebGL context at all". That reason did not survive being checked.
+# Measured on two further hosts (and by the QA seat independently), headless
+# Firefox DOES reach a context — `getParameter(VERSION)` reads "WebGL 1.0" —
+# and the probe reads a seed-derived digest that reproduces exactly from the
+# baseline profile's own seed. WebGL AVAILABILITY is a property of the HOST,
+# not of the engine, so "Firefox cannot read this" was never the right shape of
+# claim. The baseline now records the DIGEST it actually reads.
+#
+# The consequence is the one this register exists to produce: on a host where
+# the context is genuinely missing the vector reads null, disagrees with the
+# recorded digest, and goes RED. That is correct. Recording the null instead
+# made unreadability the EXPECTED state, which is precisely the silent blessing
+# of a gap this register's own docstring says it will not do.
+_KNOWN_UNREADABLE_ON_ENGINE: dict[str, tuple[str, ...]] = {}
 
 
 def _recorded_nulls():
@@ -1398,10 +1403,13 @@ def test_two_profiles_that_both_read_NULL_are_inconclusive_never_colliding():
     # COLLIDING with `inconclusive_count` 0 — the run does not even flag itself
     # as resting on nothing, which is what makes it dangerous rather than noisy.
     #
-    # MEASURED, not hypothetical: the shipped `webgl.readback` expression reads
-    # null on Firefox (that engine reaches no WebGL context at all on this
-    # launch path — `getParameter(VERSION)` is null too), so every pair of
-    # Firefox profiles was reported linkable on a vector NEITHER of them read.
+    # MEASURED, not hypothetical: the shipped `webgl.readback` expression was
+    # observed reading null on a Firefox launch that reached no WebGL context,
+    # and every pair of such profiles was reported linkable on a vector NEITHER
+    # of them read. The trigger is the CONTEXT being absent, which is a
+    # property of the HOST rather than of the engine — where Firefox does have
+    # WebGL the same expression reads a seed-derived digest — so this rule is
+    # not about Firefox and must not be narrowed to it.
     target = _must_differ_probe()
     a = _profile_snapshot(
         "alice",
@@ -1488,22 +1496,48 @@ def test_the_null_rule_never_reaches_a_probe_where_null_is_a_REAL_reading():
         )
 
 
+def test_the_unreadable_register_never_outlives_the_gap_it_describes():
+    # THE GUARD THE REGISTER'S OWN COMMENT PROMISED AND NOBODY WROTE. Until
+    # this ticket the register said "the entry going stale is itself a red"
+    # while nothing checked it — and an entry then DID go stale: it declared
+    # `webgl.readback` unreadable on Firefox on the grounds that the engine
+    # reaches no WebGL context, which turned out to be false on three separate
+    # hosts (the context is present and the probe reads a seed-derived digest).
+    #
+    # A stale entry here is not cosmetic. Every name in this register is a
+    # vector whose UNREADABILITY is treated as expected, so an entry that
+    # outlives its gap silently converts "this identity vector stopped being
+    # read" from a red into the normal state — the exact suppression the
+    # register's docstring disclaims. Keyed on the ARTIFACT, so it cannot be
+    # satisfied by a null recorded for some other probe.
+    recorded = {(path.name, pid) for path, _realm, pid in _recorded_nulls()}
+    for name, pids in _KNOWN_UNREADABLE_ON_ENGINE.items():
+        for pid in pids:
+            assert (name, pid) in recorded, (
+                f"{name} no longer records {pid} as null, but the register "
+                f"still declares it unreadable on that engine. The gap closed "
+                f"— delete the entry. Leaving it means a future null on this "
+                f"vector reads as EXPECTED instead of as a regression."
+            )
+
+
 def test_a_must_differ_vector_this_engine_cannot_read_is_inconclusive_not_a_pass():
-    # THE FIREFOX GAP, pinned as an OUTCOME rather than suppressed — and the
-    # reason it is safe to ship the probe on an engine that cannot read it.
+    # A declared gap is pinned as an OUTCOME rather than suppressed — the
+    # reason it is safe to ship a probe on an engine that cannot read it.
     #
-    # `webgl.readback` reads null on Firefox because that launch path reaches no
-    # WebGL context at all (MEASURED: `getParameter(VERSION)` is null too, so
-    # there is no surface for a spoof to perturb). The honest answer for two
-    # such profiles is "this vector was not measured", and
-    # the two wrong answers are opposite: COLLIDING invents a leak against
-    # profiles that are fine, and a silent skip certifies unlinkability nobody
-    # measured. Both are worse than INCONCLUSIVE, which denies the pass and says
-    # why.
+    # The honest answer for two such profiles is "this vector was not
+    # measured", and the two wrong answers are opposite: COLLIDING invents a
+    # leak against profiles that are fine, and a silent skip certifies
+    # unlinkability nobody measured. Both are worse than INCONCLUSIVE, which
+    # denies the pass and says why.
     #
-    # This test does NOT approve of the gap — it holds the gap to reporting
-    # itself. It goes green again on its own the day Firefox gets a readback
-    # spoof and the vector starts reading.
+    # The register is EMPTY today, so this loop is currently a no-op — and that
+    # is why it is not the only thing pinning the rule. The behaviour itself is
+    # asserted unconditionally by
+    # `test_two_profiles_that_both_read_NULL_are_inconclusive_never_colliding`
+    # above, which builds the null case directly instead of waiting for one to
+    # appear in an artifact. This test covers the additional claim that a
+    # REGISTERED gap behaves that way in the shape the artifact records it.
     for path, _realm, pid in _recorded_nulls():
         if pid not in _KNOWN_UNREADABLE_ON_ENGINE.get(path.name, ()):
             continue
