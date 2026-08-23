@@ -93,7 +93,7 @@ one-context-per-canvas caching all keep their native behaviour.
 import json
 import pathlib
 
-from .worker_wrap import realm_bootstrap_js
+from .worker_wrap import realm_bootstrap_js, realm_guard_js
 
 _CONTENT_SCRIPT = r"""
 (function () {
@@ -121,24 +121,7 @@ _CONTENT_SCRIPT = r"""
     var proto = CE && CE.prototype;
     var orig = proto && proto.getContext;
     if (typeof orig !== "function") return;
-    var __pnaReg = null;
-    try {
-      var __pnaO = G.Object;
-      if (__pnaO) {
-        __pnaReg = __pnaO.__pnaRealm;
-        if (!__pnaReg) {
-          __pnaReg = {};
-          __pnaO.defineProperty(__pnaO, '__pnaRealm',
-                                { value: __pnaReg, configurable: true });
-        }
-      }
-    } catch (e) { __pnaReg = null; }
-    try {
-      if (__pnaReg) {
-        if (__pnaReg["canvas_ctx"] === true) return;
-        __pnaReg["canvas_ctx"] = true;
-      }
-    } catch (e) {}
+__REALM_GUARD__
 
     // WebKit's legacy name, and the modern name it resolves to. WebGL1 per
     // HTMLCanvasElement::toWebGLVersion — see the module docstring.
@@ -275,6 +258,7 @@ def build_canvas_ctx_extension(os_type: str, base_dir: str) -> str:
         _CONTENT_SCRIPT
         .replace("__OS__", os_norm)
         .replace("__REALM_BOOTSTRAP__", realm_bootstrap_js("applyCanvasCtxPatch"))
+        .replace("__REALM_GUARD__", realm_guard_js("canvas_ctx"))
     )
     (ext_dir / "canvas_ctx.js").write_text(script, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(

@@ -1,7 +1,7 @@
 import json
 import pathlib
 
-from .worker_wrap import realm_bootstrap_js
+from .worker_wrap import realm_bootstrap_js, realm_guard_js
 
 # The script is wrapped in an IIFE so none of its names land in the page's global
 # scope. It runs in the MAIN world on every frame; a bare top-level const/function
@@ -22,24 +22,7 @@ CONTENT_SCRIPT = r"""
   function applyGeoPatch(G) {
    try {
     if (!G || !G.navigator) return;
-    var __pnaReg = null;
-    try {
-      var __pnaO = G.Object;
-      if (__pnaO) {
-        __pnaReg = __pnaO.__pnaRealm;
-        if (!__pnaReg) {
-          __pnaReg = {};
-          __pnaO.defineProperty(__pnaO, '__pnaRealm',
-                                { value: __pnaReg, configurable: true });
-        }
-      }
-    } catch (e) { __pnaReg = null; }
-    try {
-      if (__pnaReg) {
-        if (__pnaReg["geo"] === true) return;
-        __pnaReg["geo"] = true;
-      }
-    } catch (e) {}
+__GEO_REALM_GUARD__
     var LAT = __LAT__;
     var LON = __LON__;
     var ACC = 100;
@@ -127,6 +110,7 @@ def build_geo_extension(
         .replace("__LAT__", json.dumps(lat))
         .replace("__LON__", json.dumps(lon))
         .replace("__GEO_REALM_BOOTSTRAP__", realm_bootstrap_js("applyGeoPatch"))
+        .replace("__GEO_REALM_GUARD__", realm_guard_js("geo"))
     )
     (ext_dir / "geo.js").write_text(js, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(

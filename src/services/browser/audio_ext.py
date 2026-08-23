@@ -15,7 +15,7 @@ to read as hardware variance, large enough to survive a coarse sum-and-hash.
 import json
 import pathlib
 
-from .worker_wrap import realm_bootstrap_js
+from .worker_wrap import realm_bootstrap_js, realm_guard_js
 
 # Magnitude of the per-sample relative perturbation. Larger than the engine's
 # ~2e-7 sample-rate effect so it dominates the hash, small enough to stay a
@@ -136,24 +136,7 @@ _CONTENT_SCRIPT = r"""
   function applyAudioPatch(G) {
    try {
     if (!G) return;
-    var __pnaReg = null;
-    try {
-      var __pnaO = G.Object;
-      if (__pnaO) {
-        __pnaReg = __pnaO.__pnaRealm;
-        if (!__pnaReg) {
-          __pnaReg = {};
-          __pnaO.defineProperty(__pnaO, '__pnaRealm',
-                                { value: __pnaReg, configurable: true });
-        }
-      }
-    } catch (e) { __pnaReg = null; }
-    try {
-      if (__pnaReg) {
-        if (__pnaReg["audio"] === true) return;
-        __pnaReg["audio"] = true;
-      }
-    } catch (e) {}
+__REALM_GUARD__
     var SEED = __SEED__;
     var REL = __REL__;
     var AudioBuffer = G.AudioBuffer, AnalyserNode = G.AnalyserNode;
@@ -247,6 +230,7 @@ def _audio_patch_js(seed: int, native_wrap: str) -> str:
         .replace("__REL__", repr(_NOISE_REL))
         .replace("__NATIVE_WRAP__", native_wrap)
         .replace("__REALM_BOOTSTRAP__", realm_bootstrap_js("applyAudioPatch"))
+        .replace("__REALM_GUARD__", realm_guard_js("audio"))
     )
 
 
