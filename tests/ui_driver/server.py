@@ -33,6 +33,8 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
+from .watchdog import child_pids, reap_process_tree
+
 #: How long to wait for the served app to answer on its port. The real app
 #: loads the container, purges trash, and paints a splash before serving, so
 #: this is generous — a slow CI box must not read as "web mode is broken".
@@ -86,8 +88,29 @@ class ServedApp:
 
     _log_path: str = ""
 
+    def descendants(self) -> list[int]:
+        """Every process this served app is responsible for, itself included.
+
+        Exposed so a test can ASSERT the cleanup rather than trust it. "The
+        finally block ran" is not evidence that nothing survived.
+        """
+        return [self.process.pid, *sorted(child_pids(self.process.pid))]
+
     def stop(self) -> None:
+        """Stop the served app and everything it spawned.
+
+        THE WHOLE TREE, not just the direct child. ``ft.run`` is not a leaf:
+        the child this class holds is a python process that starts flet, which
+        starts its own. Terminating only the pid we hold leaves those
+        grandchildren reparented to init — still holding the port, still
+        running — which is a cleanup that reads as successful while moving the
+        hang rather than fixing it.
+
+        The descendants are therefore collected BEFORE anything is signalled:
+        once the parent dies they are no longer reachable from the pid we hold.
+        """
         if self.process.poll() is None:
+            family = self.descendants()
             self.process.terminate()
             try:
                 self.process.wait(timeout=15)
@@ -95,6 +118,13 @@ class ServedApp:
                 self.process.kill()
                 with contextlib.suppress(Exception):
                     self.process.wait(timeout=10)
+            # Whatever outlived its parent gets reaped explicitly.
+            for pid in family:
+                reap_process_tree(pid, grace=2.0)
+        else:
+            # Even an exited parent can leave a serving grandchild behind.
+            for pid in self.descendants():
+                reap_process_tree(pid, grace=2.0)
 
 
 @contextlib.contextmanager

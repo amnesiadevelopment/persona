@@ -380,6 +380,93 @@ here`). The capability is registered in `conftest.py`, so on a machine
 
 ---
 
+## The bound: why these tests cannot hang a run
+
+**Added by PS-104**, which measured a driven test wedged for **25 minutes** on
+an agent container where the suite's configured per-test bound did not exist.
+
+`pyproject.toml` sets `timeout = 120`, and both driven modules carry an explicit
+`@pytest.mark.timeout(...)`. All three are **`pytest-timeout` constructs**, and
+pytest silently ignores an ini key — and an unknown marker — belonging to a
+plugin that is not loaded. CI installs `requirements-dev.txt` and is bounded; an
+environment installing only the project is not. The intent to bound these tests
+was expressed three times and **none of the three survives a missing plugin**.
+
+### Where the hang actually is
+
+Not in the readiness wait. `server.py`'s `_await_ready` is already bounded
+(`STARTUP_TIMEOUT`) and raises with the child's log, on both the exited-early
+and the never-served path. The wedge is **past** readiness, inside a synchronous
+playwright call:
+
+```
+test thread ──blocked reading a pipe──> node driver ──> chromium
+                                             ▲
+                     flet web server ────────┘   (both children still alive)
+```
+
+Nothing in the test thread can interrupt that call — it is blocked in a syscall
+on a pipe the child owns, so no flag, exception or `KeyboardInterrupt` reaches
+it, and **neither `serve_app`'s `finally` nor `FletDriver.close()` ever runs**.
+That is the observed shape: a parent in `ep_poll` with both children alive. It
+is also why a thread-based timeout is weakest precisely here — the blocking wait
+is in a child process, not in the test thread.
+
+### What is done about it
+
+`tests/ui_driver/watchdog.py` bounds **each driver operation** and enforces the
+bound where the block actually is: it **reaps the child processes**. Killing the
+node driver closes the pipe the wedged call is reading, the call raises, control
+returns, and every existing `finally` runs normally.
+
+Measured (2026-08-23): a `page.evaluate` running `while(true){}` — which no
+playwright timeout applies to — was unblocked **5.0s** after its driver tree was
+killed, leaving **zero** surviving processes.
+
+Four properties worth knowing before extending this:
+
+- **One operation is bounded, not the whole test.** `pet()` starts the clock,
+  `rest()` stops it. Idle time between gestures is deliberately unbounded: a
+  driven test reads its result back through a subprocess while the browser is
+  still open, and a watchdog running across that gap would reap a healthy
+  browser and fail a passing test.
+- **`pet`/`rest` are reentrant.** `select_option` → `_open` → `find_dropdown` →
+  `nodes` are all bounded; an inner `rest()` must not disarm the outer gesture,
+  or the long compound gestures — the ones most likely to wedge — would silently
+  run unbounded. The label reported on failure is the **outermost** one.
+- **The whole tree is reaped, and it is collected before anything is
+  signalled.** `ft.run` is not a leaf and the node driver owns a browser tree.
+  Kill a parent first and its children are reparented to init — no longer
+  reachable from the pid you hold, still running, still holding the port. That
+  is how a "successful" cleanup leaves a flet server behind.
+- **The node driver is found by difference, not by introspection.** Its pid is
+  not exposed by playwright's public API; the children are snapshotted before
+  the launch and diffed after. That baseline also covers a wedge *inside*
+  `launch()`, where there is not yet any pid to register.
+
+### Reading a run
+
+`conftest.py` prints one line on **every** run:
+
+```
+per-test timeout: ACTIVE (pytest-timeout, timeout=120s)
+per-test timeout: INERT — pytest-timeout is not active in this run, ...
+```
+
+Keyed on whether the plugin is active in *that run*, not on whether it could be
+imported: an installed-but-disabled plugin (`-p no:timeout`) enforces nothing
+and must not read as bounded. The line is a **statement, not a gate** — it
+changes no outcome, and it does not need to, because the driven tests no longer
+depend on the plugin at all.
+
+The evidence lives in `tests/test_ui_driver_watchdog.py`, which **induces real
+hangs** rather than asserting that a timeout value was read from config — a test
+of the latter kind passes in exactly the environment where the bound is missing.
+One of those tests runs an inner pytest with `-p no:timeout` and a deliberate
+wedge, so the plugin-independence claim is executed rather than asserted.
+
+---
+
 ## Recommendation
 
 **The route works, and the carve-out is gone.** Downstream coverage work is
