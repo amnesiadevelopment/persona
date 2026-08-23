@@ -9,6 +9,7 @@ import json
 import os
 import pathlib
 import stat
+import sys
 
 import pytest
 
@@ -65,14 +66,59 @@ def test_trash_file_lives_under_persona_home_by_default(tmp_path, monkeypatch):
     assert mod.trash_file() == str(tmp_path / "trash.json")
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
 def test_trash_file_is_written_owner_only(store, tmp_path):
     # Payloads carry proxy creds / SSH passwords / .p12 passwords verbatim, so
     # the trashed copy must be written at the SAME 0600 the live stores use —
     # never looser than the record it came from.
+    #
+    # POSIX-ONLY, AND DELIBERATELY SO. On Windows os.chmod only toggles the
+    # read-only bit and cannot restrict WHO may read a file, so the mode reads
+    # back 0o666 no matter what the writer asked for; the protection there is
+    # the per-user ACL inherited from the .persona home, not the mode bits.
+    # src/utils/atomic.py's module docstring states exactly this. Asserting the
+    # POSIX bits unconditionally tested the PLATFORM, not the product — and it
+    # was escalated twice as a suspected Invariant #0 breach before being
+    # cleared, which is the concrete cost of leaving it unstated.
+    #
+    # THE GUARANTEE ITSELF IS NOT DROPPED ON WINDOWS: what this test protects is
+    # that the trashed copy is never written LOOSER than the live record it came
+    # from, and `test_trash_file_is_not_written_looser_than_the_live_store`
+    # below asserts that in terms every platform can express — same writer, same
+    # `private=True`, so the trash file and the live store agree. Same marker as
+    # tests/test_atomic_write.py::test_private_mode_sets_0600, which declines
+    # this identical assertion for this identical reason.
     store.add("ssh_host", "box", {"host": {"password": "hunter2"}})
     path = pathlib.Path(os.environ["PERSONA_TRASH_FILE"])
     mode = stat.S_IMODE(path.stat().st_mode)
     assert mode == 0o600, oct(mode)
+
+
+def test_trash_file_is_not_written_looser_than_the_live_store(store, tmp_path):
+    """The WINDOWS-RUNNABLE half of the guarantee above, and the reason that one
+    may decline to run without dropping it.
+
+    "0600" is one platform's SPELLING of the real rule: the parked copy of a
+    secret must be protected no less than the live record it was parked from. On
+    Windows the mode bits cannot express that, but the rule is still checkable —
+    compare the trash file against a file the LIVE store path wrote in the same
+    place, and require they agree. On POSIX that is 0600 == 0600; on Windows it
+    is 0666 == 0666, which is not a claim that either is restrictive, only that
+    trashing did not make anything WORSE. That is precisely the invariant, and
+    it is the half a bare mode assertion could never state portably.
+    """
+    from src.utils.atomic import atomic_write_json
+
+    store.add("ssh_host", "box", {"host": {"password": "hunter2"}})
+    trashed = pathlib.Path(os.environ["PERSONA_TRASH_FILE"])
+
+    # what the LIVE stores' own writer produces for a credential file, here
+    live = tmp_path / "live_reference.json"
+    atomic_write_json(str(live), {"host": {"password": "hunter2"}}, private=True)
+
+    assert stat.S_IMODE(trashed.stat().st_mode) == stat.S_IMODE(live.stat().st_mode), (
+        "the trashed copy is written LOOSER than the live record it came from"
+    )
 
 
 def test_save_is_atomic_leaving_no_temp_file(store, tmp_path):

@@ -28,6 +28,7 @@ import pytest
 
 from src.services.proxy import service as service_mod
 from src.utils import proxy_checker
+from tests.socket_spy import SocketSpy
 
 ROTATE_URL = "https://rotate.example/refresh/1?apiKey=k"
 
@@ -591,22 +592,13 @@ def test_the_library_never_follows_a_redirect_itself():
 # --------------------------------------------------------------------------
 
 
-class _SocketSpy:
-    """Records every INET/INET6 socket constructed. asyncio's own self-pipe is
-    an AF_UNIX socketpair, so it is correctly not counted as egress."""
-
-    def __init__(self, monkeypatch):
-        self.opened: list[tuple] = []
-        real = socket.socket
-
-        class Spy(real):  # type: ignore[misc,valid-type]
-            def __init__(inner, family=socket.AF_INET, type=socket.SOCK_STREAM,
-                         *args, **kwargs):
-                if family in (socket.AF_INET, socket.AF_INET6):
-                    self.opened.append((family, type))
-                super().__init__(family, type, *args, **kwargs)
-
-        monkeypatch.setattr(socket, "socket", Spy)
+#: Records every outbound INET/INET6 TCP socket constructed, minus the event
+#: loop's own self-pipe plumbing. The exemption used to be spelled "AF_UNIX",
+#: which is a POSIX-only way to say it: on Windows socketpair() is emulated over
+#: loopback TCP, so the loop's self-pipe constructed three AF_INET sockets and
+#: was counted as egress by a guard that is in fact working. See
+#: tests/socket_spy.py for the full reasoning.
+_SocketSpy = SocketSpy
 
 
 @pytest.mark.parametrize(
