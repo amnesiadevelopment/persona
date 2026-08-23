@@ -23,13 +23,22 @@ make the shape of the matrix visible and to turn a one-engine change red:
 Gap-closing was originally deferred here on the grounds that it "would change
 existing profiles' fingerprints, which the project's bit-stability invariant
 forbids". #76 measured that claim rather than inheriting it, and it does not
-hold for these three prefs: none of them is read by any probe in
-``src/services/verify/probes.py``, so closing one moves no recorded reading —
-confirmed by a byte-identical baseline recording before and after the TRR
-change, and again before and after the #105 prefetch change. The remaining true
-part is narrower: a server can still observe that a
-client does not use a TRR resolver. Each cell still needs its own measurement
-before it is closed; the blanket deferral does not.
+hold for these three prefs: no probe under ``src/services/verify/`` reads any
+pref at all, so closing one moves no recorded reading. THAT is the
+load-bearing evidence, and it is the one to re-derive when closing the QUIC
+cell.
+
+A byte-identical baseline recording before and after the #76 and #105 changes
+is consistent with that but does NOT independently confirm it:
+``baseline_profile()`` is ``proxy=None`` (``src/services/verify/baseline.py``
+:136-145), so a proxy-gated pref never fires during that recording. The
+comparison is therefore trivially true — for the ICE prefs, ``trr.mode`` and
+``disablePrefetch`` alike — and would have come back byte-identical whether
+such a pref were correct, wrong-valued, or absent entirely.
+
+The remaining true part is narrower: a server can still observe that a client
+does not use a TRR resolver. Each cell still needs its own measurement before
+it is closed; the blanket deferral does not.
 
 Matrix pinned below, for ONE proxied profile:
 
