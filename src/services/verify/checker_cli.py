@@ -109,6 +109,7 @@ import json
 import os
 import platform
 import sys
+from typing import Any
 
 from .browser_tier import (
     CHROMIUM,
@@ -120,6 +121,12 @@ from .browser_tier import (
     honours_declared_machine,
 )
 from .checkers import BROWSER_CHECKERS, JSON_CHECKERS, UNREADABLE_CHECKERS
+from .layer_differential import (
+    AXIS_LAYER,
+    AXIS_SEED,
+    DEFAULT_CONTROL_SEED as DIFF_DEFAULT_CONTROL_SEED,
+    DEFAULT_SEED as DIFF_DEFAULT_SEED,
+)
 from .exit_guard import DEFAULT_CREDENTIAL_PATH, ExitNotProven, prove_exit, redact
 from .matrix import (
     build_record,
@@ -394,6 +401,12 @@ def _read_one(
 
     readings = []
     skipped_tiers: "list[str]" = []
+    # What persona's masking layer did, for the record header. None means the
+    # browser tier never ran (it was skipped), which is recorded as null rather
+    # than as an empty layer: "no layer was installed" is a measurement and
+    # "this run did not ask the question" is not, and a consumer must be able
+    # to tell them apart.
+    layer_report: "list[Any]" = [None]
 
     if args.skip_json:
         # A SKIPPED TIER KEEPS ITS FULL WIDTH. Dropping the rows would make the
@@ -437,6 +450,14 @@ def _read_one(
         # required to read the JSON tier or to print --help.
         from .browser_tier import read_browser_tier
 
+        # The layer report arrives by callback because read_browser_tier's
+        # return value is a list of readings that several callers unpack. It is
+        # always written: read_browser_tier reports an ABSENT layer on the
+        # engine-unavailable path too, so a header can never keep the
+        # "not stated" default over a run that really did launch a browser.
+        def _capture_layer(report):
+            layer_report[0] = report
+
         readings.extend(
             read_browser_tier(
                 proxy_url,
@@ -444,6 +465,7 @@ def _read_one(
                 engine=engine,
                 declared_machine=requested_machine,
                 allow_unsandboxed=args.allow_unsandboxed_chromium,
+                layer_sink=_capture_layer,
             )
         )
         print(
@@ -462,6 +484,9 @@ def _read_one(
         seed=seed,
         declared_machine=declared_machine_for(engine, requested_machine),
         declared_machine_honoured=honours_declared_machine(engine),
+        masking_layer=(
+            layer_report[0].as_record() if layer_report[0] is not None else None
+        ),
         skipped_tiers=skipped_tiers,
         notes=_notes_for(
             engine,
@@ -632,6 +657,51 @@ def _cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_differential(args: argparse.Namespace) -> int:
+    """Demonstrate that persona's masking layer REACHES the page a checker reads.
+
+    Needs no credential, no proxy and no exit: the page is served from
+    loopback. That venue is deliberate and has a precedent — PS-69 hit the
+    missing-credential wall and was re-scoped to prove its claims without the
+    exit, and PS-10 records an instruction not to re-introduce the dependency.
+
+    The exit code is the verdict, because this is the thing that would be worth
+    gating on: 0 when a reading MOVED, 1 when every comparable vector read
+    identically (the PS-97 shape — the code the layer was supposed to change did
+    not change what the page sees), and 2 when nothing could be compared at all.
+
+    That last code is separated from the failure ON PURPOSE. "The engine would
+    not start here" and "the layer does not reach the page" are completely
+    different findings, and a run that collapsed them would report an
+    unprovisioned container as a masking defect.
+    """
+    from .layer_differential import dumps as diff_dumps, run_differential
+
+    record = run_differential(
+        axis=args.axis,
+        engine=args.engine,
+        seed=args.seed,
+        control_seed=args.control_seed,
+    )
+
+    text = diff_dumps(record)
+    if args.output and args.output != "-":
+        # Written through matrix.write, the same atomic writer the checker
+        # record uses: an interrupted run must not leave a half document that
+        # the next reader has to guess about.
+        write(record, args.output)
+        print(f"wrote {args.output}", file=sys.stderr)
+    else:
+        sys.stdout.write(text)
+
+    print(f"\n{record['verdict'].upper()}: {record['detail']}", file=sys.stderr)
+    for name, moved in sorted(record["diff"]["moved"].items()):
+        print(
+            f"  {name}: {moved['before']} -> {moved['after']}", file=sys.stderr
+        )
+    return {"moved": 0, "unmoved": 1}.get(record["verdict"], 2)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m src.services.verify.checker_cli",
@@ -766,6 +836,47 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     cmp_.set_defaults(func=_cmd_compare)
+
+    df = sub.add_parser(
+        "differential",
+        help="show that persona's masking layer reaches the page (LOCAL, no exit)",
+        description=(
+            "Reads a LOCAL loopback page twice, varying exactly ONE axis, and "
+            "reports what moved. This is the demonstration that the harness "
+            "can OBSERVE persona's masking rather than merely install it: an "
+            "assertion that a builder was called is not evidence the spoof "
+            "reached the page (PS-78 measured exactly that gap). Needs no "
+            "credential, no proxy and no exit."
+        ),
+    )
+    df.add_argument(
+        "--axis", choices=(AXIS_LAYER, AXIS_SEED), default=AXIS_LAYER,
+        help=(
+            f"which single axis to vary. {AXIS_LAYER!r} (default): same engine "
+            f"and seed, persona's layer installed on one side only — the arm "
+            f"that answers whether the layer reaches the page. {AXIS_SEED!r}: "
+            "layer on BOTH sides, only the seed moves — the control that shows "
+            "the vectors really are seed-derived. ONE axis at a time always: a "
+            "difference seen while two axes moved is attributable to neither"
+        ),
+    )
+    df.add_argument(
+        "--engine", choices=ENGINES, default=FIREFOX,
+        help="which of persona's engines to demonstrate against",
+    )
+    df.add_argument(
+        "--seed", type=int, default=DIFF_DEFAULT_SEED,
+        help="the profile seed both arms use (the layer axis)",
+    )
+    df.add_argument(
+        "--control-seed", type=int, default=DIFF_DEFAULT_CONTROL_SEED,
+        help="the second seed, used only by the seed axis",
+    )
+    df.add_argument(
+        "-o", "--output", default="-",
+        help="write the differential record here ('-' for stdout)",
+    )
+    df.set_defaults(func=_cmd_differential)
 
     ls = sub.add_parser("list", help="print the checker inventory")
     ls.set_defaults(func=_cmd_list)
