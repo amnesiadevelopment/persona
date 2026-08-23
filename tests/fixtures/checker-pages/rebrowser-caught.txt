@@ -1,0 +1,42 @@
+🕵️ rebrowser-bot-detector
+Modern tests to detect automated browser behavior. See github repo for more details. How to properly run the tests?
+Test name	Time since load	Notes
+🟢 dummyFn	52 ms	window.dummyFn() was called! It means you can interact with main world objects.
+🟢 sourceUrlLeak	127 ms	Error stack doesn't contain anything suspicious.
+testSourceUrlError@https://bot-detector.rebrowser.net/index.js?2:373:19
+testSourceUrl/document.getElementById@https://bot-detector.rebrowser.net/index.js?2:401:7
+@debugger eval code line 303 > eval:1:16
+evaluate@debugger eval code:310:18
+@debugger eval code:1:44
+@debugger eval code:1:62
+
+
+🔴 mainWorldExecution	137 ms	You've called document.getElementsByClassName() in the main world. Use rebrowser-patches to run your scripts in an isolated world.
+{
+  "args": [
+    "div"
+  ]
+}
+
+🟢 runtimeEnableLeak	2 ms	No leak detected.
+🔴 exposeFunctionLeak	113 ms	
+You're using unpatched Playwright and method page.exposeFunction as it creates window.__playwright__binding__ object.
+No fix available. Follow rebrowser-patches to stay up-to-date.
+Remove page.exposeFunction from your code to avoid this leak.
+{
+  "windowKey": "__playwright__binding__"
+}
+
+🔴 navigatorWebdriver	4 ms	navigator.webdriver = true indicates that browser is automated. Use --disable-blink-features=AutomationControlled switch for Chrome.
+typeof navigator.webdriver = boolean; navigator.webdriver = true
+
+🟢 viewport	11 ms	Viewport is different from default values used in automation libraries.
+{
+  "width": 1447,
+  "height": 863
+}
+
+🟢 pwInitScripts	11 ms	No window.__pwInitScripts detected.
+🟢 bypassCsp	16 ms	Content Security Policy (CSP) is enabled, it's expected behavior.
+JSON
+Sponsored by rebrowser.net — the ultimate stealth browser and scraping solution fueled by AI.
