@@ -70,6 +70,29 @@ def a_snapshot(**kwargs) -> dict:
     )
 
 
+def a_generation_2_record(**kwargs) -> dict:
+    """A record in the shape PS-69 left behind — the REAL writer, minus the key
+    that made it generation 3.
+
+    Derived from ``a_record()`` rather than hand-built, so it stays anchored to
+    what the writer really emits: only the ONE key that defines the generation
+    boundary is removed. Hand-building the dict would test these assertions
+    against themselves.
+
+    This helper exists because the two tests below are about telling a
+    PRE-PS-69 record from a POST-PS-69 one, and they used to get the second by
+    calling today's writer. That was only ever true while generation 2 happened
+    to be the newest: PS-103 added ``masking_layer`` and made it generation 3,
+    at which point "what the writer emits today" and "generation 2" stopped
+    being the same document. The tests' SUBJECT is the historical pair, so the
+    historical shape is what they must construct.
+    """
+    record = a_record(**kwargs)
+    record.pop("masking_layer")
+    record["schema_version"] = 2
+    return record
+
+
 def check_record(record: dict) -> None:
     check_emitted_header(
         record,
@@ -135,16 +158,18 @@ def test_a_pre_PS69_and_a_post_PS69_record_are_DIFFERENT_generations():
     can now ask the version instead.
     """
     committed = json.loads(MATRIX_FIXTURE.read_text(encoding="utf-8"))
-    today = a_record(declared_machine="windows", declared_machine_honoured=True)
+    post_ps69 = a_generation_2_record(
+        declared_machine="windows", declared_machine_honoured=True
+    )
 
-    assert committed["schema_version"] != today["schema_version"]
+    assert committed["schema_version"] != post_ps69["schema_version"]
     assert generation_of(
         committed,
         body_key=matrix.RECORD_BODY_KEY,
         generations=matrix.HEADER_GENERATIONS,
     ) == 1
     assert generation_of(
-        today,
+        post_ps69,
         body_key=matrix.RECORD_BODY_KEY,
         generations=matrix.HEADER_GENERATIONS,
     ) == 2
@@ -157,7 +182,7 @@ def test_the_generation_is_read_from_the_KEYS_not_from_the_claimed_version():
     label — and it is the exact state every record written between PS-69 and
     this ticket is in.
     """
-    drifted = a_record(declared_machine="windows")
+    drifted = a_generation_2_record(declared_machine="windows")
     drifted["schema_version"] = 1  # what PS-69 left it saying
 
     assert generation_of(
