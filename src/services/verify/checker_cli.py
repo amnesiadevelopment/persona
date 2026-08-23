@@ -310,7 +310,10 @@ def _resolve_seeds(raw: "list[str] | None") -> "list[int]":
     return out
 
 
-def _resolve_layer_vectors(args: argparse.Namespace) -> "tuple[str, ...] | None":
+def _resolve_layer_vectors(
+    args: argparse.Namespace,
+    engines: "list[str] | None" = None,
+) -> "tuple[str, ...] | None":
     """The layer subset for a subtraction arm, or None for the full product set.
 
     ``--layer-vectors`` and ``--drop-layer-vector`` are two spellings of one
@@ -318,6 +321,13 @@ def _resolve_layer_vectors(args: argparse.Namespace) -> "tuple[str, ...] | None"
     both, the operator has stated the subset twice and there is no reading that
     honours both spellings, so the run is refused rather than resolved by a
     precedence rule nobody would remember.
+
+    ``engines`` is the engine list the run will actually use. A subset is a
+    FIREFOX-ONLY capability — ``build_chromium_layer`` takes no vectors
+    parameter and builds the full extension set — so naming one for chromium is
+    refused here rather than silently ignored downstream. Left None only by
+    callers that are resolving the value for a run whose engine is already
+    fixed and checked.
 
     Returns ``None`` when neither was passed, which is the full product set —
     the arm that actually describes what an operator presents.
@@ -338,6 +348,26 @@ def _resolve_layer_vectors(args: argparse.Namespace) -> "tuple[str, ...] | None"
             "it with --layer-vectors/--drop-layer-vector asks for two different "
             "arms at once. Drop one: --no-masking-layer for the control arm, "
             "the subset flags for a subtraction arm."
+        )
+    # Refused rather than ignored, and refused BEFORE the unknown-name check:
+    # on chromium a correctly-spelled vector is the dangerous case. The layer
+    # is built by ``build_chromium_layer``, which takes no vectors parameter
+    # and assembles the FULL extension set, and ``read_browser_tier`` does not
+    # forward ``layer_vectors`` down the chromium branch — so the subset would
+    # be discarded while ``_notes_for`` stamped the record "REMOVED: locale".
+    # That is the exact false exoneration the unknown-name refusal below exists
+    # to prevent, reachable by a name that is spelled right.
+    if engines is not None and CHROMIUM in engines:
+        raise SystemExit(
+            f"--layer-vectors/--drop-layer-vector name a SUBSET of the masking "
+            f"layer, which only the {FIREFOX} engine can build: persona's "
+            f"chromium layer ships as extensions assembled as a whole set, "
+            f"with no vectors parameter to narrow. Refused rather than "
+            f"ignored: the subset would be silently discarded, chromium would "
+            f"read with the FULL layer installed, and the record would state "
+            f"the removal anyway — so an adverse row would exonerate the very "
+            f"vector you meant to remove. Take subtraction arms on "
+            f"--engine {FIREFOX}."
         )
     known = set(FIREFOX_LAYER_VECTORS)
     named = keep or drop
@@ -472,7 +502,8 @@ def _notes_for(
         ) or "(none)"
         notes.append(
             f"THIS READING IS OF A DELIBERATELY INCOMPLETE LAYER "
-            f"(--layer-vectors), NOT OF THE PRODUCT. Installed: {kept}. "
+            f"(--layer-vectors/--drop-layer-vector), NOT OF THE PRODUCT. "
+            f"Installed: {kept}. "
             f"REMOVED: {print_removed}. It is a SUBTRACTION ARM — the point is "
             f"to find which spoof a checker reacts to by removing them one at a "
             f"time, so a clean row here means only that the REMAINING vectors "
@@ -614,7 +645,7 @@ def _read_one(
                 allow_unsandboxed=args.allow_unsandboxed_chromium,
                 layer_sink=_capture_layer,
                 install_layer=not args.no_masking_layer,
-                layer_vectors=_resolve_layer_vectors(args),
+                layer_vectors=_resolve_layer_vectors(args, [engine]),
             )
         )
         print(
@@ -642,7 +673,7 @@ def _read_one(
             requested_machine,
             allow_unsandboxed=args.allow_unsandboxed_chromium,
             install_layer=not args.no_masking_layer,
-            layer_vectors=_resolve_layer_vectors(args),
+            layer_vectors=_resolve_layer_vectors(args, [engine]),
         ),
     )
 
@@ -662,6 +693,12 @@ def _cmd_read(args: argparse.Namespace) -> int:
         ),
         file=sys.stderr,
     )
+
+    # Checked here against the WHOLE plan, not just per-configuration inside
+    # _read_one: `--engine both --drop-layer-vector locale` would otherwise
+    # spend a full firefox browser run before refusing on the chromium leg,
+    # and a subtraction arm is only meaningful next to its pair.
+    _resolve_layer_vectors(args, engines)
 
     if args.no_masking_layer and args.skip_browser:
         raise SystemExit(
