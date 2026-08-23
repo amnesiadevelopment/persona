@@ -325,7 +325,14 @@ class TestInventoryHonesty:
     """The two-profile check is only as strong as the must-differ inventory."""
 
     def test_the_must_differ_inventory_is_reported_not_assumed(self):
-        """Today exactly ONE probe is INDEPENDENT, so a green is NARROW.
+        """Today TWO probes are INDEPENDENT, so a green is still NARROW.
+
+        `audio.digest` and `webgl.readback` (PS-90). Two is better than the one
+        this docstring used to describe — a single-vector gate is one upstream
+        change away from comparing nothing — but it is not coverage. The
+        charter calls the vector inventory "never complete, and treating it as
+        complete is the failure mode", so read a green here as "the two vectors
+        we check did not collide", never as "these profiles are unlinkable".
 
         This test does not demand a particular count — that would break every
         time a vector is classified. It demands that the inventory is
