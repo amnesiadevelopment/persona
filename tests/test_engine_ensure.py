@@ -1,5 +1,6 @@
 import os
 import hashlib
+import sys
 
 import pytest
 
@@ -43,8 +44,27 @@ def _wire_opener(monkeypatch, opener):
 
 def _wire_engine_dir(monkeypatch, tmp_path):
     """Point ENGINE_BINARY/MARKER_FILE/VERSION_FILE at tmp_path and force
-    non-macOS so is_installed() checks the plain binary + completion marker."""
+    non-macOS AND non-Windows, so is_installed() checks the plain binary +
+    completion marker and download_engine dispatches to `_install_linux`.
+
+    BOTH flags are pinned, and pinning only IS_MACOS was a real defect. The
+    tests below patch `updater._install_linux` and then assert on what
+    download_engine did with the SENTINEL around it — but download_engine picks
+    its installer by platform (updater.py:764-769), so with IS_WINDOWS left at
+    its real value a Windows run dispatched to the untouched, REAL
+    `_install_windows`. That tried to unzip a fake asset, returned False, and
+    the test failed on a difference it was never about: the patched installer
+    was never consulted at all.
+
+    Pinning both makes these tests measure the thing they name — the sentinel
+    bookkeeping download_engine wraps the install in, which is identical on all
+    three platforms — on all three platforms. `_install_windows` /
+    `_install_macos` have their own dedicated tests; this helper is not where
+    installer dispatch is under test. No-op on Linux, where IS_WINDOWS is
+    already False.
+    """
     monkeypatch.setattr(updater._platform, "IS_MACOS", False)
+    monkeypatch.setattr(updater._platform, "IS_WINDOWS", False)
     monkeypatch.setattr(updater, "ENGINE_DIR", str(tmp_path))
     monkeypatch.setattr(updater, "ENGINE_BINARY", str(tmp_path / "engine.bin"))
     monkeypatch.setattr(updater, "MARKER_FILE", str(tmp_path / ".engine-complete"))
@@ -496,6 +516,28 @@ def test_install_linux_swaps_in_the_new_engine_and_leaves_no_backup(
 # atomic_replace's file-only shutil.copy2 backup could not handle.
 
 
+#: True where `os.replace` can atomically put a directory ONTO a non-empty
+#: directory (POSIX: it refuses with ENOTEMPTY, which restore_aside recognises
+#: as "the destination is provably what is in the way" and clears + retries).
+#:
+#: WINDOWS CANNOT EXPRESS THAT, AND restore_aside IS RIGHT NOT TO PRETEND.
+#: MoveFileEx refuses a directory destination with ERROR_ACCESS_DENIED -> EACCES
+#: — the SAME errno Windows reports for a LOCKED file
+#: (ERROR_SHARING_VIOLATION=32, the antivirus-holding-a-fresh-.exe case).
+#: Treating EACCES as "destination in the way" would therefore clear a live
+#: artifact for a rename that was never going to succeed, which is exactly the
+#: unrecoverable outcome `test_a_lock_on_the_destination_does_not_destroy_it`
+#: pins and httpdl.restore_aside's docstring warns about. So on Windows the
+#: restore degrades to FAIL-SAFE — it declines, and BOTH copies survive for
+#: manual recovery — instead of degrading to data loss.
+#:
+#: The guarantee is not dropped on Windows, it is weaker and stated: below, the
+#: Windows branch asserts the working build is still recoverable WHOLE from the
+#: backup and that the destination was not destroyed. "Two copies on disk, not
+#: zero" is the real Windows contract, and it is asserted rather than skipped.
+_DIR_REPLACE_OVER_NON_EMPTY = not sys.platform.startswith("win")
+
+
 def test_move_aside_then_restore_brings_a_whole_directory_back():
     # AC3. The macOS-shaped case: a previous bundle directory is moved aside,
     # the promotion fails, and the ORIGINAL directory comes back whole —
@@ -520,11 +562,28 @@ def test_move_aside_then_restore_brings_a_whole_directory_back():
             f.write(b"HALF-WRITTEN")
 
         # ...and the restore replaces it wholesale with the build that worked
-        assert httpdl.restore_aside(backup, bundle) is True
-        with open(binary, "rb") as f:
-            assert f.read() == b"WORKING-BUNDLE"
-        assert not os.path.exists(os.path.join(bundle, "Contents", "junk"))
-        assert not os.path.exists(backup)
+        restored = httpdl.restore_aside(backup, bundle)
+        if _DIR_REPLACE_OVER_NON_EMPTY:
+            assert restored is True
+            with open(binary, "rb") as f:
+                assert f.read() == b"WORKING-BUNDLE"
+            assert not os.path.exists(os.path.join(bundle, "Contents", "junk"))
+            assert not os.path.exists(backup)
+        else:
+            # Windows: the rename is refused for a reason that is
+            # indistinguishable from a lock, so restore_aside declines rather
+            # than clearing the destination. Nothing is lost either way.
+            assert restored is False, (
+                "a directory restore that cannot be atomic must DECLINE, not "
+                "clear the destination — see _DIR_REPLACE_OVER_NON_EMPTY"
+            )
+            # the working build is still recoverable WHOLE, nesting and all
+            with open(
+                os.path.join(backup, "Contents", "MacOS", "Chromium"), "rb"
+            ) as f:
+                assert f.read() == b"WORKING-BUNDLE"
+            # ...and the destination was NOT destroyed for a rename that failed
+            assert os.path.exists(os.path.join(bundle, "Contents", "junk"))
 
 
 def test_move_aside_is_a_rename_not_a_copy():
@@ -641,11 +700,20 @@ def test_restore_still_replaces_a_non_empty_directory():
         with open(os.path.join(bundle, "Contents", "junk"), "wb") as f:
             f.write(b"HALF-WRITTEN")
 
-        assert httpdl.restore_aside(backup, bundle) is True
-        with open(os.path.join(bundle, "Contents", "real"), "rb") as f:
-            assert f.read() == b"WORKING"
-        assert not os.path.exists(os.path.join(bundle, "Contents", "junk"))
-        assert not os.path.exists(backup)
+        restored = httpdl.restore_aside(backup, bundle)
+        if _DIR_REPLACE_OVER_NON_EMPTY:
+            assert restored is True
+            with open(os.path.join(bundle, "Contents", "real"), "rb") as f:
+                assert f.read() == b"WORKING"
+            assert not os.path.exists(os.path.join(bundle, "Contents", "junk"))
+            assert not os.path.exists(backup)
+        else:
+            # Windows: declined, and BOTH copies survive. See
+            # _DIR_REPLACE_OVER_NON_EMPTY for why clearing here would be wrong.
+            assert restored is False
+            with open(os.path.join(backup, "Contents", "real"), "rb") as f:
+                assert f.read() == b"WORKING"
+            assert os.path.exists(os.path.join(bundle, "Contents", "junk"))
 
 
 def test_a_lock_on_the_destination_does_not_destroy_it():

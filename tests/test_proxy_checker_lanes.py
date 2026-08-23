@@ -37,6 +37,7 @@ from src.services.browser.launch_policy import _proxy_timezone
 from src.services.proxy.errors import GeographyUnknownError
 from src.services.proxy.store import ProxyStore
 from src.utils import proxy_checker
+from tests.socket_spy import SocketSpy
 
 # The loopback SOCKS5 + TLS harness is the one the socks tests already use —
 # imported, never retyped, so a change to the handshake fixture can't leave
@@ -68,24 +69,19 @@ _STILL_BLOCKED = [
 # --------------------------------------------------------------------------
 
 
-class _SocketSpy:
-    """Delegating stand-in for socket.socket that records outbound TCP sockets.
-
-    It delegates rather than stubs, so the code under test behaves normally and
-    a failure here means "a socket was opened", not "the spy broke the test".
-    Only AF_INET/AF_INET6 + SOCK_STREAM creations are counted: asyncio's event
-    loop builds an AF_UNIX socketpair for its self-pipe on every _run(), which
-    is loop plumbing rather than an outbound connection to the pasted host.
-    """
-
-    def __init__(self):
-        self.tcp_sockets = 0
-        self._real = socket.socket
-
-    def __call__(self, family=socket.AF_INET, type=socket.SOCK_STREAM, *a, **kw):
-        if family in (socket.AF_INET, socket.AF_INET6) and type == socket.SOCK_STREAM:
-            self.tcp_sockets += 1
-        return self._real(family, type, *a, **kw)
+#: Delegating stand-in for socket.socket that records outbound TCP sockets, so
+#: a failure means "a socket was opened", not "the spy broke the test".
+#:
+#: Two Windows-only defects lived in the copy that used to sit here, both fixed
+#: in tests/socket_spy.py. (1) It exempted the event loop's self-pipe by naming
+#: AF_UNIX, which is a POSIX-only way to say "loop plumbing": on Windows
+#: socketpair() is emulated over loopback TCP, so the self-pipe constructed
+#: three AF_INET sockets and this test blamed them on a guard that was working.
+#: (2) It was a callable INSTANCE rather than a type, so asyncio's proactor
+#: raised "TypeError: isinstance() arg 2 must be a type" against the patched
+#: name. The shared spy is a real socket.socket subclass and exempts the
+#: plumbing by WHEN it is built, not by address family.
+_SocketSpy = SocketSpy
 
 
 def test_remote_lane_refuses_loopback_without_opening_a_socket(monkeypatch):
@@ -109,8 +105,7 @@ def test_remote_lane_refuses_loopback_without_opening_a_socket(monkeypatch):
     thread = threading.Thread(target=serve, daemon=True)
     thread.start()
 
-    spy = _SocketSpy()
-    monkeypatch.setattr(socket, "socket", spy)
+    spy = _SocketSpy(monkeypatch)
     try:
         ok, message = proxy_checker.check_proxy_sync(
             f"socks5://127.0.0.1:{port}", timeout=5
