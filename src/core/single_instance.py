@@ -14,11 +14,37 @@ or None when another instance already holds the lock.
 import os
 import sys
 
-_LOCK_PATH = os.path.join(os.path.expanduser("~/.persona"), "persona.lock")
+from . import config
 
 
 def _lock_path() -> str:
-    return os.environ.get("PERSONA_LOCK_FILE", _LOCK_PATH)
+    """Resolve the lockfile the same way every other runtime file resolves.
+
+    This hardcoded ~/.persona/persona.lock, the one runtime file that ignored
+    PERSONA_HOME. That had two consequences, both on the normal GUI startup
+    path: a relocated install CREATED ~/.persona on the host (acquire() makedirs
+    the parent) and wrote a live pid into a directory it never used; and two
+    deliberately isolated homes resolved to the SAME lockfile, so the second was
+    refused — the guard blocking precisely the configuration it exists to allow,
+    since two distinct homes share none of the ON-DISK state named above:
+    profiles.json, settings.json and the engine caches all resolve through
+    _under_home (config.py:73-80). The port is the one exception, so the
+    isolation is not total: API_PORT is global rather than home-derived
+    (config.py:99 uses _port_env, not _under_home), and the MCP tools mount
+    into that same app, so two isolated homes still contend for it if both
+    enable the control server — which is off unless enabled (main.py:177).
+    That is a port-allocation concern, not state corruption, and this lockfile
+    was never what guarded it.
+
+    RESOLVED AT CALL TIME, NOT AT IMPORT. `config.PERSONA_HOME` is baked at
+    config import (deliberate — config.py:48), but `_under_home` reads its env
+    override with getenv at call time (config.py:54). Computing this into a
+    module-level constant would freeze PERSONA_LOCK_FILE at THIS module's import
+    and break any caller that sets it afterwards, the test fixture included.
+    _under_home already implements the override-wins precedence, so the existing
+    PERSONA_LOCK_FILE contract composes rather than conflicts.
+    """
+    return config._under_home("persona.lock", "PERSONA_LOCK_FILE")
 
 
 class _Handle:
