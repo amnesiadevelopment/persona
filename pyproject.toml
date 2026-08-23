@@ -61,6 +61,28 @@ dependencies = [
 # A blocking test must FAIL, not hang the whole run (pytest-timeout, thread
 # method on Windows). Generous per-test bound: real WMI/subprocess tests are
 # slow but finish well under this.
+#
+# READ THIS BEFORE RELYING ON THE LINE ABOVE. `timeout` is an ini key belonging
+# to pytest-timeout, and pytest IGNORES an ini key whose plugin is not loaded.
+# So this bound exists only where that plugin does. It is declared in
+# requirements-dev.txt (which .github/workflows/ci.yml installs), so CI is
+# bounded; an environment that installs only the project is NOT, and for a long
+# time nothing said so. PS-104 measured the cost of that silence: a UI-driver
+# test wedged for 25 minutes in an environment where this comment promised two.
+#
+# The disagreement is no longer silent. conftest.py's pytest_report_header
+# prints `per-test timeout: ACTIVE` or `INERT` on EVERY run, keyed on whether
+# the plugin is actually active in that run rather than on whether it could be
+# imported — an installed-but-disabled plugin (`-p no:timeout`) enforces
+# nothing and must not read as bounded.
+#
+# The same caveat applies to every `@pytest.mark.timeout(...)` in the suite: an
+# unknown marker is inert metadata, so those bounds die with the plugin too.
+# The tests that spawn EXTERNAL children (tests/test_ui_driven*.py — a flet web
+# server and a playwright node driver) therefore do not depend on it at all;
+# they bound themselves and reap their children via tests/ui_driver/watchdog.py.
+# That is deliberate: a thread-based timeout is weakest exactly where the
+# blocking wait is inside a child process rather than in the test thread.
 timeout = 120
 # Every run says what it did NOT do. Without this, a skip and a pass are the
 # same green to every reader — including the release pipeline, which runs the
