@@ -33,12 +33,14 @@ re-asserts that from this ticket's side — the two are in agreement, not tensio
 """
 
 import json
+import os
 
 import pytest
 
 import src.core.platform as _platform
 from src.services.engine import updater
 from src.ui import app as _app_mod
+from src.ui import progress_fmt as pf
 from src.utils.httpdl import normalize_digest
 
 
@@ -761,3 +763,432 @@ def test_fetch_release_full_answers_empty_for_a_tag_upstream_does_not_serve(
     assert updater.fetch_release_full("148.0.1") == ("", "", "")
     # and an empty tag never reaches the network at all
     assert updater.fetch_release_full("") == ("", "", "")
+
+
+# --- the REVERT'S PROGRESS BAR ----------------------------------------------
+#
+# Everything above this line tests the service layer. These tests cover the UI
+# path — _on_engine_rollback and the row it hangs off — which the first round of
+# this ticket shipped with zero coverage, and which is where the audit found the
+# defect.
+#
+# THE BUG THESE EXIST TO CATCH: _on_engine_rollback was the third download path
+# in app.py and the only one that never called _engine_progress_start(). The
+# other two arm the bar before starting; this one passed a progress callback
+# into a state object still holding the PREVIOUS download's finished values.
+# ProgressState is monotonic by design and resets only when `total` CHANGES
+# (progress_fmt.ProgressState.update), and the builds either side of a revert
+# are sibling Chromium releases of near-identical size — so the reset branch
+# usually never fires and the row sits pinned at 100% for the whole re-download.
+#
+# THE ASSERTIONS ARE ON WHAT THE OPERATOR SEES — _engine_bar.value and
+# _engine_detail.value — never on whether a helper was called. That is the
+# standard this ticket set, and it is what makes these tests bite: an
+# `assert progress_start_called` would pass against an implementation that armed
+# the bar and then fed it the stale state anyway.
+#
+# EVERY TEST HERE SEEDS THE STALE STATE FIRST by running a COMPLETED download
+# through the real _engine_progress_cb. Without that seeding they would pass for
+# free against the broken code, because a fresh ProgressState looks exactly like
+# an armed one.
+
+
+class _InlineThreading:
+    """Runs the rollback's worker body inline instead of on a daemon thread.
+
+    Only _on_engine_rollback's `threading.Thread(...).start()` is affected — it
+    reads the module-level name, and the methods that do a local `import
+    threading` re-bind the real module. Making the thread inline is what lets a
+    test assert on the state DURING the download (from inside a progress
+    callback) rather than racing it.
+    """
+
+    class Thread:
+        def __init__(self, target=None, daemon=None, **kwargs):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+
+class _RollbackApp:
+    """The narrowest stand-in for App that the rollback UI path actually reads.
+
+    ⚠️ THE FIVE METHODS UNDER TEST ARE THE REAL ONES, bound off the class — not
+    stubs. _engine_progress_start and _engine_progress_cb in particular MUST be
+    real: the whole defect lives in whether the first is called before the
+    second runs, so stubbing either would leave a test that cannot fail. Only
+    the paint/sidebar plumbing below is inert scaffolding.
+    """
+
+    _engine_busy = False
+    _engine_checking = False
+    _engine_latest = "149.0.1"
+    _engine_status = ""
+    _sidebar_host = None
+    page = None
+
+    # the real methods, defect and all
+    _on_engine_rollback = _app_mod.App._on_engine_rollback
+    _on_engine_resume = _app_mod.App._on_engine_resume
+    _engine_rollback_row = _app_mod.App._engine_rollback_row
+    _engine_progress_start = _app_mod.App._engine_progress_start
+    _engine_progress_cb = _app_mod.App._engine_progress_cb
+
+    def __init__(self):
+        import flet as ft
+
+        self._engine_bar = ft.ProgressBar(value=None)
+        self._engine_detail = ft.Text("")
+        self.engine_text = ft.Text("")
+        self._engine_pstate = pf.ProgressState()
+        self._engine_throttle = pf.ProgressThrottle()
+        self._engine_start_t = 0.0
+        self.logs = []
+
+    # --- inert plumbing ---
+    def _log(self, message):
+        self.logs.append(message)
+
+    def _refresh_engine_text(self, status=""):
+        pass
+
+    def _refresh_sidebar(self):
+        pass
+
+    def _safe_update(self):
+        pass
+
+    # --- what the operator sees, as one value ---
+    def seen(self):
+        return (self._engine_bar.value, self._engine_detail.value)
+
+    def seed_a_completed_download(self, size=189_000_000):
+        """Run a FULL download through the real progress path, so the app is
+        left in exactly the state a just-finished engine update leaves it in:
+        bar at 100%, detail reading "189.0 MB of 189.0 MB".
+
+        This is the precondition the bug needs, and seeding it through the real
+        callback rather than by assigning the fields is deliberate — it proves
+        the stale state is something the production path actually produces.
+        """
+        self._engine_progress_start()
+        self._engine_progress_cb(size // 2, size)
+        self._engine_progress_cb(size, size)
+        assert self._engine_bar.value == 1.0, "seeding failed to reach 100%"
+        assert "189.0 MB of 189.0 MB" in self._engine_detail.value
+        return self.seen()
+
+
+@pytest.fixture
+def ui(monkeypatch):
+    """A _RollbackApp whose rollback runs inline."""
+    monkeypatch.setattr(_app_mod, "threading", _InlineThreading)
+    return _RollbackApp()
+
+
+def _revert_emitting(*samples, ok=True, message="", gap=0.0):
+    """A fake revert_to_previous_build that emits `samples` as (done, total)
+    progress callbacks and records what the row showed at each one.
+
+    `gap` sleeps between samples. It is needed ONLY when the sizes are unknown
+    (total=0): ProgressThrottle suppresses a repaint unless the whole percent
+    advanced or min_interval (0.1s) has passed, and with total=0 the percent is
+    pinned at 0 forever — so two samples fired microseconds apart legitimately
+    paint once. That is the real production throttle doing its job, not the bug
+    under test, so the test waits it out rather than stubbing it away.
+    """
+    import time as _time
+
+    shown = []
+
+    def fake_revert(progress=None, timeout=600, log=None):
+        shown.append(("at click, before any byte moves", _CURRENT[0].seen()))
+        for i, (done, total) in enumerate(samples):
+            if gap and i:
+                _time.sleep(gap)
+            progress(done, total)
+            shown.append((f"{done} of {total}", _CURRENT[0].seen()))
+        return ok, message
+
+    return fake_revert, shown
+
+
+_CURRENT = [None]
+
+
+def test_the_revert_bar_shows_this_download_not_the_previous_one(
+    ui, monkeypatch
+):
+    """THE CENTRAL UI TEST. After an update finishes, going back must not render
+    the finished update's 100% bar for the whole re-download.
+
+    Both builds are sibling Chromium releases of near-identical size, so `total`
+    is UNCHANGED across the two downloads and ProgressState's reset branch never
+    fires. Nothing but arming the bar can clear it.
+    """
+    _CURRENT[0] = ui
+    stale = ui.seed_a_completed_download()
+
+    fake_revert, shown = _revert_emitting(
+        (1_000_000, 189_000_000), (90_000_000, 189_000_000)
+    )
+    monkeypatch.setattr(updater, "revert_to_previous_build", fake_revert)
+
+    ui._on_engine_rollback()
+
+    at_click = dict(shown)["at click, before any byte moves"]
+    one_mb_in = dict(shown)["1000000 of 189000000"]
+    ninety_mb_in = dict(shown)["90000000 of 189000000"]
+
+    # AT THE CLICK: _refresh_sidebar re-inserts the bar/detail controls, so
+    # whatever they hold is on screen instantly. A full bar with a completed
+    # byte count here is indistinguishable from "already done".
+    assert at_click != stale, (
+        "the row still showed the previous download's finished state at the "
+        f"moment of the click: {at_click}"
+    )
+    assert at_click == (None, ""), (
+        f"the bar was not armed before the download started: {at_click}"
+    )
+
+    # 1 MB IN: ~0.5%, not 100%.
+    frac, detail = one_mb_in
+    assert frac is not None and frac < 0.02, (
+        f"1 MB into a 189 MB re-download the bar read {frac}"
+    )
+    assert "1.0 MB of 189.0 MB" in detail, detail
+    assert "189.0 MB of 189.0 MB" not in detail, (
+        f"the byte line was frozen at the previous build's size: {detail}"
+    )
+
+    # 90 MB IN: still moving, still not complete.
+    frac, detail = ninety_mb_in
+    assert 0.4 < frac < 0.6, f"90 MB of 189 MB read as {frac}"
+    assert "90.0 MB of 189.0 MB" in detail, detail
+
+
+def test_a_revert_with_no_content_length_is_not_frozen_at_the_old_size(
+    ui, monkeypatch
+):
+    """The Tor case, and the worse half of the bug.
+
+    download_engine reports total=0 when the server omits Content-Length — which
+    app.py itself calls "common over Tor", and Tor is the operator this row's
+    tooltip was written for. total=0 can NEVER satisfy ProgressState's
+    `total > 0 and total != self.total` reset, so without arming, the line stays
+    frozen at the previous build's size permanently rather than merely often.
+    """
+    _CURRENT[0] = ui
+    ui.seed_a_completed_download()
+
+    fake_revert, shown = _revert_emitting(
+        (5_000_000, 0), (40_000_000, 0), gap=0.15
+    )
+    monkeypatch.setattr(updater, "revert_to_previous_build", fake_revert)
+
+    ui._on_engine_rollback()
+
+    _, five_mb_detail = dict(shown)["5000000 of 0"]
+    _, forty_mb_detail = dict(shown)["40000000 of 0"]
+
+    assert "5.0 MB" in five_mb_detail, five_mb_detail
+    assert "189.0 MB" not in five_mb_detail, (
+        f"frozen at the previous build's size with no Content-Length: "
+        f"{five_mb_detail}"
+    )
+    # and it MOVES, which is the only signal an unknown-size download has
+    assert "40.0 MB" in forty_mb_detail, forty_mb_detail
+
+
+def test_a_refusal_after_bytes_moved_does_not_leave_a_stale_byte_count(
+    ui, monkeypatch
+):
+    """The `finally` clear, isolated from the arming fix.
+
+    Bytes move and THEN the install refuses (a profile started, or the transfer
+    failed). Arming the bar cannot help here — it happened minutes ago — so this
+    goes red on the missing `_engine_detail.value = ""` alone, and stays red if
+    only BLOCKER 1 is applied.
+    """
+    _CURRENT[0] = ui
+    ui.seed_a_completed_download()
+
+    fake_revert, _shown = _revert_emitting(
+        (90_000_000, 189_000_000),
+        ok=False,
+        message="Chromium engine: going back to 148.0.1 failed — download failed",
+    )
+    monkeypatch.setattr(updater, "revert_to_previous_build", fake_revert)
+
+    ui._on_engine_rollback()
+
+    assert ui._engine_detail.value == "", (
+        "a revert that moved bytes and then refused left the byte count under "
+        f"the row: {ui._engine_detail.value!r}"
+    )
+    assert ui._engine_status == "couldn't go back — see the log"
+    assert ui._engine_busy is False
+
+
+def test_an_instant_refusal_renders_the_reason_and_clears_the_row(
+    ui, monkeypatch
+):
+    """The COMMON outcome — nothing to go back to / close your profiles / the
+    yanked tag — all of which return in milliseconds having moved no bytes."""
+    _CURRENT[0] = ui
+    ui.seed_a_completed_download()
+
+    def refuse(progress=None, timeout=600, log=None):
+        return False, ""
+
+    monkeypatch.setattr(updater, "revert_to_previous_build", refuse)
+
+    ui._on_engine_rollback()
+
+    assert ui._engine_detail.value == "", ui._engine_detail.value
+    assert ui._engine_bar.value is None
+    assert ui._engine_status == "nothing to go back to"
+    assert ui._engine_busy is False
+
+
+def test_a_raise_inside_the_revert_still_clears_the_row_and_the_busy_flag(
+    ui, monkeypatch
+):
+    """_engine_busy wedged True dead-ends every later engine action this
+    session, so the finally must survive a raise — and so must the clear."""
+    _CURRENT[0] = ui
+    ui.seed_a_completed_download()
+
+    def boom(progress=None, timeout=600, log=None):
+        raise RuntimeError("upstream exploded")
+
+    monkeypatch.setattr(updater, "revert_to_previous_build", boom)
+
+    ui._on_engine_rollback()
+
+    assert ui._engine_busy is False
+    assert ui._engine_detail.value == ""
+    assert ui._engine_status == "couldn't go back — see the log"
+    assert any("upstream exploded" in m for m in ui.logs), ui.logs
+
+
+def test_a_second_click_while_a_revert_is_running_is_ignored(ui, monkeypatch):
+    """The busy guard, asserted through observable state: the second click must
+    not re-arm the bar out from under the running download."""
+    _CURRENT[0] = ui
+    ui._engine_busy = True
+    ui.seed_a_completed_download()
+    before = ui.seen()
+
+    def must_not_run(progress=None, timeout=600, log=None):
+        raise AssertionError("a second revert started while one was running")
+
+    monkeypatch.setattr(updater, "revert_to_previous_build", must_not_run)
+
+    ui._on_engine_rollback()
+
+    assert ui.seen() == before
+
+
+def test_the_rollback_row_says_why_it_vanished_when_the_record_is_unreadable(
+    ui, monkeypatch
+):
+    """The row must still render when settings/the record cannot be read — but
+    it must not vanish SILENTLY.
+
+    This handler also covers `settings` being unreadable, so a corrupt settings
+    file takes the RESUME gesture away: an operator left pinned, with no way out
+    of the pin from the place they entered it, and nothing on screen or in the
+    log saying why the control disappeared.
+    """
+    def unreadable():
+        raise OSError("settings.json is not valid JSON")
+
+    monkeypatch.setattr(updater, "pinned_build", unreadable)
+
+    row = ui._engine_rollback_row()
+
+    assert row.height == 0, "the panel must still render"
+    assert any("settings.json is not valid JSON" in m for m in ui.logs), (
+        f"the reason was swallowed: {ui.logs}"
+    )
+
+
+def test_a_hand_edited_unusable_digest_refuses_and_changes_nothing(
+    eng, monkeypatch, tmp_path
+):
+    """A hand-edited `"digest": "sha256:"` must never install anything.
+
+    ⚠️ THIS TEST DOCUMENTS A CORRECTION. The audit suggested this value would
+    land in revert_to_previous_build's EngineUnverifiable branch. Executed, it
+    does not, and the reason is the httpdl distinction that branch is built on:
+
+        digest_missing("sha256:") is False   -- a digest ARRIVED and is unusable
+        digest_missing("")        is True    -- nothing was ever published
+
+    Only the second raises EngineUnverifiable. So "sha256:" passes _entry's
+    both-or-neither gate and DOES become a rollback target (asserted below,
+    because that half of the audit's reasoning is right and is the dangerous
+    half), but it then fails the ordinary verify gate inside the download and
+    comes back as a plain refusal instead.
+
+    That is the correct behaviour, not a gap: normalize_digest("sha256:") is ""
+    and digest_ok refuses an unusable digest explicitly ("a digest arrived but
+    is unusable — never accept it"), so the bytes are rejected either way. What
+    matters, and what this asserts, is that NOTHING IS INSTALLED and nothing on
+    disk moves.
+
+    EngineUnverifiable is therefore genuinely unreachable from the revert path —
+    _entry refuses every digest-less record before a URL is ever fetched. The
+    branch is correct defensive code and is deliberately kept; it is simply not
+    reachable by this mechanism, so no test here pretends to reach it.
+    """
+    _install(eng, monkeypatch, "148.0.1", b"OLD", "aa" * 32, tmp_path)
+    _install(eng, monkeypatch, "149.0.1", b"NEW", "bb" * 32, tmp_path)
+
+    rec = json.loads((eng.dir / "builds.json").read_text())
+    rec["previous"]["digest"] = "sha256:"
+    (eng.dir / "builds.json").write_text(json.dumps(rec))
+
+    # It really does survive _entry as a target — otherwise this tests nothing,
+    # and this is precisely why the value is worth a test at all.
+    assert updater.rollback_target() == ("148.0.1", "sha256:")
+
+    monkeypatch.setattr(
+        updater,
+        "fetch_release_full",
+        lambda tag, timeout=20: (tag, f"http://x/{tag}.zip", "bb" * 32),
+    )
+
+    # An HONEST transfer: it applies the same digest gate the real _download_to
+    # does, so the refusal below is produced by the verification rule under test
+    # rather than by a fake that declined for its own reasons.
+    zip_path = tmp_path / "rollback.zip"
+    _build_zip(zip_path, b"OLD")
+
+    def verifying_download_to(path, url, timeout, dg, progress, allow_missing=False):
+        import shutil as _sh
+        from src.utils import httpdl as _h
+
+        _sh.copyfile(zip_path, path)
+        if not _h.verify_file(path, dg, allow_missing=allow_missing):
+            os.remove(path)
+            return False
+        return True
+
+    monkeypatch.setattr(updater, "_download_to", verifying_download_to)
+
+    logged = []
+    ok, message = updater.revert_to_previous_build(log=logged.append)
+
+    assert ok is False
+    # Refused, and named as a refusal of THIS tag rather than a generic error.
+    assert "148.0.1" in message, message
+    assert any("148.0.1" in m for m in logged), logged
+    # THE POINT: nothing was installed. The engine on disk is still the new
+    # build and version.txt still agrees with the bytes.
+    assert eng.installed_marker() == b"NEW"
+    assert updater.current_version() == "149.0.1"
+    # and the record was not rewritten by a revert that did not happen
+    assert updater.rollback_target() == ("148.0.1", "sha256:")

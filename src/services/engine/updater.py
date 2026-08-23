@@ -1249,6 +1249,14 @@ def revert_to_previous_build(
     # an operator who reverts and then changes their mind can go forward again
     # by the same gesture, because the build they reverted FROM is now the
     # recorded previous one.
+    #
+    # NOTE THE ASYMMETRY WITH THE FORWARD PATH, which is deliberate and not a
+    # missed normalisation: there `digest` is a RAW value straight off the API
+    # response, and record_installed_build canonicalises it. Here it is the
+    # digest we just VERIFIED against, read back out of the record, so it is
+    # already canonical — _entry returns exactly what normalize_digest stored.
+    # Re-normalising a canonical digest is idempotent, so passing it back
+    # through is correct; do not "fix" either site to match the other.
     record_installed_build(tag, digest)
     write_version(tag)
     _set_pin(tag, log=log)
