@@ -19,16 +19,29 @@ def test_override_script_pins_language_to_locale():
     js = il._language_override_script("en-US")
     assert "Navigator.prototype" in js
     assert '"en-US"' in js
-    # the base language is also present for navigator.languages
-    assert '"en"' in js
 
 
-def test_override_script_derives_base_language():
-    # a region tag yields [full, base]; a bare tag yields just itself
-    js = il._language_override_script("de-DE")
-    assert '["de-DE", "de"]' in js
-    js2 = il._language_override_script("en")
-    assert '["en"]' in js2
+def test_override_script_languages_mirrors_the_single_header_tag():
+    # PS-124: navigator.languages must mirror the Accept-Language header this
+    # launch path actually SENDS. Playwright's locale kwarg writes
+    # intl.accept_languages VERBATIM, so the header is the single tag with no
+    # q-values — a [full, base] pair advertised a base tag the wire never sent,
+    # which is PS-119's header-vs-JS contradiction one channel over. Measured
+    # disagreeing on the real persistent-context path for en-US/de-DE/uk-UA.
+    assert '["de-DE"]' in il._language_override_script("de-DE")
+    assert '["en-US"]' in il._language_override_script("en-US")
+    # a bare tag was already single and stays that way
+    assert '["en"]' in il._language_override_script("en")
+
+
+def test_override_script_never_advertises_an_unsent_base_tag():
+    # The regression guard, stated as the property rather than the literal: for
+    # a region-qualified locale the languages array must not carry the bare base
+    # tag, because the header does not.
+    for locale, base in (("de-DE", "de"), ("uk-UA", "uk"), ("pl-PL", "pl")):
+        js = il._language_override_script(locale)
+        assert f'["{locale}"]' in js
+        assert f'["{locale}", "{base}"]' not in js
 
 
 def test_override_script_empty_locale_is_noop():
@@ -403,7 +416,9 @@ def test_reported_values_are_unchanged(cloak_probe):
     # criterion 6: the cloak changes how the overrides READ, never what they report
     v = cloak_probe["values"]
     assert v["language"] == "pl-PL"
-    assert v["languages"] == ["pl-PL", "pl"]
+    # PS-124: the single header tag, not [full, base] — see
+    # test_override_script_languages_mirrors_the_single_header_tag.
+    assert v["languages"] == ["pl-PL"]
     assert v["locale"] == "pl-PL"
     assert v["workerLocale"] == "pl-PL"
     assert v["number"] == v["workerNumber"] != "1234.5"

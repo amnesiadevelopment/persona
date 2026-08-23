@@ -397,13 +397,50 @@ def _language_override_script(locale: str) -> str:
     navigator.language — that reports the host OS locale instead (uk-UA on a
     Ukrainian Windows even behind a US proxy). Header en-US + JS uk-UA is an
     internal contradiction a scanner flags as masking. Pin the JS getters to the
-    SAME locale the header already carries so the two agree. languages is
-    [locale, base] (e.g. ["en-US","en"]) to mirror the q-valued header. Empty
-    locale is a no-op — nothing to pin."""
+    SAME locale the header already carries so the two agree. Empty locale is a
+    no-op — nothing to pin.
+
+    ``languages`` is ``[locale]`` — the SINGLE tag, NOT ``[locale, base]``.
+
+    PS-124 measured the old ``[locale, base]`` against the header this launch
+    path actually sends, on the real persistent-context path, and they
+    DISAGREED on every region-qualified locale including the default en-US::
+
+        locale     Accept-Language     navigator.languages
+        en-US      en-US               ["en-US", "en"]      *** contradiction
+        de-DE      de-DE               ["de-DE", "de"]      *** contradiction
+        uk-UA      uk-UA               ["uk-UA", "uk"]      *** contradiction
+        fr         fr                  ["fr"]               agree (base==locale)
+
+    The old docstring said the pair mirrored "the q-valued header", and that is
+    the assumption that was wrong: Playwright's ``locale`` kwarg writes
+    ``intl.accept_languages`` VERBATIM, so the header carries ONE tag and no
+    q-values. JS advertised a base tag the wire never sent — PS-119's
+    header-vs-JS shape exactly, one channel over, and self-inflicted rather
+    than inherited from the host.
+
+    In a real Firefox both surfaces are derived from the one
+    ``intl.accept_languages`` pref, so they CANNOT disagree; a single-tag
+    header is an ordinary real-browser state (a user who configured just
+    "German (Germany)") and was measured emitting header ``de-DE`` with
+    ``navigator.languages == ["de-DE"]``. Mirroring the single tag therefore
+    lands on a shape a real browser produces.
+
+    The opposite repair — widening the HEADER to ``locale,base`` — was measured
+    and REJECTED. Both routes to it break Firefox's own alignment of Intl,
+    which is live defence in depth: today, if this script fails to install
+    (PS-78 measured exactly that on restored tabs), every surface degrades to
+    the natively-aligned locale and still agrees. Under the widening the same
+    failure would PRODUCE the contradiction::
+
+        locale kwarg "de-DE,de"   header de-DE,de       native Intl en-GB  ✗
+        + q-values                navigator.languages == ["de-DE","de;q=0.9"] ✗
+        pref, no locale kwarg     header de-DE,de;q=0.9 native Intl en-US (host) ✗
+
+    So the pin mirrors the header rather than the header mirroring the pin."""
     if not locale:
         return ""
-    base = locale.split("-", 1)[0]
-    langs = [locale] if base == locale else [locale, base]
+    langs = [locale]
     langs_js = json.dumps(langs)
     loc_js = json.dumps(locale)
     return (
