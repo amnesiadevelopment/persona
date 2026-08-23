@@ -3,6 +3,7 @@ import pathlib
 
 from src.services.browser.webgl_ext import build_webgl_extension
 from tests.native_mask_probe import (
+    GL_CREEPJS_OBSERVABLE_PROBE,
     GL_OBSERVABLE_PROBE,
     GL_STUBS,
     assert_profiles_unlinkable,
@@ -45,6 +46,52 @@ def test_seed_changes_the_observable_output(tmp_path):
         "webgl.js",
         GL_STUBS,
         GL_OBSERVABLE_PROBE,
+    )
+
+
+def test_seed_changes_the_observable_output_at_creepjs_geometry(tmp_path):
+    # THE REGRESSION SEAT FOR PS-97, and the reason the test above was not
+    # enough. That probe reads 512 bytes ALL of which are 128 — every byte is
+    # perturbable, so any selection scheme at all lands on content. It was green
+    # for months while two profiles handed CreepJS a byte-identical `pixels:`
+    # hash (`51df3565`, measured live through a Polish exit on two seeds that
+    # differed on every other rendered vector).
+    #
+    # Same vector, read at the geometry a real fingerprinter uses:
+    # `readPixels(0, 0, drawingBufferWidth/15, drawingBufferHeight/6)`
+    # (creepjs `src/webgl/index.ts:355`) — 17x42 off a 256x256 canvas, cleared to
+    # zero, with only the antialiased edge of a LINE_LOOP in it.
+    #
+    # It is hostile in two independent ways and the fixture reproduces both:
+    # the 68-byte row is exactly 4x the old 17-byte stride, so a byte-offset comb
+    # aliased onto four columns and scored ZERO hits on content; and 16 eligible
+    # bytes in 2856 means a sparse selector expects ~1 hit even unaliased.
+    #
+    # Measured before the fix: both seeds observed identical bytes here. So this
+    # test fails on the old implementation, which is what makes it a regression
+    # test rather than a restatement of the one above.
+    assert_seed_changes_observable(
+        tmp_path,
+        build_webgl_extension,
+        "webgl.js",
+        GL_STUBS,
+        GL_CREEPJS_OBSERVABLE_PROBE,
+    )
+
+
+def test_different_seeds_are_unlinkable_at_creepjs_geometry(tmp_path):
+    # The Level-2 unlinkability claim, asserted at the geometry the checker
+    # actually reads rather than only at a fully-perturbable buffer. Three
+    # profiles must be pairwise distinct HERE too — a scheme that separates two
+    # seeds on a dense buffer can still collapse three onto one value on a buffer
+    # holding sixteen usable bytes, and that collapse is exactly what a checker
+    # sees.
+    assert_profiles_unlinkable(
+        tmp_path,
+        build_webgl_extension,
+        "webgl.js",
+        GL_STUBS,
+        GL_CREEPJS_OBSERVABLE_PROBE,
     )
 
 
@@ -108,7 +155,7 @@ def test_carries_readpixels_noise_into_workers(tmp_path):
     assert "G.Worker" in js
     body = js.split("function applyWebglPatch(G)", 1)[1].split("__pnaBoot", 1)[0]
     assert "var SEED =" in body
-    assert "var STRIDE =" in body
+    assert "var BUDGET =" in body
 
 
 def test_only_byte_buffers_touched(tmp_path):

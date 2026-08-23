@@ -24,10 +24,38 @@ from .worker_wrap import (
     realm_bootstrap_js,
 )
 
-# One byte is nudged per this many bytes, by +/-1. Sparse enough to be invisible
-# and to keep the image plausible, dense enough that the readback hash differs
-# per profile.
-_STRIDE = 17
+# How many bytes we aim to nudge in any one readback, by +/-1.
+#
+# A BUDGET rather than the fixed `_STRIDE = 17` byte-comb it replaces, because a
+# byte stride is a function of BUFFER GEOMETRY and the geometry belongs to
+# whoever calls readPixels — i.e. to the fingerprinter. PS-97 measured what that
+# costs. CreepJS reads a `drawingBufferWidth/15 x drawingBufferHeight/6` corner
+# (`src/webgl/index.ts:355`), which off a 256x256 canvas is 17x42, so its row is
+# 68 bytes = EXACTLY 4 x 17. A `i += 17` walk therefore visited pixel 0/4/8/12 of
+# every row and nothing else, for the whole buffer, while the antialiased edge it
+# had to reach sat at x=13..16. Measured on a real engine: of the 172 offsets the
+# comb visited, ZERO passed the mid-range guard below. Two profiles with two
+# different seeds published a byte-identical `pixels:` hash (`51df3565`) while
+# every other rendered vector differed — a vector on which they are linkable.
+#
+# Two distinct failures were behind that one number, and a stride cannot fix
+# either. ALIASING: any stride dividing the row length collapses onto a handful
+# of columns, and the row length is not ours to choose. STARVATION: that region
+# is 98.9% cleared zeros, and only 16 of its 2856 bytes pass the guard at all, so
+# even a stride coprime with the row expects ~1 hit — entropy by luck.
+#
+# So the budget is spent over the bytes that CARRY CONTENT (see `perturbBytes`),
+# never over byte offsets. No row width can alias content ordinals away, and a
+# sparse readback gets a guaranteed floor instead of a lottery.
+#
+# NOT a magnitude increase, deliberately. PS-97 also measured that CreepJS
+# publishes `pixels:` as a SHA-256 over the raw array (`utils/crypto.ts:23`) with
+# no rounding anywhere in its WebGL path, so ONE changed byte moves the hash.
+# The +/-1 nudge and the mid-range guard are untouched; only the CHOICE of which
+# bytes to spend it on changes. On a large readback this is strictly SPARSER
+# than the stride was (~512 bytes instead of length/17), so it is a smaller tell,
+# not a louder one.
+_BUDGET = 512
 
 # The ONLY engine-specific part of the patch, kept as a seam rather than a
 # second copy of the whole script: everything that computes the perturbation is
@@ -54,14 +82,14 @@ _CONTENT_SCRIPT = r"""
   // Patch one realm G (window or a WorkerGlobalScope). Detectors read a WebGL
   // pixel hash from an OffscreenCanvas inside a worker to catch a page-only
   // spoof, so the readback noise must run in every realm — carried into workers
-  // below. SEED/STRIDE live INSIDE so applyWebglPatch.toString() carries them
+  // below. SEED/BUDGET live INSIDE so applyWebglPatch.toString() carries them
   // into the worker realm (a var in the outer IIFE would be undefined there).
   function applyWebglPatch(G) {
    try {
     if (!G || G.__personaWebgl) return;
     G.__personaWebgl = true;
     var SEED = __SEED__;
-    var STRIDE = __STRIDE__;
+    var BUDGET = __BUDGET__;
 
   function bit(i) {
     var h = SEED ^ (i + 0x9e3779b1);
@@ -78,13 +106,49 @@ __NATIVE_WRAP__
     if (!(buf instanceof Uint8Array) && !(buf instanceof Uint8ClampedArray)) {
       return;
     }
-    for (var i = 0; i < buf.length; i += STRIDE) {
+    // Spend the budget over the bytes that CARRY CONTENT, never over byte
+    // offsets. A fixed byte stride is a function of the buffer's row geometry,
+    // and the caller chooses that geometry — CreepJS's 17x42 corner has a
+    // 68-byte row, so the old `i += 17` hit four columns of every row forever
+    // and never once landed on a byte this guard admits. Counting eligible
+    // bytes first makes the selection depend on the IMAGE instead, which no row
+    // width can alias away, and gives a sparse readback a guaranteed floor
+    // rather than a ~1-hit lottery.
+    //
+    // The guard is the original one and is applied IDENTICALLY in both passes:
+    // skip fully transparent/black and fully opaque/white edges so we don't make
+    // obviously-wrong pixels; nudge mid-range bytes only. Both passes must agree
+    // exactly, or the ordinals counted in pass 1 do not address the same bytes
+    // in pass 2.
+    var eligible = 0;
+    var i;
+    for (i = 0; i < buf.length; i++) {
+      var p = buf[i];
+      if (p > 1 && p < 254) eligible++;
+    }
+    if (!eligible) return;
+
+    // Take every `step`-th eligible byte so the budget is spread across the
+    // whole image rather than exhausted on the first run of content. When there
+    // is less content than budget, step is 1 and every eligible byte moves —
+    // which is what rescues the starved CreepJS readback.
+    var step = Math.floor(eligible / BUDGET);
+    if (step < 1) step = 1;
+    // Where the walk starts is seed-derived, so two seeds differ by WHICH bytes
+    // move as well as by which direction they move. With step 1 the phase is
+    // necessarily 0 and the seed still separates the profiles through bit().
+    var phase = step > 1 ? (SEED >>> 0) % step : 0;
+
+    var ord = 0;
+    for (i = 0; i < buf.length; i++) {
       var v = buf[i];
-      // skip fully transparent/black and fully opaque/white edges so we don't
-      // make obviously-wrong pixels; nudge mid-range bytes only.
-      if (v > 1 && v < 254) {
+      if (v <= 1 || v >= 254) continue;
+      if (ord % step === phase) {
+        // Keyed by byte offset, not by ordinal: the offset is stable under a
+        // change of content, so the same pixel keeps the same direction.
         buf[i] = v + bit(i);
       }
+      ord++;
     }
   }
 
@@ -150,7 +214,7 @@ def _webgl_patch_js(
     """
     return (
         _CONTENT_SCRIPT.replace("__SEED__", str(int(seed) & 0xFFFFFFFF))
-        .replace("__STRIDE__", str(_STRIDE))
+        .replace("__BUDGET__", str(_BUDGET))
         .replace("__NATIVE_WRAP__", native_wrap)
         .replace(
             "__REALM_BOOTSTRAP__", realm_bootstrap_js("applyWebglPatch", worker_cloak)
