@@ -93,10 +93,11 @@ Correct everywhere except the named platform. Not a provisioning gap on Linux.
 Worth recording, because a *future* skip from one of these is a change of
 state rather than the status quo:
 
-* the **node** probes (`native_mask_probe.py:141`, `test_worker_wrap.py:250`,
-  `test_ff_language_override.py:333`, `test_gpu_ext.py:529`/`:974`,
-  `test_title_ext.py:251`, `test_canvas_ctx_ext.py:155`/`:355`) — `node` is on
-  PATH here, so all of these ran;
+* the **node** probes (`native_mask_probe.py:141`, the `realms` fixture in
+  `test_worker_wrap.py`, `test_ff_language_override.py:333`,
+  `test_gpu_ext.py:529`/`:974`, `test_title_ext.py:251`,
+  `test_canvas_ctx_ext.py:155`/`:355`) — `node` is on PATH here, so all of
+  these ran;
 * `test_geo_disproven_refusal.py:575` (`flet`) — installed here;
 * `test_cert_terminator.py:580` (running as root) and
   `test_peer_auth.py:49` (`SO_PEERCRED`) — neither condition held.

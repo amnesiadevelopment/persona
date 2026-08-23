@@ -306,7 +306,9 @@ def _native_cloak_js() -> str:
       injected scripts compose with no shared global name between them.
 
     The patch itself is cloaked as "toString" because a detector stringifies
-    Function.prototype.toString to catch exactly this trick (native_ext.py:44-47).
+    Function.prototype.toString to catch exactly this trick — the same reason
+    `applyNativePatch` in native_ext.py pins both `__pnaName` and `name` onto its
+    `patched` wrapper.
 
     The text uses double quotes only and contains no newline and no backslash, so
     the SAME string is valid both here in the page realm and inlined inside the
