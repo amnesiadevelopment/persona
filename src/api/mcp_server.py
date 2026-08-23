@@ -9,6 +9,7 @@ layer added later.
 from __future__ import annotations
 
 import os
+import time
 
 from typing import TYPE_CHECKING
 
@@ -16,6 +17,7 @@ from mcp.server.fastmcp import FastMCP
 
 from ..core.config import PERSONA_HOME
 from .cdp_endpoint import _resolve_port
+from .refusal_report import refusal_for_attempt
 
 if TYPE_CHECKING:
     from ..core.container import Container
@@ -112,7 +114,13 @@ def build_mcp(container: Container) -> FastMCP:
 
     @mcp.tool()
     def launch_profile(name: str) -> dict:
-        """Launch the browser for a profile."""
+        """Launch the browser for a profile.
+
+        Answers ``{"launched": False, "error": "launch refused", "kind": ...,
+        "detail": ...}`` when a fail-closed guard refused the launch — the same
+        refusal shape this tool already uses above, now covering the case that
+        matters most.
+        """
         pm = container.profile_manager
         bl = container.browser_launcher
         profile = pm.profiles.get(name)
@@ -120,7 +128,27 @@ def build_mcp(container: Container) -> FastMCP:
             return {"launched": False, "error": "no such profile"}
         if bl.is_running(name):
             return {"launched": False, "error": "already running"}
+        # Stamped BEFORE the call: it is what tells a verdict THIS attempt
+        # produced from one an earlier attempt left on record. See
+        # api/refusal_report.py — the rule lives there so this lane and the REST
+        # lane cannot grow two opinions about it.
+        attempt_at = time.time()
         bl.start_thread(profile, log_callback=lambda _m: None)
+        # A guard refuses inside start_thread, which swallows the exception,
+        # records the verdict, and returns the same None a successful launch
+        # returns. Without this read the tool answered {"launched": True} for a
+        # profile that never opened — the product's loudest stop delivered to an
+        # off-machine caller as a success, with no follow-up call able to recover
+        # the reason. `kind` is the stable identifier to branch on; `detail` is
+        # the settled operator sentence, passed through untouched.
+        refusal = refusal_for_attempt(bl, name, attempt_at)
+        if refusal is not None:
+            return {
+                "launched": False,
+                "error": "launch refused",
+                "kind": refusal.kind,
+                "detail": refusal.detail,
+            }
         return {"launched": True, "name": name}
 
     @mcp.tool()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import time
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -9,6 +10,7 @@ from ...core.logging import get_logger
 from ..cdp_endpoint import cdp_info_for
 from ..dependencies import get_browser_launcher, get_event_bus, get_profile_manager
 from ..helpers import require_profile
+from ..refusal_report import refusal_for_attempt
 from ..schemas.browser import (
     BrowserCdpInfo,
     BrowserStatusResponse,
@@ -125,7 +127,44 @@ async def launch_browser(
     def _on_stop() -> None:
         bus.emit()
 
+    # Stamped BEFORE the call so the refusal read below can tell a verdict this
+    # attempt produced from one left on record by an earlier attempt. See
+    # api/refusal_report.py for why the attempt — not the dict — is the
+    # discriminator.
+    attempt_at = time.time()
     bl.start_thread(launch_profile, _api_log, on_ready=_on_ready, on_stop=_on_stop)
+
+    # A fail-closed guard refuses INSIDE start_thread, which swallows the
+    # exception, records the verdict, and returns the same None a successful
+    # launch returns. Without this read the lane composed success=True below and
+    # the caller was told a profile opened that never did — the guard's loud stop
+    # degraded to a silent no-op for the audience least able to see the
+    # server-side log the sentence went to, and most likely to retry in a loop.
+    # Answered 409 to match this route's other launch refusals (already running,
+    # engine missing, not AI-enabled). Placed BEFORE the CDP wait deliberately:
+    # nothing is coming up to attach to, so waiting would only add ~15s to an
+    # answer already known.
+    refusal = refusal_for_attempt(bl, name, attempt_at)
+    if refusal is not None:
+        logger.info(
+            "API launch refused for %s: %s", name, refusal.kind
+        )
+        bus.emit()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "launch refused",
+                # The stable identifier, for the caller's own branching. The
+                # short human label is deliberately not carried: it exists for
+                # an operator scanning a list of cards, not for a machine.
+                "kind": refusal.kind,
+                # The settled operator sentence, passed through untouched —
+                # restating it here would fork it at the first edit
+                # (services/browser/refusal.py).
+                "detail": refusal.detail,
+            },
+        )
+
     logger.info("API launched browser for: %s (automation=%s)", name, automation)
     bus.emit()
 
