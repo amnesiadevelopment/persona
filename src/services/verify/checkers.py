@@ -268,6 +268,14 @@ class Checker:
     url: str
     tier: str
     items: "tuple[JsonItem | TextItem, ...]" = ()
+    # REDUNDANT PROVIDERS OF THE SAME ANSWER, tried in order until one answers.
+    # Empty for almost every checker in the matrix, and deliberately so: two
+    # checkers are two opinions and are both recorded, never substituted for
+    # one another. This exists for the EXIT OBSERVATION alone, where the row is
+    # a PRECONDITION rather than a verdict — one unreachable oracle there marks
+    # every other row in the tier unobtainable (PS-128), which is a fault of
+    # the instrument and not a reading of the product.
+    urls: "tuple[str, ...]" = ()
     # Seconds to let a page settle before reading it. Pixelscan and CreepJS
     # take 45-60s to reach a verdict; reading either at load time records an
     # empty page as though it were the answer.
@@ -401,9 +409,31 @@ JSON_CHECKERS: "tuple[Checker, ...]" = (
 # whose keys are unquoted, the quoted pattern does not match, and the reading
 # is ABSENT. That is the fail-SAFE direction — an unmatched proof refuses the
 # tier rather than passing it — but the raw form is what this is written for.
+# The providers the ENGINE may observe its own exit through, tried in order
+# until one answers — the engine-side twin of ``exit_guard.EXIT_OBSERVATION_URLS``.
+#
+# PS-128 measured a single oracle failing closed on a HEALTHY exit. ipinfo.io
+# answered `HTTP 429 Rate limit hit` through the mobile exit (the limit
+# attaches to the EXIT's shared address, not to us), and because this row is
+# the tier's PRECONDITION, all 37 browser rows in all 4 configurations were
+# marked unobtainable — the run refused itself over a provably Polish exit.
+#
+# Redundant for REACHABILITY only. A provider that ANSWERS is authoritative:
+# the wrong country still ends the run, and is never retried against a
+# friendlier provider. Only a page that could not be loaded, or that carried
+# no country at all, advances to the next.
+ENGINE_EXIT_URLS = (
+    "https://ipinfo.io/json",
+    "https://ipwho.is/",
+)
+
 ENGINE_EXIT_CHECKER = Checker(
     id="engine-exit",
-    url="https://ipinfo.io/json",
+    # `url` stays the FIRST provider so every existing reader of it (the
+    # record, the catalogue tests) keeps its meaning; `urls` is what the
+    # observation loop walks.
+    url=ENGINE_EXIT_URLS[0],
+    urls=ENGINE_EXIT_URLS,
     tier=TIER_BROWSER,
     settle_seconds=0.0,
     items=(
@@ -414,13 +444,35 @@ ENGINE_EXIT_CHECKER = Checker(
                       "observed_ip: the two are different clients and a "
                       "divergence is a fact worth having in the record rather "
                       "than in a comment."),
-        TextItem("country", r'"country"\s*:\s*"([^"]+)"', EXIT,
+        # TWO DIALECTS, ONE ROW. ipinfo answers `"country": "PL"`; ipwho.is
+        # answers `"country": "Poland"` and puts the code in `"country_code"`.
+        # This row is compared against "PL", so reading ipwho.is with the
+        # naive `"country"` pattern captures "Poland" and REFUSES the run for
+        # being in the wrong country — a worse failure than the 429 the
+        # fallback exists to survive, because the message would be actively
+        # false. Anchoring on a TWO-LETTER value picks the code out of either
+        # dialect: "Poland" cannot match, so on ipwho.is the pattern skips
+        # past it to `country_code`. `continent_code` cannot match either,
+        # since the key must literally be `country`/`country_code`.
+        TextItem("country", r'"country(?:_code)?"\s*:\s*"([A-Za-z]{2})"', EXIT,
                  adverse=False, capture=True),
         TextItem("city", r'"city"\s*:\s*"([^"]+)"', EXIT,
                  adverse=False, capture=True),
-        TextItem("org", r'"org"\s*:\s*"([^"]+)"', EXIT,
+        # ipinfo has `org` flat; ipwho.is nests it under `connection`. The
+        # pattern is unanchored, so it finds either.
+        TextItem("org", r'"(?:org|isp)"\s*:\s*"([^"]+)"', EXIT,
                  adverse=False, capture=True),
-        TextItem("timezone", r'"timezone"\s*:\s*"([^"]+)"', EXIT,
+        # ipinfo: `"timezone": "Europe/Warsaw"`. ipwho.is: `"timezone": {"id":
+        # "Europe/Warsaw", ...}` — an OBJECT, which the quoted-value form
+        # cannot match, so the zone is reached through the nested `id`.
+        # ONE capture group, not two alternatives each with their own: `capture`
+        # records GROUP 1, so an alternation of the form `(?:"(A)"|{"id":"(B)")`
+        # reads ipinfo fine and returns None on ipwho.is, where the value lands
+        # in group 2. The alternation is therefore over the PREFIX only, and the
+        # single group follows it — measured, this was returning None.
+        TextItem("timezone",
+                 r'"timezone"\s*:\s*(?:"|\{\s*"id"\s*:\s*")([^"]+)"',
+                 EXIT,
                  adverse=False, capture=True,
                  note="The zone the engine's OWN exit implies. persona derives "
                       "the profile timezone from proxy geography, so this is "

@@ -1,0 +1,26 @@
+{
+  "4242": {
+    "readback": {
+      "bytes": 4096,
+      "digest": 1444116715,
+      "mid": 3072
+    },
+    "unmasked": {
+      "renderer": "ANGLE (Intel, Intel(R) HD Graphics 400 Direct3D11 vs_5_0 ps_5_0), or similar",
+      "vendor": "Google Inc. (Intel)"
+    },
+    "errors": 0
+  },
+  "1337": {
+    "readback": {
+      "bytes": 4096,
+      "digest": 1471895271,
+      "mid": 3072
+    },
+    "unmasked": {
+      "renderer": "ANGLE (AMD, Radeon R9 200 Series Direct3D11 vs_5_0 ps_5_0), or similar",
+      "vendor": "Google Inc. (AMD)"
+    },
+    "errors": 0
+  }
+}
