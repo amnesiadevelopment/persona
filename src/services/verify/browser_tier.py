@@ -300,6 +300,39 @@ def _read_open_session(
     That sharing is the point rather than tidiness: a Chromium-specific copy of
     this loop is exactly how one engine would quietly acquire a reading path
     the other lacks, and a record built from two dialects is not comparable.
+
+    A SESSION THAT DIES MID-RUN ENDS THE RUN, and says so once
+    ----------------------------------------------------------
+    This loop used to catch a failed ``new_page()`` per checker and ``continue``.
+    Measured consequence (PS-110): ``pixelscan.net`` crashed the Chromium
+    renderer, every subsequent ``new_page()`` raised ``TargetClosedError``, and
+    the run recorded nine CreepJS rows — plus every other row after the crash —
+    as ordinary unobtainables. Forty-five rows lost to ONE dead context are
+    indistinguishable, in that record, from forty-five checkers that each
+    independently declined, and a later comparison against a healthy record
+    reads them as forty-five moved vectors.
+
+    So a ``new_page()`` failure is treated as what it is: not this checker's
+    answer, but the end of the session. Every remaining checker is marked
+    ``never_asked`` with the SAME cause, and the loop stops rather than calling
+    ``new_page()`` another forty times on a context that cannot make pages.
+
+    The two failure kinds are kept apart deliberately, because only one of them
+    is a reading about a checker:
+
+    * ``goto`` / ``inner_text`` raising is THAT CHECKER's failure — it was
+      asked and could not answer. The run continues; one checker refusing must
+      not take the others down.
+    * ``new_page()`` raising is THE SESSION's failure. Nothing after it was
+      ever asked.
+
+    Re-establishing the browser and carrying on was the other option the ticket
+    left open. It is not taken here: a relaunch mid-run would silently change
+    the thing being measured (a fresh context, possibly a fresh seed-derived
+    identity) halfway through a record that claims to be one reading, and a
+    record built from two browsers is the same class of artifact as one built
+    from two engines' dialects. Stopping and saying so keeps the record honest
+    about what it is.
     """
     out: "dict[str, dict]" = {}
 
@@ -317,7 +350,7 @@ def _read_open_session(
         return {checker.id: {"error": str(exc)} for checker in checkers}
     out[ENGINE_EXIT_CHECKER.id] = {"text": exit_text}
 
-    for checker in checkers:
+    for index, checker in enumerate(checkers):
         if checker.id == ENGINE_EXIT_CHECKER.id:
             # Already observed above — asking twice would record a second,
             # later address for the same run and make the record
@@ -326,8 +359,22 @@ def _read_open_session(
         try:
             page = live.new_page()
         except Exception as exc:
-            out[checker.id] = {"error": f"{type(exc).__name__}: {exc}"}
-            continue
+            # THE SESSION IS GONE, not this checker. See the docstring: the
+            # remaining checkers are marked as never asked, sharing this one
+            # cause, and the loop stops rather than raising the same error
+            # against every catalogue entry in turn.
+            cause = f"{type(exc).__name__}: {exc}"
+            for remaining in checkers[index:]:
+                if remaining.id == ENGINE_EXIT_CHECKER.id:
+                    continue
+                out[remaining.id] = {
+                    "error": (
+                        "the browser session ended mid-run and this checker "
+                        f"was NEVER ASKED — {cause}"
+                    ),
+                    "never_asked": True,
+                }
+            return out
         try:
             page.goto(
                 checker.url,
@@ -339,6 +386,12 @@ def _read_open_session(
             sleep(checker.settle_seconds)
             out[checker.id] = {"text": page.inner_text("body")}
         except Exception as exc:
+            # THIS CHECKER's failure — it was asked and could not answer. The
+            # run continues: one checker refusing must not take the others
+            # down. Note this is where a crash-on-read (the PS-110 pixelscan
+            # case) is first seen; the SESSION death it causes is detected at
+            # the next new_page(), which is the honest place for it, because
+            # this checker really was asked.
             out[checker.id] = {"error": f"{type(exc).__name__}: {exc}"}
         finally:
             try:
@@ -636,6 +689,12 @@ def readings_from_texts(
 
     A checker missing from ``pages`` is unobtainable with a reason, not
     skipped — the record keeps its full width whatever the run did.
+
+    ``never_asked`` rides through from the page result onto every row it
+    produced. It is carried rather than re-derived because only the loop knows
+    WHY a checker has no text: from here, a checker the session never reached
+    and one that was asked and refused look identical, and that is exactly the
+    conflation PS-110 is about.
     """
     out: "list[Reading]" = []
     for checker in checkers:
@@ -652,7 +711,13 @@ def readings_from_texts(
             note = checker.note_unreachable
             if note:
                 reason = f"{reason} — {note}"
-            out.extend(readings_for_unread_checker(checker, reason))
+            out.extend(
+                readings_for_unread_checker(
+                    checker,
+                    reason,
+                    never_asked=bool(page.get("never_asked", False)),
+                )
+            )
             continue
         text = page["text"]
         if not text.strip():
