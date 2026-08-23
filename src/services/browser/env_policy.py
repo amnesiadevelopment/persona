@@ -1,5 +1,14 @@
 """What the launched browser is allowed to inherit from the operator's session.
 
+Two properties live here, both of them "what the child inherits from whoever
+started persona": its ENVIRONMENT (the two scrub lists below) and its WORKING
+DIRECTORY (``browser_child_cwd``). They are separate concerns kept in one
+module for one reason — they have the same failure mode, which is that a value
+decided at one engine seam and forgotten at the other looks fixed and is not.
+
+THE ENVIRONMENT
+---------------
+
 The browser's whole job is to execute untrusted remote code, so its environment
 is part of the profile's perimeter — not a detail of however the operator's
 shell happened to be set up. This module owns the lists, shared by both engines,
@@ -61,6 +70,43 @@ that difference is not cosmetic:
   persona itself and every other concurrently-open profile. That path is
   therefore left alone: an honest, recorded absence rather than a guarantee
   that silently does not hold.
+
+THE WORKING DIRECTORY
+---------------------
+
+Same shape, one axis over. Before this was centralized the chromium launcher
+pinned ``cwd=os.path.expanduser("~")`` inline and the firefox seam set nothing
+at all, so its child inherited whatever directory persona itself was sitting
+in — and ``grep -rnE 'cwd=|chdir' src/services/browser/`` returned exactly one
+hit in the whole package. That is not an edge case reachable only after a
+fault: ``src/main.py:_ensure_valid_cwd`` RETURNS EARLY whenever ``getcwd()``
+works, so on an ordinary launch persona's cwd is simply the directory the
+operator started it from, and the two engines part company there. (After a
+self-update re-exec leaves persona in an unmounted AppImage directory, that
+same guard can walk as far as ``/tmp`` or ``/``, and the firefox child would
+land there.)
+
+``browser_child_cwd`` is now the one authority. Neither seam names a path.
+
+WHAT THIS IS NOT. This is not a page-observable leak and is not claimed as
+one: a working directory is process state, no JS surface exposes it, and no
+fingerprint surface is touched. The value is what it closes structurally — the
+next person to change the browser child's working directory changes it in ONE
+place and cannot fix one engine while forgetting the other.
+
+APPLYING IT, and the platform gap that is deliberate:
+
+* Chromium passes the value to ``subprocess.Popen(cwd=...)``, which sets the
+  directory in the CHILD only. Safe on every platform by construction.
+* Firefox on Linux FORKS, and a fork has separate memory, so its child may
+  ``os.chdir`` its own process — see ``chdir_current_process``.
+* Firefox on Windows/macOS runs that same child as a THREAD of the manager
+  process, where the working directory is process-global state exactly like
+  ``os.environ``. An ``os.chdir`` there would move persona's OWN cwd and every
+  concurrently-open profile's — strictly worse than the divergence being
+  fixed. That path is therefore left alone, guarded identically to the
+  environment scrub: an honest, recorded absence rather than a guarantee that
+  silently does not hold.
 """
 
 # Identity-bearing variables the browser child has no use for. SSH_AUTH_SOCK
@@ -147,3 +193,69 @@ def scrub_current_process_environ():
     import os
 
     return scrub_inherited_environment(os.environ)
+
+
+def browser_child_cwd():
+    """THE working directory both engine seams give the browser child.
+
+    THE VALUE IS ``os.path.expanduser("~")``, AND IT IS DELIBERATELY UNCHANGED.
+    This function exists to centralize the value, not to revisit it: before it,
+    the chromium launcher pinned exactly this expression inline with no comment
+    at all, so a reader could not tell whether it was deliberate isolation or
+    an incidental default, and the firefox seam pinned nothing.
+
+    What can honestly be said for it is this and no more: it is the value both
+    seams now agree on. CHANGING it is a product decision held elsewhere — the
+    owner ruled on the neighbouring question (2026-08-21, PS-34 cancelled:
+    downloaded files must land on the host, so a directory inside the profile's
+    own data dir was rejected), which is why picking a directory is not a
+    tidy-up a reader of this module should make on their own. If a different
+    directory is right, that is its own ticket with that directive in front of
+    it. No rationale for ``~`` beyond the above is asserted here, because none
+    is established.
+
+    Computed per call rather than frozen into a module constant: ``HOME`` can
+    legitimately differ by the time a browser is launched (it is read at import
+    time exactly once otherwise), and this mirrors what the inline expression
+    at the chromium seam already did.
+    """
+    import os
+
+    return os.path.expanduser("~")
+
+
+def chdir_current_process(target=None):
+    """Move THIS process to the browser child's working directory.
+
+    Only ever safe in a FORKED child, which has its own process-global state:
+    calling it on a thread of the manager process would move persona's own
+    working directory and every other profile's open at the time. The one
+    caller guards on exactly that (see ``invisible_launch._child``); this
+    function does not guess, it just does what it is told — the same division
+    of labour as ``scrub_current_process_environ``.
+
+    RAISES ``OSError`` if the directory is unreachable — an unmounted home, the
+    fault case ``src/main.py:_ensure_valid_cwd`` exists for. It is deliberately
+    NOT caught here and NOT given a fallback chain: falling back would mean
+    choosing a second directory, which is exactly the product decision this
+    module declines to take (see ``browser_child_cwd``), and silently
+    continuing would restore the divergence — the firefox child would once
+    again be standing wherever persona happened to be. The chromium seam
+    behaves the same way by construction: ``Popen(cwd=...)`` raises rather than
+    launching somewhere else. What the caller owes is AUDIBILITY, not a
+    fallback; ``invisible_launch._child`` calls this only once its pipe is open
+    so the failure is reported rather than read by the parent as a bare EOF.
+
+    ``target`` lets the caller pass a value it already read from
+    ``browser_child_cwd``. The firefox seam does exactly that: it must read the
+    value BEFORE it scrubs its own environment (``expanduser`` reads ``HOME``)
+    but apply it AFTER its pipe exists. Omitted, the value is read now.
+
+    Returns the directory it moved to, for the caller to log.
+    """
+    import os
+
+    if target is None:
+        target = browser_child_cwd()
+    os.chdir(target)
+    return target
