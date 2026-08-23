@@ -298,6 +298,14 @@ class ChildWatchdog:
                 deadline, label = self._deadline, self._label
             if deadline is not None and time.monotonic() >= deadline:
                 self._expire(label)
+                # SINGLE-SHOT BY INTENT: returning ends the watchdog thread, so
+                # the driver is unbounded from here on. That is deliberate —
+                # once a bound has fired the test is already failing and is on
+                # its way out, and a watchdog that re-armed would be reaping
+                # during the unwind, racing the very cleanup it exists to make
+                # possible. close() still reaps directly on this path, via its
+                # own reap_process_tree loop over _spawned, so "every spawned
+                # child is gone" does not depend on this thread still running.
                 return
 
     def _expire(self, label: str | None) -> None:
