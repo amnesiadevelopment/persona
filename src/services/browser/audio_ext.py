@@ -77,11 +77,14 @@ _FIREFOX_NATIVE_WRAP = r"""  var __nm = (typeof WeakMap === 'function') ? new We
   // detector runs — the wrapper then stringifies as raw patch source,
   // `perturbFloat` and all. Measured in two isolated realms, not reasoned.
   //
-  // `G.Function.prototype` is Chromium's shape (native_ext.py:32,48) and the
-  // reason its comment names "a fresh about:blank iframe … has its own
-  // Function.prototype". The WORKER realm never had this problem — the leaf
-  // crosses there as SOURCE TEXT and is re-evaluated in the worker's own realm,
-  // so both forms resolve correctly there; this is the frame case only.
+  // `G.Function.prototype` is Chromium's shape — see `applyNativePatch` in
+  // native_ext.py, which reads that same realm-qualified form twice: once to
+  // capture `origToString`, once to assign the `patched` wrapper back onto it.
+  // That is also the reason its comment names "a fresh about:blank iframe …
+  // has its own Function.prototype". The WORKER realm never had this problem —
+  // the leaf crosses there as SOURCE TEXT and is re-evaluated in the worker's
+  // own realm, so both forms resolve correctly there; this is the frame case
+  // only.
   //
   // FAIL SOFT, NEVER `return`: this block is spliced INSIDE applyAudioPatch,
   // so bailing out here would skip the readback overrides too — trading the

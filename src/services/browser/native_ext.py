@@ -25,10 +25,26 @@ CONTENT_SCRIPT = r"""
   // patch: a fresh about:blank iframe (or a worker) has its own Function.prototype,
   // so a wrapper carried there by another extension would otherwise stringify as
   // source and betray the override. Carried into all realms by the bootstrap.
+  //
+  // CHAIN, don't flag-guard. locale_ext re-applies this same cloak in its own
+  // realms, and the two are separate content scripts in one MAIN world with no
+  // guaranteed load order and no shared closure. They used to coordinate through
+  // an enumerable global (`G.__pnaToStringPatched`), which `Object.keys(window)`
+  // found in one line, in EVERY realm, at every worker/iframe depth — positive
+  // identification of a persona-family tool, under persona's own `__pna` prefix.
+  //
+  // Chaining DISSOLVES the coordination problem instead of solving it: this
+  // wrapper delegates to whatever Function.prototype.toString it found (the
+  // engine's own, or another script's patch), so N scripts compose with no
+  // shared name between them. It also preserves the property the flag existed
+  // for — a marked wrapper renders the native form EXACTLY once, in either load
+  // order, because whichever patch is outermost answers a `__pnaName` hit itself
+  // and never reaches the one below. Same idiom as worker_wrap.py:28-32 (the
+  // Worker/iframe accessors) and invisible_launch.py:296-302 (the Firefox cloak,
+  // which this ports).
   function applyNativePatch(G) {
    try {
-    if (!G || !G.Function || G.__pnaToStringPatched) return;
-    G.__pnaToStringPatched = true;
+    if (!G || !G.Function) return;
     const origToString = G.Function.prototype.toString;
     const native = function (name) {
       return "function " + (name || "") + "() { [native code] }";
