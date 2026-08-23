@@ -896,6 +896,33 @@ def _exit_json(country="PL", ip="91.150.1.1"):
     }, indent=2)
 
 
+def _ipwho_json(country_code="PL", ip="95.49.113.111"):
+    """The SECOND provider's dialect, copied from a real body captured through
+    the mobile exit on 2026-08-23 (PS-128).
+
+    It differs from ipinfo's shape in three ways that all matter to the rows
+    above: ``country`` is the full NAME with the code in ``country_code``,
+    ``org``/``isp`` are nested under ``connection``, and ``timezone`` is an
+    OBJECT rather than a string. A double that flattened these would prove the
+    patterns work against a shape the provider never sends.
+    """
+    return json.dumps({
+        "ip": ip,
+        "success": True,
+        "country": "Poland",
+        "country_code": country_code,
+        "region": "Masovian Voivodeship",
+        "city": "Warsaw",
+        "continent_code": "EU",
+        "connection": {
+            "asn": 5617,
+            "org": "Orange Polska Spolka Akcyjna",
+            "isp": "Orange Polska Spolka Akcyjna",
+        },
+        "timezone": {"id": "Europe/Warsaw", "abbr": "CEST", "utc": "+02:00"},
+    }, indent=2)
+
+
 def test_the_engine_observes_its_own_exit_and_reads_it_as_rows():
     from src.services.verify.browser_tier import _observe_engine_exit
 
@@ -941,15 +968,108 @@ def test_an_engine_exit_with_no_country_refuses_rather_than_assuming():
 
 
 def test_an_unreachable_exit_observation_refuses_rather_than_reading_on():
+    """EVERY provider unreachable — the engine never saw its own exit at all.
+
+    ``fail_on`` names both providers rather than only ipinfo: since PS-128 the
+    observation walks a list, so "unreachable" means the whole list failed. A
+    double that downed only the first would be modelling the single-oracle
+    world this no longer is, and would assert nothing about the real refusal.
+    """
     from src.services.verify.browser_tier import (
         ExitNotProvenInEngine,
         _observe_engine_exit,
     )
 
-    live = _FakeLive({}, fail_on=("ipinfo.io",))
+    live = _FakeLive({}, fail_on=("ipinfo.io", "ipwho.is"))
     with pytest.raises(ExitNotProvenInEngine) as exc:
         _observe_engine_exit(live)
     assert "could not observe its own exit" in str(exc.value)
+    # Both providers are named, so an operator can tell "the whole list is
+    # down" from "one of them is".
+    assert "ipinfo.io" in str(exc.value)
+    assert "ipwho.is" in str(exc.value)
+
+
+# --- PS-128: one dead oracle must not refuse a provably good exit -----------
+
+
+def test_a_rate_limited_first_provider_falls_through_to_the_second():
+    """THE REGRESSION THIS EXISTS FOR, and it is a behavioural test.
+
+    ipinfo.io answered `HTTP 429 Rate limit hit` through the mobile exit — the
+    limit attaches to the exit's SHARED address, so it is not ours to clear
+    and not retryable. Because this row is the browser tier's PRECONDITION,
+    all 37 rows in all 4 configurations were marked unobtainable and the run
+    refused itself over an exit that was provably Polish.
+
+    The assertion is that the observation SUCCEEDS and returns PL — not merely
+    that a second URL was visited, which would pass even if the country never
+    reached the caller.
+    """
+    from src.services.verify.browser_tier import _observe_engine_exit
+
+    rate_limited = json.dumps(
+        {"status": 429, "error": {"title": "Rate limit hit"}}
+    )
+    live = _FakeLive({
+        "ipinfo.io": rate_limited,
+        "ipwho.is": _ipwho_json(),
+    })
+
+    text, country = _observe_engine_exit(live)
+
+    assert country == "PL"
+    # It really did fall through rather than reading the 429 as an answer.
+    assert any("ipinfo.io" in url for url in live.visited)
+    assert any("ipwho.is" in url for url in live.visited)
+    assert "95.49.113.111" in text
+
+
+def test_the_second_providers_dialect_is_read_as_PL_not_as_Poland():
+    """ipwho.is says `"country": "Poland"` and puts the CODE in
+    `country_code`. Read with ipinfo's key layout the row captures "Poland",
+    which is not "PL" — so the guard would refuse a healthy Polish exit while
+    reporting the wrong country. That is worse than the 429 the fallback
+    exists to survive, because the message would be actively false.
+    """
+    from src.services.verify.checkers import ENGINE_EXIT_CHECKER
+    from src.services.verify.matrix import extract_text_item
+
+    by_id = {
+        item.id: extract_text_item(ENGINE_EXIT_CHECKER, item, _ipwho_json())
+        for item in ENGINE_EXIT_CHECKER.items
+    }
+    assert by_id["country"].value == "PL"
+    # The nested dialect is reached for the other captured rows too, rather
+    # than landing ABSENT and quietly shrinking the record.
+    assert by_id["timezone"].value == "Europe/Warsaw"
+    assert by_id["org"].value == "Orange Polska Spolka Akcyjna"
+    assert by_id["observed_ip"].value == "95.49.113.111"
+
+
+def test_a_wrong_country_is_NOT_retried_against_a_friendlier_provider():
+    """The fallback is redundancy for REACHABILITY, never a second opinion on
+    geography. A provider that answers is authoritative: if the first says US,
+    the run ends there. Asking the next one until a Polish answer turns up is
+    how a fallback becomes a way to launder a bad exit.
+    """
+    from src.services.verify.browser_tier import (
+        ExitNotProvenInEngine,
+        _observe_engine_exit,
+    )
+
+    live = _FakeLive({
+        "ipinfo.io": _exit_json(country="US", ip="8.8.8.8"),
+        # Polish, and must never be consulted.
+        "ipwho.is": _ipwho_json(),
+    })
+    with pytest.raises(ExitNotProvenInEngine) as exc:
+        _observe_engine_exit(live)
+
+    assert "US" in str(exc.value)
+    assert not any("ipwho.is" in url for url in live.visited), (
+        "a wrong-country answer was shopped to the next provider"
+    )
 
 
 def test_an_empty_exit_observation_refuses_it_is_not_a_clean_reading():

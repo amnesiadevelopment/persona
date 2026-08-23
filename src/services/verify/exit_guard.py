@@ -63,6 +63,43 @@ EXPECTED_COUNTRY = "PL"
 # endpoint the manual reconnaissance used, so a later run can compare.
 EXIT_OBSERVATION_URL = "https://ipinfo.io/json"
 
+# The SAME question, asked of more than one provider — because a single oracle
+# makes the guard's availability the run's availability.
+#
+# PS-128 measured this failing closed on a HEALTHY exit. ipinfo.io answered
+# `HTTP 429 Rate limit hit` through the proxy while the exit itself was
+# provably Polish: ipwho.is and api.ipify.org, asked through the same
+# credential in the same minute, both returned 95.49.113.111 / PL / Warsaw.
+# The rate limit attaches to the EXIT's address, which is a shared mobile one
+# that other tenants also use — so it is not ours to clear, cannot be retried
+# around, and rotating is the operator's job. Every one of the four readings
+# that run was supposed to take was refused, and the refusal message blamed
+# the credential and the connection, which were both fine.
+#
+# The providers are tried IN ORDER and the first one that ANSWERS wins. They
+# are redundant oracles for REACHABILITY only — they do not vote, and a
+# provider that answers is authoritative:
+#
+#   * an answer naming a non-Polish country REFUSES the run. It is not a
+#     reason to go and ask a friendlier provider until one agrees, which is
+#     how a multi-provider guard turns into a way to launder a bad exit.
+#   * only a provider that could not be reached, or that did not answer with
+#     a verdict at all (the 429 above), advances to the next one.
+#
+# Every entry is fetched through the proxy argument like every other fetch in
+# this module. Adding providers widens what can be OBSERVED; it does not widen
+# what is ACCEPTED, and there is still no path here that reaches the network
+# without the credential.
+# Only providers that can answer the GEOGRAPHY question belong here. An
+# address-only endpoint (api.ipify.org) was deliberately left out: it answers
+# 200 with a perfectly good `{"ip": ...}` and no country, which this guard
+# correctly treats as an unproven exit — so listing it would turn a healthy
+# run into a refusal for a reason that has nothing to do with the exit.
+EXIT_OBSERVATION_URLS = (
+    "https://ipinfo.io/json",
+    "https://ipwho.is/",
+)
+
 
 class ExitNotProven(RuntimeError):
     """The run may not record anything.
@@ -160,11 +197,47 @@ def load_credential(path: str = DEFAULT_CREDENTIAL_PATH) -> str:
     )
 
 
+def _normalise_observation(payload: dict) -> dict:
+    """One shape out of the providers' several.
+
+    The guard compares a two-letter country code, and the providers do not
+    agree on how to give one. ipinfo answers ``country: "PL"``; ipwho.is
+    answers ``country: "Poland"`` with the code in ``country_code``, and nests
+    ``org`` under ``connection`` and the zone under ``timezone.id``.
+
+    Reading ipwho.is with ipinfo's key layout yields ``country == "POLAND"``,
+    which does not equal ``"PL"`` — so the guard would refuse a perfectly good
+    Polish exit and say it was in the wrong country. That is a WORSE failure
+    than the 429 this change exists to survive, because the message would be
+    actively misleading rather than merely unhelpful. Hence normalising here,
+    once, rather than letting each provider's dialect reach the comparison.
+    """
+    country = str(payload.get("country_code") or payload.get("country") or "")
+    org = payload.get("org")
+    timezone = payload.get("timezone")
+    # ipwho.is nests these; ipinfo has them flat. A dict here is the nested
+    # dialect, so reach in for the field rather than stringifying the object.
+    connection = payload.get("connection")
+    if not org and isinstance(connection, dict):
+        org = connection.get("isp") or connection.get("org")
+    if isinstance(timezone, dict):
+        timezone = timezone.get("id")
+    return {
+        "ip": str(payload.get("ip") or ""),
+        "country": country,
+        "region": str(payload.get("region") or ""),
+        "city": str(payload.get("city") or ""),
+        "org": str(org or ""),
+        "timezone": str(timezone or ""),
+    }
+
+
 def observe_exit(
     proxy_url: str,
     *,
     timeout: float = DEFAULT_TIMEOUT,
-    url: str = EXIT_OBSERVATION_URL,
+    url: str | None = None,
+    urls: "tuple[str, ...] | None" = None,
     expected_country: str = EXPECTED_COUNTRY,
 ) -> Exit:
     """Ask, through the proxy, what address the world sees — and check it.
@@ -172,22 +245,45 @@ def observe_exit(
     Returns the observed :class:`Exit` only when it is in the expected country.
     Raises :class:`ExitNotProven` otherwise, including when the observation
     itself could not be made.
+
+    More than one provider is asked, in order, until one ANSWERS — see
+    :data:`EXIT_OBSERVATION_URLS` for why a single oracle made the guard's
+    availability the run's availability. An answer is authoritative: a
+    provider reporting the wrong country ends the run then and there, and is
+    never retried against a friendlier provider.
+
+    ``url`` (singular) still selects exactly one provider, so an existing
+    caller or test that pins the endpoint keeps its meaning.
     """
-    try:
-        payload = fetch_json(url, proxy_url=proxy_url, timeout=timeout)
-    except (FetchFailed, ProxyRefused) as exc:
+    candidates = (url,) if url else (urls or EXIT_OBSERVATION_URLS)
+
+    payload = None
+    failures = []
+    for candidate in candidates:
+        try:
+            payload = fetch_json(candidate, proxy_url=proxy_url, timeout=timeout)
+            break
+        except (FetchFailed, ProxyRefused) as exc:
+            # Could not be reached, or did not answer with a verdict. This is
+            # the ONLY condition that advances to the next provider.
+            failures.append(f"{candidate}: {redact(str(exc))}")
+
+    if payload is None:
         raise ExitNotProven(
-            "could not observe the exit through the proxy "
-            f"({redact(str(exc))}). The connection may be refused, timed out, "
-            "or the credential unusable. Refusing to fall back to a direct "
-            "connection: rotation is the operator's, from the host."
-        ) from exc
+            "could not observe the exit through the proxy — "
+            f"{len(failures)} provider(s) tried, none answered "
+            f"({'; '.join(failures)}). The connection may be refused, timed "
+            "out, or the credential unusable. Refusing to fall back to a "
+            "direct connection: rotation is the operator's, from the host."
+        )
 
     if not isinstance(payload, dict):
         raise ExitNotProven(
             f"the exit observation endpoint answered with "
             f"{type(payload).__name__}, not an object; the exit is unproven"
         )
+
+    payload = _normalise_observation(payload)
 
     country = str(payload.get("country") or "").upper()
     ip = str(payload.get("ip") or "")
