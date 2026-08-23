@@ -282,6 +282,62 @@ def _run_section(bat: str, label: str) -> int:
     return launches
 
 
+def _labels(bat: str) -> "list[str]":
+    """Every label in the emitted script, in order."""
+    return [ln[1:] for ln in bat.replace("\r\n", "\n").split("\n")
+            if ln.startswith(":") and not ln.startswith("::")]
+
+
+def _goto_targets(bat: str, label: str) -> "list[str]":
+    """Every label the section under :label can jump to (conditional or not)."""
+    out = []
+    for line in _section(bat, label):
+        m = re.search(r"\bgoto\s+(\w+)", line.strip(), re.I)
+        if m:
+            out.append(m.group(1))
+    return out
+
+
+def _falls_through(bat: str, label: str) -> bool:
+    """True when control can drop off the end of :label into the next label —
+    i.e. its last meaningful line is not an unconditional `goto`."""
+    body = [ln.strip() for ln in _section(bat, label) if ln.strip()]
+    return not (body and re.fullmatch(r"goto\s+\w+", body[-1], re.I))
+
+
+def _route(bat: str, start: str) -> "list[str]":
+    """Every section reachable from :start, in emitted order, stopping at :done.
+
+    A route rather than a single section, because a `start` is no longer
+    necessarily in the section a `goto` names — the recovery arm reaches its
+    launch through its own purge, exactly as the normal one does.
+    """
+    labels = _labels(bat)
+    seen, stack = set(), [start]
+    while stack:
+        label = stack.pop()
+        if label in seen or label == "done" or label not in labels:
+            continue
+        seen.add(label)
+        stack.extend(_goto_targets(bat, label))
+        if _falls_through(bat, label):
+            nxt = labels[labels.index(label) + 1:]
+            if nxt:
+                stack.append(nxt[0])
+    return [ln for ln in labels if ln in seen]
+
+
+def _purge_exits(bat: str) -> "set[str]":
+    """The labels that a bounded purge block hands control to. A section is a
+    purge block when it carries the `rd /s /q` of the flet extraction."""
+    exits = set()
+    for label in _labels(bat):
+        body = "\n".join(_section(bat, label))
+        if "rd /s /q" in body:
+            exits.update(t for t in _goto_targets(bat, label) if t != label)
+    return exits
+
+
 def _install_dir(tmp_path):
     """A real install dir holding the CURRENT (working) release, plus a staged
     new release in a temp dir — the state the swap runs against."""
@@ -349,14 +405,17 @@ def test_exhausted_launch_budget_restores_and_relaunches_previous(tmp_path):
     assert "if %boots% lss 5 goto launch" in launch
     assert "goto recover" in launch, "spent launch budget does not reach a restore arm"
 
-    launches = _run_section(bat, "recover")
+    _run_section(bat, "recover")
 
     # the working release is live again, ON DISK
     assert dst_zip.read_bytes() == b"WORKING-RELEASE-CODE"
     # the hash goes back WITH the zip — that mismatch is what makes flet
     # re-extract, since its marker now records the failed release
     assert dst_hash.read_text() == "oldsha"
-    # and a launch is actually attempted from the restored pair
+    # and a launch is actually attempted from the restored pair. The recovery
+    # route reaches its `start` through its own purge (see the launch-purge
+    # reachability test below), so count the starts over the whole route.
+    launches = sum(_run_section(bat, s) for s in _route(bat, "recover"))
     assert launches == 1, "restored the previous release but never launched it"
 
 
@@ -410,3 +469,79 @@ def test_step_order_is_still_wait_stage_purge_launch(tmp_path):
     assert bat.index(":wait") < bat.index(":swap") < bat.index(":purge") < bat.index(":launch")
     # the purge is still there and still bounded
     assert "rd /s /q" in bat and "purges" in bat
+
+
+def test_every_launch_is_reached_through_a_purge(tmp_path):
+    # THE BLOCKER, as a reachability property rather than an emit order.
+    #
+    # :launch carries no purge of its own — it gets away with that only because
+    # every route into it passes through :purge first. `goto recover` added a
+    # SECOND route to a `start`, and a restore-then-start arm bypassed the
+    # purge entirely: it handed the extraction to the new persona's bootstrap,
+    # whose delete runs before any of our Python and therefore CANNOT retry
+    # (#195) — on the one path that exists because everything else has failed.
+    #
+    # The step-order test above stays green against that bug (it pins where
+    # :purge is EMITTED, never whether a launch is REACHED through one), which
+    # is exactly why this asserts reachability instead.
+    dst_zip, dst_hash, new_zip, new_hash = _install_dir(tmp_path)
+    bat = _emit(tmp_path, dst_zip, dst_hash, new_zip, new_hash)
+
+    launch_sections = [lbl for lbl in _labels(bat)
+                       if any(ln.strip().lower().startswith("start ")
+                              for ln in _section(bat, lbl))]
+    # the normal route and the recovery route
+    assert len(launch_sections) == 2, f"unexpected launch sections: {launch_sections}"
+
+    # each one is a bounded purge block's exit target, so no `start` can run
+    # against an extraction that was never cleared
+    exits = _purge_exits(bat)
+    for label in launch_sections:
+        assert label in exits, (
+            f":{label} carries a `start` that no purge block hands control to — "
+            "the bootstrap's non-retrying delete gets a stale extraction (#195)"
+        )
+
+
+def test_recovery_purge_is_bounded_on_its_own_counter(tmp_path):
+    # The recovery purge must not inherit a counter the normal route already
+    # spent: by the time `goto recover` fires, the boots budget is gone and
+    # `purges` may well be at its cap, which would make a shared counter fall
+    # straight through to the launch without deleting anything.
+    dst_zip, dst_hash, new_zip, new_hash = _install_dir(tmp_path)
+    bat = _emit(tmp_path, dst_zip, dst_hash, new_zip, new_hash)
+
+    route = _route(bat, "recover")
+    purges = [lbl for lbl in route if "rd /s /q" in "\n".join(_section(bat, lbl))]
+    assert purges, "the recovery route reaches a launch with no purge on it"
+
+    body = "\n".join(_section(bat, purges[0]))
+    counters = set(re.findall(r"set /a (\w+)\+=1", body))
+    assert counters, "the recovery purge retries without a bound"
+    counter = counters.pop()
+    assert counter != "purges", "recovery purge shares the normal route's spent counter"
+    # bounded, and reset on entry so it starts from a full budget
+    assert re.search(rf"if %{counter}% geq \d+ goto", body), "recovery purge is unbounded"
+    assert f"set {counter}=0" in bat, f"{counter} is never reset before the recovery purge"
+
+
+def test_recovery_route_launches_exactly_once(tmp_path):
+    # #229 is a multi-instance race, so the last-resort route must not spawn a
+    # fistful either. This is also what rules out the naive fix for the blocker:
+    # a bare `goto purge` would re-enter :launch with `boots` already at its cap,
+    # fail the confirm, and `goto recover` a SECOND time — restoring nothing
+    # (the `if exist` guards no-op) and firing a stray extra `start`.
+    dst_zip, dst_hash, new_zip, new_hash = _install_dir(tmp_path)
+    bat = _emit(tmp_path, dst_zip, dst_hash, new_zip, new_hash)
+    _run_section(bat, "swap")
+
+    route = _route(bat, "recover")
+    # the recovery route must not loop back into the exhausted confirm/retry
+    assert "launch" not in route, (
+        f"recovery re-enters the spent launch loop: {route}"
+    )
+    assert sum(_run_section(bat, lbl) for lbl in route) == 1
+
+    # and the restore still happened, on disk, on that same route
+    assert dst_zip.read_bytes() == b"WORKING-RELEASE-CODE"
+    assert dst_hash.read_text() == "oldsha"
