@@ -49,8 +49,16 @@ class ProfileResponse(BaseModel):
     tags: list[str] = []
     ai_control: bool = False
     notes: str = ""
-    data_dir: str
     is_running: bool
+    # `data_dir` is deliberately NOT on this row. It is an absolute host
+    # filesystem path carrying the operator's OS account name, and the profile
+    # row is the broadcast surface -- every list and every read hands it out
+    # unasked. `GET /profiles/{name}/data-dir` (DataDirResponse below) already
+    # answers it on explicit request, which is the least-exposure shape: asked
+    # for, not volunteered. This also brings the REST lane's answer into line
+    # with the MCP lane, which withholds endpoint/location data for stated
+    # reasons (mcp_server.py:82, :332; refusal_report.py:56) -- previously the
+    # two lanes disagreed and only one had recorded why.
 
 
 class ProfileListResponse(BaseModel):

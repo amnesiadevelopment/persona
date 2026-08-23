@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING
 
 from fastapi import HTTPException
 
-from ..core.config import DATA_DIR
 from .schemas.profiles import ProfileResponse
 
 if TYPE_CHECKING:
@@ -27,7 +25,6 @@ def build_profile_response(
 ) -> ProfileResponse:
     """Build a ProfileResponse DTO for the given profile name."""
     profile = pm.profiles[name]
-    data_dir = os.path.join(os.getcwd(), DATA_DIR, name)
     return ProfileResponse(
         name=profile.name,
         proxy=profile.proxy,
@@ -42,6 +39,5 @@ def build_profile_response(
         tags=getattr(profile, "tags", []),
         ai_control=getattr(profile, "ai_control", False),
         notes=getattr(profile, "notes", ""),
-        data_dir=data_dir,
         is_running=bl.is_running(name),
     )
