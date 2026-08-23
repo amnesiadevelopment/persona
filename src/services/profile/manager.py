@@ -14,7 +14,9 @@ from ...utils.store_guard import StoreGuardMixin
 from ...utils.trashable import TrashableMixin
 from ...utils.validation import validate_profile_name
 from .coherence import (
+    DEFAULT_DEVICE_TYPE,
     assert_coherent,
+    assert_device_type_coherent,
     coherence_error,
     coherent_engine,
     normalize_engine,
@@ -351,15 +353,21 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
         valid, _ = validate_profile_name(name)
         if not valid:
             return False
-        # The os_type/engine coherence rules live below every door (see
-        # coherence.py). They used to live only in the profile dialog, so the
-        # REST lane composed profiles the dialog exists to prevent — a macOS
-        # record on the Firefox engine, which launches presenting Windows.
-        # Raised rather than returned False: False here means "already exists"
-        # (409), while an incoherent pair is a different refusal with a reason
-        # the caller can act on, and a door that forgets to handle it fails
-        # loudly instead of silently storing a lie.
-        assert_coherent(os_type, engine)
+        # The coherence rules live below every door (see coherence.py). They
+        # used to live only in the profile dialog, so the REST lane composed
+        # profiles the dialog exists to prevent — a macOS record on the Firefox
+        # engine, which launches presenting Windows. Raised rather than returned
+        # False: False here means "already exists" (409), while an incoherent
+        # profile is a different refusal with a reason the caller can act on, and
+        # a door that forgets to handle it fails loudly instead of silently
+        # storing a lie.
+        #
+        # device_type is passed too (Rule 3). The dialog has no control for it,
+        # so the ONLY way a `windows` + `mobile` profile can be composed is a
+        # door that inherits none of the dialog's narrowing — which is precisely
+        # the class of caller this module exists for. A create composes a new
+        # machine from whole cloth, so it is judged on all three fields.
+        assert_coherent(os_type, engine, device_type)
         # Hold the lock across the check-then-insert so two concurrent adds of
         # the same name can't both pass the `name in self.profiles` check and one
         # silently overwrite the other (RLock: save_profiles below re-enters it).
@@ -474,18 +482,52 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
             # note or a tag fail on a conflict that edit did not create, and
             # leave the profile permanently uneditable — including the edit that
             # would FIX the pair.
+            # "Introduces" is judged PER RULE FAMILY, never with one flag for
+            # all three. The rules read different fields — the pair rules read
+            # (os_type, engine), Rule 3 reads (os_type, device_type) — so a
+            # single "something changed" gate in front of a single
+            # `assert_coherent(os, engine, device_type)` would submit EVERY
+            # field to judgement whenever ANY field moved. A device_type-only
+            # edit would then be refused by Rule 2 for a pair it never touched,
+            # and on a record violating both families (reachable via the exempt
+            # `restore_profile` and via `import_profile`, which reconciles only
+            # the pair) the edit that REPAIRS Rule 3 would be refused by Rule 2
+            # — the stranding this whole block exists to prevent, arriving
+            # through the door the exemption deliberately keeps open.
             _current = self.profiles[original_name]
+            _current_engine = getattr(_current, "engine", "chromium")
+            _current_device_type = getattr(
+                _current, "device_type", DEFAULT_DEVICE_TYPE
+            )
             _resulting_engine = (
-                new_engine if new_engine is not None
-                else getattr(_current, "engine", "chromium")
+                new_engine if new_engine is not None else _current_engine
             )
             _resulting_os = new_os if new_os is not None else _current.os_type
+            # device_type joins the resulting-value read for the same reason
+            # os_type and engine did: a PATCH carrying only device_type must be
+            # judged against the os_type already stored, or
+            # `PATCH {"device_type": "mobile"}` would sail through on a windows
+            # profile — which is the exact door this rule was added to close.
+            _resulting_device_type = (
+                new_device_type if new_device_type is not None
+                else _current_device_type
+            )
             _pair_changed = (
                 _resulting_os != _current.os_type
-                or _resulting_engine != getattr(_current, "engine", "chromium")
+                or _resulting_engine != _current_engine
+            )
+            # Rule 3's inputs are (os_type, device_type), so an os_type edit can
+            # introduce it too — the two gates overlap on os_type by design.
+            _device_type_changed = (
+                _resulting_device_type != _current_device_type
+                or _resulting_os != _current.os_type
             )
             if _pair_changed:
                 assert_coherent(_resulting_os, _resulting_engine)
+            if _device_type_changed:
+                assert_device_type_coherent(
+                    _resulting_os, _resulting_device_type
+                )
 
             # Rename the data dir BEFORE touching any in-memory field, so a
             # locked/failed dir-rename (routine on Windows when the browser is
@@ -1076,8 +1118,17 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
             # into shape. So the incoherent pair is reconciled the same way a
             # stored one is at launch: fall back to the engine that HONORS
             # os_type, which makes the imported record match the machine it will
-            # actually present. The record lands coherent; nothing is lost but a
+            # actually present. The PAIR lands coherent; nothing is lost but a
             # claim that was never true.
+            #
+            # Rule 3 (device_type) is NOT reconciled here. coherent_engine
+            # answers "which engine?", and Rule 3 has no engine remedy — a
+            # windows + mobile profile is contradictory on chromium and on
+            # firefox alike — so an imported windows + mobile archive lands as a
+            # tolerated already-stored record: editable, never stranded, exactly
+            # like a legacy record predating these rules. Reconciling it would
+            # mean rewriting a field at launch, which is process.py's job and
+            # not this door's. See coherence.device_type_error.
             resolved = coherent_engine(profile.os_type, profile.engine)
             if resolved != normalize_engine(profile.engine):
                 logger.warning(
