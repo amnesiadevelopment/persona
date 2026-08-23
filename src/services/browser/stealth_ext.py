@@ -17,8 +17,25 @@ CONTENT_SCRIPT = r"""
 (function () {
   function applyStealthPatch(G) {
    try {
-    if (!G || G.__personaStealth) return;
-    G.__personaStealth = true;
+    if (!G) return;
+    var __pnaReg = null;
+    try {
+      var __pnaO = G.Object;
+      if (__pnaO) {
+        __pnaReg = __pnaO.__pnaRealm;
+        if (!__pnaReg) {
+          __pnaReg = {};
+          __pnaO.defineProperty(__pnaO, '__pnaRealm',
+                                { value: __pnaReg, configurable: true });
+        }
+      }
+    } catch (e) { __pnaReg = null; }
+    try {
+      if (__pnaReg) {
+        if (__pnaReg["stealth"] === true) return;
+        __pnaReg["stealth"] = true;
+      }
+    } catch (e) {}
     try {
       // navigator.connection.downlinkMax — present on real Chrome, missing in
       // many headless/VM builds. CreepJS flags its absence as headless-like.

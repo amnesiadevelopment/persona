@@ -135,8 +135,25 @@ _CONTENT_SCRIPT = r"""
   // outer IIFE would be undefined there).
   function applyAudioPatch(G) {
    try {
-    if (!G || G.__personaAudio) return;
-    G.__personaAudio = true;
+    if (!G) return;
+    var __pnaReg = null;
+    try {
+      var __pnaO = G.Object;
+      if (__pnaO) {
+        __pnaReg = __pnaO.__pnaRealm;
+        if (!__pnaReg) {
+          __pnaReg = {};
+          __pnaO.defineProperty(__pnaO, '__pnaRealm',
+                                { value: __pnaReg, configurable: true });
+        }
+      }
+    } catch (e) { __pnaReg = null; }
+    try {
+      if (__pnaReg) {
+        if (__pnaReg["audio"] === true) return;
+        __pnaReg["audio"] = true;
+      }
+    } catch (e) {}
     var SEED = __SEED__;
     var REL = __REL__;
     var AudioBuffer = G.AudioBuffer, AnalyserNode = G.AnalyserNode;

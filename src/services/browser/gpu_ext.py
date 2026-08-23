@@ -38,8 +38,25 @@ _CONTENT_SCRIPT = r"""
   // into the worker realm (a var in the outer IIFE would be undefined there).
   function applyGpuPatch(G) {
    try {
-    if (!G || G.__personaGpu) return;
-    G.__personaGpu = true;
+    if (!G) return;
+    var __pnaReg = null;
+    try {
+      var __pnaO = G.Object;
+      if (__pnaO) {
+        __pnaReg = __pnaO.__pnaRealm;
+        if (!__pnaReg) {
+          __pnaReg = {};
+          __pnaO.defineProperty(__pnaO, '__pnaRealm',
+                                { value: __pnaReg, configurable: true });
+        }
+      }
+    } catch (e) { __pnaReg = null; }
+    try {
+      if (__pnaReg) {
+        if (__pnaReg["gpu"] === true) return;
+        __pnaReg["gpu"] = true;
+      }
+    } catch (e) {}
     var SEED = __SEED__;
     var OS = "__OS__";
     // The profile's frozen hardware generation. A GPU is only visible to a

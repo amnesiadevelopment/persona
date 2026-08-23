@@ -103,8 +103,25 @@ _CONTENT_SCRIPT = r"""
   // into the worker realm (a var in the outer IIFE would be undefined there).
   function applyWebglPatch(G) {
    try {
-    if (!G || G.__personaWebgl) return;
-    G.__personaWebgl = true;
+    if (!G) return;
+    var __pnaReg = null;
+    try {
+      var __pnaO = G.Object;
+      if (__pnaO) {
+        __pnaReg = __pnaO.__pnaRealm;
+        if (!__pnaReg) {
+          __pnaReg = {};
+          __pnaO.defineProperty(__pnaO, '__pnaRealm',
+                                { value: __pnaReg, configurable: true });
+        }
+      }
+    } catch (e) { __pnaReg = null; }
+    try {
+      if (__pnaReg) {
+        if (__pnaReg["webgl"] === true) return;
+        __pnaReg["webgl"] = true;
+      }
+    } catch (e) {}
     var SEED = __SEED__;
     var BUDGET = __BUDGET__;
 

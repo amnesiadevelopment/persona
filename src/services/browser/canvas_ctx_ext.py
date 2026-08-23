@@ -111,7 +111,7 @@ _CONTENT_SCRIPT = r"""
     // iOS ones. macOS included: persona's macOS profiles present Chrome-on-
     // macOS, not Safari. The alias is Safari's, not Apple's.
     if (OS !== "ios") return;
-    if (!G || G.__personaCanvasCtx) return;
+    if (!G) return;
 
     // A worker realm has no HTMLCanvasElement, so there is nothing to patch and
     // nothing to be inconsistent with — its OffscreenCanvas rejects the alias
@@ -121,7 +121,24 @@ _CONTENT_SCRIPT = r"""
     var proto = CE && CE.prototype;
     var orig = proto && proto.getContext;
     if (typeof orig !== "function") return;
-    G.__personaCanvasCtx = true;
+    var __pnaReg = null;
+    try {
+      var __pnaO = G.Object;
+      if (__pnaO) {
+        __pnaReg = __pnaO.__pnaRealm;
+        if (!__pnaReg) {
+          __pnaReg = {};
+          __pnaO.defineProperty(__pnaO, '__pnaRealm',
+                                { value: __pnaReg, configurable: true });
+        }
+      }
+    } catch (e) { __pnaReg = null; }
+    try {
+      if (__pnaReg) {
+        if (__pnaReg["canvas_ctx"] === true) return;
+        __pnaReg["canvas_ctx"] = true;
+      }
+    } catch (e) {}
 
     // WebKit's legacy name, and the modern name it resolves to. WebGL1 per
     // HTMLCanvasElement::toWebGLVersion — see the module docstring.
