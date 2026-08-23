@@ -112,12 +112,27 @@ def _scripts(tmp_path, *, reflagged: bool):
         / "locale.js"
     )
     if reflagged:
+        # encoding="utf-8" on the READS as well as the writes. Both generated
+        # scripts carry non-ASCII prose in their comments (locale.js has an em
+        # dash a few KB in), and `read_text()` with no encoding uses the
+        # PLATFORM default -- cp1252 on Windows, which has no mapping for the
+        # trailing byte of a UTF-8 em dash and raises UnicodeDecodeError. The
+        # writes below were already explicit; the reads were the asymmetry, and
+        # it made this file the only Windows-red one in the suite.
         native.write_text(
-            _reflag(native.read_text(), _NATIVE_ANCHOR, _NATIVE_REFLAGGED),
+            _reflag(
+                native.read_text(encoding="utf-8"),
+                _NATIVE_ANCHOR,
+                _NATIVE_REFLAGGED,
+            ),
             encoding="utf-8",
         )
         locale.write_text(
-            _reflag(locale.read_text(), _LOCALE_ANCHOR, _LOCALE_REFLAGGED),
+            _reflag(
+                locale.read_text(encoding="utf-8"),
+                _LOCALE_ANCHOR,
+                _LOCALE_REFLAGGED,
+            ),
             encoding="utf-8",
         )
     return native, locale
@@ -371,7 +386,8 @@ def test_chaining_matches_the_guard_on_what_the_guard_protected(realms, flagged_
 @pytest.mark.parametrize("order", _ORDERS)
 @pytest.mark.parametrize("name", _REALMS)
 def test_the_patch_itself_reads_native(realms, order, name):
-    # native_ext.py:60-63 — a detector stringifies Function.prototype.toString to
+    # `applyNativePatch` in native_ext.py pins `__pnaName: "toString"` onto its
+    # `patched` wrapper — a detector stringifies Function.prototype.toString to
     # catch exactly this trick. Chaining puts a SECOND wrapper on top, so this is
     # the assertion most at risk from the change: the outer patch must carry its
     # own __pnaName.
