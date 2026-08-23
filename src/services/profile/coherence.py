@@ -147,11 +147,31 @@ def normalize_engine(engine: str | None) -> str:
     return "firefox" if engine == "camoufox" else engine
 
 
-def _device_type_error(os_type: str, device_type: str | None) -> str | None:
-    """Rule 3's reason, or None. See the module docstring for the asymmetry.
+def device_type_error(os_type: str, device_type: str | None) -> str | None:
+    """Rule 3's reason ALONE, or None — the pair rules are not consulted.
 
-    ``None`` means the caller did not supply the field, which is NOT the same as
-    supplying the default: a caller with nothing to say gets no verdict.
+    See the module docstring for the asymmetry. ``None`` means the caller did
+    not supply the field, which is NOT the same as supplying the default: a
+    caller with nothing to say gets no verdict.
+
+    Public, and separate from ``coherence_error``, because the two answer
+    different questions. ``coherence_error`` asks "can this whole profile
+    exist?", which is right for a CREATE — a create composes all three fields at
+    once, so all three are the caller's doing. It is the WRONG question for an
+    edit that touches one rule family, because it submits the fields the edit
+    never touched to judgement as well: a ``device_type``-only patch would then
+    be refused by Rule 2 for an ``os_type``/``engine`` pair that was already
+    stored — the "never blocked by incoherence it did not introduce" invariant,
+    broken by the rule that was supposed to sit beside it. Worse, on a record
+    violating BOTH families (reachable via ``restore_profile``, which is exempt
+    by design, and via ``import_profile``, which reconciles only the pair) the
+    edit that REPAIRS Rule 3 would be refused by Rule 2 — stranding the record
+    through the exact door the exemption keeps open.
+
+    So each rule family gets its own predicate, and ``update_profile`` gates each
+    one on whether THAT family's inputs changed. Rule 3 reads ``(os_type,
+    device_type)``; the pair rules read ``(os_type, engine)``. They overlap on
+    ``os_type``, which is why an ``os_type`` edit opens both gates.
     """
     if device_type is None:
         return None
@@ -192,13 +212,21 @@ def coherence_error(
     signature shared by ``is_coherent``, ``assert_coherent`` and
     ``coherent_engine`` — and it is safe rather than merely convenient, because
     an omitted ``device_type`` is genuinely unknown here, not assumed innocent:
-    the two callers that write a profile (``add_profile``, ``update_profile``)
-    both resolve the field first and always pass it.
+    the two callers that REFUSE (``add_profile``, ``update_profile``) both
+    resolve the field first and always pass it.
+
+    That is not the same as "every write path judges Rule 3", and the difference
+    is stated rather than papered over: ``coherent_engine`` calls ``is_coherent``
+    with the PAIR only (deliberately — see its docstring, Rule 3 has no engine
+    remedy), so ``import_profile``, which reaches this module through it, has
+    Rule 3 evaluated on none of its records. An imported ``windows`` + ``mobile``
+    archive therefore lands as a tolerated already-stored record rather than
+    being normalised. That residual is the import door's, not this default's.
 
     Rule 3 is checked BEFORE the engine rules because it is the only one that can
     fire on a chromium profile, and the early return below exits on chromium.
     """
-    device_error = _device_type_error(os_type, device_type)
+    device_error = device_type_error(os_type, device_type)
     if device_error is not None:
         # Rule 3 — read first because the chromium early-return below would
         # otherwise skip it for exactly the engine this defect lives on.
@@ -242,6 +270,23 @@ def assert_coherent(
 ) -> None:
     """Raise IncoherentProfile (with the reason) if this profile cannot exist."""
     reason = coherence_error(os_type, engine, device_type)
+    if reason is not None:
+        raise IncoherentProfile(reason)
+
+
+def is_device_type_coherent(os_type: str, device_type: str | None) -> bool:
+    """True when Rule 3 alone has nothing to say about these two fields."""
+    return device_type_error(os_type, device_type) is None
+
+
+def assert_device_type_coherent(os_type: str, device_type: str | None) -> None:
+    """Raise IncoherentProfile if Rule 3 alone refuses these two fields.
+
+    The Rule-3-only counterpart of ``assert_coherent``, for a caller that must
+    judge the device_type family WITHOUT re-firing the pair rules on fields it
+    did not touch. See ``device_type_error``.
+    """
+    reason = device_type_error(os_type, device_type)
     if reason is not None:
         raise IncoherentProfile(reason)
 

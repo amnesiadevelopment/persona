@@ -32,6 +32,7 @@ from src.services.profile.coherence import (
     IncoherentProfile,
     coherence_error,
     is_coherent,
+    is_device_type_coherent,
 )
 from src.services.profile.manager import ProfileManager
 
@@ -353,6 +354,112 @@ def test_rest_update_of_an_unrelated_field_on_a_stored_bad_triple_still_works(cl
     r = c.patch("/api/v1/profiles/old", json={"notes": "hello"}, headers=h)
     assert r.status_code == 200, r.text
     assert r.json()["notes"] == "hello"
+
+
+# ---------------------------------------------------------------------------
+# AC5, the uncovered quadrant — PRE-EXISTING *PAIR* INCOHERENCE x A device_type
+# EDIT. Every case above composes windows+chromium+mobile: a COHERENT pair with
+# only Rule 3 violated, so Rules 1 and 2 have nothing to say and a gate that
+# wrongly submitted every field to every rule would still look green. These two
+# put a violated PAIR under the record and then touch device_type — the only
+# shape that can tell a per-rule-family gate from a single "something changed"
+# one. Both go RED against a single-flag gate.
+# ---------------------------------------------------------------------------
+
+
+def test_a_device_type_edit_is_not_refused_by_the_pair_it_did_not_touch(mgr):
+    """The regression this quadrant exists to catch.
+
+    A stored macos + firefox record violates Rule 2 and predates these rules
+    (reachable via `restore_profile`, exempt by design, and via the unguarded
+    REST lane). Its device_type is the innocent default. Editing ONLY
+    device_type — to a value Rule 3 does not refuse at all — introduces nothing,
+    so it must APPLY.
+
+    A gate that fires `assert_coherent(os, engine, device_type)` on "any field
+    changed" refuses this with `engine 'firefox' cannot be combined with os_type
+    'macos'`: a conflict the operator did not create and cannot even see in the
+    field they touched. That is the "never blocked by incoherence it did not
+    introduce" invariant, broken.
+    """
+    mgr.profiles["legacypair"] = Profile(
+        name="legacypair", os_type="macos", engine="firefox",
+        device_type="desktop",
+    )
+
+    assert mgr.update_profile("legacypair", "legacypair", "", None,
+                              new_device_type="tablet")
+
+    stored = mgr.profiles["legacypair"]
+    assert stored.device_type == "tablet"
+    # the pre-existing pair was tolerated, not repaired and not refused
+    assert (stored.os_type, stored.engine) == ("macos", "firefox")
+
+
+def test_the_rule_3_repair_is_allowed_on_a_record_that_also_violates_the_pair(mgr):
+    """The stranding case: BOTH families violated, and the edit REPAIRS Rule 3.
+
+    macos + firefox + mobile is routinely produced by the import door — which by
+    design does not refuse, and whose normaliser (`coherent_engine`) answers
+    "which engine?" and so leaves Rule 3 unreconciled — and by `restore_profile`,
+    which is exempt (AC6). Moving device_type back to the default is the edit
+    that FIXES Rule 3.
+
+    Under a single gate that edit is refused by Rule 2, so the record is
+    permanently stuck in its worst state: the repair is blocked by the other
+    rule, arriving through the exact door the exemption keeps open. The manager
+    docstring promises the opposite in as many words — "leave the profile
+    permanently uneditable — including the edit that would FIX the pair".
+    """
+    mgr.profiles["stuck"] = Profile(
+        name="stuck", os_type="macos", engine="firefox", device_type="mobile",
+    )
+
+    assert mgr.update_profile("stuck", "stuck", "", None,
+                              new_device_type="desktop")
+
+    stored = mgr.profiles["stuck"]
+    # Rule 3 is genuinely repaired...
+    assert is_device_type_coherent(stored.os_type, stored.device_type)
+    assert stored.device_type == "desktop"
+    # ...and the pair it did not touch is still the pair it did not touch
+    assert (stored.os_type, stored.engine) == ("macos", "firefox")
+
+
+def test_an_os_edit_that_introduces_rule_3_is_still_refused_on_such_a_record(mgr):
+    """The gates overlap on os_type, and splitting them must not lose that.
+
+    Rule 3 reads (os_type, device_type), so an os_type-only edit can INTRODUCE
+    it. Per-family gating is about not judging fields the edit did not touch —
+    not about judging less. A stored android + mobile record moved onto windows
+    newly contradicts itself and must still be refused.
+    """
+    mgr.profiles["phone"] = Profile(
+        name="phone", os_type="android", engine="chromium", device_type="mobile",
+    )
+
+    with pytest.raises(IncoherentProfile) as exc:
+        mgr.update_profile("phone", "phone", "", "windows")
+
+    # refused by RULE 3 — the reason names the fields the edit actually moved
+    assert "device_type" in str(exc.value)
+    assert mgr.profiles["phone"].os_type == "android"
+
+
+def test_a_pair_edit_that_introduces_rule_2_is_still_refused(mgr):
+    """The other half of the same guard: splitting the gates keeps Rule 2 armed.
+
+    A coherent windows + firefox profile moved onto macos newly violates Rule 2,
+    and the device_type family has nothing to say about it. The pair gate must
+    still fire on its own.
+    """
+    assert mgr.add_profile("ff", "", "windows", engine="firefox")
+
+    with pytest.raises(IncoherentProfile) as exc:
+        mgr.update_profile("ff", "ff", "", "macos")
+
+    assert "firefox" in str(exc.value)
+    assert mgr.profiles["ff"].os_type == "windows"
 
 
 # ---------------------------------------------------------------------------
