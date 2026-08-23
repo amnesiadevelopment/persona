@@ -33,8 +33,28 @@ from .diff import (
 )
 from .probes import ALL_REALMS, PROBES, WINDOW, WORKER, Probe, probes_for_realm
 from .runner import run_probes
+from .schema_ledger import (
+    SchemaLedgerViolation,
+    check_emitted_header,
+    generation_of,
+    header_keys,
+    mislabelled,
+)
+# Re-exported under SNAPSHOT_-qualified names, deliberately.
+#
+# There are two independent schema versions in this package and they are NOT
+# interchangeable: ``snapshot.SCHEMA_VERSION`` governs what a live profile
+# exposes, ``matrix.SCHEMA_VERSION`` what third-party checkers reported. Until
+# PS-81 both read 1, so a bare package-level ``SCHEMA_VERSION`` was merely
+# ambiguous. They now differ (matrix is 2), which turns that shadow into a
+# wrong answer for anyone who reaches for the unqualified name — precisely the
+# consumer this ticket exists to protect. So the ambiguous spellings are not
+# offered at package level at all; ask the module you actually mean.
 from .snapshot import (
-    SCHEMA_VERSION,
+    HEADER_GENERATIONS as SNAPSHOT_HEADER_GENERATIONS,
+    SCHEMA_VERSION as SNAPSHOT_SCHEMA_VERSION,
+    POST_WRITER_ANNOTATIONS,
+    SNAPSHOT_BODY_KEY,
     build_snapshot,
     canonicalise,
     dumps,
@@ -46,8 +66,16 @@ from .snapshot import (
 __all__ = [
     "ALL_REALMS",
     "INCONCLUSIVE",
+    "POST_WRITER_ANNOTATIONS",
     "PROBES",
-    "SCHEMA_VERSION",
+    "SNAPSHOT_BODY_KEY",
+    "SNAPSHOT_HEADER_GENERATIONS",
+    "SNAPSHOT_SCHEMA_VERSION",
+    "SchemaLedgerViolation",
+    "check_emitted_header",
+    "generation_of",
+    "header_keys",
+    "mislabelled",
     "WINDOW",
     "WORKER",
     "NotASnapshot",

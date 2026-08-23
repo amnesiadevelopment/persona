@@ -387,10 +387,17 @@ def require_comparable(
       machines reports as the module's loudest finding.
 
       Its ABSENCE is handled differently from the seed's, and the difference is
-      forced by a fact about the artifact rather than chosen: **PS-69 added the
-      field without bumping ``SCHEMA_VERSION``**, so a pre-PS-69 record and a
-      post-PS-69 one both say ``schema_version: 1``. The schema guard therefore
-      cannot separate them and this one must:
+      forced by a fact about the artifact rather than chosen. **PS-69 added the
+      field without bumping ``SCHEMA_VERSION``**, so for a window a pre-PS-69
+      record and a post-PS-69 one both said ``schema_version: 1`` and the
+      schema guard could not separate them at all.
+
+      PS-81 closed that at the source — ``matrix.HEADER_GENERATIONS`` records
+      what each generation's header contains and the writer now emits ``2`` —
+      but **the fix is not retroactive, so this handling stays**. A record
+      written during the drift window still claims ``1`` while carrying
+      generation ``2``'s keys, and those records are exactly the ones this
+      guard covers:
 
       - **both missing** — no refusal. Both records predate the field; there is
         no difference to detect, and refusing would make the tool useless on
