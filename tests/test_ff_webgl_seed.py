@@ -558,6 +558,28 @@ def _cloak_report(js: str) -> dict:
     """Install ``js`` in a node:vm realm and report, per realm, how each wrapper
     stringifies and whether it carries an own ``__pnaName``.
 
+    THE WRAPPER SET IS DERIVED, NOT LISTED, and that is the whole point of this
+    helper. It walks every function-valued slot reachable from the realm global
+    BEFORE the script runs and again AFTER, and reports every slot whose function
+    IDENTITY changed. A wrapper is, by definition, a slot the script replaced —
+    so the thing being enumerated is the script's own EFFECT ON THE REALM, which
+    is also exactly what a detector enumerates.
+
+    Three consecutive rounds of this ticket were rejected for the same class of
+    defect, each time because a check carried its own copy of the wrapper set:
+
+      r2  the seat sliced the leaf out at ``var SELF =`` — the region boundary
+          excluded the bootstrap, so the bootstrap's bare marker was invisible
+      r3  the report named only the wrappers a human had called out, and the two
+          iframe accessors were bare
+      r4  the probe list was a fixed tuple, and the two wrappers that round ADDED
+          (``URL.createObjectURL`` / ``URL.revokeObjectURL``) were not in it
+
+    A set restated in a second place cannot be kept in sync by discipline; it
+    goes stale in whichever copy someone forgets, and here the forgotten copy was
+    the one doing the asserting. Deriving it means a wrapper added WITHOUT a
+    cloak fails automatically, with nobody remembering to extend a tuple.
+
     Three realms: the page, a depth-1 worker, and a depth-2 worker (a worker
     spawning a worker) — the last because a silently-uncovered depth-2 realm
     reporting REAL values is the failure this module's docstring records.
@@ -570,32 +592,76 @@ def _cloak_report(js: str) -> dict:
 const vm = require("node:vm");
 const JS = %(js)s;
 
-const PROBE = `
+// Walk every function-valued slot reachable from the realm global, one level
+// into each object/constructor and its prototype, and return [{path, fn}].
+// ACCESSORS are collected as their getter, because two of the wrappers this
+// script installs ARE getters and a value-only walk would silently miss them.
+const WALK = `
   (function () {
-    function probe(label, fn) {
-      if (typeof fn !== "function") return { wrapper: label, missing: true };
-      var src = "";
-      try { src = Function.prototype.toString.call(fn); } catch (e) { src = "<threw>"; }
-      return {
-        wrapper: label,
-        readsNative: /\\[native code\\]/.test(src),
-        hasMarker: Object.prototype.hasOwnProperty.call(fn, "__pnaName"),
-        head: src.slice(0, 80).replace(/\\n/g, " "),
-      };
-    }
     var out = [];
-    out.push(probe("readPixels", self.WebGLRenderingContext &&
-                                 self.WebGLRenderingContext.prototype.readPixels));
-    out.push(probe("Worker", self.Worker));
-    out.push(probe("SharedWorker", self.SharedWorker));
-    if (self.HTMLIFrameElement) {
-      ["contentWindow", "contentDocument"].forEach(function (p) {
-        var d = Object.getOwnPropertyDescriptor(self.HTMLIFrameElement.prototype, p);
-        out.push(probe("iframe:" + p, d && d.get));
-      });
+    var seen = new WeakSet();
+    function members(path, obj) {
+      if (!obj || seen.has(obj)) return;
+      try { seen.add(obj); } catch (e) { return; }
+      var names;
+      try { names = Object.getOwnPropertyNames(obj); } catch (e) { return; }
+      for (var i = 0; i < names.length; i++) {
+        var n = names[i];
+        // Poison pills on function objects in strict mode.
+        if (n === "caller" || n === "callee" || n === "arguments") continue;
+        var d;
+        try { d = Object.getOwnPropertyDescriptor(obj, n); } catch (e) { continue; }
+        if (!d) continue;
+        if (typeof d.get === "function") {
+          out.push({ path: path + "." + n + " (get)", fn: d.get });
+        } else if (d.value && typeof d.value === "function") {
+          out.push({ path: path + "." + n, fn: d.value });
+        }
+      }
+    }
+    var top;
+    try { top = Object.getOwnPropertyNames(self); } catch (e) { top = []; }
+    for (var i = 0; i < top.length; i++) {
+      var n = top[i];
+      // The realm's self-references, and this harness's own snapshot slot.
+      if (n === "self" || n === "globalThis" || n === "__pnaSnap") continue;
+      var v;
+      try { v = self[n]; } catch (e) { continue; }
+      if (v === null || v === undefined) continue;
+      if (typeof v === "function") {
+        out.push({ path: n, fn: v });
+        members(n, v);
+        try { if (v.prototype) members(n + ".prototype", v.prototype); } catch (e) {}
+      } else if (typeof v === "object") {
+        members(n, v);
+      }
     }
     return out;
   })()
+`;
+
+// Probe a single wrapper. Uses indexOf on the literal rather than a regex: this
+// source is inside a JS TEMPLATE LITERAL, so the backticks eat one level of
+// escaping before a regex is parsed, and a singly-escaped /\[native code\]/
+// degrades into a CHARACTER CLASS that matches almost any source text — a probe
+// that reports every wrapper as cloaked and turns the whole seat green for
+// nothing. There is no escaping to get wrong in a plain substring search.
+const PROBE_FN = `
+  (function (label, fn) {
+    var src = "";
+    try { src = Function.prototype.toString.call(fn); } catch (e) { src = "<threw>"; }
+    return {
+      wrapper: label,
+      readsNative: src.indexOf("[native code]") >= 0,
+      hasMarker: Object.prototype.hasOwnProperty.call(fn, "__pnaName"),
+      // String.fromCharCode(10) rather than a newline escape, for the same
+      // reason the [native code] test above is an indexOf: this source sits
+      // inside a template literal, so a backslash escape is consumed BEFORE the
+      // JS here is parsed. A charCode has no escaping to get wrong -- and note
+      // this comment may not spell the escape either, for the same reason.
+      head: src.slice(0, 80).split(String.fromCharCode(10)).join(" "),
+    };
+  })
 `;
 
 function makeRealm() {
@@ -631,32 +697,55 @@ function makeRealm() {
   return ctx;
 }
 
+// Snapshot -> run `source` -> report every slot whose function identity MOVED.
+// The snapshot lives on the realm global under a name WALK skips, so taking it
+// cannot perturb the very comparison it feeds.
+function installAndDerive(ctx, source) {
+  const before = vm.runInContext(WALK, ctx);
+  const beforeByPath = new Map();
+  for (const row of before) beforeByPath.set(row.path, row.fn);
+
+  vm.runInContext(source, ctx);
+
+  const after = vm.runInContext(WALK, ctx);
+  const probe = vm.runInContext(PROBE_FN, ctx);
+  const rows = [];
+  for (const row of after) {
+    const prior = beforeByPath.get(row.path);
+    // Unchanged identity => this script did not install here.
+    if (prior === row.fn) continue;
+    const out = probe(row.path, row.fn);
+    out.added = !beforeByPath.has(row.path);
+    rows.push(out);
+  }
+  return rows;
+}
+
 // Construct a worker through the installed wrapper and return the payload the
 // wrapper actually handed the engine. Re-evaluating it in a fresh realm IS the
 // worker: that is the only way to see whether the cloak CROSSED, which is a
 // property of __pnaInstall.toString() and not of the page realm.
-function spawn(ctx) {
-  const body = vm.runInContext(`
+function workerBody(ctx) {
+  return vm.runInContext(`
     (function () {
       var u = URL.createObjectURL(new Blob(["/*orig*/"]));
       var w = new self.Worker(u);
       return __blobs[w.url] || null;
     })()`, ctx);
-  if (!body) return null;
-  const w = makeRealm();
-  vm.runInContext(body, w);
-  return w;
 }
 
 const out = {};
 const page = makeRealm();
-vm.runInContext(JS, page);
-out.page = vm.runInContext(PROBE, page);
+out.page = installAndDerive(page, JS);
 
-const w1 = spawn(page);
-out.worker1 = w1 ? vm.runInContext(PROBE, w1) : null;
-const w2 = w1 ? spawn(w1) : null;
-out.worker2 = w2 ? vm.runInContext(PROBE, w2) : null;
+const b1 = workerBody(page);
+let w1 = null;
+if (b1) { w1 = makeRealm(); out.worker1 = installAndDerive(w1, b1); }
+else { out.worker1 = null; }
+
+const b2 = w1 ? workerBody(w1) : null;
+if (b2) { const w2 = makeRealm(); out.worker2 = installAndDerive(w2, b2); }
+else { out.worker2 = null; }
 
 console.log(JSON.stringify(out));
 """ % {"js": json.dumps(js)}
@@ -672,35 +761,53 @@ console.log(JSON.stringify(out));
 
 
 def test_no_wrapper_the_firefox_script_installs_is_detectable():
-    """Every wrapper — the leaf's AND the bootstrap's — must stringify as native
-    and carry no own marker, in every realm the script reaches.
+    """Every wrapper the Firefox script installs must stringify as native and
+    carry no own marker, in every realm the script reaches.
 
-    Reads the WHOLE script. The round-2 seat sliced the leaf out and so could not
-    see the bootstrap's copy of the marker; a wrapper is a tell wherever it lives.
+    THE WRAPPER SET IS DERIVED FROM THE SCRIPT'S EFFECT ON THE REALM (see
+    :func:`_cloak_report`), not from a list kept here. That is the point: this
+    seat's claim is a UNIVERSAL one, and a universal claim checked against a
+    hand-maintained tuple is a promise the code cannot keep — it is green
+    because of what it omits. Three rounds of this ticket were rejected for
+    exactly that, the last one because the two wrappers that round ADDED were
+    not on the list the check carried.
+
+    So a wrapper added without a cloak fails HERE, automatically, with nobody
+    remembering to extend anything.
     """
     report = _cloak_report(firefox_webgl_init_script(1234))
 
     for realm in ("page", "worker1", "worker2"):
         rows = report[realm]
-        assert rows, f"{realm}: no probe rows — the script did not install"
+        assert rows, f"{realm}: no wrapper moved — the script did not install"
 
-        # POSITIVE CONTROL first. The cloak should always cover the leaf's own
-        # wrapper, so a control failure means the harness is broken and the rest
-        # of the readings in this realm are meaningless.
-        control = next(r for r in rows if r["wrapper"] == "readPixels")
-        assert not control.get("missing"), f"{realm}: control wrapper absent"
+        # POSITIVE CONTROL first. The leaf's own wrapper must always be among the
+        # derived set and must always be cloaked, so a control failure means the
+        # harness is broken and every other reading in this realm is meaningless.
+        control = next(
+            (r for r in rows if r["wrapper"].endswith(".readPixels")), None
+        )
+        assert control is not None, (
+            f"{realm}: the POSITIVE CONTROL (readPixels) is not in the derived "
+            f"set — the harness is broken, not the product. Derived: "
+            f"{[r['wrapper'] for r in rows]}"
+        )
         assert control["readsNative"] and not control["hasMarker"], (
             f"{realm}: the POSITIVE CONTROL (readPixels) is not cloaked — the "
             f"harness is broken, not the product: {control}"
         )
 
-        # The bootstrap's own wrappers, which round 2 left bare.
-        for name in ("Worker", "SharedWorker", "iframe:contentWindow",
-                     "iframe:contentDocument"):
-            row = next((r for r in rows if r["wrapper"] == name), None)
-            assert row is not None and not row.get("missing"), (
-                f"{realm}: {name} wrapper was never installed"
-            )
+        # SECOND CONTROL: the derivation must reach past the leaf. If only
+        # readPixels ever moved, the walk is not seeing the bootstrap's wrappers
+        # and every "no bare wrapper" verdict below would be vacuously true —
+        # which is precisely how r2's leaf-slice boundary passed.
+        assert len(rows) > 1, (
+            f"{realm}: the derived set is the leaf alone, so the bootstrap's own "
+            f"wrappers are invisible to this walk: {[r['wrapper'] for r in rows]}"
+        )
+
+        for row in rows:
+            name = row["wrapper"]
             assert not row["hasMarker"], (
                 f"{realm}: {name} carries an own __pnaName — a property no "
                 f"browser has, on an engine with no extension to read it"
@@ -709,6 +816,33 @@ def test_no_wrapper_the_firefox_script_installs_is_detectable():
                 f"{realm}: {name}.toString() returns patch source where every "
                 f"real engine returns [native code]: {row['head']!r}"
             )
+
+
+def test_the_derived_wrapper_set_actually_covers_the_new_wrappers():
+    """The derivation is only worth having if it SEES what a list would forget.
+
+    Round 4 added ``URL.createObjectURL`` / ``URL.revokeObjectURL`` and the
+    hand-written tuple did not mention them. Pin that the derived set reaches
+    them, so a future refactor that narrows the walk (back to globals-only, say,
+    or to value properties only — which would drop both iframe ACCESSORS) fails
+    here rather than silently shrinking the universal claim above into a smaller
+    one that still passes.
+    """
+    report = _cloak_report(firefox_webgl_init_script(4321))
+    derived = {r["wrapper"] for r in report["page"]}
+
+    for expected in (
+        "URL.createObjectURL",       # round 4 added these two
+        "URL.revokeObjectURL",
+        "Worker",                    # round 2 left these two bare
+        "SharedWorker",
+        "HTMLIFrameElement.prototype.contentWindow (get)",   # round 3, accessors
+        "HTMLIFrameElement.prototype.contentDocument (get)",
+    ):
+        assert expected in derived, (
+            f"the walk no longer reaches {expected!r}, so the seat above has "
+            f"quietly stopped checking it. Derived: {sorted(derived)}"
+        )
 
 
 def test_chromiums_bootstrap_keeps_its_marker():
