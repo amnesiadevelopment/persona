@@ -46,15 +46,26 @@ class FakeLauncher:
         # frozen default would make every refusal look stale to the staleness
         # check and mask the behaviour under test.
         self.now = None
+        # Names a CONCURRENT launch reserved after this call's is_running check
+        # but before start_thread took the lock. The real launcher keeps those
+        # in _starting, and its duplicate-return branch tests
+        # `_active_sessions or _starting` (launcher.py) — so a name can be
+        # absent from is_running() at the tool's check and still be a duplicate
+        # by the time start_thread runs. Kept OUT of _running deliberately:
+        # that gap is the only way to reach the launcher-level duplicate
+        # return, and it is the case AC4(a) is actually about.
+        self.claimed_by_racer = set()
 
     def is_running(self, name):
         return name in self._running
 
     def start_thread(self, profile, log_callback=None, **kwargs):
-        if profile.name in self._running:
+        if profile.name in self._running or profile.name in self.claimed_by_racer:
             # The real launcher returns HERE, before the pop below: a duplicate
             # is not an attempt and must not erase the verdict from the attempt
-            # that did run (launcher.py).
+            # that did run (launcher.py). `claimed_by_racer` is the arm the
+            # tool's is_running check does NOT see, which is what makes the
+            # launcher-level duplicate reachable.
             return
         self._last_refusal.pop(profile.name, None)
         exc = self.refuse_next_with
@@ -169,6 +180,59 @@ def test_duplicate_launch_does_not_re_report_an_earlier_refusal():
         "the second call re-reported a refusal that belonged to the first attempt"
     )
     assert "kind" not in second
+
+
+def test_launcher_level_duplicate_does_not_re_report_an_earlier_refusal():
+    # AC4(a), THE CASE THE TEST ABOVE CANNOT REACH — and the one the staleness
+    # rule exists for. The test above puts the profile in _running, so the
+    # TOOL's own is_running check answers {"error": "already running"} before
+    # attempt_at is ever stamped and before the last_refusal read runs at all.
+    # Its `"kind" not in second` is trivially true of a payload the new code
+    # never touched: it passes identically with refusal_report.py deleted from
+    # the repo, so it binds nothing.
+    #
+    # The duplicate return the ticket points at (launcher.py, placed BEFORE the
+    # verdict pop on purpose) is only reachable when is_running() was False at
+    # the tool's check and the attempt is a duplicate by the time start_thread
+    # takes the lock — the concurrent case, where another launch reserved the
+    # slot in between. Then, and only then, does the tool stamp attempt_at, call
+    # through, get the same None a success returns, and read a dict that still
+    # holds the EARLIER attempt's verdict.
+    #
+    # Delete the staleness check and this goes red: the second caller is told
+    # its launch was refused for a proxy failure that was someone else's.
+    mcp, bl = _harness()
+    bl.refuse_next_with = ProxyUnresolvedError("first attempt refused")
+    first = _launch(mcp)
+    assert first["launched"] is False, "precondition: the first attempt was refused"
+    assert first["kind"] == "proxy_unresolved"
+
+    # A concurrent launch reserves the slot AFTER this call's is_running check
+    # and BEFORE its start_thread — invisible to the tool's own guard.
+    bl.claimed_by_racer.add("acct-7")
+    assert bl.is_running("acct-7") is False, (
+        "precondition: the tool's own is_running check must NOT fire, or this "
+        "test re-tests a guard already on main instead of the staleness rule"
+    )
+    assert bl.last_refusal("acct-7") is not None, (
+        "precondition: the earlier attempt's verdict is still on record"
+    )
+
+    second = _launch(mcp)
+
+    # A launcher-level duplicate is not a refusal of THIS call, so this lane
+    # answers exactly what it answered before the read existed.
+    assert second["launched"] is True, (
+        "a launcher-level duplicate re-reported an earlier attempt's refusal "
+        "as this call's own verdict"
+    )
+    # The decisive assertion: the stale verdict never reached this caller.
+    assert "kind" not in second, (
+        "the first attempt's refusal kind leaked into a later call's response"
+    )
+    assert "detail" not in second
+    # And the verdict is still on record — a duplicate must not erase it.
+    assert bl.last_refusal("acct-7") is not None
 
 
 def test_a_successful_launch_after_a_refused_one_reports_success():

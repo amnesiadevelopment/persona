@@ -146,9 +146,7 @@ async def launch_browser(
     # answer already known.
     refusal = refusal_for_attempt(bl, name, attempt_at)
     if refusal is not None:
-        logger.info(
-            "API launch refused for %s: %s", name, refusal.kind
-        )
+        logger.info("API launch refused for %s: %s", name, refusal.kind)
         bus.emit()
         raise HTTPException(
             status_code=409,

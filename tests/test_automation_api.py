@@ -42,6 +42,15 @@ class FakeLauncher:
         # staleness check and mask the very behaviour under test. A test that
         # wants an explicitly OLD verdict sets this to a past value.
         self.now = None
+        # Names a CONCURRENT launch reserved after this request's is_running
+        # check but before start_thread took the lock. The real launcher keeps
+        # those in _starting, and its duplicate-return branch tests
+        # `_active_sessions or _starting` (launcher.py) — so a name can be
+        # absent from is_running() at the route's check and still be a duplicate
+        # by the time start_thread runs. Kept OUT of _running deliberately: that
+        # gap between the two moments is the only way to reach the launcher-level
+        # duplicate return, and it is the case AC4(a) is actually about.
+        self.claimed_by_racer = set()
 
     def running_profile_names(self):
         return set(self._running)
@@ -53,10 +62,12 @@ class FakeLauncher:
         return 1000.0 if name in self._running else None
 
     def start_thread(self, profile, log, on_ready=None, on_stop=None):
-        if profile.name in self._running:
+        if profile.name in self._running or profile.name in self.claimed_by_racer:
             # The real launcher returns HERE, before the pop below — a duplicate
             # is not an attempt and must not erase the verdict from the attempt
             # that did run (launcher.py). Reproduced because AC4(a) turns on it.
+            # `claimed_by_racer` is the arm the route's is_running check does NOT
+            # see, which is what makes the launcher-level duplicate reachable.
             if on_stop:
                 on_stop()
             return
@@ -416,6 +427,58 @@ def test_duplicate_launch_does_not_re_report_an_earlier_refusal(client):
     assert second.json()["detail"] == "Browser already running", (
         "the second call re-reported a refusal that belonged to the first attempt"
     )
+
+
+def test_launcher_level_duplicate_does_not_re_report_an_earlier_refusal(client):
+    # AC4(a), THE CASE THE TEST ABOVE CANNOT REACH — and the one the staleness
+    # rule exists for. The test above puts the profile in _running, so the
+    # ROUTE's own is_running guard (routes/browser.py) answers "Browser already
+    # running" before attempt_at is ever stamped and before the last_refusal
+    # read runs at all. It passes identically with refusal_report.py deleted
+    # from the repo, so it binds nothing.
+    #
+    # The duplicate return the ticket points at (launcher.py, placed BEFORE the
+    # verdict pop on purpose) is only reachable when is_running() was False at
+    # the route's check and the attempt is a duplicate by the time start_thread
+    # takes the lock — the concurrent case, where another launch reserved the
+    # slot in between. Then, and only then, does the route stamp attempt_at,
+    # call through, get the same None a success returns, and read a dict that
+    # still holds the EARLIER attempt's verdict.
+    #
+    # Delete the staleness check and this test goes red: the second caller is
+    # told its launch was refused for a proxy failure that belonged to someone
+    # else's attempt.
+    client._launcher.refuse_next_with = ProxyUnresolvedError("first attempt refused")
+    first = client.post("/api/browser/autobot/launch")
+    assert first.status_code == 409, "precondition: the first attempt was refused"
+    assert _refusal_body(first)["kind"] == "proxy_unresolved"
+
+    # A concurrent launch reserves the slot AFTER this request's is_running
+    # check and BEFORE its start_thread — invisible to the route's guard.
+    client._launcher.claimed_by_racer.add("autobot")
+    assert client._launcher.is_running("autobot") is False, (
+        "precondition: the route's own guard must NOT fire, or this test "
+        "re-tests the guard on main instead of the staleness rule"
+    )
+    assert client._launcher.last_refusal("autobot") is not None, (
+        "precondition: the earlier attempt's verdict is still on record"
+    )
+
+    second = client.post("/api/browser/autobot/launch")
+
+    # The launcher-level duplicate is not a refusal of THIS call, so this lane
+    # answers exactly what it answered before the read existed.
+    assert second.status_code == 202, (
+        "a launcher-level duplicate re-reported an earlier attempt's refusal "
+        "as this call's own verdict"
+    )
+    assert second.json()["success"] is True
+    # The decisive assertion: the stale verdict never reached this caller.
+    assert "kind" not in str(second.json()), (
+        "the first attempt's refusal kind leaked into a later call's response"
+    )
+    # And the verdict is still on record — a duplicate must not erase it.
+    assert client._launcher.last_refusal("autobot") is not None
 
 
 def test_a_successful_launch_after_a_refused_one_reports_success(client):
