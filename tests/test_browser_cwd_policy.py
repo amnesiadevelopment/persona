@@ -30,6 +30,7 @@ working directory (and therefore every other concurrently-open profile's) must
 come through a launch unmoved.
 """
 
+import ast
 import json
 import os
 import threading
@@ -99,11 +100,35 @@ def test_the_authority_returns_the_home_directory_unchanged():
     assert browser_child_cwd() == os.path.expanduser("~")
 
 
-def test_the_authority_follows_home_rather_than_freezing_it(monkeypatch, tmp_path):
-    # Computed per call, not frozen at import — mirroring what the inline
-    # expression at the chromium seam already did.
-    monkeypatch.setenv("HOME", str(tmp_path))
-    assert browser_child_cwd() == os.path.expanduser("~") == str(tmp_path)
+def test_the_authority_recomputes_per_call_rather_than_freezing_the_value(
+    monkeypatch, tmp_path
+):
+    # The claim in browser_child_cwd's docstring: the home directory is read on
+    # every call, not captured once into a module constant at import time.
+    #
+    # Asserted THROUGH expanduser itself rather than by setting an environment
+    # variable. WHICH variable drives expanduser is platform-specific and is
+    # NOT what this pins: posixpath.expanduser reads HOME, while
+    # ntpath.expanduser prefers USERPROFILE (then HOMEDRIVE+HOMEPATH) and
+    # consults HOME only if none of those are set. An earlier version of this
+    # test did monkeypatch.setenv("HOME", ...) and asserted the result equalled
+    # that path; it was green on Linux/macOS and RED on windows-latest, where
+    # USERPROFILE is always set and the setenv was simply ignored. The property
+    # worth pinning survives without naming any variable.
+    first = tmp_path / "first-home"
+    second = tmp_path / "second-home"
+    first.mkdir()
+    second.mkdir()
+
+    monkeypatch.setattr(os.path, "expanduser", lambda p: str(first))
+    assert browser_child_cwd() == str(first)
+
+    # Called again after the answer changes: a value memoized at import (or
+    # cached on the first call) would still report `first` here.
+    monkeypatch.setattr(os.path, "expanduser", lambda p: str(second))
+    assert browser_child_cwd() == str(second), (
+        "browser_child_cwd froze its value instead of recomputing it per call"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -177,7 +202,13 @@ def _child_cwd_after_fork(tmp_path, sentinel=None, in_thread=False, is_linux=Tru
     Nothing is asserted about calls — only about where the child really is.
 
     ``sentinel`` repoints the authority INSIDE the forked child, so a seam that
-    writes the path inline instead of consulting it is caught.
+    writes the path inline instead of consulting it is caught. Patched on BOTH
+    modules on purpose: ``invisible_launch`` binds the helper into its own
+    namespace at import (``from .env_policy import browser_child_cwd``), so
+    patching only ``env_policy`` misses the seam's own binding — which is
+    exactly how this harness silently stopped repointing anything and let the
+    child run to the real home directory. Patching both is the analogue of what
+    the chromium tests do with ``process.browser_child_cwd``.
     """
     read_fd, write_fd = os.pipe()
     report_r, report_w = os.pipe()
@@ -189,10 +220,8 @@ def _child_cwd_after_fork(tmp_path, sentinel=None, in_thread=False, is_linux=Tru
             os.close(report_r)
             il._platform.IS_LINUX = is_linux
             if sentinel is not None:
-                # Patched on env_policy, which is where chdir_current_process
-                # reads it from — so this reaches the firefox seam however it
-                # imported the helper.
                 env_policy.browser_child_cwd = lambda: sentinel
+                il.browser_child_cwd = lambda: sentinel
 
             def _report(cfg, profile_dir, emit, _finish, stop_event, _in_thread):
                 payload = json.dumps(
@@ -208,8 +237,21 @@ def _child_cwd_after_fork(tmp_path, sentinel=None, in_thread=False, is_linux=Tru
                 write_fd,
                 stop_event=threading.Event() if in_thread else None,
             )
-        except BaseException:
-            pass
+        except BaseException as e:  # noqa: BLE001 - reported, see below
+            # Report the failure rather than dying mute. A bare `pass` here
+            # meant a child that died for an unrelated reason sent nothing, and
+            # the parent's assert below then said only "reported no working
+            # directory" — true, uninformative, and a guess to debug. The
+            # exception text costs one write and turns that into a read.
+            try:
+                with os.fdopen(report_w, "w") as fh:
+                    fh.write(
+                        json.dumps(
+                            {"error": f"{type(e).__name__}: {e}"}
+                        )
+                    )
+            except BaseException:
+                pass
         os._exit(0)
 
     os.close(write_fd)
@@ -219,7 +261,14 @@ def _child_cwd_after_fork(tmp_path, sentinel=None, in_thread=False, is_linux=Tru
     os.fdopen(read_fd).close()
     os.waitpid(pid, 0)
     assert payload, "the forked child reported no working directory"
-    return json.loads(payload)
+    report = json.loads(payload)
+    # The child reports its own exception rather than dying mute (see above),
+    # so a failure inside the fork surfaces as itself instead of as a missing
+    # key three lines later.
+    assert "error" not in report, (
+        f"the forked child died before reporting: {report['error']}"
+    )
+    return report
 
 
 @requires_fork
@@ -246,6 +295,54 @@ def test_forked_firefox_child_does_not_disturb_the_parent(tmp_path):
     before = os.getcwd()
     _child_cwd_after_fork(tmp_path, sentinel=_sentinel_dir(tmp_path))
     assert os.getcwd() == before
+
+
+@requires_fork
+def test_an_unreachable_directory_is_reported_on_the_pipe_not_died_on(tmp_path):
+    # Pinning a directory INTRODUCES a failure mode this seam did not have:
+    # before PS-123 it set nothing and inherited a directory that by
+    # construction worked, whereas os.chdir raises if the target is gone (an
+    # unmounted home — the fault case src/main.py:_ensure_valid_cwd exists
+    # for). Applied before the pipe was open, that exception killed the child
+    # with NO BROWSER_STARTED and NO BROWSER_CLOSED: the parent's monitor saw a
+    # bare EOF and a launch that failed without saying why.
+    #
+    # Deliberately NOT a fallback chain — falling back means choosing a second
+    # directory, which is the product decision this ticket does not take. The
+    # requirement is that it is AUDIBLE.
+    missing = os.path.join(str(tmp_path), "definitely-not-mounted")
+    assert not os.path.exists(missing)
+
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:  # pragma: no cover - runs in the forked child
+        try:
+            os.close(read_fd)
+            il._platform.IS_LINUX = True
+            # Both bindings, for the reason given on _child_cwd_after_fork.
+            env_policy.browser_child_cwd = lambda: missing
+            il.browser_child_cwd = lambda: missing
+            il._launch_and_watch = lambda *a, **k: None
+            il._child({"profile_dir": str(tmp_path)}, write_fd)
+        except BaseException:
+            pass
+        os._exit(0)
+
+    os.close(write_fd)
+    with os.fdopen(read_fd) as fh:
+        said = fh.read()
+    os.waitpid(pid, 0)
+
+    assert "LAUNCH_FAILED" in said, (
+        "the child died without reporting the unreachable working directory — "
+        f"the parent saw only {said!r}"
+    )
+    # Names the directory, so the log says WHICH path was unreachable.
+    assert "definitely-not-mounted" in said
+    # And it closes the session properly: the parent's monitor keys the card's
+    # stop button off BROWSER_CLOSED, so a launch that fails must still say it
+    # is over rather than leaving the profile stuck "loading".
+    assert "BROWSER_CLOSED" in said
 
 
 @requires_fork
@@ -311,20 +408,38 @@ def test_both_engines_route_through_one_authority():
     assert (
         il.chdir_current_process.__module__ == "src.services.browser.env_policy"
     )
-    # The value lives in ONE place: the package must contain no second literal
-    # home-directory pin at a launcher. This is the grep from the ticket,
-    # asserted — it is what stops a seam quietly re-acquiring its own copy.
+    # The value lives in ONE place: neither launcher may CALL expanduser to
+    # re-acquire its own copy. This is the grep from the ticket, asserted — it
+    # is what stops a seam quietly getting a second home-directory pin.
+    #
+    # Matched on the AST rather than on the text. A line-based version of this
+    # check has two failure modes, and the dangerous one is the false NEGATIVE:
+    # it looked for the substring 'expanduser("~")', so a re-inlined
+    # expanduser('~') in SINGLE quotes would sail straight past the one
+    # assertion standing between the codebase and a re-acquired second copy.
+    # (It also had to strip whole-line comments to avoid tripping on the
+    # explanatory prose at both seams, and would still have tripped on a
+    # trailing inline comment or a docstring that named the expression.) The
+    # AST sees calls and nothing but calls, so prose can say "expanduser"
+    # freely — as the comments at both seams now do — and only real code fails.
     seam_sources = (
         os.path.join(os.path.dirname(process.__file__), "process.py"),
         os.path.join(os.path.dirname(il.__file__), "invisible_launch.py"),
     )
     for path in seam_sources:
         with open(path, encoding="utf-8") as fh:
-            body = "\n".join(
-                line for line in fh.read().splitlines()
-                if not line.lstrip().startswith("#")
+            tree = ast.parse(fh.read())
+        calls = [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and (
+                getattr(node.func, "attr", None) == "expanduser"
+                or getattr(node.func, "id", None) == "expanduser"
             )
-        assert 'expanduser("~")' not in body, (
-            f"{os.path.basename(path)} pins a home directory inline again — "
-            "the browser child's cwd belongs to env_policy.browser_child_cwd"
+        ]
+        assert not calls, (
+            f"{os.path.basename(path)} calls expanduser at line(s) {calls} — it "
+            "pins a home directory inline again; the browser child's cwd "
+            "belongs to env_policy.browser_child_cwd"
         )
