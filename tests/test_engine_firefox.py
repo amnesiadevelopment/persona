@@ -1,4 +1,5 @@
 import json
+import logging
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -310,19 +311,165 @@ def test_fetch_latest_incompatible_when_build_exceeds_pkg(monkeypatch):
     # asset (both 151.0) so the old asset-only gate said "compatible" and it got
     # auto-installed → broke FF. fetch_latest must report it incompatible (needs a
     # persona update that ships the matching driver), even though the asset matches.
+    #
+    # PS-112 CHANGED THIS TEST'S PAYLOAD, DELIBERATELY. It used to serve
+    # [firefox-19, firefox-18] with the pin at firefox-18 and assert
+    # ("firefox-19", False). That payload is not a test of #405's invariant —
+    # firefox-18 is present, drivable and ships the asset, so it is the PS-112
+    # defect case (a drivable build passed over) with N-1 absent, and any
+    # correct fix flips it to ("firefox-18", True). What the old assertion
+    # encoded was the maximise-then-test ORDERING, not the invariant.
+    #
+    # #405 IS STILL HONOURED, AND STILL TESTED HERE: the invariant is "never
+    # report a build the shipped driver cannot drive as compatible". Serving
+    # firefox-19 ALONE tests exactly that, with nothing drivable to fall back
+    # to — which is also the non-waivable control that the newer-but-undrivable
+    # tag keeps being reported so the UI's "needs a newer persona" message
+    # still fires. See test_fetch_latest_prefers_newest_drivable_over_newer_
+    # undrivable for the case this payload used to occupy.
+    import invisible_core.constants as consts
+
+    monkeypatch.setattr(consts, "BINARY_VERSION", "firefox-18")
+    _serve(monkeypatch, [{"tag_name": "firefox-19", "assets": FULL_ASSETS}])
+    tag, compatible = ff.fetch_latest()
+    assert tag == "firefox-19"
+    assert compatible is False
+
+
+def test_fetch_latest_prefers_newest_drivable_over_newer_undrivable(monkeypatch):
+    # PS-112, THE DEFECT CASE. Upstream has moved above the driver pin, but a
+    # drivable build exists BELOW it. The old code maximised over ALL releases
+    # and applied the pin bound afterwards, so it returned ("firefox-20", False)
+    # and app.py's `not self._engine2_compatible` gate refused to offer any
+    # update at all — even though firefox-18 was present, drivable, and shipped
+    # the asset. Measured on main before the fix: ("firefox-20", False).
+    #
+    # Asserted on the TUPLE fetch_latest returns, not on any helper being
+    # called: reverting the selection change alone must turn this red.
     import invisible_core.constants as consts
 
     monkeypatch.setattr(consts, "BINARY_VERSION", "firefox-18")
     _serve(
         monkeypatch,
         [
-            {"tag_name": "firefox-19", "assets": FULL_ASSETS},
+            {"tag_name": "firefox-16", "assets": FULL_ASSETS},
+            {"tag_name": "firefox-18", "assets": FULL_ASSETS},
+            {"tag_name": "firefox-20", "assets": FULL_ASSETS},
+        ],
+    )
+    assert ff.fetch_latest() == ("firefox-18", True)
+
+
+def test_fetch_latest_reports_undrivable_tag_when_nothing_drivable(monkeypatch):
+    # PS-112 AC3, NON-WAIVABLE CONTROL. When the ONLY release is above the pin
+    # there is nothing to fall back to, and the pre-PS-112 behaviour must stand:
+    # return the undrivable tag with compatible=False rather than ("", False).
+    #
+    # This is the case the obvious implementation gets wrong. Skipping
+    # above-pin releases in-loop with a bare `continue` filters out the only
+    # candidate, leaving best_tag empty and returning ("", False) — and BOTH
+    # consumers guard on exactly that (`if tag:` in _check_engine2_async,
+    # `if not tag: return` in _auto_update_engine2), so the operator-facing
+    # "Firefox engine {tag} needs a newer persona" message is silenced and they
+    # are told nothing at all. The tag being non-empty here is what keeps that
+    # message reachable, so it is asserted explicitly.
+    import invisible_core.constants as consts
+
+    monkeypatch.setattr(consts, "BINARY_VERSION", "firefox-18")
+    _serve(monkeypatch, [{"tag_name": "firefox-20", "assets": FULL_ASSETS}])
+    tag, compatible = ff.fetch_latest()
+    assert (tag, compatible) == ("firefox-20", False)
+    assert tag, "empty tag silences the 'needs a newer persona' message"
+
+
+def test_fetch_latest_picks_newest_when_every_release_is_drivable(monkeypatch):
+    # PS-112 AC4, CONTROL A. Nothing upstream sits above the pin, so the
+    # highest release is also the highest drivable one and must still be
+    # chosen. Guards against the fix accidentally biasing DOWNWARD — e.g.
+    # preferring a build strictly below the pin, or capping at N-1.
+    import invisible_core.constants as consts
+
+    monkeypatch.setattr(consts, "BINARY_VERSION", "firefox-18")
+    _serve(
+        monkeypatch,
+        [
+            {"tag_name": "firefox-16", "assets": FULL_ASSETS},
             {"tag_name": "firefox-18", "assets": FULL_ASSETS},
         ],
     )
-    tag, compatible = ff.fetch_latest()
-    assert tag == "firefox-19"
-    assert compatible is False
+    assert ff.fetch_latest() == ("firefox-18", True)
+
+
+def test_fetch_latest_drivable_without_expected_asset_is_not_offered(monkeypatch):
+    # PS-112 edge: the fallback must not launder a build that is drivable by
+    # build number but does NOT ship this OS's asset. firefox-18 is under the
+    # pin yet carries a renamed upstream asset, so it is not installable and
+    # must not be announced as an update. Falls through to the report-only
+    # path on the overall winner, exactly as an asset mismatch does today.
+    import invisible_core.constants as consts
+
+    monkeypatch.setattr(consts, "BINARY_VERSION", "firefox-18")
+    _serve(
+        monkeypatch,
+        [
+            {
+                "tag_name": "firefox-18",
+                "assets": [
+                    {"name": "checksums.txt"},
+                    {"name": "firefox-151.0-stealth-win-x86_64.zip"},
+                ],
+            },
+            {"tag_name": "firefox-20", "assets": FULL_ASSETS},
+        ],
+    )
+    assert ff.fetch_latest() == ("firefox-20", False)
+
+
+def test_fetch_latest_logs_the_passed_over_undrivable_tag(monkeypatch, caplog):
+    # PS-112 §5. Preferring the drivable build means the return value no longer
+    # carries the fact that upstream has something newer. That information is
+    # not dropped silently — it is logged to the "persona" logger from inside
+    # the offering path. The return stays a 2-tuple: a `log=` parameter would
+    # have to be threaded through both app.py consumers and breaks four
+    # existing `lambda: (tag, compatible)` stubs in three other test files.
+    import invisible_core.constants as consts
+
+    monkeypatch.setattr(consts, "BINARY_VERSION", "firefox-18")
+    _serve(
+        monkeypatch,
+        [
+            {"tag_name": "firefox-18", "assets": FULL_ASSETS},
+            {"tag_name": "firefox-20", "assets": FULL_ASSETS},
+        ],
+    )
+    with caplog.at_level(logging.INFO, logger="persona"):
+        assert ff.fetch_latest() == ("firefox-18", True)
+    assert any(
+        "firefox-20" in r.getMessage() and "firefox-18" in r.getMessage()
+        for r in caplog.records
+    ), [r.getMessage() for r in caplog.records]
+
+
+def test_fetch_latest_does_not_log_when_nothing_was_passed_over(monkeypatch, caplog):
+    # The PS-112 log line means "something newer exists that you can't drive".
+    # When the chosen build IS the newest release there is nothing to report,
+    # and firing it anyway would tell the operator to update persona for a
+    # build that does not exist.
+    import invisible_core.constants as consts
+
+    monkeypatch.setattr(consts, "BINARY_VERSION", "firefox-18")
+    _serve(
+        monkeypatch,
+        [
+            {"tag_name": "firefox-16", "assets": FULL_ASSETS},
+            {"tag_name": "firefox-18", "assets": FULL_ASSETS},
+        ],
+    )
+    with caplog.at_level(logging.INFO, logger="persona"):
+        assert ff.fetch_latest() == ("firefox-18", True)
+    assert [
+        r.getMessage() for r in caplog.records if "newer persona" in r.getMessage()
+    ] == []
 
 
 def test_active_build_ignores_unmarked_build(monkeypatch, tmp_path):
