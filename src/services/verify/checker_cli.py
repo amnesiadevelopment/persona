@@ -682,6 +682,7 @@ def _cmd_differential(args: argparse.Namespace) -> int:
         engine=args.engine,
         seed=args.seed,
         control_seed=args.control_seed,
+        allow_unsandboxed=args.allow_unsandboxed_chromium,
     )
 
     text = diff_dumps(record)
@@ -871,6 +872,18 @@ def build_parser() -> argparse.ArgumentParser:
     df.add_argument(
         "--control-seed", type=int, default=DIFF_DEFAULT_CONTROL_SEED,
         help="the second seed, used only by the seed axis",
+    )
+    df.add_argument(
+        "--allow-unsandboxed-chromium", action="store_true",
+        help=(
+            "run persona's chromium with --no-sandbox. OFF by default and "
+            "never inferred: persona's own launch path passes that flag "
+            "NOWHERE, so a reading taken with it is not the product's surface "
+            "and the record says so. Needed only on a host that forbids the "
+            "unprivileged user namespace the sandbox requires — which is the "
+            "usual state of the container this runs in, and where the chromium "
+            "arm otherwise refuses before launching. Ignored on firefox"
+        ),
     )
     df.add_argument(
         "-o", "--output", default="-",

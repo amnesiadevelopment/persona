@@ -130,19 +130,45 @@ def read_probe_once(
     install_layer: bool = True,
     settle_seconds: float = PROBE_SETTLE_SECONDS,
     sleep: "Callable[[float], None] | None" = None,
+    allow_unsandboxed: bool = False,
 ) -> Arm:
     """Launch ONE engine against the local page and read its vectors.
 
-    Deliberately drives the SAME code path a real run uses — the engine is
-    constructed by :mod:`browser_tier` and the layer installed by
-    :mod:`masking_layer` — rather than a bespoke launch written for this
-    demonstration. A differential proven through a path the real run does not
-    have would prove nothing about the real run.
+    WHAT IS SHARED WITH A REAL RUN, AND WHAT IS NOT. Stated plainly, because
+    the value of this differential rests entirely on the first list and an
+    earlier version of this docstring claimed the whole of it.
 
-    The page is read through ``inner_text``, which is also how the browser tier
-    reads a real checker (``page.evaluate`` is blocked by CSP on real checker
-    pages — measured, and recorded in ``browser_tier``'s docstring). One reading
-    path, so this cannot succeed by a route the harness lacks.
+    SHARED — the parts that could carry the defect:
+
+    * the LAUNCH and the LAYER INSTALL, both engines. Firefox goes through
+      ``browser_tier.firefox_session`` and chromium through
+      ``chromium_tier.ChromiumSession``, which are the same functions the real
+      checker run uses — not a second copy written for this demonstration. That
+      matters because the install wiring is exactly where the original defect
+      lived: a differential with its own launch could keep passing while the
+      harness's own path lost the layer.
+    * the layer itself, built by the shipped builders (:mod:`masking_layer`).
+    * the READING PATH: ``inner_text``, which is how the browser tier reads a
+      real checker (``page.evaluate`` is blocked by CSP on real checker pages —
+      measured, and recorded in ``browser_tier``'s docstring). So this cannot
+      succeed by a route the harness lacks.
+
+    NOT SHARED — and each difference is a property of the VENUE, not of the
+    layer under test:
+
+    * ``_read_open_session``, the checker loop, is not used. It cannot be: its
+      first act is to prove the engine's own exit and it blanks every row when
+      that fails (``ExitNotProvenInEngine``). A loopback page has no exit to
+      prove. So this function drives one page directly, through the same
+      ``goto``/``inner_text`` calls that loop makes.
+    * NO PROXY and, on firefox, no ``extra_prefs``. Both are the credential's
+      browser-side half (remote DNS, no direct failover) and there is no
+      resolution to leak to a loopback address and nothing to fail over to.
+    * no ``settle_seconds`` of 45-60s: the page computes its vectors
+      synchronously at load, with no third party deciding when to publish.
+
+    None of those three touches whether a spoof reaches the document, which is
+    the single claim this instrument makes.
 
     An engine that will not start is recorded on the arm as an error, not
     raised: a differential that cannot run is a result worth reporting with its
@@ -165,6 +191,7 @@ def read_probe_once(
             settle_seconds=settle_seconds,
             sleep=sleep,
             layer_sink=captured.append,
+            allow_unsandboxed=allow_unsandboxed,
         )
     except EngineUnavailable as exc:
         return Arm(
@@ -194,14 +221,18 @@ def _drive_engine(
     settle_seconds: float,
     sleep: "Callable[[float], None]",
     layer_sink: "Callable[[LayerReport], None]",
+    allow_unsandboxed: bool = False,
 ) -> str:
     """Open ``url`` in a persona engine with/without the layer, return its text.
 
     A local page needs no proxy, and the engine is given none. That is the whole
-    point of the venue: this runs in a container with no credential.
+    point of the venue: this runs in a container with no credential. Both
+    engines are told so EXPLICITLY (``allow_no_proxy`` / an empty credential)
+    rather than by omission — a launch that merely left the flag off would fall
+    back to the system proxy, which is neither "no proxy" nor a proxy this run
+    chose.
     """
-    from .browser_tier import CHROMIUM, EngineUnavailable
-    from .masking_layer import DEFAULT_LOCALE, context_for, install_firefox_layer
+    from .browser_tier import CHROMIUM, EngineUnavailable, firefox_session
 
     if engine == CHROMIUM:
         from .chromium_tier import ChromiumSession, ChromiumUnavailable
@@ -211,6 +242,11 @@ def _drive_engine(
                 "",
                 seed=seed,
                 install_layer=install_layer,
+                # There is no exit at this venue, and the session must be told
+                # so: without this it refuses the empty credential, which is
+                # the right default for a checker run and wrong for loopback.
+                allow_no_proxy=True,
+                allow_unsandboxed=allow_unsandboxed,
             )
         except ChromiumUnavailable as exc:
             raise EngineUnavailable(str(exc)) from exc
@@ -218,47 +254,15 @@ def _drive_engine(
             layer_sink(session.layer_report)
             return _load_and_read(live, url, settle_seconds, sleep)
 
-    try:
-        from invisible_playwright import InvisiblePlaywright
-    except Exception as exc:
-        raise EngineUnavailable(
-            f"persona's engine (invisible_playwright) is not importable: "
-            f"{type(exc).__name__}: {exc}"
-        ) from exc
-
-    kwargs: "dict[str, Any]" = {"headless": True, "humanize": False}
-    if seed:
-        kwargs["seed"] = seed
-    try:
-        eng = InvisiblePlaywright(**kwargs)
-    except Exception as exc:
-        raise EngineUnavailable(
-            f"could not construct persona's engine: {type(exc).__name__}: {exc}"
-        ) from exc
-
-    try:
-        with eng as live:
-            # See browser_tier: the engine returns a Browser here, which has no
-            # add_init_script and whose new_page() opens a throwaway context.
-            # The layer needs one explicit context to live in.
-            live, _note = context_for(live)
-            if install_layer:
-                layer_sink(install_firefox_layer(live, seed, locale=DEFAULT_LOCALE))
-            else:
-                layer_sink(
-                    absent_layer(
-                        "install_layer=False: the packaged engine with NONE of "
-                        "persona's masking layer — the control arm."
-                    )
-                )
-            return _load_and_read(live, url, settle_seconds, sleep)
-    except EngineUnavailable:
-        raise
-    except Exception as exc:
-        raise EngineUnavailable(
-            f"persona's engine failed during the differential: "
-            f"{type(exc).__name__}: {exc}"
-        ) from exc
+    with firefox_session(
+        # Empty: no exit at this venue. See the note above on why that is said
+        # rather than defaulted.
+        "",
+        seed=seed,
+        install_layer=install_layer,
+        layer_sink=layer_sink,
+    ) as live:
+        return _load_and_read(live, url, settle_seconds, sleep)
 
 
 def _load_and_read(live, url: str, settle_seconds: float, sleep) -> str:
@@ -281,6 +285,7 @@ def run_differential(
     seed: int = DEFAULT_SEED,
     control_seed: int = DEFAULT_CONTROL_SEED,
     settle_seconds: float = PROBE_SETTLE_SECONDS,
+    allow_unsandboxed: bool = False,
 ) -> dict:
     """Stand up the local page, read it twice varying ONE axis, and report.
 
@@ -289,6 +294,13 @@ def run_differential(
     interesting outcomes are not binary: see the module docstring on what an
     empty ``moved`` means, which depends on whether the page could compute the
     vectors at all.
+
+    ``allow_unsandboxed`` is the chromium-only waiver for a host that forbids
+    the user namespace chromium's sandbox needs — which is the state of the
+    container this is usually run in. Off by default and never inferred, for
+    the reason ``chromium_tier._launch_args`` records: persona's own launch
+    path passes ``--no-sandbox`` nowhere, so a reading taken under it is not
+    the product's surface and the operator asks for it explicitly.
     """
     if axis not in (AXIS_LAYER, AXIS_SEED):
         raise ValueError(f"unknown axis {axis!r}: vary {AXIS_LAYER} or {AXIS_SEED}")
@@ -300,20 +312,24 @@ def run_differential(
             before = read_probe_once(
                 url, seed=seed, engine=engine, install_layer=False,
                 settle_seconds=settle_seconds,
+                allow_unsandboxed=allow_unsandboxed,
             )
             after = read_probe_once(
                 url, seed=seed, engine=engine, install_layer=True,
                 settle_seconds=settle_seconds,
+                allow_unsandboxed=allow_unsandboxed,
             )
         else:
             # ONE axis: layer on BOTH sides, only the seed moves.
             before = read_probe_once(
                 url, seed=seed, engine=engine, install_layer=True,
                 settle_seconds=settle_seconds,
+                allow_unsandboxed=allow_unsandboxed,
             )
             after = read_probe_once(
                 url, seed=control_seed, engine=engine, install_layer=True,
                 settle_seconds=settle_seconds,
+                allow_unsandboxed=allow_unsandboxed,
             )
 
     return build_differential_record(axis, engine, before, after)

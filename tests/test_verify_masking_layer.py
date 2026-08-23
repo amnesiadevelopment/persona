@@ -568,3 +568,256 @@ def test_appeared_and_vanished_are_reported_APART_from_moved():
     assert set(diff["moved"]) == {"a"}
     assert diff["vanished"] == ["gone"]
     assert diff["appeared"] == ["new"]
+
+
+# --- the no-proxy venue (B1) --------------------------------------------------
+#
+# The differential's chromium arm was structurally dead: it constructed the
+# session with an empty proxy URL, and `_proxy_server_and_bridge("")` refused
+# that unconditionally on every host. The CLI advertised `--engine chromium`
+# regardless, so it was a documented, reachable, always-failing route — and it
+# failed with a message about *proxy credentials*, pointing a reader at the
+# credential wall rather than at the real cause.
+#
+# The fix has to hold BOTH directions, and the second is the one worth guarding:
+# a no-proxy launch must be possible for a venue that has no exit, and must stay
+# REFUSED for one that should have had a credential.
+
+
+def test_a_no_proxy_launch_is_possible_for_a_venue_that_has_NO_exit():
+    """The loopback differential has no exit and must be able to say so.
+
+    Asserted through the value that actually reaches the command line rather
+    than through the flag alone: an empty ``--proxy-server=`` would be a
+    different configuration than no proxy, and the bridge must not be started
+    for an upstream that does not exist.
+    """
+    from src.services.verify.chromium_tier import NO_PROXY, _proxy_server_and_bridge
+
+    proxy_server, bridge = _proxy_server_and_bridge("", allow_no_proxy=True)
+
+    assert proxy_server == NO_PROXY
+    assert bridge is None, "no upstream exists, so no relay may be started"
+
+
+def test_a_no_proxy_launch_is_REFUSED_when_the_run_did_not_ask():
+    """The default must stay hostile: a checker run whose credential went
+    missing has to fail, not quietly read the operator's REAL address while
+    every verdict parses and every row lands as READ.
+
+    The message is asserted too, because the old one blamed the credential's
+    *form* for a value that was simply absent — sending a reader to the
+    credential wall instead of to the missing opt-in.
+    """
+    from src.services.verify.chromium_tier import (
+        ChromiumUnavailable,
+        _proxy_server_and_bridge,
+    )
+
+    with pytest.raises(ChromiumUnavailable) as caught:
+        _proxy_server_and_bridge("")
+
+    message = str(caught.value)
+    assert "no proxy credential was given" in message
+    assert "did not ask" in message
+    assert "not in a form" not in message, (
+        "an ABSENT credential must not be reported as a malformed one"
+    )
+
+
+def test_the_no_proxy_venue_puts_an_EXPLICIT_flag_on_the_command_line():
+    """``--no-proxy-server`` is stated rather than left off.
+
+    Chromium with no proxy flag at all falls back to the SYSTEM proxy, which is
+    neither "no proxy" nor a proxy this run chose. So the absence of
+    ``--proxy-server`` is not enough; the refusal has to be explicit.
+    """
+    from src.services.verify.chromium_tier import NO_PROXY, _launch_args
+
+    args = _launch_args(
+        "/bin/true", "/tmp/profile",
+        seed=SEED, declared_machine="windows", proxy_server=NO_PROXY,
+    )
+
+    assert "--no-proxy-server" in args
+    assert not [a for a in args if a.startswith("--proxy-server=")]
+    assert NO_PROXY not in " ".join(args), (
+        "the sentinel is internal and must never reach the command line"
+    )
+
+
+def test_a_real_credential_still_reaches_the_command_line_unchanged():
+    """The waiver must not have moved the normal path: a proxied checker run is
+    what the tier exists for, and NO_PROXY must not leak into it."""
+    from src.services.verify.chromium_tier import _launch_args
+
+    args = _launch_args(
+        "/bin/true", "/tmp/profile",
+        seed=SEED, declared_machine="windows",
+        proxy_server="socks5://127.0.0.1:1080",
+    )
+
+    assert "--proxy-server=socks5://127.0.0.1:1080" in args
+    assert "--no-proxy-server" not in args
+
+
+# --- ONE copy of the launch-and-install wiring (B3) ---------------------------
+#
+# `masking_layer` records that a second copy of the SPOOF SET, drifting from the
+# one the product launches, would reproduce the very defect it exists to close.
+# The INSTALL wiring can drift the same way one level up: a differential with
+# its own launch keeps passing while the harness's own path loses the layer,
+# proving something about a path no real run has.
+
+
+def test_the_differential_and_the_real_run_share_ONE_firefox_launch():
+    """Both callers must reach the page through ``firefox_session``.
+
+    Asserted on the CALL rather than on source text: the double records what it
+    was handed, so this fails if either caller grows its own launch again.
+    """
+    import contextlib
+
+    from src.services.verify import browser_tier, layer_differential
+
+    calls: "list[dict]" = []
+
+    @contextlib.contextmanager
+    def recording_session(proxy_url, *, seed, install_layer=True, layer_sink=None):
+        calls.append({
+            "proxy_url": proxy_url,
+            "seed": seed,
+            "install_layer": install_layer,
+        })
+        if layer_sink is not None:
+            layer_sink(LayerReport(route="init_scripts", installed=("webgl",)))
+        yield object()
+
+    monkey = pytest.MonkeyPatch()
+    try:
+        monkey.setattr(browser_tier, "firefox_session", recording_session)
+        monkey.setattr(
+            layer_differential, "_load_and_read", lambda *a, **k: '{"webgl": "1"}'
+        )
+        layer_differential.read_probe_once(
+            "http://127.0.0.1:1/", seed=SEED, engine="firefox", install_layer=False
+        )
+    finally:
+        monkey.undo()
+
+    assert len(calls) == 1, "the differential must not construct its own engine"
+    assert calls[0]["seed"] == SEED
+    assert calls[0]["install_layer"] is False, (
+        "the control arm's request has to survive to the shared launch"
+    )
+    assert calls[0]["proxy_url"] == "", "the loopback venue passes no credential"
+
+
+def test_the_layer_report_from_the_shared_launch_reaches_the_arm():
+    """The differential's record must carry what the SHARED launch reported,
+    not a report the differential composed for itself — otherwise the arm can
+    claim a layer the launch never installed."""
+    import contextlib
+
+    from src.services.verify import browser_tier, layer_differential
+
+    @contextlib.contextmanager
+    def session(proxy_url, *, seed, install_layer=True, layer_sink=None):
+        if layer_sink is not None:
+            layer_sink(
+                LayerReport(route="init_scripts", installed=("audio", "webgl"))
+            )
+        yield object()
+
+    monkey = pytest.MonkeyPatch()
+    try:
+        monkey.setattr(browser_tier, "firefox_session", session)
+        monkey.setattr(
+            layer_differential, "_load_and_read", lambda *a, **k: '{"webgl": "1"}'
+        )
+        arm = layer_differential.read_probe_once(
+            "http://127.0.0.1:1/", seed=SEED, engine="firefox"
+        )
+    finally:
+        monkey.undo()
+
+    assert arm.layer.installed == ("audio", "webgl")
+    assert arm.as_record()["layer"]["complete"] is True
+
+
+def test_a_loopback_launch_carries_no_proxy_and_no_prefs():
+    """The prefs are the CREDENTIAL's browser-side half (remote DNS, no direct
+    failover). On a page with no exit there is no resolution to leak and nothing
+    to fail over to — and asking the engine for a proxy it does not have is how
+    the chromium arm died."""
+    from src.services.verify import browser_tier
+
+    captured: "list[dict]" = []
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            captured.append(kwargs)
+
+        def __enter__(self):
+            return FakeContext()
+
+        def __exit__(self, *exc):
+            return False
+
+    monkey = pytest.MonkeyPatch()
+    try:
+        import sys
+        import types
+
+        module = types.ModuleType("invisible_playwright")
+        module.InvisiblePlaywright = FakeEngine
+        monkey.setitem(sys.modules, "invisible_playwright", module)
+        with browser_tier.firefox_session("", seed=SEED, install_layer=False):
+            pass
+    finally:
+        monkey.undo()
+
+    assert len(captured) == 1
+    assert "proxy" not in captured[0]
+    assert "extra_prefs" not in captured[0]
+    assert captured[0]["seed"] == SEED
+
+
+def test_a_credentialled_run_still_gets_its_proxy_AND_its_prefs():
+    """The counterpart, and the one that actually protects a real reading: the
+    checker run's credential and the prefs that stop a silent direct failover
+    must both survive the shared launch."""
+    from src.services.verify import browser_tier
+
+    captured: "list[dict]" = []
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            captured.append(kwargs)
+
+        def __enter__(self):
+            return FakeContext()
+
+        def __exit__(self, *exc):
+            return False
+
+    monkey = pytest.MonkeyPatch()
+    try:
+        import sys
+        import types
+
+        module = types.ModuleType("invisible_playwright")
+        module.InvisiblePlaywright = FakeEngine
+        monkey.setitem(sys.modules, "invisible_playwright", module)
+        with browser_tier.firefox_session(
+            "socks5h://user:pass@host:1080", seed=SEED, install_layer=False
+        ):
+            pass
+    finally:
+        monkey.undo()
+
+    kwargs = captured[0]
+    assert kwargs["proxy"]["server"] == "socks5://host:1080"
+    assert kwargs["proxy"]["username"] == "user"
+    assert kwargs["extra_prefs"]["network.proxy.failover_direct"] is False
+    assert kwargs["extra_prefs"]["network.proxy.socks_remote_dns"] is True
