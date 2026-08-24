@@ -642,6 +642,15 @@ def _read_one(
                 seed=seed,
                 engine=engine,
                 declared_machine=requested_machine,
+                # The zone of the exit THIS RUN PROVED, from the same
+                # observation the record header is built from — so the browser
+                # and the record cannot disagree about where the profile is.
+                # Chromium pins nothing of its own: without this it reports the
+                # HOST clock, and a reading behind a Warsaw exit came back
+                # UTC+0 with the checker's own timezone-vs-address cross-check
+                # calling it spoofed (PS-132). Ignored on firefox, whose engine
+                # resolves the zone from the egress IP when given none.
+                timezone=observed.timezone,
                 allow_unsandboxed=args.allow_unsandboxed_chromium,
                 layer_sink=_capture_layer,
                 install_layer=not args.no_masking_layer,

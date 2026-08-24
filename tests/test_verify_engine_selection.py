@@ -422,6 +422,118 @@ def test_the_sandbox_is_never_waived_by_default():
     assert "--no-sandbox" in _args(allow_unsandboxed=True)
 
 
+def test_chromium_is_told_the_exits_timezone(): 
+    """The defect PS-132 exists to fix.
+
+    The product pins a concrete zone on every launch
+    (``process.py``: ``--timezone={_profile_timezone(profile, proxy)}``).
+    This tier pinned NONE, so the engine fell back to the HOST clock: a
+    reading taken behind a proven Warsaw exit reported the container's own
+    UTC+0, and the checker's free timezone-against-address cross-check
+    called the product spoofed for it.
+    """
+    assert "--timezone=Europe/Warsaw" in _args(timezone="Europe/Warsaw")
+
+
+def test_a_venue_with_no_exit_is_told_no_timezone_rather_than_a_made_up_one():
+    """Empty means pass no flag, and that is not the same as a default.
+
+    The loopback differential serves its page from 127.0.0.1 and has no exit
+    for a zone to agree with, so a zone asserted there would be a fact about
+    nothing. The product makes the same distinction one axis over — it
+    refuses rather than inventing geography for a proxy it cannot place.
+    """
+    assert not any(a.startswith("--timezone=") for a in _args())
+    assert not any(a.startswith("--timezone=") for a in _args(timezone=""))
+
+
+def test_the_zone_the_session_launches_with_is_the_one_it_was_given(
+    monkeypatch,
+):
+    """The flag is only as good as the value that reaches it.
+
+    ``_launch_args`` is asserted directly above, so this pins the OTHER half:
+    that ``ChromiumSession`` carries the caller's zone down to the command
+    line instead of dropping it between the two. A test of the formatter
+    alone would pass with the parameter never threaded at all — which is the
+    shape of the original defect, not a hypothetical.
+    """
+    from src.services.verify import chromium_tier
+
+    seen = {}
+
+    def _spy(binary, profile_dir, **kwargs):
+        seen.update(kwargs)
+        raise chromium_tier.ChromiumUnavailable("stop here: argv captured")
+
+    monkeypatch.setattr(chromium_tier, "_engine_binary", lambda: "/engine/fp")
+    monkeypatch.setattr(chromium_tier, "sandbox_available", lambda: True)
+    monkeypatch.setattr(
+        chromium_tier, "_ensure_display", lambda: (":99", None)
+    )
+    monkeypatch.setattr(
+        chromium_tier,
+        "_proxy_server_and_bridge",
+        lambda url, allow_no_proxy=False: ("socks5://127.0.0.1:5555", None),
+    )
+    monkeypatch.setattr(chromium_tier, "_launch_args", _spy)
+
+    with pytest.raises(chromium_tier.ChromiumUnavailable):
+        chromium_tier.ChromiumSession(
+            "socks5h://u:p@host:1080",
+            timezone="Europe/Warsaw",
+            install_layer=False,
+        )
+    assert seen["timezone"] == "Europe/Warsaw"
+
+
+def test_the_browser_tier_hands_chromium_the_exits_zone_and_never_firefox(
+    monkeypatch,
+):
+    """Chromium is raised to Firefox here, not the other way round.
+
+    Firefox reads the zone correctly ALREADY: given none, its engine resolves
+    geo from the egress IP itself (``invisible_launch.py``: "with no timezone
+    it discovers the egress IP"). Chromium has no such fallback, which is why
+    only one of the two engines ever showed this. Passing the zone to Firefox
+    would be shared machinery that drags the working side onto the broken
+    side's crutch, so the parameter must reach chromium and stop there.
+    """
+    from src.services.verify import browser_tier as bt
+
+    seen = {}
+
+    def _chromium(proxy_url, **kwargs):
+        seen.update(kwargs)
+        return {}
+
+    def _firefox(proxy_url, **kwargs):
+        seen.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(bt, "_read_page_texts_chromium", _chromium)
+    monkeypatch.setattr(bt, "_read_page_texts_firefox", _firefox)
+
+    bt.read_page_texts(
+        "socks5h://u:p@host:1080",
+        engine=bt.CHROMIUM,
+        timezone="Europe/Warsaw",
+    )
+    assert seen["timezone"] == "Europe/Warsaw"
+
+    seen.clear()
+    bt.read_page_texts(
+        "socks5h://u:p@host:1080",
+        engine=bt.FIREFOX,
+        timezone="Europe/Warsaw",
+    )
+    assert "timezone" not in seen, (
+        "firefox must not be handed the zone: it resolves geo from the egress "
+        "IP itself, and this ticket raises chromium to firefox rather than "
+        "adding shared machinery"
+    )
+
+
 def test_a_host_without_the_sandbox_refuses_rather_than_dying_obscurely(
     monkeypatch,
 ):

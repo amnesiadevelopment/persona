@@ -270,6 +270,7 @@ def _launch_args(
     declared_machine: str,
     proxy_server: str,
     lang: str = "en-US",
+    timezone: str = "",
     allow_unsandboxed: bool = False,
     extension_dirs: "list[str] | None" = None,
 ) -> "list[str]":
@@ -299,6 +300,27 @@ def _launch_args(
     mean the verification tier ran the engine with a security boundary the
     product keeps, and then recorded the result as though it were the product's
     behaviour. The operator asks for it explicitly or the run refuses.
+
+    ``timezone`` is the EXIT'S zone, and its absence was the defect PS-132
+    exists to fix — the same shape as the missing masking layer above, one
+    axis over. ``services/browser/process.py`` pins a concrete zone on every
+    product launch; this tier pinned none, so the engine fell back to the
+    HOST clock and a reading taken behind a Warsaw exit reported the
+    container's own UTC. That is not a cosmetic gap in the record: a checker
+    cross-checks timezone against the exit address for free, so the harness
+    manufactured ``timezone_spoofed`` / ``fingerprint_inconsistent`` verdicts
+    against a product that had set the zone correctly all along.
+
+    Measured on the real engine rather than assumed (PS-132, chromium
+    148.0.7778.215): with the flag the page reports the zone on all three
+    surfaces that carry it — ``Intl...resolvedOptions().timeZone``, the offset
+    ``Date`` reports, and formatting derived from it — and with the flag
+    absent all three read the host clock. It also BEATS an inherited ``TZ``
+    environment variable, which is why ``env_policy`` can leave ``TZ`` alone.
+
+    Empty means "pass no flag" and is the honest default for a venue with no
+    exit — the loopback differential has no address for a zone to agree with,
+    so inventing one there would be a fact about nothing.
     """
     from ...core import platform as _platform
 
@@ -308,6 +330,13 @@ def _launch_args(
     if allow_unsandboxed:
         # Requested explicitly, recorded in the header, and never a fallback.
         args.append("--no-sandbox")
+    if timezone:
+        # The exit's zone, mirrored from the product's own launch
+        # (``process.py``: ``args.append(f"--timezone={_profile_timezone(...)}")``).
+        # Emitted only when there IS one: see the docstring on why an empty
+        # value passes no flag rather than inventing a zone for a venue that
+        # has no exit.
+        args.append(f"--timezone={timezone}")
     args += [
         f"--user-data-dir={profile_dir}",
         f"--fingerprint={seed}",
@@ -424,12 +453,20 @@ class ChromiumSession:
     # local-page differential, whose page is served from 127.0.0.1 and has no
     # exit in the picture at all.
 
+    # ``timezone`` is the EXIT'S zone, and it is the caller's to supply for the
+    # reason the credential is: this session knows the proxy URL but never the
+    # geography behind it. The checker run has already PROVEN its exit (
+    # ``exit_guard.Exit`` carries the zone it observed), so the value handed
+    # down here is measured rather than guessed. Empty passes no flag — see
+    # :func:`_launch_args`.
+
     def __init__(
         self,
         proxy_url: str,
         *,
         seed: int = 0,
         declared_machine: str = "windows",
+        timezone: str = "",
         allow_unsandboxed: bool = False,
         allow_no_proxy: bool = False,
         install_layer: bool = True,
@@ -440,6 +477,7 @@ class ChromiumSession:
 
         self.seed = seed
         self.declared_machine = declared_machine
+        self.timezone = timezone
         self.allow_unsandboxed = allow_unsandboxed
         self.allow_no_proxy = allow_no_proxy
         self.install_layer = install_layer
@@ -531,6 +569,7 @@ class ChromiumSession:
             seed=self.seed,
             declared_machine=self.declared_machine,
             proxy_server=proxy_server,
+            timezone=self.timezone,
             allow_unsandboxed=self.allow_unsandboxed,
             extension_dirs=extension_dirs,
         )

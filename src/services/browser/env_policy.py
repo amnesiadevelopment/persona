@@ -46,8 +46,16 @@ Deliberately NOT here, each for a stated reason:
   server; dropping it plausibly stops the browser opening at all. Not worth the
   launch risk in a slice about a capability handle.
 * ``TZ`` — chromium is passed ``--timezone=`` explicitly and the firefox engine
-  applies its own timezone. Which of the two wins is not established here, so
-  it is neither claimed as a leak nor touched.
+  applies its own timezone. Which of the two wins WAS not established here;
+  it now is, measured on the real engine from a running page (PS-132,
+  chromium 148.0.7778.215): launched with ``--timezone=Europe/Warsaw`` and
+  ``TZ=America/Chicago`` in its environment, the page reported
+  ``Europe/Warsaw`` on all three surfaces that carry the zone — the IANA name
+  from ``Intl.DateTimeFormat().resolvedOptions()``, the offset ``Date``
+  reports, and formatting derived from it. **The flag wins; an inherited
+  ``TZ`` does not reach the page.** So this is still not a leak and is still
+  not touched — but now because it was checked, rather than because the
+  question was left open.
 * ``LANG`` / ``LC_ALL`` — already normalized to ``C.UTF-8`` in ``src/main.py``;
   re-deriving that here would duplicate an existing authority.
 * ``TMPDIR`` — real ground, but a path-pinning problem (where files land)
