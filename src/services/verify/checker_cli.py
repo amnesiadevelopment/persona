@@ -189,6 +189,14 @@ from .matrix_diff import (
     no_evidence,
     require_record,
 )
+from .matrix_silence import (
+    NotEnoughRecords,
+    alarms as silence_alarms,
+    discover_record_paths,
+    format_silence,
+    load_record as load_silence_record,
+    silence_pass,
+)
 from .snapshot import quote_path
 
 
@@ -1011,6 +1019,72 @@ def _load_record(path: str) -> dict:
     return require_record(obj, source=path)
 
 
+def _cmd_silence(args: argparse.Namespace) -> int:
+    """Ask a SET of records which checkers have never once answered.
+
+    The one lane in this CLI whose input is a set rather than a pair. `compare`
+    takes exactly two records because "what moved" is a question about a pair;
+    "has this checker EVER answered" is a quantifier over a set, and no number
+    of pairwise comparisons recovers it — a checker that is unobtainable on
+    both sides of every pair reads to the comparator as a row that did not
+    move, which is its agreement signal.
+
+    Reads files already on disk and nothing else. No network, no exit, no
+    reading taken.
+
+    The exit codes mirror the discipline the other lanes already keep, rather
+    than inventing a scheme:
+
+    ``2``
+        REFUSED — the set could not support the question (unreadable file, not
+        a record, or fewer than two records). Nothing was established, so it
+        can never wear a code that means something was.
+    ``3``
+        A readable-tier checker never answered. 3 already means "no finding
+        about the product, but the coverage this rests on is not what you
+        think", which is exactly what this is: the matrix presents a width it
+        has never actually read. It is NOT 1 — the product did not move, and
+        folding a coverage fact into the drift code is the mislabelling this
+        subsystem has repeatedly refused.
+    ``0``
+        Every readable-tier checker answered somewhere in the set.
+
+    The catalogue-declared unreadable checkers are printed as CARRIED and
+    deliberately do NOT influence the code. They are silent by design, and a
+    gate that fired on them would be switched off within a week.
+    """
+    paths = list(args.records)
+    if args.discover:
+        paths.extend(discover_record_paths(args.discover))
+    # Deduplicate while keeping a stable order: a record named explicitly AND
+    # found by discovery must not be counted twice, or "answered in 0/N"
+    # quotes a denominator the set does not have.
+    seen: "set[str]" = set()
+    ordered = []
+    for path in paths:
+        key = os.path.realpath(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(path)
+
+    try:
+        records = [load_silence_record(path) for path in ordered]
+        entries = silence_pass(records)
+    except (NotARecord, RecordUnreadable, NotEnoughRecords) as exc:
+        print(f"REFUSED: {exc}", file=sys.stderr)
+        print(
+            "Nothing was established, so this is NOT 'no checker is silent'.",
+            file=sys.stderr,
+        )
+        return 2
+
+    print(format_silence(entries, records=len(records)))
+    if silence_alarms(entries):
+        return 3
+    return 0
+
+
 def _cmd_list(args: argparse.Namespace) -> int:
     for checker in JSON_CHECKERS + BROWSER_CHECKERS:
         print(f"{checker.tier}\t{checker.id}\t{len(checker.items)} item(s)")
@@ -1338,6 +1412,37 @@ def build_parser() -> argparse.ArgumentParser:
         help="write the differential record here ('-' for stdout)",
     )
     df.set_defaults(func=_cmd_differential)
+
+    sil = sub.add_parser(
+        "silence",
+        help="ask a SET of records which checkers have NEVER answered",
+        description=(
+            "Reports checkers that never once produced a reading across the "
+            "whole set of records supplied. This is the question `compare` "
+            "cannot be asked: it takes exactly two records, and a checker "
+            "that is unobtainable on both sides of every pair reads to it as "
+            "a row that did not move. Splits the answer on the catalogue's "
+            "`tier`: a readable-tier checker that never answered is a "
+            "FINDING (exit 3), while a catalogue-declared unreadable one is "
+            "CARRIED and expected. Refuses a set of fewer than two records: "
+            "over one record, every checker that happened to fail in that "
+            "run reads as 'never'. Reads files only; no network, no exit."
+        ),
+    )
+    sil.add_argument(
+        "records", nargs="*",
+        help="record files to range over (two or more)",
+    )
+    sil.add_argument(
+        "--discover", metavar="ROOT",
+        help=(
+            "also find records anywhere under ROOT, by PAYLOAD SHAPE rather "
+            "than by directory name — anything keyed on a remembered "
+            "subdirectory stops ranging over the artifacts it exists to read "
+            "the moment the next recording campaign lands"
+        ),
+    )
+    sil.set_defaults(func=_cmd_silence)
 
     ls = sub.add_parser("list", help="print the checker inventory")
     ls.set_defaults(func=_cmd_list)
