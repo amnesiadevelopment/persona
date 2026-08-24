@@ -436,6 +436,66 @@ class App:
             ),
         )
 
+    def _app_rollback_row(self) -> ft.Control | None:
+        """The undo gesture for a bad app update — the macOS .app counterpart of
+        _engine2_rollback_row, and it follows the same rule that row states:
+
+          * a previous bundle is retained — offer "go back to it".
+          * nothing retained — render NOTHING AT ALL (return None). A revert
+            with no retained bundle cannot work, and a button that cannot work
+            is worse than no button: it promises the machine can undo something
+            it cannot.
+
+        There is no PINNED state to mirror here: the app updater has no pin to
+        hold updates off, so the two states are "retained" and "not"."""
+        try:
+            target = app_update.rollback_target()
+        except Exception:
+            # the panel must render even if the install location is unreadable
+            return None
+        if not target:
+            return None
+
+        return ft.Container(
+            on_click=lambda _: self._on_app_rollback(),
+            ink=True,
+            tooltip=(
+                "Go back to the previous version of persona, kept from the "
+                "last update — no download needed"
+            ),
+            padding=ft.Padding.only(top=4, bottom=2),
+            content=ft.Row(
+                spacing=6,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Icon(
+                        ft.Icons.HISTORY, size=13, color=COLORS["text_dim"]
+                    ),
+                    ft.Text(
+                        "go back to the previous version",
+                        size=10,
+                        color=COLORS["text_dim"],
+                        font_family="monospace",
+                    ),
+                ],
+            ),
+        )
+
+    def _on_app_rollback(self) -> None:
+        """Put the retained previous bundle back. Instant — it is a rename, not
+        a download — so there is no progress bar, which is exactly why a
+        refusal must be VISIBLE rather than log-only: without it a refused
+        revert is indistinguishable from a dead button. The service call owns
+        the decision; this only reports it."""
+        try:
+            went = app_update.revert_to_previous_build(log=self._log)
+        except Exception as e:
+            self._log(f"Update: going back failed ({e})")
+            went = ""
+        if went:
+            self._log("Update: restart persona to run the previous version.")
+        self._refresh_sidebar()
+
     def _build_version_panel(self) -> ft.Control:
         from . import progress_fmt as pf
 
@@ -551,6 +611,10 @@ class App:
             rows.append(
                 self._update_button(f"[ update to {self._app_latest} ]")
             )
+
+        rollback = self._app_rollback_row()
+        if rollback is not None:
+            rows.append(rollback)
 
         return ft.Container(
             border_radius=3,

@@ -903,7 +903,24 @@ def _apply_macos(staged: str, say) -> bool:
                 except OSError:
                     pass
             return False
-        shutil.rmtree(backup, ignore_errors=True)
+        # RETENTION — the previous bundle STAYS on disk. This is where it used
+        # to be destroyed, the instant ditto returned 0. A macOS release can be
+        # authentically what upstream published, pass its sha256, install
+        # perfectly and then simply not launch; that left the operator with
+        # nothing to go back to, while the FAILED-ditto arm just above restored
+        # cleanly. The arm where everything succeeded was the one keeping
+        # nothing. See rollback_target / revert_to_previous_build for the way
+        # back this retention makes expressible.
+        #
+        # Bounded to exactly ONE by construction — no second cleanup path, no
+        # timer: the pre-clean above rmtree's a stale `.bak` BEFORE the next
+        # update renames its own bundle aside, so each update's retained bundle
+        # REPLACES the last one rather than accumulating. That is the
+        # depth-not-duration policy the Firefox engine states in place at
+        # browser/engine_install.py:628-631, mirrored here for the .app.
+        if moved_aside:
+            say("Update: keeping the previous version — you can go back to it "
+                "if the new one doesn't work.")
     finally:
         try:
             subprocess.run(
@@ -940,6 +957,101 @@ def _apply_macos(staged: str, say) -> bool:
     except Exception:
         pass
     os._exit(0)
+
+
+def rollback_target() -> str:
+    """The retained previous .app bundle an operator can go BACK to, or "" when
+    there is nothing to go back to.
+
+    This is the whole "can I undo this app update?" question as one call —
+    exactly as engine_install.rollback_target is for the Firefox engine, whose
+    `-> str` shape this deliberately mirrors (the Chromium one in
+    engine/updater.py returns a tuple; the two are not interchangeable, and the
+    UI reaches the Firefox-shaped one). "" means the gesture must not be
+    offered, because a revert with no retained bundle is a button that cannot
+    work.
+
+    macOS only, and deliberately quiet: every failure to resolve an install
+    location answers "" rather than raising, because this is called to decide
+    whether to RENDER a control."""
+    if not _platform.IS_MACOS:
+        return ""
+    try:
+        app = installed_macos_app()
+        if not app:
+            return ""
+        # the same install-target resolution the update itself used, so a
+        # translocated run offers the bundle that was actually replaced rather
+        # than the read-only mirror it runs from
+        app = _macos_install_target(app, lambda _m: None)
+        if not app:
+            return ""
+        backup = app + ".bak"
+        return backup if os.path.isdir(backup) else ""
+    except Exception:
+        return ""
+
+
+def revert_to_previous_build(log=None) -> str:
+    """Go BACK to the retained previous .app bundle. Returns the bundle path now
+    installed, or "" when the revert was refused or could not be completed.
+
+    RENAME, NEVER COPY — and that is a correctness constraint, not a
+    performance one. `ditto` is used for the forward swap precisely because it
+    preserves the code signature, resource forks and permissions that a plain
+    python copy does not (see the note beside the ditto call above);
+    Gatekeeper refuses a bundle whose signature a copy has broken. A
+    copytree-based revert would restore a bundle macOS will not launch, which
+    is not a rollback at all. os.rename is atomic, O(1), and preserves every
+    one of those attributes because nothing is rewritten — the directory is
+    relocated, not reconstructed. The retained bundle is kept beside the
+    original (app + ".bak") so the rename stays same-filesystem.
+
+    The new bundle is moved aside first, so a rename that fails midway leaves
+    the operator with something rather than an empty install location, and the
+    build being reverted FROM lands in the retained slot — making the revert
+    itself undoable by the same gesture."""
+    def _say(m):
+        if log:
+            log(m)
+
+    target = rollback_target()
+    if not target:
+        _say("Update: nothing to go back to — no previous version is retained.")
+        return ""
+    app = target[: -len(".bak")]
+    # park the build being reverted FROM rather than destroying it: it becomes
+    # the retained slot's new occupant, so the revert is itself reversible
+    parked = app + ".reverting"
+    try:
+        import shutil
+
+        shutil.rmtree(parked, ignore_errors=True)
+        current_exists = os.path.exists(app)
+        if current_exists:
+            os.rename(app, parked)
+        try:
+            os.rename(target, app)
+        except OSError as e:
+            _say(f"Update: couldn't go back to the previous version ({e}).")
+            if current_exists:
+                try:
+                    os.rename(parked, app)  # put the new build back
+                except OSError:
+                    pass
+            return ""
+        # the reverted-from build now occupies the single retained slot
+        if current_exists:
+            try:
+                os.rename(parked, target)
+            except OSError:
+                shutil.rmtree(parked, ignore_errors=True)
+    except OSError as e:
+        _say(f"Update: couldn't go back to the previous version ({e}).")
+        return ""
+    _say("Update: went back to the previous version — restart persona to run "
+         "it.")
+    return app
 
 
 def _try_windows_fast_update(say) -> bool:
