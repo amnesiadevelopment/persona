@@ -78,8 +78,13 @@ def _mk(cn, issuer_key=None, issuer_cert=None, ca=False, san=None):
 
 
 def _mtls_origin(tmp_path, require_client=True):
-    """A local TLS origin that (optionally) requires a client cert. Returns
-    (port, ca_pem, client_p12, p12_pass, stop_fn) and logs admits into a list."""
+    """A local TLS origin that (optionally) requires a client cert.
+
+    Returns (port, ca_pem, client_p12, p12_pass, admits, conns, stop_fn), where
+    `admits` logs each COMPLETED TLS session and `conns` logs each accepted
+    connection regardless of handshake outcome. The two together distinguish
+    "the origin refused the handshake" from "nothing ever reached the origin".
+    """
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.serialization import pkcs12
 
@@ -119,6 +124,7 @@ def _mtls_origin(tmp_path, require_client=True):
     port = srv.getsockname()[1]
     stop = threading.Event()
     admits = []
+    conns = []
 
     def serve():
         srv.settimeout(0.5)
@@ -127,6 +133,12 @@ def _mtls_origin(tmp_path, require_client=True):
                 c, _ = srv.accept()
             except OSError:
                 continue
+            # Reaching the origin at all is recorded SEPARATELY from admitting a
+            # TLS session, so a test can tell "the origin refused the handshake"
+            # apart from "nothing ever got here" — those are the same observation
+            # from the client's side, and conflating them makes a dead tunnel look
+            # like a passing security check.
+            conns.append(True)
             try:
                 s = ctx.wrap_socket(c, server_side=True)
                 admits.append(True)
@@ -145,7 +157,7 @@ def _mtls_origin(tmp_path, require_client=True):
         stop.set()
         srv.close()
 
-    return port, str(ca_pem), str(p12), "pw", admits, stopper
+    return port, str(ca_pem), str(p12), "pw", admits, conns, stopper
 
 
 def _connect_via_proxy(proxy_port, host, dest_port, leaf_ca, timeout=8):
@@ -197,7 +209,7 @@ def test_host_port_from_url():
 
 
 def test_client_pem_from_p12(tmp_path):
-    _, _, p12, pw, _, stop = _mtls_origin(tmp_path)
+    _, _, p12, pw, _, _, stop = _mtls_origin(tmp_path)
     try:
         pem = term.client_pem_from_p12(p12, pw, tmp_path)
         text = open(pem).read()
@@ -210,7 +222,7 @@ def test_client_pem_from_p12(tmp_path):
 # ---------- the terminator end to end ----------
 
 def test_terminator_presents_cert_to_admin_host(tmp_path):
-    port, ca_pem, p12, pw, admits, stop = _mtls_origin(tmp_path)
+    port, ca_pem, p12, pw, admits, _, stop = _mtls_origin(tmp_path)
     try:
         leaf = term.make_leaf("localhost", tmp_path)
         pem = term.client_pem_from_p12(p12, pw, tmp_path)
@@ -231,7 +243,7 @@ def test_terminator_presents_cert_to_admin_host(tmp_path):
 def test_terminator_does_not_present_cert_to_other_host(tmp_path):
     # an origin that also requires a client cert, but is NOT the admin host, must
     # be reached as a plain tunnel with no certificate → its handshake fails.
-    port, ca_pem, p12, pw, admits, stop = _mtls_origin(tmp_path)
+    port, ca_pem, p12, pw, admits, conns, stop = _mtls_origin(tmp_path)
     try:
         leaf = term.make_leaf("admin.example.com", tmp_path)  # admin != localhost
         pem = term.client_pem_from_p12(p12, pw, tmp_path)
@@ -249,37 +261,36 @@ def test_terminator_does_not_present_cert_to_other_host(tmp_path):
             cctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             cctx.check_hostname = False
             cctx.verify_mode = ssl.CERT_NONE
-            # Assert the SECURITY PROPERTY, not the error surface. The origin
-            # requires a client certificate, so a tunnel that presents none must
-            # fail — but HOW that failure surfaces is platform-specific under
-            # TLS 1.3: the client's wrap_socket() returns before the server's
-            # rejection arrives, so the alert lands on the first read/write as an
-            # ssl.SSLError on Linux/macOS and as a connection reset (OSError) or
-            # a clean EOF on Windows. Asserting `pytest.raises(ssl.SSLError)`
-            # tested the surface and so failed only on Windows (PS-147) — and,
-            # worse, "DID NOT RAISE" could not tell that benign difference apart
-            # from the actual leak this test exists to catch, because presenting
-            # the cert ALSO does not raise. So check what the leak would produce:
-            # a completed handshake at the origin, and a served response.
-            # wrap_socket() is inside the try because a platform that delivers
-            # the alert during the handshake must pass here too, not error out.
+            # Assert the SECURITY PROPERTY, not the error surface. HOW the
+            # origin's rejection surfaces is platform-specific under TLS 1.3 —
+            # ssl.SSLError on Linux/macOS, a reset (OSError) or clean EOF on
+            # Windows — so `pytest.raises(ssl.SSLError)` failed only on Windows
+            # (PS-147), and its "DID NOT RAISE" could not tell that benign
+            # difference apart from the actual leak, which also does not raise.
             try:
                 s = cctx.wrap_socket(raw, server_hostname="localhost")
                 s.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
                 got = s.recv(100)
             except (ssl.SSLError, OSError):
                 got = b""  # handshake rejected — the expected outcome
+            # NEGATIVE CONTROL, and it must come first: catching OSError above
+            # makes "the origin refused us" and "the tunnel never worked at all"
+            # produce identical evidence (got == b"", admits == []). Without this
+            # the two assertions below pass on a dead tunnel and prove nothing.
+            deadline = time.time() + 0.5
+            while not conns and time.time() < deadline:
+                time.sleep(0.02)
+            assert conns, "tunnel never reached the origin - test proved nothing"
             # Had the terminator presented the certificate to this non-admin
             # host, the origin would have served us its body.
             assert b"HI!" not in got and b"200 OK" not in got, (
                 f"terminator presented the client cert to a non-admin host: {got!r}"
             )
-            # The direct observable: the origin never completed a TLS session at
-            # all, because no certificate was ever offered to it. The origin
-            # records the admit BEFORE it serves a body, so a leak has already
-            # been recorded by the time our client saw a response above — this
-            # short settle only covers the handshake losing a loopback race, and
-            # is deliberately not long, since the passing case always pays it.
+            # The direct observable: the origin never completed a TLS session,
+            # because no certificate was ever offered to it. The admit is
+            # recorded BEFORE the body is served, so a leak is already logged by
+            # the time our client saw a response above; this short settle only
+            # covers the handshake losing a loopback race.
             deadline = time.time() + 0.5
             while not admits and time.time() < deadline:
                 time.sleep(0.02)
@@ -357,7 +368,7 @@ def test_terminator_routes_upstream_through_socks(tmp_path):
     # When a profile has a proxy, the terminator's mTLS connection to the admin
     # host must go THROUGH that SOCKS proxy so the exit IP matches the rest of the
     # profile — never a direct connection that would leak the real IP.
-    port, ca_pem, p12, pw, admits, stop = _mtls_origin(tmp_path)
+    port, ca_pem, p12, pw, admits, _, stop = _mtls_origin(tmp_path)
     seen: list = []
     socks_port, socks_stop = _local_socks5(seen)
     try:
@@ -497,7 +508,7 @@ def test_session_start_sweeps_previous_sessions_key_material(tmp_path):
     # must leave nothing of the previous one behind.
     from src.services.cert import manager as cm
 
-    port, _, p12, pw, _, stop = _mtls_origin(tmp_path)
+    port, _, p12, pw, _, _, stop = _mtls_origin(tmp_path)
     # work_dir is a SEPARATE subdir: _mtls_origin writes srv.pem (a private key)
     # into tmp_path itself, which would otherwise poison the scan.
     work = str(tmp_path / "profile" / ".persona-mtls")
@@ -535,7 +546,7 @@ def test_repeated_unclean_sessions_do_not_accumulate_key_material(tmp_path):
     # session adds one more orphaned copy of the operator's key, forever.
     from src.services.cert import manager as cm
 
-    port, _, p12, pw, _, stop = _mtls_origin(tmp_path)
+    port, _, p12, pw, _, _, stop = _mtls_origin(tmp_path)
     work = str(tmp_path / "profile" / ".persona-mtls")
     try:
         cert = _cert_for(p12, pw, port)
@@ -568,7 +579,7 @@ def test_failed_terminator_construction_leaves_no_key_on_disk(tmp_path, monkeypa
     # object exists, so process.py's handler has nothing to stop.
     from src.services.cert import manager as cm
 
-    port, _, p12, pw, _, stop = _mtls_origin(tmp_path)
+    port, _, p12, pw, _, _, stop = _mtls_origin(tmp_path)
     work = str(tmp_path / "profile" / ".persona-mtls")
     try:
         real_make_leaf = term.make_leaf
@@ -631,7 +642,7 @@ def test_unlistable_work_dir_does_not_abort_the_launch(tmp_path):
     if os.geteuid() == 0:
         pytest.skip("root bypasses directory permissions; can't make a dir unlistable")
 
-    port, _, p12, pw, _, stop = _mtls_origin(tmp_path)
+    port, _, p12, pw, _, _, stop = _mtls_origin(tmp_path)
     work = str(tmp_path / "profile" / ".persona-mtls")
     os.makedirs(work)
     # Pre-existing key material we will NOT be able to enumerate.
@@ -665,7 +676,7 @@ def test_unlistable_work_dir_degrades_on_every_platform(tmp_path, monkeypatch):
     # "exists but cannot be enumerated".
     from src.services.cert import manager as cm
 
-    port, _, p12, pw, _, stop = _mtls_origin(tmp_path)
+    port, _, p12, pw, _, _, stop = _mtls_origin(tmp_path)
     work = str(tmp_path / "profile" / ".persona-mtls")
     os.makedirs(work)
     # Pre-existing key material the sweep will NOT be able to enumerate.
