@@ -1144,11 +1144,19 @@ def test_the_waiver_puts_the_flag_on_the_command_line_after_the_appimage_flag():
     The flag must actually REACH argv — a waiver that parses and then changes
     no launch is the defect this file already guards elsewhere.
 
-    And it must come AFTER ``--appimage-extract-and-run``, which is consumed by
-    the AppImage RUNTIME rather than by chromium. Measured in PS-133 while
-    building the repro: putting another flag ahead of it makes the runtime fall
-    back to a FUSE mount and die ``rc=127 'fuse: device not found'`` before
-    chromium is reached at all — a failure that looks like a broken engine.
+    And where ``--appimage-extract-and-run`` is present it must stay FIRST,
+    because it is consumed by the AppImage RUNTIME rather than by chromium.
+    Measured in PS-133 while building the repro: putting another flag ahead of
+    it makes the runtime fall back to a FUSE mount and die
+    ``rc=127 'fuse: device not found'`` before chromium is reached at all — a
+    failure that looks like a broken engine.
+
+    The ORDERING is what is asserted, not the platform. That flag is appended
+    under ``if _platform.IS_LINUX`` (``chromium_tier._launch_args``), so an
+    unconditional ``args[1] == "--appimage-extract-and-run"`` fails on macOS and
+    Windows for a reason that has nothing to do with the invariant — as it did
+    on this PR's own CI. Asking "where is it, if it is here at all" pins the
+    real rule on every host.
     """
     from src.services.verify import chromium_tier
 
@@ -1161,11 +1169,14 @@ def test_the_waiver_puts_the_flag_on_the_command_line_after_the_appimage_flag():
         allow_small_dev_shm=True,
     )
     assert "--disable-dev-shm-usage" in args
-    assert args[1] == "--appimage-extract-and-run", (
-        "the AppImage runtime consumes this flag and it must stay first, "
-        "or the launch dies rc=127 before chromium starts"
-    )
-    assert args.index("--disable-dev-shm-usage") > 1
+    if "--appimage-extract-and-run" in args:
+        assert args.index("--appimage-extract-and-run") == 1, (
+            "the AppImage runtime consumes this flag and it must stay first, "
+            "or the launch dies rc=127 before chromium starts"
+        )
+        assert args.index("--disable-dev-shm-usage") > args.index(
+            "--appimage-extract-and-run"
+        ), "the waiver must never be ordered ahead of the AppImage flag"
 
 
 def test_no_waiver_means_no_flag():
