@@ -265,12 +265,17 @@ def get_data_dir(
     pm: IProfileManager = Depends(get_profile_manager),
 ) -> DataDirResponse:
     require_profile(name, pm)
-    # abspath, not a bare join: DATA_DIR is whatever PERSONA_DATA_DIR was set to
-    # and config._under_home returns an env override VERBATIM, so it can be
-    # relative (the shipped .env.example ships `PERSONA_DATA_DIR=persona_data`).
-    # This endpoint has always answered with an absolute path; abspath keeps that
-    # true under both an absolute and a relative override, which a bare join
-    # would not.
+    # abspath, not a bare join: this endpoint has always answered with an
+    # absolute path, and abspath keeps that true under every override shape.
+    # NOTE the rationale changed in PS-127: config._under_home no longer returns
+    # a relative env override verbatim — it anchors one, so DATA_DIR is already
+    # absolute here (measured at ba39a03 vs this branch under the shipped
+    # `.env.example` shape `PERSONA_DATA_DIR=persona_data`: 'persona_data' ->
+    # '/<cwd>/persona_data'). This abspath is therefore REDUNDANT-BUT-CORRECT
+    # rather than load-bearing — abspath on an already-absolute path is
+    # identity — and it is kept deliberately: it still normalises the join and
+    # costs nothing. Do not re-add an os.getcwd() join in its place; that was
+    # the silent compensation PS-127 removed.
     data_dir = os.path.abspath(os.path.join(DATA_DIR, name))
     return DataDirResponse(
         name=name,

@@ -42,8 +42,9 @@ def relocated_home(tmp_path, monkeypatch):
     """A configured home that is NOT ~/.persona, with no explicit lock override.
 
     ``config.PERSONA_HOME`` is resolved once at config IMPORT time (deliberate —
-    see config.py:48), so relocation in-process is expressed by patching that
-    attribute, exactly as tests/test_settings.py does for settings.json.
+    see its module-level assignment, ``PERSONA_HOME = _ensure_home(_home())``),
+    so relocation in-process is expressed by patching that attribute, exactly
+    as tests/test_settings.py does for settings.json.
     """
     home = tmp_path / "portable-home"
     home.mkdir()
