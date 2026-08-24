@@ -632,6 +632,7 @@ def _read_page_texts_chromium(
     seed: int,
     declared_machine: str,
     sleep: Callable[[float], None],
+    timezone: str = "",
     allow_unsandboxed: bool = False,
     layer_sink: "Callable[[LayerReport], None] | None" = None,
     install_layer: bool = True,
@@ -662,6 +663,7 @@ def _read_page_texts_chromium(
             proxy_url,
             seed=seed,
             declared_machine=declared_machine,
+            timezone=timezone,
             allow_unsandboxed=allow_unsandboxed,
             install_layer=install_layer,
         )
@@ -696,6 +698,7 @@ def read_page_texts(
     seed: int = 0,
     engine: str = FIREFOX,
     declared_machine: str = "",
+    timezone: str = "",
     allow_unsandboxed: bool = False,
     sleep: Callable[[float], None] = time.sleep,
     layer_sink: "Callable[[LayerReport], None] | None" = None,
@@ -749,6 +752,7 @@ def read_page_texts(
             checkers=checkers,
             seed=seed,
             declared_machine=declared_machine or DEFAULT_DECLARED_MACHINE,
+            timezone=timezone,
             allow_unsandboxed=allow_unsandboxed,
             sleep=sleep,
             layer_sink=layer_sink,
@@ -831,6 +835,7 @@ def read_browser_tier(
     seed: int = 0,
     engine: str = FIREFOX,
     declared_machine: str = "",
+    timezone: str = "",
     allow_unsandboxed: bool = False,
     layer_sink: "Callable[[LayerReport], None] | None" = None,
     install_layer: bool = True,
@@ -851,6 +856,14 @@ def read_browser_tier(
     the caller initialised it with — and a header claiming the product's layer
     over a run where no browser started is the exact class of wrong record this
     subsystem exists to prevent.
+
+    ``timezone`` is the PROVEN EXIT'S zone, forwarded to chromium and ignored
+    on firefox. Chromium pins nothing of its own, so without it the engine
+    reports the HOST clock and the reading contradicts the exit the run just
+    proved (PS-132). Firefox needs no such value: given none, its engine
+    resolves the zone from the egress IP itself
+    (``invisible_launch.py``: "with no timezone it discovers the egress IP"),
+    which is why only one of the two engines ever showed this.
     """
     from .masking_layer import absent_layer
 
@@ -861,6 +874,7 @@ def read_browser_tier(
             seed=seed,
             engine=engine,
             declared_machine=declared_machine,
+            timezone=timezone,
             allow_unsandboxed=allow_unsandboxed,
             layer_sink=layer_sink,
             install_layer=install_layer,
