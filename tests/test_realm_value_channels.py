@@ -227,6 +227,41 @@ run(orphan, MT);
 out.orphanScreen = screenOf(orphan);
 out.orphanMeasured = measured(orphan);
 
+// --- THE OTHER DIRECTION: a DOM-BEARING child that measures FIRST --------
+// Everything above drives top->child, because every child above is built
+// `withDom` false. That models a document_start frame correctly but freezes it:
+// the leaf reads the DOM at CALL time (`var doc = G.document` sits inside
+// measureText), so by the time page script actually measures, a real child
+// frame HAS a document. A child that measures before the top does is the normal
+// case in a browser, not a corner — and it is the only thing that drives
+// setFactor's upward publish.
+//
+// The realms below are built on a SECOND top that has deliberately not measured
+// yet, so the factor cannot have come from above: whatever `kidB` reads, `kidA`
+// put there through the top.
+const pubTop = asTopWindow(makeMeasurableRealm([__TOP_W__, __TOP_H__], true));
+run(pubTop, DEVICE);
+run(pubTop, MT);
+// NOT measured here on purpose — this top has no learned factor yet.
+out.pubTopFactorBeforeKid = (slotOf(pubTop) || {}).mtFactor;
+
+// kidA CAN calibrate (it has a documentElement) and does so first.
+const kidA = asChildOf(makeMeasurableRealm([__CHILD_W__, __CHILD_H__], true), pubTop);
+run(kidA, DEVICE);
+run(kidA, MT);
+out.kidAMeasured = measured(kidA);
+out.pubTopFactorAfterKid = (slotOf(pubTop) || {}).mtFactor;
+
+// kidB is a DOM-less sibling: it can only repair by reading what kidA
+// published to the shared top. This is the payoff of the upward publish.
+const kidB = asChildOf(makeMeasurableRealm([__CHILD_W__, __CHILD_H__], false), pubTop);
+run(kidB, DEVICE);
+run(kidB, MT);
+out.kidBMeasured = measured(kidB);
+
+// And the top itself, measuring last, converges on the child's factor.
+out.pubTopMeasuredLast = measured(pubTop);
+
 // --- a WORKER realm, reached as TEXT through the real bootstrap -----------
 // Asserted for the LEAK only. It has no `top` and never read either value; see
 // this file's module docstring before adding a crossing assertion here.
@@ -404,6 +439,60 @@ def test_a_child_frame_repairs_text_from_the_tops_learned_factor(shipped):
     assert shipped["childMeasured"] == pytest.approx(REPAIRED_WIDTH), (
         f"the child reported {shipped['childMeasured']}, not the repaired "
         f"{REPAIRED_WIDTH} — it is serving the raw noised geometry"
+    )
+
+
+def test_a_child_that_calibrates_first_publishes_the_factor_up_to_the_top(shipped):
+    # THE OTHER DIRECTION, and the one the tests above could not see. Every
+    # child realm above is built without a DOM, so the factor only ever flowed
+    # top->child and `setFactor`'s upward publish was driven by nothing:
+    # replacing it with `if (false) ts.mtFactor = f;` left the whole suite green.
+    #
+    # This is the control that makes the claim non-vacuous: the top of THIS
+    # group has run both leaves but has never measured, so it has no factor of
+    # its own. Anything that appears in its slot got there from below.
+    assert shipped["pubTopFactorBeforeKid"] is None, (
+        "the publishing group's top already had a learned factor before the "
+        f"child measured ({shipped['pubTopFactorBeforeKid']}) — this group's "
+        "top must not measure, or the assertions below cannot tell an upward "
+        "publish from the top's own calibration and pass vacuously"
+    )
+    assert shipped["kidAMeasured"] == pytest.approx(REPAIRED_WIDTH), (
+        f"the DOM-bearing child did not calibrate locally (got "
+        f"{shipped['kidAMeasured']}) — it has a documentElement, so it must"
+    )
+    assert shipped["pubTopFactorAfterKid"] == pytest.approx(NOISE), (
+        "the child calibrated but did not publish its factor UP to the top "
+        f"(top slot holds {shipped['pubTopFactorAfterKid']}) — `setFactor`'s "
+        "second write is what puts it there, and without it the child's "
+        "siblings have nothing to read"
+    )
+
+
+def test_a_dom_less_sibling_repairs_from_the_factor_the_other_child_published(shipped):
+    # The payoff, and the assertion with teeth: kidB has no documentElement and
+    # the top never measured, so the ONLY path to a repaired width is the factor
+    # kidA published upward. Suppress that publish and this realm reports the
+    # raw noised width while its sibling reports the repaired one — a page and
+    # its iframe repairing text to 50 and 0.5, which is precisely the silent
+    # cross-realm divergence this file's docstring says it exists to prevent.
+    assert shipped["kidBMeasured"] == pytest.approx(shipped["kidAMeasured"]), (
+        "two sibling frames repaired text to DIFFERENT widths (DOM-less "
+        f"{shipped['kidBMeasured']} vs calibrating {shipped['kidAMeasured']}) — "
+        "a scanner measuring text in both realms sees two machines"
+    )
+    assert shipped["kidBMeasured"] == pytest.approx(REPAIRED_WIDTH), (
+        f"the DOM-less sibling reported {shipped['kidBMeasured']}, not the "
+        f"repaired {REPAIRED_WIDTH} — it is serving the raw noised geometry "
+        "because nothing published a factor it could reach"
+    )
+    # The top measuring LAST converges on the same value. Stated as agreement
+    # rather than as proof of the publish: this top has a DOM, so it could also
+    # have calibrated its own identical factor. The discriminating assertion is
+    # kidB's above, not this one.
+    assert shipped["pubTopMeasuredLast"] == pytest.approx(REPAIRED_WIDTH), (
+        f"the top realm reported {shipped['pubTopMeasuredLast']} after its "
+        f"children had already agreed on {REPAIRED_WIDTH}"
     )
 
 
