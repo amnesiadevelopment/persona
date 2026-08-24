@@ -103,3 +103,40 @@ def test_import_does_not_clobber_existing_before_reporting(tmp_path, monkeypatch
     assert "already exists" in msg
     # original data untouched
     assert (ddir / "cookies.sqlite").read_bytes() == b"ORIGINAL"
+
+
+def test_export_excludes_the_browser_child_scratch_dir(tmp_path):
+    # PS-129. Pinning the child's TMPDIR inside the profile is what makes
+    # crash-stranded engine temp files wipeable — but it also puts the engine's
+    # AppImage self-extraction under the profile dir (MEASURED at ~714MB, and
+    # it survives a CLEAN exit, not just a crash). Without the exclusion every
+    # profile export would grow by that much.
+    #
+    # Unlike the .persona-mtls exclusion beside it this is a BULK concern, not
+    # a secrecy one: scratch is per-launch state the child recreates on demand,
+    # so excluding it loses nothing an importer wanted.
+    from src.services.browser.env_policy import CHILD_TMPDIR_NAME
+
+    pdir = tmp_path / "pdata"
+    scratch = pdir / CHILD_TMPDIR_NAME
+    (scratch / "appimage_extracted_deadbeef" / "opt").mkdir(parents=True)
+    (scratch / "appimage_extracted_deadbeef" / "opt" / "chrome").write_text(
+        "x" * 1024
+    )
+    (scratch / "org.chromium.Chromium.AbCdEf").mkdir(parents=True)
+    (pdir / "cookies.sqlite").write_text("ok")
+
+    profile = Profile(name="p", os_type="windows")
+    ok, path = export_to_zip(profile, str(pdir), str(tmp_path))
+    assert ok is True
+    with zipfile.ZipFile(path) as z:
+        names = z.namelist()
+
+    # The real profile data still exports.
+    assert any("cookies.sqlite" in n for n in names)
+    # None of the scratch does.
+    assert not any(CHILD_TMPDIR_NAME in n for n in names), (
+        f"the child's scratch dir rode along in the export: "
+        f"{[n for n in names if CHILD_TMPDIR_NAME in n]}"
+    )
+    assert not any("appimage_extracted" in n for n in names)
