@@ -24,8 +24,10 @@ import src.services.browser.invisible_launch as il
 import src.services.browser.process as process
 from src.models.profile import Profile
 from src.services.browser.env_policy import (
+    CHILD_TMPDIR_NAME,
     OPERATOR_IDENTITY_VARS,
     STALE_RUNTIME_PATH_VARS,
+    TEMP_DIR_VARS,
 )
 
 # A parent polluted the way a real operator's shell is. The socket path is the
@@ -178,7 +180,7 @@ requires_fork = pytest.mark.skipif(
 )
 
 
-def _child_environ_after_fork(tmp_path, in_thread=False, is_linux=True):
+def _child_environ_after_fork(tmp_path, in_thread=False, is_linux=True, cfg=None):
     """Fork for real, run ``_child``, and report the child's OWN os.environ back
     over a pipe.
 
@@ -187,9 +189,15 @@ def _child_environ_after_fork(tmp_path, in_thread=False, is_linux=True):
     by the time it would have handed control to the browser. Nothing is
     asserted about calls — only about the environment that actually exists in
     the child process.
+
+    ``cfg`` overrides what the child is handed. The scratch-directory tests
+    need it: the firefox seam reads the profile DATA dir from
+    ``cfg["profile_data_dir"]``, which the default cfg here deliberately does
+    not carry, so those tests pass it explicitly.
     """
     read_fd, write_fd = os.pipe()
     report_r, report_w = os.pipe()
+    child_cfg = {"profile_dir": str(tmp_path)} if cfg is None else cfg
     pid = os.fork()
     if pid == 0:  # pragma: no cover - runs in the forked child
         try:
@@ -204,6 +212,7 @@ def _child_environ_after_fork(tmp_path, in_thread=False, is_linux=True):
                         for k in (
                             *OPERATOR_IDENTITY_VARS,
                             *STALE_RUNTIME_PATH_VARS,
+                            *TEMP_DIR_VARS,
                         )
                     }
                 )
@@ -213,7 +222,7 @@ def _child_environ_after_fork(tmp_path, in_thread=False, is_linux=True):
 
             il._launch_and_watch = _report
             il._child(
-                {"profile_dir": str(tmp_path)},
+                child_cfg,
                 write_fd,
                 stop_event=threading.Event() if in_thread else None,
             )
@@ -390,3 +399,217 @@ def test_scrub_does_not_touch_the_deliberately_excluded_names():
         "LC_ALL": "C.UTF-8",
         "TMPDIR": "/tmp",
     }
+
+
+# --------------------------------------------------------------------------
+# The child's scratch directory (PS-129)
+#
+# Same shape as everything above, one axis over: not what the child must not
+# LEARN or FOLLOW, but where its temp files LAND. Asserted against a POLLUTED
+# parent throughout — a parent whose TMPDIR already points at the host's shared
+# temp dir, which is what a real operator's shell hands persona. A clean parent
+# would let an implementation that pins nothing pass.
+# --------------------------------------------------------------------------
+
+# The host's shared temp dir, the way an operator's environment actually
+# presents it. This is the value the child must NOT keep.
+HOST_TEMP_PARENT = {
+    "TMPDIR": "/tmp",
+    "TMP": "/tmp",
+    "TEMP": "/tmp",
+}
+
+
+def _pollute_temp(monkeypatch):
+    for key, value in HOST_TEMP_PARENT.items():
+        monkeypatch.setenv(key, value)
+
+
+def test_chromium_child_scratch_is_pinned_inside_the_profile(monkeypatch, tmp_path):
+    # AC3/AC4 for the chromium seam. The assertion is on the env dict actually
+    # handed to Popen, and on the PATH being under the profile's data dir —
+    # which is the whole perimeter claim, since delete_profile renames that
+    # directory into the trash and wipe_all_profiles rmtrees it.
+    _pollute(monkeypatch)
+    _pollute_temp(monkeypatch)
+    captured = _spawn_chromium(
+        monkeypatch, tmp_path, Profile(name="scratch-linux"), linux=True
+    )
+    profile_dir = os.path.join(str(tmp_path), "scratch-linux")
+    expected = os.path.join(profile_dir, CHILD_TMPDIR_NAME)
+    for var in TEMP_DIR_VARS:
+        assert captured["env"][var] == expected, (
+            f"{var} was left at {captured['env'].get(var)!r} — engine scratch "
+            "outside the profile is reached by neither delete_profile nor "
+            "wipe_all_profiles"
+        )
+
+
+def test_chromium_scratch_directory_exists_before_the_launch(monkeypatch, tmp_path):
+    # An unwritable or missing TMPDIR can stop the engine starting, which would
+    # turn a residue fix into a launch bug. The directory must therefore exist
+    # by the time Popen is reached, not on first use by the child.
+    _pollute_temp(monkeypatch)
+    captured = _spawn_chromium(
+        monkeypatch, tmp_path, Profile(name="scratch-exists"), linux=True
+    )
+    assert os.path.isdir(captured["env"]["TMPDIR"])
+
+
+def test_chromium_pins_scratch_on_non_linux_too(monkeypatch, tmp_path):
+    # Chromium hands Popen an env= copy on every platform, so — exactly like
+    # the scrub — this half is NOT Linux-only. Pins that a future refactor
+    # cannot quietly fold the pin into the IS_LINUX branch beside it.
+    _pollute_temp(monkeypatch)
+    captured = _spawn_chromium(
+        monkeypatch, tmp_path, Profile(name="scratch-win"), linux=False
+    )
+    expected = os.path.join(str(tmp_path), "scratch-win", CHILD_TMPDIR_NAME)
+    for var in TEMP_DIR_VARS:
+        assert captured["env"][var] == expected
+
+
+def test_chromium_scratch_pin_does_not_move_personas_own_temp_dir(
+    monkeypatch, tmp_path
+):
+    # The parent-safety half. `env` is a COPY, so pinning the child's scratch
+    # must be invisible in this process — persona's own temp dir, and every
+    # concurrently-open profile's, stay where they were.
+    _pollute_temp(monkeypatch)
+    _spawn_chromium(monkeypatch, tmp_path, Profile(name="scratch-parent"), linux=True)
+    for var, value in HOST_TEMP_PARENT.items():
+        assert os.environ.get(var) == value
+
+
+@requires_fork
+def test_forked_firefox_child_scratch_is_pinned_inside_the_profile(
+    monkeypatch, tmp_path
+):
+    # AC3 for the firefox fork seam, asserted on the child's OWN environ after
+    # a real fork rather than on whether a helper was called — an inert
+    # implementation cannot pass this.
+    _pollute(monkeypatch)
+    _pollute_temp(monkeypatch)
+    child_env = _child_environ_after_fork(
+        tmp_path,
+        cfg={
+            "profile_dir": os.path.join(str(tmp_path), ".invisible-profile"),
+            "profile_data_dir": str(tmp_path),
+        },
+    )
+    expected = os.path.join(str(tmp_path), CHILD_TMPDIR_NAME)
+    for var in TEMP_DIR_VARS:
+        assert child_env[var] == expected, (
+            f"{var} reached the forked firefox child as {child_env[var]!r}"
+        )
+
+
+@requires_fork
+def test_both_engines_pin_the_same_scratch_directory(monkeypatch, tmp_path):
+    # THE AGREE TEST (AC5). Two seams, one value: the regression this whole
+    # module exists to prevent is a value decided at one engine and forgotten
+    # at the other.
+    #
+    # FALSIFICATION, run before shipping: re-inlining the value at either seam
+    # — e.g. `env["TMPDIR"] = os.path.join(profile_dir, ".persona-tmp")` in
+    # process.py instead of the shared call — must turn this RED. It does: an
+    # inline pin at the chromium seam sets TMPDIR but not TMP/TEMP, and the
+    # per-var loop below catches the divergence.
+    _pollute(monkeypatch)
+    _pollute_temp(monkeypatch)
+
+    profile_root = tmp_path / "agree"
+    profile_root.mkdir()
+
+    captured = _spawn_chromium(
+        monkeypatch, tmp_path, Profile(name="agree"), linux=True
+    )
+    child_env = _child_environ_after_fork(
+        profile_root,
+        cfg={
+            "profile_dir": str(profile_root / ".invisible-profile"),
+            "profile_data_dir": str(profile_root),
+        },
+    )
+
+    for var in TEMP_DIR_VARS:
+        assert captured["env"][var] == child_env[var], (
+            f"the two engines disagree on {var}: chromium pinned "
+            f"{captured['env'][var]!r}, the forked firefox child "
+            f"{child_env[var]!r}"
+        )
+
+
+@requires_fork
+def test_thread_path_child_leaves_its_process_temp_dir_alone(monkeypatch, tmp_path):
+    # THE HAZARD, asserted rather than assumed — and it is SHARPER here than
+    # for the scrub. On Windows/macOS this same _child runs as a THREAD of the
+    # manager process, where os.environ IS persona's own. Pinning there would
+    # move persona's temp dir AND every concurrently-open profile's, pointing
+    # them all at ONE profile's scratch directory: worse than leaving them in
+    # /tmp, because it makes profiles share scratch.
+    #
+    # IS_LINUX is held TRUE on purpose, mirroring :255 — it isolates the
+    # in_thread half of the guard, so a pin gated on platform alone fails here.
+    _pollute(monkeypatch)
+    _pollute_temp(monkeypatch)
+    child_env = _child_environ_after_fork(
+        tmp_path,
+        in_thread=True,
+        is_linux=True,
+        cfg={
+            "profile_dir": os.path.join(str(tmp_path), ".invisible-profile"),
+            "profile_data_dir": str(tmp_path),
+        },
+    )
+    for var, value in HOST_TEMP_PARENT.items():
+        assert child_env[var] == value, (
+            f"{var} was pinned on the thread path — that moves persona's own "
+            "temp dir and every concurrently-open profile's onto one "
+            "profile's scratch directory"
+        )
+
+
+@requires_fork
+def test_forked_firefox_scratch_pin_does_not_disturb_the_parent(monkeypatch, tmp_path):
+    # A fork has separate memory, so the child pinning its own os.environ must
+    # be invisible in this process.
+    _pollute_temp(monkeypatch)
+    _child_environ_after_fork(
+        tmp_path,
+        cfg={
+            "profile_dir": os.path.join(str(tmp_path), ".invisible-profile"),
+            "profile_data_dir": str(tmp_path),
+        },
+    )
+    for var, value in HOST_TEMP_PARENT.items():
+        assert os.environ.get(var) == value
+
+
+def test_both_engines_share_one_scratch_authority():
+    # AC2, mirroring test_both_engines_share_one_scrub_list: both launchers
+    # must reach env_policy rather than a local literal. Neither seam may
+    # rebuild the path itself — that is precisely how FONTCONFIG_* ended up
+    # scrubbed for chromium and inherited by the forked firefox child.
+    assert process.pin_child_tmpdir.__module__ == "src.services.browser.env_policy"
+    assert il.pin_current_process_tmpdir.__module__ == (
+        "src.services.browser.env_policy"
+    )
+    # All three names, pinned as a set: TMPDIR is POSIX, TMP/TEMP are what
+    # Windows resolves, and tempfile checks all three. Setting one and leaving
+    # the others is how a value looks pinned on one platform and is not on
+    # another. Widening or narrowing this is a decision, not a tidy-up.
+    assert set(TEMP_DIR_VARS) == {"TMPDIR", "TMP", "TEMP"}
+
+
+def test_scratch_directory_is_inside_the_wipeable_perimeter(tmp_path):
+    # AC4 as a unit-level guard on the PATH (the live wipe proof is in the PR).
+    # delete_profile renames the profile's data dir into the trash and
+    # wipe_all_profiles rmtrees it, so a scratch path that is not UNDER that
+    # directory is reached by neither.
+    from src.services.browser.env_policy import browser_child_tmpdir
+
+    profile_dir = str(tmp_path / "victim")
+    scratch = browser_child_tmpdir(profile_dir)
+    assert os.path.commonpath([profile_dir, scratch]) == profile_dir
+    assert scratch != profile_dir

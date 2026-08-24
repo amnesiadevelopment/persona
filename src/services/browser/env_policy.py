@@ -50,8 +50,12 @@ Deliberately NOT here, each for a stated reason:
   it is neither claimed as a leak nor touched.
 * ``LANG`` / ``LC_ALL`` — already normalized to ``C.UTF-8`` in ``src/main.py``;
   re-deriving that here would duplicate an existing authority.
-* ``TMPDIR`` — real ground, but a path-pinning problem (where files land)
-  rather than an inherited-capability one.
+* ``TMPDIR`` — deferred here as "real ground, but a path-pinning problem
+  (where files land) rather than an inherited-capability one". That reading
+  still stands and is why it is NOT on either scrub list: pinning it is the
+  third property below, not a fourth name to delete. Scrubbing it would be
+  actively wrong — the child would fall back to ``/tmp`` and land right back
+  outside the perimeter.
 
 APPLYING IT. Both engines go through ONE entry point,
 ``scrub_inherited_environment``, which applies every list above. Neither seam
@@ -222,6 +226,98 @@ def browser_child_cwd():
     import os
 
     return os.path.expanduser("~")
+
+
+# THE SCRATCH DIRECTORY
+# ---------------------
+#
+# Third property, same shape as the two above and here for the same reason.
+# See the module docstring's TMPDIR entry: it is excluded from the scrub
+# lists because scrubbing it would be actively WRONG — the child would fall
+# back to /tmp and land straight back outside the perimeter. It has to be
+# POINTED somewhere, not deleted.
+#
+# All three names, not just TMPDIR: TMPDIR is the POSIX one, TMP/TEMP are what
+# Windows resolves, and Python's own tempfile checks all three in that order.
+# Setting one and leaving the others is how a value looks pinned on the
+# developer's platform and is not on the operator's.
+TEMP_DIR_VARS = ("TMPDIR", "TMP", "TEMP")
+
+# Dotted so it sorts beside the other persona-owned subdirectories the profile
+# already carries (.invisible-profile, .persona-mtls, .persona-*-ext).
+CHILD_TMPDIR_NAME = ".persona-tmp"
+
+
+def browser_child_tmpdir(profile_dir):
+    """THE scratch directory both engine seams give the browser child.
+
+    INSIDE THE PROFILE, which is the whole point: everything under the
+    profile's data dir is reached by ``delete_profile`` (which RENAMES the
+    data dir into the trash), by the trash, and by ``wipe_all_profiles``
+    (which ``rmtree``s it). Scratch left in the host's shared temp dir is
+    reached by none of the three and outlives the profile it belonged to.
+
+    This is the same argument persona already applies to its OWN scratch —
+    ``invisible_launch`` passes ``dir=`` to ``mkstemp`` so a crash cannot
+    strand a ``persona-*`` artifact in the host temp dir. The child that
+    executes untrusted remote code was the one seam not getting it.
+
+    Computed per call rather than frozen, mirroring ``browser_child_cwd``:
+    the profile directory is an argument, so nothing here is cached across
+    profiles.
+    """
+    import os
+
+    return os.path.join(profile_dir, CHILD_TMPDIR_NAME)
+
+
+def prepare_child_tmpdir(profile_dir):
+    """Create the scratch directory and return it.
+
+    Created BEFORE the launch on purpose: a TMPDIR that does not exist or is
+    not writable can stop the engine starting, which would turn a residue fix
+    into a launch bug. ``exist_ok`` because a relaunch of the same profile
+    legitimately finds last session's directory.
+    """
+    import os
+
+    target = browser_child_tmpdir(profile_dir)
+    os.makedirs(target, exist_ok=True)
+    return target
+
+
+def pin_child_tmpdir(env, profile_dir):
+    """THE entry point both engine seams call. Pins every name in ``env``.
+
+    Takes the mapping to write rather than reaching for ``os.environ``
+    itself, exactly like ``scrub_operator_identity``: the chromium caller
+    holds a COPY and must not be able to mutate the parent's environment
+    through it. Returns the directory, for the caller to log.
+
+    Single entry point for the same reason the scrub has one — see
+    ``scrub_inherited_environment``. A seam that wrote ``env["TMPDIR"] = ...``
+    inline would pin one name on one engine, and adding TMP/TEMP later would
+    have to be remembered twice.
+    """
+    target = prepare_child_tmpdir(profile_dir)
+    for var in TEMP_DIR_VARS:
+        env[var] = target
+    return target
+
+
+def pin_current_process_tmpdir(profile_dir):
+    """Pin THIS process's own ``os.environ`` at the child's scratch directory.
+
+    Only ever safe in a FORKED child, which has its own memory: calling it on
+    a thread of the manager process would move persona's own temp dir and
+    every concurrently-open profile's — the same hazard, and the same
+    division of labour, as ``scrub_current_process_environ``. The one caller
+    guards on exactly that (see ``invisible_launch._child``); this function
+    does not guess, it just does what it is told.
+    """
+    import os
+
+    return pin_child_tmpdir(os.environ, profile_dir)
 
 
 def chdir_current_process(target=None):
