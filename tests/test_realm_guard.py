@@ -47,7 +47,7 @@ import subprocess
 import pytest
 
 from src.services.browser.audio_ext import _CHROMIUM_NATIVE_WRAP, _audio_patch_js
-from src.services.browser.worker_wrap import realm_guard_js
+from src.services.browser.worker_wrap import realm_guard_js, realm_slot_js
 from tests.realm_harness import HARNESS
 
 SEED = 0x1234ABCD
@@ -585,4 +585,59 @@ def test_the_helper_is_the_single_source_of_truth_for_every_site(generated):
     assert total == len(GUARD_SITES), (
         f"expected {len(GUARD_SITES)} spliced guards across the generated "
         f"scripts, found {total}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The same wiring gate for `realm_slot_js` (PS-139).
+#
+# The guard battery above exists because the guard was once hand-pasted into
+# twelve sites and coupled to its helper by nothing. `realm_slot_js` now has two
+# consumers, the same `.replace()` wiring and the same failure mode, so it gets
+# the same gate rather than waiting to earn one the expensive way.
+#
+# Both sites splice the IDENTICAL text — `realm_slot_js` takes no key, only an
+# indent — so unlike GUARD_SITES these entries differ by script, not by key.
+# ---------------------------------------------------------------------------
+
+SLOT_SITES = [
+    ("device", 4),        # __SCREEN_REALM_SLOT__
+    ("measuretext", 4),   # __MT_REALM_SLOT__
+]
+
+
+@pytest.mark.parametrize("script_key,indent", SLOT_SITES)
+def test_every_slot_consumer_carries_the_spliced_slot_helper(generated, script_key, indent):
+    expected = realm_slot_js(indent)
+    assert expected in generated[script_key], (
+        f"{script_key}.js does not contain the spliced `__pnaSlot` helper.\n"
+        f"It must come from realm_slot_js at build time — if its placeholder "
+        f"was dropped from the builder's .replace() chain, this leaf loses the "
+        f"per-realm value slot and its cross-realm channel goes dead SILENTLY: "
+        f"the realms then disagree about the screen or repair text to different "
+        f"widths, which is a worse tell than the global PS-139 removed."
+    )
+
+
+@pytest.mark.parametrize("script_key,indent", SLOT_SITES)
+def test_each_slot_helper_appears_exactly_once_per_leaf(generated, script_key, indent):
+    # Spliced twice, the second `function __pnaSlot` re-declaration shadows the
+    # first for the whole body. Harmless only by luck — assert the shape.
+    assert generated[script_key].count(realm_slot_js(indent)) == 1
+
+
+def test_no_generated_script_carries_an_unfilled_slot_placeholder(generated):
+    # The failure splicing introduces that hand-copying could not, and the one
+    # the reviewer of PS-139 named concretely: drop `__SCREEN_REALM_SLOT__` from
+    # the builder chain and the placeholder ships as LITERAL TEXT into
+    # device.js. A bare token on its own line is a ReferenceError at
+    # document_start, which takes the whole leaf down — an unmasked realm.
+    offenders = {
+        name: [n for n, line in enumerate(script.splitlines(), 1)
+               if "REALM_SLOT__" in line]
+        for name, script in generated.items()
+    }
+    offenders = {k: v for k, v in offenders.items() if v}
+    assert not offenders, (
+        f"unfilled slot placeholder(s) shipped as JS: {offenders}"
     )
