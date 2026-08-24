@@ -65,7 +65,7 @@ Matrix pinned below, for ONE proxied profile:
 import pytest
 
 from src.models.profile import Profile
-from src.services.browser.invisible_launch import _profile_prefs
+from src.services.browser.invisible_launch import _profile_prefs, _proxy_dict
 from tests.test_process import (
     _StoreWithCheckedProxy,
     _disable_features_values,
@@ -97,7 +97,7 @@ def _firefox_proxied():
 
 
 def _firefox_effective_proxied():
-    """Every pref a proxied Firefox profile ACTUALLY launches with.
+    """Every pref a proxied, HEADFUL Firefox profile actually launches with.
 
     `_firefox_proxied()` above returns only persona's own overlay. That is the
     right oracle for a cell persona pins itself, and the WRONG one for a cell
@@ -105,18 +105,53 @@ def _firefox_effective_proxied():
     composes `_BASELINE` first and applies `extra_prefs` LAST, so the effective
     value is what the browser sees.
 
+    `compose_session_prefs`, NOT `translate_profile_to_prefs`. The engine says
+    why in its own source (`invisible_core/prefs.py:1466`): translate "is the
+    fingerprint. It is never the whole prefs dict a session runs with" — a
+    proxy, a cloak, a humanize toggle and two crash prefs sit on top of it, in
+    an ordering the same file calls load-bearing. `compose_session_prefs` is
+    the composer the product actually reaches (`invisible_launch.py:2956,3022`
+    -> `launcher._build_prefs` -> `_session.build_prefs` -> here), so this is
+    the layer the browser launches with rather than one below it.
+
+    That distinction is the whole point of this helper. The cell it feeds is a
+    regression sentinel against an engine that autobumps daily at 06:00 UTC,
+    and today's value is identical at both layers — so reading the lower one
+    would look correct indefinitely and then fail OPEN the moment a bump moved
+    the guard up a layer, or a future `configure_proxy` touched HTTP/3 behind a
+    UDP-blocking proxy (exactly the compatibility rationale at `prefs.py:566`).
+    A sentinel that reads below the layer it guards is silently worthless.
+
+    `proxy=` is passed for the same reason the helper is named `_proxied`: the
+    proxy layer is one of the five above the fingerprint, and it is the one
+    that mutates prefs. Built with the product's own `_proxy_dict` rather than
+    a hand-written dict, so the shape cannot drift from what persona passes.
+
+    HEADFUL, and the word is the honest bound rather than a decoration. The
+    other three layer flags are derived from `headless` one level up
+    (`invisible_playwright/_session.py:219-228`: `virtual_display` and `cloak`
+    are `bool(headless and <platform>)`, `humanize` from the cursor engine),
+    and persona launches `headless: False` (`invisible_launch.py:2956`), so
+    all three are off on the path this cell describes. Measured rather than
+    assumed: composing with them set explicitly differs from this helper's
+    return in exactly ONE key, `stealthfox.humanize` (None vs False) — not an
+    http3 key, so the cell's verdict is identical either way. This returns the
+    headful composition, not every composition the engine can produce.
+
     Skips rather than fails when the engine is missing: it is a git dependency
     (`pyproject.toml:48`) and is genuinely absent from some containers, so an
     ImportError here would be an environment report, not a matrix regression.
     The same `importorskip` guard `test_invisible_launch.py:796` uses.
     """
     pytest.importorskip("invisible_core")
+    from invisible_core import compose_session_prefs
     from invisible_core._fpforge import generate_profile
-    from invisible_core.prefs import translate_profile_to_prefs
 
-    return translate_profile_to_prefs(
-        generate_profile(1), extra_prefs=_firefox_proxied()
-    )
+    return compose_session_prefs(
+        generate_profile(1),
+        extra_prefs=_firefox_proxied(),
+        proxy=_proxy_dict(_FF_PROXIED_CFG["proxy_url"]),
+    ).prefs
 
 
 def test_matrix_webrtc_non_proxied_udp_both_engines(monkeypatch, tmp_path):
