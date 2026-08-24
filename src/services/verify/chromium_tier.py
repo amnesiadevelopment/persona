@@ -567,6 +567,7 @@ class ChromiumSession:
         allow_no_proxy: bool = False,
         allow_small_dev_shm: bool = False,
         install_layer: bool = True,
+        include_geo: bool = False,
     ) -> None:
         import asyncio
 
@@ -579,6 +580,7 @@ class ChromiumSession:
         self.allow_no_proxy = allow_no_proxy
         self.allow_small_dev_shm = allow_small_dev_shm
         self.install_layer = install_layer
+        self.include_geo = include_geo
         # Whether this launch REALLY dropped the sandbox, read back off the
         # command line in :meth:`_start` rather than echoed from the request.
         # The two can differ — a session that refuses before launching never
@@ -699,6 +701,7 @@ class ChromiumSession:
                 self._profile_dir,
                 self.seed,
                 os_type=self.declared_machine,
+                include_geo=self.include_geo,
             )
         else:
             # The differential's control arm: the packaged engine with NONE of

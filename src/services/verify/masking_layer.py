@@ -111,6 +111,7 @@ VOICE = "voice"
 DEVICE = "device"
 GPU = "gpu"
 CANVAS_CTX = "canvas_ctx"
+GEO = "geo"
 
 # The vectors persona's FIREFOX layer actually builds, in install order. Named
 # as data so a subtraction arm can be checked against the real set rather than
@@ -401,6 +402,7 @@ def build_chromium_layer(
     os_type: str = DEFAULT_OS_TYPE,
     locale: str = DEFAULT_LOCALE,
     generation: int = 0,
+    include_geo: bool = False,
 ) -> "tuple[list[str], LayerReport]":
     """Build persona's Chromium masking extensions into ``profile_dir``.
 
@@ -409,10 +411,25 @@ def build_chromium_layer(
 
     The set mirrors ``spawn_browser``'s masking extensions and stops there. What
     is left out is left out on purpose and is named in the module docstring:
-    ``build_search_extension`` is a settings override rather than masking,
-    ``build_geo_extension`` needs proxy coordinates this harness does not carry,
-    and ``build_mobile_extension`` belongs to a mobile profile which a checker
-    run is not.
+    ``build_search_extension`` is a settings override rather than masking, and
+    ``build_mobile_extension`` belongs to a mobile profile which a checker run
+    is not.
+
+    ``include_geo`` adds ``build_geo_extension`` in DENY mode, closing a
+    TIER-VERSUS-PRODUCT gap rather than widening the seam. This exclusion used
+    to be unconditional, on the stated ground that the builder "needs proxy
+    coordinates this harness does not carry". That reason does not survive
+    reading the product: ``process.py`` builds the extension for EVERY proxied
+    profile and passes ``None, None`` when the exit has no usable coordinates,
+    so coordinate-less is a case the builder is DESIGNED for and the product
+    exercises — not a blocker. Every checker reading in this campaign is
+    proxied, so the product surface always carries this extension and the tier
+    never did.
+
+    Off by default, because it changes what the harness installs and an
+    existing reading must not move underneath a caller that did not ask. The
+    record names the vector in ``installed`` either way, so which surface was
+    read is never inferred.
 
     ``generation`` is the hardware generation, defaulting to ``0`` — the value
     ``models.hardware_generation.normalize_generation`` gives a profile that
@@ -426,6 +443,7 @@ def build_chromium_layer(
     from ..browser.audio_ext import build_audio_extension
     from ..browser.canvas_ctx_ext import build_canvas_ctx_extension
     from ..browser.device_ext import build_device_extension
+    from ..browser.geo_ext import build_geo_extension
     from ..browser.gpu_ext import build_gpu_extension
     from ..browser.locale_ext import build_locale_extension
     from ..browser.measuretext_ext import build_measuretext_extension
@@ -459,6 +477,21 @@ def build_chromium_layer(
         (CANVAS_CTX, lambda: build_canvas_ctx_extension(
             os_type, _dir(".persona-canvas-ctx-ext"))),
     ]
+    if include_geo:
+        # Mirrors ``process.py``'s LAST extension, appended here in the same
+        # position so a diff against the product's list still reads straight
+        # down. DENY mode (lat/lon = None) because this harness carries no
+        # proxy coordinates — which is not a shortfall but the PRODUCT'S OWN
+        # BEHAVIOUR for that case: ``process.py`` computes
+        # ``has_coords = proxy.lat is not None and proxy.lon is not None`` and
+        # passes ``None, None`` when it is false, precisely so
+        # ``getCurrentPosition`` cannot fall through to the real host
+        # coordinates while the locale and timezone already name the exit
+        # country.
+        builders.append(
+            (GEO, lambda: build_geo_extension(
+                None, None, _dir(".persona-geo-ext")))
+        )
 
     dirs: "list[str]" = []
     installed: "list[str]" = []

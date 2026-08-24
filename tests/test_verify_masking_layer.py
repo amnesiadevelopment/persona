@@ -308,6 +308,56 @@ def test_the_chromium_layer_builds_real_extension_directories(tmp_path):
         json.loads(manifest.read_text(encoding="utf-8"))
 
 
+def test_the_chromium_layer_omits_geo_unless_asked(tmp_path):
+    """Default OFF, so an existing reading cannot move under a caller.
+
+    Asserts the DIRECTORY IS ABSENT, not merely that the vector is missing from
+    the report: a builder that ran but went unreported would still have changed
+    the surface the browser presents, which is the thing that must not happen.
+    """
+    dirs, report = build_chromium_layer(str(tmp_path), SEED, os_type="windows")
+
+    assert masking_layer.GEO not in report.installed
+    assert not (tmp_path / ".persona-geo-ext").exists()
+    assert not any(".persona-geo-ext" in d for d in dirs)
+
+
+def test_the_chromium_layer_builds_geo_in_DENY_mode_when_asked(tmp_path):
+    """``include_geo`` closes the measured tier-versus-product gap (PS-150).
+
+    The generated source is read to confirm it is the coordinate-less DENY
+    build the product uses for an exit with no usable lat/lon — the ``null``
+    literals ``process.py`` produces when it passes ``None, None``. Asserting
+    only that a directory appeared would equally pass for a build that PINNED
+    coordinates, which is the opposite behaviour.
+    """
+    dirs, report = build_chromium_layer(
+        str(tmp_path), SEED, os_type="windows", include_geo=True
+    )
+
+    assert report.complete, report.failed
+    assert masking_layer.GEO in report.installed
+    assert any(".persona-geo-ext" in d for d in dirs)
+
+    ext = tmp_path / ".persona-geo-ext"
+    json.loads((ext / "manifest.json").read_text(encoding="utf-8"))
+    source = (ext / "geo.js").read_text(encoding="utf-8")
+    assert "null" in source, "DENY mode passes no coordinates"
+
+
+def test_the_chromium_geo_vector_is_appended_LAST_like_the_product(tmp_path):
+    """Ordered as ``process.py`` appends them, so a diff reads straight down.
+
+    The order is load-bearing for the record's own diff-against-the-product
+    argument, so it is asserted rather than left to the reading eye.
+    """
+    _, report = build_chromium_layer(
+        str(tmp_path), SEED, os_type="windows", include_geo=True
+    )
+
+    assert report.installed[-1] == masking_layer.GEO
+
+
 def test_the_chromium_webgl_extension_is_PER_SEED(tmp_path):
     """Same argument as the Firefox scripts: a constant layer links profiles."""
     a = tmp_path / "a"
