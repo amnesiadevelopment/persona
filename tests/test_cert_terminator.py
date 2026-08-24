@@ -10,6 +10,7 @@ import socket
 import ssl
 import sys
 import threading
+import time
 
 import pytest
 
@@ -248,10 +249,41 @@ def test_terminator_does_not_present_cert_to_other_host(tmp_path):
             cctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             cctx.check_hostname = False
             cctx.verify_mode = ssl.CERT_NONE
-            s = cctx.wrap_socket(raw, server_hostname="localhost")
-            with pytest.raises(ssl.SSLError):
+            # Assert the SECURITY PROPERTY, not the error surface. The origin
+            # requires a client certificate, so a tunnel that presents none must
+            # fail — but HOW that failure surfaces is platform-specific under
+            # TLS 1.3: the client's wrap_socket() returns before the server's
+            # rejection arrives, so the alert lands on the first read/write as an
+            # ssl.SSLError on Linux/macOS and as a connection reset (OSError) or
+            # a clean EOF on Windows. Asserting `pytest.raises(ssl.SSLError)`
+            # tested the surface and so failed only on Windows (PS-147) — and,
+            # worse, "DID NOT RAISE" could not tell that benign difference apart
+            # from the actual leak this test exists to catch, because presenting
+            # the cert ALSO does not raise. So check what the leak would produce:
+            # a completed handshake at the origin, and a served response.
+            # wrap_socket() is inside the try because a platform that delivers
+            # the alert during the handshake must pass here too, not error out.
+            try:
+                s = cctx.wrap_socket(raw, server_hostname="localhost")
                 s.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
-                s.recv(100)
+                got = s.recv(100)
+            except (ssl.SSLError, OSError):
+                got = b""  # handshake rejected — the expected outcome
+            # Had the terminator presented the certificate to this non-admin
+            # host, the origin would have served us its body.
+            assert b"HI!" not in got and b"200 OK" not in got, (
+                f"terminator presented the client cert to a non-admin host: {got!r}"
+            )
+            # The direct observable: the origin never completed a TLS session at
+            # all, because no certificate was ever offered to it. The origin
+            # records the admit BEFORE it serves a body, so a leak has already
+            # been recorded by the time our client saw a response above — this
+            # short settle only covers the handshake losing a loopback race, and
+            # is deliberately not long, since the passing case always pays it.
+            deadline = time.time() + 0.5
+            while not admits and time.time() < deadline:
+                time.sleep(0.02)
+            assert admits == [], "mTLS origin admitted a session; a cert was presented"
         finally:
             t.stop()
     finally:
