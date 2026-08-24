@@ -296,3 +296,109 @@ to do with the invariant — which is exactly what this PR's own CI reported
 green). The `rc=127` finding is worth pinning, so it is now pinned as the
 **ordering** rule — *where the AppImage flag is present, it comes first and the
 waiver comes after it* — which holds on every host.
+
+## 9. Second rework — the probe's own Windows contract, and the CI red that is not this branch's
+
+Two separate things were outstanding when this branch came back around. They
+are recorded together only because they arrived in the same session; they are
+unrelated, and one of them is deliberately **not fixed here**.
+
+### 9.1 `dev_shm_bytes()` raised on Windows instead of returning `None`
+
+Found by the researcher during approval review and passed over as non-blocking.
+It is genuinely this branch's defect — `git show origin/main:…chromium_tier.py`
+contains no `dev_shm_bytes` at all, so the function is introduced here rather
+than inherited.
+
+The function's docstring promises `None` for "no `/dev/shm`, **or a platform
+where it means nothing**". Windows is exactly that platform, and it reached the
+answer by a route the code did not handle: `os.statvfs` does not *exist* there,
+so the call raises `AttributeError` — which is **not** an `OSError`, and so is
+not caught by the `except OSError` beneath it. The function contradicted its own
+contract.
+
+Reproduced by executing the branch's verbatim function body against an `os`
+shim with `statvfs` removed, before changing anything:
+
+```
+Windows result: RAISED AttributeError: module 'os' has no attribute 'statvfs'
+  -> caught by the function's 'except OSError'?  False
+```
+
+The fix checks for the attribute's absence up front rather than catching its
+use as a failure, because an inapplicable question is not an error condition:
+
+```python
+statvfs = getattr(os, "statvfs", None)
+if statvfs is None:
+    # No statvfs at all (Windows). The question does not apply here.
+    return None
+```
+
+Same harness, after — all three platform shapes now honour the docstring:
+
+```
+Windows  -> None          (was: AttributeError)
+macOS    -> None          (statvfs exists, /dev/shm does not -> OSError)
+Linux    -> 67108864      (real capacity)
+```
+
+**Why a green `tests (windows-latest)` never caught this**, and the reason the
+new tests are shaped the way they are: *every* pre-existing dev-shm test
+monkeypatches `dev_shm_bytes`, so the real body is never executed by the suite
+on any platform. The three tests added here drive the real body instead, by
+swapping the `os` module it reaches through — so they pin the contract from any
+host the suite runs on, including the Linux container that cannot otherwise
+observe Windows behaviour at all. This is the same shape as the project's
+`ntpath.isabs` finding (PS-127).
+
+Revert-proved rather than trusted green, and the result is reported honestly:
+against the old body **exactly one** of the three goes red —
+`test_the_probe_returns_None_on_windows_rather_than_raising`. The other two
+(macOS `OSError`, Linux capacity-not-free-space) guard behaviour that was
+already correct. They are regression guards, **not** evidence for this fix, and
+are not claimed as such.
+
+### 9.2 The `windows-latest` CI red is a cross-branch flake, not this branch
+
+`tests (windows-latest)` failed on `ca3e3f0` with:
+
+```
+FAILED tests/test_cert_terminator.py::test_terminator_does_not_present_cert_to_other_host
+  - Failed: DID NOT RAISE SSLError
+1 failed, 3444 passed, 62 skipped
+```
+
+This is **not** silenced, retried until green, or excused as "pre-existing" —
+main at `49a761d` is green on all three legs, so that excuse was not available
+and was not used. It was established by evidence:
+
+- **No coupling.** This branch's diff is 7 files, all `src/services/verify/`
+  plus their tests plus this document. `git diff --name-only origin/main...HEAD
+  | grep -i cert` is empty. The failing test imports only
+  `src.services.cert.terminator`.
+- **The same test, on the same leg, fails on unrelated branches.** Three CI runs:
+
+  | run | branch | touches cert code? |
+  |---|---|---|
+  | 32690296747 | `fix/ps133-seed-4242-renderer-crash` | no |
+  | 32676943577 | `fix/124-locale-languages-header-agreement` | no |
+  | 32674445788 | `fix/131-firefox-window-realm-tostring-cloak` | no |
+
+  All three failed **only** `tests (windows-latest)`, on the identical
+  assertion. A failure that follows the platform across three unrelated diffs is
+  a property of the test, not of any of them.
+- **The same source content passed.** `d3f91c7` — this branch pre-rebase,
+  byte-identical in `src/` — was green on `windows-latest`, and the rebase range
+  `969bda4..49a761d` touches no cert file.
+
+The mechanism is visible in the test itself: the TLS handshake is performed by
+`wrap_socket` **outside** the `pytest.raises(ssl.SSLError)` block, so whether
+the server's alert surfaces as an exception inside the block depends on when it
+arrives. That is timing-dependent, which is what a leg-specific intermittent
+failure looks like.
+
+It is left alone deliberately. Fixing an unrelated test inside this PR would
+put an unreviewed change to the mTLS terminator's test into a ticket about
+`/dev/shm`, and the honest report is more useful than a silenced leg. It wants
+its own ticket.

@@ -297,9 +297,19 @@ def dev_shm_bytes() -> "int | None":
     platform where it means nothing). It is deliberately NOT reported as zero,
     so a caller can tell "this host has no shm to speak of" from "the probe did
     not run" instead of refusing a launch on a missing answer.
+
+    Windows is exactly "a platform where it means nothing", and it reaches that
+    answer by a different route than the others: ``os.statvfs`` does not EXIST
+    there, so the call raises ``AttributeError`` rather than ``OSError``. That
+    is not an error condition to report, it is the question being inapplicable
+    — so the absence is checked up front instead of being caught as a failure.
     """
+    statvfs = getattr(os, "statvfs", None)
+    if statvfs is None:
+        # No statvfs at all (Windows). The question does not apply here.
+        return None
     try:
-        st = os.statvfs("/dev/shm")
+        st = statvfs("/dev/shm")
     except OSError:
         return None
     return int(st.f_blocks) * int(st.f_frsize)

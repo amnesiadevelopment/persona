@@ -1237,3 +1237,68 @@ def test_a_normal_reading_does_not_carry_the_dev_shm_waiver_note(monkeypatch):
         ],
     )
     assert not any("--disable-dev-shm-usage" in n for n in record["notes"])
+
+
+# ---------- the probe itself, on platforms where /dev/shm means nothing ----------
+#
+# Every other dev-shm test in this file monkeypatches `dev_shm_bytes`, so the
+# REAL function body is never executed by the suite on any platform. That is
+# precisely why a Windows defect in it survived a green `tests (windows-latest)`
+# leg. These three drive the real body instead, by swapping the `os` module it
+# reaches through — so they pin its contract from any host the suite runs on.
+
+
+def _dev_shm_bytes_with_os(fake_os):
+    """Run the REAL `dev_shm_bytes` body against a substitute `os` module."""
+    from src.services.verify import chromium_tier
+
+    real_os = chromium_tier.os
+    try:
+        chromium_tier.os = fake_os
+        return chromium_tier.dev_shm_bytes()
+    finally:
+        chromium_tier.os = real_os
+
+
+def test_the_probe_returns_None_on_windows_rather_than_raising():
+    """On Windows `os.statvfs` does not EXIST, so the call raises
+    `AttributeError` — which is NOT an `OSError` and so is not caught by the
+    probe's error handling.
+
+    The docstring promises `None` for "a platform where it means nothing", and
+    Windows is exactly that platform. Returning `None` is the contract; raising
+    through the caller is a defect that a monkeypatched suite cannot see.
+    """
+
+    class _NoStatvfs:
+        def __getattr__(self, name):
+            raise AttributeError(f"module 'os' has no attribute {name!r}")
+
+    assert _dev_shm_bytes_with_os(_NoStatvfs()) is None
+
+
+def test_the_probe_returns_None_when_dev_shm_is_absent():
+    """macOS shape: `statvfs` exists, `/dev/shm` does not. An `OSError` here is
+    a real answer — "no shm to speak of" — and is reported as `None`, not 0."""
+
+    class _NoDevShm:
+        def statvfs(self, path):
+            raise FileNotFoundError(2, "No such file or directory", path)
+
+    assert _dev_shm_bytes_with_os(_NoDevShm()) is None
+
+
+def test_the_probe_reports_capacity_not_free_space():
+    """Where the question DOES apply, the answer is total capacity —
+    blocks * frsize — so the reading does not depend on who else is on the box.
+    """
+
+    class _Linux:
+        def statvfs(self, path):
+            class _St:
+                f_blocks = 16384
+                f_frsize = 4096
+                f_bavail = 1  # nearly full: must not influence the answer
+            return _St()
+
+    assert _dev_shm_bytes_with_os(_Linux()) == 16384 * 4096
