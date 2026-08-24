@@ -314,3 +314,96 @@ def test_all_eight_constants_default_layout_is_unchanged(monkeypatch, tmp_path):
     cfg = _reload_config(monkeypatch, PERSONA_HOME=str(home))
     for const, (_, basename) in ALL_UNDER_HOME.items():
         assert getattr(cfg, const) == os.path.join(str(home), basename)
+
+
+def test_all_eight_constants_are_cwd_invariant_under_every_shape(
+    monkeypatch, tmp_path
+):
+    """The FOURTH shape — rooted-but-driveless — and the property that is
+    actually true universally, rather than the one that cannot be.
+
+    The sweep above asserts isabs over unset/absolute/relative. It deliberately
+    omits '/custom/data', because on a Windows path flavour under Python 3.13
+    that value is returned verbatim (correctly — an absolute override is
+    returned exactly as given) and ntpath.isabs reports False for it, so an
+    isabs assertion over this shape would be asserting something the function
+    does not promise and must not deliver. Adding it there would turn Windows
+    CI red for the second time, on the same shape as the first.
+
+    So this asserts the WEAKER, UNIVERSAL guarantee the docstring now states in
+    its place: the value does not move when the process's cwd moves. That holds
+    on every platform for every shape, including the rooted one, and it is the
+    property a consumer actually needs in order to retire a local cwd join —
+    which is what this ticket exists to let them do. It is the caveat made
+    enforceable instead of merely promised.
+    """
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+
+    shapes = {
+        "unset": lambda name: None,
+        "absolute": lambda name: str(tmp_path / f"abs_{name}"),
+        "relative": lambda name: f"rel_{name}",
+        # hardcoded literal, NOT tmp_path-derived: a tmp_path string is
+        # drive-absolute on Windows, which is exactly the blindness that let
+        # the round-1 defect reach CI.
+        "rooted": lambda name: f"/custom/{name.lower()}",
+    }
+
+    for shape, spell in shapes.items():
+        monkeypatch.chdir(workdir)
+        overrides = {
+            env: spell(name)
+            for name, (env, _) in ALL_UNDER_HOME.items()
+            if spell(name) is not None
+        }
+        cfg = _reload_config(
+            monkeypatch, PERSONA_HOME=str(tmp_path / "home"), **overrides
+        )
+        # NOTE: compare the RESOLVED location, not the joined string. A plain
+        # os.path.join of a RELATIVE constant returns the same string before
+        # and after a chdir ('rel_data_dir/acme' both times) while naming a
+        # different directory each time — so a string comparison here passes
+        # against the very defect this ticket fixes. abspath is what makes the
+        # assertion bite: it is the operation every real consumer's filesystem
+        # call performs implicitly.
+        before = {
+            c: os.path.abspath(os.path.join(getattr(cfg, c), "acme"))
+            for c in ALL_UNDER_HOME
+        }
+
+        # the cwd moves out from under the already-imported module
+        monkeypatch.chdir(elsewhere)
+        after = {
+            c: os.path.abspath(os.path.join(getattr(cfg, c), "acme"))
+            for c in ALL_UNDER_HOME
+        }
+
+        for const in ALL_UNDER_HOME:
+            assert before[const] == after[const], (
+                f"{const} moved when cwd moved under {shape} override: "
+                f"{before[const]!r} -> {after[const]!r}"
+            )
+
+
+def test_rooted_driveless_override_is_returned_verbatim_for_all_eight(
+    monkeypatch, tmp_path
+):
+    """The other half of the rooted shape: it is returned EXACTLY as given.
+
+    Pairs with the cwd-invariance test above. Together they pin the whole of
+    what the docstring's caveat claims for this shape — verbatim, and stable —
+    without asserting the absoluteness that is false for it on Windows.
+    """
+    overrides = {
+        env: f"/custom/{name.lower()}" for name, (env, _) in ALL_UNDER_HOME.items()
+    }
+    cfg = _reload_config(
+        monkeypatch, PERSONA_HOME=str(tmp_path / "home"), **overrides
+    )
+    for name, (env, _) in ALL_UNDER_HOME.items():
+        assert getattr(cfg, name) == f"/custom/{name.lower()}", (
+            f"{name} was rewritten; a rooted override must come back verbatim"
+        )

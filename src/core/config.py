@@ -81,7 +81,9 @@ def _is_already_absolute(val: str, _path: ModuleType = os.path) -> bool:
 
 def _under_home(name: str, env: str) -> str:
     """Resolve a runtime path: an explicit env override wins; otherwise the
-    name is placed under PERSONA_HOME. The result is ALWAYS absolute.
+    name is placed under PERSONA_HOME. The result is never interpreted against
+    the CALLER's cwd — see the caveat below for the one shape where "never
+    interpreted against anything" is a stronger claim than this can make.
 
     A RELATIVE override is anchored to the current working directory here, once,
     at import. It used to be returned verbatim, which made every constant built
@@ -100,7 +102,35 @@ def _under_home(name: str, env: str) -> str:
     through abspath/normpath, which would rewrite a trailing slash or an
     embedded '..' and thereby relocate a path an operator spelled on purpose.
     This is a normalisation of relative values, not a rewrite of absolute ones.
-    See _is_already_absolute for why that test is not a bare os.path.isabs."""
+    See _is_already_absolute for why that test is not a bare os.path.isabs.
+
+    CAVEAT — stated because a consumer must not drop its OWN anchoring without
+    it. On a Windows path flavour, a ROOTED-BUT-DRIVELESS override
+    ('/custom/data') is returned verbatim, and that value is NOT absolute:
+
+        py3.13  ntpath.isabs('/custom/data')            -> False
+                resolved from cwd 'C:\\repo'      -> C:\\custom\\data
+                resolved from cwd 'D:\\elsewhere' -> D:\\custom\\data
+
+    so it still resolves against the process's current DRIVE. This is not a
+    regression — the pre-normalisation function returned that shape verbatim
+    too, byte for byte — and it is not fixable here: the two guarantees
+    genuinely conflict for this one spelling, and "an absolute override is
+    returned exactly as given" WINS, because rewriting it onto the current
+    drive would relocate a path the operator spelled (that is the defect
+    _is_already_absolute exists to prevent, and it turned Windows CI red once).
+
+    What IS universally true, and what a consumer may rely on, is the weaker
+    property this function actually delivers: THE VALUE DOES NOT MOVE WHEN THE
+    PROCESS'S CWD MOVES. Every constant is fixed at import and is identical
+    afterwards regardless of any later chdir. On POSIX — and on Windows for
+    every other override shape — the result is additionally absolute.
+
+    Do not read the paragraph above as licence to re-add a cwd join: joining
+    os.getcwd() onto one of these constants is wrong under every shape, and
+    removing those joins is the point of this function. A Windows consumer that
+    needs a drive-anchored value from a rooted-driveless override should say so
+    explicitly (os.path.abspath at that call site), not silently."""
     val = os.getenv(env)
     if val:
         return val if _is_already_absolute(val) else os.path.abspath(val)
