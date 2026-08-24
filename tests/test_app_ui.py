@@ -718,3 +718,213 @@ def test_profile_dir_is_absolute_and_ignores_cwd(monkeypatch, tmp_path):
 
     assert os.path.isabs(before)
     assert before == after == str(tmp_path / "persona_data" / "acme")
+
+
+# --- the app-update rollback row: a refused revert must be VISIBLE ----------
+#
+# These mirror the Firefox engine row's tests (test_engine_rollback.py:568-620),
+# which are the encoded memory of the lesson _on_app_rollback's own docstring
+# quotes: the gesture is a rename, so it finishes in milliseconds with no
+# progress bar, and a refusal that reaches only the log is indistinguishable
+# from a dead button. _log is not a surface here — the sidebar log panel does
+# not render at all while collapsed.
+
+
+def _rollback_app(monkeypatch, *, went, retained, boom=False):
+    """An App stub for the app-rollback CLICK, with the service decision
+    stubbed. `retained` is what rollback_target() reports AFTER the attempt,
+    which is how the handler tells the two refusals apart."""
+    from src.ui import app as app_mod
+
+    def _revert(**k):
+        if boom:
+            raise OSError("permission denied")
+        return went
+
+    monkeypatch.setattr(app_mod.app_update, "revert_to_previous_build", _revert)
+    monkeypatch.setattr(app_mod.app_update, "rollback_target", lambda: retained)
+
+    app = make_app(None)
+    app._app_rollback_status = ""
+    app._log = lambda *a, **k: None
+    app._refresh_sidebar = lambda *a, **k: None
+    return app
+
+
+def test_a_refused_app_revert_says_so_on_the_row(monkeypatch):
+    # The retained bundle is still there after the attempt, so it was the
+    # RENAME that was refused — /Applications not being writable by this user
+    # is the ordinary case, and it is likelier on the rollback path than the
+    # update path, because the update may have run with different privileges.
+    # The OS error is in the log, so the row points at it.
+    app = _rollback_app(monkeypatch, went="", retained="/Applications/p.app.bak")
+
+    app._on_app_rollback()
+
+    assert app._app_rollback_status == "couldn't go back — see the log", (
+        app._app_rollback_status
+    )
+
+
+def test_an_app_revert_with_nothing_retained_says_that_instead(monkeypatch):
+    # The two refusals are not interchangeable. Sending someone to the log to
+    # read an error when there was simply never a retained bundle points them
+    # at something that will not explain anything.
+    app = _rollback_app(monkeypatch, went="", retained="")
+
+    app._on_app_rollback()
+
+    assert app._app_rollback_status == "nothing to go back to", (
+        app._app_rollback_status
+    )
+
+
+def test_an_app_revert_that_raises_still_says_something(monkeypatch):
+    # The service is documented to answer "" rather than raise, but the
+    # handler must not depend on that: an exception escaping it would leave
+    # the row silent, which is the exact defect these tests exist to prevent.
+    app = _rollback_app(monkeypatch, went="", retained="", boom=True)
+
+    app._on_app_rollback()
+
+    assert app._app_rollback_status == "couldn't go back — see the log", (
+        app._app_rollback_status
+    )
+
+
+def test_a_successful_app_revert_replaces_any_stale_complaint(monkeypatch):
+    # A refusal from an earlier attempt must not outlive the attempt that
+    # succeeded. Unlike the engine row, this one does not clear to "": nothing
+    # restarts persona for the operator, so the one thing they must still do
+    # is the thing the row says.
+    app = _rollback_app(
+        monkeypatch, went="/Applications/p.app", retained="/Applications/p.app.bak"
+    )
+    app._app_rollback_status = "couldn't go back — see the log"
+
+    app._on_app_rollback()
+
+    assert app._app_rollback_status == "restart to run the previous version", (
+        app._app_rollback_status
+    )
+
+
+# --- the render rule: nothing retained -> render nothing at all -------------
+
+
+def _row_app(monkeypatch, *, retained, boom=False):
+    from src.ui import app as app_mod
+
+    def _target():
+        if boom:
+            raise OSError("install location unreadable")
+        return retained
+
+    monkeypatch.setattr(app_mod.app_update, "rollback_target", _target)
+    return make_app(None)
+
+
+def test_app_rollback_row_renders_nothing_when_nothing_is_retained(monkeypatch):
+    # A revert with no retained bundle cannot work, and a button that cannot
+    # work is worse than no button: it promises the machine can undo something
+    # it cannot.
+    app = _row_app(monkeypatch, retained="")
+
+    assert app._app_rollback_row() is None
+
+
+def test_app_rollback_row_renders_nothing_when_the_target_is_unreadable(monkeypatch):
+    # The panel must still render if the install location cannot be resolved.
+    app = _row_app(monkeypatch, retained="", boom=True)
+
+    assert app._app_rollback_row() is None
+
+
+def test_app_rollback_row_is_offered_when_a_bundle_is_retained(monkeypatch):
+    # The positive control for the two above: without it, an always-None
+    # implementation would pass them both.
+    app = _row_app(monkeypatch, retained="/Applications/p.app.bak")
+
+    assert app._app_rollback_row() is not None
+
+
+# --- the status must REACH THE PANEL, not just be assigned to a field -------
+#
+# This is the test that would have caught the defect these were written for.
+# The original implementation set nothing; but an implementation that sets
+# _app_rollback_status and never renders it would pass every assertion above
+# while the operator still sees nothing move. The only way to tell those apart
+# is to build the panel and read the text out of it.
+
+
+def _panel_texts(app, monkeypatch):
+    """Build the version panel and collect every string it renders."""
+    from src.ui import app as app_mod
+
+    monkeypatch.setattr(
+        app_mod.app_settings, "is_auto_update_enabled", lambda: False
+    )
+    app._app_latest = ""
+    app._app_update_status = ""
+    app._update_staged = ""
+    panel = app._build_version_panel()
+
+    found: list[str] = []
+
+    def walk(c):
+        v = getattr(c, "value", None)
+        if isinstance(v, str):
+            found.append(v)
+        for attr in ("content", "controls"):
+            child = getattr(c, attr, None)
+            if child is None:
+                continue
+            for k in (child if isinstance(child, list) else [child]):
+                walk(k)
+
+    walk(panel)
+    return found
+
+
+def test_a_refused_app_revert_is_rendered_in_the_version_panel(monkeypatch):
+    # The whole point: after a refused click the operator must SEE the reason
+    # in the panel they clicked in. _log does not count — the sidebar log
+    # panel renders only while expanded.
+    app = _rollback_app(monkeypatch, went="", retained="/Applications/p.app.bak")
+    app._app_rollback_row = lambda: None
+
+    app._on_app_rollback()
+
+    assert "couldn't go back — see the log" in _panel_texts(app, monkeypatch)
+
+
+def test_the_nothing_retained_refusal_is_rendered_even_though_the_row_is_not(
+    monkeypatch,
+):
+    # The case the separation exists for. When nothing is retained the row
+    # itself renders NOTHING AT ALL, so a status hung off the row would
+    # disappear in exactly the case it is reporting on. It must survive the
+    # row's absence.
+    app = _rollback_app(monkeypatch, went="", retained="")
+    app._app_rollback_row = lambda: None
+
+    app._on_app_rollback()
+
+    texts = _panel_texts(app, monkeypatch)
+    assert "nothing to go back to" in texts
+    assert "go back to the previous version" not in texts  # the row is gone
+
+
+def test_a_quiet_panel_renders_no_rollback_status_line(monkeypatch):
+    # The negative control: with no attempt made, the panel carries no status
+    # line at all, so the assertions above are reporting the click rather than
+    # a line that is always present.
+    app = _rollback_app(monkeypatch, went="", retained="")
+    app._app_rollback_row = lambda: None
+
+    assert _panel_texts(app, monkeypatch) == [
+        "persona v" + __import__(
+            "src.ui.app", fromlist=["app_update"]
+        ).app_update.APP_VERSION,
+        "[ auto-update: off ]",
+    ]
