@@ -58,6 +58,7 @@ from .engine_install import (  # noqa: F401
 from .env_policy import (
     browser_child_cwd,
     chdir_current_process,
+    pin_current_process_tmpdir,
     scrub_current_process_environ,
 )
 from .firefox_bookmarks import places_ready
@@ -2652,6 +2653,43 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     _apply_child_cwd = not in_thread and _platform.IS_LINUX
     _child_cwd = browser_child_cwd() if _apply_child_cwd else None
 
+    # The child's SCRATCH directory, pinned inside the profile so a crash
+    # cannot strand engine temp files where delete_profile, the trash and
+    # wipe_all_profiles can never reach them. Same authority the chromium seam
+    # uses; see env_policy.browser_child_tmpdir for the perimeter argument.
+    #
+    # The source is the PROFILE DATA DIR, which the parent puts in cfg under
+    # its own key — NOT cfg["profile_dir"], which is the engine's inner
+    # .invisible-profile one level down. Deriving it from that would pin the
+    # two seams one level apart: still inside the perimeter, but the property
+    # under test is that both engines agree on ONE path.
+    #
+    # APPLIED BELOW, NOT HERE, for the same reason as the working directory:
+    # this creates the directory, and makedirs RAISES on an unwritable profile
+    # dir. Done up here that exception would kill the child before `out`
+    # exists and the parent would read a bare EOF — a launch that dies without
+    # saying anything. Unlike the cwd, the VALUE needs no pre-scrub read: it
+    # comes from cfg rather than from HOME, so the environ scrub below cannot
+    # move it.
+    #
+    # FORK PATH ONLY, the same guard as the environ scrub and for the same
+    # hazard, one notch sharper. On Windows/macOS this `_child` is a THREAD of
+    # the manager process, where os.environ IS persona's own: pinning TMPDIR
+    # there would move persona's temp dir and EVERY concurrently-open
+    # profile's — pointing them all at one profile's scratch directory, which
+    # is worse than leaving them in /tmp. That platform gap is a recorded
+    # absence, not a guarantee that silently doesn't hold. The chromium
+    # launcher, which hands Popen an env= copy, is pinned on all platforms.
+    # TWO SEPARATE QUESTIONS, kept apart on purpose. Whether this platform pins
+    # at all is the deliberate, recorded absence above. Whether cfg actually
+    # carried the directory is a MALFORMED-INPUT question with the opposite
+    # answer — folding it into the same boolean would let a missing key wear
+    # the platform gap's clothes and launch unpinned in silence, which is the
+    # one outcome this ticket exists to prevent. Checked where it can be said
+    # out loud, below.
+    _pin_tmpdir_here = not in_thread and _platform.IS_LINUX
+    _child_tmp_root = cfg.get("profile_data_dir") or ""
+
     # The browser executes untrusted remote code, so it inherits none of the
     # operator's identity — above all SSH_AUTH_SOCK, which is a live handle onto
     # their ssh-agent rather than a passive label. Done in this child's own
@@ -2692,6 +2730,41 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
             out.close()
         except Exception:
             pass
+
+    # The other half of the scratch-directory split above: the value came from
+    # cfg, and the directory is CREATED here, now that `out` exists and a
+    # failure can be said out loud. makedirs raises if the profile dir is
+    # unwritable; up above that would have killed the child before the pipe
+    # existed and the parent would have read a bare EOF.
+    #
+    # Ordered BEFORE the chdir deliberately: a failure to pin scratch is the
+    # perimeter guarantee failing, and continuing would hand the engine the
+    # host's shared temp dir — the exact residue being closed. Reported and
+    # ended the same way, rather than launched anyway.
+    if _pin_tmpdir_here:
+        # A cfg with no profile_data_dir reaches the SAME outcome as a failed
+        # makedirs — the engine runs on the host's shared temp dir — so it is
+        # refused the same way rather than launched in silence. It is a caller
+        # bug, not a platform gap: `_child_main` builds cfg from an unvalidated
+        # PERSONA_INVISIBLE_CFG blob, so the next caller that omits the key
+        # must hear about it instead of quietly losing the perimeter.
+        if not _child_tmp_root:
+            emit(
+                "LAUNCH_FAILED: browser scratch directory: cfg has no "
+                "'profile_data_dir', so the child's scratch could not be "
+                "pinned inside the profile"
+            )
+            emit("BROWSER_CLOSED")
+            _finish()
+            return
+        try:
+            _pinned_tmp = pin_current_process_tmpdir(_child_tmp_root)
+        except OSError as e:
+            emit(f"LAUNCH_FAILED: browser scratch directory in {_child_tmp_root!r}: {e}")
+            emit("BROWSER_CLOSED")
+            _finish()
+            return
+        logger.info("firefox child scratch pinned at %s", _pinned_tmp)
 
     # The other half of the working-directory split above: the value was read
     # before the environ scrub, and it is applied HERE, now that `out` exists

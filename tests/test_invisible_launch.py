@@ -1603,13 +1603,32 @@ def test_child_fork_path_teardown_fires_on_pid_exit(monkeypatch, tmp_path):
     monkeypatch.setattr(invisible_launch, "_raise_profile_window", lambda *a, **k: None)
 
     old_term = signal.getsignal(signal.SIGTERM)
+    # This test calls _child IN THIS PROCESS rather than across a real fork, so
+    # the child's scratch pin writes into pytest's own os.environ. Production
+    # never does that — the fork path has separate memory and the thread path
+    # is guarded precisely because it does not — so the temp vars are saved and
+    # restored here for the same reason SIGTERM is, and profile_data_dir is
+    # supplied because _child refuses a cfg without it (launching unpinned in
+    # silence is the residue PS-129 closes).
+    old_temp = {k: os.environ.get(k) for k in ("TMPDIR", "TMP", "TEMP")}
     r, w = os.pipe()
     try:
         invisible_launch._child(
-            {"profile_dir": str(tmp_path), "profile_name": "t", "seed": 1}, w
+            {
+                "profile_dir": str(tmp_path),
+                "profile_data_dir": str(tmp_path),
+                "profile_name": "t",
+                "seed": 1,
+            },
+            w,
         )
     finally:
         signal.signal(signal.SIGTERM, old_term)
+        for _k, _v in old_temp.items():
+            if _v is None:
+                os.environ.pop(_k, None)
+            else:
+                os.environ[_k] = _v
     out = os.read(r, 65536).decode()
     os.close(r)
 
