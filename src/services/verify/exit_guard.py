@@ -27,8 +27,11 @@ is a coupling; without the address in the record, nobody can tell).
 
 Never a fallback to direct
 --------------------------
-A missing credential file, an unusable credential, a refused connection, a
-timeout, an exit that is not Polish — each ENDS the run with a recorded reason.
+A credential missing from EVERY channel, an unusable credential, a refused
+connection, a timeout, an exit that is not Polish — each ENDS the run with a
+recorded reason. A missing credential FILE alone does NOT: the credential
+arrives on two channels and either can supply it (PS-145, see
+`resolve_credential`). What ends the run is that no channel had one.
 There is deliberately no code path in this module that produces a "well, try it
 without the proxy" outcome, silently or otherwise. An inconclusive run is a
 legitimate recordable result; a WRONG one is not, because a wrong one looks
@@ -463,6 +466,27 @@ def resolve_credential(
     exactly the thing that looks like it is working. When the two disagree, the
     channel that can be rotated is the one to believe — and the disagreement is
     REPORTED either way, never resolved quietly.
+
+    **AN EXPLICIT ``path`` IS A PREFERENCE, NOT A PIN.** Naming a path (the
+    CLI's ``--credential``) changes WHICH FILE is consulted first; it does not
+    switch the environment channel off. So a run given a path to a file that
+    turns out to be absent or unusable still proceeds on
+    :data:`ENVIRONMENT_CREDENTIAL_VAR`, and the record says it did.
+
+    Decided deliberately rather than inherited (PS-145 audit raised it as an
+    open question). The resilience is the entire point of two channels — a
+    named path that REFUSED when the file was missing would reintroduce, for
+    exactly the operator who was most specific, the single point of failure
+    this function exists to remove. The cost is real but bounded: an operator
+    who names a path to PIN which credential is in use can be given the other
+    one. That case is not silent — the chosen channel is in the run's record
+    and on stderr — so it is visible rather than surprising, which is the
+    property that made this the acceptable side of the trade.
+
+    To pin a credential absolutely, unset the variable for the run
+    (``env -u PERSONA_TEST_PROXY``) or pass ``env_var`` naming one that is
+    not set: with one channel genuinely absent, the named file is the only
+    one that can answer.
 
     Adding a second SOURCE is compatible with this module's rule; adding a
     second OUTCOME is not. There is still exactly one way for this function to
