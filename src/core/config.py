@@ -1,4 +1,5 @@
 import os
+from types import ModuleType
 
 try:
     from dotenv import load_dotenv
@@ -48,12 +49,125 @@ def _ensure_home(path: str) -> str:
 PERSONA_HOME = _ensure_home(_home())
 
 
+def _is_already_absolute(val: str, _path: ModuleType = os.path) -> bool:
+    """Is this override already anchored, such that _under_home must return it
+    untouched? `os.path.isabs` alone is NOT enough, on two counts.
+
+    1. On Windows under Python 3.13+, a ROOTED BUT DRIVELESS path ('/custom/x')
+       reports isabs=False, where 3.12 reported True. Sending it to abspath then
+       pins it to whatever drive the process is running from — relocating a path
+       the operator spelled on purpose, and reintroducing exactly the
+       cwd-dependence this function exists to remove. Measured:
+           py3.12  ntpath.isabs('/custom/p.json') -> True
+           py3.13  ntpath.isabs('/custom/p.json') -> False
+       so we state the pre-3.13 semantics explicitly rather than depend on a
+       stdlib predicate that has already shifted once.
+
+    2. That rooted test MUST be gated to Windows path flavours. A backslash is a
+       legal character in a POSIX filename, so '\\custom\\p.json' on Linux is a
+       RELATIVE file whose name merely contains backslashes; treating it as
+       anchored would return it verbatim and leave a cwd-dependent constant —
+       the very defect being fixed. Hence the `sep` check: it is true for ntpath
+       (and for os.path on Windows) and false for posixpath.
+
+    `_path` is injectable so the Windows branch is testable from POSIX — this
+    defect reached CI precisely because it is invisible to a POSIX-only run."""
+    if _path.isabs(val):
+        return True
+    if _path.sep == "\\":  # Windows path flavour: rooted-but-driveless
+        return _path.splitdrive(val)[1][:1] in ("/", "\\")
+    return False
+
+
 def _under_home(name: str, env: str) -> str:
     """Resolve a runtime path: an explicit env override wins; otherwise the
-    name is placed under PERSONA_HOME. Absolute overrides are used as-is."""
+    name is placed under PERSONA_HOME. Every return is ABSOLUTE, with one
+    documented exception (the Windows rooted-driveless caveat below). Whether
+    that absolute value is also STABLE across a chdir depends on where the
+    caller binds it — see "WHAT THIS FUNCTION GUARANTEES, AND TO WHOM" below;
+    do not assume import-time semantics.
+
+    A RELATIVE override is anchored to the current working directory at the
+    moment of the call. It used to be returned verbatim, which made every
+    constant built from it — DATA_DIR, LOG_DIR, ENGINE_DIR — resolve against
+    whatever cwd the process happened to hold at the moment each consumer
+    joined onto it. That is not a hypothetical shape: `.env.example` ships
+    `PERSONA_DATA_DIR=persona_data` (relative) and load_dotenv() above reads it,
+    so an operator who copied the example is running on one. And persona's cwd
+    is not fixed — main.py's
+    _ensure_valid_cwd() exists because a self-update re-exec can strand the
+    process in an unmounted directory and move it to ~ / $HOME / /tmp / /, which
+    would silently re-point "where profiles and logs live" mid-installation.
+    For the eight constants below, anchoring at import (main.py runs
+    _ensure_valid_cwd BEFORE anything imports this module) collapses that to a
+    single, stable answer. For the three call-time consumers it does not — see
+    below.
+
+    An ABSOLUTE override is returned EXACTLY as given — deliberately not passed
+    through abspath/normpath, which would rewrite a trailing slash or an
+    embedded '..' and thereby relocate a path an operator spelled on purpose.
+    This is a normalisation of relative values, not a rewrite of absolute ones.
+    See _is_already_absolute for why that test is not a bare os.path.isabs.
+
+    CAVEAT — stated because a consumer must not drop its OWN anchoring without
+    it. On a Windows path flavour, a ROOTED-BUT-DRIVELESS override
+    ('/custom/data') is returned verbatim, and that value is NOT absolute:
+
+        py3.13  ntpath.isabs('/custom/data')            -> False
+                resolved from cwd 'C:\\repo'      -> C:\\custom\\data
+                resolved from cwd 'D:\\elsewhere' -> D:\\custom\\data
+
+    so it still resolves against the process's current DRIVE. This is not a
+    regression — the pre-normalisation function returned that shape verbatim
+    too, byte for byte — and it is not fixable here: the two guarantees
+    genuinely conflict for this one spelling, and "an absolute override is
+    returned exactly as given" WINS, because rewriting it onto the current
+    drive would relocate a path the operator spelled (that is the defect
+    _is_already_absolute exists to prevent, and it turned Windows CI red once).
+
+    WHAT THIS FUNCTION GUARANTEES, AND TO WHOM. The anchoring above is
+    os.path.abspath AT THE MOMENT THIS IS CALLED, so it reads getcwd() on every
+    call. That makes cwd-invariance a property of WHERE THE RESULT IS BOUND, not
+    a property of this function, and the eleven call sites split in two:
+
+      * The EIGHT module-level constants below — PROFILES_FILE, PROXIES_FILE,
+        CERTS_FILE, CERTS_DIR, BOOKMARKS_FILE, DATA_DIR, LOG_DIR, ENGINE_DIR —
+        are bound ONCE, at import, before any chdir can happen: main.py calls
+        _ensure_valid_cwd() at module scope, and defers its `from
+        src.core.container import Container` import (which transitively pulls
+        in this module) until after that call. For them the value genuinely
+        does not move when the process's cwd moves.
+
+      * THREE consumers call this PER USE, not at import, and therefore get a
+        value that TRACKS THE CWD under a relative override — absolute on every
+        call, but a DIFFERENT absolute path once the process chdirs:
+            core/settings.py        _path()       (used by _load, _save, set)
+            core/single_instance.py _lock_path()  (used by acquire)
+            api/mcp_token.py        _path()       (used by get_or_create_token,
+                                                   read_token)
+        Measured on this branch, relative override, cwd A -> B:
+            PERSONA_SETTINGS_FILE  cwd=A -> /tmp/tmpA/myrel_settings.json
+                                   cwd=B -> /tmp/tmpB/myrel_settings.json
+        single_instance._lock_path's docstring ("RESOLVED AT CALL TIME, NOT AT
+        IMPORT") already documents this correctly, and deliberately (freezing
+        it would break the override contract for anything that sets the env
+        var after this module loads). Read that rather than assuming
+        import-time semantics here.
+
+    So the honest universal — true for all eleven — is only the per-call one:
+    EVERY RETURN IS ABSOLUTE (outside the Windows rooted-driveless caveat
+    above). Invariance is the strictly stronger claim, and it is earned by the
+    eight constants' BINDING, not by this function. A call-time consumer that
+    needs a value stable across a chdir must bind it once itself.
+
+    Do not read any of the above as licence to re-add a cwd join: joining
+    os.getcwd() onto one of these constants is wrong under every shape, and
+    removing those joins is the point of this function. A Windows consumer that
+    needs a drive-anchored value from a rooted-driveless override should say so
+    explicitly (os.path.abspath at that call site), not silently."""
     val = os.getenv(env)
     if val:
-        return val
+        return val if _is_already_absolute(val) else os.path.abspath(val)
     return os.path.join(PERSONA_HOME, name)
 
 

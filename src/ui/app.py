@@ -1604,7 +1604,20 @@ class App:
 
         from ..core.config import DATA_DIR
 
-        return os.path.join(os.getcwd(), DATA_DIR, name)
+        # No getcwd() anchor: config._under_home anchors DATA_DIR at import, so
+        # it does not move when the process's cwd moves (PS-127). The join used
+        # to be load-bearing under a RELATIVE PERSONA_DATA_DIR — the shape
+        # .env.example ships — and inert otherwise, so the call site could not
+        # tell whether it was compensating. It now never is.
+        #
+        # Relying on cwd-INVARIANCE rather than on absoluteness is deliberate:
+        # the latter is not universal. On a Windows path flavour a rooted-but-
+        # driveless override ('/custom/data') comes back verbatim and is not
+        # isabs — see the CAVEAT in _under_home's docstring. Re-adding a getcwd()
+        # join would not help that shape anyway (it would pin it to the current
+        # drive, relocating a path the operator spelled); invariance is the
+        # property this call site actually needs, and it holds under every shape.
+        return os.path.join(DATA_DIR, name)
 
     async def _import_cookies_file(self, profile_name: str) -> str | None:
         from ..services.cookie.store import import_cookies, parse_cookies_json
