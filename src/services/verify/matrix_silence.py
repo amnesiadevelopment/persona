@@ -89,6 +89,12 @@ NEVER_ANSWERED = "never-answered"
 # in full, never so it is alarmed on.
 CARRIED = "carried"
 
+# A checker whose TIER the set never asked often enough to support a claim
+# about it — the operator skipped that tier (``--skip-browser``), so its rows
+# are unobtainable because nothing attempted them. NOT a finding: silence here
+# is a fact about the RUN, not about the checker. See :func:`asked_by_record`.
+NOT_ASKED = "not-asked"
+
 # The minimum set size that can support a claim about "never". See the module
 # header: one record makes the reading unfalsifiable.
 MINIMUM_RECORDS = 2
@@ -123,6 +129,63 @@ def _tiers() -> "dict[str, str]":
     return {c.id: c.tier for c in CHECKERS}
 
 
+def _checker_ids(records: "Iterable[Any]", tiers: "dict[str, str]") -> "set[str]":
+    """Every checker the catalogue knows, plus any that appear in the records.
+
+    The union, not the catalogue alone: a checker present in the records and
+    absent from the catalogue is exactly the case that must not fall silently
+    out of the report.
+    """
+    seen: "set[str]" = set(tiers)
+    for record in records:
+        for row in record.get("readings", []):
+            if isinstance(row, dict):
+                seen.add(str(row.get("checker", "")))
+    seen.discard("")
+    return seen
+
+
+def asked_by_record(records: "Iterable[Any]") -> "dict[str, int]":
+    """Checker id -> how many records actually ASKED it.
+
+    A record names the tiers the operator told it not to read in
+    ``skipped_tiers`` (``matrix.build_record``), and a skipped tier's checkers
+    still occupy their full width in the record as ``unobtainable`` rows — so
+    to :func:`answered_by_record` they are indistinguishable from a checker
+    that was asked and could not answer. **They are not the same fact.** One is
+    a statement about the checker; the other is a statement about the RUN.
+
+    This is the distinction ``evidence.never_asked_rows`` calls "the
+    load-bearing half of PS-110", and the reason it has to be made HERE is that
+    the row flag cannot carry it: ``--skip-browser`` emits its rows through
+    :func:`matrix.readings_for_unread_checker` WITHOUT ``never_asked=True``
+    (``checker_cli``'s skip path), so the only honest key is the record-level
+    ``skipped_tiers`` field.
+
+    Counted PER RECORD rather than as a union across the set, deliberately. A
+    union would let one ``--skip-browser`` record suppress the alarm for a
+    checker that every OTHER record asked and never got an answer from —
+    silencing the gate with the very flag that should only ever narrow it. A
+    per-record count keeps such a checker alarming on the records that did ask.
+
+    A checker missing from the catalogue has no declared tier, so no skip can
+    match it and it always counts as asked. That is the same conservative
+    direction the rest of this module takes: what cannot be classified is
+    reported, never quietly excused.
+    """
+    tiers = _tiers()
+    records = list(records)
+    counts: "dict[str, int]" = {}
+    for record in records:
+        require_record(record)
+        skipped = {str(t) for t in (record.get("skipped_tiers") or [])}
+        for checker_id in _checker_ids([record], tiers):
+            if tiers.get(checker_id) in skipped:
+                continue
+            counts[checker_id] = counts.get(checker_id, 0) + 1
+    return counts
+
+
 def answered_by_record(records: "Iterable[Any]") -> "dict[str, int]":
     """Checker id -> how many records obtained at least ONE reading from it.
 
@@ -147,14 +210,27 @@ def silence_pass(records: "Iterable[Any]") -> "list[dict]":
     """Report every checker that never answered across the whole set.
 
     Returns one entry per SILENT checker, each carrying its ``classification``
-    (:data:`NEVER_ANSWERED` or :data:`CARRIED`), its ``tier``, and the
-    ``records`` the claim ranges over — so a reader is never handed a bare
-    "never" without being told over how many records "never" was measured.
+    (:data:`NEVER_ANSWERED`, :data:`CARRIED` or :data:`NOT_ASKED`), its
+    ``tier``, and the ``records`` the claim ranges over — so a reader is never
+    handed a bare "never" without being told over how many records "never" was
+    measured.
 
     A checker that answered in even one record is not silent, however badly it
     did elsewhere. That is the discriminator the whole report rests on: an
     intermittent checker is a reachability problem, and folding it in here
     would drown the checkers that have genuinely never been read.
+
+    A checker is only ALARMED on if the set actually ASKED it enough times to
+    support the claim — see :func:`asked_by_record`. Silence across records
+    that never attempted the checker is a fact about those runs, and reporting
+    it as "never answered" is the same false alarm as reporting an
+    ``unreadable``-tier checker, arriving through a different door: it puts the
+    run's own deliberate choice in the findings section. Such a checker is
+    reported under :data:`NOT_ASKED` so the set stays accounted for in full.
+
+    The evidence floor applies to the ASKED count, not just to the set size:
+    a checker asked in fewer than :data:`MINIMUM_RECORDS` records cannot
+    support "never answered" for exactly the reason a one-record set cannot.
 
     Refuses a set smaller than :data:`MINIMUM_RECORDS`; see
     :class:`NotEnoughRecords`.
@@ -171,31 +247,39 @@ def silence_pass(records: "Iterable[Any]") -> "list[dict]":
         )
 
     counts = answered_by_record(records)
+    asked = asked_by_record(records)
     tiers = _tiers()
-
-    # Every checker the catalogue knows about, plus any that appear in the
-    # records without being in the catalogue. The union, not the catalogue
-    # alone: a checker present in the records and absent from the catalogue is
-    # exactly the case that must not fall silently out of the report.
-    seen: "set[str]" = set(tiers)
-    for record in records:
-        for row in record.get("readings", []):
-            if isinstance(row, dict):
-                seen.add(str(row.get("checker", "")))
-    seen.discard("")
+    seen = _checker_ids(records, tiers)
 
     entries = []
     for checker_id in sorted(seen):
         if counts.get(checker_id, 0):
             continue
         tier = tiers.get(checker_id)
-        carried = tier == TIER_UNREADABLE
+        asked_in = asked.get(checker_id, 0)
+        if tier == TIER_UNREADABLE:
+            # The catalogue already established this one cannot be read and
+            # wrote the reason down. Checked BEFORE the asked count so a
+            # skipped tier cannot relabel a checker whose silence was never a
+            # finding in the first place.
+            classification = CARRIED
+        elif asked_in < MINIMUM_RECORDS:
+            # The set never asked this checker enough times to say "never".
+            # A fact about the RUNS, not about the checker.
+            classification = NOT_ASKED
+        else:
+            classification = NEVER_ANSWERED
         entries.append(
             {
                 "checker": checker_id,
                 "tier": tier,
-                "classification": CARRIED if carried else NEVER_ANSWERED,
+                "classification": classification,
                 "records": len(records),
+                # The denominator the claim is actually measured over. It is
+                # the ASKED count, not the set size: quoting "0/N" for a
+                # checker that N-2 of those records never attempted would
+                # overstate the evidence behind the alarm.
+                "asked_in": asked_in,
                 "answered_in": 0,
             }
         )
@@ -218,6 +302,17 @@ def alarms(entries: "Iterable[dict]") -> "list[dict]":
 def carried(entries: "Iterable[dict]") -> "list[dict]":
     """The entries that are EXPECTED — catalogue-declared unreadable checkers."""
     return [e for e in entries if e.get("classification") == CARRIED]
+
+
+def not_asked(entries: "Iterable[dict]") -> "list[dict]":
+    """The entries the SET never asked enough times to judge.
+
+    Reported so the silent population is accounted for in full, and kept out of
+    :func:`alarms` so a deliberate ``--skip-browser`` campaign cannot turn this
+    gate into mostly false alarm. Absence of evidence about the RUN is not
+    evidence about the CHECKER.
+    """
+    return [e for e in entries if e.get("classification") == NOT_ASKED]
 
 
 def discover_record_paths(root: str) -> "list[str]":
@@ -273,10 +368,13 @@ def load_record(path: str) -> dict:
 
 
 def format_silence(entries: "list[dict]", *, records: int) -> str:
-    """Render the pass for a human, with the two populations kept APART.
+    """Render the pass for a human, with the populations kept APART.
 
     The sections are the point. A single list of eight checkers is the report
-    this module was written to not produce.
+    this module was written to not produce, and the two non-finding sections
+    exist so that keeping them out of the alarm does not mean hiding them: the
+    silent population is printed in full, sorted into the three different
+    things silence can MEAN.
     """
     lines = [
         f"SILENCE PASS over {records} record(s)",
@@ -290,7 +388,13 @@ def format_silence(entries: "list[dict]", *, records: int) -> str:
         )
         for entry in found:
             tier = entry["tier"] if entry["tier"] is not None else "(not in catalogue)"
-            lines.append(f"  {entry['checker']}   tier={tier}   answered in 0/{records}")
+            # The denominator is the count of records that ASKED, never the
+            # set size. Quoting 0/N for a checker some of those records never
+            # attempted would overstate the evidence the alarm rests on.
+            asked_in = entry.get("asked_in", records)
+            lines.append(
+                f"  {entry['checker']}   tier={tier}   answered in 0/{asked_in} asked"
+            )
         lines.append("")
         lines.append(
             "  These are not click-gated or paywalled: the catalogue declares "
@@ -321,6 +425,26 @@ def format_silence(entries: "list[dict]", *, records: int) -> str:
         )
     else:
         lines.append("CARRIED — none.")
+
+    unasked = not_asked(entries)
+    if unasked:
+        lines.append("")
+        lines.append(
+            f"NOT ASKED (no evidence either way) — {len(unasked)} checker(s) "
+            f"the set never attempted enough times to judge:"
+        )
+        for entry in unasked:
+            tier = entry["tier"] if entry["tier"] is not None else "(not in catalogue)"
+            lines.append(
+                f"  {entry['checker']}   tier={tier}   "
+                f"asked in {entry.get('asked_in', 0)}/{records}"
+            )
+        lines.append(
+            "  Their tier was skipped (`--skip-browser` and friends), so these "
+            "rows are unobtainable because nothing ATTEMPTED them. That is a "
+            "fact about these runs, not about the checkers — putting it in "
+            "FINDINGS would report the operator's own choice as a defect."
+        )
     return "\n".join(lines)
 
 
@@ -328,12 +452,15 @@ __all__ = [
     "CARRIED",
     "MINIMUM_RECORDS",
     "NEVER_ANSWERED",
+    "NOT_ASKED",
     "NotARecord",
     "NotEnoughRecords",
     "RecordUnreadable",
     "alarms",
     "answered_by_record",
+    "asked_by_record",
     "carried",
+    "not_asked",
     "discover_record_paths",
     "format_silence",
     "load_record",

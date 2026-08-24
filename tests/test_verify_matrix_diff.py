@@ -1343,17 +1343,24 @@ def test_compare_needs_no_exit_and_no_network(record, tmp_path, monkeypatch):
 # An AC keyed on it would already be a false RED pointing at nothing.
 # ---------------------------------------------------------------------------
 
+from src.services.verify.checkers import BROWSER_CHECKERS  # noqa: E402
+from src.services.verify.matrix import (  # noqa: E402
+    readings_for_unread_checker,
+)
 from src.services.verify.matrix_silence import (  # noqa: E402
     CARRIED,
     MINIMUM_RECORDS,
     NEVER_ANSWERED,
+    NOT_ASKED,
     NotEnoughRecords,
     alarms,
     answered_by_record,
+    asked_by_record,
     carried,
     discover_record_paths,
     format_silence,
     load_record,
+    not_asked,
     silence_pass,
 )
 
@@ -1624,3 +1631,147 @@ def test_absent_counts_as_evidence_so_an_absent_only_checker_is_not_silent(
         "answered: `absent` means it replied and did not report the item"
     )
     assert "iphey.com" not in reported
+
+
+# ---------------------------------------------------------------------------
+# The skipped-tier case. THE COMMITTED CORPUS CANNOT EXPRESS IT: all 22 records
+# carry `skipped_tiers == []`, so a real record set cannot tell a correct
+# implementation from one that alarms on a tier the run never asked. Built as a
+# mutation for the same reason `test_absent_counts_as_evidence...` is — and
+# built through the REAL production path (`readings_for_unread_checker` over
+# `BROWSER_CHECKERS`, exactly as `checker_cli`'s `--skip-browser` calls it)
+# rather than by hand-rolling rows, so the test cannot pass against a shape the
+# product never emits.
+# ---------------------------------------------------------------------------
+
+
+def skip_browser_record(record: dict) -> dict:
+    """A record from a `--skip-browser` run, built the way the CLI builds one.
+
+    The skip path appends "browser" to `skipped_tiers` and emits a full width
+    of UNOBTAINABLE rows for every browser checker, so the matrix keeps its
+    width. Crucially it does NOT pass `never_asked=True` — which is why the
+    row flag cannot carry this distinction and the record-level `skipped_tiers`
+    field is the only honest key.
+    """
+    skipped = mutate(record)
+    browser_ids = {c.id for c in BROWSER_CHECKERS}
+    skipped["readings"] = [
+        r for r in skipped["readings"] if r["checker"] not in browser_ids
+    ]
+    for checker in BROWSER_CHECKERS:
+        skipped["readings"].extend(
+            reading.as_record()
+            for reading in readings_for_unread_checker(
+                checker, "tier skipped by --skip-browser"
+            )
+        )
+    skipped["skipped_tiers"] = ["browser"]
+    return skipped
+
+
+def test_a_skipped_tier_is_not_reported_as_never_answered(record):
+    """A tier the run never ASKED is not evidence that its checkers are silent.
+
+    THE REGRESSION THIS PINS: deciding silence from the row state alone
+    collapses "the run never asked" into "the checker was asked and could not
+    answer" — the exact distinction `evidence.never_asked_rows` calls the
+    load-bearing half of PS-110. It is reachable from a shipped, documented
+    flag, not a hypothetical: `--skip-browser` emits a full width of
+    unobtainable browser rows, and every browser checker then reads as
+    NEVER ANSWERED.
+
+    Measured on the pre-fix implementation: 7 of 8 alarms were false, including
+    `creepjs` and `pixelscan.net` — the two checkers AC3 exists to keep OUT of
+    the report — and `engine-exit`. A gate that is 71% false alarm on the first
+    skip campaign teaches the reader to ignore it, which is precisely the
+    outcome AC2 exists to prevent, arriving through a door AC2 did not check.
+    """
+    records = [skip_browser_record(record), skip_browser_record(record)]
+
+    entries = silence_pass(records)
+    alarmed = {e["checker"] for e in alarms(entries)}
+
+    # The AC3 discriminators must not be alarmed on for lack of asking.
+    for checker_id in ("creepjs", "pixelscan.net", "bot.sannysoft.com"):
+        assert checker_id not in alarmed, (
+            f"{checker_id} was never ASKED in these records (the browser tier "
+            "was skipped), so its silence is a fact about the runs, not a "
+            "finding about the checker"
+        )
+
+    # Not merely dropped — accounted for, under a heading of their own.
+    assert "creepjs" in {e["checker"] for e in not_asked(entries)}
+
+
+def test_a_skipped_tier_does_not_suppress_a_genuine_finding(record):
+    """The guard must NARROW the alarm, never switch it off.
+
+    `tools.scrapfly.io` is `tier=json`, and a `--skip-browser` run still asks
+    the JSON tier — so it stays a finding. This is the other half of the fix:
+    an implementation that suppressed every silent checker whenever any tier
+    was skipped would pass the test above and report nothing at all.
+    """
+    records = [skip_browser_record(record), skip_browser_record(record)]
+
+    alarmed = {e["checker"] for e in alarms(silence_pass(records))}
+
+    assert "tools.scrapfly.io" in alarmed, (
+        "the JSON tier WAS asked in these records and this checker never "
+        "answered, so suppressing it would be a false GREEN"
+    )
+
+
+def test_a_tier_skipped_in_only_some_records_still_alarms(record):
+    """One skip record must not silence a checker the OTHER records asked.
+
+    The reason the asked-count is per-record rather than a union across the
+    set. A union would let a single `--skip-browser` record suppress the alarm
+    for a checker every other record asked and never got an answer from —
+    switching the gate off with the very flag that should only ever narrow it.
+
+    `bot-detector.rebrowser.net` is browser-tier and genuinely silent in the
+    committed corpus, so with enough records that DID ask it, it must still be
+    reported however many skipped records sit alongside.
+    """
+    records = [
+        skip_browser_record(record),
+        mutate(record),
+        mutate(record),
+    ]
+
+    entries = silence_pass(records)
+    alarmed = {e["checker"] for e in alarms(entries)}
+
+    assert "bot-detector.rebrowser.net" in alarmed
+    # And the claim is quoted against the records that actually asked, not
+    # against the set size: 2 of these 3 records asked the browser tier.
+    entry = next(
+        e for e in entries if e["checker"] == "bot-detector.rebrowser.net"
+    )
+    assert entry["asked_in"] == 2
+    assert entry["records"] == 3
+
+
+def test_cli_exits_0_when_every_silent_checker_was_merely_unasked(
+    record, tmp_path, capsys
+):
+    """End to end: a skip campaign does not turn the gate red on its own.
+
+    The browser tier is skipped and the JSON tier is made to read clean, so
+    nothing was asked-and-silent. Exit 0 — and the unasked checkers are still
+    PRINTED, because keeping them out of the alarm must not mean hiding them.
+    """
+    clean = mutate(record)
+    for reading in clean["readings"]:
+        reading["state"] = "read"
+    skipped = skip_browser_record(clean)
+
+    a = write_record(tmp_path, "a.json", skipped)
+    b = write_record(tmp_path, "b.json", mutate(skipped))
+
+    assert main(["silence", a, b]) == 0
+
+    out = capsys.readouterr().out
+    assert "NOT ASKED" in out
+    assert "creepjs" in out
