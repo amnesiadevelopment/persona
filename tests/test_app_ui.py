@@ -670,3 +670,51 @@ def test_startup_notice_patch_version_shows_nearest_older_notes(monkeypatch):
     assert version == "2.99.0"
     assert len(notes) > 0
     assert calls["recorded"] == "2.99.0"
+
+
+# --- _profile_dir (PS-127) ---
+#
+# This call site used to be `os.path.join(os.getcwd(), DATA_DIR, name)`. That
+# join was load-bearing under a RELATIVE PERSONA_DATA_DIR — the shape
+# .env.example ships — and inert otherwise, so the call site could not tell
+# whether it was compensating for _under_home returning an override verbatim.
+# _under_home now guarantees DATA_DIR is absolute, so the join is gone. These
+# assert the VALUE is unchanged, which is the claim that matters; reasoning that
+# the join "was redundant" is exactly the step PS-125 got wrong.
+
+def _profile_dir_with_data_dir(monkeypatch, data_dir, name="acme"):
+    """Call App._profile_dir with DATA_DIR patched. _profile_dir imports the
+    constant inside the function body, so the patch is read at call time."""
+    import src.core.config as cfg
+
+    monkeypatch.setattr(cfg, "DATA_DIR", data_dir)
+    app = App.__new__(App)
+    return App._profile_dir(app, name)
+
+
+def test_profile_dir_joins_absolute_data_dir(monkeypatch, tmp_path):
+    data_dir = str(tmp_path / "persona_data")
+    assert _profile_dir_with_data_dir(monkeypatch, data_dir) == str(
+        tmp_path / "persona_data" / "acme"
+    )
+
+
+def test_profile_dir_is_absolute_and_ignores_cwd(monkeypatch, tmp_path):
+    """The old form injected getcwd(); the new one must not, so the result is
+    stable when the working directory moves (main.py's _ensure_valid_cwd can
+    relocate the process mid-run after a self-update re-exec)."""
+    data_dir = str(tmp_path / "persona_data")
+    first = tmp_path / "first"
+    first.mkdir()
+    monkeypatch.chdir(first)
+    before = _profile_dir_with_data_dir(monkeypatch, data_dir)
+
+    second = tmp_path / "second"
+    second.mkdir()
+    monkeypatch.chdir(second)
+    after = _profile_dir_with_data_dir(monkeypatch, data_dir)
+
+    import os
+
+    assert os.path.isabs(before)
+    assert before == after == str(tmp_path / "persona_data" / "acme")

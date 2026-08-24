@@ -1604,7 +1604,12 @@ class App:
 
         from ..core.config import DATA_DIR
 
-        return os.path.join(os.getcwd(), DATA_DIR, name)
+        # No getcwd() anchor: config._under_home guarantees DATA_DIR is absolute
+        # (PS-127). The join used to be load-bearing under a RELATIVE
+        # PERSONA_DATA_DIR — the shape .env.example ships — and inert otherwise,
+        # so the call site could not tell whether it was compensating. It now
+        # never is: joining cwd onto an absolute DATA_DIR was already a no-op.
+        return os.path.join(DATA_DIR, name)
 
     async def _import_cookies_file(self, profile_name: str) -> str | None:
         from ..services.cookie.store import import_cookies, parse_cookies_json
