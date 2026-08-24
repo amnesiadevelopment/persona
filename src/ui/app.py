@@ -2489,7 +2489,7 @@ class App:
                 url, size=self._app_update_size, tag=self._app_update_tag
             )
             if ready:
-                self._update_staged = ready
+                self._set_update_staged(ready)
                 self._app_update_status = "ready"
                 self._log(f"Update {tag} ready — restart to apply.")
                 self._refresh_sidebar()
@@ -2528,7 +2528,7 @@ class App:
                         pass
                     staged = ""
                 if staged:
-                    self._update_staged = staged
+                    self._set_update_staged(staged)
                     self._app_update_status = "ready"
                     self._log("Update downloaded.")
                     self._refresh_sidebar()
@@ -2638,6 +2638,35 @@ class App:
         self._app_update_total = total
         self._refresh_sidebar()
 
+    def _set_update_staged(self, staged: str) -> None:
+        """The single writer for _update_staged, so a rollback status line can
+        never outlive the state it describes.
+
+        WHY THIS IS A SETTER AND NOT A GATE AT THE RENDER SITE. The defect is
+        the REVERSE ORDER, which is the canonical sequence for this feature:
+        you revert precisely BECAUSE a release was bad, and upstream then ships
+        the fix. The revert leaves "restart to run the previous version" on the
+        panel; the poll then stages the fix and adds "[ restart to update ]"
+        beside it, telling the operator to restart into two opposite versions
+        with no way to tell which wins.
+
+        Gating the status render on `not self._update_staged` would suppress
+        that pair, and would ALSO suppress "can't go back while an update is
+        pending" — which must render EXACTLY when an update is pending, since
+        it is the refusal explaining a click the guard just swallowed. That
+        gate would silently reintroduce the dead-button defect one gesture
+        over. So the fix is on the WRITE, not the read: the moment the staged
+        pointer changes, whatever the operator was last told about a rollback
+        stopped being true, because every one of those messages is about an
+        action they can no longer coherently take.
+
+        Clearing on the transition in BOTH directions is deliberate and covers
+        the sticky refusal too: `_apply_update` un-stages through here when a
+        verify-refusal deleted the file, which is what retires "can't go back
+        while an update is pending" once nothing is pending any more."""
+        self._update_staged = staged
+        self._app_rollback_status = ""
+
     def _apply_update(self, staged: str) -> None:
         """Launch the staged installer/AppImage. apply_and_restart doesn't return
         on success (the process is replaced), so reaching here means it failed.
@@ -2662,7 +2691,7 @@ class App:
             self.bl.shutdown_all()
         app_update.apply_and_restart(staged, log=self._log)
         if not staged or not os.path.isfile(staged):
-            self._update_staged = ""
+            self._set_update_staged("")
             self._app_update_status = ""
         else:
             self._app_update_status = "ready"
@@ -2692,7 +2721,7 @@ class App:
                         tag=self._app_update_tag,
                     )
                     if staged:
-                        self._update_staged = staged
+                        self._set_update_staged(staged)
                         self._log("Update downloaded — restarting...")
                         self._apply_update(staged)
                     else:

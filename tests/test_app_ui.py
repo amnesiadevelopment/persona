@@ -47,6 +47,15 @@ def make_app(page):
     # override them; these are only the idle defaults.
     app._update_in_progress = False
     app._update_staged = ""
+    # Same reasoning, for the update-discovery fields __init__ sets at
+    # app.py:142-147. A test that drives the REAL staging path
+    # (_on_update_found) reads all of these, and without them the stub
+    # raises AttributeError on code that works fine in the real app.
+    app._app_latest = ""
+    app._app_update_url = ""
+    app._app_update_size = 0
+    app._app_update_tag = ""
+    app._app_update_status = ""
     return app
 
 
@@ -864,18 +873,8 @@ def test_app_rollback_row_is_offered_when_a_bundle_is_retained(monkeypatch):
 # is to build the panel and read the text out of it.
 
 
-def _panel_texts(app, monkeypatch):
-    """Build the version panel and collect every string it renders."""
-    from src.ui import app as app_mod
-
-    monkeypatch.setattr(
-        app_mod.app_settings, "is_auto_update_enabled", lambda: False
-    )
-    app._app_latest = ""
-    app._app_update_status = ""
-    app._update_staged = ""
-    panel = app._build_version_panel()
-
+def _walk_texts(panel):
+    """Collect every string the built panel renders."""
     found: list[str] = []
 
     def walk(c):
@@ -891,6 +890,36 @@ def _panel_texts(app, monkeypatch):
 
     walk(panel)
     return found
+
+
+def _panel_texts_keeping_staged(app, monkeypatch):
+    """Build the version panel WITHOUT disturbing the update state.
+
+    _panel_texts below clears _update_staged to get a quiet panel, which is
+    right for the refusal tests but would erase the very state the
+    contradiction tests are about — a staged update is half of the pair being
+    asserted on. So this variant leaves _update_staged and _app_update_status
+    exactly as the code under test left them."""
+    from src.ui import app as app_mod
+
+    monkeypatch.setattr(
+        app_mod.app_settings, "is_auto_update_enabled", lambda: False
+    )
+    app._app_latest = ""
+    return _walk_texts(app._build_version_panel())
+
+
+def _panel_texts(app, monkeypatch):
+    """Build the version panel and collect every string it renders."""
+    from src.ui import app as app_mod
+
+    monkeypatch.setattr(
+        app_mod.app_settings, "is_auto_update_enabled", lambda: False
+    )
+    app._app_latest = ""
+    app._app_update_status = ""
+    app._update_staged = ""
+    return _walk_texts(app._build_version_panel())
 
 
 def test_a_refused_app_revert_is_rendered_in_the_version_panel(monkeypatch):
@@ -1078,45 +1107,86 @@ def test_a_refused_click_says_why_rather_than_swallowing_it(monkeypatch):
     )
 
 
+def _stage_an_update_for_real(app, monkeypatch, staged="/tmp/persona-3.0.0.dmg"):
+    """Drive the REAL staging path (_on_update_found -> find_ready_staged),
+    rather than assigning _update_staged by hand.
+
+    This matters for what the tests below can prove. The clearing rule lives on
+    the WRITE to _update_staged, so a test that sets the attribute directly
+    bypasses the very code under test and then reports a contradiction that no
+    real sequence can produce. Going through the handler means the panel state
+    being asserted on is one the running app can actually reach."""
+    from src.ui import app as app_mod
+
+    monkeypatch.setattr(app_mod.app_update, "can_self_update", lambda: True)
+    monkeypatch.setattr(
+        app_mod.app_update, "find_ready_staged", lambda *a, **k: staged
+    )
+    # don't pop a dialog / install anything in a unit test
+    monkeypatch.setattr(app_mod.App, "_when_update_ready", lambda s, t, st: None)
+    app._on_update_found("v3.0.0", "http://x")
+
+
 def test_the_panel_never_shows_both_restart_instructions_at_once(monkeypatch):
     # Problem (b), asserted on the RENDERED PANEL rather than on the flags,
     # because the defect was that the operator reads two opposite instructions
-    # in one box. _update_staged survives a revert untouched, so this is the
-    # state that actually occurred: a successful revert with an update still
-    # staged rendered "[ restart to update ]" and "restart to run the previous
-    # version" together, with no way to tell which wins.
+    # in one box.
+    #
+    # THE ORDER HERE IS THE POINT, and it is the reverse of the one first
+    # tested. The canonical sequence for this feature is: you revert BECAUSE a
+    # release was bad, and upstream THEN ships the fix. So the revert lands
+    # first and the staged update arrives second — and the guard, which only
+    # refuses a revert while an update is already pending, does nothing about
+    # this direction. Both steps run through their real entry points for that
+    # reason; hand-setting either field would assert on a state the app cannot
+    # actually reach.
+    app = _rollback_app(
+        monkeypatch, went="/Applications/p.app", retained="/Applications/p.app.bak"
+    )
+    app._update_in_progress = False
+    app._update_staged = ""
+
+    app._on_app_rollback()                      # step 1: the revert succeeds
+    assert app._app_rollback_status == "restart to run the previous version"
+
+    _stage_an_update_for_real(app, monkeypatch)  # step 2: upstream ships the fix
+
+    found = _panel_texts_keeping_staged(app, monkeypatch)
+
+    # the staged update's own instruction is the one that stands...
+    assert "[ restart to update ]" in found, found
+    # ...and the gesture that would contradict it is not offered beside it
+    assert "go back to the previous version" not in found, found
+    # ...NOR is the STATUS TEXT that contradicts it. THIS is the assertion the
+    # test is named for, and the row label above is not: the row is a GESTURE,
+    # and the guard already removes it. The string that actually tells the
+    # operator to restart into the OTHER version is this one. Asserting only on
+    # the label passes over a panel still carrying the contradiction — it goes
+    # red for the row's presence, never for the contradiction, so it cannot
+    # tell a fixed panel from a broken one.
+    assert "restart to run the previous version" not in found, found
+
+
+def test_a_refusal_does_not_outlive_the_update_that_caused_it(monkeypatch):
+    # The other half of the same stickiness: "can't go back while an update is
+    # pending" is TRUE when written and false as soon as nothing is pending,
+    # but nothing used to retire it. Here the pending update goes away through
+    # the real un-stage path (_apply_update finding the staged file gone,
+    # app.py:2693-2695), and the stale complaint must not survive it.
     app = _rollback_app(
         monkeypatch, went="/Applications/p.app", retained="/Applications/p.app.bak"
     )
     app._update_in_progress = False
     app._update_staged = "/tmp/persona-3.0.0.dmg"
-    app._app_rollback_status = "restart to run the previous version"
+
+    app._on_app_rollback()
+    assert app._app_rollback_status == "can't go back while an update is pending"
 
     from src.ui import app as app_mod
 
-    monkeypatch.setattr(
-        app_mod.app_settings, "is_auto_update_enabled", lambda: False
-    )
-    app._app_latest = ""
-    app._app_update_status = ""
-    panel = app._build_version_panel()
+    monkeypatch.setattr(app_mod.app_update, "apply_and_restart", lambda *a, **k: None)
+    app.bl = SimpleNamespace(shutdown_all=lambda: None)
+    app._apply_update("/tmp/persona-3.0.0.dmg")   # file never existed -> un-stages
 
-    found: list[str] = []
-
-    def walk(c):
-        v = getattr(c, "value", None)
-        if isinstance(v, str):
-            found.append(v)
-        for attr in ("content", "controls"):
-            child = getattr(c, attr, None)
-            if child is None:
-                continue
-            for k in (child if isinstance(child, list) else [child]):
-                walk(k)
-
-    walk(panel)
-
-    # the staged update's own instruction is the one that stands...
-    assert "[ restart to update ]" in found
-    # ...and the gesture that would contradict it is not offered beside it
-    assert "go back to the previous version" not in found, found
+    assert app._update_staged == ""
+    assert app._app_rollback_status == "", app._app_rollback_status
