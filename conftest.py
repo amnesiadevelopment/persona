@@ -46,6 +46,39 @@ from dataclasses import dataclass, field
 
 import pytest
 
+# PS-140's fallback bound. Imported DEFENSIVELY, and the reason is not
+# hypothetical: tests/test_skip_visibility.py copies THIS FILE into a throwaway
+# sandbox to exercise its hooks for real, and in that sandbox there is no
+# `tests` package to import from. A hard import here took 19 of those tests
+# down with a ModuleNotFoundError raised before pytest could even start.
+#
+# So the import may fail — but it may NOT fail SILENTLY. A safety net that
+# quietly evaporates when moved is the exact defect this ticket is about, one
+# level up: `timeout = 120` also "worked" right up until the environment
+# changed underneath it, and said nothing. `_WATCHDOG_IMPORT_ERROR` carries the
+# reason to pytest_report_header, so every run states which of the two it got.
+try:
+    from tests.suite_watchdog import (
+        SuiteWatchdog,
+        configured_timeout_s,
+        marker_timeout_s,
+    )
+    from tests.suite_watchdog import (
+        TIMEOUT_ENV_VAR as _WATCHDOG_ENV_VAR,
+    )
+    from tests.suite_watchdog import (
+        TIMEOUT_EXIT_CODE as _WATCHDOG_EXIT_CODE,
+    )
+
+    _WATCHDOG_IMPORT_ERROR: str | None = None
+except ImportError as exc:  # pragma: no cover - exercised by the sandbox copy
+    SuiteWatchdog = None  # type: ignore[assignment,misc]
+    configured_timeout_s = None  # type: ignore[assignment]
+    marker_timeout_s = None  # type: ignore[assignment]
+    _WATCHDOG_ENV_VAR = "PERSONA_SUITE_TIMEOUT"
+    _WATCHDOG_EXIT_CODE = 124
+    _WATCHDOG_IMPORT_ERROR = str(exc)
+
 #: Environment variable an operator uses to declare what this machine supports.
 #: Comma- or space-separated capability names from ``CAPABILITIES`` below.
 REQUIRE_ENV_VAR = "PERSONA_REQUIRED_CAPABILITIES"
@@ -372,25 +405,216 @@ def pytest_report_header(config: pytest.Config) -> list[str]:
     discovered by a hang.
 
     This is a STATEMENT, not a gate — it changes no outcome and fails nothing.
-    It does not need to gate anything, because the UI-driver tests no longer
-    depend on the plugin at all: ``tests/ui_driver/watchdog.py`` bounds each
-    driver operation itself and reaps the children, which is what makes the
-    guarantee hold in both environments instead of only one.
+
+    PS-140 CHANGED WHAT THE SECOND LINE CAN HONESTLY SAY. It used to end "a
+    blocking test will hang this run rather than fail it", which was true when
+    written and is now false: ``tests/suite_watchdog.py`` bounds every item in
+    exactly this case. Leaving the old sentence would be the defect this
+    function exists to remove, pointed the other way — a header describing a
+    hazard the run no longer has is still a header that stops the next person
+    diagnosing. So the INERT line now says what the fallback IS and what it
+    costs, which is the part a reader has to act on: the process ends at the
+    first hang instead of failing one test and continuing.
+
+    PS-140 ROUND 2 — THIS FUNCTION NO LONGER DECIDES ANYTHING; IT REPORTS.
+    The first cut re-derived its verdict from the environment, in parallel with
+    :func:`_start_suite_watchdog` deriving the same verdict from the same
+    inputs. Two derivations of one fact drift, and they did: with
+    ``PERSONA_SUITE_TIMEOUT=0`` the watchdog correctly declined to arm while
+    this header went on printing ``FALLBACK BOUND ACTIVE`` and the flat
+    assertion "a blocking test cannot hang this run" — false in the one state
+    where a reader most needs it to be true. That is strictly worse than the
+    hazard-describing header above: an outdated warning merely nags, whereas
+    this one REASSURES. It is also the original defect wearing a new coat —
+    ``timeout = 120`` likewise "worked" until its environment changed and said
+    nothing.
+
+    So the single source of truth is the watchdog OBJECT: is one armed on this
+    config, and at what bound. A header that reads the arming outcome cannot
+    disagree with the arming, because there is no longer a second opinion to
+    disagree with — and every new reason to decline arming inherits an honest
+    header for free instead of needing one remembered here.
     """
     if _timeout_bound_active(config):
         return [
             f"per-test timeout: ACTIVE (pytest-timeout, "
             f"{_TIMEOUT_INI_KEY}={_configured_timeout(config)}s)"
         ]
+
+    watchdog = _watchdog(config)
+    if watchdog is not None:
+        # Bound reported from the ARMED watchdog, not re-read from the ini: this
+        # is the number that will actually fire, including a PERSONA_SUITE_TIMEOUT
+        # override.
+        return [
+            "per-test timeout: INERT — pytest-timeout is not active in this run, "
+            f"so the `{_TIMEOUT_INI_KEY}` setting in pyproject.toml and every "
+            "`@pytest.mark.timeout(...)` in this suite are being IGNORED. "
+            f"FALLBACK BOUND ACTIVE: tests/suite_watchdog.py bounds each item at "
+            f"{watchdog.default_timeout_s:.0f}s without the plugin, so a blocking "
+            f"test cannot hang this run — but it can only END THE PROCESS (exit "
+            f"{_WATCHDOG_EXIT_CODE}, dumping the stuck frame), not fail one test "
+            "and carry on. Install the plugin for per-test failures: pip install "
+            f"-r requirements-dev.txt. Override or disable with "
+            f"{_WATCHDOG_ENV_VAR}=<seconds|0>.",
+        ]
+
+    # NEITHER bound is in force. This is the genuinely unbounded run, and it is
+    # the one state that must never be reported as though something were still
+    # watching — saying so is the entire lesson of this ticket. WHY it is
+    # unbounded comes from the arming path, which is the only thing that knows.
     return [
-        "per-test timeout: INERT — pytest-timeout is not active in this run, "
-        f"so the `{_TIMEOUT_INI_KEY}` setting in pyproject.toml and every "
-        "`@pytest.mark.timeout(...)` in this suite are being IGNORED. A "
-        "blocking test will hang this run rather than fail it. Install it "
-        "with: pip install -r requirements-dev.txt (or drop `-p no:timeout`). "
-        "UI-driver tests bound themselves regardless — see "
-        "tests/ui_driver/watchdog.py.",
+        "per-test timeout: NONE — pytest-timeout is not active in this run "
+        f"AND the fallback bound is not armed ({_bound_absent_reason(config)}). "
+        "A blocking test WILL hang this run indefinitely, with no bound of any "
+        "kind and no diagnostic when it does.",
     ]
+
+
+# ---------------------------------------------------------------------------
+# PS-140: the fallback per-test bound
+# ---------------------------------------------------------------------------
+#
+# PS-104 made the missing plugin VISIBLE (the header above). PS-140 measured
+# what visibility alone was worth: a worker watched a wedged suite for ninety
+# minutes in a container where that header had already said INERT, and the
+# platform reclaimed the ticket underneath them as inactive. A notice is not a
+# bound, and a second notice would be read exactly as well as the first one was.
+#
+# So the run is bounded whether or not the plugin is there. The mechanism is
+# PS-104's — a plain thread, no plugin — widened from the UI-driver family to
+# every item, which is the scope gap PS-140 names. See tests/suite_watchdog.py
+# for why it must terminate the process rather than fail the test politely.
+
+
+#: ``pytest_runtest_logstart`` receives a nodeid, not an item, and the per-test
+#: ``@pytest.mark.timeout(N)`` lives on the item — so the mapping is recorded at
+#: collection. Without it the two driven modules' 600s and 900s declarations
+#: would be invisible here and they would be killed at the 120s default.
+_ITEM_BY_NODEID: dict[str, pytest.Item] = {}
+
+#: The logstart/logfinish hooks are not passed the config either. One slot, set
+#: at configure and cleared at unconfigure.
+_ACTIVE_CONFIG: list[pytest.Config | None] = [None]
+
+
+def _watchdog(config: pytest.Config) -> SuiteWatchdog | None:
+    return getattr(config, "_persona_suite_watchdog", None)
+
+
+def _bound_absent_reason(config: pytest.Config) -> str:
+    """Why no fallback is armed, for a header that must not guess.
+
+    PS-140 round 2. Every ``return`` in :func:`_start_suite_watchdog` that
+    declines to arm is a state a reader can land in, and the header's job is to
+    name which one rather than to print a single vague sentence over all of
+    them — "not armed" tells you nothing you can act on, and the three causes
+    have three different remedies (fix the import, unset the override, nothing
+    at all). Ordered to match the checks in ``_start_suite_watchdog`` so the two
+    read as one thing.
+
+    The final branch is deliberately not phrased as a cause. If a future
+    ``return`` is added there without a matching clause here, the honest output
+    is "no reason was recorded" — an admission that this function does not know,
+    which sends the reader to the code. Inventing a plausible-sounding cause
+    would be the reassuring-header defect a third time.
+    """
+    if _WATCHDOG_IMPORT_ERROR is not None:
+        return (
+            f"the fallback module failed to load: {_WATCHDOG_IMPORT_ERROR}. "
+            f"Install the plugin instead with: pip install -r requirements-dev.txt"
+        )
+    if configured_timeout_s is not None and configured_timeout_s() <= 0:
+        # WHICH of the two knobs zeroed it, named exactly. "Disabled" alone
+        # sends a reader to unset an environment variable that may not be set,
+        # while the real 0 sits in pyproject.toml — so the source is read rather
+        # than assumed to be the more common one.
+        override = os.environ.get(_WATCHDOG_ENV_VAR)
+        if override is not None:
+            return (
+                f"the fallback is explicitly DISABLED by {_WATCHDOG_ENV_VAR}="
+                f"{override}. Unset it, or set it to a number of seconds, to "
+                f"bound this run"
+            )
+        return (
+            f"the fallback is explicitly DISABLED by `{_TIMEOUT_INI_KEY} = 0` in "
+            f"pyproject.toml. Set it to a number of seconds, or set "
+            f"{_WATCHDOG_ENV_VAR}=<seconds>, to bound this run"
+        )
+    return "no reason was recorded — see _start_suite_watchdog in conftest.py"
+
+
+def _start_suite_watchdog(config: pytest.Config) -> None:
+    """Arm the fallback bound, but ONLY where nothing else is bounding the run.
+
+    Deliberately keyed on the SAME question the header asks, so the header and
+    the behaviour cannot disagree: if pytest-timeout is active it already bounds
+    every test, and it does so better than this can — it fails the one test and
+    lets the run continue, where this can only end the process. Running both
+    would mean the weaker bound sometimes fires first and destroys a run the
+    plugin would have merely reddened. Deferring is not politeness; it keeps CI's
+    behaviour exactly as it is today.
+
+    Workers with ``-p no:timeout`` get the fallback, which is correct: that run
+    is genuinely unbounded and is the environment PS-140 is about.
+    """
+    if _timeout_bound_active(config):
+        return
+    # The fallback module itself failed to import (see the guarded import at the
+    # top of this file). Nothing to arm; pytest_report_header states it loudly
+    # rather than letting the run look bounded.
+    if SuiteWatchdog is None or configured_timeout_s is None:
+        return
+
+    watchdog = SuiteWatchdog(
+        default_timeout_s=configured_timeout_s(), config=config
+    )
+    if watchdog.default_timeout_s <= 0:
+        return  # explicitly disabled; see SuiteWatchdog.arm
+    config._persona_suite_watchdog = watchdog  # type: ignore[attr-defined]
+    watchdog.start()
+    # Collection is bounded too. An import that never returns is the same
+    # defect arriving earlier, and "the suite cannot hang" is not true if
+    # collection can — the wedge PS-140 saw was at 74%, but nothing makes
+    # collection immune.
+    watchdog.arm("collection (importing test modules)")
+
+
+def pytest_collection_finish(session: pytest.Session) -> None:
+    watchdog = _watchdog(session.config)
+    if watchdog is not None:
+        watchdog.disarm()
+
+
+def pytest_runtest_logstart(nodeid: str, location) -> None:  # noqa: ARG001
+    # Armed per ITEM rather than per phase, so setup and teardown are bounded
+    # too: a fixture that never returns wedges the run exactly as thoroughly as
+    # a test body that never returns.
+    config = _ACTIVE_CONFIG[0]
+    if config is None:
+        return
+    watchdog = _watchdog(config)
+    if watchdog is None:
+        return
+    item = _ITEM_BY_NODEID.get(nodeid)
+    watchdog.arm(nodeid, marker_timeout_s(item) if item is not None else None)
+
+
+def pytest_runtest_logfinish(nodeid: str, location) -> None:  # noqa: ARG001
+    config = _ACTIVE_CONFIG[0]
+    if config is None:
+        return
+    watchdog = _watchdog(config)
+    if watchdog is not None:
+        watchdog.disarm()
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    watchdog = _watchdog(config)
+    if watchdog is not None:
+        watchdog.stop()
+    _ACTIVE_CONFIG[0] = None
+    _ITEM_BY_NODEID.clear()
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -410,6 +634,8 @@ def pytest_configure(config: pytest.Config) -> None:
         "a copied number goes stale when the suite changes. Selected and "
         "deselected as a group with `-m ui_driver`.",
     )
+
+    _start_suite_watchdog(config)
 
     requested = _requested_capabilities(config)
     unknown = [n for n in requested if n not in CAPABILITIES]
@@ -468,6 +694,15 @@ def pytest_collection_modifyitems(
     Validated at collection so the error names the offending tests and arrives
     before any of them runs, rather than at the end of a long suite.
     """
+    # PS-140: record the nodeid -> item mapping the watchdog needs. The
+    # logstart hook is handed a nodeid and nothing else, but the per-test
+    # `@pytest.mark.timeout(N)` lives on the ITEM — so without this the two
+    # driven modules' 600s/900s declarations would be invisible to the bound
+    # and those healthy long tests would be killed at the 120s default.
+    if _watchdog(config) is not None:
+        _ACTIVE_CONFIG[0] = config
+        _ITEM_BY_NODEID.update({item.nodeid: item for item in items})
+
     offenders: dict[str, list[str]] = {}
     for item in items:
         for name in sorted(_declared_marker_capabilities(item)):
