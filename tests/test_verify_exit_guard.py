@@ -48,6 +48,36 @@ from src.services.verify.socks_fetch import (
 
 CRED = "socks5://alice:s3cr3t@gate.example.com:10000"
 
+# A DIFFERENT credential, for the tests about two channels disagreeing. Its
+# host differs visibly from CRED's so a mix-up is legible in a failure message.
+OTHER_CRED = "socks5://bob:0th3r@relay.example.net:20000"
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_credential(monkeypatch):
+    """Unset ``PERSONA_TEST_PROXY`` for EVERY test in this file.
+
+    ⚠️ NOT tidiness — this fixture is load-bearing, and it was written after
+    watching its absence break three tests that had passed for months.
+
+    The guard reads two channels now (PS-145), and the CI/dev container this
+    suite runs in EXPORTS a real, working credential in this variable. So a
+    test that writes a bad file and asserts the guard refuses would be handed
+    the ambient variable as a fallback, prove the exit through it, and NOT
+    refuse. Measured, not theorised: with the variable live,
+    ``test_a_missing_credential_file_refuses_the_run``,
+    ``test_an_empty_credential_file_refuses_the_run`` and
+    ``test_a_credential_that_is_not_socks5_refuses_the_run`` all failed with
+    "DID NOT RAISE ExitNotProven".
+
+    Those tests are about THE FILE's disposition, so the other channel is
+    removed and each test that wants it puts it back explicitly. Without this,
+    the file-half assertions would quietly become assertions about whichever
+    container the suite happened to run in — green here, green there, and
+    testing nothing in either place.
+    """
+    monkeypatch.delenv(exit_guard.ENVIRONMENT_CREDENTIAL_VAR, raising=False)
+
 
 # --- the credential ---------------------------------------------------------
 
@@ -86,6 +116,241 @@ def test_an_already_socks5h_credential_is_left_alone(tmp_path):
     path = tmp_path / "cred.txt"
     path.write_text("socks5h://alice:s3cr3t@gate.example.com:10000")
     assert load_credential(str(path)).count("socks5h") == 1
+
+
+# --- PS-145: the credential arrives on TWO channels -------------------------
+#
+# One channel failing must not stop a live reading. Both have been observed
+# failing INDEPENDENTLY on this fleet within one hour, almost exactly
+# complementarily — `persona-planner` had the file and an EMPTY variable,
+# `persona-reviewer` (freshly recreated) had the variable and NO file. Whoever
+# looked had one of them and nobody had both, which is why it went unnoticed.
+#
+# The tests below are about the SECOND channel, so each one sets the variable
+# explicitly — the autouse fixture at the top of this file removes the
+# container's ambient credential, without which every assertion here would be
+# about whichever machine the suite happened to run on.
+
+
+def _set_env(monkeypatch, value):
+    monkeypatch.setenv(exit_guard.ENVIRONMENT_CREDENTIAL_VAR, value)
+
+
+def test_the_environment_supplies_the_credential_when_there_is_NO_file(
+    tmp_path, monkeypatch
+):
+    """THE TICKET'S HEADLINE BEHAVIOUR: no file at all, and the run proceeds.
+
+    This is the `persona-reviewer` case measured on 2026-08-24 — a freshly
+    recreated container whose file had died with the overlay while the
+    variable survived. Before this change the guard read one source, so this
+    container could not take a reading at all.
+
+    Asserted on the RESULT, not on the code path: the credential comes back,
+    in socks5h form, from a directory that demonstrably contains no file.
+    """
+    missing = str(tmp_path / "definitely-not-here.txt")
+    assert not os.path.exists(missing)
+    _set_env(monkeypatch, CRED)
+
+    assert load_credential(missing) == (
+        "socks5h://alice:s3cr3t@gate.example.com:10000"
+    )
+
+
+def test_the_environment_credential_is_rewritten_to_socks5h_TOO(
+    tmp_path, monkeypatch
+):
+    """The rewrite is one rule, not one rule per channel.
+
+    The ticket says to CONFIRM this rather than assume it, because the two
+    channels are populated by different mechanisms and could in principle
+    carry different shapes. Measured in the container: file and variable were
+    byte-identical (sha256 matched), both plain `socks5://`.
+
+    A second source must not become a second place that guesses at schemes —
+    plain `socks5` resolves the checker's hostname locally and leaks a DNS
+    query naming the checker being read.
+    """
+    _set_env(monkeypatch, CRED)
+    resolved = load_credential(str(tmp_path / "nope.txt"))
+    assert resolved.startswith("socks5h://")
+    assert resolved.count("socks5h") == 1
+
+
+def test_an_EMPTY_environment_variable_refuses_rather_than_going_direct(
+    tmp_path, monkeypatch
+):
+    """⚠️ THE MOST IMPORTANT TEST IN THIS FILE'S PS-145 SECTION.
+
+    An empty value is treated as ABSENT, never as "unset means no proxy is
+    needed". The variable HAS been observed empty in production containers, so
+    this is the EXPECTED case rather than an edge one.
+
+    It matters because an empty proxy value does not error — `curl -x ""`
+    connects DIRECTLY and returns perfectly parseable JSON of the operator's
+    real address. That is exactly the wrong-but-plausible reading this whole
+    module exists to prevent: a wrong result looks like data.
+    """
+    _set_env(monkeypatch, "")
+    with pytest.raises(ExitNotProven) as exc:
+        load_credential(str(tmp_path / "nope.txt"))
+    assert "refusing to fall back" in str(exc.value).lower()
+
+
+def test_a_WHITESPACE_environment_variable_is_also_absent(
+    tmp_path, monkeypatch
+):
+    """"Set to nothing" is not a weaker "set" — same refusal as empty."""
+    _set_env(monkeypatch, "   \n\t ")
+    with pytest.raises(ExitNotProven):
+        load_credential(str(tmp_path / "nope.txt"))
+
+
+def test_a_credential_in_NEITHER_source_still_ends_the_run(
+    tmp_path, monkeypatch
+):
+    """The refusal this module already had, preserved exactly.
+
+    The ticket is explicit that adding a second SOURCE must not add a second
+    OUTCOME. With both channels unusable the run ends the same way it always
+    did, with the same recorded reason.
+    """
+    monkeypatch.delenv(exit_guard.ENVIRONMENT_CREDENTIAL_VAR, raising=False)
+    with pytest.raises(ExitNotProven) as exc:
+        load_credential(str(tmp_path / "nope.txt"))
+    assert "refusing to fall back to a direct connection" in str(exc.value).lower()
+
+
+def test_the_refusal_NAMES_BOTH_CHANNELS_and_how_each_failed(
+    tmp_path, monkeypatch
+):
+    """Because this ticket exists precisely because nobody had both halves.
+
+    "The file is missing" sends an operator to fix a file when the variable
+    was the empty one. With two channels the refusal must account for both,
+    or it points at the wrong half of a complementary failure.
+    """
+    _set_env(monkeypatch, "")
+    missing = str(tmp_path / "nope.txt")
+    with pytest.raises(ExitNotProven) as exc:
+        load_credential(missing)
+    message = str(exc.value)
+    assert missing in message
+    assert exit_guard.ENVIRONMENT_CREDENTIAL_VAR in message
+    # And it says the variable was EMPTY, not merely that it did not work —
+    # an empty variable and an unset one need different fixes.
+    assert "empty" in message.lower()
+
+
+# --- which source won is VISIBLE -------------------------------------------
+
+
+def test_the_file_WINS_when_both_channels_hold_a_credential(
+    tmp_path, monkeypatch
+):
+    """Precedence is the file, and it is not arbitrary.
+
+    The file is bind-mounted from the host, so the operator's rotation reaches
+    a running container immediately. The variable is fixed when the container
+    is created and cannot be updated in place, so it goes stale SILENTLY — and
+    a stale credential is exactly the thing that looks like it is working.
+    When they disagree, believe the channel that can be rotated.
+    """
+    path = tmp_path / "cred.txt"
+    path.write_text(CRED)
+    _set_env(monkeypatch, OTHER_CRED)
+
+    resolved = exit_guard.resolve_credential(str(path))
+    assert resolved.source == exit_guard.SOURCE_FILE
+    assert "gate.example.com" in resolved.proxy_url
+    assert "relay.example.net" not in resolved.proxy_url
+
+
+def test_a_DISAGREEMENT_between_the_two_channels_is_REPORTED(
+    tmp_path, monkeypatch
+):
+    """Silent precedence between two live credentials is how an operator ends
+    up debugging a reading taken through a proxy they thought they'd replaced.
+
+    With a host mount on one side and a container-frozen variable on the
+    other, the two can genuinely diverge — so this is a real state, not a
+    defensive branch.
+    """
+    path = tmp_path / "cred.txt"
+    path.write_text(CRED)
+    _set_env(monkeypatch, OTHER_CRED)
+
+    resolved = exit_guard.resolve_credential(str(path))
+    assert resolved.diverged is True
+    assert "DISAGREE" in resolved.detail
+    # It names the winner, so the report is actionable rather than just alarming.
+    assert exit_guard.SOURCE_FILE in resolved.detail
+
+
+def test_two_channels_that_AGREE_are_not_reported_as_a_disagreement(
+    tmp_path, monkeypatch
+):
+    """The container measured for this ticket had both channels byte-identical
+    — the NORMAL state. It must not read as a conflict."""
+    path = tmp_path / "cred.txt"
+    path.write_text(CRED)
+    _set_env(monkeypatch, CRED)
+
+    resolved = exit_guard.resolve_credential(str(path))
+    assert resolved.diverged is False
+    assert "DISAGREE" not in resolved.detail
+
+
+def test_the_run_records_that_it_fell_back_to_the_environment(
+    tmp_path, monkeypatch
+):
+    """Which source won is visible even when only one was usable — otherwise
+    a reading taken through the fallback is indistinguishable from one taken
+    through the file."""
+    _set_env(monkeypatch, CRED)
+    resolved = exit_guard.resolve_credential(str(tmp_path / "nope.txt"))
+    assert resolved.source == exit_guard.SOURCE_ENVIRONMENT
+    assert exit_guard.ENVIRONMENT_CREDENTIAL_VAR in resolved.detail
+
+
+# --- the new source must not become the path that bypasses redact() ---------
+
+
+def test_NO_channel_leaks_the_credential_into_the_provenance_it_records(
+    tmp_path, monkeypatch
+):
+    """`detail` is written into the RECORD, which is committed. It names a
+    path or a variable NAME — a coordinate, never a value."""
+    path = tmp_path / "cred.txt"
+    path.write_text(CRED)
+    _set_env(monkeypatch, OTHER_CRED)
+
+    for resolved in (
+        exit_guard.resolve_credential(str(path)),
+        exit_guard.resolve_credential(str(tmp_path / "nope.txt")),
+    ):
+        assert "s3cr3t" not in resolved.detail
+        assert "0th3r" not in resolved.detail
+        assert "alice" not in resolved.detail
+        assert "bob" not in resolved.detail
+
+
+def test_a_refusal_message_never_carries_either_channels_credential(
+    tmp_path, monkeypatch
+):
+    """The refusing paths are the easy ones to forget, and they are the ones
+    that get printed and pasted into tickets."""
+    path = tmp_path / "cred.txt"
+    # Malformed on BOTH channels, so both dispositions reach the message.
+    path.write_text("http://alice:s3cr3t@proxy.example:8080")
+    _set_env(monkeypatch, "http://bob:0th3r@relay.example.net:8080")
+
+    with pytest.raises(ExitNotProven) as exc:
+        load_credential(str(path))
+    message = str(exc.value)
+    assert "s3cr3t" not in message
+    assert "0th3r" not in message
 
 
 # --- socks5h is enforced, not preferred -------------------------------------
