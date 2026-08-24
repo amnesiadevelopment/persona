@@ -21,15 +21,27 @@ def test_override_script_pins_language_to_locale():
     assert '"en-US"' in js
 
 
-def test_override_script_languages_mirrors_the_single_header_tag():
+def test_override_script_languages_mirrors_the_tags_the_header_actually_sends():
     """The requested locale actually reaches the JS side — the LITERAL half.
 
     PS-124: navigator.languages must mirror the Accept-Language header this
-    launch path actually SENDS. Playwright's locale kwarg writes
-    intl.accept_languages VERBATIM, so the header is the single tag with no
-    q-values — a [full, base] pair advertised a base tag the wire never sent,
-    which is PS-119's header-vs-JS contradiction one channel over. Measured
-    disagreeing on the real persistent-context path for en-US/de-DE/uk-UA.
+    launch path actually SENDS. The engine EXPANDS a region-qualified tag
+    (invisible_core.prefs._accept_language: "de-DE" -> "de-DE, de") and builds
+    the wire header from that pref, so the header carries BOTH tags and the JS
+    side must too.
+
+    ⚠️ CORRECTION (round 3). This test previously asserted the OPPOSITE
+    (`["de-DE"]`, the single tag) on the stated premise that "Playwright's
+    locale kwarg writes intl.accept_languages VERBATIM". That premise was never
+    measured on the wire and is FALSE on firefox-20. Measured live through the
+    real product launch path against a standalone capture server:
+
+        profile de-DE  ->  wire "de-DE,de;q=0.9" on the top document, img,
+                           script, XHR and fetch alike
+                       ->  prefs.js: user_pref("intl.accept_languages",
+                           "de-DE, de")
+
+    so the single-tag pin advertised FEWER languages than the wire carried.
 
     THIS TEST IS LOAD-BEARING, not documentation, and the reason is worth
     stating because it is the opposite of the usual advice. Pinning a literal
@@ -46,16 +58,15 @@ def test_override_script_languages_mirrors_the_single_header_tag():
         this one     the value is the REQUESTED one
         binding one  the two channels AGREE with each other
     """
-    assert '["de-DE"]' in il._language_override_script("de-DE")
-    assert '["en-US"]' in il._language_override_script("en-US")
-    # a bare tag was already single and stays that way
+    assert '["de-DE", "de"]' in il._language_override_script("de-DE")
+    assert '["en-US", "en"]' in il._language_override_script("en-US")
+    # a bare tag has no base to add and stays single
     assert '["en"]' in il._language_override_script("en")
 
 
-def test_override_script_never_advertises_an_unsent_base_tag():
-    """No bare base tag for a region-qualified locale, because the header sends
-    none — the original PS-124 defect, stated as a property over several
-    locales rather than as one literal.
+def test_override_script_advertises_every_tag_the_wire_carries():
+    """The JS side omits no tag the header sends — the round-3 defect, stated
+    as a property over several locales rather than as one literal.
 
     Complementary to the cross-channel binding test in the same way as the test
     directly above: this one constrains the SHAPE the JS side emits on its own,
@@ -64,8 +75,9 @@ def test_override_script_never_advertises_an_unsent_base_tag():
     """
     for locale, base in (("de-DE", "de"), ("uk-UA", "uk"), ("pl-PL", "pl")):
         js = il._language_override_script(locale)
-        assert f'["{locale}"]' in js
-        assert f'["{locale}", "{base}"]' not in js
+        assert f'["{locale}", "{base}"]' in js
+        # the single-tag shape is the round-1/2 inversion; it must not return
+        assert f'["{locale}"]' not in js
 
 
 # Sentinel for "the profile declares no locale key at all", which is a different
@@ -142,10 +154,33 @@ def _both_locale_channels_from_one_launch(monkeypatch, tmp_path, cfg_locale):
     os.read(r, 65536)
     os.close(r)
 
-    # The header, as the engine received it. Playwright writes this verbatim, so
-    # the tags on the wire are this string split on commas (q-values stripped if
-    # any were ever present — they are not today, and this survives it if so).
-    header = captured["engine_kwargs"]["locale"]
+    # The header, read DOWNSTREAM OF THE ENGINE'S EXPANSION.
+    #
+    # ⚠️ This is the line that decided PS-124, and it used to read:
+    #
+    #     header = captured["engine_kwargs"]["locale"]
+    #     header_tags = [t.split(";")[0].strip() for t in header.split(",") ...]
+    #
+    # i.e. it took the string persona hands TO the engine and split it. That is
+    # a PREDICTION of the header, not the header. The engine EXPANDS the tag
+    # (invisible_core.prefs._accept_language: "de-DE" -> "de-DE, de", written to
+    # intl.accept_languages, from which the patched nsHttpHandler builds the
+    # wire header), so both "channels" were derived from the same pre-expansion
+    # string and agreed BY CONSTRUCTION while the live browser contradicted
+    # itself. Three rounds and two audits passed over that.
+    #
+    # The diagnostic to apply here: *if the engine transformed this value on its
+    # way out, would this measurement notice?* Splitting the kwarg: no. Running
+    # the kwarg through the engine's own expansion: yes.
+    #
+    # So we hand the captured kwarg to the ENGINE'S OWN header builder and parse
+    # the q-valued result the way a server would. Verified live on firefox-20
+    # against a standalone capture server: profile de-DE puts "de-DE,de;q=0.9"
+    # on the top document, img, script, XHR and fetch, and the launch writes
+    # user_pref("intl.accept_languages", "de-DE, de").
+    from invisible_core.prefs import _accept_language_header
+
+    header = _accept_language_header(captured["engine_kwargs"]["locale"])
     header_tags = [t.split(";")[0].strip() for t in header.split(",") if t.strip()]
 
     # The JS, as it was actually registered on the context by this same launch.
@@ -162,6 +197,67 @@ def _both_locale_channels_from_one_launch(monkeypatch, tmp_path, cfg_locale):
     js_tags = json.loads(match.group(1))
 
     return header_tags, js_tags
+
+
+def test_the_launch_path_carries_the_REQUESTED_locale_to_both_channels(
+    monkeypatch, tmp_path
+):
+    """The literal half, taken ON THE LAUNCH PATH — the measured hole.
+
+    The other literal-pinned tests in this file call
+    ``_language_override_script()`` DIRECTLY, so they never traverse
+    ``_launch_and_watch`` at all. That makes both families blind to the same
+    mutation, and it is not hypothetical — measured, round 3:
+
+        mutation                                    binding   direct literal   this
+        JS pin -> [locale] (the round-1/2 inversion)  RED        RED           RED
+        JS side alone -> zz-ZZ (channels diverge)     RED        RED           RED
+        BOTH launch channels -> zz-ZZ (consistent)    green*     green**       RED
+
+        *  correct: the two surfaces genuinely DO agree, and agreement is all
+           the binding tests assert. Not a bug in them.
+        ** NOT correct, and the gap this test exists to close: they never call
+           the launch path, so a locale substituted at
+           ``invisible_launch.py:2902`` / ``:3139`` cannot reach them however
+           wrong it is.
+
+    Both channels on the launch path independently read
+    ``cfg.get("locale") or "en-US"`` — two separate reads, at two separate
+    sites — so this also covers a fix applied to only one of the two fallbacks.
+
+    Unlike the binding tests this one DOES pin a literal, deliberately: it is
+    the family that catches both channels moving off the requested locale
+    together, which is invisible to a comparison of the channels with each
+    other by construction.
+    """
+    for cfg_locale, expected_first in (
+        ("de-DE", "de-DE"), ("fr", "fr"), ("pt-BR", "pt-BR"),
+    ):
+        header_tags, js_tags = _both_locale_channels_from_one_launch(
+            monkeypatch, tmp_path, cfg_locale
+        )
+        assert header_tags[0] == expected_first, (
+            f"the launch sent header {header_tags} for a profile that "
+            f"requested {cfg_locale!r}"
+        )
+        assert js_tags[0] == expected_first, (
+            f"the launch pinned navigator.languages to {js_tags} for a profile "
+            f"that requested {cfg_locale!r}"
+        )
+
+    # and the unset-locale profile really does land on the documented default,
+    # rather than merely landing on the SAME wrong thing in both channels
+    header_tags, js_tags = _both_locale_channels_from_one_launch(
+        monkeypatch, tmp_path, _UNSET
+    )
+    assert header_tags[0] == "en-US", (
+        f"an unset-locale profile defaulted its header to {header_tags}, "
+        f"not the documented en-US"
+    )
+    assert js_tags[0] == "en-US", (
+        f"an unset-locale profile defaulted navigator.languages to {js_tags}, "
+        f"not the documented en-US"
+    )
 
 
 _UNSET = object()
@@ -236,6 +332,82 @@ def test_the_two_channels_agree_for_a_profile_that_declares_NO_locale(
         f"a profile with no declared locale sent header {header_tags} while "
         f"navigator.languages reported {js_tags} — the two fallbacks disagree"
     )
+
+
+def test_engine_expansion_matches_local_fallback():
+    """The local fallback in ``_engine_accept_language_tags`` must agree with
+    the engine's own expansion, on every shape the engine handles.
+
+    ``_engine_accept_language_tags`` calls ``invisible_core.prefs._accept_
+    language`` and only falls back to a local re-implementation when that
+    import fails. A fallback nobody compares is a fallback that rots: the day
+    the engine changes the expansion (three tags, a different base rule, a
+    script-subtag policy) the fallback would silently keep producing the old
+    shape and re-open exactly the contradiction PS-124 closed — on the machines
+    where the import fails, which are the ones nobody is watching.
+
+    So this pins the two against each other rather than against a literal.
+    ``zh_Hans-CN`` is in the list deliberately: it is the case a hand-rolled
+    "split on the first dash" gets WRONG (correct is ``zh-Hans-CN`` + ``zh``),
+    which is why the fallback mirrors the engine's rule instead of inventing
+    one.
+    """
+    from invisible_core.prefs import _accept_language
+
+    def _local(locale):
+        lang = locale.replace("_", "-")
+        base = lang.split("-")[0]
+        expanded = f"{lang}, {base}" if base != lang else lang
+        return [t.strip() for t in expanded.split(",") if t.strip()]
+
+    for locale in ("de-DE", "en-US", "fr", "en", "uk-UA", "pt-BR",
+                   "zh_Hans-CN", "zh-Hans-CN", "es_ES"):
+        engine_tags = [t.strip() for t in _accept_language(locale).split(",")
+                       if t.strip()]
+        assert il._engine_accept_language_tags(locale) == engine_tags, (
+            f"{locale!r}: helper disagrees with the engine's own expansion"
+        )
+        assert _local(locale) == engine_tags, (
+            f"{locale!r}: the local FALLBACK has drifted from the engine's "
+            f"expansion ({_local(locale)} vs {engine_tags}) — the fallback "
+            f"would silently re-open PS-124 wherever the import fails"
+        )
+
+
+def test_the_js_pin_matches_the_engines_untouched_worker_realm_value():
+    """The pin must equal what the engine natively reports in a WORKER realm.
+
+    A second contradiction the round-1/2 single-tag pin produced, and one no
+    previous round recorded. This script patches ``Navigator.prototype``, but a
+    worker realm has ``WorkerNavigator`` — a different interface the pin's
+    ``def()`` never touches — so the worker kept the engine's native value
+    while the main realm reported the pinned one. Measured live on firefox-20
+    under a host/profile mismatch (profile de-DE, host en-US):
+
+        arm                    main realm        blob-worker realm
+        [locale] (round 1-2)   ["de-DE"]         ["de-DE","de"]   *** page vs
+                                                                  its own worker
+        [locale, base] (now)   ["de-DE","de"]    ["de-DE","de"]   agree
+
+    That native worker value is independent corroboration of the direction:
+    it is the engine's own untouched answer, and it is ``[locale, base]``.
+
+    Asserted here against the engine's expansion rather than a literal, because
+    the engine is what decides it — see the module docstring's note on reading
+    surfaces where the browser emits them.
+    """
+    from invisible_core.prefs import _accept_language
+
+    for locale in ("de-DE", "en-US", "fr", "pt-BR"):
+        native_worker_tags = [t.strip() for t in _accept_language(locale).split(",")
+                              if t.strip()]
+        js = il._language_override_script(locale)
+        match = re.search(r"LS=(\[.*?\])", js)
+        assert match, f"no languages array in the locale spoof for {locale!r}"
+        assert json.loads(match.group(1)) == native_worker_tags, (
+            f"{locale!r}: the main-realm pin would contradict the engine's "
+            f"untouched worker-realm value {native_worker_tags}"
+        )
 
 
 def test_override_script_empty_locale_is_noop():
@@ -610,9 +782,12 @@ def test_reported_values_are_unchanged(cloak_probe):
     # criterion 6: the cloak changes how the overrides READ, never what they report
     v = cloak_probe["values"]
     assert v["language"] == "pl-PL"
-    # PS-124: the single header tag, not [full, base] — see
-    # test_override_script_languages_mirrors_the_single_header_tag.
-    assert v["languages"] == ["pl-PL"]
+    # PS-124 round 3: the tags the header ACTUALLY sends. The engine expands a
+    # region-qualified tag (pl-PL -> "pl-PL, pl") and builds the wire header
+    # from that pref, so both tags are on the wire and both belong here. This
+    # asserted ["pl-PL"] until round 3, on a premise measured false — see
+    # test_override_script_languages_mirrors_the_tags_the_header_actually_sends.
+    assert v["languages"] == ["pl-PL", "pl"]
     assert v["locale"] == "pl-PL"
     assert v["workerLocale"] == "pl-PL"
     assert v["number"] == v["workerNumber"] != "1234.5"
