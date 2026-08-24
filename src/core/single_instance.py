@@ -28,20 +28,20 @@ def _lock_path() -> str:
     refused — the guard blocking precisely the configuration it exists to allow,
     since two distinct homes share none of the ON-DISK state named above:
     profiles.json, settings.json and the engine caches all resolve through
-    _under_home (config.py:73-80). The port is the one exception, so the
-    isolation is not total: API_PORT is global rather than home-derived
-    (config.py:99 uses _port_env, not _under_home), and the MCP tools mount
-    into that same app, so two isolated homes still contend for it if both
-    enable the control server — which is off unless enabled (main.py:177).
-    That is a port-allocation concern, not state corruption, and this lockfile
-    was never what guarded it.
+    `config._under_home` (the eight constants PROFILES_FILE .. ENGINE_DIR).
+    The port is the one exception, so isolation is not total: API_PORT is
+    global rather than home-derived (`config._port_env`, not `_under_home`),
+    and the MCP tools mount into that same app, so two isolated homes still
+    contend for it if both enable the control server — off unless enabled
+    (see main.py's APIServer construction). A port-allocation concern, not
+    state corruption, and this lockfile was never what guarded it.
 
     RESOLVED AT CALL TIME, NOT AT IMPORT. `config.PERSONA_HOME` is baked at
-    config import (deliberate — config.py:48), but `_under_home` reads its env
-    override with getenv at call time (config.py:54). Computing this into a
-    module-level constant would freeze PERSONA_LOCK_FILE at THIS module's import
-    and break any caller that sets it afterwards, the test fixture included.
-    _under_home already implements the override-wins precedence, so the existing
+    its module-level assignment (deliberate), but `_under_home` reads its env
+    override via `os.getenv` on every call. Computing this into a module-level
+    constant would freeze PERSONA_LOCK_FILE at THIS module's import and break
+    any caller that sets it afterwards, the test fixture included. _under_home
+    already implements the override-wins precedence, so the existing
     PERSONA_LOCK_FILE contract composes rather than conflicts.
     """
     return config._under_home("persona.lock", "PERSONA_LOCK_FILE")

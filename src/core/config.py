@@ -130,24 +130,29 @@ def _under_home(name: str, env: str) -> str:
     call. That makes cwd-invariance a property of WHERE THE RESULT IS BOUND, not
     a property of this function, and the eleven call sites split in two:
 
-      * The EIGHT module-level constants below (config.py:153-160) are bound
-        ONCE, at import, before any chdir can happen (main.py runs
-        _ensure_valid_cwd() at L30; this module is first imported at L159). For
-        them the value genuinely does not move when the process's cwd moves.
+      * The EIGHT module-level constants below — PROFILES_FILE, PROXIES_FILE,
+        CERTS_FILE, CERTS_DIR, BOOKMARKS_FILE, DATA_DIR, LOG_DIR, ENGINE_DIR —
+        are bound ONCE, at import, before any chdir can happen: main.py calls
+        _ensure_valid_cwd() at module scope, and defers its `from
+        src.core.container import Container` import (which transitively pulls
+        in this module) until after that call. For them the value genuinely
+        does not move when the process's cwd moves.
 
       * THREE consumers call this PER USE, not at import, and therefore get a
         value that TRACKS THE CWD under a relative override — absolute on every
         call, but a DIFFERENT absolute path once the process chdirs:
-            core/settings.py:68        (used at settings.py:118,128,145)
-            core/single_instance.py:47 (used at single_instance.py:73)
-            api/mcp_token.py:16        (used at mcp_token.py:21,36)
+            core/settings.py        _path()       (used by _load, _save, set)
+            core/single_instance.py _lock_path()  (used by acquire)
+            api/mcp_token.py        _path()       (used by get_or_create_token,
+                                                   read_token)
         Measured on this branch, relative override, cwd A -> B:
             PERSONA_SETTINGS_FILE  cwd=A -> /tmp/tmpA/myrel_settings.json
                                    cwd=B -> /tmp/tmpB/myrel_settings.json
-        single_instance.py:39-46 already documents this call-time resolution
-        correctly, and deliberately (freezing it would break the override
-        contract for anything that sets the env var after this module loads).
-        Read that comment rather than assuming import-time semantics here.
+        single_instance._lock_path's docstring ("RESOLVED AT CALL TIME, NOT AT
+        IMPORT") already documents this correctly, and deliberately (freezing
+        it would break the override contract for anything that sets the env
+        var after this module loads). Read that rather than assuming
+        import-time semantics here.
 
     So the honest universal — true for all eleven — is only the per-call one:
     EVERY RETURN IS ABSOLUTE (outside the Windows rooted-driveless caveat
