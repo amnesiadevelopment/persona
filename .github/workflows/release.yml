@@ -220,14 +220,44 @@ jobs:
           done
           echo "bundled engine packages OK"
 
+      - name: Provision the interpreter the BUNDLE was frozen for
+        # flet does NOT freeze against the Python set up above. It downloads its
+        # own python-build-standalone runtime (cpython-3.12.9 today) and installs
+        # site-packages against THAT, so every compiled extension in the bundle is
+        # stamped with that ABI (_pydantic_core.cpython-312-*.so). The job's own
+        # interpreter is 3.13, which does not look at -312- files at all.
+        #
+        # MEASURED (PS-158): running the smoke check under 3.13 reported fastapi,
+        # pydantic, paramiko, mcp and invisible_playwright "missing" from the REAL,
+        # PUBLISHED v2.9.17 bundle that users are running successfully. The same
+        # bundle under 3.12 imported all of them and printed SELFTEST_OK. That
+        # false alarm blocked the entire 3.0.0 release.
+        #
+        # update-environment: false is load-bearing — this MUST NOT become the
+        # job's default python. Everything after it (flet, appimagetool packaging)
+        # keeps using 3.13; only the smoke check's payload run uses this one.
+        id: bundle-python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+          update-environment: false
+
       - name: Open the frozen bundle before packaging it
         # The checks above validate the RUNNER's pip env; this one looks INSIDE
         # what flet actually froze. Runs BEFORE appimagetool and before upload,
         # so a bundle that will not open is never wrapped, never checksummed and
         # never published. Windowless by construction — see the script's
         # docstring for exactly what it can and cannot ask without a screen.
+        #
+        # --python is passed EXPLICITLY rather than left to the script's search.
+        # The script detects the required ABI from the bundle's own extensions and
+        # REFUSES a mismatch, so if flet ever moves off 3.12 this step fails loudly
+        # with the real reason instead of silently checking with the wrong Python.
+        env:
+          BUNDLE_PYTHON: ${{ steps.bundle-python.outputs.python-path }}
         run: |
-          python3 .github/scripts/smoke_frozen_bundle.py build/linux --repo-root .
+          python3 .github/scripts/smoke_frozen_bundle.py build/linux --repo-root . \
+            --python "$BUNDLE_PYTHON"
 
       - name: Show what flet produced
         run: |
@@ -413,6 +443,18 @@ jobs:
           done
           echo "bundled engine packages OK"
 
+      - name: Provision the interpreter the BUNDLE was frozen for
+        # Same rationale as the Linux job: flet freezes site-packages against its
+        # OWN downloaded cpython-3.12.x, not the 3.13 this job runs, so the
+        # bundle's .pyd files are stamped cp312 and 3.13 cannot import them.
+        # update-environment: false keeps this OFF the job's PATH — the Inno Setup
+        # steps below must keep using the job's own python.
+        id: bundle-python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+          update-environment: false
+
       - name: Open the frozen bundle before packaging it
         # The counterpart of the Linux job's step, on the Windows bundle shape.
         # Runs BEFORE Inno Setup and before upload, so a bundle that will not
@@ -420,9 +462,16 @@ jobs:
         # script discovers flet's layout rather than assuming a fixed path,
         # which is what lets one script serve all three OSes without hollowing
         # any of them out.
+        #
+        # Windows ships TWO site-packages (the app's, plus the embedded
+        # interpreter's own Lib/site-packages). The script puts BOTH on the path,
+        # which is what the real app does; a module in neither still fails.
         shell: bash
+        env:
+          BUNDLE_PYTHON: ${{ steps.bundle-python.outputs.python-path }}
         run: |
-          python .github/scripts/smoke_frozen_bundle.py build/windows --repo-root .
+          python .github/scripts/smoke_frozen_bundle.py build/windows --repo-root . \
+            --python "$BUNDLE_PYTHON"
 
       - name: Show what flet produced
         shell: bash
@@ -845,19 +894,34 @@ jobs:
           done
           echo "bundled engine packages OK"
 
+      - name: Provision the interpreter the BUNDLE was frozen for
+        # Same rationale as the Linux/Windows jobs: flet freezes site-packages
+        # against its OWN downloaded cpython-3.12.x, so the .so files inside the
+        # .app are stamped cpython-312 and the job's 3.13 cannot import them.
+        # update-environment: false keeps this off the job's PATH — the hdiutil
+        # packaging steps below keep using the job's own python.
+        id: bundle-python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+          update-environment: false
+
       - name: Open the frozen bundle before packaging it
         # The counterpart of the Linux/Windows steps, on the .app bundle shape.
         # Runs BEFORE hdiutil and before upload, so a bundle that will not open
         # is never wrapped into a dmg and never published. Pointed at the .app
         # itself rather than build/macos so it reads the tree that actually
         # ships.
+        env:
+          BUNDLE_PYTHON: ${{ steps.bundle-python.outputs.python-path }}
         run: |
           APP="$(find build/macos -maxdepth 3 -name '*.app' | head -1)"
           if [ -z "$APP" ]; then
             echo "ERROR: no .app produced by flet build macos" >&2
             exit 1
           fi
-          python3 .github/scripts/smoke_frozen_bundle.py "$APP" --repo-root .
+          python3 .github/scripts/smoke_frozen_bundle.py "$APP" --repo-root . \
+            --python "$BUNDLE_PYTHON"
 
       - name: Package the .app into a dmg
         run: |
