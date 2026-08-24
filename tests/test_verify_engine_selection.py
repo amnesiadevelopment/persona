@@ -468,6 +468,19 @@ def test_the_zone_the_session_launches_with_is_the_one_it_was_given(
 
     monkeypatch.setattr(chromium_tier, "_engine_binary", lambda: "/engine/fp")
     monkeypatch.setattr(chromium_tier, "sandbox_available", lambda: True)
+    # Both HOST gates have to be neutralised, not just the sandbox one. This
+    # test is about the zone reaching argv, so every probe standing between
+    # the constructor and `_launch_args` must be made to say yes — otherwise
+    # the run refuses on the HOST and never reaches the thing under test.
+    # `_start` runs the shm probe immediately after the sandbox probe, and
+    # `DevShmTooSmall` is a `ChromiumUnavailable` subclass, so on a host below
+    # the floor (this container: 64 MiB vs a 256 MiB floor) the
+    # `pytest.raises` below is satisfied by the WRONG exception and only the
+    # `seen["timezone"]` assertion notices. A generous size keeps the gate
+    # open on any host and keeps this test about the zone.
+    monkeypatch.setattr(
+        chromium_tier, "dev_shm_bytes", lambda: 1024 * 1024 * 1024
+    )
     monkeypatch.setattr(
         chromium_tier, "_ensure_display", lambda: (":99", None)
     )
