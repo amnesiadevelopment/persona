@@ -220,3 +220,131 @@ def test_no_other_probe_was_reclassified():
         "screen.devicePixelRatio",
         "webgl.unmasked",
     }
+
+
+# --- the realms decision, and the cost it carries ---------------------------
+
+
+def _two_profile_snapshots(*, worker_null):
+    """Two snapshots that differ correctly on EVERY must-differ vector.
+
+    Built from the inventory rather than from literals, so this keeps working
+    when the next vector is classified. The only variable is whether this
+    probe's WORKER row carries a real reading or a ``null`` — everything else
+    is a clean, genuinely-distinct pair, which is what makes the contrast below
+    attributable to that one row and to nothing else.
+    """
+
+    def one(profile):
+        snap = {
+            "schema_version": 1,
+            "engine": "firefox",
+            "engine_build": "firefox-20",
+            "profile": profile,
+            "realms": [probes.WINDOW, probes.WORKER],
+            "probes": {probes.WINDOW: {}, probes.WORKER: {}},
+        }
+        for probe in probes.must_differ_probes():
+            for realm in probe.realms:
+                if worker_null and realm == probes.WORKER and probe.id == PROBE_ID:
+                    # The state the five `return null` paths below produce: no
+                    # canvas, no 2D context, a throwing `width` assignment, a
+                    # throwing getImageData, or empty data.
+                    snap["probes"][realm][probe.id] = {"value": None}
+                else:
+                    snap["probes"][realm][probe.id] = {"value": f"{probe.id}-{profile}"}
+        return snap
+
+    return one("alice"), one("bob")
+
+
+def _unlinkability_verdict(*, worker_null):
+    """Drive the REAL gate, not the comparator underneath it.
+
+    The claim being pinned is about the gate's published VERDICT, so asserting
+    on `compare_profiles` entries alone would leave the load-bearing half — the
+    escalation from one inconclusive entry to a whole-gate CANNOT_RUN — untested.
+    `_run_two_profile_unlinkability` takes its two recordings from `ctx`, so a
+    stand-in supplies them without launching a browser.
+    """
+    from src.services.verify.behaviour_checks import _run_two_profile_unlinkability
+
+    a, b = _two_profile_snapshots(worker_null=worker_null)
+
+    class _Ctx:
+        launches = 0
+
+        def __init__(self):
+            self._snaps = {"ps70-unlink-a": a, "ps70-unlink-b": b}
+
+        def make_profile(self, name, **kwargs):
+            return type("P", (), {"name": name})()
+
+        def record(self, profile, fresh=False):
+            return self._snaps[profile.name]
+
+    return _run_two_profile_unlinkability(_Ctx())
+
+
+def test_a_worker_realm_null_on_this_probe_degrades_the_unlinkability_gate():
+    """The COST of declaring BOTH on an INDEPENDENT record, enforced.
+
+    The realms rationale in `probes.py` claims a worker realm that cannot give
+    a 2D context takes the whole two-profile gate to CANNOT_RUN. That claim is
+    the reason the rationale had to be rewritten once already — an earlier
+    version asserted such a null "costs a recorded null and nothing else",
+    which is false — so it is pinned here rather than left as prose that the
+    next edit can quietly invert again.
+
+    Note what is NOT the failure mode: the null does not produce a false
+    COLLIDING. `diff._unread_for_unlinkability` (diff.py:295) maps a
+    ``{"value": null}`` to UNREAD on this axis, so the pair reads as
+    INCONCLUSIVE. That guard is pre-existing and is what makes BOTH admissible
+    on this record at all.
+    """
+    from src.services.verify.behaviour import CANNOT_RUN
+
+    outcome = _unlinkability_verdict(worker_null=True)
+
+    assert outcome.status == CANNOT_RUN, (
+        "one worker-realm null on this probe must take the WHOLE gate to "
+        f"CANNOT_RUN, not to {outcome.status!r}"
+    )
+    # Specifically INCONCLUSIVE, NOT colliding. A false leak report and a
+    # withheld verdict are different failures and only one of them is correct
+    # here, so the distinction is asserted rather than left to the status alone.
+    evidence = "\n".join(outcome.evidence or [])
+    assert f"{probes.WORKER}/{PROBE_ID}: inconclusive" in evidence, (
+        "the withheld verdict must NAME the vector that withheld it, and name "
+        f"it as inconclusive rather than colliding. Got:\n{evidence}"
+    )
+    assert "colliding" not in evidence, (
+        "a null on both sides must never be reported as two profiles AGREEING "
+        "— that is the false leak report `_unread_for_unlinkability` prevents"
+    )
+    assert "not established" in outcome.detail
+
+    # The rest of the inventory was read cleanly on both sides, so this is a
+    # gate discarding GENUINE passes — the actual cost, not a run that had
+    # nothing to say.
+    assert "webgl.readback" in outcome.detail and "audio.digest" in outcome.detail
+
+
+def test_the_same_pair_PASSES_when_the_worker_realm_reads():
+    """The contrast row, and the half that makes the one above mean something.
+
+    Without it, the CANNOT_RUN assertion is satisfied by a harness that can
+    never reach PASS — a gate wedged shut looks identical to a gate correctly
+    withholding. This pins that the ONLY difference between the two outcomes is
+    that single worker row, which is also the evidence that `BOTH` is not
+    breaking the gate on the engines actually measured: both firefox-20 and
+    chromium recorded a real worker digest on every seed.
+    """
+    from src.services.verify.behaviour import PASS
+
+    outcome = _unlinkability_verdict(worker_null=False)
+
+    assert outcome.status == PASS, (
+        "two profiles differing on every must-differ vector must PASS — if "
+        f"this is {outcome.status!r} the test above proves nothing"
+    )

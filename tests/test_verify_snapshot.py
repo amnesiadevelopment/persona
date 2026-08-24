@@ -1208,16 +1208,25 @@ def _profile_snapshot(profile, *, engine="chromium", **kwargs):
     than off a literal, so the next vector classified in two realms costs
     nothing here either. Deliberately narrowed to must-differ ids: a SHARED
     probe is never compared across profiles, so mirroring it would be noise.
+
+    MERGED per key rather than gated on `"worker_values" not in kwargs`. The
+    guard used to be all-or-nothing, so a call site naming `worker_values` for
+    ONE unrelated probe silently lost the mirror for EVERY must-differ vector —
+    a test would then assert against a colliding neighbour it never mentioned.
+    Only 2 of the call sites below pass the key today and neither names a
+    must-differ id, so nothing was broken; merging removes the trap rather than
+    waiting for it. The CALLER still wins on any key it states explicitly,
+    which is what keeps a test that deliberately plants a worker-realm value
+    (a null, a per-profile digest) in control of its own target.
     """
     window_values = kwargs.get("window_values") or {}
-    if "worker_values" not in kwargs:
-        mirrored = {
-            probe.id: window_values[probe.id]
-            for probe in probes.must_differ_probes()
-            if probe.id in window_values and probes.WORKER in probe.realms
-        }
-        if mirrored:
-            kwargs["worker_values"] = mirrored
+    mirrored = {
+        probe.id: window_values[probe.id]
+        for probe in probes.must_differ_probes()
+        if probe.id in window_values and probes.WORKER in probe.realms
+    }
+    if mirrored:
+        kwargs["worker_values"] = {**mirrored, **(kwargs.get("worker_values") or {})}
     return snapshot.build_snapshot(
         _run(**kwargs),
         engine=engine,

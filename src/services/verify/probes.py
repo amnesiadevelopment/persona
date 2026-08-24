@@ -467,28 +467,69 @@ PROBES: tuple[Probe, ...] = (
     # --- canvas 2D ----------------------------------------------------------
     Probe(
         "canvas.readback",
-        # BOTH, and unlike webgl.readback that is safe here rather than merely
-        # desirable. The reason those two differ is the CLASSIFICATION, not the
-        # surface: a probe declared INDEPENDENT that reads null in a realm makes
-        # two profiles compare EQUAL and be reported COLLIDING — a false leak
-        # report on every pair — which is why webgl.readback is WINDOW_ONLY. On
-        # a SHARED probe (see `variance` below) the cross-profile comparator
-        # never looks at this vector at all, so a worker realm that declined to
-        # give a 2D context costs a recorded null and nothing else. The worker
-        # arm is the half worth having: `_CANVAS` yields an OffscreenCanvas
-        # there, and whether the delegated C++ canvas patch reaches a worker at
-        # all is exactly the kind of thing this inventory exists to observe
-        # rather than assume.
+        # BOTH — declared on an INDEPENDENT record (see `variance` below), so
+        # the cost of a worker realm that cannot read is paid on the
+        # cross-profile axis and is stated here rather than left to be found.
+        #
+        # WHAT A WORKER-REALM null COSTS. Not a false COLLIDING: that failure
+        # mode is already handled generally by `diff._unread_for_unlinkability`
+        # (diff.py:295), which — unlike `_unread` — maps a {"value": null} to
+        # UNREAD on the must-differ axis, so two profiles that both failed to
+        # read are INCONCLUSIVE rather than reported linkable. That guard is
+        # pre-existing and is what makes BOTH admissible here at all; it is NOT
+        # the `WINDOW_ONLY` declaration on webgl.readback, which predates it and
+        # answers a different question (a context that is absent BY
+        # CONSTRUCTION in that realm on that engine — measured, not feared).
+        #
+        # What it does cost is the whole verdict. `compare_profiles` walks the
+        # INVENTORY, so this probe contributes a worker row on every run; one
+        # inconclusive entry sends `_run_two_profile_unlinkability` to
+        # CANNOT_RUN (behaviour_checks.py:216-220), discarding a genuine and
+        # complete pass on `audio.digest` and `webgl.readback` alongside it.
+        # Measured, not argued: two profiles differing correctly on every window
+        # vector, with only the worker canvas row null, yield
+        #     entries: [('worker', 'canvas.readback', 'inconclusive')]
+        #     verdict: CANNOT_RUN
+        # and this is pinned by a test (see
+        # test_a_worker_realm_null_on_this_probe_degrades_the_unlinkability_gate)
+        # so the claim is enforced rather than asserted. There are five paths
+        # that return null below (no canvas, no 2D context, a throwing `width`
+        # assignment, a throwing getImageData, empty data), so this is a
+        # reachable state and not a theoretical one.
+        #
+        # WHY BOTH IS STILL RIGHT. The worker reading was OBTAINED on both
+        # engines actually measured — firefox-20 and chromium recorded a real
+        # digest in the worker realm on every seed (readings/ps135-2026-08-24/),
+        # so the degradation above is a contingency, not the expected path. And
+        # whether the delegated C++ canvas patch reaches a worker at all is
+        # precisely the question this probe exists to answer: declaring
+        # WINDOW_ONLY to dodge a null that was not observed would silence the
+        # measurement to protect a verdict, which is the inversion this
+        # subsystem is built to refuse. If a host is later found where the
+        # worker realm genuinely cannot give a 2D context, the honest response
+        # is the same one webgl.readback got — narrow the realm ON THE MEASURED
+        # ENGINE — not to pre-emptively stop looking.
+        #
+        # NOTE FOR THE NEXT READER CHOOSING REALMS: `_unread_for_unlinkability`
+        # closes at diff.py:332-338 with the observation that no INDEPENDENT
+        # probe has a legitimate null reading. This probe is the first
+        # INDEPENDENT record that contemplates one, and that note now says so.
         BOTH,
         "(function(){"
         "var c=" + _CANVAS + ";"
         "if(!c)return null;"
         "var ctx=null;try{ctx=c.getContext('2d');}catch(e){ctx=null;}"
         "if(!ctx)return null;"
-        # A FIXED surface size. `_CANVAS` hands back 300x150 in a window (the
-        # HTML default) and 300x150 in a worker, but the default is the
-        # element's, not this probe's, so it is pinned here: a future change to
-        # the shared surface must not silently change what this vector reads.
+        # A FIXED surface size. `_CANVAS` hands back a 300x150 element in a
+        # window (there the HTML default) and a 300x150 OffscreenCanvas in a
+        # worker (there a LITERAL, `new OffscreenCanvas(300,150)` at
+        # probes.py:112 — not a spec default, so nothing guarantees it stays).
+        # Either way the size is the shared surface's, not this probe's, so it
+        # is pinned here: a future change to `_CANVAS` must not silently change
+        # what this vector reads. Note this WRITES to the surface, which the
+        # module docstring's "probes READ" rule would otherwise forbid — it is
+        # safe only because `_CANVAS` mints a FRESH element per call, so the
+        # mutation cannot outlive this expression or be seen by another probe.
         "var W=64,H=32;"
         "try{c.width=W;c.height=H;}catch(e){return null;}"
         # MID-RANGE fills, for the same reason webgl.readback uses them: a spoof
