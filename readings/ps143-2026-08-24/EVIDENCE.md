@@ -102,9 +102,16 @@ it. Eight is the number that carries the argument, and eight is still a decisive
 (One further row, `creepjs/canvas_data_hash`, is *not* a move at all: the value is `4c7ac378` on both
 arms and only the surrounding page text changed. `compare` classifies it `reworded`. It is excluded.)
 
-Independently corroborated on the loopback harness before the live run
-(`checker_cli differential --engine chromium --axis layer`), which returned verdict `moved`:
-`intl_locale` `de-DE`→`en-US`, `webgl_pixel_hash` `605e792a`→`c85ceb58`, `audio_digest` moved.
+A loopback-harness differential (`checker_cli differential --engine chromium --axis layer`) was run
+before the live arms and returned verdict `moved`. **Its record was written via `-o` and not retained,
+so nothing in this directory substantiates it** — the specific rows and hashes it reported are
+therefore deliberately not quoted here, because a value no reader can check against a committed
+artifact adds no evidence. Treat that run as context for why the live arms were attempted, not as
+corroboration of them. (§6 independently reports the same harness catching the missing Chromium
+engine, which is the surviving evidence that it ran.)
+
+The guard above does not depend on it: the eight fingerprint rows are re-derivable from the two
+committed arms alone, with the `compare` command in *Artifacts*.
 
 So the instrument was live, the layer reached the page, pixelscan read the page on both arms — **and the
 two verdicts still did not move.** The comparison is sound.
