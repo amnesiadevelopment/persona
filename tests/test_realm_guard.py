@@ -52,19 +52,41 @@ from tests.realm_harness import HARNESS
 
 SEED = 0x1234ABCD
 
-# The names this ticket removed. `__personaScreenWH` and `__personaMtFactor` are
-# deliberately NOT here: they are cross-realm VALUE channels (a DOM-less worker
-# reading a constant the top realm measured), not idempotency guards, and no
-# closure mechanism can carry a value across a realm boundary. They are a real,
-# separate leak — named here so removing this list does not lose them.
+# The names PS-93 removed. `__personaScreenWH` and `__personaMtFactor` were
+# deliberately NOT here while they shipped: they are cross-realm VALUE channels
+# (one realm reusing a constant another realm resolved), not idempotency guards.
+#
+# PS-139 has since moved them into the same non-enumerable `Object.__pnaRealm`
+# slot, so no `__persona*` name is written to the global object by any leaf.
+# THE ORIGINAL REASON GIVEN HERE WAS HALF WRONG AND IS CORRECTED IN PLACE rather
+# than struck out: this list used to say "no closure mechanism can carry a value
+# across a realm boundary", and that sentence is STILL TRUE OF THE WORKER
+# CROSSING — a worker has no `top`, so it never read either value and still
+# cannot. What was wrong was treating it as the reason the channels had to sit
+# on the GLOBAL. They did not: the channel that actually functions is
+# iframe -> top, and it works identically through the per-realm slot, which the
+# `top` hop reaches exactly as it reached the global.
+#
+# So the worker gap is real, is unchanged by PS-139, and is tracked separately —
+# it is not disproven, and writing it up as defeated would strand a false
+# statement in the tree. The moved channels are asserted by execution in
+# tests/test_realm_value_channels.py (leak gate + the iframe crossing they exist
+# for); this file keeps owning the eleven booleans.
 REMOVED_MARKERS = [
     "__personaAudio", "__personaCanvasCtx", "__personaScreen", "__personaHw",
     "__personaGeo", "__personaGpu", "__personaMt", "__personaMobile",
     "__personaStealth", "__personaVoice", "__personaWebgl", "__personaLocale",
 ]
 
-# Still in the tree, and out of scope for this ticket.
-RETAINED_VALUE_CHANNELS = ["__personaScreenWH", "__personaMtFactor"]
+# Formerly RETAINED_VALUE_CHANNELS — the two names this file had to tolerate on
+# the global while they still shipped there. PS-139 moved them off it, so they
+# are retained NO LONGER and the subset assertion below no longer excuses them.
+#
+# Kept as a named list rather than deleted, because it is what makes the
+# tightening legible: these are the two names whose absence is now asserted by
+# execution (in tests/test_realm_value_channels.py, which owns the channels
+# themselves and their iframe->top crossing) instead of being carved out here.
+MOVED_VALUE_CHANNELS = ["__personaScreenWH", "__personaMtFactor"]
 
 # Anchored to THIS file, never to the cwd. Several suites in this repo chdir
 # (test_main_cwd, test_verify_snapshot, test_app_update, …), so a relative path
@@ -106,24 +128,40 @@ def test_no_leaf_assigns_the_removed_marker_to_a_realm(marker):
     assert not offenders, f"{marker} is assigned to a realm again:\n" + "\n".join(offenders)
 
 
-@pytest.mark.parametrize("name", RETAINED_VALUE_CHANNELS)
-def test_the_out_of_scope_value_channels_are_left_alone(name):
-    # The counterpart to the test above, and the reason this ticket's marker
-    # assertion is a SUBSET check rather than an emptiness one. These are not
-    # idempotency guards, so this change neither removes nor should remove them.
-    # If a later ticket closes them, this test is the thing that tells you the
-    # subset assertion below needs re-deriving rather than silently loosening.
-    paths = sorted(_SRC.glob("*.py"))
-    assert len(paths) > 5, f"source sweep read only {len(paths)} file(s) from {_SRC}"
-    found = any(
-        re.search(rf"\.{name}\b", path.read_text(encoding="utf-8"))
-        for path in paths
+@pytest.mark.parametrize("name", MOVED_VALUE_CHANNELS)
+def test_no_leaf_assigns_a_moved_value_channel_to_a_realm(name):
+    # THIS TEST WAS INVERTED, NOT DELETED (PS-139). It used to assert these two
+    # names were still PRESENT in the tree — the counterpart that justified the
+    # subset assertion below being a subset rather than an emptiness gate — and
+    # its own failure message said that if a later ticket closed them, the
+    # subset assertions here had to be re-derived rather than silently loosened.
+    # That ticket is PS-139 and this is that re-derivation.
+    #
+    # It now asserts the same thing about them that the sibling above asserts
+    # about the eleven booleans: no leaf ASSIGNS the name to a realm. Matching
+    # the assignment and not the bare name is what keeps this honest — both
+    # leaves narrate the retired channel by name in their Python-level comments,
+    # which is history and not a leak, and a bare-substring sweep would read
+    # that prose as a regression.
+    offenders = []
+    scanned = 0
+    for path in sorted(_SRC.glob("*.py")):
+        scanned += 1
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if re.search(rf"\.{name}\s*=(?!=)", line):
+                offenders.append(f"{path.name}:{n}: {line.strip()}")
+    # An absence assertion that swept nothing is green for the wrong reason.
+    assert scanned > 5, f"source sweep read only {scanned} file(s) from {_SRC}"
+    assert not offenders, (
+        f"{name} is assigned to a realm again:\n" + "\n".join(offenders) + "\n"
+        f"It is a cross-realm VALUE channel — the screen geometry, or the "
+        f"divisor that inverts the text-metrics spoof — and it belongs in the "
+        f"non-enumerable per-realm slot, not on the global object."
     )
-    assert found, (
-        f"{name} is gone — it is a cross-realm VALUE channel that was OUT OF "
-        f"SCOPE for PS-93. If that was deliberate, re-derive the marker subset "
-        f"assertions in this file; do not just delete this test."
-    )
+    # SOURCE TEXT IS THE WEAKER HALF and is not what this rests on: it passes on
+    # a build that merely renamed the channel. The gate that reads the live
+    # global, and the iframe->top crossing these channels exist for, are in
+    # tests/test_realm_value_channels.py.
 
 
 # ---------------------------------------------------------------------------
@@ -283,11 +321,23 @@ def test_no_removed_marker_is_reachable_by_enumerating_the_global(shipped, realm
 @pytest.mark.parametrize("realm", ["topMarkers", "workerMarkers", "nestedMarkers"])
 def test_the_marker_set_is_a_strict_subset_and_gains_no_new_name(shipped, realm):
     # A SUBSET check, deliberately not `markers == []`. This ticket does not
-    # close the charter item — `__pnaName` is per-function and out of scope, and
-    # the two value channels above remain — so asserting emptiness would ship a
-    # knowingly-red gate. What must hold is that the 12 are absent and nothing
-    # NEW appeared in their place.
-    allowed = set(RETAINED_VALUE_CHANNELS) | {"__pnaName", "__pnaRealm"}
+    # close the charter item — `__pnaName` is per-function and out of scope —
+    # so asserting emptiness would ship a knowingly-red gate. What must hold is
+    # that the 12 are absent and nothing NEW appeared in their place.
+    #
+    # THE CARVE-OUT FOR THE TWO VALUE CHANNELS IS GONE (PS-139), which is the
+    # re-derivation the inverted test at the top of this file demanded rather
+    # than a silent loosening: `__personaScreenWH` / `__personaMtFactor` moved
+    # into the non-enumerable per-realm slot, so they are no longer names this
+    # assertion has to tolerate. They are not merely un-excused here — their
+    # absence from the live global is asserted positively, in
+    # tests/test_realm_value_channels.py, on the realms that actually carry
+    # device_ext and measuretext_ext (this probe drives the audio leaf alone).
+    #
+    # `__pnaRealm` stays allowed and that bound is inherited, not closed: it
+    # hangs off `Object`, so a detector walking getOwnPropertyNames(Object)
+    # still finds it. worker_wrap.py states that in place.
+    allowed = {"__pnaName", "__pnaRealm"}
     unexpected = [m for m in shipped[realm] if m not in allowed]
     assert not unexpected, (
         f"{realm}: unexpected persona-family global(s) {unexpected}; the guard "
