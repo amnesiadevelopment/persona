@@ -27,8 +27,11 @@ is a coupling; without the address in the record, nobody can tell).
 
 Never a fallback to direct
 --------------------------
-A missing credential file, an unusable credential, a refused connection, a
-timeout, an exit that is not Polish — each ENDS the run with a recorded reason.
+A credential missing from EVERY channel, an unusable credential, a refused
+connection, a timeout, an exit that is not Polish — each ENDS the run with a
+recorded reason. A missing credential FILE alone does NOT: the credential
+arrives on two channels and either can supply it (PS-145, see
+`resolve_credential`). What ends the run is that no channel had one.
 There is deliberately no code path in this module that produces a "well, try it
 without the proxy" outcome, silently or otherwise. An inconclusive run is a
 legitimate recordable result; a WRONG one is not, because a wrong one looks
@@ -53,6 +56,35 @@ from .socks_fetch import DEFAULT_TIMEOUT, FetchFailed, ProxyRefused, fetch_json
 # Where the operator's credential lives. Read at call time, never cached to
 # disk, never logged, never placed in a record — see `redact`.
 DEFAULT_CREDENTIAL_PATH = "/workspace/_secrets/test-proxy.txt"
+
+# The SECOND channel the same credential arrives on. Read as a FALLBACK to the
+# file, never instead of it — see `resolve_credential` for why the file wins.
+#
+# Two channels because one channel failing must not stop a live reading, and
+# both have been observed failing INDEPENDENTLY on this fleet within one hour
+# (PS-145). The failures were almost exactly complementary, which is why it
+# went unnoticed for so long: whoever looked had one of them, and nobody had
+# both.
+#
+#   * `persona-planner`  — file present (117 bytes), variable EMPTY (0 chars).
+#   * `persona-reviewer` — freshly recreated: variable present (117 chars),
+#     file GONE. At the time the file sat on the container overlay with no
+#     host volume, so it died with the container.
+#
+# The operator has since bind-mounted the file from the host, which closed the
+# second failure and made rotation immediate. This constant closes the FIRST
+# one: the durable channel the operator maintains was previously invisible to
+# this module (`grep -rn PERSONA_TEST_PROXY src/` returned nothing at all).
+#
+# ⚠️ AN EMPTY VALUE IS "ABSENT", NEVER "NO PROXY NEEDED". This is the single
+# most important line attached to this constant, because the variable HAS been
+# observed empty in production containers — so empty is the EXPECTED case here
+# rather than an edge one. An empty proxy value is cheap to misuse: `curl -x ""`
+# connects DIRECTLY and returns perfectly parseable JSON of the operator's real
+# address with no error at all. That is the exact shape of the wrong-but-
+# plausible reading this whole module exists to prevent, so "unset" and "set to
+# nothing" are collapsed to the same refusing outcome.
+ENVIRONMENT_CREDENTIAL_VAR = "PERSONA_TEST_PROXY"
 
 # The exit this project is entitled to read checkers from. Poland, because
 # persona derives a profile's timezone from proxy geography and every
@@ -289,46 +321,257 @@ def _connect_stage_code(text: str) -> "int | None":
         return None
 
 
-def load_credential(path: str = DEFAULT_CREDENTIAL_PATH) -> str:
-    """Read the proxy credential and return it in ``socks5h`` form.
+def _to_socks5h(raw: str) -> "str | None":
+    """Rewrite a socks5 credential to ``socks5h`` form, or ``None``.
 
-    The file supplies the plain ``socks5://`` form. The scheme is rewritten
-    HERE, deliberately and in one place, rather than each call site guessing:
-    ``socks5h`` sends the hostname for the EXIT to resolve, while ``socks5``
-    resolves it locally and leaks a DNS query naming the checker being read.
+    **THE ONE PLACE A SCHEME IS DECIDED IN THIS MODULE.** Both sources feed
+    THIS function rather than each carrying its own copy of the rule, because
+    the rule is a security property and a second copy is a second thing to get
+    wrong: ``socks5h`` sends the hostname for the EXIT to resolve, while plain
+    ``socks5`` resolves it LOCALLY and leaks a DNS query naming the very
+    checker being read — from the operator's own resolver, which is precisely
+    what routing through the exit is meant to prevent.
 
-    A missing or empty file raises :class:`ExitNotProven` — it is one of the
-    ways a run ends without recording, not a condition to work around.
+    ``None`` means "not a socks5 URL", reported by the caller as a source that
+    could not be used. It never means "use it as-is": a scheme this module does
+    not recognise is not a scheme it may guess at.
+
+    The browser lane deliberately keeps the plain ``socks5`` scheme
+    (``process.py``: Chromium rejects ``socks5h`` with
+    ``ERR_NO_SUPPORTED_PROXIES`` and performs remote DNS itself). The two lanes
+    differ ON PURPOSE — do not "fix" either to match the other.
     """
+    if raw.startswith("socks5://"):
+        return "socks5h://" + raw[len("socks5://"):]
+    if raw.startswith("socks5h://"):
+        return raw
+    return None
+
+
+# The source names, as they appear in a record. Short, stable and NOT
+# credential-shaped: they name a CHANNEL, never a value.
+SOURCE_FILE = "file"
+SOURCE_ENVIRONMENT = "environment"
+
+
+@dataclass(frozen=True)
+class _Candidate:
+    """One channel's answer, and WHY it answered that way.
+
+    ``proxy_url`` is ``None`` for every unusable disposition, so "can this be
+    used" is one check rather than a re-reading of the prose.
+
+    ``origin`` is a PATH or a VARIABLE NAME — a coordinate, never a value — so
+    it is safe in a refusal message. ``why`` is likewise built only from that
+    coordinate and a fixed phrase: no branch here interpolates the credential
+    itself, which is what keeps a second source from becoming the one path
+    that bypasses :func:`redact`.
+    """
+
+    source: str
+    origin: str
+    proxy_url: "str | None"
+    why: str
+
+
+@dataclass(frozen=True)
+class Credential:
+    """A usable proxy credential, and which channel it came from.
+
+    ``proxy_url`` is CREDENTIAL-SHAPED and must never be logged or recorded.
+    ``source`` and ``detail`` are deliberately safe to record — that split is
+    the whole point of this object: the run can state which channel it used
+    without the value travelling alongside the statement.
+    """
+
+    proxy_url: str
+    source: str
+    detail: str
+    diverged: bool = False
+
+
+def _from_file(path: str) -> _Candidate:
+    """The operator's file — bind-mounted from the host, so it rotates live."""
     if not os.path.exists(path):
-        raise ExitNotProven(
-            f"no proxy credential at {path}: the run cannot reach the exit, "
-            "and a checker reading taken over a direct connection would expose "
-            "the operator's real address to every checker in the matrix. "
-            "Refusing to fall back to a direct connection."
+        return _Candidate(
+            SOURCE_FILE, path, None, f"no proxy credential at {path}"
         )
     try:
         with open(path, "r", encoding="utf-8") as handle:
             raw = handle.read().strip()
     except OSError as exc:
-        raise ExitNotProven(
-            f"could not read the proxy credential at {path}: "
-            f"{type(exc).__name__}"
-        ) from exc
-    if not raw:
-        raise ExitNotProven(
-            f"the proxy credential at {path} is empty; refusing to fall back "
-            "to a direct connection"
+        return _Candidate(
+            SOURCE_FILE, path, None,
+            f"the proxy credential at {path} could not be read "
+            f"({type(exc).__name__})",
         )
-    if raw.startswith("socks5://"):
-        return "socks5h://" + raw[len("socks5://"):]
-    if raw.startswith("socks5h://"):
-        return raw
-    raise ExitNotProven(
-        "the proxy credential is not a socks5 URL (a scheme this run can "
-        "route a checker through); refusing to fall back to a direct "
-        "connection"
+    if not raw:
+        return _Candidate(
+            SOURCE_FILE, path, None,
+            f"the proxy credential at {path} is empty",
+        )
+    url = _to_socks5h(raw)
+    if url is None:
+        return _Candidate(
+            SOURCE_FILE, path, None,
+            f"the proxy credential at {path} is not a socks5 URL",
+        )
+    return _Candidate(SOURCE_FILE, path, url, f"read from {path}")
+
+
+def _from_environment(var: str = ENVIRONMENT_CREDENTIAL_VAR) -> _Candidate:
+    """The environment variable — the durable channel, read as a FALLBACK.
+
+    ⚠️ ``.strip()`` BEFORE the emptiness test, and an empty value is ABSENT.
+    A variable set to ``""`` or to whitespace is treated exactly like one that
+    was never exported, because the alternative is the failure this module
+    exists to prevent: an empty proxy value does not error, it CONNECTS
+    DIRECTLY, and the run would record the operator's real address as a
+    perfectly well-formed reading. "Set to nothing" is not a weaker "set".
+    """
+    raw = os.environ.get(var)
+    if raw is None:
+        return _Candidate(SOURCE_ENVIRONMENT, var, None, f"{var} is unset")
+    raw = raw.strip()
+    if not raw:
+        return _Candidate(
+            SOURCE_ENVIRONMENT, var, None,
+            f"{var} is set but empty (treated as absent: an empty proxy "
+            "value would connect DIRECTLY)",
+        )
+    url = _to_socks5h(raw)
+    if url is None:
+        return _Candidate(
+            SOURCE_ENVIRONMENT, var, None, f"{var} is not a socks5 URL"
+        )
+    return _Candidate(SOURCE_ENVIRONMENT, var, url, f"read from {var}")
+
+
+def resolve_credential(
+    path: str = DEFAULT_CREDENTIAL_PATH,
+    *,
+    env_var: str = ENVIRONMENT_CREDENTIAL_VAR,
+) -> Credential:
+    """Obtain the credential from EITHER channel, and say which one won.
+
+    Two sources so that one channel failing does not stop a live reading. Both
+    have been observed failing independently on this fleet — see
+    :data:`ENVIRONMENT_CREDENTIAL_VAR` for the measurement.
+
+    **Precedence: the FILE wins, the environment is the fallback.** Not
+    arbitrary, and not alphabetical. The file is bind-mounted from the host, so
+    the operator's rotation reaches a running container IMMEDIATELY; the
+    environment variable is fixed when the container is created and cannot be
+    updated in place, so it goes stale SILENTLY and a stale credential is
+    exactly the thing that looks like it is working. When the two disagree, the
+    channel that can be rotated is the one to believe — and the disagreement is
+    REPORTED either way, never resolved quietly.
+
+    **AN EXPLICIT ``path`` IS A PREFERENCE, NOT A PIN.** Naming a path (the
+    CLI's ``--credential``) changes WHICH FILE is consulted first; it does not
+    switch the environment channel off. So a run given a path to a file that
+    turns out to be absent or unusable still proceeds on
+    :data:`ENVIRONMENT_CREDENTIAL_VAR`, and the record says it did.
+
+    Decided deliberately rather than inherited (PS-145 audit raised it as an
+    open question). The resilience is the entire point of two channels — a
+    named path that REFUSED when the file was missing would reintroduce, for
+    exactly the operator who was most specific, the single point of failure
+    this function exists to remove. The cost is real but bounded: an operator
+    who names a path to PIN which credential is in use can be given the other
+    one. That case is not silent — the chosen channel is in the run's record
+    and on stderr — so it is visible rather than surprising, which is the
+    property that made this the acceptable side of the trade.
+
+    To pin a credential absolutely, unset the variable for the run
+    (``env -u PERSONA_TEST_PROXY``) or pass ``env_var`` naming one that is
+    not set: with one channel genuinely absent, the named file is the only
+    one that can answer.
+
+    Adding a second SOURCE is compatible with this module's rule; adding a
+    second OUTCOME is not. There is still exactly one way for this function to
+    return — with a socks5h credential — and exactly one way for it to fail —
+    :class:`ExitNotProven`. No arrangement of the two channels produces a "try
+    it without the proxy" result.
+    """
+    # Precedence is the ORDER of this tuple, stated once.
+    candidates = (_from_file(path), _from_environment(env_var))
+    usable = [c for c in candidates if c.proxy_url is not None]
+
+    if not usable:
+        # NEITHER CHANNEL — the run ends, with the same reason it always gave
+        # plus which channel failed how. Every source is named even though one
+        # sentence would do: "the file is missing" sends an operator to fix a
+        # file when the variable was the empty one, and this ticket exists
+        # because nobody had both halves of that picture at once.
+        why = "; ".join(c.why for c in candidates)
+        raise ExitNotProven(redact(
+            f"no usable proxy credential — {why}. The run cannot reach the "
+            "exit, and a checker reading taken over a direct connection would "
+            "expose the operator's real address to every checker in the "
+            "matrix. Refusing to fall back to a direct connection."
+        ))
+
+    winner = usable[0]
+    others = [c for c in candidates if c is not winner]
+    diverged = any(
+        c.proxy_url is not None and c.proxy_url != winner.proxy_url
+        for c in others
     )
+
+    if diverged:
+        # BOTH CHANNELS HELD A CREDENTIAL AND THEY WERE NOT THE SAME ONE.
+        #
+        # Loud, because silent precedence between two live credentials is how
+        # an operator ends up debugging a reading taken through a proxy they
+        # believed they had replaced. With a host mount on one side and a
+        # container-frozen variable on the other, they can now genuinely
+        # diverge — so this is a real state, not a defensive branch.
+        #
+        # It does NOT refuse. Both channels are the operator's own and a
+        # disagreement is a staleness question, not evidence that either is
+        # hostile; refusing would turn a rotation into an outage, which is the
+        # opposite of what this ticket is for. It is reported instead, and the
+        # value of neither channel appears in the report.
+        detail = (
+            f"SOURCES DISAGREE: the {SOURCE_FILE} ({path}) and "
+            f"{SOURCE_ENVIRONMENT} ({env_var}) each hold a credential and "
+            f"they are NOT the same one. Used the {winner.source} "
+            f"({winner.origin}), which takes precedence because the file is "
+            "mounted from the host and rotates live while the variable is "
+            "frozen at container creation. If that is the wrong one, the "
+            "other channel is the stale one."
+        )
+    elif len(usable) > 1:
+        detail = (
+            f"used the {winner.source} ({winner.origin}); the "
+            f"{SOURCE_ENVIRONMENT} ({env_var}) holds the same credential"
+        )
+    else:
+        unusable = "; ".join(c.why for c in others)
+        detail = f"used the {winner.source} ({winner.origin}) — {unusable}"
+
+    return Credential(
+        proxy_url=winner.proxy_url,
+        source=winner.source,
+        detail=redact(detail),
+        diverged=diverged,
+    )
+
+
+def load_credential(path: str = DEFAULT_CREDENTIAL_PATH) -> str:
+    """The proxy credential in ``socks5h`` form, from either channel.
+
+    Thin wrapper over :func:`resolve_credential` for callers that want only
+    the URL. A caller that needs to RECORD which channel won should call
+    :func:`resolve_credential` directly rather than re-deriving it here —
+    re-deriving would read the channels a second time and could reach a
+    different answer than the one actually used.
+
+    A credential in NEITHER source raises :class:`ExitNotProven` — one of the
+    ways a run ends without recording, not a condition to work around.
+    """
+    return resolve_credential(path).proxy_url
 
 
 def _normalise_observation(payload: dict) -> dict:
@@ -571,24 +814,44 @@ def prove_exit(
     *,
     credential_path: str = DEFAULT_CREDENTIAL_PATH,
     timeout: float = DEFAULT_TIMEOUT,
-) -> "tuple[str, Exit]":
-    """The whole precondition, in one call: ``(proxy_url, observed_exit)``.
+) -> "tuple[str, Exit, Credential]":
+    """The whole precondition, in one call.
+
+    Returns ``(proxy_url, observed_exit, credential)``.
 
     Raises :class:`ExitNotProven` if the run may not record. Callers are
     expected to let that propagate — catching it to continue anyway is the one
     thing this module exists to prevent.
+
+    THE THIRD MEMBER IS THE PROVENANCE, and it is returned rather than left
+    for the caller to look up. A caller that re-derived it would read the
+    channels a SECOND time and could get a different answer than the one this
+    run actually used — the file is mounted live, so it can change between the
+    two reads, and a record naming the wrong channel is worse than one naming
+    none. It travels WITH the result for the same reason the observed exit
+    does.
+
+    It carries the credential VALUE as well as the channel, so it is not a
+    record-safe object on its own: write ``credential.source`` and
+    ``credential.detail``, never the object. See :class:`Credential`.
     """
-    proxy_url = load_credential(credential_path)
-    return proxy_url, observe_exit(proxy_url, timeout=timeout)
+    credential = resolve_credential(credential_path)
+    proxy_url = credential.proxy_url
+    return proxy_url, observe_exit(proxy_url, timeout=timeout), credential
 
 
 __all__ = [
     "DEFAULT_CREDENTIAL_PATH",
+    "ENVIRONMENT_CREDENTIAL_VAR",
     "EXPECTED_COUNTRY",
+    "Credential",
     "Exit",
     "ExitNotProven",
+    "SOURCE_ENVIRONMENT",
+    "SOURCE_FILE",
     "load_credential",
     "observe_exit",
     "prove_exit",
     "redact",
+    "resolve_credential",
 ]

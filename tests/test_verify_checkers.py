@@ -1538,13 +1538,18 @@ def _read(argv, tmp_path, monkeypatch, exit_country="PL", expect_rc=3):
     the record and only the code moved.
     """
     import src.services.verify.checker_cli as cli
-    from src.services.verify.exit_guard import Exit
+    from src.services.verify.exit_guard import Credential, Exit, SOURCE_FILE
 
     monkeypatch.setattr(
         cli, "prove_exit",
         lambda **kw: ("socks5h://u:p@host:1080",
                       Exit(ip="91.150.1.1", country=exit_country, city="Warsaw",
-                           org="AS9141 P4", timezone="Europe/Warsaw")),
+                           org="AS9141 P4", timezone="Europe/Warsaw"),
+                      Credential(
+                          proxy_url="socks5h://u:p@host:1080",
+                          source=SOURCE_FILE,
+                          detail="used the file (/stub/test-proxy.txt)",
+                      )),
     )
     monkeypatch.setattr(cli, "read_json_tier", lambda *a, **k: [])
     target = tmp_path / "reading.json"
@@ -1642,14 +1647,19 @@ def _browser_arm(argv, tmp_path, monkeypatch, expect_rc=3):
     """
     import src.services.verify.checker_cli as cli
     import src.services.verify.browser_tier as bt
-    from src.services.verify.exit_guard import Exit
+    from src.services.verify.exit_guard import Credential, Exit, SOURCE_FILE
     from src.services.verify.masking_layer import LayerReport, absent_layer
 
     monkeypatch.setattr(
         cli, "prove_exit",
         lambda **kw: ("socks5h://u:p@host:1080",
                       Exit(ip="91.150.1.1", country="PL", city="Warsaw",
-                           org="AS9141 P4", timezone="Europe/Warsaw")),
+                           org="AS9141 P4", timezone="Europe/Warsaw"),
+                      Credential(
+                          proxy_url="socks5h://u:p@host:1080",
+                          source=SOURCE_FILE,
+                          detail="used the file (/stub/test-proxy.txt)",
+                      )),
     )
     monkeypatch.setattr(cli, "read_json_tier", lambda *a, **k: [])
 
@@ -1864,3 +1874,184 @@ def test_no_adverse_row_matched_on_the_clean_captured_pages():
     flagged = [(r.checker, r.item, r.value)
                for r in readings if r.adverse and r.state == READ]
     assert flagged == [], f"clean pages reported adverse matches: {flagged}"
+
+
+# --- which credential channel the RECORD says was used (PS-145) -------------
+#
+# THESE TESTS EXIST BECAUSE THE FEATURE WAS SILENTLY REMOVABLE. The guard's
+# two-channel behaviour was well covered, but the leg that carries the answer
+# INTO THE ARTEFACT was covered by nothing: deleting `credential_detail=...`
+# from the `_notes_for` call in `checker_cli` left the entire suite green, so
+# the provenance could regress to stderr-only — the exact state PS-145 says is
+# insufficient — without a single test objecting.
+#
+# ⚠️ THE HELPER BELOW DELIBERATELY DOES **NOT** STUB `prove_exit`, which is
+# what every other CLI test in this file does. Stubbing it hands the record a
+# hand-written `Credential` and pins the CALL SIGNATURE while proving nothing
+# about which channel a real run would have chosen. Only the NETWORK is
+# replaced here; `resolve_credential` runs for real against a real file and a
+# real environment variable, so what is asserted is what an operator would
+# actually read weeks later.
+
+
+def _read_with_real_credential(
+        tmp_path, monkeypatch, *, file_credential=None, env_credential=None,
+        credential_path=None, expect_rc=3):
+    """Drive the CLI `read` path with ONLY the network stubbed out.
+
+    Returns ``(record, used)`` where ``used`` carries the proxy URL the run
+    actually reached the network with — so a test can assert the record's
+    stated channel against the credential that was genuinely used, rather than
+    against the one the test hoped would win.
+    """
+    import src.services.verify.checker_cli as cli
+    import src.services.verify.exit_guard as exit_guard
+    from src.services.verify.exit_guard import Exit
+
+    used = {}
+
+    def fake_observe_exit(proxy_url, **kw):
+        # The one seam. Everything above it — both channels, the precedence
+        # between them, the socks5h rewrite — is the real code.
+        used["proxy_url"] = proxy_url
+        return Exit(ip="91.150.1.1", country="PL", city="Warsaw",
+                    org="AS9141 P4", timezone="Europe/Warsaw")
+
+    monkeypatch.setattr(exit_guard, "observe_exit", fake_observe_exit)
+    monkeypatch.setattr(cli, "read_json_tier", lambda *a, **k: [])
+
+    if file_credential is None:
+        # A path that genuinely does not exist, not an empty file: "absent" and
+        # "present but unusable" are different dispositions.
+        path = credential_path or str(tmp_path / "no-such-test-proxy.txt")
+    else:
+        written = tmp_path / "test-proxy.txt"
+        written.write_text(file_credential + "\n", encoding="utf-8")
+        path = credential_path or str(written)
+
+    # The ambient variable is REAL in this container, so every test states its
+    # own environment rather than inheriting one — see the equivalent fixture
+    # in test_verify_exit_guard.py for what happens when it does not.
+    if env_credential is None:
+        monkeypatch.delenv(exit_guard.ENVIRONMENT_CREDENTIAL_VAR, raising=False)
+    else:
+        monkeypatch.setenv(
+            exit_guard.ENVIRONMENT_CREDENTIAL_VAR, env_credential
+        )
+
+    target = tmp_path / "reading.json"
+    rc = cli.main(["read", "-o", str(target), "--skip-browser", "--skip-json",
+                   "--credential", path])
+    assert rc == expect_rc
+    return json.loads(target.read_text()), used
+
+
+def _credential_note(record):
+    """The record's own statement of which channel it used, or None."""
+    notes = [n for n in record["notes"] if n.startswith("CREDENTIAL SOURCE:")]
+    assert len(notes) <= 1, f"more than one credential note: {notes}"
+    return notes[0] if notes else None
+
+
+def test_the_record_states_the_credential_came_from_the_file(
+        tmp_path, monkeypatch):
+    """The ordinary case: both channels hold the SAME credential, the file
+    wins, and the record says so by name."""
+    cred = "socks5://alice:s3cr3t@gate.example.com:10000"
+    record, used = _read_with_real_credential(
+        tmp_path, monkeypatch, file_credential=cred, env_credential=cred,
+    )
+
+    note = _credential_note(record)
+    assert note is not None, (
+        "the record carries NO credential-source note. The run chose a "
+        "channel and the artefact does not say which — an operator reading "
+        "this record later cannot account for its exit."
+    )
+    # The note must say the FILE was USED. "environment" legitimately appears
+    # further along (it holds the same credential, and the note says so), so
+    # the assertion is on which channel was USED rather than on which words
+    # occur — a substring test for "file" alone would pass on a note that said
+    # the environment won and merely mentioned the file.
+    assert "used the file" in note.lower(), (
+        f"the file won and the record does not say so: {note!r}"
+    )
+    assert "used the environment" not in note.lower()
+    assert used["proxy_url"].startswith("socks5h://")
+
+
+def test_the_record_states_the_credential_came_from_the_environment(
+        tmp_path, monkeypatch):
+    """THE CASE THE TICKET EXISTS FOR — no file at all, and the run still
+    proves its exit. The record must name the ENVIRONMENT, not the file: this
+    is the assertion that a file-vs-environment distinction is genuinely
+    visible in the artefact rather than a constant string that happens to
+    mention a channel."""
+    cred = "socks5://alice:s3cr3t@gate.example.com:10000"
+    record, used = _read_with_real_credential(
+        tmp_path, monkeypatch, file_credential=None, env_credential=cred,
+    )
+
+    note = _credential_note(record)
+    assert note is not None, "the record does not say which channel was used"
+    assert "environment" in note.lower(), (
+        f"the run used the environment variable and the record does not say "
+        f"so: {note!r}"
+    )
+    assert "PERSONA_TEST_PROXY" in note
+    assert used["proxy_url"].startswith("socks5h://"), (
+        "the environment channel must feed the same socks5h rewrite as the "
+        "file — plain socks5 leaks a DNS query naming the checker"
+    )
+
+
+def test_the_record_names_the_channel_that_won_when_the_two_disagree(
+        tmp_path, monkeypatch):
+    """The case silent precedence would hide. Two DIFFERENT live credentials:
+    the record must state which one the reading was actually taken through,
+    because an operator who rotated one of them and is debugging the result
+    has no other way to find out."""
+    record, used = _read_with_real_credential(
+        tmp_path, monkeypatch,
+        file_credential="socks5://alice:s3cr3t@gate.example.com:10000",
+        env_credential="socks5://bob:0th3r@relay.example.net:20000",
+    )
+
+    note = _credential_note(record)
+    assert note is not None, (
+        "two channels disagreed and the record is silent about which one was "
+        "used — the reading cannot be accounted for"
+    )
+    assert "DISAGREE" in note, f"the divergence is not reported: {note!r}"
+    # The run reached the network through the FILE, and the record has to
+    # agree with that rather than merely mention both channels.
+    assert "gate.example.com" in used["proxy_url"]
+    # Case-insensitive: the divergence sentence capitalises "Used the file"
+    # mid-paragraph while the ordinary one does not. The claim under test is
+    # WHICH CHANNEL IS NAMED, not how the sentence is punctuated.
+    assert "used the file" in note.lower()
+
+    # And the value of NEITHER channel may appear in the artefact.
+    blob = json.dumps(record)
+    for secret in ("s3cr3t", "0th3r", "alice", "bob"):
+        assert secret not in blob, (
+            f"{secret!r} reached the written record — the provenance note is "
+            f"the one path that must not bypass redact()"
+        )
+
+
+def test_a_record_taken_through_one_channel_does_not_claim_the_other(
+        tmp_path, monkeypatch):
+    """Guard the guard. If the note were a fixed string naming both channels,
+    every test above would pass while telling a reader nothing. The
+    environment-only run must NOT claim a file was read."""
+    record, _ = _read_with_real_credential(
+        tmp_path, monkeypatch, file_credential=None,
+        env_credential="socks5://alice:s3cr3t@gate.example.com:10000",
+    )
+
+    note = _credential_note(record)
+    assert "used the environment" in note, (
+        f"expected the note to name the channel actually used: {note!r}"
+    )
+    assert "used the file" not in note

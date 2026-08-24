@@ -31,7 +31,7 @@ import pytest
 from src.services.verify import browser_tier as bt
 from src.services.verify import checker_cli as cli
 from src.services.verify.checkers import BROWSER_CHECKERS, ENGINE_EXIT_CHECKER
-from src.services.verify.exit_guard import Exit
+from src.services.verify.exit_guard import Credential, Exit, SOURCE_FILE
 from src.services.verify.matrix import UNOBTAINABLE, build_record
 
 
@@ -629,6 +629,11 @@ def _record_from_read(
                 ip="192.0.2.1", country="PL", city="Warsaw", org="stub",
                 timezone="Europe/Warsaw",
             ),
+            Credential(
+                proxy_url="socks5h://u:p@host:1080",
+                source=SOURCE_FILE,
+                detail="used the file (/stub/test-proxy.txt)",
+            ),
         ),
     )
     monkeypatch.setattr(cli, "read_json_tier", lambda *_a, **_k: [])
@@ -721,6 +726,11 @@ def test_a_proven_exit_with_no_timezone_refuses_rather_than_reading(
             # Proven: Polish, addressed, reached through the credential. The
             # provider simply did not carry a zone.
             Exit(ip="192.0.2.1", country="PL", city="Warsaw", org="stub"),
+            Credential(
+                proxy_url="socks5h://u:p@host:1080",
+                source=SOURCE_FILE,
+                detail="used the file (/stub/test-proxy.txt)",
+            ),
         ),
     )
     # NO tier may be reached: the refusal is worth nothing if the reading
@@ -1011,6 +1021,11 @@ def test_a_mixed_engine_run_is_refused_before_any_browser_starts(
         lambda **_k: (
             "socks5h://u:p@host:1080",
             Exit(ip="192.0.2.1", country="PL", city="Warsaw", org="stub"),
+            Credential(
+                proxy_url="socks5h://u:p@host:1080",
+                source=SOURCE_FILE,
+                detail="used the file (/stub/test-proxy.txt)",
+            ),
         ),
     )
 
