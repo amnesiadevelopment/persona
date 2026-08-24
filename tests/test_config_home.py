@@ -263,9 +263,10 @@ def test_rooted_driveless_override_is_returned_exactly_as_given(
 
 # --- PS-127 rework: the blast radius is EIGHT constants, not three ---
 #
-# _under_home backs eight constants (config.py:91-98). The first revision's
-# sweep enumerated DATA_DIR/LOG_DIR/ENGINE_DIR only — and PROFILES_FILE is the
-# one that actually blew up on Windows CI.
+# _under_home backs eight constants (PROFILES_FILE .. ENGINE_DIR in
+# src/core/config.py). The first revision's sweep enumerated
+# DATA_DIR/LOG_DIR/ENGINE_DIR only — and PROFILES_FILE is the one that
+# actually blew up on Windows CI.
 
 ALL_UNDER_HOME = {
     "PROFILES_FILE": ("PERSONA_PROFILES_FILE", "profiles.json"),
@@ -484,9 +485,10 @@ def test_call_time_sites_track_the_cwd_unlike_the_eight_constants(
     if someone 'fixes' the docstring back to a universal invariance claim, or
     freezes these sites at import, this test says so.
 
-    single_instance.py:39-46 documents the call-time resolution deliberately —
-    freezing it would break the override contract for anything that sets the
-    env var after that module loads, the test fixtures included.
+    single_instance._lock_path's docstring ("RESOLVED AT CALL TIME, NOT AT
+    IMPORT") documents the call-time resolution deliberately — freezing it
+    would break the override contract for anything that sets the env var
+    after that module loads, the test fixtures included.
     """
     a = tmp_path / "cwd_a"
     a.mkdir()
