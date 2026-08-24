@@ -149,6 +149,13 @@ class App:
         self._update_in_progress = False
         self._update_staged = ""
         self._update_start_t = 0.0
+        # Why a REFUSED app rollback needs its own rendered field: the gesture
+        # is a rename, so it finishes in milliseconds with no progress bar to
+        # watch. Without a status line on the row, a refusal is
+        # indistinguishable from a dead button — and _log alone is not a
+        # surface, because the sidebar log panel is hidden entirely when
+        # collapsed. Mirrors _engine2_status on the Firefox engine row.
+        self._app_rollback_status: str = ""
         self._checking_proxies: set[str] = set()
         self._engine_latest: str = ""
         # _engine_busy = a real download is in flight (show the progress bar).
@@ -486,14 +493,40 @@ class App:
         a download — so there is no progress bar, which is exactly why a
         refusal must be VISIBLE rather than log-only: without it a refused
         revert is indistinguishable from a dead button. The service call owns
-        the decision; this only reports it."""
+        the decision; this only reports it.
+
+        _log is NOT that visible surface: it reaches the sidebar log panel,
+        which renders only when the operator has it expanded, so a refusal
+        that goes solely to the log has no user-visible surface at all with the
+        panel collapsed. The status line on the row is where they are already
+        looking, and it is set on every exit below."""
         try:
             went = app_update.revert_to_previous_build(log=self._log)
         except Exception as e:
             self._log(f"Update: going back failed ({e})")
-            went = ""
+            self._app_rollback_status = "couldn't go back — see the log"
+            self._refresh_sidebar()
+            return
         if went:
             self._log("Update: restart persona to run the previous version.")
+            # No refusal to explain, and any stale complaint from an earlier
+            # failed attempt must not outlive the attempt that succeeded.
+            self._app_rollback_status = "restart to run the previous version"
+        else:
+            # Re-derive WHICH refusal it was rather than restating "no": the
+            # two are not interchangeable. A retained bundle still on disk
+            # means the RENAME was refused (a non-writable /Applications is the
+            # ordinary case) and the log carries the OS error; no retained
+            # bundle means there was never anything to go back to.
+            try:
+                retained = bool(app_update.rollback_target())
+            except Exception:
+                retained = False
+            self._app_rollback_status = (
+                "couldn't go back — see the log"
+                if retained
+                else "nothing to go back to"
+            )
         self._refresh_sidebar()
 
     def _build_version_panel(self) -> ft.Control:
@@ -615,6 +648,24 @@ class App:
         rollback = self._app_rollback_row()
         if rollback is not None:
             rows.append(rollback)
+
+        # The status line is rendered INDEPENDENTLY of the rollback row above,
+        # and that separation is load-bearing rather than tidiness. The row
+        # obeys the "nothing retained — render nothing at all" rule and so
+        # returns None in exactly the case one of the two refusals reports:
+        # a bundle that vanished between the render and the click. Hanging the
+        # status off the row would therefore drop the refusal precisely when it
+        # needs to be read. Rendered here, every outcome of the gesture has a
+        # visible surface whether or not the button survives it.
+        if self._app_rollback_status:
+            rows.append(
+                ft.Text(
+                    self._app_rollback_status,
+                    size=10,
+                    color=COLORS["text_dim"],
+                    font_family="monospace",
+                )
+            )
 
         return ft.Container(
             border_radius=3,
