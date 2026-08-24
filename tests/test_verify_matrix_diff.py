@@ -1323,3 +1323,304 @@ def test_compare_needs_no_exit_and_no_network(record, tmp_path, monkeypatch):
         )
         == 0
     )
+
+
+# ---------------------------------------------------------------------------
+# PS-144 — the SILENCE PASS: which checkers have never once answered?
+#
+# Everything below runs over the REAL COMMITTED RECORDS ON DISK, discovered by
+# payload shape from the repository tree — not over mutated copies of the
+# fixture, and not over hand-built dicts. That is the point of this lane: the
+# claim under test is "never answered in any record we hold", which is a
+# statement about the corpus, so a synthetic corpus would prove nothing about
+# it. `test_silence_pass_names_exactly_the_three_readable_tier_checkers` is the
+# falsification target — delete the silence pass and it goes RED.
+#
+# The expected value is the three named hosts, NEVER a record count. The count
+# is a count of on-disk artifacts, in the exact tree this feature exists to
+# consume: it stood at 9 when this ticket was written and at 20 when it was
+# implemented, because three legitimate recording campaigns landed in between.
+# An AC keyed on it would already be a false RED pointing at nothing.
+# ---------------------------------------------------------------------------
+
+from src.services.verify.matrix_silence import (  # noqa: E402
+    CARRIED,
+    MINIMUM_RECORDS,
+    NEVER_ANSWERED,
+    NotEnoughRecords,
+    alarms,
+    answered_by_record,
+    carried,
+    discover_record_paths,
+    format_silence,
+    load_record,
+    silence_pass,
+)
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Measured live over the committed corpus. These three are `tier=browser` or
+# `tier=json` — the catalogue declares them READABLE — and not one record has
+# ever obtained a reading from any of them, while the matrix presents as 16
+# wide. Each already carries a per-run `note_unreachable`; this is those notes
+# added up, which no command could do before this one.
+SILENT_READABLE = {
+    "bot-detector.rebrowser.net",
+    "deviceandbrowserinfo.com",
+    "tools.scrapfly.io",
+}
+
+# Silent too, and deliberately NOT findings: the catalogue declares each of
+# these `tier=unreadable` with a written `unreadable_reason` (click-gated,
+# paywalled, Cloudflare challenge). A report that alarmed on all eight would be
+# 5/8 false alarm, and on an alarm-shaped deliverable every by-design member
+# discounts every genuine one.
+SILENT_CARRIED = {
+    "amiunique.org",
+    "browserscan.net",
+    "coveryourtracks.eff.org",
+    "fv.pro",
+    "whoer.net",
+}
+
+
+@pytest.fixture
+def committed_records() -> "list[dict]":
+    """Every committed checker-matrix record, discovered by PAYLOAD SHAPE.
+
+    Globs the whole tree and filters on `isinstance(d["readings"], list)`
+    rather than reading a remembered subdirectory, so a new recording campaign
+    widens the corpus instead of breaking the suite.
+    """
+    paths = discover_record_paths(REPO_ROOT)
+    assert len(paths) >= MINIMUM_RECORDS, (
+        f"discovery found {len(paths)} record(s) under {REPO_ROOT}; the "
+        "silence lane needs a real corpus to range over"
+    )
+    return [load_record(path) for path in paths]
+
+
+def test_silence_pass_names_exactly_the_three_readable_tier_checkers(
+    committed_records,
+):
+    """AC1 — THE FALSIFICATION TARGET.
+
+    Over the committed record set the report names exactly
+    `bot-detector.rebrowser.net`, `deviceandbrowserinfo.com` and
+    `tools.scrapfly.io` — no more, no fewer. Before this slice no command in
+    the subsystem could produce this answer at all, because `compare_records`
+    takes exactly two records and "never" is a quantifier over a set.
+
+    Asserted on the return value of a real call over real record files. Not
+    that a helper ran, not on source text.
+    """
+    entries = silence_pass(committed_records)
+
+    assert {e["checker"] for e in alarms(entries)} == SILENT_READABLE
+
+
+def test_silence_pass_reports_unreadable_tier_as_carried_not_as_findings(
+    committed_records,
+):
+    """AC2 — the partition IS the finding; the raw count is the wrong number.
+
+    Eight checkers are silent across the corpus. Five of them are silent
+    BY DESIGN and say so in the catalogue. Reporting 8 undifferentiated is the
+    false-alarm failure that trains a reader to ignore the gate.
+    """
+    entries = silence_pass(committed_records)
+
+    assert {e["checker"] for e in carried(entries)} == SILENT_CARRIED
+    assert all(e["tier"] == "unreadable" for e in carried(entries))
+
+    # The whole silent population is the union of the two — and the split is
+    # load-bearing, so assert the count is NOT what a naive report would print.
+    assert {e["checker"] for e in entries} == SILENT_READABLE | SILENT_CARRIED
+    assert len(entries) == 8
+    assert len(alarms(entries)) == 3
+
+
+def test_a_checker_read_in_some_records_is_not_silent(committed_records):
+    """AC3 — intermittent is NOT silent.
+
+    `creepjs` and `pixelscan.net` both appear in individual records'
+    unobtainable tallies yet read elsewhere, so both must stay out of the
+    report entirely. Folding them in would drown the three checkers that have
+    genuinely never been read.
+
+    The unit asserted here is the RECORD (the implementation's unit): each
+    answered in strictly more than zero and strictly fewer than all of them.
+    The ticket quoted 5/9 at filing time and this measured 12/20 at
+    implementation; the ratio moves with the corpus, so the assertion is on the
+    MIXED PROPERTY, which is what actually discriminates.
+    """
+    answered = answered_by_record(committed_records)
+    total = len(committed_records)
+    reported = {e["checker"] for e in silence_pass(committed_records)}
+
+    for checker_id in ("creepjs", "pixelscan.net"):
+        assert 0 < answered[checker_id] < total, (
+            f"{checker_id} answered in {answered[checker_id]}/{total} records; "
+            "this test needs a checker that is genuinely MIXED to discriminate"
+        )
+        assert checker_id not in reported
+
+
+def test_a_single_record_is_refused_rather_than_reported_clean(
+    committed_records,
+):
+    """AC4 — the PS-92 evidence floor, one artifact over.
+
+    A one-record silence reading is unfalsifiable: every checker that happened
+    to fail in that one run reads as "never answered". Zero silent checkers
+    over one record and zero over twenty are the same VALUE and completely
+    different EVIDENCE, so the degenerate input must REFUSE rather than return
+    an empty report that reads as a clean bill of health.
+    """
+    with pytest.raises(NotEnoughRecords):
+        silence_pass(committed_records[:1])
+
+    with pytest.raises(NotEnoughRecords):
+        silence_pass([])
+
+
+def test_cli_silence_exits_3_over_the_committed_corpus(capsys):
+    """The lane end to end, exit code included.
+
+    3 already means "no finding, but the coverage this rests on is not what you
+    think" at three existing sites in this CLI, which is exactly what a
+    never-read readable-tier checker is. Never 1 — the product did not move.
+    """
+    assert main(["silence", "--discover", REPO_ROOT]) == 3
+
+    out = capsys.readouterr().out
+    for checker_id in SILENT_READABLE:
+        assert checker_id in out
+    # The carried five are PRINTED (the set is accounted for in full) but they
+    # are what the FINDINGS section must not contain.
+    findings_section = out.split("CARRIED")[0]
+    for checker_id in SILENT_CARRIED:
+        assert checker_id in out
+        assert checker_id not in findings_section
+
+
+def test_cli_silence_refuses_a_single_record_with_2(capsys):
+    """A refusal is never a verdict — exit 2, the convention PS-61 settled."""
+    assert main(["silence", RECORD_PATH]) == 2
+    assert "REFUSED" in capsys.readouterr().err
+
+
+def test_cli_silence_refuses_a_file_that_is_not_a_record(
+    record, tmp_path, capsys
+):
+    """A non-record in the set refuses, naming the file. Never a silent skip.
+
+    A file quietly dropped from the set changes the denominator "answered in
+    0/N" is quoted against, which is the number the whole report rests on.
+    """
+    not_a_record = os.path.join(str(tmp_path), "not-a-record.json")
+    with open(not_a_record, "w", encoding="utf-8") as handle:
+        json.dump({"nope": True}, handle)
+
+    assert main(["silence", not_a_record, RECORD_PATH]) == 2
+    assert not_a_record in capsys.readouterr().err
+
+
+def test_silence_exits_0_when_every_readable_checker_answered(record):
+    """The clean path is REACHABLE — a gate that can only fire is not a gate.
+
+    Built by mutating the committed record so every row reads, then handing in
+    two of them: the tier split still runs, the carried entries are still
+    reported, and the exit is 0 because no READABLE-tier checker is silent.
+    """
+    healthy = mutate(record)
+    for reading in healthy["readings"]:
+        reading["state"] = "read"
+
+    entries = silence_pass([healthy, mutate(healthy)])
+
+    assert alarms(entries) == []
+    # The unreadable-tier checkers with no rows at all are still carried, and
+    # still must not turn the report red.
+    assert all(e["classification"] == CARRIED for e in entries)
+
+
+def test_discovery_is_by_payload_shape_not_by_directory_name(tmp_path, record):
+    """A record in an unheard-of directory is found; a non-record is not.
+
+    The guard against the failure mode that makes this feature silently stop
+    working: keying discovery on a remembered subdirectory means the next
+    recording campaign lands outside the set and nobody is told.
+    """
+    campaign = os.path.join(str(tmp_path), "readings", "ps999-never-seen")
+    os.makedirs(campaign)
+    a_record = write_record(tmp_path, os.path.join(campaign, "reading.json"), record)
+
+    decoy = os.path.join(str(tmp_path), "not-a-record.json")
+    with open(decoy, "w", encoding="utf-8") as handle:
+        json.dump({"readings": "not a list"}, handle)
+
+    found = discover_record_paths(str(tmp_path))
+
+    assert found == [a_record]
+
+
+def test_format_silence_keeps_the_two_populations_apart(committed_records):
+    """The rendering carries the split, not just the data structure.
+
+    A caller reading the printed page must not be able to come away with the
+    undifferentiated 8.
+    """
+    entries = silence_pass(committed_records)
+    text = format_silence(entries, records=len(committed_records))
+
+    assert "FINDINGS" in text and "CARRIED" in text
+    assert str(len(committed_records)) in text
+    findings_section, carried_section = text.split("CARRIED")
+    for checker_id in SILENT_READABLE:
+        assert checker_id in findings_section
+    for checker_id in SILENT_CARRIED:
+        assert checker_id in carried_section
+
+
+def test_absent_counts_as_evidence_so_an_absent_only_checker_is_not_silent(
+    record,
+):
+    """`absent` is a READING, not a failure to read — so it breaks silence.
+
+    This pins the one rule this lane must never quietly redefine. `absent`
+    means the checker ANSWERED and did not report the item, which for an
+    adverse item is the GOOD news; only `unobtainable` and a missing row are
+    non-evidence. `evidence.obtained` is the single owner of that definition
+    and this lane delegates to it rather than re-deriving it, because the
+    failure mode of writing it twice is that the lanes drift and a checker
+    reported "never answered" here is one every other lane can see answering.
+
+    Built as a mutation because the committed corpus cannot express the case:
+    NO checker in it has `absent` as its only evidence corpus-wide, so a real
+    record set cannot tell a correct implementation from one that counts only
+    `read`. Without this test, narrowing the rule to `state == "read"` passes
+    the entire suite — measured, not assumed.
+    """
+    absent_only = mutate(record)
+    for reading in absent_only["readings"]:
+        if reading["checker"] == "iphey.com":
+            reading["state"] = "absent"
+
+    other = mutate(record)
+    for reading in other["readings"]:
+        if reading["checker"] == "iphey.com":
+            reading["state"] = "unobtainable"
+
+    answered = answered_by_record([absent_only, other])
+    reported = {e["checker"] for e in silence_pass([absent_only, other])}
+
+    # It answered in exactly the one record where it was `absent`. Read with
+    # `.get` so an implementation that counts only `read` fails this as a
+    # stated ASSERTION about the rule, rather than as a KeyError that has to
+    # be interpreted.
+    assert answered.get("iphey.com", 0) == 1, (
+        "a checker whose only evidence is `absent` must count as having "
+        "answered: `absent` means it replied and did not report the item"
+    )
+    assert "iphey.com" not in reported
