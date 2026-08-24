@@ -668,7 +668,15 @@ def test_the_scratch_directory_is_swept_so_only_one_session_lands_on_disk(tmp_pa
     assert os.listdir(second) == [], "the swept directory must start empty"
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory write bits")
+@pytest.mark.skipif(
+    # hasattr short-circuits: os.geteuid does NOT exist on Windows, and this
+    # runs at COLLECTION time, so calling it unguarded fails the whole job
+    # rather than one test. Windows is skipped on its own merits anyway —
+    # dropping a directory's write bit does not gate unlinking there, so the
+    # unsweepable directory this test needs cannot be built with chmod.
+    not hasattr(os, "geteuid") or os.geteuid() == 0,
+    reason="POSIX-only: root and Windows both ignore directory write bits",
+)
 def test_a_sweep_that_cannot_clear_does_not_fail_the_launch(tmp_path):
     # The degradation, stated in prepare_child_tmpdir's docstring and asserted
     # here so it stays true: a directory that cannot be CLEARED is a stale-cache
