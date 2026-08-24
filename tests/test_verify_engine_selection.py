@@ -422,7 +422,7 @@ def test_the_sandbox_is_never_waived_by_default():
     assert "--no-sandbox" in _args(allow_unsandboxed=True)
 
 
-def test_chromium_is_told_the_exits_timezone(): 
+def test_chromium_is_told_the_exits_timezone():
     """The defect PS-132 exists to fix.
 
     The product pins a concrete zone on every launch
@@ -584,7 +584,13 @@ def _record_from_read(
         "prove_exit",
         lambda **_k: (
             "socks5h://u:p@host:1080",
-            Exit(ip="192.0.2.1", country="PL", city="Warsaw", org="stub"),
+            # A zone, because a real observation of a Polish exit carries one
+            # and a run whose exit cannot be PLACED now refuses to read at all
+            # (PS-132). A zoneless stub here would exercise the refusal rather
+            # than the record these tests are about; the refusal has its own
+            # arm below.
+            Exit(ip="192.0.2.1", country="PL", city="Warsaw", org="stub",
+                 timezone="Europe/Warsaw"),
         ),
     )
     monkeypatch.setattr(cli, "read_json_tier", lambda *_a, **_k: [])
@@ -641,6 +647,71 @@ def test_a_sandboxed_reading_does_not_carry_the_waiver_note(monkeypatch):
         ],
     )
     assert not any("--no-sandbox" in n for n in record["notes"])
+
+
+def test_a_proven_exit_with_no_timezone_refuses_rather_than_reading(
+    monkeypatch, capsys
+):
+    """PROVEN is not PLACED, and the difference must stop the run.
+
+    ``observe_exit`` proves an exit on ``ip`` and ``country`` ALONE, so a
+    provider payload with no ``timezone`` key yields a fully proven ``Exit``
+    carrying the empty string. One layer down that empty string means the
+    opposite thing — to ``_launch_args`` it is the loopback differential
+    honestly saying it has no exit, so it passes no flag — and a run that HAS
+    an exit would then launch exactly as it did before this fix, reporting the
+    HOST clock and collecting a ``timezone_spoofed`` verdict the product did
+    not earn.
+
+    So this is the arm that keeps the fix from failing OPEN. It asserts the
+    run records NOTHING, which is the product's own settled answer one axis
+    over (``process.py:_profile_timezone`` refuses to launch a profile whose
+    proxy has no geography rather than deriving one from the host).
+    """
+    args = cli.build_parser().parse_args(
+        [
+            "read", "--engine", "chromium", "--declared-machine", "windows",
+            "--seed", "4242",
+        ]
+    )
+    monkeypatch.setattr(
+        cli,
+        "prove_exit",
+        lambda **_k: (
+            "socks5h://u:p@host:1080",
+            # Proven: Polish, addressed, reached through the credential. The
+            # provider simply did not carry a zone.
+            Exit(ip="192.0.2.1", country="PL", city="Warsaw", org="stub"),
+        ),
+    )
+    # NO tier may be reached: the refusal is worth nothing if the reading
+    # happens anyway and is merely discarded, because the point is that
+    # nothing behind an unplaceable exit ever describes the container to a
+    # third party. Each tier names ITSELF rather than sharing one message —
+    # reverting the fix trips the JSON tier first, and a shared "a browser was
+    # launched" would then be a false statement about which tier ran.
+    def _never(tier: str):
+        def _fail(*_a, **_k):
+            raise AssertionError(
+                f"the {tier} tier ran behind an exit whose zone is unknown; "
+                "the run should have refused before reading anything"
+            )
+
+        return _fail
+
+    monkeypatch.setattr(bt, "read_browser_tier", _never("browser"))
+    monkeypatch.setattr(cli, "read_json_tier", _never("json"))
+    monkeypatch.setattr(cli, "read_unreadable_tier", _never("unreadable"))
+
+    assert cli._read_one(args, bt.CHROMIUM, "windows", seed=4242) is None, (
+        "a proven-but-unplaceable exit must record nothing; returning a "
+        "record means the run read the host clock and wrote it down"
+    )
+    # The operator has to be told WHICH precondition failed, or the refusal is
+    # indistinguishable from a dead proxy and they debug the wrong thing.
+    refusal = capsys.readouterr().err
+    assert "REFUSED" in refusal
+    assert "timezone" in refusal
 
 
 def test_a_credentialled_upstream_gets_persona_s_hardened_relay(monkeypatch):
