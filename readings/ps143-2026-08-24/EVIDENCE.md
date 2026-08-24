@@ -74,7 +74,8 @@ A differential where both arms return identical verdicts is worthless if the arm
 That failure has a name on this project (`A/B VERIFICATION` / saturation) and it is the one that ships a
 wrong ticket, because it produces evidence rather than silence. So it was tested rather than assumed.
 
-**10 of 61 rows moved between the arms.** The layer demonstrably changes what checkers see:
+**8 of 61 rows moved on the `fingerprint` sort.** Those are the rows that carry this argument: the
+layer demonstrably changes what checkers see about the browser.
 
 | row | layer ON | layer OFF |
 |---|---|---|
@@ -85,8 +86,21 @@ wrong ticket, because it produces evidence rather than silence. So it was tested
 | `pixelscan.net/webgl_vendor` | `Google Inc. (NVIDIA)` | `Google Inc. (AMD)` |
 | `pixelscan.net/webgl_hash` | `036072f3…` | `185b5d0e…` |
 | `iphey.com/trustworthy` | absent | read |
-| `iphey.com/hardware_fine` | absent | read |
 | `iphey.com/software_fine` | absent | read |
+
+Ten rows differ in total. The other two are **corroboration, deliberately excluded from the headline**,
+because neither is a fingerprint row and a guard that counts them overstates itself:
+
+| row | sort | why it is not in the eight |
+|---|---|---|
+| `iphey.com/hardware_fine` | `host` | moved, and `compare` reports it under `host-moved` — real, but host-sorted, so it is not evidence about the browser's fingerprint |
+| `tls.peet.ws/observed_ip` | `exit` | ephemeral source port only (`:44988`→`:45002`) — **same address**, and §2 already discounts it on exactly that ground; `compare` files it under `CONTEXT / exit-rotated: the exit rotates by design — not news` |
+
+Counting the port row here would have put this record in contradiction with its own §2, which discounts
+it. Eight is the number that carries the argument, and eight is still a decisive pass.
+
+(One further row, `creepjs/canvas_data_hash`, is *not* a move at all: the value is `4c7ac378` on both
+arms and only the surrounding page text changed. `compare` classifies it `reworded`. It is excluded.)
 
 Independently corroborated on the loopback harness before the live run
 (`checker_cli differential --engine chromium --axis layer`), which returned verdict `moved`:
@@ -206,4 +220,16 @@ this ticket's.
 
 - `arm-a-layer-on.json` — layer ON, `route=extensions`, 10 vectors
 - `arm-b-layer-off.json` — layer OFF, `route=none`, control arm
-- Reproduce the comparison: `python -m src.services.verify.checker_cli compare arm-a-layer-on.json arm-b-layer-off.json`
+- Reproduce the comparison — **run this from the repository root**, with the paths as written:
+
+  ```bash
+  python -m src.services.verify.checker_cli compare \
+    readings/ps143-2026-08-24/arm-a-layer-on.json \
+    readings/ps143-2026-08-24/arm-b-layer-off.json
+  ```
+
+  The `-m` form only resolves at the repo root, so a `cd` into this directory fails with
+  `ModuleNotFoundError: No module named 'src'`. Running it at the root with *bare* filenames fails the
+  other way, with `REFUSED: no checker-matrix record to read at 'arm-a-layer-on.json'` — read that as a
+  statement about the path, **not** as a finding about these records. The command exits non-zero when
+  the differential has findings, which for this pair it does; that is success, not failure.
