@@ -4,8 +4,19 @@ Every anti-leak vector is implemented TWICE (Chromium in ``process.py``,
 Firefox in ``invisible_launch.py``) with no shared policy layer, so historically
 a vector shipped for one engine and was rediscovered for the other releases
 later — DoH/QUIC/dns-prefetch landed for Chromium in the initial commit and did
-not exist in Firefox for releases afterwards. DoH/TRR was closed by #76 and
-dns-prefetch by #105; QUIC/HTTP3 is still open.
+not exist in Firefox for releases afterwards. DoH/TRR was closed by #76,
+dns-prefetch by #105, and QUIC/HTTP3 by #151 — the matrix has NO open cells.
+
+#151 is the one closed WITHOUT adding a persona pref, and that difference is
+load-bearing rather than a detail. Measured before writing any implementation:
+the engine's own baseline (``invisible_core.prefs._BASELINE``) already sets BOTH
+``network.http.http3.enable`` and ``.enabled`` to False, and
+``translate_profile_to_prefs`` starts from ``dict(_BASELINE)`` — so Firefox's
+HTTP/3 was already off for every profile persona launches, direct and proxied
+alike. Adding a persona-level pref would have changed no value and bought
+nothing. The cell below therefore asserts the ENGINE-layer coverage, which is
+where the guard actually lives; asserting ``_profile_prefs`` would have pinned
+an empty claim.
 
 The per-engine assertions that exist today live in two different files
 (``test_process.py`` for Chromium argv, ``test_invisible_launch.py`` for Firefox
@@ -48,8 +59,10 @@ Matrix pinned below, for ONE proxied profile:
 | proxied DNS          | --dns-over-https-mode=off + DnsOverHttps  | socks_remote_dns |
 | DoH / TRR            | --dns-over-https-mode=off                 | trr.mode=5 (#76) |
 | dns-prefetch         | --dns-prefetch-disable                    | disablePrefetch x2 (#105) |
-| QUIC / HTTP3         | --disable-quic + EnableQuic disabled      | KNOWN GAP |
+| QUIC / HTTP3         | --disable-quic + EnableQuic disabled      | engine _BASELINE http3 x2 (#151) |
 """
+
+import pytest
 
 from src.models.profile import Profile
 from src.services.browser.invisible_launch import _profile_prefs
@@ -81,6 +94,29 @@ def _chromium_proxied(monkeypatch, tmp_path):
 def _firefox_proxied():
     """Firefox prefs for a proxied profile — _profile_prefs is a pure function."""
     return _profile_prefs(_FF_PROXIED_CFG)
+
+
+def _firefox_effective_proxied():
+    """Every pref a proxied Firefox profile ACTUALLY launches with.
+
+    `_firefox_proxied()` above returns only persona's own overlay. That is the
+    right oracle for a cell persona pins itself, and the WRONG one for a cell
+    the engine owns: a key absent from the overlay may still be set — the engine
+    composes `_BASELINE` first and applies `extra_prefs` LAST, so the effective
+    value is what the browser sees.
+
+    Skips rather than fails when the engine is missing: it is a git dependency
+    (`pyproject.toml:48`) and is genuinely absent from some containers, so an
+    ImportError here would be an environment report, not a matrix regression.
+    The same `importorskip` guard `test_invisible_launch.py:796` uses.
+    """
+    pytest.importorskip("invisible_core")
+    from invisible_core._fpforge import generate_profile
+    from invisible_core.prefs import translate_profile_to_prefs
+
+    return translate_profile_to_prefs(
+        generate_profile(1), extra_prefs=_firefox_proxied()
+    )
 
 
 def test_matrix_webrtc_non_proxied_udp_both_engines(monkeypatch, tmp_path):
@@ -165,13 +201,53 @@ def test_matrix_dns_prefetch_direct_profile_unpinned():
     assert "network.dns.disablePrefetchFromHTTPS" not in prefs
 
 
-def test_matrix_quic_http3_chromium_only(monkeypatch, tmp_path):
+def test_matrix_quic_http3_both_engines(monkeypatch, tmp_path):
+    # BOTH engines cover this one, as of #151. Gap closed: the known-gap
+    # assertions that used to sit here are deleted, which IS the record.
+    #
+    # This cell is closed DIFFERENTLY from the other four, and the difference is
+    # the finding rather than an implementation detail. #151 measured before
+    # writing anything and found the guard already present one layer down: the
+    # engine's `_BASELINE` sets both http3 spellings False, and
+    # `translate_profile_to_prefs` starts from `dict(_BASELINE)`, so Firefox's
+    # HTTP/3 is off for every profile persona launches. No persona-level pref
+    # was added, because adding one would have changed no value.
+    #
+    # So the oracle here is the EFFECTIVE pref set a profile launches with, not
+    # `_profile_prefs`'s return. Asserting on `_profile_prefs` would pin an
+    # empty claim: the key is legitimately absent from it (see the direct/
+    # proxied cell below), and absence there says nothing about the browser.
+    #
+    # NOT SOLD AS A LEAK. `process.py:741-748` gives Chromium's --disable-quic a
+    # COMPATIBILITY motive (SOCKS5 tunnels only TCP, so HTTP/3 hangs behind a
+    # UDP-blocking proxy) and a motive is not a measurement. Whether UDP would
+    # egress on the real interface was NOT measured — the bundled Firefox is
+    # absent from this container, so no live traffic run was possible. The
+    # narrow, fully-evidenced claim is the one asserted: both engines disable
+    # HTTP/3 for a proxied profile.
     args = _chromium_proxied(monkeypatch, tmp_path)
     assert "--disable-quic" in args
     assert "EnableQuic" in ",".join(_disable_features_values(args)).split(",")
 
-    # KNOWN GAP — Firefox has no QUIC/HTTP3 guard. A SOCKS5 proxy tunnels only
-    # TCP, so HTTP/3 over UDP never reaches the far side (see the note above).
-    prefs = _firefox_proxied()
-    assert "network.http.http3.enable" not in prefs
-    assert "network.http.http3.enabled" not in prefs
+    # Firefox: assert the ENGINE-layer coverage, on the composed pref set.
+    prefs = _firefox_effective_proxied()
+    assert prefs.get("network.http.http3.enable") is False
+    assert prefs.get("network.http.http3.enabled") is False
+
+
+def test_matrix_quic_http3_not_pinned_by_persona():
+    # The companion to the cell above, and the reason it reads the EFFECTIVE set.
+    #
+    # This is NOT the direct-profile gate the trr.mode and dns-prefetch cells
+    # use — those pin a persona pref to the `if cfg.get("proxy_url")` block, and
+    # there is no persona pref here to gate. What it pins instead is WHERE the
+    # HTTP/3 guard lives: entirely in the engine, for BOTH profile shapes.
+    #
+    # It earns its place by failing on a real regression: if someone later adds
+    # a persona-level http3 pref (believing the cell above needs one), this goes
+    # red and forces the question out loud — is the engine guard gone, or is the
+    # new pref redundant? Either answer belongs in a commit message.
+    for cfg in (_FF_PROXIED_CFG, {"search_engine": "duckduckgo"}):
+        prefs = _profile_prefs(cfg)
+        assert "network.http.http3.enable" not in prefs
+        assert "network.http.http3.enabled" not in prefs
