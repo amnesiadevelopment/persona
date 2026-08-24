@@ -64,6 +64,28 @@ from src.services.browser.worker_wrap import CHROMIUM_WORKER_CLOAK
 BOOTSTRAP_WRAPPERS = ("Worker", "SharedWorker", "contentWindow", "contentDocument")
 
 
+# The two FURTHER wrappers this delivery path installs, which the four above do
+# not cover. They come from `firefox_worker_cloak()`'s `_FIREFOX_BLOB_RETAIN_SETUP`
+# (`worker_wrap.py`, `__bcloak(__wcou, "createObjectURL")` / `__bcloak(__wrv,
+# "revokeObjectURL")`), so on Firefox this path installs SIX wrappers, not four.
+#
+# Kept as a separate constant rather than folded into BOOTSTRAP_WRAPPERS because
+# they hang off `URL` rather than off the global, and so need their own read in
+# STRINGIFY.
+#
+# WHY THEY ARE PINNED HERE AT ALL, given they already read native: this is the
+# enumeration the ticket asked for ("enumerate what that path installs and state
+# each one's position"), and PS-131 exists precisely because a mechanism that
+# installs several wrappers was checked at the one probe that happened to be
+# recorded. Covering four of six would reproduce that reasoning one level down.
+# `worker_wrap.py` also names these two specifically as a repeat offence — "an
+# uncloaked `URL.createObjectURL` stringifying as raw patch source is the
+# identical class of tell that got round 3 rejected" — and a property the
+# codebase flags in those terms with no test pinning it is one regression away
+# from being live, silently, while the other four seats stay green.
+DELIVERY_WRAPPERS = ("createObjectURL", "revokeObjectURL")
+
+
 # The realms a detector can reach, in the order the page reaches them. `window`
 # is where the leak was recorded; `worker` is the sibling that appeared to pass.
 REALMS = ("window", "worker", "worker2")
@@ -170,11 +192,35 @@ const STRINGIFY = "(function(){var r={};" +
   "    r[p] = (d && d.get) ? Function.prototype.toString.call(d.get) : 'absent';" +
   "  } catch (e) { r[p] = 'throws:' + e; }" +
   "});" +
+  // The two further wrappers firefox_worker_cloak()'s blob_setup installs. They
+  // hang off URL rather than the global, hence the separate read. Note these
+  // start life in this harness as the sandbox's OWN arrow functions, which
+  // stringify as their own source — so an absent cloak reads as a leak here
+  // exactly as it would on the engine, rather than silently reading native.
+  "['createObjectURL','revokeObjectURL'].forEach(function(k){" +
+  "  try { var f = self.URL && self.URL[k];" +
+  "        r[k] = f === undefined ? 'absent'" +
+  "             : Function.prototype.toString.call(f); }" +
+  "  catch (e) { r[k] = 'throws:' + e; }" +
+  "});" +
   // Own properties, so `__pnaName` (Chromium's marker, a tell on this engine)
   // is reported as well as the stringification.
   "r.__own = {};" +
   "['Worker','SharedWorker'].forEach(function(k){" +
   "  try { r.__own[k] = Object.getOwnPropertyNames(self[k]); } catch (e) {}" +
+  "});" +
+  "['createObjectURL','revokeObjectURL'].forEach(function(k){" +
+  "  try { r.__own[k] = Object.getOwnPropertyNames(self.URL[k]); } catch (e) {}" +
+  "});" +
+  // The two iframe accessors are GETTERS, so the marker (if any) rides the get
+  // function, not a global binding — `self['contentWindow']` is undefined and
+  // reading own props off THAT silently reports nothing. Read the descriptor's
+  // getter, which is the object `__bcloak`/`__pnaName` would actually stamp.
+  "['contentWindow','contentDocument'].forEach(function(p){" +
+  "  try {" +
+  "    var d2 = P && Object.getOwnPropertyDescriptor(P, p);" +
+  "    if (d2 && d2.get) { r.__own[p] = Object.getOwnPropertyNames(d2.get); }" +
+  "  } catch (e) {}" +
   "});" +
   "return JSON.stringify(r);})()";
 
@@ -344,10 +390,53 @@ def test_bootstrap_wrapper_stringifies_as_native(tmp_path, realm, wrapper):
 
 
 @pytest.mark.parametrize("realm", REALMS)
+@pytest.mark.parametrize("wrapper", DELIVERY_WRAPPERS)
+def test_delivery_wrapper_stringifies_as_native(tmp_path, realm, wrapper):
+    """The other two wrappers this path installs — `firefox_worker_cloak()`'s
+    `URL.createObjectURL` / `URL.revokeObjectURL` — read native in every realm
+    too. Six wrappers on this path, so six pinned, not the four that hang off
+    the global.
+
+    These PASS TODAY; the seat is the enumeration, not a repair. `worker_wrap.py`
+    cloaks both through `__bcloak` at the point it installs them, and names them
+    there as a known repeat offence ("an uncloaked `URL.createObjectURL`
+    stringifying as raw patch source is the identical class of tell that got
+    round 3 rejected"). A property flagged in those terms with nothing pinning it
+    regresses silently — the four sibling seats would all stay green.
+
+    IT CANNOT PASS VACUOUSLY, and for a sharper reason than its siblings can
+    claim. The four global constructors have a genuine native built-in
+    underneath, so an UNREACHED realm reads `[native code]` off the untouched
+    original and the assertion passes for the wrong reason — which is the exact
+    false pass this file's vacuity guard exists to catch. These two have no
+    native original in this harness: they start as the sandbox's OWN arrow
+    functions, which stringify as their own source. So a realm the delivery
+    never reached reads an arrow here and goes RED, rather than passing quietly.
+    `_assert_realm_was_reached` is still called, to keep every seat in this file
+    reading the same way and to fail with the diagnostic rather than a confusing
+    stringification mismatch.
+    """
+    report = _probe(tmp_path)
+    _assert_realm_was_reached(report, realm)
+
+    read = report["realms"][realm]["stringified"][wrapper]
+    assert "[native code]" in read, (
+        f"a page in the {realm!r} realm that stringifies URL.{wrapper} reads "
+        f"{len(read)} characters of source instead of the native form. This is "
+        f"the tell worker_wrap.py names at the point it installs this wrapper; "
+        f"every real engine returns `[native code]`. Read: {read[:120]!r}"
+    )
+
+
+@pytest.mark.parametrize("realm", REALMS)
 def test_no_bootstrap_wrapper_carries_the_chromium_marker(tmp_path, realm):
     """`__pnaName` is a bare own property no browser has, and on Firefox nothing
     reads it — the marker is not a hiding place there, it is a second,
     independent tell alongside the stringification.
+
+    Covers all SIX wrappers: the probe reports `__own` for the two `URL` ones
+    beside the global constructors, and this walks whatever it is given rather
+    than a list of its own, so the delivery pair is checked here too.
 
     Pinned as ABSENCE, mirroring tests/test_ff_language_override.py.
     """
