@@ -105,6 +105,28 @@ BASELINE_REALMS: tuple[str, ...] = (WINDOW, WORKER)
 # string, driver version) would make the artifact's bytes depend on the machine
 # that recorded it — the opposite of what a byte-stable reference needs.
 ENV_SENSITIVE_PROBES: tuple[str, ...] = (
+    # PS-135. Listed for the SAME reason `fonts.measureText` below is, only
+    # more so: that probe reads glyph ADVANCE WIDTHS, while this one rasterises
+    # glyphs and a stroked arc and hashes the resulting PIXELS. Everything that
+    # moves a text width between two machines (which fonts are installed, which
+    # rasteriser, which hinting) moves these bytes too, and antialiasing — which
+    # a width measurement never sees at all — moves them as well. A vector
+    # strictly downstream of an already-listed one cannot be less host-dependent
+    # than it.
+    #
+    # THE HONEST BOUND on that: it is an argument from what the draw DOES, not a
+    # two-machine measurement. Only one host was available on PS-135, so
+    # "differs across machines" was not observed directly. What WAS observed is
+    # the weaker neighbouring fact — the same seed reads 4242351214 on the
+    # packaged firefox and 2838771797 on chromium — which shows the digest
+    # tracks the renderer rather than the seed alone.
+    #
+    # Listed rather than omitted because the two errors are not symmetric. A
+    # probe wrongly listed costs a line of caveat on a real drift. A probe
+    # wrongly OMITTED reds the baseline on a different machine for a reason
+    # nobody can see in the artifact, which is how an operator is trained to
+    # ignore the command.
+    "canvas.readback",
     "fonts.measureText",
     "masking.webglGetParameter",
     "webgl.extensions",

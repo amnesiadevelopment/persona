@@ -1186,7 +1186,38 @@ def test_no_implicit_concatenation_drops_an_interpolation():
 
 
 def _profile_snapshot(profile, *, engine="chromium", **kwargs):
-    """A snapshot with a nameable profile, otherwise identical to `_snapshot`."""
+    """A snapshot with a nameable profile, otherwise identical to `_snapshot`.
+
+    A per-profile value named for a must-differ vector in ``window_values`` is
+    mirrored into ``worker_values`` unless the caller states that realm itself.
+
+    WHY THIS MIRROR EXISTS. `_fake_evaluate` answers an unnamed probe with the
+    SAME default for every profile, so any must-differ vector left at its
+    default collides — which is why `_unlinkable` gives each one a per-profile
+    value in the first place. That helper and every call site below were written
+    when EVERY must-differ vector was WINDOW_ONLY, so naming the window realm
+    was the same as naming all of them, and the distinction cost nothing.
+
+    `canvas.readback` (PS-135) is the first must-differ vector declaring BOTH
+    realms, which separates the two: without this mirror its WORKER row keeps
+    the shared default on both profiles and is reported COLLIDING, and twelve
+    tests isolating an unrelated vector start asserting against that neighbour
+    instead of their own target.
+
+    Keyed off `must_differ_probes()` and each probe's declared realms rather
+    than off a literal, so the next vector classified in two realms costs
+    nothing here either. Deliberately narrowed to must-differ ids: a SHARED
+    probe is never compared across profiles, so mirroring it would be noise.
+    """
+    window_values = kwargs.get("window_values") or {}
+    if "worker_values" not in kwargs:
+        mirrored = {
+            probe.id: window_values[probe.id]
+            for probe in probes.must_differ_probes()
+            if probe.id in window_values and probes.WORKER in probe.realms
+        }
+        if mirrored:
+            kwargs["worker_values"] = mirrored
     return snapshot.build_snapshot(
         _run(**kwargs),
         engine=engine,

@@ -464,6 +464,142 @@ PROBES: tuple[Probe, ...] = (
         # on this digest are linkable on it.
         variance=INDEPENDENT,
     ),
+    # --- canvas 2D ----------------------------------------------------------
+    Probe(
+        "canvas.readback",
+        # BOTH, and unlike webgl.readback that is safe here rather than merely
+        # desirable. The reason those two differ is the CLASSIFICATION, not the
+        # surface: a probe declared INDEPENDENT that reads null in a realm makes
+        # two profiles compare EQUAL and be reported COLLIDING — a false leak
+        # report on every pair — which is why webgl.readback is WINDOW_ONLY. On
+        # a SHARED probe (see `variance` below) the cross-profile comparator
+        # never looks at this vector at all, so a worker realm that declined to
+        # give a 2D context costs a recorded null and nothing else. The worker
+        # arm is the half worth having: `_CANVAS` yields an OffscreenCanvas
+        # there, and whether the delegated C++ canvas patch reaches a worker at
+        # all is exactly the kind of thing this inventory exists to observe
+        # rather than assume.
+        BOTH,
+        "(function(){"
+        "var c=" + _CANVAS + ";"
+        "if(!c)return null;"
+        "var ctx=null;try{ctx=c.getContext('2d');}catch(e){ctx=null;}"
+        "if(!ctx)return null;"
+        # A FIXED surface size. `_CANVAS` hands back 300x150 in a window (the
+        # HTML default) and 300x150 in a worker, but the default is the
+        # element's, not this probe's, so it is pinned here: a future change to
+        # the shared surface must not silently change what this vector reads.
+        "var W=64,H=32;"
+        "try{c.width=W;c.height=H;}catch(e){return null;}"
+        # MID-RANGE fills, for the same reason webgl.readback uses them: a spoof
+        # that nudges a byte within a guard band leaves pure black and pure
+        # white untouched, so a black-or-white draw would read as a total
+        # masking failure while the masking worked perfectly. Four bands rather
+        # than one flat fill so the surface carries spatial structure for the
+        # position-sensitive digest below. Written as integer rgb() rather than
+        # float channels — there is no float->byte conversion to land on a tie.
+        "var bands=['rgb(79,115,154)','rgb(140,90,163)',"
+        "'rgb(107,160,92)','rgb(168,129,74)'];"
+        "for(var b=0;b<bands.length;b++){"
+        "ctx.fillStyle=bands[b];ctx.fillRect(0,b*(H/4),W,H/4);}"
+        # Text and a curve: the two things a canvas-2D fingerprint actually
+        # reads. Band fills alone are flat colour that any renderer reproduces
+        # exactly, so a fills-only draw would be stable everywhere and observe
+        # nothing — it is glyph rasterisation and antialiasing that carry the
+        # host signal, which is the same reason `fonts.measureText` is already
+        # ENV-sensitive. Deliberately drawn OVER the bands so the antialiased
+        # edges blend against a mid-range background rather than against black.
+        "try{ctx.font='14px sans-serif';ctx.fillStyle='rgb(60,90,140)';"
+        "ctx.fillText('Persona mMwWgjpq\\u00c9\\u4e2d',2,20);"
+        "ctx.strokeStyle='rgb(150,110,80)';ctx.lineWidth=2;"
+        "ctx.beginPath();ctx.arc(50,16,9,0,Math.PI*1.5);ctx.stroke();}"
+        "catch(e){}"
+        # getImageData, NOT toDataURL. Both are canvas-2D readbacks, but
+        # toDataURL routes through a PNG encoder, so its output mixes the pixels
+        # with a compressor's own choices; getImageData hands back the raw RGBA
+        # bytes the renderer produced. Wrapped because a tainted canvas throws
+        # SecurityError — this surface is never tainted (nothing external is
+        # drawn into it), so the guard is for a future edit, not for today.
+        "var d=null;"
+        "try{d=ctx.getImageData(0,0,W,H).data;}catch(e){return null;}"
+        "if(!d)return null;"
+        # FNV-1a over EVERY byte — the same reduction webgl.readback uses, and
+        # for the same two reasons. Not a sample: a spoof's touched offsets are
+        # not on a fixed comb, and a narrow sample reads a false "no variance".
+        # Not a sum: small per-byte deltas make a sum a random walk in which two
+        # seeds collide by ARITHMETIC rather than by identity, which would make
+        # a vector look POOLED whatever its declaration says. An integer digest,
+        # so there is no float formatting for a snapshot comparison to trip on.
+        "var h=2166136261,mid=0;"
+        "for(var i=0;i<d.length;i++){var v=d[i];"
+        "if(v>1&&v<254)mid++;"
+        "h=Math.imul(h^v,16777619);}"
+        # `mid` is the self-check that keeps a green from being empty: how many
+        # bytes were even ELIGIBLE to be nudged. If a future edit makes the draw
+        # black or white, `mid` collapses toward the alpha-only floor and the
+        # digest stops moving — this says WHICH of the two happened rather than
+        # leaving "identical digests" to be read as a masking failure.
+        "return {digest:h>>>0,bytes:d.length,mid:mid};"
+        "})()",
+        note=(
+            "Deterministic 2D draw (four mid-range bands, text, a stroked arc) "
+            "on the shared detached surface, reduced by FNV-1a over the raw "
+            "getImageData bytes. Reads the vector persona delegates to "
+            "fingerprint-chromium's C++ patch and never itself spoofs."
+        ),
+        # INDEPENDENT — and this is a READING, not a reflex. Every number below
+        # was measured live on PS-135 and is committed under
+        # readings/ps135-2026-08-24/. The two engines DISAGREE, so they are
+        # stated separately: neither is evidence about the other.
+        #
+        # CHROMIUM (the delegated C++ patch, driven by --fingerprint=,
+        # process.py:561) — five seeds, five DISTINCT digests:
+        #     111 -> 381336052    222 -> 1832625859   333 -> 2076010582
+        #     1337 -> 2838771797  4242 -> 2455437942
+        #   Not a small pool, so not POOLED. Stable: seed 1337 re-read on a
+        #   fresh profile dir returned 2838771797 bit-identically, so the
+        #   variation is per-PROFILE and not per-LAUNCH noise (a random vector
+        #   satisfies "two profiles differ" while making one profile
+        #   unrecognisable to itself, which is a different leak, not a fix).
+        #   COUNTERFACTUAL, which is what makes this evidence about the FLAG
+        #   rather than a correlation: with --fingerprint= REMOVED, seed args
+        #   1337 and 4242 both read 2616755061 — the same value. The entropy
+        #   is caused by the flag.
+        #
+        # FIREFOX (the packaged engine, firefox-20) — three seeds, ONE digest:
+        #   111, 1337 and 4242 all read 4242351214, in BOTH realms. That is an
+        #   observed COLLISION, and the control is what makes it a statement
+        #   about canvas rather than about the harness: in the very same
+        #   snapshots `audio.digest` DOES move per seed (35.749981 vs
+        #   35.749964), along with webgl.readback, webgl.unmasked,
+        #   webgl.parameters and navigator.hardwareConcurrency. The masking
+        #   layer was live and correctly seeded; canvas 2D simply is not
+        #   spoofed there, because the --fingerprint= flag is Chromium-only and
+        #   the Firefox arm returns at process.py:353 well before it.
+        #
+        # WHY INDEPENDENT AND NOT SHARED, given that half the matrix collides.
+        # SHARED is not the neutral choice here — it is a positive claim that a
+        # vector is "not seed-derived at all", which the Chromium counterfactual
+        # shows to be FALSE. It would also be self-erasing: SHARED probes are
+        # skipped by `compare_profiles` entirely, so the Firefox collision this
+        # ticket exists to expose would be recorded once and then never
+        # reported again by the machinery. The classification says how the
+        # vector MUST behave across two profiles; it is not a summary of how
+        # well it currently behaves on the weakest engine.
+        #
+        # THE CONSEQUENCE, STATED RATHER THAN DISCOVERED: this makes two
+        # Firefox profiles report COLLIDING on window and worker, which turns
+        # the two-profile unlinkability check to FINDING on that engine. That
+        # finding is TRUE — the digests really are identical and really are
+        # linkable — so it is a report, not the fabrication the SHARED default
+        # guards against. Fixing it is out of scope here (per the ticket, a
+        # canvas spoof is a finding for PS-2); this probe's job is to stop the
+        # fact being invisible. Precedent: `audio.digest` (PS-73) and
+        # `webgl.readback` (PS-78) were both classified INDEPENDENT while
+        # Firefox still collided on them, and in both cases the collision was
+        # reported and then fixed — audio.digest now varies per seed above.
+        variance=INDEPENDENT,
+    ),
     # --- fonts --------------------------------------------------------------
     Probe(
         "fonts.measureText",
