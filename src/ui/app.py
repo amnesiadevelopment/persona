@@ -3371,6 +3371,14 @@ class App:
 
         def _do_wipe() -> None:
             self.pm.wipe_all_profiles()
+            # wipe_all_profiles() clears the FILE log, but the Activity Log the
+            # operator is looking at is an in-memory ring that is only ever
+            # SEEDED from that file at startup — it accumulates independently
+            # afterwards, so without this the wiped names stay on screen (both
+            # the sidebar panel and the fullscreen dialog) until the next
+            # launch. Cleared BEFORE _refresh_profiles() so its _flush_log()
+            # repaints the emptied panel in the same pass.
+            self.state.clear_log()
             self.state.current_page = 1
             self._refresh_profiles()
             self._update_stats()
