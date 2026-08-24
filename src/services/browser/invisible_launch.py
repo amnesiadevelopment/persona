@@ -2680,8 +2680,15 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     # is worse than leaving them in /tmp. That platform gap is a recorded
     # absence, not a guarantee that silently doesn't hold. The chromium
     # launcher, which hands Popen an env= copy, is pinned on all platforms.
+    # TWO SEPARATE QUESTIONS, kept apart on purpose. Whether this platform pins
+    # at all is the deliberate, recorded absence above. Whether cfg actually
+    # carried the directory is a MALFORMED-INPUT question with the opposite
+    # answer — folding it into the same boolean would let a missing key wear
+    # the platform gap's clothes and launch unpinned in silence, which is the
+    # one outcome this ticket exists to prevent. Checked where it can be said
+    # out loud, below.
+    _pin_tmpdir_here = not in_thread and _platform.IS_LINUX
     _child_tmp_root = cfg.get("profile_data_dir") or ""
-    _apply_child_tmpdir = bool(_child_tmp_root) and not in_thread and _platform.IS_LINUX
 
     # The browser executes untrusted remote code, so it inherits none of the
     # operator's identity — above all SSH_AUTH_SOCK, which is a live handle onto
@@ -2734,7 +2741,22 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     # perimeter guarantee failing, and continuing would hand the engine the
     # host's shared temp dir — the exact residue being closed. Reported and
     # ended the same way, rather than launched anyway.
-    if _apply_child_tmpdir:
+    if _pin_tmpdir_here:
+        # A cfg with no profile_data_dir reaches the SAME outcome as a failed
+        # makedirs — the engine runs on the host's shared temp dir — so it is
+        # refused the same way rather than launched in silence. It is a caller
+        # bug, not a platform gap: `_child_main` builds cfg from an unvalidated
+        # PERSONA_INVISIBLE_CFG blob, so the next caller that omits the key
+        # must hear about it instead of quietly losing the perimeter.
+        if not _child_tmp_root:
+            emit(
+                "LAUNCH_FAILED: browser scratch directory: cfg has no "
+                "'profile_data_dir', so the child's scratch could not be "
+                "pinned inside the profile"
+            )
+            emit("BROWSER_CLOSED")
+            _finish()
+            return
         try:
             _pinned_tmp = pin_current_process_tmpdir(_child_tmp_root)
         except OSError as e:
