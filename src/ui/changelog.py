@@ -5,6 +5,17 @@ not a git log. When cutting a release, add the new version's highlights here.
 """
 
 CHANGELOG: dict[str, list[str]] = {
+    "3.0.0": [
+        "Fixed a real-location disclosure: a profile launched through a proxy "
+        "could advertise your own computer's timezone instead of the proxy's, "
+        "revealing roughly where you really are on the very connection the "
+        "proxy exists to hide. A proxied profile whose location cannot be "
+        "determined now refuses to launch instead of falling back to yours.",
+        "The proxy [ check ] button now speaks SOCKS properly, so it can "
+        "confirm the location of SOCKS proxies it previously could not check.",
+        "Deleted profiles, bookmarks, proxies, SSH hosts and certificates now "
+        "go to a recycle bin and can be restored.",
+    ],
     "2.9.18": [
         "Updated the Firefox engine to the latest patched build for stronger anti-detection.",
     ],

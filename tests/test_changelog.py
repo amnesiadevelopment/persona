@@ -13,10 +13,18 @@ def test_exact_version_returns_its_notes():
 def test_unknown_newer_version_falls_back_to_nearest_older():
     # A user on a version with no exact entry (e.g. a patch release) still sees
     # the newest recorded notes at or below their version, not an empty dialog.
-    notes = notes_for("2.99.0")
+    #
+    # Derive the probe FROM CHANGELOG rather than hardcoding one: the sentinel
+    # has to be newer than every recorded entry for this assertion to mean
+    # anything, and a literal silently stopped being that the first time a
+    # major bump landed ("2.99.0" was above every 2.9.x entry, but not above
+    # 3.0.0 — so the probe fell to 2.9.18 while `newest` moved to 3.0.0 and the
+    # test failed on the release cut instead of on a real regression).
+    newest = max(CHANGELOG, key=lambda v: tuple(int(x) for x in v.split(".")))
+    probe = f"{int(newest.split('.')[0]) + 1}.0.0"
+    notes = notes_for(probe)
     assert notes, "expected nearest-older notes, not []"
     # it must be the highest recorded version's notes
-    newest = max(CHANGELOG, key=lambda v: tuple(int(x) for x in v.split(".")))
     assert notes == CHANGELOG[newest]
 
 
