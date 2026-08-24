@@ -556,6 +556,108 @@ def test_a_destination_side_reply_does_not_blame_the_session_token(monkeypatch):
     assert "the credential unusable" not in lowered
 
 
+# --- the third group: neither relay-side nor destination-side --------------
+#
+# 0x07/0x08 are a PROTOCOL-level disagreement — the module's own comment calls
+# them "neither of the above". Before PR #105's third round the code had two
+# branches for three groups, so these fell into the `else` and inherited prose
+# written for the destination-side group: "raised AFTER an exit was allocated
+# ... the session token is not implicated and re-minting it would not help".
+# For a protocol-level rejection no exit need have been allocated at all.
+#
+# These rows are the reason the group has a branch. Both PASSED while being
+# wrong, because a group with no branch is invisible to a suite that pins one
+# row per branch — the same way pinning only 0x01 hid round 1.
+_BAD_COMMAND_TEXT = "SOCKS5Error: 0x07: Command not supported"
+_BAD_ADDRESS_TYPE_TEXT = "SOCKS5Error: 0x08: Address type not supported"
+
+# A connect-stage failure whose reply code cannot be read. `_connect_stage_code`
+# returns None and promises in its docstring that this is reported "as an
+# unattributed connect-stage failure rather than guessed at".
+_UNPARSEABLE_CODE_TEXT = "SOCKS5Error: the relay said no"
+
+
+@pytest.mark.parametrize(
+    "failure_text, code",
+    [(_BAD_COMMAND_TEXT, "0x07"), (_BAD_ADDRESS_TYPE_TEXT, "0x08")],
+)
+def test_a_protocol_level_reply_attributes_neither_side(
+    monkeypatch, failure_text, code
+):
+    """The third group says LESS, and this asserts that it said less.
+
+    A group whose correct behaviour is to withhold attribution needs a test
+    that pins the withholding, or nothing stops it from inheriting a
+    neighbour's wording. 0x07/0x08 mean the relay and the client disagreed
+    about the request itself — that says nothing about whether an exit was
+    allocated, so BOTH causes must go unstated: not the stale session token
+    (relay-side prose) and not "raised after an exit was allocated"
+    (destination-side prose).
+
+    What the CLASS still establishes is unaffected: PySocks only reaches the
+    reply-code read once auth has completed, so "auth passed" is asserted for
+    these codes too.
+    """
+    message = _observe_raising(monkeypatch, FetchFailed(failure_text))
+    lowered = message.lower()
+
+    # Still fully earned from the class: auth passed, connect stage failed,
+    # and the code the relay actually sent is carried verbatim.
+    assert "authenticated" in lowered
+    assert code in lowered
+    # Neither neighbour's cause may be asserted.
+    assert "sticky session token" not in lowered
+    assert "after an exit was allocated" not in lowered
+    assert "not implicated" not in lowered
+    # It says so explicitly rather than trailing off.
+    assert "does not say which side failed" in lowered
+    # And it does not regress to blaming the credential the class cleared.
+    assert "the credential unusable" not in lowered
+
+
+def test_an_unreadable_reply_code_is_reported_unattributed(monkeypatch):
+    """"Reply unreported" and a named cause cannot both be true.
+
+    This is the one that matters most, because the claim it used to invent is
+    the INVERSE of this ticket's purpose: it told the operator that re-minting
+    the session token would not help, on a run where nothing whatsoever was
+    known about the reply code. `_connect_stage_code`'s docstring already
+    promises an unattributed report "rather than guessed at"; this pins the
+    code to that promise.
+    """
+    message = _observe_raising(monkeypatch, FetchFailed(_UNPARSEABLE_CODE_TEXT))
+    lowered = message.lower()
+
+    # The stage is still known — it came from the class, not from the code.
+    assert "authenticated" in lowered
+    # It is honest that the code could not be read...
+    assert "unreported" in lowered
+    # ...and then does not attribute anyway, in either direction.
+    assert "sticky session token" not in lowered
+    assert "after an exit was allocated" not in lowered
+    assert "not implicated" not in lowered
+    assert "does not say which side failed" in lowered
+
+
+def test_the_unattributed_arm_carries_no_credential(monkeypatch):
+    """Redaction holds on the NEW arm too, asserted on output.
+
+    Each arm builds its own message, so credential-safety proven on one is not
+    proven on another. Pushed through as a credential-shaped string.
+    """
+    message = _observe_raising(
+        monkeypatch,
+        FetchFailed(f"SOCKS5Error: 0x07: Command not supported via {CRED}"),
+    )
+
+    # It really did take the unattributed arm...
+    assert "does not say which side failed" in message.lower()
+    # ...and the credential did not survive into it.
+    assert "s3cr3t" not in message
+    assert "alice" not in message
+    assert "***:***@" in message
+
+
 def test_a_checkers_own_body_cannot_trigger_the_connect_stage_message(
     monkeypatch
 ):
