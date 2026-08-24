@@ -1,10 +1,11 @@
 """What the launched browser is allowed to inherit from the operator's session.
 
-Two properties live here, both of them "what the child inherits from whoever
-started persona": its ENVIRONMENT (the two scrub lists below) and its WORKING
-DIRECTORY (``browser_child_cwd``). They are separate concerns kept in one
-module for one reason — they have the same failure mode, which is that a value
-decided at one engine seam and forgotten at the other looks fixed and is not.
+Three properties live here, all of them "what the child inherits from whoever
+started persona": its ENVIRONMENT (the two scrub lists below), its WORKING
+DIRECTORY (``browser_child_cwd``) and its SCRATCH DIRECTORY
+(``browser_child_tmpdir``). They are separate concerns kept in one module for
+one reason — they have the same failure mode, which is that a value decided at
+one engine seam and forgotten at the other looks fixed and is not.
 
 THE ENVIRONMENT
 ---------------
@@ -111,6 +112,71 @@ APPLYING IT, and the platform gap that is deliberate:
   fixed. That path is therefore left alone, guarded identically to the
   environment scrub: an honest, recorded absence rather than a guarantee that
   silently does not hold.
+
+THE SCRATCH DIRECTORY
+---------------------
+
+Same shape again, and the one property here that is POINTED rather than
+removed. persona already scopes its OWN scratch into the profile — the
+``dir=`` argument to ``mkstemp`` in ``invisible_launch``, so a crash cannot
+strand a ``persona-*`` artifact in the host's shared temp dir — while the
+child that actually executes untrusted remote code got no such treatment and
+wrote to ``/tmp``. Measured before this was fixed: a SIGKILLed session left
+``org.chromium.Chromium.*`` directories, product-identifying by name, plus the
+engine's ~714MB AppImage extraction, all of it outliving the profile.
+
+``browser_child_tmpdir`` is now the one authority, and it points every name in
+``TEMP_DIR_VARS`` — not ``TMPDIR`` alone, because Windows resolves ``TMP`` /
+``TEMP`` and Python's own ``tempfile`` consults all three. Setting one is how a
+value looks pinned on the developer's platform and is not on the operator's.
+
+NOT A SCRUB, which is why ``TMPDIR`` is deliberately absent from both lists
+above. Deleting it would send the child to ``/tmp`` — straight back outside the
+perimeter. The docstring entry there says so at the point a reader would
+otherwise "finish the job" by adding it.
+
+BOUNDED TO ONE SESSION, which is the half that makes this a perimeter
+guarantee rather than a relocation. Pinning scratch inside the profile puts it
+where ``delete_profile`` (which renames the data dir into the trash), the trash
+and ``wipe_all_profiles`` can reach it; it does not stop it accumulating. The
+engine's extraction survives a clean exit, so without a sweep what used to be
+ONE shared copy in ``/tmp`` becomes one PERMANENT copy per profile, and a
+deleted profile parks it in the trash for the full 30-day retention
+(``services/trash/store.py``). ``prepare_child_tmpdir`` therefore sweeps before
+it creates, binding scratch to a single session exactly as
+``cert.terminator.sweep_key_material`` binds decrypted key material to its
+directory — and for the same stated reason: cleanup that runs at EXIT never
+runs when the session dies without one, which is precisely the SIGKILL case
+that motivated this.
+
+THE COST, stated rather than buried: the AppImage extraction is content-
+addressed and reused, so sweeping re-extracts it on every launch. Measured on
+the reference engine, cold vs warm ``TMPDIR``: ~3.1s against ~0.6s, so roughly
+2.5s of added launch latency, every launch, bought for a bounded perimeter.
+That is a real regression in startup time and whoever revisits this should
+weigh it knowing the number. It sits against a 90s CDP-ready timeout that
+already anticipates cold-extraction slowness. The extraction is a pure cache of
+the engine binary — byte-identical across profiles, carrying nothing
+identity-bearing — so nothing but time is lost by discarding it.
+
+WHAT THIS IS NOT. Not a page-observable leak and not claimed as one: no JS
+surface reads ``TMPDIR`` and no fingerprint surface is touched. This is the
+local-code / forensic-residue threat model — invariant #0, a profile must not
+strand data outside what ``delete_profile``, the trash and
+``wipe_all_profiles`` can reach.
+
+APPLYING IT, and the same platform gap, one notch sharper:
+
+* Chromium gets it in the ``env`` COPY handed to ``subprocess.Popen(env=...)``,
+  so it is pinned on all three platforms by construction and the parent's own
+  environment is untouched.
+* Firefox on Linux FORKS, so its child pins its own ``os.environ`` — see
+  ``pin_current_process_tmpdir``.
+* Firefox on Windows/macOS runs that child as a THREAD. Pinning there would
+  move persona's own temp dir and EVERY concurrently-open profile's, pointing
+  them all at ONE profile's scratch directory — worse than leaving them in
+  ``/tmp``, because it would cross-contaminate profiles rather than merely
+  miss the perimeter. Left alone, guarded identically: a recorded absence.
 """
 
 # Identity-bearing variables the browser child has no use for. SSH_AUTH_SOCK
@@ -228,14 +294,9 @@ def browser_child_cwd():
     return os.path.expanduser("~")
 
 
-# THE SCRATCH DIRECTORY
-# ---------------------
-#
-# Third property, same shape as the two above and here for the same reason.
-# See the module docstring's TMPDIR entry: it is excluded from the scrub
-# lists because scrubbing it would be actively WRONG — the child would fall
-# back to /tmp and land straight back outside the perimeter. It has to be
-# POINTED somewhere, not deleted.
+# THE SCRATCH DIRECTORY — rationale in the module docstring's section of that
+# name (why it is pointed rather than scrubbed, why it is swept, and the
+# latency that buys).
 #
 # All three names, not just TMPDIR: TMPDIR is the POSIX one, TMP/TEMP are what
 # Windows resolves, and Python's own tempfile checks all three in that order.
@@ -272,16 +333,46 @@ def browser_child_tmpdir(profile_dir):
 
 
 def prepare_child_tmpdir(profile_dir):
-    """Create the scratch directory and return it.
+    """Sweep the scratch directory, recreate it empty, and return it.
 
     Created BEFORE the launch on purpose: a TMPDIR that does not exist or is
     not writable can stop the engine starting, which would turn a residue fix
-    into a launch bug. ``exist_ok`` because a relaunch of the same profile
-    legitimately finds last session's directory.
+    into a launch bug.
+
+    SWEPT FIRST, which is the half that makes the pin a perimeter guarantee
+    rather than a relocation. Pinning scratch inside the profile only decides
+    WHERE it lands; on its own it lets scratch accumulate forever, so what used
+    to be one shared copy in ``/tmp`` (which the OS clears on reboot) becomes
+    one PERMANENT copy per profile that nothing in the tree ever reclaims — and
+    a deleted profile parks it in the trash for the full 30-day retention.
+    Sweeping binds it to a single session: at most one session's scratch is
+    ever on disk.
+
+    Deliberately at LAUNCH rather than at exit, copying
+    ``cert.terminator.sweep_key_material`` — which binds decrypted key material
+    to its directory for exactly this reason, that cleanup hung off session
+    teardown "never runs when a session ends without it". The residue this
+    ticket measured came from a SIGKILLed session, so an exit-time sweep would
+    miss the very case that motivated it.
+
+    THE COST, stated because it is real: the engine's AppImage extraction is
+    content-addressed and reused, so discarding it re-extracts ~714MB on the
+    next launch. Measured cold vs warm on the reference engine: ~3.1s against
+    ~0.6s, i.e. roughly 2.5s of added launch latency every time, against a 90s
+    CDP-ready timeout that already anticipates cold-extraction slowness. Only
+    time is lost — the extraction is a pure cache of the engine binary,
+    byte-identical across profiles and carrying nothing identity-bearing.
+
+    ``ignore_errors`` on the sweep, not on the create: a scratch directory that
+    cannot be cleared is a stale-cache problem and must not fail the launch,
+    whereas one that cannot be CREATED means the pin did not happen, and the
+    caller refuses the launch over it rather than hand the engine ``/tmp``.
     """
     import os
+    import shutil
 
     target = browser_child_tmpdir(profile_dir)
+    shutil.rmtree(target, ignore_errors=True)
     os.makedirs(target, exist_ok=True)
     return target
 

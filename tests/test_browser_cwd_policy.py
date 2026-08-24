@@ -233,7 +233,18 @@ def _child_cwd_after_fork(tmp_path, sentinel=None, in_thread=False, is_linux=Tru
 
             il._launch_and_watch = _report
             il._child(
-                {"profile_dir": str(tmp_path)},
+                # Both keys, the way process._spawn_invisible builds them:
+                # profile_dir is the engine's inner .invisible-profile and
+                # profile_data_dir is the profile data dir one level up. This
+                # file is about the WORKING directory, but _child refuses a cfg
+                # with no profile_data_dir (it could not pin scratch, and
+                # launching unpinned silently is the residue PS-129 closes), so
+                # a fixture omitting it would exercise that refusal instead of
+                # the cwd behaviour under test here.
+                {
+                    "profile_dir": os.path.join(str(tmp_path), ".invisible-profile"),
+                    "profile_data_dir": str(tmp_path),
+                },
                 write_fd,
                 stop_event=threading.Event() if in_thread else None,
             )
@@ -323,7 +334,18 @@ def test_an_unreachable_directory_is_reported_on_the_pipe_not_died_on(tmp_path):
             env_policy.browser_child_cwd = lambda: missing
             il.browser_child_cwd = lambda: missing
             il._launch_and_watch = lambda *a, **k: None
-            il._child({"profile_dir": str(tmp_path)}, write_fd)
+            # profile_data_dir is set so the scratch pin SUCCEEDS and this test
+            # reaches the cwd failure it is about. The scratch guard runs first
+            # (deliberately — a failure to pin scratch is the perimeter
+            # guarantee failing), so a cfg without it would report the missing
+            # key here instead of the unreachable directory.
+            il._child(
+                {
+                    "profile_dir": os.path.join(str(tmp_path), ".invisible-profile"),
+                    "profile_data_dir": str(tmp_path),
+                },
+                write_fd,
+            )
         except BaseException:
             pass
         os._exit(0)

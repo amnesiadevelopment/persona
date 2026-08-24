@@ -190,14 +190,23 @@ def _child_environ_after_fork(tmp_path, in_thread=False, is_linux=True, cfg=None
     asserted about calls — only about the environment that actually exists in
     the child process.
 
-    ``cfg`` overrides what the child is handed. The scratch-directory tests
-    need it: the firefox seam reads the profile DATA dir from
-    ``cfg["profile_data_dir"]``, which the default cfg here deliberately does
-    not carry, so those tests pass it explicitly.
+    ``cfg`` overrides what the child is handed. The default models a
+    WELL-FORMED launch, carrying both keys the way ``process._spawn_invisible``
+    builds them: ``profile_dir`` is the engine's inner ``.invisible-profile``
+    and ``profile_data_dir`` is the profile data dir one level up, which is
+    what the scratch pin hangs off. It used to omit the second key, which
+    quietly made every caller of this helper a malformed-cfg launch — the
+    child now refuses those (correctly), so a default that omitted it would
+    test the refusal path in tests that are about something else entirely.
+    Pass ``cfg`` explicitly to construct the malformed shape on purpose.
     """
     read_fd, write_fd = os.pipe()
     report_r, report_w = os.pipe()
-    child_cfg = {"profile_dir": str(tmp_path)} if cfg is None else cfg
+    default_cfg = {
+        "profile_dir": str(tmp_path / ".invisible-profile"),
+        "profile_data_dir": str(tmp_path),
+    }
+    child_cfg = default_cfg if cfg is None else cfg
     pid = os.fork()
     if pid == 0:  # pragma: no cover - runs in the forked child
         try:
@@ -613,3 +622,131 @@ def test_scratch_directory_is_inside_the_wipeable_perimeter(tmp_path):
     scratch = browser_child_tmpdir(profile_dir)
     assert os.path.commonpath([profile_dir, scratch]) == profile_dir
     assert scratch != profile_dir
+
+
+def test_the_scratch_directory_is_swept_so_only_one_session_lands_on_disk(tmp_path):
+    # THE BOUND, and the one test here that a no-op CANNOT pass. Pinning
+    # scratch inside the profile only decides WHERE it lands; without a sweep
+    # it accumulates forever, so what used to be one shared copy in /tmp (which
+    # the OS clears on reboot) becomes one PERMANENT copy per profile that
+    # nothing in the tree ever reclaims — and a deleted profile parks it in the
+    # trash for the full 30-day retention.
+    #
+    # Measured on the real engine: the AppImage extraction is ~714MB and
+    # survives a clean exit, so this is the difference between bounded and
+    # unbounded growth, not a tidy-up.
+    #
+    # FALSIFICATION: drop the rmtree from prepare_child_tmpdir and this goes
+    # red on the planted file — the pin still "works" by every other test in
+    # this module, which is exactly why the bound needs its own assertion.
+    from src.services.browser.env_policy import prepare_child_tmpdir
+
+    profile_dir = str(tmp_path / "recurring")
+    os.makedirs(profile_dir)
+
+    first = prepare_child_tmpdir(profile_dir)
+    # Stand in for last session's residue: the engine's extraction, and a
+    # nested directory, since rmtree vs unlink is part of what is under test.
+    planted = os.path.join(first, "appimage_extracted_deadbeef")
+    os.makedirs(planted)
+    leftover = os.path.join(planted, "chrome")
+    with open(leftover, "w") as fh:
+        fh.write("last session")
+    assert os.path.exists(leftover)
+
+    second = prepare_child_tmpdir(profile_dir)
+
+    assert second == first, "the scratch path must be stable across sessions"
+    assert os.path.isdir(second), (
+        "the sweep must leave the directory EXISTING and writable — an absent "
+        "or unwritable TMPDIR can stop the engine starting"
+    )
+    assert not os.path.exists(leftover), (
+        "last session's scratch survived into this one — scratch is unbounded "
+        "and grows one copy per profile, forever"
+    )
+    assert os.listdir(second) == [], "the swept directory must start empty"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory write bits")
+def test_a_sweep_that_cannot_clear_does_not_fail_the_launch(tmp_path):
+    # The degradation, stated in prepare_child_tmpdir's docstring and asserted
+    # here so it stays true: a directory that cannot be CLEARED is a stale-cache
+    # problem and must not fail the launch, unlike one that cannot be CREATED
+    # (which means the pin did not happen, and the caller refuses over it).
+    #
+    # The unsweepable directory is built for REAL — a scratch dir with its
+    # write bit dropped, so unlinking the file inside genuinely fails. An
+    # earlier version of this test monkeypatched shutil.rmtree to raise, which
+    # asserted on the mock rather than on the behaviour: it bypassed the very
+    # ignore_errors= that is under test, so it would have passed against code
+    # with no error handling at all.
+    #
+    # Mirrors sweep_key_material's "unreadable is not clean" degradation — the
+    # precedent this sweep is modelled on.
+    from src.services.browser.env_policy import prepare_child_tmpdir
+
+    profile_dir = str(tmp_path / "unsweepable")
+    os.makedirs(profile_dir)
+
+    target = prepare_child_tmpdir(profile_dir)
+    stuck = os.path.join(target, "wont-go")
+    with open(stuck, "w") as fh:
+        fh.write("residue")
+    os.chmod(target, 0o500)  # r-x: entries cannot be unlinked
+
+    try:
+        again = prepare_child_tmpdir(profile_dir)
+        assert again == target
+        assert os.path.isdir(again), (
+            "an unsweepable scratch directory must not fail the launch — "
+            "a stale cache is not a perimeter failure"
+        )
+        # The honest outcome, asserted rather than glossed: the sweep did NOT
+        # clear it. Unreadable is not clean, and the docstring says so.
+        assert os.path.exists(stuck)
+    finally:
+        os.chmod(target, 0o700)
+
+
+@requires_fork
+def test_a_cfg_without_the_profile_data_dir_is_refused_not_launched_unpinned(tmp_path):
+    # A cfg with no profile_data_dir reaches the SAME outcome as a failed
+    # makedirs — the engine runs on the host's shared temp dir — so it must be
+    # refused the same way rather than launched in silence.
+    #
+    # This is NOT the platform gap. The thread/non-Linux paths are deliberate,
+    # recorded absences; a missing cfg key is a CALLER BUG, and folding the two
+    # into one boolean let the bug wear the absence's clothes. _child_main
+    # builds cfg from an unvalidated PERSONA_INVISIBLE_CFG blob, so the next
+    # caller that omits the key has to hear about it.
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:  # pragma: no cover - runs in the forked child
+        try:
+            os.close(read_fd)
+            il._platform.IS_LINUX = True
+            il._launch_and_watch = lambda *a, **k: None
+            # profile_dir present, profile_data_dir absent — the shape a caller
+            # that only knows about the engine's inner profile would build.
+            il._child({"profile_dir": str(tmp_path / ".invisible-profile")}, write_fd)
+        except BaseException:
+            pass
+        os._exit(0)
+
+    os.close(write_fd)
+    with os.fdopen(read_fd) as fh:
+        said = fh.read()
+    os.waitpid(pid, 0)
+
+    assert "LAUNCH_FAILED" in said, (
+        "the child launched with no scratch pin and said nothing — the engine "
+        f"would run on the host's shared temp dir; the parent saw {said!r}"
+    )
+    # Names the missing key, so the log says WHAT was wrong rather than only
+    # that something was.
+    assert "profile_data_dir" in said
+    # And it closes the session properly: the parent's monitor keys the card's
+    # stop button off BROWSER_CLOSED, so a refused launch must still say it is
+    # over rather than leaving the profile stuck "loading".
+    assert "BROWSER_CLOSED" in said
