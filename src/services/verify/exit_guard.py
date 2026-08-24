@@ -182,28 +182,77 @@ def redact(text: str) -> str:
 # misleading: it points at the relay and at the credential, both of which are
 # fine, and it looks identical to a proxy that is simply down.
 #
-# Substring matching is enough to separate the two and does NOT collide:
-# "SOCKS5Error" is not a substring of "SOCKS5AuthError" (the class names
-# diverge at the character after `SOCKS5`), so an auth failure cannot be read
-# as a connect-stage one. Only the connect stage gets its own wording — an
-# auth failure genuinely IS "the credential unusable", which the existing
-# message already says.
+# The class name is read as the FIRST TOKEN of the wrapped text, never as a
+# substring of it. That distinction is load-bearing rather than fastidious:
+# `failures` also carries text this module did not author. `fetch_json` echoes
+# the checker's own response body into its message (`socks_fetch.py:206-216`,
+# `first 120 chars: ...`), that `FetchFailed` is caught below, and it `continue`s
+# BEFORE `reached_any` is set — so a remote body reaches this predicate. A page
+# that merely mentions `SOCKS5Error` (an error-index URL, a status page) would
+# otherwise be read as this run's own SOCKS negotiation failing, and the guard
+# would tell the operator authentication succeeded on a run where no SOCKS
+# negotiation failed at all. Anchoring to the first token cannot be fooled that
+# way, and it retires the "SOCKS5Error is not a substring of SOCKS5AuthError"
+# argument rather than depending on it.
 _CONNECT_STAGE_MARKER = "SOCKS5Error"
 
+# Connect-stage reply codes that mean NO EXIT WAS ALLOCATED for this run.
+#
+# All eight codes below arrive AFTER authentication has succeeded (PySocks
+# raises `SOCKS5AuthError` for the auth stage and only reaches the reply-code
+# read at `socks.py:533` once auth is complete — `socks.py:505`), so "auth
+# passed" is true for every one of them. What is NOT true for every one of them
+# is "the relay had no exit to give this run":
+#
+#   * 0x01 general failure / 0x02 not allowed by ruleset — RELAY-side. The
+#     relay declined to allocate. This is the shape a dead sticky session token
+#     takes, so these are the only codes that may name it.
+#   * 0x03 network unreachable / 0x04 host unreachable / 0x05 refused /
+#     0x06 TTL expired — DESTINATION-side. An exit WAS allocated and the target
+#     was unreachable or refused FROM it. Claiming "refused to allocate an
+#     exit" here is false, and blaming a session token points the operator at
+#     one that is working.
+#   * 0x07 bad command / 0x08 bad address type — protocol-level disagreement,
+#     neither of the above.
+#
+# Hence the stage is reported for all of them and the CAUSE only where it is
+# known. The module's own standard is that an actively misleading message is a
+# worse failure than a merely unhelpful one (see `_normalise_observation` and
+# the `not reached_any` arm below); a confident wrong attribution on four of
+# eight codes is exactly that failure.
+_NO_EXIT_ALLOCATED_CODES = frozenset({0x01, 0x02})
 
-def _names_connect_stage_failure(failures: "list[str]") -> bool:
-    """Did the proxy get PAST authentication and fail to allocate an exit?
 
-    Reads the failure text this module already collected — see
-    :data:`_CONNECT_STAGE_MARKER` for why the class name is in there and why
-    matching it cannot catch an authentication failure by accident.
+def _wrapped_class_name(text: str) -> str:
+    """The exception class name ``socks_fetch`` prefixed, or ``""``.
 
-    True if ANY provider's failure names the connect stage: every provider is
-    reached through the same credential, so one connect-stage refusal
-    attributes the whole round, and a sibling timeout does not make it less
-    true.
+    ``socks_fetch.fetch`` wraps an unknown exception as
+    ``f"{type(exc).__name__}: {exc}"`` (`socks_fetch.py:185`), so the class
+    name is the text BEFORE the first colon — a position, not a substring.
+    Anything that is not a bare identifier there (``HTTP 429: ...``, a redacted
+    URL, a checker's own prose) is not a wrapped class name and returns ``""``.
     """
-    return any(_CONNECT_STAGE_MARKER in failure for failure in failures)
+    head = text.split(":", 1)[0].strip()
+    return head if head.isidentifier() else ""
+
+
+def _connect_stage_code(text: str) -> "int | None":
+    """The SOCKS5 reply code in a wrapped ``SOCKS5Error``, or ``None``.
+
+    PySocks formats the message ``"{:#04x}: {}"`` (`socks.py:533`), so the
+    wrapped text reads ``SOCKS5Error: 0x04: Host unreachable``. ``None`` means
+    the code could not be read, which is reported as an unattributed
+    connect-stage failure rather than guessed at.
+    """
+    if _wrapped_class_name(text) != _CONNECT_STAGE_MARKER:
+        return None
+    rest = text.split(":", 2)
+    if len(rest) < 2:
+        return None
+    try:
+        return int(rest[1].strip(), 16)
+    except ValueError:
+        return None
 
 
 def load_credential(path: str = DEFAULT_CREDENTIAL_PATH) -> str:
@@ -310,13 +359,29 @@ def observe_exit(
 
     observation = None
     failures = []
+    # The RAW wrapped exception text from the unreachable arm, kept beside
+    # `failures` rather than the stage being re-parsed out of it later.
+    #
+    # Two different collections on purpose. `failures` is OPERATOR PROSE: it is
+    # redacted, prefixed with the provider URL, and on a non-verdict answer it
+    # carries the checker's OWN response body. Reading a stage out of THAT lets
+    # remote text decide what this guard reports. This list carries only what
+    # `socks_fetch` itself wrapped, so the class name is still at the position
+    # `_wrapped_class_name` expects (the URL prefix would displace it) and
+    # redaction cannot rewrite the token being matched.
+    #
+    # Nothing from here reaches a message — only the parsed class name and
+    # reply code do — so it is not a second path for a credential to escape.
+    stages: "list[str]" = []
     reached_any = False
     for candidate in candidates:
         try:
             payload = fetch_json(candidate, proxy_url=proxy_url, timeout=timeout)
         except (FetchFailed, ProxyRefused) as exc:
             # Could not be reached at all.
-            failures.append(f"{candidate}: {redact(str(exc))}")
+            raw = str(exc)
+            failures.append(f"{candidate}: {redact(raw)}")
+            stages.append(raw)
             continue
 
         reached_any = True
@@ -358,22 +423,55 @@ def observe_exit(
         # them is what makes an operator chase the wrong half.
         if not reached_any:
             # THREE causes now, not two — and the third is the one that used
-            # to be reported as the other two. A dead sticky session token
-            # authenticates fine and then has no exit to allocate, so the
-            # generic wording below blames the relay and the credential while
-            # both are working. See `_CONNECT_STAGE_MARKER` for how the stage
-            # is known here at all.
-            if _names_connect_stage_failure(failures):
-                raise ExitNotProven(
+            # to be reported as the other two. A connect-stage refusal means
+            # the relay took the credential and then did not hand this run an
+            # exit, so the generic wording below blames the relay and the
+            # credential while both are demonstrably working. See
+            # `_CONNECT_STAGE_MARKER` for how the stage is known here at all.
+            codes = [
+                _connect_stage_code(raw)
+                for raw in stages
+                if _wrapped_class_name(raw) == _CONNECT_STAGE_MARKER
+            ]
+            if codes:
+                # WHAT IS KNOWN FOR EVERY CODE vs WHAT IS KNOWN FOR SOME.
+                # Authentication passing is a property of the CLASS: PySocks
+                # only reaches the reply-code read once the auth exchange has
+                # completed, so it is true of all eight codes and is stated
+                # unconditionally. Which side failed is a property of the
+                # CODE, so the cause is named only where the code carries it —
+                # see `_NO_EXIT_ALLOCATED_CODES`. Asserting "no exit was
+                # allocated" on a destination-side code would be a confident
+                # falsehood, which this module treats as worse than saying
+                # less.
+                seen = ", ".join(
+                    f"{c:#04x}" if c is not None else "unreported"
+                    for c in codes
+                )
+                opening = (
                     f"could not observe the exit through the proxy — {detail}. "
-                    "The proxy AUTHENTICATED this run and then refused to "
-                    "allocate an exit for it (SOCKS5 connect stage): the "
-                    "relay is up and the credential was accepted, so neither "
-                    "is the fault. The likeliest cause is a stale sticky "
-                    "session token in the credential, which the relay can no "
-                    "longer resolve to a live exit. Refusing to fall back to "
-                    "a direct connection: re-minting the session token is the "
-                    "operator's, from the host."
+                    "The proxy AUTHENTICATED this run and the SOCKS5 CONNECT "
+                    f"stage then failed (reply {seen}): the relay is up and "
+                    "the credential was accepted, so neither is the fault. "
+                )
+                if any(c in _NO_EXIT_ALLOCATED_CODES for c in codes):
+                    raise ExitNotProven(
+                        opening
+                        + "The relay declined to allocate an exit for this "
+                        "run, and the likeliest cause is a stale sticky "
+                        "session token in the credential, which it can no "
+                        "longer resolve to a live exit. Refusing to fall back "
+                        "to a direct connection: re-minting the session token "
+                        "is the operator's, from the host."
+                    )
+                raise ExitNotProven(
+                    opening
+                    + "That reply is raised AFTER an exit was allocated — it "
+                    "reports the destination as unreachable or refusing from "
+                    "that exit, so the session token is not implicated and "
+                    "re-minting it would not help. Refusing to fall back to a "
+                    "direct connection: rotation is the operator's, from the "
+                    "host."
                 )
             raise ExitNotProven(
                 f"could not observe the exit through the proxy — {detail}, "

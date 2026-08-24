@@ -515,6 +515,79 @@ def test_an_auth_failure_is_not_reported_as_a_dead_session_token(monkeypatch):
     assert "the credential unusable" in lowered
 
 
+# --- the two cases that passed while being wrong (PR #105 audit) ------------
+#
+# Both were invisible to the suite above because it pinned exactly one reply
+# code (0x01) and never drove a non-verdict body through the guard. They are
+# the reason the predicate reads a CLASS NAME AT A POSITION rather than a
+# substring anywhere in the collected prose.
+
+# A DESTINATION-side reply. PySocks raises this after the relay has already
+# ALLOCATED an exit — the target was unreachable from it. Same class, same
+# stage, opposite cause to 0x01.
+_DESTINATION_SIDE_TEXT = "SOCKS5Error: 0x04: Host unreachable"
+
+
+def test_a_destination_side_reply_does_not_blame_the_session_token(monkeypatch):
+    """The message may not claim a cause the reply code contradicts.
+
+    0x03/0x04/0x05/0x06 are raised AFTER an exit was allocated: the relay
+    authenticated, gave this run an exit, and the destination was unreachable
+    or refused from it. Reporting "refused to allocate an exit ... stale sticky
+    session token" there is a CONFIDENT FALSEHOOD — it points the operator at a
+    token that is working, and this module's standard is that an actively
+    misleading message is worse than a merely unhelpful one.
+
+    What is still true for every code in the class is that authentication
+    PASSED, so that half is asserted rather than dropped.
+    """
+    message = _observe_raising(
+        monkeypatch, FetchFailed(_DESTINATION_SIDE_TEXT)
+    )
+    lowered = message.lower()
+
+    # The half that IS known from the class: auth passed, connect stage failed.
+    assert "authenticated" in lowered
+    assert "0x04" in lowered
+    # The half that is NOT known: this code does not implicate the token.
+    assert "sticky session token" not in lowered
+    # And it must not silently fall back to blaming the credential either —
+    # we know from the class that the credential was accepted.
+    assert "the credential unusable" not in lowered
+
+
+def test_a_checkers_own_body_cannot_trigger_the_connect_stage_message(
+    monkeypatch
+):
+    """Remote text must not decide what this guard reports.
+
+    `fetch_json` echoes the checker's response body into its failure message
+    (`socks_fetch.py`, "first 120 chars: ..."), that `FetchFailed` is caught on
+    the unreachable arm, and it lands in the same collection the stage is read
+    from. So a page that merely MENTIONS `SOCKS5Error` — an error-index URL, a
+    status page, a rate-limit notice — reaches the predicate.
+
+    An unanchored substring match fires here and tells the operator
+    authentication succeeded on a run where no SOCKS negotiation happened at
+    all. The class name is read as the FIRST TOKEN of the wrapped text, which
+    a body cannot occupy.
+    """
+    body = "Rate limit hit. see https://example.com/errors#SOCKS5Error-faq"
+    message = _observe_raising(
+        monkeypatch,
+        FetchFailed(
+            "HTTP 429: the checker answered, but not with a verdict "
+            f"(first 120 chars: {body[:120]!r})"
+        ),
+    )
+    lowered = message.lower()
+
+    assert "authenticated" not in lowered
+    assert "sticky session token" not in lowered
+    # It is a genuine "nothing answered" round, so the generic wording is right.
+    assert "the credential unusable" in lowered
+
+
 def test_the_connect_stage_message_still_raises_ExitNotProven(monkeypatch):
     """Control flow does NOT change — see the `ExitNotProven` docstring.
 
