@@ -590,7 +590,33 @@ def _read_one(
         # identical to every other unmet precondition — record nothing for
         # this configuration — which is the reason that class is deliberately
         # one class (see its docstring).
-        if not observed.timezone:
+        #
+        # GATED TO THE CONFIGURATION THAT ACTUALLY READS A CLOCK, because the
+        # cost of refusing is a reading the operator does not get and only
+        # ONE configuration is buying anything with it:
+        #
+        #   * `engine == CHROMIUM` — Chromium is the engine with no fallback,
+        #     which is the whole asymmetry this ticket rests on. Firefox given
+        #     no zone resolves geography from the egress IP itself
+        #     (`invisible_launch.py`: "with no timezone it discovers the egress
+        #     IP"), so on a zoneless exit it reports the EXIT's zone, its
+        #     timezone-against-address cross-check passes and the record is
+        #     good. Refusing there describes no container and prevents no leak;
+        #     it only throws a correct reading away.
+        #   * `not args.skip_browser` — the host clock can only reach a page
+        #     through a browser. A run that launches none reads no clock at
+        #     all, so there is nothing to refuse; the JSON tier reads the
+        #     EXIT's own address from the network, not this machine's.
+        #
+        # The record header does still carry a blank `exit.timezone` on those
+        # runs. That is a thinness rather than a falsehood — the observation
+        # genuinely did not carry a zone, and the header reports the
+        # observation — so it is not worth the reading it would cost. The
+        # refusal here answers "would this record describe the CONTAINER",
+        # which is a narrower question than "is this record complete".
+        if engine == CHROMIUM and not observed.timezone and (
+            not args.skip_browser
+        ):
             raise ExitNotProven(
                 f"the exit {observed.ip} was proven ({observed.country}) but "
                 "the observation carries no timezone. Chromium pins no zone "
