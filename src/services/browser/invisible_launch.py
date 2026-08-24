@@ -389,6 +389,42 @@ def _outer_size_override_script() -> str:
     )
 
 
+def _engine_accept_language_tags(locale: str) -> list:
+    """The Accept-Language tag list THE ENGINE ACTUALLY SENDS for `locale`.
+
+    Derived from the engine's own expansion rather than re-split here, because
+    re-splitting is what produced PS-124: persona assumed the locale kwarg
+    reached the wire VERBATIM, and it does not. ``invisible_core.prefs`` owns
+    the expansion —::
+
+        _accept_language("de-DE")     -> "de-DE, de"     # prefs.py:809
+        prefs["intl.accept_languages"] = that            # prefs.py:1321
+        prefs["zoom.stealth.http.accept_language"]       # prefs.py:1327 (q-ladder)
+
+    — and the patched nsHttpHandler builds the header from that pref, so the
+    tag LIST here is the one on the wire. Measured on firefox-20: profile
+    ``de-DE`` puts ``de-DE,de;q=0.9`` on the top document, ``img``, ``script``,
+    XHR and ``fetch`` alike.
+
+    Calling the engine's function means a future engine that changes the shape
+    (three tags, no base tag, a different fallback) moves this pin WITH it
+    instead of silently re-opening the contradiction. The local fallback only
+    covers the engine not exposing the helper at all; it mirrors the same rule,
+    and ``test_engine_expansion_matches_local_fallback`` fails loudly if the
+    two ever disagree, so the fallback cannot rot unnoticed.
+    """
+    if not locale:
+        return []
+    try:
+        from invisible_core.prefs import _accept_language
+        expanded = _accept_language(locale)
+    except Exception:
+        lang = locale.replace("_", "-")
+        base = lang.split("-")[0]
+        expanded = f"{lang}, {base}" if base != lang else lang
+    return [t.strip() for t in expanded.split(",") if t.strip()]
+
+
 def _language_override_script(locale: str) -> str:
     """JS that pins navigator.language/languages to `locale`.
 
@@ -400,31 +436,53 @@ def _language_override_script(locale: str) -> str:
     SAME locale the header already carries so the two agree. Empty locale is a
     no-op — nothing to pin.
 
-    ``languages`` is ``[locale]`` — the SINGLE tag, NOT ``[locale, base]``.
+    ``languages`` is the ENGINE'S OWN TAG LIST for this locale — for a
+    region-qualified tag that is ``[locale, base]`` — obtained from
+    :func:`_engine_accept_language_tags`, never re-split here.
 
-    PS-124 measured the old ``[locale, base]`` against the header this launch
-    path actually sends, on the real persistent-context path, and they
-    DISAGREED on every region-qualified locale including the default en-US::
+    ⚠️ CORRECTION (PS-124 round 3, measured live on firefox-20). An earlier
+    revision of this docstring claimed::
 
-        locale     Accept-Language     navigator.languages
-        en-US      en-US               ["en-US", "en"]      *** contradiction
-        de-DE      de-DE               ["de-DE", "de"]      *** contradiction
-        uk-UA      uk-UA               ["uk-UA", "uk"]      *** contradiction
-        fr         fr                  ["fr"]               agree (base==locale)
+        Playwright's `locale` kwarg writes `intl.accept_languages` VERBATIM,
+        so the header carries ONE tag and no q-values.
 
-    The old docstring said the pair mirrored "the q-valued header", and that is
-    the assumption that was wrong: Playwright's ``locale`` kwarg writes
-    ``intl.accept_languages`` VERBATIM, so the header carries ONE tag and no
-    q-values. JS advertised a base tag the wire never sent — PS-119's
-    header-vs-JS shape exactly, one channel over, and self-inflicted rather
-    than inherited from the host.
+    **That claim is false, and it is the premise that cost three rounds.** It
+    was never measured on the wire — every seat that checked it read
+    ``kwargs["locale"]``, the string persona hands TO the engine, and split
+    that. The expansion happens DOWNSTREAM, inside the engine, so a reading
+    taken upstream of it agrees with itself by construction while the browser
+    contradicts itself. ``invisible_core.prefs`` owns the expansion
+    (``_accept_language`` at prefs.py:809 → ``"de-DE, de"``; written to
+    ``intl.accept_languages`` at :1321; q-ladder header at :1327), and the
+    patched nsHttpHandler builds the header from that pref.
 
-    In a real Firefox both surfaces are derived from the one
-    ``intl.accept_languages`` pref, so they CANNOT disagree; a single-tag
-    header is an ordinary real-browser state (a user who configured just
-    "German (Germany)") and was measured emitting header ``de-DE`` with
-    ``navigator.languages == ["de-DE"]``. Mirroring the single tag therefore
-    lands on a shape a real browser produces.
+    Measured on the real product launch path (xvfb + ``spawn(in_process=True)``
+    → ``_child`` → ``_launch_and_watch``), reading the wire from a standalone
+    capture server and the JS from the live page::
+
+        arm                    Accept-Language (wire)   navigator.languages
+        [locale] (round 1-2)   de-DE,de;q=0.9           ["de-DE"]        *** contradiction
+        layer OFF (control)    de-DE,de;q=0.9           ["de-DE","de"]   agree
+        [locale, base] (now)   de-DE,de;q=0.9           ["de-DE","de"]   agree
+
+    ``prefs.js`` generated by that same launch: ``user_pref("intl.accept_
+    languages", "de-DE, de")``. The header is uniform across the top document,
+    sub-resource ``img``, sub-resource ``script``, XHR and ``fetch`` — every
+    channel sends BOTH tags. So the single-tag pin advertised FEWER languages
+    than the wire carried, which is PS-119's header-vs-JS shape self-inflicted.
+
+    A SECOND contradiction the single-tag pin produced, not previously
+    recorded: this script patches ``Navigator.prototype``, but a worker realm
+    has ``WorkerNavigator``, so the worker kept the engine's native
+    ``["de-DE","de"]`` while the main realm read ``["de-DE"]`` — the page
+    disagreeing with its own worker. Mirroring the engine closes that too, and
+    it is independent corroboration of the direction: the engine's untouched
+    value in the second realm IS ``[locale, base]``.
+
+    The control arm is what makes this evidence rather than inference: with
+    this script suppressed, the engine natively produces ``["de-DE","de"]``,
+    matching its own two-tag header. The single-tag pin overrode a surface that
+    was already correct.
 
     The opposite repair — widening the HEADER to ``locale,base`` — was measured
     and REJECTED. Both routes to it break Firefox's own alignment of Intl,
@@ -440,7 +498,9 @@ def _language_override_script(locale: str) -> str:
     So the pin mirrors the header rather than the header mirroring the pin."""
     if not locale:
         return ""
-    langs = [locale]
+    # Derived from the engine, never re-split here — see
+    # _engine_accept_language_tags. Re-splitting is the bug this ticket fixed.
+    langs = _engine_accept_language_tags(locale) or [locale]
     langs_js = json.dumps(langs)
     loc_js = json.dumps(locale)
     return (
