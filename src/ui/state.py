@@ -117,6 +117,22 @@ class AppState:
         with self._log_lock:
             return list(self._log_lines)
 
+    def clear_log(self) -> None:
+        """Drop the in-memory Activity Log.
+
+        The panic wipe clears the FILE log, but this ring is a SEPARATE copy of
+        it: _load_recent_log_lines() only ever seeds the ring at __init__ (i.e.
+        at app startup), after which it accumulates independently via add_log().
+        So clearing the file alone leaves every wiped profile's name rendered in
+        the sidebar panel and in the fullscreen Activity Log dialog for the rest
+        of the session — the operator performs the wipe, opens the log, and reads
+        the identity straight back. Sets the flush flag so the panel repaints
+        empty on the next _flush_log() instead of keeping its last painted lines
+        until some later log line happens to arrive."""
+        with self._log_lock:
+            self._log_lines.clear()
+            self._pending_log_flush = True
+
     def toggle_selection(self, name: str) -> None:
         with self._selection_lock:
             if name in self._selected_profiles:
