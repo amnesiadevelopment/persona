@@ -37,7 +37,6 @@ missing — an absent engine must not read as a clean bill of health.
 import json
 import os
 import subprocess
-import sys
 import tempfile
 import time
 import urllib.request
@@ -97,14 +96,23 @@ requires_display = pytest.mark.skipif(
 pytestmark = [requires_engine, requires_display]
 
 
-def _read_zone_from_a_running_page(timezone: str) -> dict:
+def _read_zone_from_a_running_page(
+    timezone: str, *, tz_env: "str | None" = None
+) -> dict:
     """Launch the tier's OWN command line and ask the PAGE what zone it is in.
 
     The args come from ``chromium_tier._launch_args`` rather than from a list
     written here, which is the whole point: a copy would keep passing after
     the tier stopped emitting the flag, and a divergent second copy of the
-    launch path is the defect class this ticket belongs to (PS-103). The only
-    thing added is the CDP port, because a test has to get in.
+    launch path is the defect class this ticket belongs to (PS-103). Nothing
+    is added to the argv at all — the CDP port and its origin waiver are
+    already emitted by ``_launch_args`` itself, so a test that appended them
+    would be asserting against a launch that differs from the shipped one in
+    a file whose entire premise is that such divergences are the bug.
+
+    ``tz_env`` sets the ``TZ`` environment variable for the launch. ``None``
+    REMOVES it, so a case that pins no zone really inherits none whatever the
+    shell that started the suite exported.
     """
     profile_dir = tempfile.mkdtemp(prefix="ps132-tz-")
     args = chromium_tier._launch_args(
@@ -125,15 +133,22 @@ def _read_zone_from_a_running_page(timezone: str) -> dict:
         allow_unsandboxed=not chromium_tier.sandbox_available(),
         extension_dirs=[],
     )
+    # NOTHING is appended: `_launch_args` already emits
+    # `--remote-debugging-port=0` and `--remote-allow-origins=*` itself, so
+    # the test gets its CDP channel from the shipped argv rather than from a
+    # divergence it introduced. Only the trailing `about:blank` is dropped and
+    # re-appended, to keep it last after the filter above.
     args = [a for a in args if a != "about:blank"]
-    args += ["--remote-debugging-port=0", "--remote-allow-origins=*"]
     args.append("about:blank")
 
     display, xvfb = chromium_tier._ensure_display()
     env = dict(os.environ, DISPLAY=display)
-    # A case that pins no zone must really inherit none, whatever the shell
-    # that started the suite happened to export.
-    env.pop("TZ", None)
+    if tz_env is None:
+        # A case that pins no zone must really inherit none, whatever the
+        # shell that started the suite happened to export.
+        env.pop("TZ", None)
+    else:
+        env["TZ"] = tz_env
 
     proc = subprocess.Popen(
         args, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
@@ -294,8 +309,42 @@ def test_reverting_the_fix_turns_this_red(zoned_page):
         "reporting the exit's zone anyway would mean these tests are not "
         "measuring the flag at all"
     )
-    assert unzoned["offsetMin"] == 0, (
-        f"this host runs on UTC, so the un-pinned launch should report offset "
-        f"0; got {unzoned['offsetMin']}. If this fails the host's own clock "
-        f"is not UTC and the contrast above is weaker than it looks, not wrong"
+    assert unzoned["offsetMin"] != zoned_page["offsetMin"], (
+        f"the pinned and un-pinned launches reported the SAME offset "
+        f"({unzoned['offsetMin']}), so the flag moved nothing measurable. "
+        f"Note this arm deliberately asserts a CONTRAST rather than a value: "
+        f"claiming the un-pinned launch reports 0 would be a claim about the "
+        f"clock of whatever machine runs the suite, and would red on a "
+        f"developer in Warsaw while the product is perfectly correct."
+    )
+
+
+def test_the_flag_beats_an_inherited_tz_environment_variable():
+    """``env_policy``'s reason for leaving ``TZ`` alone, pinned to a run.
+
+    That note (``env_policy.py``) used to record this as an OPEN QUESTION and
+    now records it as a measured conclusion — and the conclusion is what
+    justifies not scrubbing ``TZ`` from the browser's environment. That makes
+    it load-bearing, security-adjacent reasoning, so it must not rest on a
+    measurement nobody can reproduce from the repo.
+
+    A conflicting ``TZ`` is set alongside the flag here, deliberately naming a
+    zone on the OTHER side of UTC (Chicago is behind it, Warsaw ahead), so the
+    two cannot be confused for one another on any of the three surfaces. If
+    the environment ever starts winning, the page reports Chicago, this reds,
+    and the comment stops being a claim nobody checked.
+    """
+    both = _read_zone_from_a_running_page(_ZONE, tz_env="America/Chicago")
+    assert both["iana"] == _ZONE, (
+        f"the page reported {both['iana']!r} with --timezone={_ZONE} on the "
+        f"command line and TZ=America/Chicago in the environment. The flag "
+        f"must win: env_policy leaves TZ unscrubbed BECAUSE it does, so if "
+        f"the environment now reaches the page that note is wrong and TZ is "
+        f"a live channel for the host's zone."
+    )
+    assert both["offsetMin"] == -120, (
+        f"the name says Warsaw but the offset is {both['offsetMin']} "
+        f"(Warsaw at {_INSTANT} is UTC+2, i.e. -120; Chicago would be 300). "
+        f"A zone that is named on one surface and inherited from TZ on "
+        f"another is the 'relocates the defect' outcome, not a fix."
     )
