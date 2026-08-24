@@ -201,15 +201,21 @@ timezone — but whether persona's masking layer causes them is NOT established.
 
 ### The harness sharp edge that made this worth checking twice
 
-`evidence: SUFFICIENT` is an **aggregate** floor over all checkers. Three records
-this session passed it while pixelscan contributed **zero** rows
+`evidence: SUFFICIENT` is an **aggregate** floor over all checkers. **Four
+records** this session passed it while pixelscan contributed **zero** rows
 (`TargetClosedError: Target page, context or browser has been closed`), the
-floor being met by `bot.sannysoft.com` and `iphey.com` instead.
+floor being met by `bot.sannysoft.com` and `iphey.com` instead — run 1's
+seed-1337 arm, run 4's control, and **both** arms of run 5. (Three *runs*, four
+*records*: run 5 contributes two.)
 
 A record can be "sufficient" and **completely silent on the one checker a ticket
-is about**. Every such record was discarded rather than read: an
-absent-because-unobtainable row is not an absent-because-clean row. The first
-seed-1337 arm of run 1 is exactly this shape and is **not** used anywhere above.
+is about** — an absent-because-unobtainable row is not an absent-because-clean
+row. **No such record is read as a result anywhere in this document.** They
+reached that state two different ways, and the distinction matters: run 1's
+seed-1337 arm was **re-run on the same seed** and its thin record is used nowhere
+above, while run 4's and run 5's are **retained on disk as failure evidence**
+(§3, §5) — retained precisely so the failed control arm stays visible, and read
+as a result nowhere.
 
 ---
 
