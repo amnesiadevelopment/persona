@@ -1024,3 +1024,192 @@ def test_the_incomplete_layer_note_names_both_spellings():
     note = next(n for n in notes if "DELIBERATELY INCOMPLETE" in n)
     assert "--layer-vectors" in note
     assert "--drop-layer-vector" in note
+
+
+# --- /dev/shm: the confound that got read as a seed defect (PS-133) ---------
+#
+# PS-128 reported that a profile seeded 4242 crashed chromium's renderer
+# mid-page, 3 runs out of 3, and that the crash "followed the seed" rather than
+# the launch order or the exit. PS-133 re-measured it live and the seed was
+# innocent: /dev/shm on that host is 64 MiB, chromium puts its renderer
+# transport, GPU command buffers and font-data service there, and below that
+# ceiling it dies PART-WAY THROUGH A PAGE with `TargetClosedError` — a message
+# that names no cause. Every seed tried died (4242, 1337, 1, 7, 99999, 31337 —
+# six of six); with `--disable-dev-shm-usage` every one of them completed the
+# same page.
+#
+# The correlation was real and the conclusion drawn from it was wrong, which is
+# the failure mode these tests exist to prevent: the run must REFUSE and name
+# the host, instead of producing a reading that blames whatever configuration
+# happened to be in the chair.
+
+
+def test_a_host_with_too_little_dev_shm_refuses_rather_than_dying_mid_page(
+    monkeypatch,
+):
+    """The refusal names the HOST, and it costs no browser launch.
+
+    Measured (PS-133): at 64 MiB the page dies with 'TargetClosedError: Target
+    page, context or browser has been closed', whose text carries no cause at
+    all — the cause is only in chromium's stderr, which no record captured.
+    """
+    from src.services.verify import chromium_tier
+
+    monkeypatch.setattr(chromium_tier, "sandbox_available", lambda: True)
+    monkeypatch.setattr(
+        chromium_tier, "_engine_binary", lambda: "/engine/fpchrome"
+    )
+    monkeypatch.setattr(
+        chromium_tier, "dev_shm_bytes", lambda: 64 * 1024 * 1024
+    )
+
+    def _never(*_a, **_k):  # the refusal must cost no browser launch
+        raise AssertionError("a display was started before the refusal")
+
+    monkeypatch.setattr(chromium_tier, "_ensure_display", _never)
+
+    with pytest.raises(chromium_tier.DevShmTooSmall) as exc:
+        chromium_tier.ChromiumSession("socks5h://u:p@host:1080")
+
+    message = str(exc.value)
+    # The NUMBER, so the operator knows what to change rather than only that
+    # something was wrong.
+    assert "64 MiB" in message
+    # The waiver, so the refusal is recoverable rather than a dead end.
+    assert "--allow-small-dev-shm" in message
+
+
+def test_a_host_with_enough_dev_shm_is_not_refused(monkeypatch):
+    """The other direction: the gate must not refuse every host.
+
+    Without this, a gate that raised unconditionally would satisfy the test
+    above and take the whole tier down with it.
+    """
+    from src.services.verify import chromium_tier
+
+    monkeypatch.setattr(chromium_tier, "sandbox_available", lambda: True)
+    monkeypatch.setattr(
+        chromium_tier, "_engine_binary", lambda: "/engine/fpchrome"
+    )
+    monkeypatch.setattr(
+        chromium_tier, "dev_shm_bytes", lambda: 1024 * 1024 * 1024
+    )
+
+    # Getting PAST the shm gate is the assertion. _ensure_display is the very
+    # next step, so reaching it proves the gate let this host through.
+    reached = {}
+
+    def _stop(*_a, **_k):
+        reached["yes"] = True
+        raise RuntimeError("stop here: the gate was passed")
+
+    monkeypatch.setattr(chromium_tier, "_ensure_display", _stop)
+
+    with pytest.raises(RuntimeError, match="stop here"):
+        chromium_tier.ChromiumSession("socks5h://u:p@host:1080")
+    assert reached, "the shm gate refused a host that has plenty of shm"
+
+
+def test_an_unreadable_dev_shm_is_not_treated_as_zero(monkeypatch):
+    """``None`` means "the probe could not run", NOT "this host has none".
+
+    Refusing on an unanswerable probe would make the tier unusable on any
+    platform where /dev/shm means nothing, for a reason that is not a fact
+    about the host.
+    """
+    from src.services.verify import chromium_tier
+
+    monkeypatch.setattr(chromium_tier, "sandbox_available", lambda: True)
+    monkeypatch.setattr(
+        chromium_tier, "_engine_binary", lambda: "/engine/fpchrome"
+    )
+    monkeypatch.setattr(chromium_tier, "dev_shm_bytes", lambda: None)
+
+    reached = {}
+
+    def _stop(*_a, **_k):
+        reached["yes"] = True
+        raise RuntimeError("stop here: the gate was passed")
+
+    monkeypatch.setattr(chromium_tier, "_ensure_display", _stop)
+
+    with pytest.raises(RuntimeError, match="stop here"):
+        chromium_tier.ChromiumSession("socks5h://u:p@host:1080")
+    assert reached, "an unreadable probe was treated as a refusal"
+
+
+def test_the_waiver_puts_the_flag_on_the_command_line_after_the_appimage_flag():
+    """Two claims in one, because both are load-bearing and both were measured.
+
+    The flag must actually REACH argv — a waiver that parses and then changes
+    no launch is the defect this file already guards elsewhere.
+
+    And it must come AFTER ``--appimage-extract-and-run``, which is consumed by
+    the AppImage RUNTIME rather than by chromium. Measured in PS-133 while
+    building the repro: putting another flag ahead of it makes the runtime fall
+    back to a FUSE mount and die ``rc=127 'fuse: device not found'`` before
+    chromium is reached at all — a failure that looks like a broken engine.
+    """
+    from src.services.verify import chromium_tier
+
+    args = chromium_tier._launch_args(
+        "/engine/fpchrome.AppImage",
+        "/tmp/profile",
+        seed=4242,
+        declared_machine="windows",
+        proxy_server=chromium_tier.NO_PROXY,
+        allow_small_dev_shm=True,
+    )
+    assert "--disable-dev-shm-usage" in args
+    assert args[1] == "--appimage-extract-and-run", (
+        "the AppImage runtime consumes this flag and it must stay first, "
+        "or the launch dies rc=127 before chromium starts"
+    )
+    assert args.index("--disable-dev-shm-usage") > 1
+
+
+def test_no_waiver_means_no_flag():
+    """The other direction, so the assertion above cannot be satisfied by a
+    flag that is simply always passed — which would silently make every run
+    take the workaround surface instead of the product's."""
+    from src.services.verify import chromium_tier
+
+    args = chromium_tier._launch_args(
+        "/engine/fpchrome.AppImage",
+        "/tmp/profile",
+        seed=4242,
+        declared_machine="windows",
+        proxy_server=chromium_tier.NO_PROXY,
+    )
+    assert "--disable-dev-shm-usage" not in args
+
+
+def test_the_dev_shm_waiver_is_recorded_in_the_reading_it_produced(monkeypatch):
+    """A reading taken on the workaround surface must say so.
+
+    This is the assertion that would have caught PS-128's misattribution at the
+    record: a run whose renderer surface was changed to survive the host is not
+    the product's surface, and a record that did not disclose it is
+    indistinguishable from one taken on a healthy host.
+    """
+    record = _record_from_read(
+        monkeypatch,
+        [
+            "read", "--engine", "chromium", "--declared-machine", "windows",
+            "--seed", "4242", "--allow-small-dev-shm",
+        ],
+    )
+    assert any("--disable-dev-shm-usage" in n for n in record["notes"])
+
+
+def test_a_normal_reading_does_not_carry_the_dev_shm_waiver_note(monkeypatch):
+    """The other direction, so the note cannot be one that is always present —
+    which would make every record falsely confess a workaround."""
+    record = _record_from_read(
+        monkeypatch,
+        [
+            "read", "--engine", "chromium", "--declared-machine", "windows",
+            "--seed", "4242",
+        ],
+    )
+    assert not any("--disable-dev-shm-usage" in n for n in record["notes"])

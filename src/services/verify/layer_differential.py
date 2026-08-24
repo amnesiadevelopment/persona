@@ -146,6 +146,7 @@ def read_probe_once(
     settle_seconds: float = PROBE_SETTLE_SECONDS,
     sleep: "Callable[[float], None] | None" = None,
     allow_unsandboxed: bool = False,
+    allow_small_dev_shm: bool = False,
 ) -> Arm:
     """Launch ONE engine against the local page and read its vectors.
 
@@ -211,6 +212,7 @@ def read_probe_once(
             sleep=sleep,
             layer_sink=captured.append,
             allow_unsandboxed=allow_unsandboxed,
+            allow_small_dev_shm=allow_small_dev_shm,
             waiver_sink=waived.append,
         )
     except EngineUnavailable as exc:
@@ -244,6 +246,7 @@ def _drive_engine(
     sleep: "Callable[[float], None]",
     layer_sink: "Callable[[LayerReport], None]",
     allow_unsandboxed: bool = False,
+    allow_small_dev_shm: bool = False,
     waiver_sink: "Callable[[bool], None] | None" = None,
 ) -> str:
     """Open ``url`` in a persona engine with/without the layer, return its text.
@@ -276,6 +279,7 @@ def _drive_engine(
                 # the right default for a checker run and wrong for loopback.
                 allow_no_proxy=True,
                 allow_unsandboxed=allow_unsandboxed,
+                allow_small_dev_shm=allow_small_dev_shm,
             )
         except ChromiumUnavailable as exc:
             raise EngineUnavailable(str(exc)) from exc
@@ -318,6 +322,7 @@ def run_differential(
     control_seed: int = DEFAULT_CONTROL_SEED,
     settle_seconds: float = PROBE_SETTLE_SECONDS,
     allow_unsandboxed: bool = False,
+    allow_small_dev_shm: bool = False,
 ) -> dict:
     """Stand up the local page, read it twice varying ONE axis, and report.
 
@@ -345,11 +350,13 @@ def run_differential(
                 url, seed=seed, engine=engine, install_layer=False,
                 settle_seconds=settle_seconds,
                 allow_unsandboxed=allow_unsandboxed,
+                allow_small_dev_shm=allow_small_dev_shm,
             )
             after = read_probe_once(
                 url, seed=seed, engine=engine, install_layer=True,
                 settle_seconds=settle_seconds,
                 allow_unsandboxed=allow_unsandboxed,
+                allow_small_dev_shm=allow_small_dev_shm,
             )
         else:
             # ONE axis: layer on BOTH sides, only the seed moves.
@@ -357,11 +364,13 @@ def run_differential(
                 url, seed=seed, engine=engine, install_layer=True,
                 settle_seconds=settle_seconds,
                 allow_unsandboxed=allow_unsandboxed,
+                allow_small_dev_shm=allow_small_dev_shm,
             )
             after = read_probe_once(
                 url, seed=control_seed, engine=engine, install_layer=True,
                 settle_seconds=settle_seconds,
                 allow_unsandboxed=allow_unsandboxed,
+                allow_small_dev_shm=allow_small_dev_shm,
             )
 
     return build_differential_record(axis, engine, before, after)

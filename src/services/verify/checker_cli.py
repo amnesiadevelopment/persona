@@ -426,6 +426,7 @@ def _notes_for(
     engine: str,
     requested_machine: str,
     allow_unsandboxed: bool = False,
+    allow_small_dev_shm: bool = False,
     install_layer: bool = True,
     layer_vectors: "tuple[str, ...] | None" = None,
 ) -> "list[str]":
@@ -481,6 +482,23 @@ def _notes_for(
                 "product presents to a checker: treat any difference against a "
                 "sandboxed reading as possibly environmental until it is "
                 "reproduced on a host where the sandbox works."
+            )
+        if allow_small_dev_shm:
+            notes.append(
+                "THIS READING WAS TAKEN WITH --disable-dev-shm-usage. This "
+                "host's /dev/shm is below the floor the tier insists on "
+                "(see chromium_tier.MIN_DEV_SHM_BYTES), and the operator "
+                "waived it explicitly (--allow-small-dev-shm). The flag moves "
+                "chromium's renderer transport, GPU command buffers and "
+                "font-data service off shared memory and onto disk. persona's "
+                "own launch path passes it NOWHERE, so this is not the surface "
+                "the product presents. It is disclosed rather than inferred "
+                "because the failure it works around does not announce itself: "
+                "chromium on a too-small /dev/shm dies MID-PAGE with a "
+                "TargetClosedError that names no cause, and the run then "
+                "attributes the death to whatever configuration was being "
+                "read — which is how PS-128 came to report a renderer crash as "
+                "a property of fingerprint seed 4242 (PS-133)."
             )
     if not install_layer:
         notes.append(
@@ -714,6 +732,7 @@ def _read_one(
                 # resolves the zone from the egress IP when given none.
                 timezone=observed.timezone,
                 allow_unsandboxed=args.allow_unsandboxed_chromium,
+                allow_small_dev_shm=args.allow_small_dev_shm,
                 layer_sink=_capture_layer,
                 install_layer=not args.no_masking_layer,
                 layer_vectors=_resolve_layer_vectors(args, [engine]),
@@ -743,6 +762,7 @@ def _read_one(
             engine,
             requested_machine,
             allow_unsandboxed=args.allow_unsandboxed_chromium,
+            allow_small_dev_shm=args.allow_small_dev_shm,
             install_layer=not args.no_masking_layer,
             layer_vectors=_resolve_layer_vectors(args, [engine]),
         ),
@@ -1024,6 +1044,7 @@ def _cmd_differential(args: argparse.Namespace) -> int:
         seed=args.seed,
         control_seed=args.control_seed,
         allow_unsandboxed=args.allow_unsandboxed_chromium,
+        allow_small_dev_shm=args.allow_small_dev_shm,
     )
 
     text = diff_dumps(record)
@@ -1114,6 +1135,19 @@ def build_parser() -> argparse.ArgumentParser:
             "and the record says so. Needed only on a host that forbids the "
             "unprivileged user namespace the sandbox requires, where chromium "
             "otherwise dies before opening a debug port"
+        ),
+    )
+    rd.add_argument(
+        "--allow-small-dev-shm", action="store_true",
+        help=(
+            "run persona's chromium with --disable-dev-shm-usage on a host "
+            "whose /dev/shm is below the tier's floor. OFF by default and "
+            "never inferred, exactly like --allow-unsandboxed-chromium: the "
+            "flag is not on persona's own launch path, so a reading taken "
+            "with it is not the product's surface and the record says so. "
+            "Without it, such a host is REFUSED up front rather than allowed "
+            "to produce a reading that dies mid-page and blames whatever "
+            "configuration was being read (PS-133)"
         ),
     )
     rd.add_argument(
@@ -1267,6 +1301,19 @@ def build_parser() -> argparse.ArgumentParser:
             "unprivileged user namespace the sandbox requires — which is the "
             "usual state of the container this runs in, and where the chromium "
             "arm otherwise refuses before launching. Ignored on firefox"
+        ),
+    )
+    df.add_argument(
+        "--allow-small-dev-shm", action="store_true",
+        help=(
+            "run persona's chromium with --disable-dev-shm-usage on a host "
+            "whose /dev/shm is below the tier's floor. OFF by default and "
+            "never inferred, exactly like --allow-unsandboxed-chromium: the "
+            "flag is not on persona's own launch path, so a reading taken "
+            "with it is not the product's surface and the record says so. "
+            "Without it, such a host is REFUSED up front rather than allowed "
+            "to produce a reading that dies mid-page and blames whatever "
+            "configuration was being read (PS-133)"
         ),
     )
     df.add_argument(
