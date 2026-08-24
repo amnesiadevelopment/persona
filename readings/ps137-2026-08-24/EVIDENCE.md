@@ -137,22 +137,64 @@ did not. That question is **still open** and is stated rather than closed.
 
 The strongest available test of a surviving `masking_detected` is the
 differential: read Chromium **without** persona's masking layer. If the verdict
-fires without the layer, it is not the layer's doing. **Both attempts are
-unusable, and neither is being read as a result.**
+fires without the layer, it is not the layer's doing. **Both attempts that
+produced a record are unusable, and neither is being read as a result.**
+("Twice" counts the two attempts that produced retained records — run 4 and
+run 5. A third, earlier attempt produced no file at all and is described at the
+end of this section; it is narrative, not evidence.)
 
 | attempt | outcome |
 |---|---|
-| run 4 | crashed at the **write** step — `IsADirectoryError`. The browser tier had already been read (26 rows) and was then discarded. |
+| run 4 | **session ended mid-run.** Thin at 7/28 fingerprint rows, 2 checkers, **pixelscan 0/12 rows read** (all 12 `unobtainable`, `TargetClosedError`). Record **retained** — `run4-chromium-control/`. |
 | run 5 (paired control + treatment, back to back) | **both arms thin**: 7/28 fingerprint rows, 2 checkers, **pixelscan 0/12 rows read** |
 
 A differential in which the checker under test contributed **nothing to either
 arm** answers nothing.
+
+**What run 4's own record says**, since this section's only value is being an
+accurate account of how the control arm failed:
+
+```
+counts        read 22 · absent 7 · unobtainable 32 · total 61
+evidence      verdict "sufficient" · fingerprint 7/28 · checkers [bot.sannysoft.com, iphey.com]
+evidence.reasons
+              "9 row(s) were NEVER ASKED — the session ended mid-run and
+               everything sequenced after it was abandoned, not attempted and failed"
+exit          83.24.251.158 · AS5617 Orange Polska      ← rotated
+```
+
+The 21 `TargetClosedError` rows and the death site (`pixelscan.net`) are the
+`/dev/shm` exhaustion **PS-133** established and owns — 64 MiB on this host. That
+is why the control arm died; it is not this ticket's to fix.
+
+An **earlier, separate** attempt at the same control arm did crash at the
+**write** step with `IsADirectoryError` — the harness resolves `--output` to a
+literal file path for a single-configuration run (`checker_cli.py:816`) while
+creating a directory for a multi-configuration one (`:808`), so pointing a
+single-config run at an existing directory raises it after the reading is done.
+**That attempt produced no file and nothing of it is committed**, so it is
+recorded here as narrative only: no artifact corroborates it, and the row count
+previously reported for it ("26 rows") matches no field in any retained record
+and should not be carried forward. It is stated separately precisely so that the
+retained run-4 record above is **not** read as the discarded one — it is a
+different, later attempt, and it was kept.
 
 Independently disqualifying: the exit **rotated** between the thick runs and the
 differential — `83.175.185.209` (AS9141, P4) → `83.24.251.158` (AS5617, Orange
 Polska). The CLI states that both arms of a comparison must be taken through the
 **same** exit and that an arm which rotated is not a comparison. Even a thick
 result there would have needed re-taking.
+
+**Why the two control records are near-identical, so nobody has to re-derive
+it.** `run4-chromium-control/…CONTROL-no-masking.json` and
+`run5-differential/CONTROL.no-masking.seed1337.json` differ **only** in
+`observed_at` (`09:59:51Z` vs `10:03:29Z`) and one ephemeral relay port
+(`83.24.251.158:46328` vs `:39044`); every other byte matches. This is expected,
+not duplication: **both control arms died before the browser tier**, so each
+reduces to the same exit-determined rows — `engine-exit`, `ipleak.net`,
+`tls.peet.ws`, `tls.browserleaks.com` and two `bot.sannysoft.com` rows — and two
+arms sharing one exit produce identical values for all of them. They are two
+genuinely distinct attempts that failed the same way at the same point.
 
 **So: `masking_detected` and `fingerprint_inconsistent` survive a corrected
 timezone — but whether persona's masking layer causes them is NOT established.**
