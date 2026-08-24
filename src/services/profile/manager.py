@@ -5,6 +5,7 @@ import os
 import pathlib
 import shutil
 import threading
+import zlib
 from collections.abc import Callable
 
 from ...core.config import DATA_DIR, PROFILES_FILE
@@ -329,7 +330,26 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                 elif payload.get("name"):
                     # Pre-field trashed record: it would restore onto the
                     # crc32(name) fallback, so that is the value to reserve.
-                    seeds.add(mint_fingerprint_seed(str(payload["name"])))
+                    #
+                    # zlib.crc32 DIRECTLY, not mint_fingerprint_seed(). This
+                    # line models `Profile.fingerprint_seed`'s LEGACY FALLBACK
+                    # (profile.py: "return zlib.crc32(self.name...)"), which is
+                    # the value a restore genuinely lands on — it is not a
+                    # mint, and it never was. It merely read identically while
+                    # the mint happened to equal crc32(name).
+                    #
+                    # Once the mint became SALTED those two stopped being the
+                    # same number, and calling the mint here would silently
+                    # reserve a value NOTHING restores onto while leaving the
+                    # real fallback free — so a pre-field trashed profile
+                    # restoring onto its crc32(name) seed could collide with a
+                    # live profile that had since been handed it. Two live
+                    # profiles, one presented machine: the exact isolation
+                    # failure the reservation exists to prevent, reintroduced
+                    # by the secrecy fix. Do NOT "tidy" this back into the
+                    # mint; it must track the fallback, and the fallback is
+                    # deliberately unsalted legacy behaviour.
+                    seeds.add(zlib.crc32(str(payload["name"]).encode("utf-8")))
         except Exception:
             logger.exception("Could not read trashed seeds; reserving live only")
         return seeds
