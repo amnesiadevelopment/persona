@@ -23,6 +23,7 @@ import base64
 import datetime
 import hashlib
 import os
+import select
 import socket
 import ssl
 import tempfile
@@ -385,23 +386,182 @@ def _secure_delete(path: str | None) -> None:
         pass
 
 
+_CHUNK = 65536
+
+# Stop reading a direction whose peer is this far behind on writes. Bounds the
+# memory one connection can pin when one side is slower than the other, instead
+# of buffering a whole download in RAM. Backpressure reaches the sender through
+# its own TCP window, which is what the old blocking sendall() achieved as a
+# side effect of stalling its thread.
+_HIGH_WATER = 1 << 20
+
+
 def _pipe_both(a: socket.socket, b: socket.socket) -> None:
-    t = threading.Thread(target=_pipe, args=(a, b), daemon=True)
-    t.start()
-    _pipe(b, a)
+    """Pump bytes both ways between two sockets from ONE thread, via select().
 
+    This used to start a second thread running ``_pipe(a, b)`` while ``_pipe(b,
+    a)`` ran here. On the MITM path (``_mitm``) both ``a`` and ``b`` are
+    ``ssl.SSLSocket``s, so from the instant the handshake returned one thread
+    sat in ``SSL_read`` on a socket while the other sat in ``SSL_write`` on that
+    SAME OpenSSL ``SSL`` object, with no synchronisation. An ``SSL`` object is
+    not thread-safe for that and Python's ``ssl`` module adds no locking of its
+    own. Under TLS 1.3 it is worse than a plain data race: post-handshake
+    records (NewSessionTicket, KeyUpdate) mean a read can need to write and a
+    write can need to read, so the two calls contend on one connection state.
 
-def _pipe(src: socket.socket, dst: socket.socket) -> None:
-    try:
+    The observable failure was the dangerous kind — ``sendall()`` returned
+    success and the ciphertext never reached the wire. Nothing raised; the peer
+    blocked in ``recv()`` until something timed out. In production that is a
+    browser request to the admin host that HANGS rather than errors.
+
+    Driving both directions from a single thread removes the class of bug
+    rather than narrowing its window: no lock discipline to get right, and no
+    concurrent access left to synchronise. The cost is that this must be
+    non-blocking — a blocking ``sendall`` here would stall the other direction —
+    so reads and writes are retried around ``select()``.
+
+    Two TLS-specific details this has to respect, both of which a plain
+    ``select()`` loop gets wrong:
+
+    * A read may need the fd WRITABLE and a write may need it READABLE (that
+      same TLS 1.3 post-handshake traffic). ``SSLWantReadError`` /
+      ``SSLWantWriteError`` say which, and the next ``select()`` is armed from
+      the flags they set rather than from the direction we wanted.
+    * ``select()`` reports the underlying fd, but OpenSSL decrypts a whole TLS
+      record at once and buffers what one ``recv()`` did not take. Those bytes
+      make the fd look idle forever, so every read drains ``pending()`` before
+      going back to ``select()``.
+
+    EOF is propagated as a HALF-close: when one side stops sending, its
+    remaining bytes are flushed and only that direction is shut down, so an
+    in-flight response is not truncated by a client that closed its request
+    side. Both sockets are closed once both directions are done.
+    """
+    for s in (a, b):
+        s.setblocking(False)
+
+    peer = {a: b, b: a}
+    out: dict[socket.socket, bytearray] = {a: bytearray(), b: bytearray()}
+    eof = {a: False, b: False}            # this socket has hit EOF on read
+    shut = {a: False, b: False}           # we half-closed this socket's write side
+    read_needs_w = {a: False, b: False}   # its next read wants the fd writable
+    write_needs_r = {a: False, b: False}  # its next write wants the fd readable
+    dead = False
+
+    def _wants_read(s: socket.socket) -> bool:
+        # Don't read from s while its peer is already far behind on writes.
+        return not eof[s] and len(out[peer[s]]) < _HIGH_WATER
+
+    def _try_read(s: socket.socket) -> None:
+        """Read from s into out[peer[s]]. Drains OpenSSL's decrypted buffer."""
+        nonlocal dead
         while True:
-            data = src.recv(65536)
+            try:
+                data = s.recv(_CHUNK)
+            except ssl.SSLWantReadError:
+                read_needs_w[s] = False
+                return
+            except ssl.SSLWantWriteError:
+                read_needs_w[s] = True
+                return
+            except (BlockingIOError, InterruptedError):
+                return
+            except (OSError, ssl.SSLError):
+                dead = True
+                return
+            read_needs_w[s] = False
             if not data:
+                eof[s] = True
+                return
+            out[peer[s]] += data
+            # select() cannot see bytes OpenSSL has already decrypted, so take
+            # them now or they sit unnoticed until the next record arrives.
+            pending = getattr(s, "pending", None)
+            if not (pending and pending()):
+                return
+            if len(out[peer[s]]) >= _HIGH_WATER:
+                return
+
+    def _try_write(s: socket.socket) -> None:
+        """Flush out[s] to s."""
+        nonlocal dead
+        while out[s]:
+            try:
+                n = s.send(out[s])
+            except ssl.SSLWantReadError:
+                write_needs_r[s] = True
+                return
+            except ssl.SSLWantWriteError:
+                write_needs_r[s] = False
+                return
+            except (BlockingIOError, InterruptedError):
+                return
+            except (OSError, ssl.SSLError):
+                dead = True
+                return
+            write_needs_r[s] = False
+            if n <= 0:
+                return
+            del out[s][:n]
+
+    try:
+        while not dead:
+            # Everything the peer sent has been forwarded and acknowledged as
+            # finished in both directions.
+            if all(eof[s] and not out[peer[s]] for s in (a, b)):
                 break
-            dst.sendall(data)
+
+            rset, wset = [], []
+            for s in (a, b):
+                if (_wants_read(s) and not read_needs_w[s]) or (
+                    out[s] and write_needs_r[s]
+                ):
+                    rset.append(s)
+                if (out[s] and not write_needs_r[s]) or (
+                    _wants_read(s) and read_needs_w[s]
+                ):
+                    wset.append(s)
+            if not rset and not wset:
+                break
+
+            try:
+                rl, wl, _ = select.select(rset, wset, [], 30)
+            except (OSError, ValueError):
+                break
+            if not rl and not wl:
+                # Idle. A quiet live tunnel is legitimate, so keep waiting — but
+                # once one side has finished, a silent peer that never closes its
+                # own half would pin this thread indefinitely. Tear down instead.
+                # Still strictly more permissive than the old pump, which closed
+                # BOTH sockets the instant either direction saw EOF.
+                if eof[a] or eof[b]:
+                    break
+                continue
+            ready = set(rl) | set(wl)
+
+            for s in (a, b):
+                if s not in ready:
+                    continue
+                if out[s]:
+                    _try_write(s)
+                if _wants_read(s):
+                    _try_read(s)
+                if dead:
+                    break
+
+            # One side is done sending: flush what's left and close only that
+            # direction, so a half-closing client doesn't truncate the response.
+            for s in (a, b):
+                if eof[peer[s]] and not out[s] and not shut[s]:
+                    shut[s] = True
+                    try:
+                        s.shutdown(socket.SHUT_WR)
+                    except OSError:
+                        pass
     except Exception:
         pass
     finally:
-        for s in (src, dst):
+        for s in (a, b):
             try:
                 s.close()
             except OSError:
