@@ -27,14 +27,28 @@ throbber that also blocked every Sheets popover/overlay from painting.
 import json
 import pathlib
 
-from .worker_wrap import realm_bootstrap_js, realm_guard_js
+from .worker_wrap import realm_bootstrap_js, realm_guard_js, realm_slot_js
 
 # The same noise repair must hold in a fresh child frame and in a Web Worker's
 # OffscreenCanvas measureText, else a scanner measuring text in a pristine realm
 # sees the raw noised geometry (functional inconsistency across realms). The
-# shared recursive registry carries applyMtPatch everywhere. The multiplicative
-# noise factor is a session constant, so it is learned once in a DOM-bearing
-# realm and shared via top.__personaMtFactor to realms without a DOM.
+# shared recursive registry carries applyMtPatch everywhere.
+#
+# The multiplicative noise factor is a session constant, so a realm that CAN
+# calibrate learns it once and publishes it for realms that cannot. It rides the
+# top realm's non-enumerable `Object.__pnaRealm` slot (PS-139); it used to ride a
+# `top.__personaMtFactor` global, which put the divisor that INVERTS this spoof
+# one property read from any page.
+#
+# WHICH REALMS ACTUALLY CROSS — this sentence used to claim the factor reached
+# "realms without a DOM", and that was overstated. The channel that functions is
+# iframe -> top: a same-origin child frame has `top` and reuses the learned
+# factor, which is what keeps it repairing text to the same width as the top
+# realm. A WORKER has no `top` at all, so it never read this value and does not
+# now; it falls through to `trueWidth`'s "no DOM here + not learned yet" branch
+# below, exactly as it did before. That gap is real and unchanged by PS-139 —
+# a runtime-learned value cannot ride the leaf's source-text crossing into a
+# worker — and it is tracked separately rather than assumed away here.
 CONTENT_SCRIPT = r"""
 (function () {
   function applyMtPatch(G) {
@@ -44,6 +58,7 @@ CONTENT_SCRIPT = r"""
     var off = (G.OffscreenCanvasRenderingContext2D || {}).prototype;
     if ((!proto || !proto.measureText) && (!off || !off.measureText)) return;
 __MT_REALM_GUARD__
+__MT_REALM_SLOT__
 
     // One-shot, un-noised true width of `text` in `font`, via a throwaway DOM
     // node measured and removed immediately (the bounding-rect read is not
@@ -64,15 +79,37 @@ __MT_REALM_GUARD__
       return w > 0 ? w : null;
     }
 
-    // The noise scale is a session constant; share the learned factor across
-    // realms via the top window so a DOM-less realm (worker) can still repair.
+    // The noise scale is a session constant, so it is learned ONCE in a realm
+    // that can calibrate and published for realms that cannot. It rides the top
+    // realm's non-enumerable per-realm slot — see the Python note above this
+    // template for what does and does not cross (iframe yes, worker no).
+    // Reads pass `create` false so probing a realm never mints a registry in it.
     function getFactor() {
-      try { if (G.top && typeof G.top.__personaMtFactor === 'number') return G.top.__personaMtFactor; } catch (e) {}
-      return (typeof G.__personaMtFactor === 'number') ? G.__personaMtFactor : null;
+      try {
+        if (G.top && G.top !== G) {
+          var ts = __pnaSlot(G.top, false);
+          if (ts && typeof ts.mtFactor === 'number') return ts.mtFactor;
+        }
+      } catch (e) {}
+      try {
+        var s = __pnaSlot(G, false);
+        if (s && typeof s.mtFactor === 'number') return s.mtFactor;
+      } catch (e) {}
+      return null;
     }
     function setFactor(f) {
-      G.__personaMtFactor = f;
-      try { if (G.top) G.top.__personaMtFactor = f; } catch (e) {}
+      // Own realm first (`create` true) so a top realm that calibrated always
+      // has its own copy, then publish to the top for children to read.
+      try {
+        var s = __pnaSlot(G, true);
+        if (s) s.mtFactor = f;
+      } catch (e) {}
+      try {
+        if (G.top && G.top !== G) {
+          var ts = __pnaSlot(G.top, true);
+          if (ts && typeof ts.mtFactor !== 'number') ts.mtFactor = f;
+        }
+      } catch (e) {}
     }
 
     function patch(target) {
@@ -145,6 +182,8 @@ def build_measuretext_extension(base_dir: str) -> str:
         "__MT_REALM_BOOTSTRAP__", realm_bootstrap_js("applyMtPatch")
     ).replace(
         "__MT_REALM_GUARD__", realm_guard_js("measuretext")
+    ).replace(
+        "__MT_REALM_SLOT__", realm_slot_js()
     )
     (ext_dir / "measuretext.js").write_text(js, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(

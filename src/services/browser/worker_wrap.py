@@ -797,3 +797,97 @@ def realm_guard_js(module_key: str, indent: int = 4) -> str:
         "} catch (e) {}"
     )
     return textwrap.indent(body, " " * indent)
+
+
+# ---------------------------------------------------------------------------
+# Per-realm VALUE slot (PS-139)
+# ---------------------------------------------------------------------------
+# The second consumer of the same `Object.__pnaRealm` object the guard above
+# creates. It replaces the last two `__persona*` names that sat ENUMERABLE on
+# the global object — and unlike the eleven booleans PS-93 removed, these two
+# handed the page live session values rather than mere tool presence:
+#
+#   * `__personaScreenWH` -> the profile's resolved screen geometry {W, H};
+#   * `__personaMtFactor` -> the measureText noise factor, i.e. the divisor
+#     that INVERTS the text-metrics spoof.
+#
+# NO NEW GLOBAL NAME IS ADDED. The slot already ships (see realm_guard_js), so
+# this is two keys inside one existing object; `getOwnPropertyNames(G)` gains
+# nothing and loses two.
+#
+# WHY A HELPER AND NOT `__pnaReg`. The guard already resolves this realm's own
+# slot into a local `__pnaReg`, and the own-realm write could have reused it.
+# It does not, for two reasons: the value channels must also read ANOTHER
+# realm's slot (the iframe->top crossing below), which `__pnaReg` cannot do; and
+# reusing a variable the guard happens to declare would couple two leaves to the
+# guard's internal spelling with nothing asserting the coupling.
+#
+# THE CROSSING THIS SUPPORTS, precisely. `__pnaRealm` is built per-realm off
+# each realm's OWN `G.Object`, so a child reaches the top's copy the same way it
+# reached `top.__personaScreenWH` before: through the `top` hop, same-origin
+# only. That means:
+#
+#   * iframe -> top   WORKS, and is the channel both values exist for. Every
+#                     realm must agree on one screen geometry and one noise
+#                     factor; divergence between realms is a worse tell than
+#                     the global this replaces.
+#   * cross-origin    UNCHANGED, not improved — such a child could not read
+#                     `top.__personaScreenWH` either. This is not a frame
+#                     isolation fix and must not be read as one.
+#   * worker -> top    STILL IMPOSSIBLE. `WorkerGlobalScope` has no `top`, so a
+#                     worker never read either value and does not now. Nothing
+#                     regresses; nothing improves. Carrying a RUNTIME-LEARNED
+#                     value into a worker needs a mechanism nobody has
+#                     specified — the leaf crosses as SOURCE TEXT built at
+#                     new-Worker time (`fragment()` above), which by
+#                     construction cannot carry a value learned later. That is
+#                     tracked separately and this slice does not block on it.
+#
+# FAIL OPEN, exactly like the guard: every path returns null rather than
+# throwing, and each caller falls back to computing the value locally. A null
+# slot costs a realm re-deriving its own geometry (what happens today when
+# `top` is cross-origin); a throw would cost an UNMASKED realm.
+#
+# HONEST BOUND, inherited not closed: a detector walking
+# `getOwnPropertyNames(Object)` still finds `__pnaRealm`. PS-93 states that
+# bound in place and this slice does not claim to close it.
+def realm_slot_js(indent: int = 4) -> str:
+    """Inline JS defining ``__pnaSlot(R, create)`` — the per-realm value slot.
+
+    THE ONLY SOURCE OF THIS TEXT, on the same terms as ``realm_guard_js``: a
+    leaf carries a ``*_REALM_SLOT__`` placeholder and fills it from HERE in its
+    builder's ``.replace()`` chain. Do not paste the emitted body into a leaf.
+
+    ``__pnaSlot(R, create)`` returns realm ``R``'s ``Object.__pnaRealm``, or
+    null when it cannot be reached (no ``Object``, a cross-origin ``R``, a
+    refused ``defineProperty``). ``create`` is for the realm you OWN; pass false
+    when reading another realm's slot, so a read never mints an empty registry
+    in a realm that has not booted.
+
+    Keys inside the slot are a flat namespace shared with the guard's module
+    keys, so a value key must not collide with one: the guard's are module names
+    (``audio``, ``screen``, ``hw``, ``measuretext``, …) and the value keys are
+    ``screenWH`` / ``mtFactor``. A collision would make a leaf's guard read a
+    value object as its ``=== true`` boot flag — which fails OPEN (the leaf
+    re-applies) rather than silently skipping, but is still a bug.
+
+    Emitted as text with no free variables at all, so it survives the trip into
+    a worker realm inside ``LEAF.toString()``. ``indent`` is the leaf body's own
+    indentation, as with the guard.
+    """
+    body = (
+        "function __pnaSlot(R, create) {\n"
+        "  try {\n"
+        "    var O = R && R.Object;\n"
+        "    if (!O) return null;\n"
+        "    var s = O.__pnaRealm;\n"
+        "    if (!s && create) {\n"
+        "      s = {};\n"
+        "      O.defineProperty(O, '__pnaRealm', { value: s, configurable: true });\n"
+        "      s = O.__pnaRealm || s;\n"
+        "    }\n"
+        "    return s || null;\n"
+        "  } catch (e) { return null; }\n"
+        "}"
+    )
+    return textwrap.indent(body, " " * indent)
