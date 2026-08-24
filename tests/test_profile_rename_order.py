@@ -507,15 +507,28 @@ def test_failed_dir_rename_does_not_mint_or_move_a_seed(mgr, monkeypatch):
     assert _identity(mgr.profiles["alpha"]) == before
 
 
-def test_a_new_profiles_seed_is_the_one_it_would_have_derived(mgr):
-    # The freeze must not RE-ROLL anything: a profile created today presents
-    # exactly what it would have presented before the seed was persisted. This
-    # is what keeps the change a freeze rather than the seed-secrecy change
-    # (which would move fingerprints and is deliberately out of scope).
+def test_a_new_profiles_seed_is_frozen_and_is_no_longer_the_names_crc32(mgr):
+    # CORRECTED, not deleted (PS-148). This test used to assert the exact
+    # OPPOSITE — `fingerprint_seed == _crc32("shop1")` — because when the seed
+    # became a field the mint deliberately reproduced the value the old
+    # every-read derivation would have produced. Making the mint SECRET is
+    # precisely the change that retires that assertion: a new profile's seed is
+    # now salted with a per-install secret, so it is NOT computable from the
+    # name by anyone who did not read this install's secret file.
+    #
+    # What survives the change is asserted here instead: the seed is FROZEN
+    # into the field at creation (the stability half — a profile must not
+    # re-roll its machine under its own cookie jar), and it is emphatically no
+    # longer the name's crc32. The secrecy property itself — two installs, same
+    # name, different seed — is pinned in tests/test_fingerprint_seed_secrecy.py,
+    # against the RETURNED SEED VALUES rather than against "a secret exists".
     mgr.add_profile("shop1", "", "windows")
 
-    assert mgr.profiles["shop1"].fingerprint_seed == _crc32("shop1")
-    assert mgr.profiles["shop1"].fingerprint_seed_value == _crc32("shop1")
+    frozen = mgr.profiles["shop1"].fingerprint_seed_value
+    assert frozen is not None  # genuinely frozen, not re-derived on every read
+    assert mgr.profiles["shop1"].fingerprint_seed == frozen
+    # the whole point of PS-148: the name is no longer the preimage
+    assert mgr.profiles["shop1"].fingerprint_seed != _crc32("shop1")
 
 
 # --- the OTHER half of the seed invariant: distinct live profiles, distinct
@@ -561,6 +574,14 @@ def test_recreating_a_freed_name_does_not_reuse_the_renamed_profiles_machine(mgr
     # "archive last quarter's account, start a fresh one under the same label".
     # Before the uniqueness rule both profiles landed on crc32('acme-bank').
     mgr.add_profile("acme-bank", "", "windows")
+    # CORRECTED for PS-148: capture what this profile presents BEFORE the
+    # rename rather than asserting it equals _crc32("acme-bank"). The stability
+    # half is "a rename does not move the machine", and the honest way to state
+    # that is to compare against the value the profile actually held a moment
+    # ago. Spelling it as crc32(name) only ever worked because the mint used to
+    # BE crc32(name); now that the mint is salted, crc32 is the wrong constant
+    # and asserting it would be testing the old formula, not the property.
+    seed_before_rename = mgr.profiles["acme-bank"].fingerprint_seed
     mgr.update_profile("acme-bank", "acme-bank-old", "", "windows")
     mgr.add_profile("acme-bank", "", "windows")
 
@@ -568,11 +589,14 @@ def test_recreating_a_freed_name_does_not_reuse_the_renamed_profiles_machine(mgr
     new = _identity(mgr.profiles["acme-bank"])
 
     # the renamed profile kept its machine (the stability half, still true)
-    assert old["seed"] == _crc32("acme-bank")
+    assert old["seed"] == seed_before_rename
     # and the recreated name did NOT inherit it (the isolation half)
     assert new["seed"] != old["seed"]
     assert new != old
     assert _seeds_are_unique(mgr)
+    # PS-148: neither profile's seed is computable from the label any more
+    assert old["seed"] != _crc32("acme-bank")
+    assert new["seed"] != _crc32("acme-bank")
 
 
 def test_a_restored_profile_and_a_recreated_name_present_different_machines(
@@ -772,24 +796,44 @@ def test_reimporting_over_a_profile_does_not_re_roll_its_own_seed(
 
 
 def test_the_mint_walks_to_the_next_free_seed_deterministically():
-    # The mint is pure and deterministic — no RNG — so a given (name, taken)
-    # always produces the same seed. It returns crc32(name) whenever that is
-    # free, which is what keeps every non-colliding create presenting exactly
-    # what it always would have.
+    # CORRECTED FOR PS-148, NOT DELETED — deleting it would leave the walk's
+    # surviving invariants unpinned, and the walk is the branch the ordinary
+    # "archive last quarter's account, reuse the label" workflow takes.
+    #
+    # WHAT THIS TEST USED TO ASSERT, and why it had to change: it pinned
+    # `mint_fingerprint_seed("acme-bank") == _crc32("acme-bank")` and
+    # `first == _crc32("acme-bank:1")`. Those were assertions that the minted
+    # value is COMPUTABLE FROM THE NAME BY ANYONE — which is exactly the defect
+    # PS-148 removes. They went red for the right reason: the mint is now
+    # salted with a per-install secret.
+    #
+    # WHAT SURVIVES, and is asserted here instead:
+    #   * determinism within one install (no RNG at call time — the entropy was
+    #     spent once, when the install secret was created);
+    #   * the walk still returns a FREE seed, and keeps walking as the taken
+    #     set grows;
+    #   * the walked values are distinct from the first-choice value.
+    # The cross-install property (same name, same `taken`, DIFFERENT results)
+    # is AC5 and is pinned in tests/test_fingerprint_seed_secrecy.py, which is
+    # where a second install can actually be modelled.
     from src.models.profile import mint_fingerprint_seed
 
-    plain = _crc32("acme-bank")
-    assert mint_fingerprint_seed("acme-bank") == plain
-    assert mint_fingerprint_seed("acme-bank", set()) == plain
+    plain = mint_fingerprint_seed("acme-bank")
+    assert mint_fingerprint_seed("acme-bank") == plain  # deterministic
+    assert mint_fingerprint_seed("acme-bank", set()) == plain  # nothing taken
+
+    # PS-148: the mint is no longer the name's crc32, on either derivation.
+    assert plain != _crc32("acme-bank")
 
     first = mint_fingerprint_seed("acme-bank", {plain})
-    assert first == _crc32("acme-bank:1")
-    assert first != plain
+    assert first != plain  # it really walked off the taken value
+    assert first != _crc32("acme-bank:1")  # ...and the walk is salted too
     assert mint_fingerprint_seed("acme-bank", {plain}) == first  # deterministic
 
     second = mint_fingerprint_seed("acme-bank", {plain, first})
-    assert second == _crc32("acme-bank:2")
     assert second not in (plain, first)
+    assert second != _crc32("acme-bank:2")
+    assert mint_fingerprint_seed("acme-bank", {plain, first}) == second
 
 
 def test_a_trashed_profiles_seed_is_not_handed_to_a_new_profile(trash_mgr):
@@ -858,25 +902,40 @@ def legacy_trash_mgr(tmp_path, monkeypatch):
 
 
 def test_renaming_a_legacy_profile_does_not_land_on_a_live_profiles_machine(
-    legacy_trash_mgr,
+    legacy_trash_mgr, tmp_path
 ):
     # COLLISION PATH D — the rename door, reached with a pre-field profile.
-    # 'acme-bank' is created and renamed away, FREEZING crc32('acme-bank') and
-    # freeing the name; the legacy profile is then renamed INTO that freed name
-    # and its still-derived seed lands straight on the frozen one. Two live
-    # profiles, one presented machine — the same invariant-#0 failure as the
-    # create door, which the uniqueness rule did not reach because
-    # update_profile mints nothing and consults no reserved set.
+    # The legacy profile's seed is STILL DERIVED (crc32 of whatever name it
+    # currently holds), so renaming it INTO a name whose crc32 a live profile
+    # already holds lands the two on one presented machine — the invariant-#0
+    # failure the uniqueness rule did not reach, because update_profile mints
+    # nothing and consults no reserved set. The freeze-before-rename is what
+    # closes it.
+    #
+    # CORRECTED FOR PS-148 — the SETUP, not the property. This test used to
+    # build the collision target by creating 'acme-bank' and renaming it away,
+    # then asserting `frozen["seed"] == _crc32("acme-bank")`. That worked only
+    # while the mint WAS crc32(name); now that the mint is salted, a created
+    # profile never lands on crc32("acme-bank") and the old setup silently
+    # stopped constructing a collision at all — the test would have passed
+    # while modelling nothing, which is worse than failing.
+    #
+    # So the target is planted through a REAL door that can still produce that
+    # exact value: an archive carrying the seed a pre-field 'acme-bank' would
+    # present. That is not synthetic — it is precisely the shape of an old
+    # export, and the import path keeps a carried seed whenever it is free.
     mgr = legacy_trash_mgr
     assert mgr.profiles["legacy-acct"].fingerprint_seed_value is None
 
-    mgr.add_profile("acme-bank", "", "windows")
-    assert mgr.update_profile("acme-bank", "acme-bank-old", "", "windows") is True
+    target = _crc32("acme-bank")
+    archive = _archive_with_seed(tmp_path, "acme-bank-old", target)
+    ok, name = mgr.import_profile(archive)
+    assert ok is True, name
     frozen = _identity(mgr.profiles["acme-bank-old"])
-    # the name is genuinely free and its crc32 is genuinely the frozen value —
-    # otherwise this test would pass without ever setting up the collision
+    # the collision is genuinely set up: a live profile holds crc32('acme-bank')
+    # and the name itself is free, so the rename below really can land on it
+    assert frozen["seed"] == target
     assert "acme-bank" not in mgr.profiles
-    assert frozen["seed"] == _crc32("acme-bank")
 
     assert mgr.update_profile("legacy-acct", "acme-bank", "", "windows") is True
 

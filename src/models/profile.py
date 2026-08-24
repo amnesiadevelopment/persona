@@ -1,8 +1,41 @@
+import hashlib
+import hmac
 import zlib
 from collections.abc import Container
 from dataclasses import asdict, dataclass, field
 
 from .hardware_generation import normalize_generation
+
+
+def _derive(label: str) -> int:
+    """Derive ONE seed value from a label, salted with the install secret.
+
+    The single owner of the salted formula, so the mint and its collision walk
+    cannot drift apart — a salted mint with an unsalted walk would leak the
+    guessable scheme straight back for exactly the profiles a name-reuse
+    workflow creates (see mint_fingerprint_seed).
+
+    HMAC-SHA256 truncated to 32 bits, rather than crc32(secret + label). crc32
+    is a checksum, not a keyed hash: it is linear over its input, so an
+    attacker holding one (name, seed) pair could recover enough structure to
+    predict others under the same install. HMAC is the standard construction
+    for "keyed digest of an attacker-influenced message" and costs nothing
+    here — this runs once per profile creation, not per request.
+
+    The output stays a 32-BIT INT because that is what every consumer already
+    is: `--fingerprint=` formats it, touch_points does `seed % 2`, the preset
+    tables index into it. Salting removes GUESSABILITY, not the birthday bound
+    of a 32-bit space; the reserved-seed check is what handles collisions, and
+    it is unchanged. Widening the space is a different decision.
+
+    The secret is read here and never returned, logged or stored on the model.
+    """
+    from ..core.install_secret import install_secret
+
+    digest = hmac.new(
+        install_secret(), label.encode("utf-8"), hashlib.sha256
+    ).digest()
+    return int.from_bytes(digest[:4], "big")
 
 
 def mint_fingerprint_seed(name: str, taken: Container[int] | None = None) -> int:
@@ -36,17 +69,43 @@ def mint_fingerprint_seed(name: str, taken: Container[int] | None = None) -> int
     read a stale set and mint the same seed. None = don't check (the caller has
     no registry in hand).
 
-    Making the minted value SECRET/unguessable is a separate decision — it
-    would move existing profiles' fingerprints — and is deliberately not
-    attempted here. Freezing and hiding are different problems; keeping them
-    apart is why this is a named function and not an inlined literal.
+    3. SECRECY — and this is the property that changed the formula. crc32(name)
+       is a PURE, PUBLIC function of a string the operator typed: same name,
+       same integer, on every install and every machine. The seed is not
+       internal bookkeeping — it derives the PRESENTED machine — so an
+       adversary who guessed a naming scheme ('acme-bank', 'shop1',
+       'client-alpha') computed that profile's presented hardware OFFLINE, with
+       no access to the install. Mixing in a per-install secret (see
+       core.install_secret) is what turns that computation back into a guess.
+
+    WHAT THIS DOES NOT TOUCH, and it is the bound that makes the change
+    shippable: this function is on NEITHER read path. ``Profile.fingerprint_seed``
+    returns ``fingerprint_seed_value`` when set, else computes ``crc32(name)``
+    INLINE. So salting here moves NO existing profile — every stored seed keeps
+    its value and every pre-field profile keeps its crc32(name) fallback. The
+    honest bound is therefore that this narrows guessability for NEW profiles
+    and does not make an existing one secret; closing that needs a migration
+    that would move fingerprints, which is deliberately not attempted here.
+
+    THE WALK IS SALTED TOO, and that is not decoration. A salted mint whose
+    collision walk fell back to plain crc32(f"{name}:{n}") would leak the
+    scheme straight back: the walk is exactly the branch a name-reuse workflow
+    ("archive last quarter's account, start a fresh one") takes, so the
+    guessable value would be handed to precisely the profiles the operator
+    creates most deliberately. Both derivations go through _derive.
+
+    STILL DETERMINISTIC, and still no RNG at call time. The entropy was spent
+    ONCE, when the install secret file was created; given the same name, the
+    same ``taken`` set and the same install, this returns the same seed on
+    every call. That is what keeps a profile's presented machine stable under
+    its own cookie jar — the entire point of property 1 above.
     """
-    seed = zlib.crc32(name.encode("utf-8"))
+    seed = _derive(name)
     if taken is None or seed not in taken:
         return seed
     n = 1
     while True:
-        seed = zlib.crc32(f"{name}:{n}".encode("utf-8"))
+        seed = _derive(f"{name}:{n}")
         if seed not in taken:
             return seed
         n += 1
