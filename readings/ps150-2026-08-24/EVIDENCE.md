@@ -156,6 +156,14 @@ patch, replace, or accept and document — rather than treated as out of reach.
 `scripts/ps150_stock_control.py` read pixelscan under Debian's **stock** `/usr/bin/chromium` 151 — zero
 persona code — through the same exit, same host, same no-sandbox waiver:
 
+> **Provenance of `arm-c-stock-vs-packaged.json`.** This arm was first written to a `.log`, which
+> `.gitignore:183` (`*.log`) silently excluded from the commit, so the table below rested on numbers no
+> reader could check. The artifact now committed is the **byte-exact JSON block this script printed on that
+> original run**, lifted from the surviving output — it is *not* a re-run. That matters for validity: a
+> second live read could not be compared to arms A and B, because the exit is not guaranteed to survive a
+> rotation and a rotated arm is not a comparison. Every row below was re-verified field-by-field against the
+> committed file.
+
 | item | stock chromium | packaged engine (layer OFF) |
 |---|---|---|
 | `masking_detected` | **`true`** | **`true`** |
@@ -230,6 +238,23 @@ lists it, at 500 lines, and both cited premises were verified on the checked-out
 The path correction in that comment (`src/services/verify/`, no `browser/` segment) **is** right and was
 useful. Only the absent-from-`main` claim is withdrawn.
 
+### The ticket's stated WebGL lead did NOT reproduce
+
+The ticket names a specific lead on `fingerprint_inconsistent`: on PS-137's seed-9001 record pixelscan read
+renderer **and** vendor as `-` (absent) while creepjs read a plausible AMD string on the same load, and that
+*absence* is offered as the internal contradiction. **This run did not reproduce it.** On both arms — same
+seed 9001 — pixelscan read a full, plausible string, `state=read`, not absent:
+
+```
+webgl_renderer: ANGLE (NVIDIA, NVIDIA GeForce RTX 3070 (0x00002484) Direct3D11 vs_5_0 ps_5_0, D3D11)
+webgl_vendor:   Google Inc. (NVIDIA)
+```
+
+Both verdicts fired anyway. So the lead is **retired, not inherited**: a reader working from the ticket body
+will go looking for a `-` that is not in these records. This does not weaken §5 — that section rests on the
+claimed-vs-rendered contradiction (a D3D11 discrete GPU claimed beside a hash SwiftShader drew), which is
+present *with* a full renderer string and therefore never depended on the absence.
+
 ---
 
 ## 10. Environment findings (for whoever runs the next one)
@@ -255,7 +280,7 @@ steady state rather than a one-off:
 
 - `arm-a-baseline-layer-on.json` — arm A, layer ON, 10 vectors
 - `arm-b-geo-gap-closed.json` — arm B, layer ON + `geo`, 11 vectors
-- `arm-c-stock-vs-packaged.log` — stock chromium vs packaged engine (layer off), same exit
+- `arm-c-stock-vs-packaged.json` — stock chromium vs packaged engine (layer off), same exit
 
 Reproduce the comparison:
 
