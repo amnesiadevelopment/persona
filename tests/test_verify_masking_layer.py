@@ -44,6 +44,7 @@ import pytest
 from src.services.verify import local_probe, masking_layer
 from src.services.verify.layer_differential import (
     AXIS_LAYER,
+    AXIS_SEED,
     Arm,
     build_differential_record,
 )
@@ -417,7 +418,12 @@ def test_an_absent_layer_reports_incomplete_with_a_reason():
 
 
 def _arm(
-    label: str, vectors: dict, error: str = "", sandbox_waived: bool = False
+    label: str,
+    vectors: dict,
+    error: str = "",
+    sandbox_waived: bool = False,
+    dev_shm_waived: bool = False,
+    dev_shm_bytes: "int | None" = None,
 ) -> Arm:
     return Arm(
         label=label,
@@ -426,6 +432,8 @@ def _arm(
         seed=SEED,
         error=error,
         sandbox_waived=sandbox_waived,
+        dev_shm_waived=dev_shm_waived,
+        dev_shm_bytes=dev_shm_bytes,
     )
 
 
@@ -990,6 +998,225 @@ def test_the_disclosure_SURVIVES_to_the_artifact_a_reader_actually_opens():
     assert reloaded["sandbox_waived"] is True
     assert "--no-sandbox" in "\n".join(reloaded["notes"])
     assert reloaded["before"]["sandbox_waived"] is True
+
+
+# --- PS-133: the /dev/shm waiver on the DIFFERENTIAL path -------------------
+#
+# The `read` path already discloses this waiver
+# (`test_the_dev_shm_waiver_is_recorded_in_the_reading_it_produced`). These are
+# its counterparts on the OTHER record path, and the gap they close is not
+# hypothetical: `--allow-small-dev-shm` was accepted on the differential
+# subparser and threaded all the way down to the launch, and then disclosed
+# NOWHERE — a differential taken on the workaround surface was byte-identical
+# to one taken on a healthy host.
+#
+# That matters most here of all places. AXIS_SEED defaults to 4242 vs 1337 —
+# the PS-97 two-seed comparison this ticket exists to unblock — so the reading
+# taken on the strength of this work runs on exactly this path.
+
+
+def test_a_dev_shm_waived_differential_SAYS_SO_in_the_record():
+    """The same promise the `read` path already keeps, on the other path.
+
+    Asserted on the DOCUMENT for the same reason the sandbox twin above is: the
+    record is the durable thing a future reader diffs against, and an
+    undisclosed environmental condition riding along with a reading is how a
+    host limit comes to be read as a property of the product.
+    """
+    record = build_differential_record(
+        AXIS_SEED, "chromium",
+        _arm("seed4242", {"audio_digest": "124.036605"},
+             dev_shm_waived=True, dev_shm_bytes=64 * 1024 * 1024),
+        _arm("seed1337", {"audio_digest": "124.036578"},
+             dev_shm_waived=True, dev_shm_bytes=64 * 1024 * 1024),
+    )
+
+    assert record["dev_shm_waived"] is True
+    assert record["before"]["dev_shm_waived"] is True
+    assert record["after"]["dev_shm_waived"] is True
+
+    note = "\n".join(record["notes"])
+    assert "--disable-dev-shm-usage" in note
+    assert "NOT the surface the product presents" in note, (
+        "the note must say what the reading is NOT, which is the whole point"
+    )
+
+
+def test_the_record_states_the_NUMBER_not_merely_the_verdict():
+    """"64 MiB" tells a reader what to change; "too small" does not.
+
+    ``dev_shm_bytes`` was built with that comment on it and then read by
+    nothing — an attribute serving a consumer that was never written. This is
+    that consumer.
+    """
+    record = build_differential_record(
+        AXIS_SEED, "chromium",
+        _arm("seed4242", {"audio_digest": "1"},
+             dev_shm_waived=True, dev_shm_bytes=64 * 1024 * 1024),
+        _arm("seed1337", {"audio_digest": "2"},
+             dev_shm_waived=True, dev_shm_bytes=64 * 1024 * 1024),
+    )
+
+    assert record["dev_shm_bytes"] == 64 * 1024 * 1024
+    assert record["before"]["dev_shm_bytes"] == 64 * 1024 * 1024
+
+    note = "\n".join(record["notes"])
+    assert "64 MiB" in note, "the measured size must appear in the prose"
+    assert "256 MiB" in note, (
+        "the floor must appear beside it, or the number has nothing to be "
+        "read against"
+    )
+
+
+def test_an_unwaived_differential_never_claims_a_dev_shm_waiver():
+    """The direction that makes the disclosure worth anything.
+
+    A note that is always present discloses nothing — a consumer would learn to
+    ignore it, and the tag would be decoration rather than information. This is
+    the exact counterpart of
+    ``test_a_normal_reading_does_not_carry_the_dev_shm_waiver_note`` on the
+    `read` path.
+    """
+    record = build_differential_record(
+        AXIS_SEED, "chromium",
+        _arm("seed4242", {"audio_digest": "1"}),
+        _arm("seed1337", {"audio_digest": "2"}),
+    )
+
+    assert record["dev_shm_waived"] is False
+    assert record["dev_shm_bytes"] is None
+    assert not any("--disable-dev-shm-usage" in n for n in record["notes"])
+
+
+def test_a_HALF_waived_dev_shm_pair_warns_that_a_SECOND_AXIS_moved():
+    """One axis at a time, or the difference is attributable to neither.
+
+    The same method the sandbox twin enforces, and it applies here verbatim: if
+    only one arm ran its renderer transport off disk, that moved alongside the
+    axis under test. On the SEED axis — the PS-97 comparison — presenting such
+    a pair as a clean single-axis result is how a wrong answer gets recorded.
+    """
+    record = build_differential_record(
+        AXIS_SEED, "chromium",
+        _arm("seed4242", {"audio_digest": "1"},
+             dev_shm_waived=True, dev_shm_bytes=64 * 1024 * 1024),
+        _arm("seed1337", {"audio_digest": "2"}),
+    )
+
+    assert record["dev_shm_waived"] is True
+    note = "\n".join(record["notes"])
+    assert "--disable-dev-shm-usage" in note
+    assert "SECOND axis" in note
+    assert "attributable to neither" in note
+
+
+def test_the_two_waivers_are_disclosed_INDEPENDENTLY():
+    """A host can forbid the sandbox and have a healthy /dev/shm, or the
+    reverse. Collapsing them into one flag would let a reader conclude the
+    wrong thing about which surface actually moved.
+
+    This is also the guard against the shape that caused the rework: threading
+    one waiver and leaving the other silently False.
+    """
+    sandbox_only = build_differential_record(
+        AXIS_LAYER, "chromium",
+        _arm("off", {"audio_digest": "1"}, sandbox_waived=True),
+        _arm("on", {"audio_digest": "2"}, sandbox_waived=True),
+    )
+    assert sandbox_only["sandbox_waived"] is True
+    assert sandbox_only["dev_shm_waived"] is False
+    assert not any(
+        "--disable-dev-shm-usage" in n for n in sandbox_only["notes"]
+    )
+
+    shm_only = build_differential_record(
+        AXIS_LAYER, "chromium",
+        _arm("off", {"audio_digest": "1"},
+             dev_shm_waived=True, dev_shm_bytes=64 * 1024 * 1024),
+        _arm("on", {"audio_digest": "2"},
+             dev_shm_waived=True, dev_shm_bytes=64 * 1024 * 1024),
+    )
+    assert shm_only["dev_shm_waived"] is True
+    assert shm_only["sandbox_waived"] is False
+    assert not any("--no-sandbox" in n for n in shm_only["notes"])
+
+    # Both at once: two notes, not one merged sentence.
+    both = build_differential_record(
+        AXIS_LAYER, "chromium",
+        _arm("off", {"audio_digest": "1"}, sandbox_waived=True,
+             dev_shm_waived=True, dev_shm_bytes=64 * 1024 * 1024),
+        _arm("on", {"audio_digest": "2"}, sandbox_waived=True,
+             dev_shm_waived=True, dev_shm_bytes=64 * 1024 * 1024),
+    )
+    assert both["sandbox_waived"] is True and both["dev_shm_waived"] is True
+    assert len(both["notes"]) == 2
+
+
+def test_a_firefox_arm_is_never_tagged_with_the_dev_shm_flag_either():
+    """TRYING TO MAKE THE RECORD LIE, on the second waiver.
+
+    ``--allow-small-dev-shm`` is accepted on the CLI whatever ``--engine``
+    says. A record that echoed the REQUEST would tag a firefox reading with a
+    workaround that was never applied to it. The guard is structural, exactly
+    as it is for the sandbox: the waiver is reported by the SESSION that
+    launched, and the firefox launch reports nothing.
+    """
+    import contextlib
+
+    from src.services.verify import browser_tier, layer_differential
+
+    @contextlib.contextmanager
+    def session(proxy_url, *, seed, install_layer=True, layer_sink=None):
+        if layer_sink is not None:
+            layer_sink(LayerReport(route="init_scripts", installed=("webgl",)))
+        yield object()
+
+    monkey = pytest.MonkeyPatch()
+    try:
+        monkey.setattr(browser_tier, "firefox_session", session)
+        monkey.setattr(
+            layer_differential, "_load_and_read", lambda *a, **k: '{"webgl": "1"}'
+        )
+        arm = layer_differential.read_probe_once(
+            "http://127.0.0.1:1/", seed=SEED, engine="firefox",
+            allow_small_dev_shm=True,
+        )
+    finally:
+        monkey.undo()
+
+    assert arm.dev_shm_waived is False, (
+        "firefox has no such flag; reporting the REQUEST here would tag a "
+        "reading with a condition it was never taken under"
+    )
+    assert arm.dev_shm_bytes is None, (
+        "a launch that never asked the question must not state a number"
+    )
+    assert arm.as_record()["dev_shm_waived"] is False
+
+
+def test_the_dev_shm_disclosure_SURVIVES_the_round_trip_to_JSON():
+    """A tag that exists only in memory discloses nothing to the next reader.
+
+    ``dumps`` is what the CLI writes to stdout and what ``matrix.write`` puts
+    on disk, so this is the last place the disclosure could be lost.
+    """
+    from src.services.verify.layer_differential import dumps
+
+    record = build_differential_record(
+        AXIS_SEED, "chromium",
+        _arm("seed4242", {"audio_digest": "124.036605"},
+             dev_shm_waived=True, dev_shm_bytes=64 * 1024 * 1024),
+        _arm("seed1337", {"audio_digest": "124.036578"},
+             dev_shm_waived=True, dev_shm_bytes=64 * 1024 * 1024),
+    )
+
+    reloaded = json.loads(dumps(record))
+
+    assert reloaded["dev_shm_waived"] is True
+    assert reloaded["dev_shm_bytes"] == 64 * 1024 * 1024
+    assert "--disable-dev-shm-usage" in "\n".join(reloaded["notes"])
+    assert reloaded["before"]["dev_shm_waived"] is True
+    assert reloaded["after"]["dev_shm_bytes"] == 64 * 1024 * 1024
 
 
 # --- PS-119: the harness must declare the locale the way the product does ----
