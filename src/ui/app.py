@@ -455,6 +455,8 @@ class App:
 
         There is no PINNED state to mirror here: the app updater has no pin to
         hold updates off, so the two states are "retained" and "not"."""
+        if self._update_in_progress or self._update_staged:
+            return None
         try:
             target = app_update.rollback_target()
         except Exception:
@@ -499,7 +501,48 @@ class App:
         which renders only when the operator has it expanded, so a refusal
         that goes solely to the log has no user-visible surface at all with the
         panel collapsed. The status line on the row is where they are already
-        looking, and it is set on every exit below."""
+        looking, and it is set on every exit below.
+
+        REFUSED WHILE AN UPDATE IS PENDING, and this guard is not decoration
+        just because _app_rollback_row() already declines to render in the same
+        condition: reaching here means the row was built BEFORE the update
+        arrived and the operator clicked one that has since gone stale — which
+        is precisely the window the guard exists for, not a case it may assume
+        away.
+
+          * The race. On macOS the install runs in a daemon thread spawned
+            AFTER the dialog is popped (_offer_install -> on_install), so the
+            sidebar stays live for the whole of a sha256 re-verify, a checksum
+            fetch, `hdiutil attach` and `ditto` — seconds to minutes. A click
+            in that window renames app -> app.reverting and app.bak -> app
+            while _apply_macos is mid-`ditto` INTO app: two uncoordinated
+            renames of the same paths, one of them mid-copy. _apply_update
+            refuses the mirror-image case one gesture over ("execv would kill
+            the writer mid-extract"); the artifact corrupted here would be the
+            .app itself — the exact brick this ticket ships retention to make
+            survivable.
+          * The contradiction. _update_staged survives a revert untouched, so
+            without this the panel renders "[ restart to update ]" and
+            "restart to run the previous version" at once, telling the operator
+            to restart into two opposite versions with no way to tell which
+            wins.
+
+        BOTH flags are needed and neither is redundant: _update_in_progress
+        does not by itself cover the install, because its `finally` clears it
+        when the DOWNLOAD thread ends, long before the operator clicks "install
+        now" — _update_staged is what spans the install window itself.
+
+        THE ONE PLACE THIS DIFFERS FROM THE ENGINE SIBLING is that it says so
+        instead of returning silently. That sibling's panel carries its own
+        busy/checking indicator, so its silent return is still legible; this
+        panel has none, and a stale row that swallows the click with no
+        explanation is the dead-button defect this whole group of tests exists
+        to prevent. "An update is pending" is also a state the operator can act
+        on."""
+        if self._update_in_progress or self._update_staged:
+            self._app_rollback_status = "can't go back while an update is pending"
+            self._refresh_sidebar()
+            return
         try:
             went = app_update.revert_to_previous_build(log=self._log)
         except Exception as e:
