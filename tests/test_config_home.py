@@ -7,7 +7,7 @@ def _reload_config(monkeypatch, **env):
     for k in [
         "PERSONA_HOME", "PERSONA_PROFILES_FILE", "PERSONA_PROXIES_FILE",
         "PERSONA_BOOKMARKS_FILE", "PERSONA_DATA_DIR", "PERSONA_LOG_DIR",
-        "PERSONA_ENGINE_DIR",
+        "PERSONA_ENGINE_DIR", "PERSONA_CERTS_FILE", "PERSONA_CERTS_DIR",
     ]:
         monkeypatch.delenv(k, raising=False)
     for k, v in env.items():
@@ -174,3 +174,143 @@ def test_default_home_layout_is_unchanged_by_normalisation(monkeypatch, tmp_path
     assert cfg.DATA_DIR == os.path.join(str(home), "persona_data")
     assert cfg.LOG_DIR == os.path.join(str(home), "logs")
     assert cfg.ENGINE_DIR == os.path.join(str(home), "engine")
+
+
+# --- PS-127 rework: the absoluteness PREDICATE itself ---
+#
+# The first revision used a bare os.path.isabs and turned Windows CI red. The
+# tests above could not catch it, for the same structural reason the ORIGINAL
+# suite could not catch the original defect: every "absolute" spelling they try
+# is derived from tmp_path, which on Windows is drive-absolute (C:\...), so the
+# uncovered shape was ROOTED-BUT-DRIVELESS ('/custom/p.json'). That shape is
+# what the one hardcoded literal in this file happens to use, which is why CI
+# caught what the new tests did not.
+#
+# These exercise the predicate DIRECTLY with an injected path flavour, so the
+# Windows branch is provable from a POSIX run. A defect invisible on POSIX is
+# exactly the kind that reaches CI.
+
+import ntpath
+import posixpath
+
+from src.core.config import _is_already_absolute
+
+
+def test_rooted_driveless_path_is_absolute_on_windows_flavour():
+    """The regression that turned Windows CI red at cdcb5cf.
+
+    Python 3.13 changed ntpath.isabs: a rooted but driveless path stopped
+    counting as absolute ('/custom/p.json' -> True on 3.12, False on 3.13).
+    CI pins 3.13, so a bare isabs sent that operator-spelled path to abspath,
+    which pinned it to the process's current drive ('C:\\custom\\p.json') — a
+    RELOCATION, which the ticket names as a regression, and which reintroduces
+    drive-dependence into the function whose job is to remove cwd-dependence.
+    """
+    for rooted in ["/custom/p.json", r"\custom\p.json", "/data", "/"]:
+        assert _is_already_absolute(rooted, ntpath), (
+            f"{rooted!r} must count as absolute on a Windows path flavour; "
+            "abspath would otherwise pin it to the current drive"
+        )
+
+
+def test_drive_absolute_and_unc_are_absolute_on_windows_flavour():
+    for val in ["C:/data", r"C:\data", "//server/share/x", r"\\server\share\x"]:
+        assert _is_already_absolute(val, ntpath)
+
+
+def test_genuinely_relative_is_not_absolute_on_windows_flavour():
+    """The other half: the rooted allowance must not swallow real relatives,
+    or the normalisation this ticket exists to add would stop happening."""
+    for val in ["mydata", "persona_data", "a/b", r"a\b", "", "C:mydata"]:
+        assert not _is_already_absolute(val, ntpath), (
+            f"{val!r} is relative and must still be anchored"
+        )
+
+
+def test_predicate_is_exactly_isabs_on_posix():
+    """Linux/macOS behaviour must be untouched by the Windows accommodation.
+
+    This is a real constraint, not a formality: a backslash is a LEGAL
+    character in a POSIX filename, so '\\custom\\p.json' on Linux is a
+    RELATIVE file whose name merely contains backslashes. An ungated rooted
+    test would return it verbatim and leave a cwd-dependent constant — the
+    very defect this ticket fixes, reintroduced on the other platform.
+    """
+    for val in [
+        "/x/y", "mydata", r"\custom\p.json", r"a\b", "C:/data", "",
+        "/tmp/abs/", "/tmp/e/../e", "//server/share/x",
+    ]:
+        assert _is_already_absolute(val, posixpath) is posixpath.isabs(val), (
+            f"POSIX behaviour diverged from os.path.isabs for {val!r}"
+        )
+
+
+def test_rooted_driveless_override_is_returned_exactly_as_given(
+    monkeypatch, tmp_path
+):
+    """The end-to-end case, with a hardcoded literal rather than a tmp_path
+    string — the spelling the tmp_path-derived cases structurally cannot reach.
+    """
+    cfg = _reload_config(
+        monkeypatch,
+        PERSONA_HOME=str(tmp_path),
+        PERSONA_PROFILES_FILE="/custom/p.json",
+        PERSONA_DATA_DIR="/custom/data",
+    )
+    assert cfg.PROFILES_FILE == "/custom/p.json"
+    assert cfg.DATA_DIR == "/custom/data"
+
+
+# --- PS-127 rework: the blast radius is EIGHT constants, not three ---
+#
+# _under_home backs eight constants (config.py:91-98). The first revision's
+# sweep enumerated DATA_DIR/LOG_DIR/ENGINE_DIR only — and PROFILES_FILE is the
+# one that actually blew up on Windows CI.
+
+ALL_UNDER_HOME = {
+    "PROFILES_FILE": ("PERSONA_PROFILES_FILE", "profiles.json"),
+    "PROXIES_FILE": ("PERSONA_PROXIES_FILE", "proxies.json"),
+    "CERTS_FILE": ("PERSONA_CERTS_FILE", "certificates.json"),
+    "CERTS_DIR": ("PERSONA_CERTS_DIR", "certificates"),
+    "BOOKMARKS_FILE": ("PERSONA_BOOKMARKS_FILE", "bookmarks.json"),
+    "DATA_DIR": ("PERSONA_DATA_DIR", "persona_data"),
+    "LOG_DIR": ("PERSONA_LOG_DIR", "logs"),
+    "ENGINE_DIR": ("PERSONA_ENGINE_DIR", "engine"),
+}
+
+
+def test_all_eight_constants_are_absolute_under_every_override_shape(
+    monkeypatch, tmp_path
+):
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    shapes = {
+        "unset": lambda name: None,
+        "absolute": lambda name: str(tmp_path / f"abs_{name}"),
+        "relative": lambda name: f"rel_{name}",
+    }
+    for shape, spell in shapes.items():
+        overrides = {
+            env: spell(name)
+            for name, (env, _) in ALL_UNDER_HOME.items()
+            if spell(name) is not None
+        }
+        cfg = _reload_config(
+            monkeypatch, PERSONA_HOME=str(tmp_path / "home"), **overrides
+        )
+        for const in ALL_UNDER_HOME:
+            value = getattr(cfg, const)
+            assert os.path.isabs(value), (
+                f"{const} not absolute under {shape} override: {value!r}"
+            )
+
+
+def test_all_eight_constants_default_layout_is_unchanged(monkeypatch, tmp_path):
+    """"Normalisation, not relocation", stated over the whole blast radius."""
+    monkeypatch.chdir(tmp_path)
+    home = tmp_path / "home"
+    cfg = _reload_config(monkeypatch, PERSONA_HOME=str(home))
+    for const, (_, basename) in ALL_UNDER_HOME.items():
+        assert getattr(cfg, const) == os.path.join(str(home), basename)

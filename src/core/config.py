@@ -1,4 +1,5 @@
 import os
+from types import ModuleType
 
 try:
     from dotenv import load_dotenv
@@ -48,6 +49,36 @@ def _ensure_home(path: str) -> str:
 PERSONA_HOME = _ensure_home(_home())
 
 
+def _is_already_absolute(val: str, _path: ModuleType = os.path) -> bool:
+    """Is this override already anchored, such that _under_home must return it
+    untouched? `os.path.isabs` alone is NOT enough, on two counts.
+
+    1. On Windows under Python 3.13+, a ROOTED BUT DRIVELESS path ('/custom/x')
+       reports isabs=False, where 3.12 reported True. Sending it to abspath then
+       pins it to whatever drive the process is running from — relocating a path
+       the operator spelled on purpose, and reintroducing exactly the
+       cwd-dependence this function exists to remove. Measured:
+           py3.12  ntpath.isabs('/custom/p.json') -> True
+           py3.13  ntpath.isabs('/custom/p.json') -> False
+       so we state the pre-3.13 semantics explicitly rather than depend on a
+       stdlib predicate that has already shifted once.
+
+    2. That rooted test MUST be gated to Windows path flavours. A backslash is a
+       legal character in a POSIX filename, so '\\custom\\p.json' on Linux is a
+       RELATIVE file whose name merely contains backslashes; treating it as
+       anchored would return it verbatim and leave a cwd-dependent constant —
+       the very defect being fixed. Hence the `sep` check: it is true for ntpath
+       (and for os.path on Windows) and false for posixpath.
+
+    `_path` is injectable so the Windows branch is testable from POSIX — this
+    defect reached CI precisely because it is invisible to a POSIX-only run."""
+    if _path.isabs(val):
+        return True
+    if _path.sep == "\\":  # Windows path flavour: rooted-but-driveless
+        return _path.splitdrive(val)[1][:1] in ("/", "\\")
+    return False
+
+
 def _under_home(name: str, env: str) -> str:
     """Resolve a runtime path: an explicit env override wins; otherwise the
     name is placed under PERSONA_HOME. The result is ALWAYS absolute.
@@ -68,10 +99,11 @@ def _under_home(name: str, env: str) -> str:
     An ABSOLUTE override is returned EXACTLY as given — deliberately not passed
     through abspath/normpath, which would rewrite a trailing slash or an
     embedded '..' and thereby relocate a path an operator spelled on purpose.
-    This is a normalisation of relative values, not a rewrite of absolute ones."""
+    This is a normalisation of relative values, not a rewrite of absolute ones.
+    See _is_already_absolute for why that test is not a bare os.path.isabs."""
     val = os.getenv(env)
     if val:
-        return val if os.path.isabs(val) else os.path.abspath(val)
+        return val if _is_already_absolute(val) else os.path.abspath(val)
     return os.path.join(PERSONA_HOME, name)
 
 
