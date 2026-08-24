@@ -19,9 +19,20 @@ logger = get_logger("profile.transfer")
 _MAX_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
 _MAX_ENTRIES = 50_000
 
-# The mTLS terminator drops the client cert + UNENCRYPTED private key here inside
-# the profile dir; never let it ride along in an exported/shared profile zip.
-_EXPORT_EXCLUDE_DIRS = {".persona-mtls"}
+# Directories that live inside the profile dir but must never ride along in an
+# exported/shared profile zip. Two entries, for two different reasons:
+#
+# * ``.persona-mtls`` — the mTLS terminator drops the client cert + UNENCRYPTED
+#   private key here. A secrecy exclusion.
+# * ``.persona-tmp`` — the browser child's scratch directory (PS-129, see
+#   env_policy.browser_child_tmpdir). A BULK exclusion, and it is load-bearing:
+#   pinning the child's TMPDIR inside the profile is what makes a crash-stranded
+#   temp file wipeable, but it also puts the engine's ~714MB AppImage
+#   self-extraction under the profile dir — MEASURED, and it survives a CLEAN
+#   exit, not just a crash. Without this line every profile export would grow by
+#   that much. Scratch is per-launch state that no importer wants and the child
+#   recreates on demand, so excluding it loses nothing.
+_EXPORT_EXCLUDE_DIRS = {".persona-mtls", ".persona-tmp"}
 
 
 def _is_within(base: str, target: str) -> bool:
