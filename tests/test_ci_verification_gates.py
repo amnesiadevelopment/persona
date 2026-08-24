@@ -459,13 +459,45 @@ def test_smoke_checks_the_asset_at_its_exact_path(smoke_text) -> None:
     )
 
 
-def test_smoke_refuses_to_guess_between_ambiguous_candidates(smoke_text) -> None:
+def test_smoke_refuses_to_guess_between_ambiguous_candidates(tmp_path) -> None:
     """rglob order is filesystem-dependent, so picking [0] out of several
     matches silently smoke-tests an arbitrary payload and reports on the whole
-    bundle. This script fails closed everywhere else."""
-    assert smoke_text.count("Refusing to guess") >= 2, (
-        "find_app_payload / find_site_packages still pick an arbitrary match "
-        "instead of failing closed on ambiguity"
+    bundle. This script fails closed everywhere else.
+
+    PS-158 REWROTE THIS TEST, AND THE REASON MATTERS. It used to assert
+    `smoke_text.count("Refusing to guess") >= 2` — counting a phrase in the
+    source. That made it a test of PROSE: it could be satisfied by a comment and
+    broken by a rewording, while saying nothing about what the script does.
+
+    The two call sites it lumped together turned out to need OPPOSITE answers:
+
+      * find_app_payload — ambiguity is still fatal. Two app trees means two
+        candidate apps and only one ships; guessing reports on the wrong one.
+        Still asserted below, now by DRIVING it.
+      * find_site_packages — the refusal was itself the Windows bug. flet ships
+        TWO there (the app's, plus the embedded interpreter's own
+        Lib/site-packages) and the real app imports from BOTH, so "which one
+        does it ship with?" had no answer and the job died on a false dilemma.
+
+    Using every bundled site-packages is not leniency — see
+    test_using_both_site_packages_is_not_leniency and
+    test_no_bundled_site_packages_still_fails_closed, which pin that a module
+    present in NONE of them still fails and that an empty tree still errors.
+    """
+    smoke = _load_smoke()
+
+    root = tmp_path / "bundle"
+    for name in ("first", "second"):
+        payload = root / name / "flutter_assets" / "app"
+        payload.mkdir(parents=True)
+        (payload / "main.py").write_text("", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc:
+        smoke.find_app_payload(root, tmp_path / "workdir")
+    assert exc.value.code != 0, (
+        "find_app_payload picked one of two candidate app trees instead of "
+        "failing closed — it would smoke-test an arbitrary payload and report "
+        "on the whole bundle"
     )
 
 
@@ -984,4 +1016,232 @@ def test_no_self_hosted_runner_is_introduced(ci_yaml) -> None:
     for platform in ci_yaml["jobs"]["tests"]["strategy"]["matrix"]["os"]:
         assert "self-hosted" not in str(platform), (
             "a self-hosted runner appeared in the matrix"
+        )
+
+
+# --------------------------------------------------------------------------
+# PS-158: the check runs under the interpreter the BUNDLE was frozen for.
+#
+# These tests exist because this gate's first ever release run blocked v3.0.0 by
+# reporting five dependencies "missing" from a bundle that contained all of them.
+# The bundle was fine; the check was importing 3.12-built extension modules with
+# the runner's 3.13, which searches only for its own ABI tag and so cannot see a
+# `-312-` file sitting right there.
+#
+# MEASURED against the real, published v2.9.17 AppImage — a build users are
+# running successfully today:
+#   under 3.13 -> fastapi, pydantic, paramiko, mcp, invisible_playwright "missing"
+#   under 3.12 -> every import resolved, entry point printed SELFTEST_OK
+#
+# They drive the script's real functions against real directory trees rather
+# than asserting on its source text, because the defect being pinned was
+# BEHAVIOURAL: the old code read perfectly and still condemned a healthy bundle.
+# --------------------------------------------------------------------------
+
+
+def _load_smoke():
+    """Import the smoke script as a module so tests exercise what it DOES."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_ps158_smoke", SMOKE_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def smoke():
+    return _load_smoke()
+
+
+def _touch(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"")
+
+
+def test_bundle_abi_is_read_from_the_bundles_own_extensions(smoke, tmp_path) -> None:
+    """The required interpreter is MEASURED from the artifact, not configured.
+
+    A constant would be a second source of truth that keeps saying 3.12 while
+    flet quietly moves to 3.13 — and that failure looks exactly like the one
+    this fixes, so it would be diagnosed as "missing dependencies" all over again.
+    """
+    sp = tmp_path / "site-packages"
+    _touch(sp / "pydantic_core" / "_pydantic_core.cpython-312-x86_64-linux-gnu.so")
+    assert smoke.detect_bundle_abi([sp]) == (3, 12)
+
+    win = tmp_path / "win" / "site-packages"
+    _touch(win / "pydantic_core" / "_pydantic_core.cp313-win_amd64.pyd")
+    assert smoke.detect_bundle_abi([win]) == (3, 13)
+
+
+def test_stable_abi_extensions_do_not_decide_the_version(smoke, tmp_path) -> None:
+    """`foo.abi3.so` imports on EVERY version, so it is evidence of nothing.
+
+    This is not hypothetical: cryptography ships abi3 and imported fine under
+    the wrong interpreter, which is part of why the failure looked like five
+    arbitrary packages rather than one systematic cause. Letting an abi3 file
+    vote would let the check pick an interpreter that cannot load the
+    version-specific extensions sitting beside it.
+    """
+    sp = tmp_path / "site-packages"
+    _touch(sp / "cryptography" / "_rust.abi3.so")
+    with pytest.raises(SystemExit):
+        smoke.detect_bundle_abi([sp])  # abi3 alone determines nothing
+
+    _touch(sp / "pydantic_core" / "_pydantic_core.cpython-312-x86_64-linux-gnu.so")
+    assert smoke.detect_bundle_abi([sp]) == (3, 12)
+
+
+def test_a_bundle_with_no_compiled_extensions_fails_closed(smoke, tmp_path) -> None:
+    """persona's bundle carries ~24 compiled extensions. Finding none means we
+    are looking at the wrong tree — and continuing would mean choosing an
+    interpreter at random, which is the whole defect."""
+    sp = tmp_path / "site-packages"
+    _touch(sp / "somepkg" / "__init__.py")
+    with pytest.raises(SystemExit):
+        smoke.detect_bundle_abi([sp])
+
+
+def test_a_bundle_built_for_two_pythons_is_a_real_defect(smoke, tmp_path) -> None:
+    """No single interpreter can import both, so this is the bundle's problem
+    and must be reported rather than resolved by picking a side."""
+    sp = tmp_path / "site-packages"
+    _touch(sp / "a" / "x.cpython-312-x86_64-linux-gnu.so")
+    _touch(sp / "b" / "y.cpython-313-x86_64-linux-gnu.so")
+    with pytest.raises(SystemExit):
+        smoke.detect_bundle_abi([sp])
+
+
+def test_every_bundled_site_packages_is_used(smoke, tmp_path) -> None:
+    """Windows ships TWO — the app's, and the embedded interpreter's own
+    Lib/site-packages — and the real app imports from both.
+
+    The old code refused outright ("Refusing to guess which one the app ships
+    with"), which is what failed the Windows job. The question had no answer
+    because the premise was wrong: it ships both.
+    """
+    root = tmp_path / "bundle"
+    _touch(root / "site-packages" / "flet" / "__init__.py")
+    _touch(root / "Lib" / "site-packages" / "paramiko" / "__init__.py")
+    found = smoke.find_site_packages(root)
+    assert {p.name for p in found} == {"site-packages"}
+    assert len(found) == 2, f"only {found} used — a dependency in the other is invisible"
+
+
+def test_using_both_site_packages_is_not_leniency(smoke, tmp_path) -> None:
+    """The search got COMPLETE, not forgiving.
+
+    Every directory used is inside the bundle, the runner's own site-packages is
+    still excluded by -S -E, and a module in NONE of them must still fail. This
+    pins the boundary that separates a repaired check from a removed one.
+    """
+    root = tmp_path / "bundle"
+    _touch(root / "site-packages" / "flet" / "__init__.py")
+    _touch(root / "Lib" / "site-packages" / "paramiko" / "__init__.py")
+    for found in smoke.find_site_packages(root):
+        assert root in found.parents or found == root, (
+            f"{found} is outside the bundle — imports could resolve from the runner"
+        )
+
+
+def test_no_bundled_site_packages_still_fails_closed(smoke, tmp_path) -> None:
+    root = tmp_path / "empty"
+    root.mkdir()
+    with pytest.raises(SystemExit):
+        smoke.find_site_packages(root)
+
+
+def test_a_mismatched_interpreter_is_refused_not_substituted(smoke) -> None:
+    """"Could not find the right Python, so I used the one I had" is exactly how
+    a healthy bundle got reported as missing five dependencies.
+
+    An explicit --python that does not match must be REFUSED, because it means
+    the workflow is wired wrong and silently substituting would hide that.
+    """
+    import sys as _sys
+
+    running = _sys.version_info[:2]
+    wrong = (running[0], running[1] + 1)
+    with pytest.raises(SystemExit):
+        smoke.resolve_interpreter(wrong, _sys.executable)
+
+
+def test_a_matching_interpreter_is_accepted(smoke) -> None:
+    import sys as _sys
+
+    assert smoke.resolve_interpreter(_sys.version_info[:2], _sys.executable) == _sys.executable
+
+
+def test_an_unobtainable_interpreter_errors_rather_than_falling_back(smoke) -> None:
+    """A version that cannot exist must produce a RED build, not a quiet
+    downgrade to whatever is on PATH."""
+    with pytest.raises(SystemExit):
+        smoke.resolve_interpreter((3, 99), None)
+
+
+def test_a_failed_import_reports_the_module_that_actually_failed(smoke_text) -> None:
+    """The bootstrap must report the exception MESSAGE, not just its class.
+
+    Recording only `exc.__class__.__name__` printed "fastapi
+    (ModuleNotFoundError)", which reads as "fastapi is not in the bundle" — and
+    that sentence was false and cost a release. What had really failed was a
+    TRANSITIVE import of pydantic_core._pydantic_core. The message names it and
+    turns a phantom into a one-line diagnosis.
+    """
+    assert "exc.__class__.__name__, exc" in smoke_text, (
+        "the bootstrap discards the exception message, so a transitive import "
+        "failure is misreported as the top-level package being absent"
+    )
+
+
+@pytest.mark.parametrize("job", BUILD_JOBS)
+def test_every_build_job_checks_with_the_bundles_own_python(release_yaml, job) -> None:
+    """The gate must not run under whatever Python the job happens to have.
+
+    Pinned per job because this failed on all three platforms at once: a fix
+    applied to one is not a fix.
+    """
+    steps = release_yaml["jobs"][job]["steps"]
+    smoke_idx = next(
+        i for i, s in enumerate(steps) if "smoke_frozen_bundle.py" in str(s.get("run", ""))
+    )
+    provision = [
+        i for i, s in enumerate(steps)
+        if "setup-python" in str(s.get("uses", ""))
+        and str(s.get("with", {}).get("python-version", "")).startswith("3.12")
+    ]
+    assert provision, (
+        f"{job} never provisions the 3.12 interpreter the bundle is frozen for, "
+        "so the check would run under the job's 3.13 and report every "
+        "version-specific extension as missing"
+    )
+    assert min(provision) < smoke_idx, (
+        f"{job} provisions the bundle interpreter AFTER the smoke step"
+    )
+    assert "--python" in str(steps[smoke_idx].get("run", "")), (
+        f"{job} does not tell the smoke check which interpreter to use"
+    )
+
+
+@pytest.mark.parametrize("job", BUILD_JOBS)
+def test_the_bundle_interpreter_does_not_become_the_jobs_default(release_yaml, job) -> None:
+    """update-environment: false is load-bearing.
+
+    Everything after this step (flet, appimagetool, Inno Setup, hdiutil) must
+    keep using the job's own interpreter. Letting 3.12 take over the PATH would
+    fix the smoke check by breaking the packaging steps behind it.
+    """
+    steps = release_yaml["jobs"][job]["steps"]
+    provisioning = [
+        s for s in steps
+        if "setup-python" in str(s.get("uses", ""))
+        and str(s.get("with", {}).get("python-version", "")).startswith("3.12")
+    ]
+    assert provisioning, f"{job} does not provision the bundle interpreter at all"
+    for step in provisioning:
+        assert step.get("with", {}).get("update-environment") is False, (
+            f"{job} lets the bundle's 3.12 become the job default, which would "
+            "change the interpreter every later packaging step runs under"
         )
