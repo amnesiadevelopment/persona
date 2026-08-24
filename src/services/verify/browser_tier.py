@@ -634,6 +634,7 @@ def _read_page_texts_chromium(
     sleep: Callable[[float], None],
     timezone: str = "",
     allow_unsandboxed: bool = False,
+    allow_small_dev_shm: bool = False,
     layer_sink: "Callable[[LayerReport], None] | None" = None,
     install_layer: bool = True,
 ) -> "dict[str, dict]":
@@ -665,6 +666,7 @@ def _read_page_texts_chromium(
             declared_machine=declared_machine,
             timezone=timezone,
             allow_unsandboxed=allow_unsandboxed,
+            allow_small_dev_shm=allow_small_dev_shm,
             install_layer=install_layer,
         )
     except ChromiumUnavailable as exc:
@@ -700,6 +702,7 @@ def read_page_texts(
     declared_machine: str = "",
     timezone: str = "",
     allow_unsandboxed: bool = False,
+    allow_small_dev_shm: bool = False,
     sleep: Callable[[float], None] = time.sleep,
     layer_sink: "Callable[[LayerReport], None] | None" = None,
     install_layer: bool = True,
@@ -754,6 +757,7 @@ def read_page_texts(
             declared_machine=declared_machine or DEFAULT_DECLARED_MACHINE,
             timezone=timezone,
             allow_unsandboxed=allow_unsandboxed,
+            allow_small_dev_shm=allow_small_dev_shm,
             sleep=sleep,
             layer_sink=layer_sink,
             install_layer=install_layer,
@@ -837,6 +841,7 @@ def read_browser_tier(
     declared_machine: str = "",
     timezone: str = "",
     allow_unsandboxed: bool = False,
+    allow_small_dev_shm: bool = False,
     layer_sink: "Callable[[LayerReport], None] | None" = None,
     install_layer: bool = True,
     layer_vectors: "tuple[str, ...] | None" = None,
@@ -876,6 +881,7 @@ def read_browser_tier(
             declared_machine=declared_machine,
             timezone=timezone,
             allow_unsandboxed=allow_unsandboxed,
+            allow_small_dev_shm=allow_small_dev_shm,
             layer_sink=layer_sink,
             install_layer=install_layer,
             layer_vectors=layer_vectors,
