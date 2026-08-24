@@ -17,7 +17,7 @@ import pathlib
 from dataclasses import dataclass
 
 from ...models.hardware_generation import normalize_generation, visible_entries
-from .worker_wrap import realm_bootstrap_js, realm_guard_js
+from .worker_wrap import realm_bootstrap_js, realm_guard_js, realm_slot_js
 
 
 @dataclass(frozen=True)
@@ -71,6 +71,30 @@ def cores_memory_for_generation(generation: int) -> list[tuple[int, int]]:
 # real-world distribution keeps each profile plausible while differing between
 # profiles. availHeight subtracts a typical Windows taskbar (40px); availWidth
 # stays full — matching how real Windows reports it.
+#
+# THE SCREEN GEOMETRY CROSSES REALMS THROUGH THE PER-REALM SLOT (PS-139), not
+# through a global. It used to be published as a plain `top.__personaScreenWH`,
+# which is an ENUMERABLE property of the global object: one `Object.keys(window)`
+# in any realm at any depth handed the page the profile's resolved screen
+# geometry. It now rides `Object.__pnaRealm` (worker_wrap.realm_slot_js), which
+# is non-enumerable and already shipped for the idempotency guard — so this adds
+# NO new global name and removes one.
+#
+# THIS NOTE IS PYTHON, DELIBERATELY, and must not migrate into the template
+# below. The template's text IS the shipped artifact: a JS comment naming the
+# retired channel would keep `__personaScreenWH` present in device.js, where a
+# source-text assertion (tests/test_realm_guard.py sweeps for exactly this)
+# would read it and go green on a build that no longer has the behaviour. Keep
+# the history here, where it explains the code without shipping the string.
+#
+# WHAT ACTUALLY CROSSES, since the `top` hop is unchanged and so is the
+# reachability — this is not a frame-isolation improvement:
+#   * same-origin CHILD FRAME -> reads the top's slot. This is the channel the
+#     value exists for: every realm must report ONE monitor, and realms that
+#     disagree are a worse tell than the global this replaces.
+#   * cross-origin child      -> cannot. It could not read the global either.
+#   * WORKER                  -> cannot, and never did: WorkerGlobalScope has no
+#     `top`. Nothing regresses here; the gap is real, unchanged, tracked apart.
 _CONTENT_SCRIPT = r"""
 (function () {
   var SEED = __SEED__;
@@ -116,6 +140,7 @@ _CONTENT_SCRIPT = r"""
    try {
     if (!G || !G.screen) return;
 __SCREEN_REALM_GUARD__
+__SCREEN_REALM_SLOT__
     var SEED = __SEED__;
     var FORCED = __FORCED_RES__;
     var OS = "__OS__";
@@ -152,11 +177,19 @@ __SCREEN_REALM_GUARD__
     var RES = ALL_RES.filter(function (r) { return (r[2] || 0) <= GEN; });
 
     // Reuse the top window's already-computed W/H so every realm agrees. Only
-    // the top realm has a real window extent to measure against.
+    // the top realm has a real window extent to measure against. The value
+    // rides the top realm's non-enumerable per-realm slot (see the Python note
+    // above this template for why, and for what does and does not cross).
+    // `create` is false: a READ must not mint an empty registry in the top.
     var top;
     try { top = G.top; } catch (e) { top = null; }
     var wh = null;
-    try { if (top && top !== G && top.__personaScreenWH) wh = top.__personaScreenWH; } catch (e) {}
+    try {
+      if (top && top !== G) {
+        var ts = __pnaSlot(top, false);
+        if (ts && ts.screenWH) wh = ts.screenWH;
+      }
+    } catch (e) {}
 
     var W, H;
     if (wh) {
@@ -175,7 +208,14 @@ __SCREEN_REALM_GUARD__
       var r = fits[h(0x5c0fee) % fits.length];
       W = r[0]; H = r[1];
     }
-    try { if (!G.__personaScreenWH) G.__personaScreenWH = { W: W, H: H }; } catch (e) {}
+    // Publish this realm's resolved geometry for a child realm to reuse. Into
+    // THIS realm's own slot (`create` true), never onto the global object.
+    // First writer wins: a second independent invocation into one realm must
+    // not re-roll W/H.
+    try {
+      var ss = __pnaSlot(G, true);
+      if (ss && !ss.screenWH) ss.screenWH = { W: W, H: H };
+    } catch (e) {}
 
     try {
       def(G.screen, 'width', W);
@@ -389,6 +429,8 @@ def build_device_extension(
         "__SCREEN_REALM_GUARD__", realm_guard_js("screen")
     ).replace(
         "__HW_REALM_GUARD__", realm_guard_js("hw")
+    ).replace(
+        "__SCREEN_REALM_SLOT__", realm_slot_js()
     )
     (ext_dir / "device.js").write_text(script, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(
