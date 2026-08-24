@@ -262,6 +262,79 @@ class SandboxUnavailable(ChromiumUnavailable):
     """
 
 
+# The /dev/shm floor this tier insists on, in bytes.
+#
+# Chromium puts its renderer transport surfaces, its GPU command buffers and
+# the font-data service's memory in /dev/shm. Docker's default is 64 MiB, and
+# under that ceiling chromium does not degrade — it dies mid-page, which is
+# what PS-133 was filed as.
+#
+# 256 MiB is a MARGIN, not a measured knee, and the docstring says so rather
+# than implying a precision the measurement does not have. What was measured
+# (PS-133, on this container, live against pixelscan.net through the exit) is
+# the endpoint pair only:
+#
+#   * at 64 MiB /dev/shm saturates (peak use pins to the ceiling) and the page
+#     dies with `TargetClosedError`, on EVERY seed tried — 4242, 1337, 1, 7,
+#     99999 and 31337, six of six;
+#   * with ``--disable-dev-shm-usage`` the same six configurations complete the
+#     same page, six of six.
+#
+# Values BETWEEN 64 MiB and 256 MiB were never tested, because raising the
+# ceiling needs CAP_SYS_ADMIN this container does not have. So the true knee is
+# somewhere at or above 64 MiB and this constant sits deliberately clear of it.
+MIN_DEV_SHM_BYTES = 256 * 1024 * 1024
+
+
+def dev_shm_bytes() -> "int | None":
+    """Total capacity of ``/dev/shm`` in bytes, or ``None`` if unreadable.
+
+    CAPACITY, not free space: the ceiling is what chromium runs into, and a
+    reading taken when some other process happens to hold a few MiB would make
+    the probe's answer depend on who else is on the box.
+
+    ``None`` means the question could not be asked (no ``/dev/shm``, or a
+    platform where it means nothing). It is deliberately NOT reported as zero,
+    so a caller can tell "this host has no shm to speak of" from "the probe did
+    not run" instead of refusing a launch on a missing answer.
+
+    Windows is exactly "a platform where it means nothing", and it reaches that
+    answer by a different route than the others: ``os.statvfs`` does not EXIST
+    there, so the call raises ``AttributeError`` rather than ``OSError``. That
+    is not an error condition to report, it is the question being inapplicable
+    — so the absence is checked up front instead of being caught as a failure.
+    """
+    statvfs = getattr(os, "statvfs", None)
+    if statvfs is None:
+        # No statvfs at all (Windows). The question does not apply here.
+        return None
+    try:
+        st = statvfs("/dev/shm")
+    except OSError:
+        return None
+    return int(st.f_blocks) * int(st.f_frsize)
+
+
+class DevShmTooSmall(ChromiumUnavailable):
+    """``/dev/shm`` is below :data:`MIN_DEV_SHM_BYTES` and no waiver was given.
+
+    Its own class for the same reason :class:`SandboxUnavailable` is: the
+    operator's response is specific, and the failure it prevents is not a
+    missing reading but a WRONG one.
+
+    This is the class PS-133 exists to make impossible to mistake for something
+    else. On a 64 MiB host chromium dies part-way through a page with
+    ``TargetClosedError: Target page, context or browser has been closed`` —
+    which carries no cause at all, and which the run then attributes to
+    whatever configuration happened to be in the chair. PS-128 read that shape
+    as a property of fingerprint seed 4242, filed it as a seed-derived renderer
+    crash, and the attribution held up across three runs precisely because the
+    real cause was constant and invisible. The cause is in chromium's stderr
+    (``font_data_service_impl.cc: Check failed: . : No space left on device``),
+    which no record captured.
+    """
+
+
 def _launch_args(
     binary: str,
     profile_dir: str,
@@ -272,6 +345,7 @@ def _launch_args(
     lang: str = "en-US",
     timezone: str = "",
     allow_unsandboxed: bool = False,
+    allow_small_dev_shm: bool = False,
     extension_dirs: "list[str] | None" = None,
 ) -> "list[str]":
     """The command line, mirroring the product's own chromium launch.
@@ -321,6 +395,22 @@ def _launch_args(
     Empty means "pass no flag" and is the honest default for a venue with no
     exit — the loopback differential has no address for a zone to agree with,
     so inventing one there would be a fact about nothing.
+
+    ``allow_small_dev_shm`` adds ``--disable-dev-shm-usage``, on exactly the
+    same terms and for the same reason. It moves chromium's shared-memory
+    surfaces off ``/dev/shm`` and onto disk, which is what lets a run complete
+    on a host whose ``/dev/shm`` is below :data:`MIN_DEV_SHM_BYTES`. It is OFF
+    by default because it is a WORKAROUND, not a default: the flag is not on
+    persona's own launch path either, and a record taken under it must say so.
+    The alternative — inferring it whenever ``/dev/shm`` looks small — is what
+    would turn PS-133's reproducible crash into an intermittent one, since the
+    run would silently change surface depending on the host it landed on.
+
+    ORDER MATTERS on Linux and it is not cosmetic: ``--appimage-extract-and-run``
+    is consumed by the AppImage RUNTIME, not by chromium, and it must stay the
+    first argument. Measured under PS-133 while building the repro — putting
+    another flag ahead of it makes the runtime fall back to a FUSE mount and
+    die ``rc=127 'fuse: device not found'`` before chromium is reached at all.
     """
     from ...core import platform as _platform
 
@@ -337,6 +427,12 @@ def _launch_args(
         # value passes no flag rather than inventing a zone for a venue that
         # has no exit.
         args.append(f"--timezone={timezone}")
+    if allow_small_dev_shm:
+        # Requested explicitly, recorded in the header, and never a fallback —
+        # exactly as --no-sandbox above. Appended AFTER
+        # --appimage-extract-and-run, which the AppImage runtime consumes and
+        # which must remain first (see the docstring: rc=127 otherwise).
+        args.append("--disable-dev-shm-usage")
     args += [
         f"--user-data-dir={profile_dir}",
         f"--fingerprint={seed}",
@@ -469,6 +565,7 @@ class ChromiumSession:
         timezone: str = "",
         allow_unsandboxed: bool = False,
         allow_no_proxy: bool = False,
+        allow_small_dev_shm: bool = False,
         install_layer: bool = True,
     ) -> None:
         import asyncio
@@ -480,6 +577,7 @@ class ChromiumSession:
         self.timezone = timezone
         self.allow_unsandboxed = allow_unsandboxed
         self.allow_no_proxy = allow_no_proxy
+        self.allow_small_dev_shm = allow_small_dev_shm
         self.install_layer = install_layer
         # Whether this launch REALLY dropped the sandbox, read back off the
         # command line in :meth:`_start` rather than echoed from the request.
@@ -489,6 +587,17 @@ class ChromiumSession:
         # exact defect PS-103 exists to close. False until argv proves
         # otherwise.
         self.sandbox_waived = False
+        # Whether this launch REALLY worked around a small /dev/shm, read back
+        # off the command line in :meth:`_start` for the same reason
+        # ``sandbox_waived`` is: the record must describe the surface that was
+        # PRESENTED, never the one that was requested. False until argv proves
+        # otherwise.
+        self.dev_shm_waived = False
+        # The host's /dev/shm capacity in bytes, probed in :meth:`_start`, or
+        # None where the question could not be asked. Carried on the session so
+        # the record can state the NUMBER rather than only the verdict: "64 MiB"
+        # tells a later reader what to change, where "too small" does not.
+        self.dev_shm_bytes: "int | None" = None
         # What persona's masking layer actually did, for the record header.
         # Initialised to an ABSENT report rather than to None, so a session that
         # dies during construction still hands the caller a truthful answer
@@ -528,6 +637,45 @@ class ChromiumSession:
                 "(--allow-unsandboxed-chromium) to read anyway. A record taken "
                 "that way is tagged with it, because an engine running without "
                 "its sandbox is not presenting the product's surface."
+            )
+        # Probed BEFORE anything is started, for the same reason and in the same
+        # place as the sandbox probe above: the refusal must cost no browser
+        # launch and must NAME ITS CAUSE, because the failure it prevents does
+        # not announce itself. Chromium on a too-small /dev/shm does not refuse
+        # to start — it dies PART-WAY THROUGH A PAGE with `TargetClosedError`,
+        # a message that carries no cause, and the run then attributes the
+        # death to whatever configuration was in the chair. That is not
+        # hypothetical: PS-128 read this exact shape as a property of
+        # fingerprint seed 4242 and filed PS-133 against it, and the
+        # attribution survived three runs because the real cause was constant
+        # and never recorded. Measured under PS-133: at 64 MiB every seed tried
+        # died (4242, 1337, 1, 7, 99999, 31337 — six of six), and with the
+        # workaround every one of them completed the same page.
+        shm = dev_shm_bytes()
+        self.dev_shm_bytes = shm
+        if (
+            not self.allow_small_dev_shm
+            and shm is not None
+            and shm < MIN_DEV_SHM_BYTES
+        ):
+            raise DevShmTooSmall(
+                f"this host's /dev/shm is {shm // (1024 * 1024)} MiB, below "
+                f"the {MIN_DEV_SHM_BYTES // (1024 * 1024)} MiB this tier "
+                "insists on. Chromium puts its renderer transport, GPU command "
+                "buffers and font-data service in /dev/shm, and below that "
+                "ceiling it does not degrade — it dies MID-PAGE with "
+                "'TargetClosedError: Target page, context or browser has been "
+                "closed', whose text names no cause (the cause is in chromium's "
+                "stderr: font_data_service_impl.cc 'No space left on device'). "
+                "A reading taken there does not fail cleanly; it attributes the "
+                "death to whatever configuration was being read, which is "
+                "exactly how PS-128 came to report a renderer crash as a "
+                "property of fingerprint seed 4242. So it is REFUSED rather "
+                "than attempted. Fix the host (docker run --shm-size=1g, or "
+                "mount -o remount,size=1g /dev/shm), or re-run with "
+                "allow_small_dev_shm=True (--allow-small-dev-shm) to launch "
+                "with --disable-dev-shm-usage, which trades shm for disk and "
+                "is tagged on the record."
             )
         display, self._xvfb = _ensure_display()
         proxy_server, self._bridge = _proxy_server_and_bridge(
@@ -571,6 +719,7 @@ class ChromiumSession:
             proxy_server=proxy_server,
             timezone=self.timezone,
             allow_unsandboxed=self.allow_unsandboxed,
+            allow_small_dev_shm=self.allow_small_dev_shm,
             extension_dirs=extension_dirs,
         )
         # Read back off the COMMAND LINE, not off the request. _launch_args is
@@ -578,6 +727,7 @@ class ChromiumSession:
         # argv makes the disclosure a fact about the process that ran instead
         # of a second copy of the decision that could drift from it.
         self.sandbox_waived = "--no-sandbox" in args
+        self.dev_shm_waived = "--disable-dev-shm-usage" in args
         env = dict(os.environ, DISPLAY=display)
         try:
             self._proc = subprocess.Popen(
@@ -764,8 +914,11 @@ class ChromiumSession:
 
 __all__ = [
     "CDP_READY_TIMEOUT",
+    "MIN_DEV_SHM_BYTES",
     "ChromiumSession",
     "ChromiumUnavailable",
+    "DevShmTooSmall",
     "SandboxUnavailable",
+    "dev_shm_bytes",
     "sandbox_available",
 ]
