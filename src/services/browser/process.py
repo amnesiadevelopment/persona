@@ -21,7 +21,11 @@ from ..proxy.store import ProxyStore
 from .bookmarks_seed import seed_bookmarks
 from .audio_ext import build_audio_extension
 from .device_ext import build_device_extension
-from .env_policy import browser_child_cwd, scrub_inherited_environment
+from .env_policy import (
+    browser_child_cwd,
+    pin_child_tmpdir,
+    scrub_inherited_environment,
+)
 from .resolution import parse_resolution, resolve_resolution
 from .device_presets import is_mobile_os, pick_preset, pick_touch_points
 from .engine_version import (
@@ -285,6 +289,14 @@ def _spawn_invisible(profile: Profile, profile_dir: str, *, in_process: bool = F
             "bookmarks": [{"name": b.name, "url": b.url} for b in chosen],
             "resolution": [width, height],
             "profile_dir": os.path.join(profile_dir, ".invisible-profile"),
+            # The PROFILE DATA DIR, distinct from "profile_dir" just above —
+            # which is the engine's own inner profile, one level down. The
+            # child pins its scratch directory off THIS one so both engines
+            # agree on the same path: chromium's --user-data-dir IS the data
+            # dir, so deriving the firefox value from .invisible-profile would
+            # put the two seams one level apart. Both would still be inside the
+            # perimeter, but "both seams agree" is the property under test.
+            "profile_data_dir": profile_dir,
             # A pure presence check: ensure_invisible_installed would DOWNLOAD the
             # ~118MB engine here and block the launch for minutes over Tor.
             "_needs_fetch": not is_invisible_installed(),
@@ -777,6 +789,24 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
         # inline tuple here instead is exactly the divergence that left the
         # firefox child inheriting stale FONTCONFIG_* mount paths.
         scrub_inherited_environment(env)
+        # The child's scratch directory goes INSIDE the profile, from the same
+        # module and for the perimeter reason stated there: everything under the
+        # profile's data dir is reached by delete_profile (which renames it into
+        # the trash) and by wipe_all_profiles (which rmtrees it), and the host's
+        # shared temp dir is reached by neither. Measured before this line
+        # existed: a SIGKILLed session left an `org.chromium.Chromium.*`
+        # directory — product-identifying by name — plus the engine's own
+        # ~714MB AppImage extraction sitting in the host temp dir, both
+        # outliving the profile entirely.
+        #
+        # NOT a scrub: TMPDIR is deliberately off both scrub lists, because
+        # deleting it would send the child to /tmp — straight back outside the
+        # perimeter. It has to be POINTED, and pin_child_tmpdir creates the
+        # directory before the launch (an unwritable TMPDIR can stop the engine
+        # starting). `env` is a COPY, so persona's own temp dir is untouched.
+        # Pinned on ALL THREE platforms here, exactly like the scrub above,
+        # because Popen(env=) sets the child's environment only.
+        pin_child_tmpdir(env, profile_dir)
         if _platform.IS_LINUX:
             env.setdefault("DISPLAY", ":0")
 
