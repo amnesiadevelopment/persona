@@ -159,6 +159,53 @@ def redact(text: str) -> str:
     return re.sub(r"(\w+://)[^/@\s]+:[^/@\s]+@", r"\1***:***@", text)
 
 
+# The two SOCKS5 stages, told apart by the class name PySocks raised.
+#
+# A SOCKS5 connection is negotiated in two stages, and they fail for opposite
+# reasons. PySocks (1.7.1, pinned `PySocks>=1.7` in `requirements.txt`) raises
+# a DIFFERENT class at each, and `socks_fetch.fetch` wraps an unknown exception
+# as `f"{type(exc).__name__}: {exc}"` — so the class name survives into the
+# `FetchFailed` text this module already receives, and the stage is readable
+# here without touching the fetcher:
+#
+#   * AUTH     — `SOCKS5AuthError`: the relay rejected the credential itself.
+#   * CONNECT  — `SOCKS5Error`, message formatted `"{:#04x}: {}"`: the relay
+#     ACCEPTED the credential and then could not give this run an exit.
+#   * relay unreachable — `ProxyConnectionError`: nothing was negotiated at
+#     all, so neither stage was reached.
+#
+# The CONNECT one is the interesting case and the reason this distinction is
+# drawn. The credential this project holds pins a sticky session token, and
+# when that token dies the relay still authenticates it and then has no exit
+# to allocate — auth succeeds, allocation fails. Reported as "the connection
+# may be refused, timed out, or the credential unusable" that is actively
+# misleading: it points at the relay and at the credential, both of which are
+# fine, and it looks identical to a proxy that is simply down.
+#
+# Substring matching is enough to separate the two and does NOT collide:
+# "SOCKS5Error" is not a substring of "SOCKS5AuthError" (the class names
+# diverge at the character after `SOCKS5`), so an auth failure cannot be read
+# as a connect-stage one. Only the connect stage gets its own wording — an
+# auth failure genuinely IS "the credential unusable", which the existing
+# message already says.
+_CONNECT_STAGE_MARKER = "SOCKS5Error"
+
+
+def _names_connect_stage_failure(failures: "list[str]") -> bool:
+    """Did the proxy get PAST authentication and fail to allocate an exit?
+
+    Reads the failure text this module already collected — see
+    :data:`_CONNECT_STAGE_MARKER` for why the class name is in there and why
+    matching it cannot catch an authentication failure by accident.
+
+    True if ANY provider's failure names the connect stage: every provider is
+    reached through the same credential, so one connect-stage refusal
+    attributes the whole round, and a sibling timeout does not make it less
+    true.
+    """
+    return any(_CONNECT_STAGE_MARKER in failure for failure in failures)
+
+
 def load_credential(path: str = DEFAULT_CREDENTIAL_PATH) -> str:
     """Read the proxy credential and return it in ``socks5h`` form.
 
@@ -310,6 +357,24 @@ def observe_exit(
         # second at a rate-limit body or an unreadable dialect. Collapsing
         # them is what makes an operator chase the wrong half.
         if not reached_any:
+            # THREE causes now, not two — and the third is the one that used
+            # to be reported as the other two. A dead sticky session token
+            # authenticates fine and then has no exit to allocate, so the
+            # generic wording below blames the relay and the credential while
+            # both are working. See `_CONNECT_STAGE_MARKER` for how the stage
+            # is known here at all.
+            if _names_connect_stage_failure(failures):
+                raise ExitNotProven(
+                    f"could not observe the exit through the proxy — {detail}. "
+                    "The proxy AUTHENTICATED this run and then refused to "
+                    "allocate an exit for it (SOCKS5 connect stage): the "
+                    "relay is up and the credential was accepted, so neither "
+                    "is the fault. The likeliest cause is a stale sticky "
+                    "session token in the credential, which the relay can no "
+                    "longer resolve to a live exit. Refusing to fall back to "
+                    "a direct connection: re-minting the session token is the "
+                    "operator's, from the host."
+                )
             raise ExitNotProven(
                 f"could not observe the exit through the proxy — {detail}, "
                 "none answered. The connection may be refused, timed out, or "

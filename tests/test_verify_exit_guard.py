@@ -402,6 +402,160 @@ def test_every_provider_answering_without_a_country_refuses_the_run(
     assert "could not observe the exit" not in str(observed)
 
 
+# --- PS-126: a dead sticky session token names ITSELF ------------------------
+#
+# The credential this project holds pins a sticky session token. When that
+# token dies the relay AUTHENTICATES it and then has no exit to allocate:
+# auth succeeds, allocation fails. That used to be reported as "the connection
+# may be refused, timed out, or the credential unusable" — a message that
+# blames the relay and the credential while both are working, and that reads
+# identically to a proxy which is simply down. An operator seeing it chases
+# the wrong half.
+#
+# The stage is knowable without a network and without touching the fetcher:
+# PySocks raises a different class at each stage and `socks_fetch.fetch` wraps
+# it preserving the class name, so `SOCKS5Error` (connect) vs
+# `SOCKS5AuthError` (auth) vs `ProxyConnectionError` (relay unreachable)
+# already arrives here inside the `FetchFailed` text.
+#
+# Every row below drives that text through the guard offline. The contrast
+# rows are the point: a message that fires on EVERY failure distinguishes
+# nothing, which is the defect being fixed.
+
+# What PySocks 1.7.1 actually raises at the connect stage — the message is
+# formatted `"{:#04x}: {}"` at socks.py:533, and `socks_fetch.fetch` prefixes
+# the class name at socks_fetch.py:185. Re-confirmed against the installed
+# wheel, not transcribed.
+_CONNECT_STAGE_TEXT = "SOCKS5Error: 0x01: General SOCKS server failure"
+_AUTH_STAGE_TEXT = "SOCKS5AuthError: SOCKS5 authentication failed"
+
+
+def _observe_raising(monkeypatch, exc):
+    """Drive `observe_exit` with a fetcher that always raises — no network.
+
+    The `_observe` helper above RETURNS a payload, so it can only exercise the
+    answered paths. This one exercises the unreachable arm, which is where the
+    stage distinction lives.
+    """
+    monkeypatch.setattr(
+        exit_guard, "fetch_json", lambda url, **kw: (_ for _ in ()).throw(exc)
+    )
+    with pytest.raises(ExitNotProven) as caught:
+        observe_exit("socks5h://127.0.0.1:9")
+    return str(caught.value)
+
+
+def test_a_dead_session_token_reports_the_stage_not_a_generic_failure(
+    monkeypatch
+):
+    """THE REGRESSION THIS EXISTS FOR.
+
+    A connect-stage refusal means the proxy took the credential and then could
+    not give this run an exit. The message must say that happened — naming the
+    stage and pointing at the stale sticky session token — rather than
+    offering the operator a list of three things to check, two of which are
+    provably fine.
+    """
+    message = _observe_raising(monkeypatch, FetchFailed(_CONNECT_STAGE_TEXT))
+
+    lowered = message.lower()
+    # It says auth PASSED and allocation failed — the two halves of the stage.
+    assert "authenticated" in lowered
+    assert "allocate an exit" in lowered
+    # And it names the likely cause an operator can actually act on.
+    assert "sticky session token" in lowered
+    # It must NOT fall back to the wording that blames the relay/credential.
+    assert "the credential unusable" not in lowered
+
+
+def test_the_connect_stage_message_is_not_the_dead_relay_message(monkeypatch):
+    """THE CONTRAST THAT MAKES IT A DISTINCTION.
+
+    `ProxyConnectionError` is the relay-unreachable case: nothing was
+    negotiated, so no stage was reached. If the new wording fired here too it
+    would distinguish nothing — which is precisely the defect, restated.
+    """
+    relay = _observe_raising(
+        monkeypatch,
+        FetchFailed("ProxyConnectionError: Error connecting to SOCKS5 proxy"),
+    )
+
+    lowered = relay.lower()
+    assert "sticky session token" not in lowered
+    assert "authenticated" not in lowered
+    # It keeps the existing generic wording, which is CORRECT here.
+    assert "the credential unusable" in lowered
+
+
+def test_the_connect_stage_message_is_not_the_timeout_message(monkeypatch):
+    """The other half of the contrast. A timeout reached no stage either."""
+    timed_out = _observe_raising(
+        monkeypatch, FetchFailed("timeout: timed out")
+    )
+
+    assert "sticky session token" not in timed_out.lower()
+    assert "the credential unusable" in timed_out.lower()
+
+
+def test_an_auth_failure_is_not_reported_as_a_dead_session_token(monkeypatch):
+    """The discriminator that a careless substring match would break.
+
+    "SOCKS5Error" is not a substring of "SOCKS5AuthError" — the names diverge
+    at the character after `SOCKS5` — so a REJECTED credential must keep
+    reporting as a rejected credential. Reporting it as "auth succeeded"
+    would be worse than the generic message it replaced: actively false about
+    the one thing it claims to have observed.
+    """
+    auth = _observe_raising(monkeypatch, FetchFailed(_AUTH_STAGE_TEXT))
+
+    lowered = auth.lower()
+    assert "authenticated this run" not in lowered
+    assert "sticky session token" not in lowered
+    # An auth failure genuinely IS "the credential unusable".
+    assert "the credential unusable" in lowered
+
+
+def test_the_connect_stage_message_still_raises_ExitNotProven(monkeypatch):
+    """Control flow does NOT change — see the `ExitNotProven` docstring.
+
+    One exception class on purpose: the caller's correct response to every
+    way the exit can fail is identical (stop, record the reason, do not fall
+    back). This ticket changes the MESSAGE. A caller that started behaving
+    differently would be the bug.
+    """
+    monkeypatch.setattr(
+        exit_guard,
+        "fetch_json",
+        lambda url, **kw: (_ for _ in ()).throw(
+            FetchFailed(_CONNECT_STAGE_TEXT)
+        ),
+    )
+    # Not a new subclass, and nothing leaks a SOCKS exception to the caller.
+    with pytest.raises(ExitNotProven) as caught:
+        observe_exit("socks5h://127.0.0.1:9")
+    assert type(caught.value) is ExitNotProven
+
+
+def test_the_connect_stage_message_carries_no_credential(monkeypatch):
+    """A new failure path must not become the one place a credential lands.
+
+    Pushed through the branch as a credential-shaped string and asserted on
+    what comes OUT — the module's own rule is that the risky part is the one
+    nobody thought of, so this asserts on the message rather than on the code.
+    """
+    message = _observe_raising(
+        monkeypatch,
+        FetchFailed(f"SOCKS5Error: 0x01: General SOCKS server failure via {CRED}"),
+    )
+
+    # It really did take the new branch...
+    assert "sticky session token" in message.lower()
+    # ...and the credential did not survive into it.
+    assert "s3cr3t" not in message
+    assert "alice" not in message
+    assert "***:***@" in message
+
+
 # --- the credential never reaches a message ---------------------------------
 
 
