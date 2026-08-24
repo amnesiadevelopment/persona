@@ -208,3 +208,91 @@ the ticket directs.
 Anyone taking it should note that it must be taken either on a host with
 adequate `/dev/shm`, or with `--allow-small-dev-shm` — in which case the record
 will say so, and the comparison should be read with that disclosure in view.
+
+## 8. Rework — threading the disclosure to the *other* record path
+
+The first submission of this work was rejected for a real and load-bearing
+gap, and the rejection was correct. The rule this whole ticket rests on —
+*the record must describe the surface that was PRESENTED, never the one that
+was requested* — was enforced on **one** of the two paths that produce records.
+
+* **`read`** — correct from the first submission. `checker_cli._notes_for`
+  appends the `--disable-dev-shm-usage` note, pinned in both directions by
+  `test_the_dev_shm_waiver_is_recorded_in_the_reading_it_produced` and
+  `test_a_normal_reading_does_not_carry_the_dev_shm_waiver_note`.
+* **`differential`** — accepted the waiver and disclosed **nothing**. The flag
+  was offered on the subparser, passed into `run_differential`, and threaded
+  all the way down to the launch — and then stopped. There was no counterpart
+  to `Arm.sandbox_waived` on the arm, in `as_record()`, in the notes builder,
+  or at the record's top level.
+
+The observable proof that the plumbing was unfinished: `dev_shm_waived` and
+`dev_shm_bytes` were **written by the session and read by nothing in the tree,
+tests included**. `dev_shm_bytes` carried the comment *"so the record can state
+the NUMBER rather than only the verdict"* — and no record ever stated it. The
+attribute had been built for a consumer that was never written.
+
+That is the same defect PS-133 was filed about, one path over: an undisclosed
+environmental condition riding along with a reading, waiting to be read as a
+property of the product. It mattered most on precisely the path that matters
+most — `AXIS_SEED` defaults to **4242 vs 1337**, so the differential seed axis
+*is* the PS-97 two-seed comparison this ticket exists to unblock. On a 64 MiB
+host the waiver is not optional but **mandatory** for any chromium reading, so
+this was the default case here, not an edge one.
+
+### What changed
+
+* A `Waivers` carrier now crosses the sink, replacing the bare `bool`. Both
+  conditions travel together **by construction**, so a launch reports every
+  condition it ran under or none — there is no third channel for the next
+  waiver to be forgotten in. That is the shape fix, not just this instance.
+* `Arm` gained `dev_shm_waived` and `dev_shm_bytes`, surfaced in `as_record()`
+  and hoisted to the record's top level beside `sandbox_waived`.
+* `_sandbox_notes` generalised to `_waiver_notes`: one note **per condition**,
+  because a host can forbid the sandbox and have a healthy `/dev/shm` or the
+  reverse, and a reader must be able to tell which surface moved. The existing
+  one-arm-only caveat ("a SECOND axis moved, attributable to neither") is
+  shared by both, since it applies here verbatim.
+* `dev_shm_bytes` is now genuinely **consumed**: the note states the measured
+  size against the floor — "64 MiB, against the 256 MiB floor" — which is what
+  tells a later reader what to change. Where the size could not be probed the
+  note says so rather than inventing a figure; where the two arms disagree it
+  reports both rather than picking one.
+
+### Demonstrated, not asserted
+
+The reviewer proved the gap by building a differential record on the branch.
+The same demonstration, re-run after the change, returns the opposite answer:
+
+```
+probe: 64 MiB   floor: 256 MiB
+=> this host REQUIRES --allow-small-dev-shm for ANY chromium reading: True
+
+top-level keys: [axis, engine, verdict, detail, sandbox_waived,
+                 dev_shm_waived, dev_shm_bytes, notes, comparable_vectors,
+                 diff, before, after]
+dev_shm_waived: True   dev_shm_bytes: 67108864
+any dev_shm disclosure anywhere in record?: True
+```
+
+A differential taken on the workaround surface is no longer byte-identical to
+one taken on a healthy host.
+
+Seven tests cover it — both directions (a waived run says so; an unwaived run
+never claims a waiver it did not take), the number, the half-waived
+second-axis warning, the two waivers disclosed **independently**, a firefox arm
+never tagged with a flag firefox ignores, and survival of the round trip
+through `dumps` to the artifact a reader actually opens. Each was verified to
+turn **red** under a targeted revert; none is green by default.
+
+### Secondary — a test that asserted the platform instead of the invariant
+
+`test_the_waiver_puts_the_flag_on_the_command_line_after_the_appimage_flag`
+asserted `args[1] == "--appimage-extract-and-run"` unconditionally, but that
+element is appended under `if _platform.IS_LINUX`. On macOS and Windows
+`args[1]` is `--user-data-dir=…`, so the test failed for a reason with nothing
+to do with the invariant — which is exactly what this PR's own CI reported
+(`tests (macos-latest)` and `tests (windows-latest)` red, `ubuntu-24.04`
+green). The `rc=127` finding is worth pinning, so it is now pinned as the
+**ordering** rule — *where the AppImage flag is present, it comes first and the
+waiver comes after it* — which holds on every host.

@@ -87,20 +87,53 @@ DEFAULT_CONTROL_SEED = 1337
 
 
 @dataclass(frozen=True)
+class Waivers:
+    """What ONE launch really did about the conditions it ran under.
+
+    Both flags are read back off the chromium command line by the session that
+    ran (see ``chromium_tier.ChromiumSession._start``), never echoed from the
+    request — the record must describe the surface that was PRESENTED, not the
+    one that was asked for.
+
+    Carried as one object rather than as two parallel sinks so a launch cannot
+    report half its conditions: a new waiver added to the session arrives here
+    or it does not, and there is no third channel for it to be forgotten in.
+
+    ``dev_shm_bytes`` is the host's shared-memory capacity as probed, or None
+    where the question could not be asked. It rides alongside the verdict so
+    the record can state the NUMBER: "64 MiB, floor 256 MiB" tells a later
+    reader what to change, where "too small" does not.
+    """
+
+    sandbox_waived: bool = False
+    dev_shm_waived: bool = False
+    dev_shm_bytes: "int | None" = None
+
+
+@dataclass(frozen=True)
 class Arm:
     """One side of a differential: a label, a reading, and what produced it.
 
-    ``sandbox_waived`` is what the launch REALLY did, not what was asked for.
-    It is read back off the chromium command line (see
-    ``chromium_tier.ChromiumSession._start``) and it stays False on firefox,
-    which ignores the flag entirely — a record that echoed the REQUEST would
-    tag a firefox arm with a waiver that never applied to it, which is this
-    ticket's own defect in miniature.
+    ``sandbox_waived`` and ``dev_shm_waived`` are what the launch REALLY did,
+    not what was asked for. Both are read back off the chromium command line
+    (see ``chromium_tier.ChromiumSession._start``) and both stay False on
+    firefox, which ignores the flags entirely — a record that echoed the
+    REQUEST would tag a firefox arm with a waiver that never applied to it,
+    which is this ticket's own defect in miniature.
 
-    It is per-ARM rather than per-record because the arms are separate
+    They are per-ARM rather than per-record because the arms are separate
     launches: an arm that refused before launching never ran anything to
     disclose, and collapsing the pair into one flag would attribute a
     condition to a reading that was never taken under it.
+
+    ``dev_shm_waived`` is disclosed for the same reason ``sandbox_waived`` is,
+    and the reason is this ticket's whole finding: a differential taken with
+    ``--disable-dev-shm-usage`` is running its renderer transport off DISK
+    rather than shared memory. Undisclosed, such a record is byte-identical to
+    one taken on a healthy host — which is precisely how an environmental
+    condition comes to be read as a property of the product. It matters most on
+    the SEED axis, whose defaults (4242 vs 1337) are the two-seed comparison
+    PS-133 exists to unblock.
     """
 
     label: str
@@ -109,6 +142,8 @@ class Arm:
     seed: int
     error: str = ""
     sandbox_waived: bool = False
+    dev_shm_waived: bool = False
+    dev_shm_bytes: "int | None" = None
 
     def as_record(self) -> dict:
         return {
@@ -118,6 +153,8 @@ class Arm:
             "reading": self.reading.as_record(),
             "error": self.error,
             "sandbox_waived": self.sandbox_waived,
+            "dev_shm_waived": self.dev_shm_waived,
+            "dev_shm_bytes": self.dev_shm_bytes,
         }
 
 
@@ -134,6 +171,25 @@ def _computed_vectors(reading: ProbeReading) -> "dict[str, str]":
         k: v
         for k, v in reading.vectors.items()
         if not (v.startswith("unavailable:") or v.startswith("error:"))
+    }
+
+
+def _waiver_fields(waived: "list[Waivers]") -> dict:
+    """The disclosure fields for an :class:`Arm`, from what the launch reported.
+
+    Empty ``waived`` is the honest case, not a gap: firefox never reports (it
+    has neither flag), and a launch that REFUSED before starting a process ran
+    nothing to disclose. Both must yield "no waiver, no number" rather than a
+    fabricated False-with-a-figure, because an arm that never launched cannot
+    testify about the surface it would have presented.
+    """
+    if not waived:
+        return {}
+    w = waived[0]
+    return {
+        "sandbox_waived": w.sandbox_waived,
+        "dev_shm_waived": w.dev_shm_waived,
+        "dev_shm_bytes": w.dev_shm_bytes,
     }
 
 
@@ -198,10 +254,10 @@ def read_probe_once(
     label = f"{engine}/seed{seed}/layer={'on' if install_layer else 'off'}"
 
     captured: "list[LayerReport]" = []
-    # What the launch REALLY did about the sandbox, reported by the session
-    # itself. Stays empty on firefox and on a launch that never happened, so
-    # the arm cannot claim a condition no process ran under.
-    waived: "list[bool]" = []
+    # What the launch REALLY did about the conditions it ran under, reported by
+    # the session itself. Stays empty on firefox and on a launch that never
+    # happened, so the arm cannot claim a condition no process ran under.
+    waived: "list[Waivers]" = []
     try:
         page_text = _drive_engine(
             url,
@@ -222,7 +278,7 @@ def read_probe_once(
             layer=captured[0] if captured else absent_layer(str(exc)),
             seed=seed,
             error=str(exc),
-            sandbox_waived=bool(waived and waived[0]),
+            **_waiver_fields(waived),
         )
 
     return Arm(
@@ -232,7 +288,7 @@ def read_probe_once(
             "the engine ran but reported no layer"
         ),
         seed=seed,
-        sandbox_waived=bool(waived and waived[0]),
+        **_waiver_fields(waived),
     )
 
 
@@ -247,7 +303,7 @@ def _drive_engine(
     layer_sink: "Callable[[LayerReport], None]",
     allow_unsandboxed: bool = False,
     allow_small_dev_shm: bool = False,
-    waiver_sink: "Callable[[bool], None] | None" = None,
+    waiver_sink: "Callable[[Waivers], None] | None" = None,
 ) -> str:
     """Open ``url`` in a persona engine with/without the layer, return its text.
 
@@ -258,11 +314,12 @@ def _drive_engine(
     back to the system proxy, which is neither "no proxy" nor a proxy this run
     chose.
 
-    ``waiver_sink`` receives what the launch REALLY did about chromium's
-    sandbox, taken from the session that ran rather than from this function's
-    own argument. It is never called on the firefox arm, because firefox has no
-    sandbox flag to waive and a report there would be a claim about a condition
-    that does not exist on that engine.
+    ``waiver_sink`` receives a :class:`Waivers` describing what the launch
+    REALLY did about the conditions it ran under — chromium's sandbox and the
+    host's ``/dev/shm`` — taken from the session that ran rather than from this
+    function's own arguments. It is never called on the firefox arm, because
+    firefox has neither flag and a report there would be a claim about
+    conditions that do not exist on that engine.
     """
     from .browser_tier import CHROMIUM, EngineUnavailable, firefox_session
 
@@ -287,7 +344,15 @@ def _drive_engine(
             layer_sink(session.layer_report)
             if waiver_sink is not None:
                 # What the command line REALLY carried, not what was requested.
-                waiver_sink(session.sandbox_waived)
+                # Both bits together: a launch reports every condition it ran
+                # under or none, so a new waiver cannot arrive half-threaded.
+                waiver_sink(
+                    Waivers(
+                        sandbox_waived=session.sandbox_waived,
+                        dev_shm_waived=session.dev_shm_waived,
+                        dev_shm_bytes=session.dev_shm_bytes,
+                    )
+                )
             return _load_and_read(live, url, settle_seconds, sleep)
 
     with firefox_session(
@@ -376,40 +441,112 @@ def run_differential(
     return build_differential_record(axis, engine, before, after)
 
 
-def _sandbox_notes(before: Arm, after: Arm) -> "list[str]":
-    """The prose disclosure for a reading taken without chromium's sandbox.
+def _waiver_notes(before: Arm, after: Arm) -> "list[str]":
+    """The prose disclosure for a reading taken under a waived condition.
 
     Mirrors ``checker_cli._notes_for``, which already tags the sibling ``read``
-    path's record with the same caveat. Two surfaces, one meaning: a consumer
+    path's record with the same caveats. Two surfaces, one meaning: a consumer
     who learns to read the note on a checker record reads the same note here.
 
-    Derived from what the LAUNCHES DID (``Arm.sandbox_waived``, read back off
-    the command line) rather than from what the run requested, and empty when
-    neither arm waived anything — so the note appears exactly when it is true.
-    A firefox record never carries it, because firefox has no such flag.
+    Derived from what the LAUNCHES DID (``Arm.sandbox_waived`` /
+    ``Arm.dev_shm_waived``, read back off the command line) rather than from
+    what the run requested, and empty when neither arm waived anything — so a
+    note appears exactly when it is true. A firefox record never carries
+    either, because firefox has neither flag.
+
+    One note PER CONDITION rather than one merged note, because the two are
+    independent: a host can forbid the sandbox and have a healthy /dev/shm, or
+    the reverse, and a reader must be able to tell which surface moved.
     """
-    waived = [arm for arm in (before, after) if arm.sandbox_waived]
-    if not waived:
-        return []
-    which = " and ".join(arm.label for arm in waived)
-    both = len(waived) == 2
-    return [
-        f"THIS DIFFERENTIAL WAS TAKEN WITH --no-sandbox ({which}). The host "
-        "forbids the unprivileged user namespace chromium's sandbox needs, and "
-        "the operator waived it explicitly (--allow-unsandboxed-chromium). "
-        "persona's own launch path passes that flag NOWHERE, so this is NOT "
-        "the surface the product presents to a checker: treat any difference "
-        "against a sandboxed reading as possibly environmental until it is "
-        "reproduced on a host where the sandbox works."
-        + (
-            ""
-            if both
-            else " Only ONE arm waived it, so the sandbox is a SECOND axis "
-            "that moved alongside the one under test — and a difference seen "
-            "while two axes moved is attributable to neither. Read this "
-            "record's verdict as inconclusive about the axis it names."
+    # Imported here rather than at module scope to match this file's existing
+    # convention for reaching into an engine tier: printing --help, or building
+    # a record from two arms in a test, must not cost an engine import.
+    from .chromium_tier import MIN_DEV_SHM_BYTES
+
+    notes: "list[str]" = []
+
+    def _one_arm_caveat(waived: "list[Arm]") -> str:
+        """The second-axis warning, shared because the logic is identical.
+
+        An arm-asymmetric waiver is a SECOND axis moving alongside the one
+        under test, and a difference seen while two axes moved is attributable
+        to neither — the method this whole module enforces.
+        """
+        if len(waived) == 2:
+            return ""
+        return (
+            " Only ONE arm waived it, so this is a SECOND axis that moved "
+            "alongside the one under test — and a difference seen while two "
+            "axes moved is attributable to neither. Read this record's verdict "
+            "as inconclusive about the axis it names."
         )
-    ]
+
+    sandbox = [arm for arm in (before, after) if arm.sandbox_waived]
+    if sandbox:
+        which = " and ".join(arm.label for arm in sandbox)
+        notes.append(
+            f"THIS DIFFERENTIAL WAS TAKEN WITH --no-sandbox ({which}). The "
+            "host forbids the unprivileged user namespace chromium's sandbox "
+            "needs, and the operator waived it explicitly "
+            "(--allow-unsandboxed-chromium). persona's own launch path passes "
+            "that flag NOWHERE, so this is NOT the surface the product "
+            "presents to a checker: treat any difference against a sandboxed "
+            "reading as possibly environmental until it is reproduced on a "
+            "host where the sandbox works."
+            + _one_arm_caveat(sandbox)
+        )
+
+    shm = [arm for arm in (before, after) if arm.dev_shm_waived]
+    if shm:
+        which = " and ".join(arm.label for arm in shm)
+        # The NUMBER, not just the verdict — that is what tells a later reader
+        # what to change. Stated only where it was actually probed: a host
+        # whose /dev/shm could not be read says so rather than inventing a
+        # figure. Both arms are asked because they are separate launches.
+        sizes = {
+            arm.dev_shm_bytes for arm in shm if arm.dev_shm_bytes is not None
+        }
+        if len(sizes) == 1:
+            measured = (
+                f"This host's /dev/shm measured "
+                f"{sizes.pop() // (1024 * 1024)} MiB, against the "
+                f"{MIN_DEV_SHM_BYTES // (1024 * 1024)} MiB floor the tier "
+                "insists on. "
+            )
+        elif sizes:
+            measured = (
+                "The arms measured DIFFERENT /dev/shm sizes ("
+                + ", ".join(
+                    f"{n // (1024 * 1024)} MiB" for n in sorted(sizes)
+                )
+                + f"), against the {MIN_DEV_SHM_BYTES // (1024 * 1024)} MiB "
+                "floor the tier insists on. "
+            )
+        else:
+            measured = (
+                "This host's /dev/shm size could not be read, so this note "
+                "states the waiver without a number. "
+            )
+        notes.append(
+            f"THIS DIFFERENTIAL WAS TAKEN WITH --disable-dev-shm-usage "
+            f"({which}). " + measured + "The operator waived the floor "
+            "explicitly (--allow-small-dev-shm). The flag moves chromium's "
+            "renderer transport, GPU command buffers and font-data service "
+            "off shared memory and onto disk. persona's own launch path "
+            "passes it NOWHERE, so this is NOT the surface the product "
+            "presents. It is disclosed rather than inferred because the "
+            "failure it works around does not announce itself: chromium on a "
+            "too-small /dev/shm dies MID-PAGE with a TargetClosedError that "
+            "names no cause, and the run then attributes the death to "
+            "whatever configuration was being read — which is how PS-128 came "
+            "to report a renderer crash as a property of fingerprint seed "
+            "4242. On the seed axis in particular, whose defaults are that "
+            "very pair, treat any difference as possibly environmental until "
+            "it is reproduced on a host with enough shared memory."
+            + _one_arm_caveat(shm)
+        )
+
+    return notes
 
 
 def build_differential_record(
@@ -424,10 +561,14 @@ def build_differential_record(
     THE RECORD DISCLOSES THE CONDITIONS IT WAS TAKEN UNDER, and that is not
     decoration: this whole ticket exists because a record described one subject
     while a consumer read it as another. A differential taken under
-    ``--no-sandbox`` describes an engine surface persona never ships, so
-    ``sandbox_waived`` and the matching ``notes`` entry ride the document
+    ``--no-sandbox`` describes an engine surface persona never ships, and one
+    taken under ``--disable-dev-shm-usage`` is running its renderer transport
+    off DISK rather than shared memory. So both verdicts, the measured
+    ``/dev/shm`` size, and the matching ``notes`` entries ride the document
     itself — the durable thing that outlives the terminal it was printed in —
-    rather than only the help text of the flag that caused it.
+    rather than only the help text of the flags that caused them. Undisclosed,
+    such a record is byte-identical to one taken on a healthy host, which is
+    exactly the shape PS-133 was filed about.
     """
     # Compared on the vectors the page really COMPUTED. See _computed_vectors:
     # two sides agreeing on "unavailable:no-webgl-context" is not a spoof
@@ -480,7 +621,21 @@ def build_differential_record(
         # the top of the document so a consumer scanning records cannot miss
         # it, with the per-arm truth on each arm and the prose in `notes`.
         "sandbox_waived": bool(before.sandbox_waived or after.sandbox_waived),
-        "notes": _sandbox_notes(before, after),
+        # The same, for the host's /dev/shm — hoisted for the same reason and
+        # by the same rule. A differential taken on the workaround surface must
+        # not be byte-identical to one taken on a healthy host, which is the
+        # defect PS-133 was filed about.
+        "dev_shm_waived": bool(before.dev_shm_waived or after.dev_shm_waived),
+        # The NUMBER behind that verdict, so the record states what to change
+        # rather than only that something is wrong. Taken from whichever arm
+        # measured it (both probe the same host, and an arm that never launched
+        # reports None); None where the question could not be asked.
+        "dev_shm_bytes": (
+            before.dev_shm_bytes
+            if before.dev_shm_bytes is not None
+            else after.dev_shm_bytes
+        ),
+        "notes": _waiver_notes(before, after),
         "comparable_vectors": comparable,
         "diff": diff,
         "before": before.as_record(),
@@ -499,6 +654,7 @@ __all__ = [
     "DEFAULT_CONTROL_SEED",
     "DEFAULT_SEED",
     "PROBE_SETTLE_SECONDS",
+    "Waivers",
     "build_differential_record",
     "dumps",
     "read_probe_once",
