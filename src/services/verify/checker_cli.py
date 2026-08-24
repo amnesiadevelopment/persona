@@ -205,9 +205,14 @@ from .matrix_silence import (
 )
 from .matrix_consistency import (
     consistency_pass,
-    contradictions,
     coverage_holes,
+    # Aliased: `matrix_diff.findings` is already imported above and is used by
+    # the `compare` lane. Two lanes, two different questions, same word — the
+    # alias keeps them apart rather than letting the later import silently
+    # shadow the earlier one.
+    findings as consistency_findings,
     format_consistency,
+    host_leaks,
 )
 from .snapshot import quote_path
 
@@ -1172,7 +1177,7 @@ def _cmd_consistency(args: argparse.Namespace) -> int:
         return 2
 
     print(format_consistency(entries, source=args.record))
-    if contradictions(entries):
+    if consistency_findings(entries):
         return 1
     if coverage_holes(entries):
         return 3

@@ -162,6 +162,19 @@ INCOMPARABLE_VECTORS: "dict[str, str]" = {
 # DIFFERENT hardware. The record contradicts itself.
 CONTRADICTION = "contradiction"
 
+# THE LOUDER ALARM: a row names a SOFTWARE RASTERISER — SwiftShader, llvmpipe.
+# That is not a spoof disagreeing with another spoof; it is the machine
+# underneath showing through, because a host with no GPU is what draws in
+# software. PS-155 ranks this above a contradiction in so many words: "a leak
+# of the true adapter is a materially worse finding than an inconsistent
+# spoof".
+#
+# It is a finding ON ITS OWN and needs no second row to disagree with. One such
+# row IS the finding — which is the whole distinction from CONTRADICTION, a
+# property that requires a PAIR. A record where every checker leaks in unison
+# holds no disagreement at all and is the WORST case, not the cleanest.
+HOST_LEAK = "host-leak"
+
 # The vector's rows agree everywhere they could be read.
 CONSISTENT = "consistent"
 
@@ -191,6 +204,25 @@ UNKNOWN_VECTOR_REASON = (
 # emits a literal "-" in a row whose `state` is "read", on 6 corpus records.
 _PLACEHOLDERS = {"", "-", "--", "n/a", "na", "none", "null", "unknown", "?"}
 
+# THE PARSER IS ANGLE-SHAPED BY DECISION, NOT BY OVERSIGHT.
+#
+# Both patterns below read the two shapes the Direct3D11/ANGLE stack emits,
+# because every arm in the corpus today declares `windows` and every
+# `gpu_claimed` value in it is ANGLE-wrapped. The ordinary macOS and Linux
+# spellings are NOT parsed and fall to `None`:
+#
+#     AMD Radeon Pro 5500M OpenGL Engine     -> None
+#     NVIDIA GeForce GTX 1650/PCIe/SSE2      -> None
+#     Mesa DRI Intel(R) HD Graphics 620      -> None
+#     Apple GPU                              -> None
+#
+# That fires on nothing today — all four of the product's own pools parse
+# cleanly and no corpus value takes these shapes — but it is a STATED
+# BOUNDARY rather than a property to be rediscovered. Whoever adds a
+# non-Windows arm to the matrix meets it here: those rows will land in
+# COVERAGE_HOLE, which is honest (nothing established) but is not detection.
+# Widening the parse is the work that arm needs, and it belongs with the arm.
+#
 # "ANGLE (AMD, AMD Radeon(TM) Graphics (0x00001638) Direct3D11 …)" -> "amd"
 # The IHV is the first field inside ANGLE(...), terminated by a comma (the
 # desktop form) or by the closing paren (the bare form).
@@ -199,6 +231,47 @@ _ANGLE = re.compile(r"angle\s*\(\s*([^,()]+?)\s*[,)]")
 # "Google Inc. (AMD)" -> "amd". The ANGLE-wrapper vendor convention: the
 # OUTER name is always the wrapper (Google), the parenthesised one is the IHV.
 _WRAPPED = re.compile(r"^[a-z0-9.\s]*\(\s*([^)]+?)\s*\)\s*$")
+
+# --- the host showing through ----------------------------------------------
+
+# Names that belong to NO graphics vendor: they are what a browser reports
+# when it is drawing in SOFTWARE because there is no GPU to draw with. On a
+# headless host — which is exactly what `environment: "linux-x86_64 (agent
+# sandbox)"` is — a spoof that stops covering one read path does not reveal a
+# different plausible card. It reveals one of these.
+#
+# MATCHED AGAINST THE WHOLE VALUE, NOT AGAINST THE PARSED IHV, and that is
+# load-bearing rather than incidental: SwiftShader's ANGLE string puts
+# `Google` in the IHV slot — `ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device
+# (Subzero) (0x0000C0DE)), SwiftShader driver)` — and llvmpipe puts
+# `Mesa/X.org` there. The marker never appears in the field the IHV parse
+# reads. Parsing first and testing the IHV afterwards is *precisely* how this
+# case came to be missed: `google` was mapped to `None`, the row was dropped,
+# and the vector routed to a coverage hole.
+#
+# Bare "mesa" is deliberately NOT a marker. `Mesa DRI Intel(R) HD Graphics
+# 620` is a real Intel adapter on a real Linux machine; Mesa is the driver
+# stack, not the rasteriser. Only the software devices Mesa can fall back to
+# (llvmpipe, softpipe, lavapipe) are named.
+_SOFTWARE_RASTERISERS = (
+    "swiftshader",
+    "llvmpipe",
+    "softpipe",
+    "lavapipe",
+    "swangle",
+    "microsoft basic render",
+    "basic render driver",
+)
+
+# The identity token :func:`identity` returns for such a value. A REAL token
+# rather than ``None``, so the row takes part in the comparison instead of
+# being dropped out of it — a leaked host is something we LOOKED AT and SAW,
+# not something we failed to read.
+#
+# Chosen to be un-collidable with any IHV: no vendor is called this, so it can
+# never be mistaken for one, and `nvidia` beside it reads as the
+# self-contradiction it is.
+SOFTWARE_RASTERISER = "software-rasteriser"
 
 # pixelscan renders a hedged renderer string: "ANGLE (AMD, Radeon R9 200
 # Series Direct3D11 vs_5_0 ps_5_0), or similar". The hedge is pixelscan's
@@ -240,12 +313,26 @@ def identity(value: Any) -> "str | None":
     string, or a shape not recognised. It is deliberately NOT folded into a
     vendor: an unidentifiable value must reach :data:`COVERAGE_HOLE` and not
     quietly join a consensus it never supported.
+
+    :data:`SOFTWARE_RASTERISER` is a THIRD answer and is not either of those.
+    It means *this value names no hardware because there was none* — the host
+    drew in software. It is returned as a real token rather than as ``None``
+    so the row PARTICIPATES in the comparison instead of being dropped from
+    it, which is the difference between reporting a host leak and printing
+    "FINDINGS — none" over it.
     """
     if value is None:
         return None
     text = _normalise(value)
     if text in _PLACEHOLDERS:
         return None
+
+    # BEFORE the IHV parse, and against the WHOLE value. See
+    # `_SOFTWARE_RASTERISERS`: the marker lives outside the field the IHV
+    # parse reads, so testing the parsed IHV instead would miss every one of
+    # these — which is exactly the defect this ordering repairs.
+    if any(marker in text for marker in _SOFTWARE_RASTERISERS):
+        return SOFTWARE_RASTERISER
 
     found = _ANGLE.search(text)
     ihv = found.group(1) if found else None
@@ -316,12 +403,23 @@ def check_vector(record: "dict", vector: str) -> dict:
     The order of the checks is load-bearing. Comparability is settled FIRST,
     from the declaration, because a vector that may not be compared cannot
     produce either a contradiction or a pass and asking about its values would
-    be meaningless. Then a contradiction, if there is one — a record that
-    contradicts itself is reported as such even if OTHER rows in the same
-    vector are missing, since the holes do not make the disagreement any less
-    real. Only then the coverage hole, and a pass last: :data:`CONSISTENT` is
-    the one verdict that asserts something positive, so it is reached only
-    when every other explanation has been excluded.
+    be meaningless.
+
+    Then :data:`HOST_LEAK`, ABOVE the contradiction — the ticket ranks a leak
+    of the true adapter as materially worse than an inconsistent spoof, and a
+    vector that is both must report as the worse one. It is also the only
+    finding here that a SINGLE row can constitute: a contradiction needs a
+    pair, so a record in which every checker leaks in unison would otherwise
+    hold no disagreement and fall through to a pass-shaped verdict. That is
+    the worst case wearing the best case's costume, and putting this check
+    first is what prevents it.
+
+    Then a contradiction, if there is one — a record that contradicts itself
+    is reported as such even if OTHER rows in the same vector are missing,
+    since the holes do not make the disagreement any less real. Only then the
+    coverage hole, and a pass last: :data:`CONSISTENT` is the one verdict that
+    asserts something positive, so it is reached only when every other
+    explanation has been excluded.
     """
     reason = INCOMPARABLE_VECTORS.get(vector)
     if reason is not None or vector not in COMPARABLE_VECTORS:
@@ -366,6 +464,37 @@ def check_vector(record: "dict", vector: str) -> dict:
         "unidentified": unidentified,
         "reason": "",
     }
+
+    leaked = identities.get(SOFTWARE_RASTERISER, [])
+    if leaked:
+        # Checked BEFORE the contradiction, and satisfied by ONE row. See the
+        # docstring: this is the finding the ticket ranks worse, and it is the
+        # only one a single row can constitute.
+        others = {n: w for n, w in identities.items() if n != SOFTWARE_RASTERISER}
+        entry["classification"] = HOST_LEAK
+        detail = (
+            f"{len(leaked)} row(s) rendered in SOFTWARE, naming no real "
+            f"adapter ({', '.join(sorted(leaked))})"
+        )
+        if others:
+            entry["reason"] = (
+                detail
+                + ", while "
+                + "; ".join(
+                    f"{name} ({', '.join(sorted(where))})"
+                    for name, where in sorted(others.items())
+                )
+                + " claimed real hardware — BOTH a self-contradiction and a "
+                "leak of the machine underneath"
+            )
+        else:
+            entry["reason"] = (
+                detail
+                + ", and NO row claimed real hardware — every checker saw "
+                "the host. The rows agree, which is what makes this the "
+                "worst case and not the cleanest"
+            )
+        return entry
 
     if len(identities) > 1:
         entry["classification"] = CONTRADICTION
@@ -430,21 +559,43 @@ def consistency_pass(record: "dict") -> "list[dict]":
     require_record(record)
     entries = [check_vector(record, vector) for vector in vectors_in(record)]
     order = {
-        CONTRADICTION: 0,
-        COVERAGE_HOLE: 1,
-        NOT_COMPARABLE: 2,
-        CONSISTENT: 3,
+        HOST_LEAK: 0,
+        CONTRADICTION: 1,
+        COVERAGE_HOLE: 2,
+        NOT_COMPARABLE: 3,
+        CONSISTENT: 4,
     }
     entries.sort(key=lambda e: (order.get(e["classification"], 9), e["vector"]))
     return entries
 
 
-def contradictions(entries: "Iterable[dict]") -> "list[dict]":
-    """The entries that are FINDINGS — vectors that contradict themselves.
+def host_leaks(entries: "Iterable[dict]") -> "list[dict]":
+    """The entries where the machine underneath showed through.
+
+    Kept as its own predicate rather than folded into :func:`contradictions`
+    because it is a DIFFERENT fact with a different fix: an inconsistent spoof
+    means two authors disagree, a leak means no spoof covered the read at all.
+    Both are findings; only one of them is the one the ticket ranks worse.
+    """
+    return [e for e in entries if e.get("classification") == HOST_LEAK]
+
+
+def findings(entries: "Iterable[dict]") -> "list[dict]":
+    """Every entry that is a FINDING ABOUT THE PRODUCT — leaks and contradictions.
 
     The predicate the exit code is taken from. Never the length of the whole
     entry list: that number mixes populations and is the wrong number to
     report.
+    """
+    return host_leaks(entries) + contradictions(entries)
+
+
+def contradictions(entries: "Iterable[dict]") -> "list[dict]":
+    """The entries that are FINDINGS — vectors that contradict themselves.
+
+    Strictly the two-identities case. A vector carrying a host leak is
+    reported by :func:`host_leaks` and is deliberately NOT also counted here,
+    so the two populations sum without double-counting.
     """
     return [e for e in entries if e.get("classification") == CONTRADICTION]
 
@@ -476,8 +627,30 @@ def format_consistency(entries: "list[dict]", *, source: str = "") -> str:
     where = f" of {source}" if source else ""
     lines = [f"SAME-VECTOR CONSISTENCY{where}", ""]
 
+    leaks = host_leaks(entries)
     found = contradictions(entries)
+    holes = coverage_holes(entries)
+
+    if leaks:
+        lines.append(
+            f"FINDINGS — {len(leaks)} vector(s) LEAKED THE HOST MACHINE in "
+            "this one record:"
+        )
+        for entry in leaks:
+            lines.append(f"  {entry['vector']}   {entry['reason']}")
+        lines.append("")
+        lines.append(
+            "  A software rasteriser is not a graphics card. These rows are "
+            "what the machine UNDERNEATH reports when no spoof covered the "
+            "read — the true adapter showing through, which is a materially "
+            "worse finding than an inconsistent spoof. Note that rows naming "
+            "it AGREE with each other: a leak needs no disagreement to be a "
+            "finding, so this can never be established by looking for one."
+        )
+
     if found:
+        if leaks:
+            lines.append("")
         lines.append(
             f"FINDINGS — {len(found)} vector(s) CONTRADICT THEMSELVES in this "
             "one record:"
@@ -492,12 +665,26 @@ def format_consistency(entries: "list[dict]", *, source: str = "") -> str:
             "machine has one GPU, and any observer reading both sees a "
             "contradiction no plausible string repairs."
         )
-    else:
-        lines.append(
-            "FINDINGS — none. Every comparable vector names one identity."
-        )
 
-    holes = coverage_holes(entries)
+    if not leaks and not found:
+        # "No finding" and "nothing was established" are DIFFERENT STATEMENTS
+        # and this headline must never say the first when the second is true.
+        # 13 of the 21 readable records in `readings/` route to a coverage
+        # hole, and every one of them used to print the unqualified "FINDINGS
+        # — none" — a detector reporting cleanliness over records it could not
+        # read. That is the failure this whole module exists to not commit.
+        if holes:
+            lines.append(
+                f"FINDINGS — none FOUND, but {len(holes)} vector(s) COULD NOT "
+                "BE READ. This is NOT a clean record: see COVERAGE HOLES "
+                "below. Nothing was established either way."
+            )
+        else:
+            lines.append(
+                "FINDINGS — none. Every comparable vector was read and names "
+                "one identity."
+            )
+
     lines.append("")
     if holes:
         lines.append(
@@ -546,10 +733,12 @@ __all__ = [
     "CONSISTENT",
     "CONTRADICTION",
     "COVERAGE_HOLE",
+    "HOST_LEAK",
     "INCOMPARABLE_VECTORS",
     "NOT_COMPARABLE",
     "NotARecord",
     "RecordUnreadable",
+    "SOFTWARE_RASTERISER",
     "UNKNOWN_VECTOR_REASON",
     "adapter_text",
     "check_vector",
@@ -557,7 +746,9 @@ __all__ = [
     "consistent",
     "contradictions",
     "coverage_holes",
+    "findings",
     "format_consistency",
+    "host_leaks",
     "identity",
     "not_comparable",
     "vectors_in",

@@ -46,13 +46,17 @@ from src.services.verify.matrix_consistency import (
     CONSISTENT,
     CONTRADICTION,
     COVERAGE_HOLE,
+    HOST_LEAK,
     NOT_COMPARABLE,
+    SOFTWARE_RASTERISER,
     adapter_text,
     check_vector,
     consistency_pass,
     contradictions,
     coverage_holes,
+    findings,
     format_consistency,
+    host_leaks,
     identity,
 )
 from src.services.verify.matrix_diff import NotARecord
@@ -512,8 +516,40 @@ def test_the_report_says_none_rather_than_going_quiet(negative):
 
 def test_a_hole_is_never_rendered_under_the_findings_heading():
     text = format_consistency(consistency_pass(load(ALL_NULL)), source=ALL_NULL)
-    assert "FINDINGS — none." in text
     assert "NOT a pass" in text
+    # The heading must NOT be the unqualified "none." that a genuinely clean
+    # record earns. See the test below for the positive form of this claim.
+    assert "FINDINGS — none." not in text
+
+
+def test_a_record_that_established_nothing_does_not_claim_a_clean_headline():
+    """"I looked and found nothing" and "I could not look" are DIFFERENT
+    STATEMENTS, and the headline is where they were being collapsed.
+
+    This is the wider defect behind the SwiftShader case: 13 of the 21
+    readable records in ``readings/`` route to a coverage hole, and every one
+    of them printed the same unqualified "FINDINGS — none." that a clean
+    record prints. A reader who stops at the headline — which is what a
+    headline is FOR — was told a record established agreement when it
+    established nothing at all.
+    """
+    text = format_consistency(consistency_pass(load(ALL_NULL)), source=ALL_NULL)
+    headline = next(line for line in text.splitlines() if "FINDINGS" in line)
+    assert "COULD NOT BE READ" in headline
+    assert "NOT a clean record" in headline
+
+
+def test_the_clean_headline_is_still_reachable(negative):
+    """The corollary, and the reason the test above can fail.
+
+    If a hole and a pass BOTH printed a qualified headline, the assertion
+    above would hold for a check that never reports anything clean. A real
+    clean record must still earn the unqualified form.
+    """
+    text = format_consistency(consistency_pass(negative), source=NEGATIVE)
+    headline = next(line for line in text.splitlines() if "FINDINGS" in line)
+    assert "FINDINGS — none." in headline
+    assert "COULD NOT BE READ" not in headline
 
 
 # --- the CLI ----------------------------------------------------------------
@@ -544,6 +580,227 @@ def test_cli_exits_2_on_a_file_that_is_not_a_record(capsys):
 
 def test_cli_exits_2_on_a_missing_file():
     assert main(["consistency", os.path.join(READINGS, "no-such-file.json")]) == 2
+
+
+# --- the host showing through ----------------------------------------------
+#
+# The case the check was BLIND to when PR #127 was first submitted: a
+# software-rasteriser value mapped to `None`, the row was dropped, the vector
+# routed to a coverage hole, and the report printed "FINDINGS — none" over a
+# leak of the real machine. 0 of the 48 tests then present covered it.
+#
+# `environment` on every record in the corpus is `linux-x86_64 (agent
+# sandbox)`, a host with NO GPU — so this is not a hypothetical shape. It is
+# what a spoof that stops covering one read path actually produces here, and
+# the ticket ranks it worse than the contradiction that motivated the module:
+# "a leak of the true adapter is a materially worse finding than an
+# inconsistent spoof".
+#
+# Both spellings are mutated from a COMMITTED record on ONE axis, exactly as
+# the falsification tests above are. A fixture row is legitimate here (and the
+# planner said so explicitly): the value is a STRING A CHECKER RETURNS, not a
+# rendered artifact, so the fixture is the real thing rather than a stand-in.
+
+SWIFTSHADER = (
+    "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) "
+    "(0x0000C0DE)), SwiftShader driver)"
+)
+LLVMPIPE = "ANGLE (Mesa/X.org, llvmpipe (LLVM 15.0.7, 256 bits), OpenGL 4.5)"
+
+
+def leak_one_checker(record: dict, renderer: str, vendor: str) -> dict:
+    """One checker leaks the host; the other keeps its spoof."""
+    mutated = copy.deepcopy(record)
+    for row in mutated["readings"]:
+        if row.get("vector") != "gpu_claimed":
+            continue
+        if row.get("checker") != "pixelscan.net":
+            continue
+        if row["item"] == "webgl_renderer":
+            row["value"] = renderer
+        elif row["item"] == "webgl_vendor":
+            row["value"] = vendor
+    return mutated
+
+
+@pytest.mark.parametrize(
+    "renderer,vendor",
+    [(SWIFTSHADER, "Google Inc. (Google)"), (LLVMPIPE, "Mesa/X.org")],
+    ids=["swiftshader", "llvmpipe"],
+)
+def test_a_leaked_host_is_reported_not_filed_as_a_coverage_hole(
+    positive, renderer, vendor
+):
+    """THE REGRESSION TEST for the defect that failed the audit.
+
+    Before the fix this asserted-on record printed "FINDINGS — none" and
+    exited 3. pixelscan DID speak — it said SwiftShader — so filing it beside
+    a `None` as "these rows did not disagree because they did not speak" was
+    not merely quiet, it was false.
+    """
+    entries = consistency_pass(leak_one_checker(positive, renderer, vendor))
+    leaks = host_leaks(entries)
+
+    assert [e["vector"] for e in leaks] == ["gpu_claimed"]
+    assert entry_for(entries, "gpu_claimed")["classification"] == HOST_LEAK
+    # And it is NOT filed as the thing it used to be filed as.
+    assert coverage_holes(entries) == []
+
+
+@pytest.mark.parametrize(
+    "renderer,vendor",
+    [(SWIFTSHADER, "Google Inc. (Google)"), (LLVMPIPE, "Mesa/X.org")],
+    ids=["swiftshader", "llvmpipe"],
+)
+def test_a_leak_is_a_finding_even_when_every_checker_agrees_on_it(
+    positive, renderer, vendor
+):
+    """The WORST case, and the one a pair-based rule can never catch.
+
+    When the spoof fails completely, every checker reads the same host
+    rasteriser. There is no disagreement anywhere in the record — so a check
+    that only ever looks for a PAIR of differing values finds nothing and the
+    record reads clean. A leak needs no second row to be a finding, which is
+    exactly why HOST_LEAK is satisfied by one row and is tested here without
+    any contradiction present.
+    """
+    mutated = copy.deepcopy(positive)
+    for row in mutated["readings"]:
+        if row.get("vector") != "gpu_claimed":
+            continue
+        if "renderer" in str(row.get("item")):
+            row["value"] = renderer
+        elif "vendor" in str(row.get("item")):
+            row["value"] = vendor
+
+    entries = consistency_pass(mutated)
+    entry = entry_for(entries, "gpu_claimed")
+
+    assert entry["classification"] == HOST_LEAK
+    # There is genuinely no contradiction here — the rows AGREE.
+    assert contradictions(entries) == []
+    assert "every checker saw the host" in entry["reason"]
+
+
+@pytest.mark.parametrize(
+    "renderer,vendor",
+    [(SWIFTSHADER, "Google Inc. (Google)"), (LLVMPIPE, "Mesa/X.org")],
+    ids=["swiftshader", "llvmpipe"],
+)
+def test_the_leak_headline_does_not_say_findings_none(positive, renderer, vendor):
+    """The report is the deliverable, not just the classification.
+
+    Exit 3 was always non-zero, which limited the blast radius for a
+    machine-read gate — but a HUMAN reads the headline, and the headline said
+    the opposite of the truth. This asserts on what a person actually sees.
+    """
+    mutated = leak_one_checker(positive, renderer, vendor)
+    text = format_consistency(consistency_pass(mutated), source="mutated")
+    headline = next(line for line in text.splitlines() if "FINDINGS" in line)
+
+    assert "LEAKED THE HOST MACHINE" in headline
+    assert "FINDINGS — none" not in text
+
+
+@pytest.mark.parametrize(
+    "renderer,vendor",
+    [(SWIFTSHADER, "Google Inc. (Google)"), (LLVMPIPE, "Mesa/X.org")],
+    ids=["swiftshader", "llvmpipe"],
+)
+def test_cli_exits_1_on_a_leaked_host(tmp_path, capsys, positive, renderer, vendor):
+    """A finding ABOUT THE PRODUCT, so 1 — never 3.
+
+    3 means "no finding, but the coverage is not what you think". A leak is a
+    finding, and the code it exits under is what a CI gate reads.
+
+    THE EXIT CODE ALONE IS NOT ENOUGH, and this is not caution — it is
+    measured. With the leak rule reverted, the llvmpipe case exits 1 ANYWAY:
+    `Mesa/X.org` happens to parse as an IHV, which happens to disagree with
+    the AMD rows, so the record trips the CONTRADICTION rule by coincidence.
+    A test asserting only on the code passes for a reason it did not intend
+    and would not have caught this defect. So the report is asserted too: it
+    must be reported AS A LEAK, not as an incidental disagreement.
+    """
+    path = tmp_path / "leak.json"
+    path.write_text(
+        json.dumps(leak_one_checker(positive, renderer, vendor)), encoding="utf-8"
+    )
+    assert main(["consistency", str(path)]) == 1
+    assert "LEAKED THE HOST MACHINE" in capsys.readouterr().out
+
+
+def test_a_software_rasteriser_is_not_confused_with_a_missing_value():
+    """The distinction the whole class exists to draw, at the unit level.
+
+    `None` means "this row said nothing". SOFTWARE_RASTERISER means "this row
+    said something, and what it said is alarming". Collapsing the second into
+    the first is the defect.
+    """
+    assert identity(None) is None
+    assert identity("-") is None
+    assert identity(SWIFTSHADER) == SOFTWARE_RASTERISER
+    assert identity(LLVMPIPE) == SOFTWARE_RASTERISER
+
+
+def test_the_bare_wrapper_vendor_is_left_as_unidentified_deliberately():
+    """`Google Inc. (Google)` stays `None`, and that is a DECISION.
+
+    It is the vendor string that accompanies a SwiftShader render, so it is
+    tempting to mark it as a leak too. It is not marked, because on its own it
+    names no rasteriser — it says only "the wrapper named itself", which is
+    weaker evidence than the renderer string that actually spells SwiftShader.
+    Treating a suggestive value as proof is the kind of overclaim this project
+    keeps retracting.
+
+    Nothing is lost by the restraint: the RENDERER row in the same vector
+    carries the real marker and fires the leak, so the vector is reported
+    either way. This test exists so that decision is visible rather than
+    mistaken for the bug that was just fixed.
+    """
+    assert identity("Google Inc. (Google)") is None
+
+
+def test_real_hardware_is_never_read_as_a_software_rasteriser():
+    """The falsification direction: the marker must not fire on real adapters.
+
+    Bare "Mesa" is the trap — `Mesa DRI Intel(R) HD Graphics 620` is a real
+    Intel adapter on a real Linux machine. Mesa is the driver stack, not the
+    rasteriser; only the software devices it can fall back to are markers. A
+    rule that matched "mesa" would report a leak on ordinary Linux hardware.
+    """
+    for value in (
+        "ANGLE (AMD, AMD Radeon(TM) Graphics (0x00001638) Direct3D11 "
+        "vs_5_0 ps_5_0, D3D11)",
+        "ANGLE (NVIDIA, NVIDIA GeForce RTX 3070 (0x00002484) Direct3D11 "
+        "vs_5_0 ps_5_0, D3D11)",
+        "Google Inc. (AMD)",
+        "Google Inc. (NVIDIA)",
+        "Mesa DRI Intel(R) HD Graphics 620",
+        "ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    ):
+        assert identity(value) != SOFTWARE_RASTERISER
+
+
+def test_no_committed_record_is_read_as_a_leaked_host():
+    """The false-alarm measurement, pinned.
+
+    Zero values in the whole committed corpus carry a software-rasteriser
+    marker, so adding this class changed no existing verdict — the census
+    below is byte-identical either side of the fix. If a future marker starts
+    firing on a real record, that is a FINDING to report (per the ticket's
+    standing instruction), and this test is what surfaces it rather than
+    letting it be absorbed.
+    """
+    for path in discover():
+        try:
+            record = load(path)
+        except (OSError, json.JSONDecodeError):  # pragma: no cover
+            continue
+        try:
+            entries = consistency_pass(record)
+        except NotARecord:
+            continue
+        assert host_leaks(entries) == [], f"unexpected leak verdict on {path}"
 
 
 # --- the corpus census, asserted -------------------------------------------
@@ -580,7 +837,7 @@ def test_the_check_fires_on_exactly_three_records_in_the_whole_corpus():
             entries = consistency_pass(record)
         except NotARecord:
             continue
-        if contradictions(entries):
+        if findings(entries):
             flagged.append(os.path.relpath(path, READINGS))
 
     assert sorted(flagged) == [
