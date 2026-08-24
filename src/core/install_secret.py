@@ -127,13 +127,25 @@ def _read(path: str) -> bytes:
 
 
 def _create(path: str) -> bytes:
-    """Generate, persist 0600, and return a new secret.
+    """Generate, persist 0600 (POSIX), and return a new secret.
 
     Written to a temp file in the same directory and `os.replace`d into place,
     so a crash mid-write cannot leave a HALF-LENGTH secret that `_read` would
     reject and a fresh `_create` would then replace — silently re-rolling the
     salt for every mint that followed. The chmod happens BEFORE the rename, so
     the bytes are never briefly readable at the final path under a wider mode.
+
+    THE 0600 IS POSIX-ONLY, and that is a real bound rather than an oversight.
+    Windows has no POSIX mode bits: `os.chmod` there can only flip the
+    read-only attribute, so the file lands at whatever the parent directory's
+    ACL grants (it reads back as 0o666). Confining it would mean an ACL call
+    (icacls / pywin32), which this slice does not attempt. So on Windows the
+    secret is protected by the ACL on PERSONA_HOME and not by this line — the
+    unguessability property still holds against a REMOTE adversary, which is
+    the threat this file exists for, but the local-unprivileged-reader half of
+    it does not. `test_the_secret_file_is_not_world_readable` is skipped there
+    for exactly this reason, matching the repo's convention for mode-bit
+    assertions.
     """
     secret = secrets.token_bytes(_SECRET_BYTES)
     directory = os.path.dirname(path)
