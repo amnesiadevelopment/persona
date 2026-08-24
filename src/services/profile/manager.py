@@ -1087,7 +1087,6 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
             # cwd under a relative PERSONA_LOG_DIR override, exactly as
             # trash_data_root() re-derives DATA_DIR's parent per call.
             from ...core import config
-            from ...core.logging import emit_session_marker
 
             log_dir = config.LOG_DIR
             # The files the live handler holds open — the ones we must truncate
@@ -1112,6 +1111,11 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                     logger.exception("Could not clear log file during the wipe")
 
             if truncated_any:
+                # Imported HERE, beside its use, rather than at the top of this
+                # try: the marker re-emit is the least important step, and an
+                # import failure up there would skip ALL the clearing below it.
+                from ...core.logging import emit_session_marker
+
                 emit_session_marker(logging.getLogger("persona"))
         except Exception:
             logger.exception("Could not clear the logs during the wipe")
