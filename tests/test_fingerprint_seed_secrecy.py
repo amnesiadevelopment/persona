@@ -23,6 +23,7 @@ seed-migration that would re-roll fingerprints across the installed base.
 """
 
 import json as _json
+import sys as _sys
 import zlib as _zlib
 
 import pytest
@@ -413,10 +414,23 @@ def test_the_install_secret_is_absent_from_the_logs(mgr, caplog, tmp_path):
     assert str(secret) not in text
 
 
+@pytest.mark.skipif(_sys.platform == "win32", reason="POSIX permission bits")
 def test_the_secret_file_is_not_world_readable(tmp_path):
     # AC7's on-disk half: a secret at mode 0644 is a secret an unprivileged
     # local process reads, which would trade a guessable seed for a readable
     # one — the ticket's own words.
+    #
+    # POSIX-ONLY, and the skip is a real bound rather than a tidy-up. The
+    # `os.chmod(tmp, 0o600)` this asserts is a NO-OP on Windows, which has no
+    # POSIX mode bits — the mode reads back 0o666 and the assertion fails on a
+    # correct implementation. Confining the secret on Windows means an ACL
+    # (icacls / pywin32), which this slice does not attempt, so the honest
+    # statement is: the 0600 guarantee is POSIX-only and the Windows file sits
+    # at whatever the parent directory's ACL grants. Skipping matches the
+    # repo's standing convention for mode-bit assertions (test_cert_store.py,
+    # test_ssh_store.py, test_trash_store.py and five more use this exact
+    # marker); it does NOT weaken the POSIX assertion, which still runs on the
+    # two platforms where the bits exist.
     import os
     import stat
 

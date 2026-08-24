@@ -41,14 +41,26 @@ def _derive(label: str) -> int:
 def mint_fingerprint_seed(name: str, taken: Container[int] | None = None) -> int:
     """Mint the seed a NEW profile freezes into ``fingerprint_seed_value``.
 
-    The seed carries TWO properties, and this function has to hold both:
+    The seed carries THREE properties, and this function has to hold all of
+    them:
 
     1. STABILITY — a profile's presented machine must not move under its own
-       live cookie jar. That is what persisting the seed buys, and why the
-       common case here is deliberately the SAME crc32(name) the old property
-       derived on every read: a freshly created profile presents
-       byte-identically to what it would have presented before the seed became
-       a field. This freezes the seed, it does not re-roll it.
+       live cookie jar. That is what persisting the seed buys: this function
+       runs ONCE, at creation, and the value it returns is frozen into
+       ``fingerprint_seed_value`` and read back verbatim on every access
+       afterwards. So a RENAME cannot move the presented machine, even though
+       the name is what the seed was derived FROM — the derivation is never
+       re-run. (Before the seed became a field the old property re-derived
+       from the name on every read, so a rename DID move the machine; that is
+       the bug persisting the seed closed.) This freezes the seed, it does not
+       re-roll it.
+
+       Note what this property does NOT claim: a freshly created profile does
+       NOT present byte-identically to pre-field behaviour. Salting the
+       derivation deliberately moves NEW profiles — that is the whole point of
+       property 3. The compatibility guarantee is about profiles that ALREADY
+       EXIST, and it is delivered by the read path, not by this function; see
+       WHAT THIS DOES NOT TOUCH below.
     2. ISOLATION — two LIVE profiles must not present the same machine. Once
        the seed is frozen at creation, crc32(name) alone no longer delivers
        this, because a name is REUSABLE: rename 'acme-bank' to 'acme-bank-old'
@@ -57,18 +69,6 @@ def mint_fingerprint_seed(name: str, taken: Container[int] | None = None) -> int
        cross-profile linkage, and it is the ordinary "archive last quarter's
        account, start a fresh one under the same label" workflow — not a
        corner case.
-
-    So: mint crc32(name); if that value is already held by a live profile,
-    walk crc32(name + ':' + n) from n=1 for the first free one. Deterministic
-    (no RNG, reproducible from the inputs), and it only diverges from plain
-    crc32(name) when it must — every non-colliding create still mints exactly
-    the value it always would have.
-
-    ``taken`` is the set of seeds held by live profiles. Pass it under the same
-    lock that guards the check-then-insert, or two concurrent creates can both
-    read a stale set and mint the same seed. None = don't check (the caller has
-    no registry in hand).
-
     3. SECRECY — and this is the property that changed the formula. crc32(name)
        is a PURE, PUBLIC function of a string the operator typed: same name,
        same integer, on every install and every machine. The seed is not
@@ -77,6 +77,18 @@ def mint_fingerprint_seed(name: str, taken: Container[int] | None = None) -> int
        'client-alpha') computed that profile's presented hardware OFFLINE, with
        no access to the install. Mixing in a per-install secret (see
        core.install_secret) is what turns that computation back into a guess.
+
+    So: mint _derive(name) — the install-salted derivation, NOT crc32(name);
+    if that value is already held by a live profile, walk _derive(name + ':' +
+    n) from n=1 for the first free one. Deterministic (no RNG, reproducible
+    from the inputs), and the walk is entered only when it must be — a
+    non-colliding create returns the first derivation. Both branches go
+    through _derive, so both are salted; see THE WALK IS SALTED TOO below.
+
+    ``taken`` is the set of seeds held by live profiles. Pass it under the same
+    lock that guards the check-then-insert, or two concurrent creates can both
+    read a stale set and mint the same seed. None = don't check (the caller has
+    no registry in hand).
 
     WHAT THIS DOES NOT TOUCH, and it is the bound that makes the change
     shippable: this function is on NEITHER read path. ``Profile.fingerprint_seed``
