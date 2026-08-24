@@ -450,13 +450,55 @@ def test_a_moved_vector_is_the_demonstration():
 def test_identical_readings_report_UNMOVED_which_is_the_PS97_shape():
     """The reading that must not be mistaken for success. On the layer axis it
     means the code the layer was supposed to change did not change what the page
-    sees — which is exactly what PS-97's re-read looked like."""
+    sees — which is exactly what PS-97's re-read looked like.
+
+    THE PROSE IS PINNED BY EQUALITY, not by substring. The layer-axis clause is
+    the one that was always correct, and making the sentence axis-conditional
+    put it at risk of collateral damage — a substring assertion would survive a
+    reworded or truncated sentence, so it cannot detect that. The literal below
+    is the string this branch produced BEFORE the axis conditional existed,
+    captured from a run against the pre-fix code rather than retyped from it.
+    """
     same = {"webgl_pixel_hash": "51df3565", "audio_digest": "35.749972"}
     record = build_differential_record(
         AXIS_LAYER, "firefox", _arm("off", same), _arm("on", dict(same))
     )
     assert record["verdict"] == "unmoved"
     assert record["diff"]["moved"] == {}
+    assert record["detail"] == (
+        "all 2 comparable vectors read IDENTICALLY when layer changed. On the "
+        "layer axis this is the PS-97 shape: the code the layer was supposed "
+        "to change did not change what the page sees."
+    )
+
+
+def test_an_unmoved_SEED_control_names_the_SEED_axis_not_the_layer():
+    """THE DEFECT PS-116 WAS FILED FOR: the state where this misleads is a real
+    finding, not an error path.
+
+    An unmoved reading on the SEED axis means two different seeds produced
+    identical values — the compared vectors are not seed-derived. That is the
+    PS-97-shaped alarm this harness exists to raise, and the branch used to
+    hand the reader a sentence about the LAYER, sending them to look for a
+    cause that is not there. The reader most likely to hit it is the one who
+    most needs the reading to be right.
+
+    Asserted on the ``detail`` of a real ``build_differential_record`` — the
+    string a person actually reads off the regression-gate artifact — never on
+    a helper having been called.
+    """
+    same = {"webgl_pixel_hash": "51df3565", "audio_digest": "35.749972"}
+    record = build_differential_record(
+        AXIS_SEED, "firefox", _arm("seed4242", same), _arm("seed1337", dict(same))
+    )
+
+    assert record["verdict"] == "unmoved"
+    # AC1's negative half: the wrong-axis pointer must be gone.
+    assert "On the layer axis" not in record["detail"]
+    # AC1's positive half: deleting the sentence would also satisfy the line
+    # above, so pin that the seed-axis MEANING is actually stated.
+    assert "seed changed" in record["detail"]
+    assert "not seed-derived" in record["detail"]
 
 
 def test_vectors_the_PAGE_COULD_NOT_READ_are_never_counted_as_unmoved():

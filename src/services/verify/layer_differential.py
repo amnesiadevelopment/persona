@@ -605,11 +605,30 @@ def build_differential_record(
         )
     else:
         verdict = "unmoved"
+        # WHAT AN UNMOVED READING MEANS IS AXIS-DEPENDENT, so this clause is
+        # conditional on the axis rather than hardcoded to one of them. Both
+        # readings are real findings — an unmoved control is the alarm this
+        # harness exists to raise — and each sends the reader somewhere
+        # different to look for the cause. Naming the wrong axis here is the
+        # PS-11 failure class arriving in the instrument that detects it:
+        # structured data correct, prose describing a different subject.
+        if axis == AXIS_LAYER:
+            meaning = (
+                "On the layer axis this is the PS-97 shape: the "
+                "code the layer was supposed to change did not change what "
+                "the page sees."
+            )
+        else:
+            meaning = (
+                "On the seed axis this is the PS-97 shape read from the other "
+                "side: two DIFFERENT seeds produced the same values, so the "
+                "compared vectors are not seed-derived — whatever the page is "
+                "reading does not follow the seed it was supposed to be "
+                "generated from. Do not look to the layer for this one."
+            )
         detail = (
             f"all {len(comparable)} comparable vectors read IDENTICALLY when "
-            f"{axis} changed. On the layer axis this is the PS-97 shape: the "
-            "code the layer was supposed to change did not change what the "
-            "page sees."
+            f"{axis} changed. {meaning}"
         )
 
     return {
