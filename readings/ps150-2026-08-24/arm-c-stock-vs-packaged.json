@@ -1,0 +1,40 @@
+{
+  "exit": {
+    "ip": "5.173.155.60",
+    "country": "PL",
+    "region": "Mazovia",
+    "city": "Warsaw",
+    "org": "AS39603 P4 Sp. z o.o.",
+    "timezone": "Europe/Warsaw"
+  },
+  "arms": {
+    "stock_chromium": {
+      "fingerprint_inconsistent": true,
+      "fingerprint_consistent": null,
+      "proxy_detected": null,
+      "masking_detected": true,
+      "automation_detected": true,
+      "timezone_spoofed": true,
+      "geo_country_city": null,
+      "timezone_from_js": "Africa/Abidjan",
+      "webgl_vendor": "Google Inc. (Google)",
+      "webgl_renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+      "webgl_hash": "b35a6e95ccbb64d2d42a637ad06d7297",
+      "canvas_hash": "5f4a84ed7ee599a84a46ce732dc3edc3"
+    },
+    "packaged_engine_layer_off": {
+      "fingerprint_inconsistent": true,
+      "fingerprint_consistent": null,
+      "proxy_detected": null,
+      "masking_detected": true,
+      "automation_detected": null,
+      "timezone_spoofed": null,
+      "geo_country_city": "Poland / Warsaw",
+      "timezone_from_js": "Europe/Warsaw",
+      "webgl_vendor": "Google Inc. (AMD)",
+      "webgl_renderer": "ANGLE (AMD, AMD Radeon(TM) Graphics (0x00001638) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "webgl_hash": "185b5d0e64d82a72db8cf3cd5842676f",
+      "canvas_hash": "2bcfee1204804fa8ed34ccae53f2362a"
+    }
+  }
+}
