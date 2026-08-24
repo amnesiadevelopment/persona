@@ -50,10 +50,28 @@ PERSONA_HOME = _ensure_home(_home())
 
 def _under_home(name: str, env: str) -> str:
     """Resolve a runtime path: an explicit env override wins; otherwise the
-    name is placed under PERSONA_HOME. Absolute overrides are used as-is."""
+    name is placed under PERSONA_HOME. The result is ALWAYS absolute.
+
+    A RELATIVE override is anchored to the current working directory here, once,
+    at import. It used to be returned verbatim, which made every constant built
+    from it — DATA_DIR, LOG_DIR, ENGINE_DIR — resolve against whatever cwd the
+    process happened to hold at the moment each consumer joined onto it. That is
+    not a hypothetical shape: `.env.example` ships `PERSONA_DATA_DIR=persona_data`
+    (relative) and load_dotenv() above reads it, so an operator who copied the
+    example is running on one. And persona's cwd is not fixed — main.py's
+    _ensure_valid_cwd() exists because a self-update re-exec can strand the
+    process in an unmounted directory and move it to ~ / $HOME / /tmp / /, which
+    would silently re-point "where profiles and logs live" mid-installation.
+    Anchoring at import (main.py runs _ensure_valid_cwd BEFORE anything imports
+    this module) collapses that to a single, stable answer.
+
+    An ABSOLUTE override is returned EXACTLY as given — deliberately not passed
+    through abspath/normpath, which would rewrite a trailing slash or an
+    embedded '..' and thereby relocate a path an operator spelled on purpose.
+    This is a normalisation of relative values, not a rewrite of absolute ones."""
     val = os.getenv(env)
     if val:
-        return val
+        return val if os.path.isabs(val) else os.path.abspath(val)
     return os.path.join(PERSONA_HOME, name)
 
 
