@@ -563,6 +563,68 @@ def _read_one(
     # until it holds.
     try:
         proxy_url, observed = prove_exit(credential_path=args.credential)
+        # A PROVEN exit is not necessarily a PLACED one, and the difference is
+        # only knowable HERE. `observe_exit` proves the exit on `ip` and
+        # `country` alone, so a provider payload carrying no `timezone` key
+        # yields a fully proven `Exit` whose zone is the empty string — and
+        # that empty string means the OPPOSITE thing one layer down. To
+        # `chromium_tier._launch_args` an empty zone is the honest "this venue
+        # has no exit" of the loopback differential, so it passes no flag;
+        # for a run that HAS an exit that puts the engine straight back on the
+        # HOST clock and restores the very defect PS-132 closes. One sentinel,
+        # two opposite meanings: they are separated at this boundary rather
+        # than by teaching the launch path to guess which one it holds.
+        #
+        # Refusing rather than filling the gap in is the product's own settled
+        # answer one axis over: `process.py:_profile_timezone` will not launch
+        # a profile whose proxy has no geography, because "deriving the
+        # timezone from the host would declare the operator's real location
+        # inside the tunnel". `exit_guard`'s docstring is on the same side —
+        # report and stop, never fall back. A reading taken here would not be
+        # merely thin: it would describe the CONTAINER, and the checker's free
+        # timezone-against-address cross-check would manufacture a
+        # `timezone_spoofed` verdict against a product that is correct.
+        #
+        # Raised as `ExitNotProven` so it lands in the refusal path already
+        # below rather than beside it: the caller's correct response is
+        # identical to every other unmet precondition — record nothing for
+        # this configuration — which is the reason that class is deliberately
+        # one class (see its docstring).
+        #
+        # GATED TO THE CONFIGURATION THAT ACTUALLY READS A CLOCK, because the
+        # cost of refusing is a reading the operator does not get and only
+        # ONE configuration is buying anything with it:
+        #
+        #   * `engine == CHROMIUM` — Chromium is the engine with no fallback,
+        #     which is the whole asymmetry this ticket rests on. Firefox given
+        #     no zone resolves geography from the egress IP itself
+        #     (`invisible_launch.py`: "with no timezone it discovers the egress
+        #     IP"), so on a zoneless exit it reports the EXIT's zone, its
+        #     timezone-against-address cross-check passes and the record is
+        #     good. Refusing there describes no container and prevents no leak;
+        #     it only throws a correct reading away.
+        #   * `not args.skip_browser` — the host clock can only reach a page
+        #     through a browser. A run that launches none reads no clock at
+        #     all, so there is nothing to refuse; the JSON tier reads the
+        #     EXIT's own address from the network, not this machine's.
+        #
+        # The record header does still carry a blank `exit.timezone` on those
+        # runs. That is a thinness rather than a falsehood — the observation
+        # genuinely did not carry a zone, and the header reports the
+        # observation — so it is not worth the reading it would cost. The
+        # refusal here answers "would this record describe the CONTAINER",
+        # which is a narrower question than "is this record complete".
+        if engine == CHROMIUM and not observed.timezone and (
+            not args.skip_browser
+        ):
+            raise ExitNotProven(
+                f"the exit {observed.ip} was proven ({observed.country}) but "
+                "the observation carries no timezone. Chromium pins no zone "
+                "of its own, so this reading would describe the HOST clock, "
+                "and the checker's timezone-against-address cross-check would "
+                "call the product spoofed for it (PS-132). Refusing to read "
+                "rather than record a reading of the container."
+            )
     except ExitNotProven as exc:
         print(f"REFUSED: {redact(str(exc))}", file=sys.stderr)
         print(
@@ -573,7 +635,7 @@ def _read_one(
 
     print(
         f"exit proven: {observed.ip} {observed.city}/{observed.country} "
-        f"{observed.org}",
+        f"{observed.org} {observed.timezone}",
         file=sys.stderr,
     )
 
@@ -642,6 +704,15 @@ def _read_one(
                 seed=seed,
                 engine=engine,
                 declared_machine=requested_machine,
+                # The zone of the exit THIS RUN PROVED, from the same
+                # observation the record header is built from — so the browser
+                # and the record cannot disagree about where the profile is.
+                # Chromium pins nothing of its own: without this it reports the
+                # HOST clock, and a reading behind a Warsaw exit came back
+                # UTC+0 with the checker's own timezone-vs-address cross-check
+                # calling it spoofed (PS-132). Ignored on firefox, whose engine
+                # resolves the zone from the egress IP when given none.
+                timezone=observed.timezone,
                 allow_unsandboxed=args.allow_unsandboxed_chromium,
                 layer_sink=_capture_layer,
                 install_layer=not args.no_masking_layer,
