@@ -1538,13 +1538,18 @@ def _read(argv, tmp_path, monkeypatch, exit_country="PL", expect_rc=3):
     the record and only the code moved.
     """
     import src.services.verify.checker_cli as cli
-    from src.services.verify.exit_guard import Exit
+    from src.services.verify.exit_guard import Credential, Exit, SOURCE_FILE
 
     monkeypatch.setattr(
         cli, "prove_exit",
         lambda **kw: ("socks5h://u:p@host:1080",
                       Exit(ip="91.150.1.1", country=exit_country, city="Warsaw",
-                           org="AS9141 P4", timezone="Europe/Warsaw")),
+                           org="AS9141 P4", timezone="Europe/Warsaw"),
+                      Credential(
+                          proxy_url="socks5h://u:p@host:1080",
+                          source=SOURCE_FILE,
+                          detail="used the file (/stub/test-proxy.txt)",
+                      )),
     )
     monkeypatch.setattr(cli, "read_json_tier", lambda *a, **k: [])
     target = tmp_path / "reading.json"
@@ -1642,14 +1647,19 @@ def _browser_arm(argv, tmp_path, monkeypatch, expect_rc=3):
     """
     import src.services.verify.checker_cli as cli
     import src.services.verify.browser_tier as bt
-    from src.services.verify.exit_guard import Exit
+    from src.services.verify.exit_guard import Credential, Exit, SOURCE_FILE
     from src.services.verify.masking_layer import LayerReport, absent_layer
 
     monkeypatch.setattr(
         cli, "prove_exit",
         lambda **kw: ("socks5h://u:p@host:1080",
                       Exit(ip="91.150.1.1", country="PL", city="Warsaw",
-                           org="AS9141 P4", timezone="Europe/Warsaw")),
+                           org="AS9141 P4", timezone="Europe/Warsaw"),
+                      Credential(
+                          proxy_url="socks5h://u:p@host:1080",
+                          source=SOURCE_FILE,
+                          detail="used the file (/stub/test-proxy.txt)",
+                      )),
     )
     monkeypatch.setattr(cli, "read_json_tier", lambda *a, **k: [])
 

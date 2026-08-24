@@ -45,7 +45,7 @@ from src.services.verify.checkers import (
     ENGINE_EXIT_CHECKER,
     FINGERPRINT,
 )
-from src.services.verify.exit_guard import Exit
+from src.services.verify.exit_guard import Credential, Exit, SOURCE_FILE
 from src.services.verify.matrix import READ, UNOBTAINABLE
 
 # Resolved from THIS file, never the CWD — other tests chdir into tmp dirs.
@@ -423,6 +423,11 @@ def _run_cli(tmp_path, monkeypatch, pages):
             "socks5h://u:p@host:1080",
             Exit(ip="83.6.13.226", country="PL", city="Warsaw",
                  org="AS5617 Orange Polska", timezone="Europe/Warsaw"),
+            Credential(
+                proxy_url="socks5h://u:p@host:1080",
+                source=SOURCE_FILE,
+                detail="used the file (/stub/test-proxy.txt)",
+            ),
         ),
     )
     monkeypatch.setattr(cli, "read_json_tier", lambda *a, **k: [])
@@ -496,6 +501,11 @@ def test_the_written_record_is_what_carries_the_verdict_not_just_stderr(
             "socks5h://u:p@host:1080",
             Exit(ip="83.6.13.226", country="PL", city="Warsaw",
                  org="AS5617 Orange Polska", timezone="Europe/Warsaw"),
+            Credential(
+                proxy_url="socks5h://u:p@host:1080",
+                source=SOURCE_FILE,
+                detail="used the file (/stub/test-proxy.txt)",
+            ),
         ),
     )
     monkeypatch.setattr(cli, "read_json_tier", lambda *a, **k: [])
