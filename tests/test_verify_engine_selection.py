@@ -558,12 +558,27 @@ def test_a_host_without_the_sandbox_refuses_rather_than_dying_obscurely(
     assert "--no-sandbox" in str(exc.value)
 
 
+def _a_proven_exit_carrying_no_zone() -> Exit:
+    """Proven: Polish, addressed, reached through the credential. The provider
+    simply did not carry a zone.
+
+    ONE constructor for every arm that needs this state, because the arms
+    disagree about the OUTCOME — chromium refuses, firefox and a browserless
+    run record — and that contrast means nothing if they are each free to
+    drift into describing a different exit. ``observe_exit`` proves on ``ip``
+    and ``country`` alone, so this is a genuinely reachable observation and
+    not a contrived one.
+    """
+    return Exit(ip="192.0.2.1", country="PL", city="Warsaw", org="stub")
+
+
 def _record_from_read(
     monkeypatch,
     argv: "list[str]",
     engine: str = bt.CHROMIUM,
     browser_stub=None,
-) -> dict:
+    exit_: "Exit | None" = None,
+) -> "dict | None":
     """Drive ``_read_one`` through the REAL parser, with the tiers stubbed.
 
     The point of going through ``build_parser`` rather than constructing a
@@ -576,6 +591,14 @@ def _record_from_read(
     Nothing here touches the network, an engine, or the exit: the exit is
     proven by a stub, so this asserts the RECORD ONLY and no part of it can
     be mistaken for a reading.
+
+    Asserts a record came back, naming the configuration when none did. Every
+    caller here expects one: the arms whose point is that a configuration
+    RECORDS rely on this assertion to say so, and the one arm that expects a
+    REFUSAL drives ``_read_one`` directly so it can also prove no tier ran.
+    Without the message, a refusal reaches the caller as ``None`` and surfaces
+    as ``'NoneType' object is not subscriptable`` — which reads as a broken
+    test rather than as the product having declined to read.
     """
     args = cli.build_parser().parse_args(argv)
 
@@ -584,13 +607,15 @@ def _record_from_read(
         "prove_exit",
         lambda **_k: (
             "socks5h://u:p@host:1080",
-            # A zone, because a real observation of a Polish exit carries one
-            # and a run whose exit cannot be PLACED now refuses to read at all
-            # (PS-132). A zoneless stub here would exercise the refusal rather
-            # than the record these tests are about; the refusal has its own
-            # arm below.
-            Exit(ip="192.0.2.1", country="PL", city="Warsaw", org="stub",
-                 timezone="Europe/Warsaw"),
+            # A zone by default, because a real observation of a Polish exit
+            # carries one and a chromium run whose exit cannot be PLACED now
+            # refuses to read at all (PS-132). A zoneless stub by default
+            # would exercise the refusal rather than the record most of these
+            # tests are about; the arms that want that state pass `exit_`.
+            exit_ if exit_ is not None else Exit(
+                ip="192.0.2.1", country="PL", city="Warsaw", org="stub",
+                timezone="Europe/Warsaw",
+            ),
         ),
     )
     monkeypatch.setattr(cli, "read_json_tier", lambda *_a, **_k: [])
@@ -604,10 +629,11 @@ def _record_from_read(
         browser_stub if browser_stub is not None else lambda *_a, **_k: [],
     )
 
-    record = cli._read_one(
-        args, engine, "windows", seed=4242
+    record = cli._read_one(args, engine, "windows", seed=4242)
+    assert record is not None, (
+        f"{engine} recorded NOTHING for `{' '.join(argv)}` — the run "
+        "refused a configuration this arm expects to read"
     )
-    assert record is not None
     return record
 
 
@@ -712,6 +738,61 @@ def test_a_proven_exit_with_no_timezone_refuses_rather_than_reading(
     refusal = capsys.readouterr().err
     assert "REFUSED" in refusal
     assert "timezone" in refusal
+
+
+def test_the_same_zoneless_exit_still_records_on_firefox(monkeypatch):
+    """The refusal above is CHROMIUM's, and it must not become the matrix's.
+
+    This is the exact asymmetry the whole ticket rests on, asserted from the
+    other side. Given no zone, the firefox engine resolves geography from the
+    egress IP itself (``invisible_launch.py``: "with no timezone it discovers
+    the egress IP"), so behind a zoneless exit firefox reports the EXIT's zone,
+    its timezone-against-address cross-check passes, and the record is good.
+    Nothing describes the container, so there is no leak to prevent — and a
+    refusal here would buy nothing while throwing a correct reading away.
+
+    Paired with the chromium arm this pins the actual rule — *chromium cannot
+    place itself without being told* — rather than "a zoneless exit is
+    refused", which a blanket guard would also satisfy while removing firefox
+    from the matrix on every exit whose provider omits a zone. That blanket
+    guard is precisely what this ticket's boundary forbids: raise chromium to
+    firefox, never add shared machinery that drags firefox down.
+    """
+    record = _record_from_read(
+        monkeypatch,
+        ["read", "--engine", "firefox", "--seed", "4242"],
+        engine=bt.FIREFOX,
+        exit_=_a_proven_exit_carrying_no_zone(),
+    )
+    # The header reports the OBSERVATION, which genuinely carried no zone.
+    # That is a thinness, not a falsehood, and it is not worth a lost reading.
+    assert record["exit"]["timezone"] == ""
+
+
+@pytest.mark.parametrize("engine", [bt.CHROMIUM, bt.FIREFOX])
+def test_a_zoneless_exit_still_records_when_no_browser_is_launched(
+    monkeypatch, engine
+):
+    """``--skip-browser`` reads no clock, so it has nothing to refuse.
+
+    The host clock can only reach a page through a browser. A run that
+    launches none cannot describe the container however unplaceable its exit
+    is — the JSON tier reads the exit's own address from the NETWORK, not
+    this machine's — so refusing it costs a real reading and prevents
+    nothing.
+
+    Parametrised across BOTH engines deliberately: on chromium this is the
+    narrow case where the engine that needs the guard still must not trip it,
+    which a guard written as ``engine == CHROMIUM`` alone would fail. It is
+    the arm that keeps the gate on the TIER as well as on the engine.
+    """
+    record = _record_from_read(
+        monkeypatch,
+        ["read", "--engine", engine, "--seed", "4242", "--skip-browser"],
+        engine=engine,
+        exit_=_a_proven_exit_carrying_no_zone(),
+    )
+    assert "browser" in record["skipped_tiers"]
 
 
 def test_a_credentialled_upstream_gets_persona_s_hardened_relay(monkeypatch):
