@@ -407,3 +407,143 @@ def test_rooted_driveless_override_is_returned_verbatim_for_all_eight(
         assert getattr(cfg, name) == f"/custom/{name.lower()}", (
             f"{name} was rewritten; a rooted override must come back verbatim"
         )
+
+
+# --- The CALL-TIME arm of the sweep -----------------------------------------
+#
+# ALL_UNDER_HOME above covers the eight module-level constants. _under_home has
+# ELEVEN call sites, and the other three do not resolve at import at all — they
+# call it per use. They are the sites where this ticket's change alters
+# behaviour AND where cwd-invariance does NOT hold, so they are the most
+# interesting rows in the sweep and were missing from it.
+CALL_TIME_SITES = {
+    # call-site label -> the env var that overrides it. The matching resolver
+    # callables live in _call_time_resolvers() below (lazily imported).
+    "core/settings.py:68": "PERSONA_SETTINGS_FILE",
+    "core/single_instance.py:47": "PERSONA_LOCK_FILE",
+    "api/mcp_token.py:16": "PERSONA_MCP_TOKEN_FILE",
+}
+
+
+def _call_time_resolvers():
+    """The three per-use call sites, as callables. Imported lazily so this
+    module's other tests don't pay for the api/ import graph."""
+    from src.api import mcp_token
+    from src.core import settings, single_instance
+
+    return {
+        "core/settings.py:68": settings._path,
+        "core/single_instance.py:47": single_instance._lock_path,
+        "api/mcp_token.py:16": mcp_token._path,
+    }
+
+
+def test_call_time_sites_are_absolute_on_every_call(monkeypatch, tmp_path):
+    """What IS true for the three call-time consumers: every call returns an
+    absolute path, under every override shape.
+
+    This is the honest universal the docstring now states — 'every return is
+    absolute' — as distinct from the stronger cwd-invariance that only the
+    eight import-bound constants get. Asserted per call, because that is the
+    granularity at which these sites actually consume the value.
+    """
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    shapes = {
+        "unset": lambda label: None,
+        "absolute": lambda label: str(tmp_path / "abs_file"),
+        "relative": lambda label: "rel_file",
+    }
+    for shape, spell in shapes.items():
+        monkeypatch.setenv("PERSONA_HOME", str(tmp_path / "home"))
+        for label, env in CALL_TIME_SITES.items():
+            value = spell(label)
+            if value is None:
+                monkeypatch.delenv(env, raising=False)
+            else:
+                monkeypatch.setenv(env, value)
+        for label, resolve in _call_time_resolvers().items():
+            got = resolve()
+            assert os.path.isabs(got), (
+                f"{label} not absolute under {shape} override: {got!r}"
+            )
+
+
+def test_call_time_sites_track_the_cwd_unlike_the_eight_constants(
+    monkeypatch, tmp_path
+):
+    """What is NOT true for them, pinned so the docstring cannot drift back.
+
+    Under a RELATIVE override these three re-read getcwd() on every call, so
+    they are absolute each time but resolve to a DIFFERENT absolute path once
+    the process chdirs. The eight constants, bound once at import, do not move.
+    That asymmetry is the whole of what the round-3 docstring got wrong by
+    claiming invariance universally, so it is asserted rather than described:
+    if someone 'fixes' the docstring back to a universal invariance claim, or
+    freezes these sites at import, this test says so.
+
+    single_instance.py:39-46 documents the call-time resolution deliberately —
+    freezing it would break the override contract for anything that sets the
+    env var after that module loads, the test fixtures included.
+    """
+    a = tmp_path / "cwd_a"
+    a.mkdir()
+    b = tmp_path / "cwd_b"
+    b.mkdir()
+
+    monkeypatch.setenv("PERSONA_HOME", str(tmp_path / "home"))
+    for env in CALL_TIME_SITES.values():
+        monkeypatch.setenv(env, "rel_file")
+
+    resolvers = _call_time_resolvers()
+
+    monkeypatch.chdir(a)
+    before = {label: resolve() for label, resolve in resolvers.items()}
+    monkeypatch.chdir(b)
+    after = {label: resolve() for label, resolve in resolvers.items()}
+
+    for label in resolvers:
+        # absolute on BOTH calls ...
+        assert os.path.isabs(before[label]) and os.path.isabs(after[label]), (
+            f"{label} returned a non-absolute path: "
+            f"{before[label]!r} / {after[label]!r}"
+        )
+        # ... but a DIFFERENT absolute path, because it re-resolves per call.
+        assert before[label] != after[label], (
+            f"{label} did NOT track the cwd. If this site was deliberately "
+            f"changed to bind at import, update _under_home's docstring: it "
+            f"names this site as call-time resolved. Got {before[label]!r} "
+            f"both times."
+        )
+        assert before[label] == os.path.join(str(a), "rel_file")
+        assert after[label] == os.path.join(str(b), "rel_file")
+
+
+def test_the_eight_constants_do_not_track_the_cwd(monkeypatch, tmp_path):
+    """The control for the test above: same relative shape, same chdir, and
+    the eight import-bound constants stay put. Without this, the asymmetry
+    isn't demonstrated — only half of it is.
+    """
+    a = tmp_path / "cwd_a"
+    a.mkdir()
+    b = tmp_path / "cwd_b"
+    b.mkdir()
+
+    monkeypatch.chdir(a)
+    overrides = {env: f"rel_{name}" for name, (env, _) in ALL_UNDER_HOME.items()}
+    cfg = _reload_config(
+        monkeypatch, PERSONA_HOME=str(tmp_path / "home"), **overrides
+    )
+    before = {c: getattr(cfg, c) for c in ALL_UNDER_HOME}
+
+    monkeypatch.chdir(b)
+    after = {c: getattr(cfg, c) for c in ALL_UNDER_HOME}
+
+    for const in ALL_UNDER_HOME:
+        assert before[const] == after[const], (
+            f"{const} moved when cwd moved; the eight constants are bound "
+            f"once at import and must not track the cwd"
+        )
+        assert before[const] == os.path.join(str(a), f"rel_{const}")

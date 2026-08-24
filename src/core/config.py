@@ -81,22 +81,27 @@ def _is_already_absolute(val: str, _path: ModuleType = os.path) -> bool:
 
 def _under_home(name: str, env: str) -> str:
     """Resolve a runtime path: an explicit env override wins; otherwise the
-    name is placed under PERSONA_HOME. The result is never interpreted against
-    the CALLER's cwd — see the caveat below for the one shape where "never
-    interpreted against anything" is a stronger claim than this can make.
+    name is placed under PERSONA_HOME. Every return is ABSOLUTE, with one
+    documented exception (the Windows rooted-driveless caveat below). Whether
+    that absolute value is also STABLE across a chdir depends on where the
+    caller binds it — see "WHAT THIS FUNCTION GUARANTEES, AND TO WHOM" below;
+    do not assume import-time semantics.
 
-    A RELATIVE override is anchored to the current working directory here, once,
-    at import. It used to be returned verbatim, which made every constant built
-    from it — DATA_DIR, LOG_DIR, ENGINE_DIR — resolve against whatever cwd the
-    process happened to hold at the moment each consumer joined onto it. That is
-    not a hypothetical shape: `.env.example` ships `PERSONA_DATA_DIR=persona_data`
-    (relative) and load_dotenv() above reads it, so an operator who copied the
-    example is running on one. And persona's cwd is not fixed — main.py's
+    A RELATIVE override is anchored to the current working directory at the
+    moment of the call. It used to be returned verbatim, which made every
+    constant built from it — DATA_DIR, LOG_DIR, ENGINE_DIR — resolve against
+    whatever cwd the process happened to hold at the moment each consumer
+    joined onto it. That is not a hypothetical shape: `.env.example` ships
+    `PERSONA_DATA_DIR=persona_data` (relative) and load_dotenv() above reads it,
+    so an operator who copied the example is running on one. And persona's cwd
+    is not fixed — main.py's
     _ensure_valid_cwd() exists because a self-update re-exec can strand the
     process in an unmounted directory and move it to ~ / $HOME / /tmp / /, which
     would silently re-point "where profiles and logs live" mid-installation.
-    Anchoring at import (main.py runs _ensure_valid_cwd BEFORE anything imports
-    this module) collapses that to a single, stable answer.
+    For the eight constants below, anchoring at import (main.py runs
+    _ensure_valid_cwd BEFORE anything imports this module) collapses that to a
+    single, stable answer. For the three call-time consumers it does not — see
+    below.
 
     An ABSOLUTE override is returned EXACTLY as given — deliberately not passed
     through abspath/normpath, which would rewrite a trailing slash or an
@@ -120,13 +125,37 @@ def _under_home(name: str, env: str) -> str:
     drive would relocate a path the operator spelled (that is the defect
     _is_already_absolute exists to prevent, and it turned Windows CI red once).
 
-    What IS universally true, and what a consumer may rely on, is the weaker
-    property this function actually delivers: THE VALUE DOES NOT MOVE WHEN THE
-    PROCESS'S CWD MOVES. Every constant is fixed at import and is identical
-    afterwards regardless of any later chdir. On POSIX — and on Windows for
-    every other override shape — the result is additionally absolute.
+    WHAT THIS FUNCTION GUARANTEES, AND TO WHOM. The anchoring above is
+    os.path.abspath AT THE MOMENT THIS IS CALLED, so it reads getcwd() on every
+    call. That makes cwd-invariance a property of WHERE THE RESULT IS BOUND, not
+    a property of this function, and the eleven call sites split in two:
 
-    Do not read the paragraph above as licence to re-add a cwd join: joining
+      * The EIGHT module-level constants below (config.py:153-160) are bound
+        ONCE, at import, before any chdir can happen (main.py runs
+        _ensure_valid_cwd() at L30; this module is first imported at L159). For
+        them the value genuinely does not move when the process's cwd moves.
+
+      * THREE consumers call this PER USE, not at import, and therefore get a
+        value that TRACKS THE CWD under a relative override — absolute on every
+        call, but a DIFFERENT absolute path once the process chdirs:
+            core/settings.py:68        (used at settings.py:118,128,145)
+            core/single_instance.py:47 (used at single_instance.py:73)
+            api/mcp_token.py:16        (used at mcp_token.py:21,36)
+        Measured on this branch, relative override, cwd A -> B:
+            PERSONA_SETTINGS_FILE  cwd=A -> /tmp/tmpA/myrel_settings.json
+                                   cwd=B -> /tmp/tmpB/myrel_settings.json
+        single_instance.py:39-46 already documents this call-time resolution
+        correctly, and deliberately (freezing it would break the override
+        contract for anything that sets the env var after this module loads).
+        Read that comment rather than assuming import-time semantics here.
+
+    So the honest universal — true for all eleven — is only the per-call one:
+    EVERY RETURN IS ABSOLUTE (outside the Windows rooted-driveless caveat
+    above). Invariance is the strictly stronger claim, and it is earned by the
+    eight constants' BINDING, not by this function. A call-time consumer that
+    needs a value stable across a chdir must bind it once itself.
+
+    Do not read any of the above as licence to re-add a cwd join: joining
     os.getcwd() onto one of these constants is wrong under every shape, and
     removing those joins is the point of this function. A Windows consumer that
     needs a drive-anchored value from a rooted-driveless override should say so
