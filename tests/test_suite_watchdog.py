@@ -79,12 +79,36 @@ FAST_BOUND = "3"
 OUTER_LIMIT = 120
 
 
-def _run_inner(body: str, *, bound: str = FAST_BOUND, extra_env=None):
+def _run_inner(
+    body: str,
+    *,
+    bound: str | None = FAST_BOUND,
+    extra_env=None,
+    extra_args=(),
+    header: bool = False,
+):
     """Run ``body`` as its own pytest session and return (result, elapsed).
 
     The session is deliberately a real subprocess: the behaviour under test is
     that a RUN terminates, and a run that terminates itself cannot be observed
     from inside itself.
+
+    ``header=True`` keeps ``pytest_report_header``'s output. That is what lets a
+    test assert on what the run CLAIMS about its own bound, not merely on what
+    it did — the two drifted apart in round 1 of PS-140 and the claim was the
+    half nothing covered.
+
+    It drops ``-q`` ENTIRELY rather than only ``--no-header``, which is measured
+    rather than assumed: ``-q`` alone already suppresses the header, so a
+    ``-q``-plus-something spelling would leave every header assertion below
+    trivially true against absent output. That is the always-green shape this
+    project has catalogued, and it would hide exactly the defect these tests
+    were added for.
+
+    ``bound=None`` leaves ``PERSONA_SUITE_TIMEOUT`` unset rather than setting
+    it, so a test can exercise the ``pyproject.toml`` path. Passing ``"0"``
+    would disable the bound too, but by the OTHER knob, and the whole point of
+    those tests is telling the two apart.
     """
     os.makedirs(PROBE_DIR, exist_ok=True)
     path = os.path.join(PROBE_DIR, f"wedge_{uuid.uuid4().hex}.py")
@@ -92,8 +116,15 @@ def _run_inner(body: str, *, bound: str = FAST_BOUND, extra_env=None):
         handle.write(textwrap.dedent(body))
 
     env = dict(os.environ)
-    env["PERSONA_SUITE_TIMEOUT"] = bound
+    if bound is None:
+        env.pop("PERSONA_SUITE_TIMEOUT", None)
+    else:
+        env["PERSONA_SUITE_TIMEOUT"] = bound
     env.update(extra_env or {})
+
+    # `-q` alone already suppresses the header, so keeping it here would make
+    # every header assertion below vacuous. Measured, not assumed — see above.
+    quiet_args = [] if header else ["-q", "--no-header"]
 
     started = time.monotonic()
     try:
@@ -102,7 +133,8 @@ def _run_inner(body: str, *, bound: str = FAST_BOUND, extra_env=None):
                 sys.executable, "-m", "pytest", path,
                 "-p", "no:timeout",     # the plugin is genuinely gone
                 "-p", "no:randomly",    # keep declaration order meaningful
-                "-q", "--no-header",
+                *quiet_args,
+                *extra_args,
             ],
             capture_output=True, text=True, cwd=REPO_ROOT,
             env=env, timeout=OUTER_LIMIT,
@@ -425,6 +457,34 @@ def test_a_module_that_hangs_at_import_is_bounded_too():
     _cleanup_probe_dir()
 
 
+def test_a_collect_only_run_is_bounded_too():
+    """``--collect-only`` faces the import hazard and must be bounded in it.
+
+    Round 1 returned early for this mode on the reasoning that no items will
+    run — true, and beside the point: a module that hangs at IMPORT hangs
+    collection, and collection is the ENTIRE work of a ``--collect-only`` run.
+    So the one mode whose whole job is importing was the one mode left
+    unbounded, while the header went on advertising a 120s bound. Measured
+    before the fix: this ran to an external cap with the watchdog token absent.
+
+    The arming call already labels the collection phase, so the fix was simply
+    deleting the early return.
+    """
+    result, elapsed = _run_inner(_HANGS_AT_IMPORT, extra_args=("--collect-only",))
+    output = result.stdout + result.stderr
+
+    assert result.returncode == TIMEOUT_EXIT_CODE, (
+        f"a --collect-only run hung on a module that never finished "
+        f"importing:\n{output[-2000:]}"
+    )
+    assert elapsed < 60
+    assert "collection" in output.lower(), (
+        f"the run was killed but did not name collection as the hang:\n"
+        f"{output[-2000:]}"
+    )
+    _cleanup_probe_dir()
+
+
 # --------------------------------------------------------------------------
 # 6. The escape hatch, and deferring to the real plugin
 # --------------------------------------------------------------------------
@@ -442,8 +502,104 @@ def test_a_zero_bound_disables_the_watchdog_entirely():
 
     assert result.returncode == 0, output[-2000:]
     assert BANNER_TOKEN not in output
-    # And it says so, rather than leaving "is anything bounding this?" to be
-    # answered by a hang.
+    _cleanup_probe_dir()
+
+
+# --------------------------------------------------------------------------
+# 6b. What the run CLAIMS while it is disabled — PS-140 round 2
+# --------------------------------------------------------------------------
+#
+# The test above covers that `0` DISABLES the bound. Round 1 shipped with that
+# green while the header went on printing "FALLBACK BOUND ACTIVE ... bounds each
+# item at 0s ... so a blocking test cannot hang this run" — a flat assertion,
+# false in the one state where a reader most needs it to be true.
+#
+# That is worse than the stale-hazard header this feature originally replaced:
+# an outdated warning merely nags, whereas this one REASSURES. It is also the
+# original defect wearing a new coat — `timeout = 120` likewise "worked" until
+# its environment changed and said nothing. The behaviour was right and the
+# CLAIM was wrong, so a test that only watches behaviour cannot see it. These
+# assert the claim.
+
+
+def _header_line(output: str) -> str:
+    """The ``per-test timeout:`` line alone.
+
+    Header assertions are scoped to this rather than run against the whole
+    capture, because the whole capture contains pytest's own summary and a
+    naive substring test collides with it: ``"0s" in output`` is satisfied by
+    the timing line ``1 passed in 1.10s``. A test that passes for a reason
+    other than the one it names is worthless the day the timing shifts.
+    """
+    for line in output.splitlines():
+        if "per-test timeout:" in line:
+            return line
+    return ""
+
+
+def test_a_disabled_bound_does_not_advertise_itself_as_active():
+    """The header must not promise a safety net the run has just declined to arm.
+
+    Asserts the CLAIM, not the behaviour: with the bound off, the run is
+    genuinely unbounded and the header's job is to say so. The banned strings
+    are the exact ones round 1 printed here.
+    """
+    result, _ = _run_inner(_SLOW_BUT_FINE, bound="0", header=True)
+    output = result.stdout + result.stderr
+    header = _header_line(output)
+
+    assert "per-test timeout: NONE" in header, (
+        f"a run with no bound of any kind did not report itself as unbounded:\n"
+        f"{output[-2000:]}"
+    )
+    assert "FALLBACK BOUND ACTIVE" not in header, (
+        f"the header advertised a fallback that is not armed:\n{output[-2000:]}"
+    )
+    assert "cannot hang this run" not in header, (
+        f"the header flatly promised the run cannot hang, while nothing was "
+        f"bounding it — the reassuring-header defect:\n{output[-2000:]}"
+    )
+    assert "0s" not in header, (
+        f"the header rendered a nonsensical 0s bound instead of saying "
+        f"disabled:\n{output[-2000:]}"
+    )
+    _cleanup_probe_dir()
+
+
+def test_a_disabled_bound_names_the_knob_that_disabled_it():
+    """"Not armed" is not actionable; WHICH knob turned it off is.
+
+    The two knobs have different remedies — unset an environment variable, or
+    edit ``pyproject.toml`` — so naming the wrong one sends a reader to change
+    a setting that is not the cause.
+    """
+    result, _ = _run_inner(_SLOW_BUT_FINE, bound="0", header=True)
+    header = _header_line(result.stdout + result.stderr)
+
+    assert "PERSONA_SUITE_TIMEOUT=0" in header, (
+        f"the header did not name the environment variable holding the bound "
+        f"off, so a reader cannot act on it:\n{header}"
+    )
+    _cleanup_probe_dir()
+
+
+def test_an_armed_bound_reports_the_bound_that_will_actually_fire():
+    """The advertised number is the ARMED one, not the one re-read from the ini.
+
+    Round 1's header re-derived its number independently of the watchdog. This
+    pins them together from the outside: the override is what fires, so it is
+    what the header must show.
+    """
+    result, _ = _run_inner(_SLOW_BUT_FINE, bound="37", header=True)
+    header = _header_line(result.stdout + result.stderr)
+
+    assert "FALLBACK BOUND ACTIVE" in header, (
+        f"an armed fallback did not report itself:\n{header}"
+    )
+    assert "37s" in header, (
+        f"the header advertised a different bound from the one armed, so the "
+        f"two can drift again:\n{header}"
+    )
     _cleanup_probe_dir()
 
 
@@ -528,8 +684,16 @@ def test_a_conftest_copied_away_from_the_repo_still_starts(tmp_path):
     # Deliberately NOT `-q`: the bound's status is printed by
     # pytest_report_header, and `-q` suppresses the header entirely — so a
     # quiet run cannot answer the second half of this test.
+    #
+    # `-p no:timeout` for the reason stated at the top of this module: it goes
+    # on EVERY inner run. This one was missing it and that reddened all three CI
+    # legs — CI installs pytest-timeout, so the sandbox reported the plugin
+    # ACTIVE and never reached the NONE branch this test is about, while the
+    # same test passed in a plugin-less container. A test that means one thing
+    # in CI and another locally is this ticket's own defect wearing a third
+    # coat, so the inner run is pinned to the unbounded condition everywhere.
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", "-p", "no:randomly"],
+        [sys.executable, "-m", "pytest", "-p", "no:timeout", "-p", "no:randomly"],
         capture_output=True, text=True, cwd=str(sandbox), timeout=OUTER_LIMIT,
     )
     output = result.stdout + result.stderr
@@ -579,12 +743,34 @@ def test_an_unloadable_fallback_is_reported_and_never_looks_bounded():
         assert "WILL hang" in header, header
         # The reassuring line must NOT appear: that is the whole point.
         assert "FALLBACK BOUND ACTIVE" not in header, header
+        # And it names the CAUSE, so the reader knows which of the several
+        # ways to be unbounded they are looking at.
+        assert "No module named 'tests'" in header, header
     finally:
         conftest._WATCHDOG_IMPORT_ERROR = original
 
-    # And with the import healthy, the run reports the fallback as active.
-    healthy = " ".join(conftest.pytest_report_header(_StubConfig()))
-    assert "FALLBACK BOUND ACTIVE" in healthy, healthy
+    # And with a fallback genuinely ARMED, the run reports it as active.
+    #
+    # PS-140 round 2 changed what this half is allowed to assert. It used to
+    # call the header on a bare config and expect FALLBACK-ACTIVE purely
+    # because the IMPORT was healthy — which is the re-derivation that caused
+    # the defect: an importable module is not an armed bound, and treating the
+    # two as the same fact is how the header came to advertise a bound that
+    # PERSONA_SUITE_TIMEOUT=0 had already declined to arm. So the watchdog is
+    # actually armed here, and the header is asserted against that.
+    armed = _StubConfig()
+    conftest._start_suite_watchdog(armed)
+    try:
+        assert conftest._watchdog(armed) is not None, (
+            "nothing armed on a config with no plugin and a healthy import — "
+            "this is the unbounded agent container PS-140 was filed about"
+        )
+        healthy = " ".join(conftest.pytest_report_header(armed))
+        assert "FALLBACK BOUND ACTIVE" in healthy, healthy
+    finally:
+        found = conftest._watchdog(armed)
+        if found is not None:
+            found.stop()
 
 
 # --------------------------------------------------------------------------
