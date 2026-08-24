@@ -222,6 +222,24 @@ _CONNECT_STAGE_MARKER = "SOCKS5Error"
 # eight codes is exactly that failure.
 _NO_EXIT_ALLOCATED_CODES = frozenset({0x01, 0x02})
 
+# The DESTINATION-side group, named so the third group can exist in the code
+# and not only in the comment above.
+#
+# The comment describes three groups; before this constant the code implemented
+# two, and the third — `0x07`/`0x08`, "neither of the above" — fell into the
+# `else` of a two-way branch and inherited prose written for THIS group. That
+# prose says an exit WAS allocated and the session token is not implicated.
+# For a protocol-level disagreement no exit need have been allocated at all,
+# so that is a confident claim about something the code has not established —
+# the same defect this module exists to remove, one group over.
+#
+# Membership is therefore stated POSITIVELY for both attributing arms, and
+# anything in neither set — including a reply code that could not be parsed —
+# gets the unattributed report `_connect_stage_code` already promises. A branch
+# selected by "not the other one" attributes by default; these two sets
+# attribute only on a code actually identified.
+_DESTINATION_SIDE_CODES = frozenset({0x03, 0x04, 0x05, 0x06})
+
 
 def _wrapped_class_name(text: str) -> str:
     """The exception class name ``socks_fetch`` prefixed, or ``""``.
@@ -464,14 +482,35 @@ def observe_exit(
                         "to a direct connection: re-minting the session token "
                         "is the operator's, from the host."
                     )
+                if codes and all(c in _DESTINATION_SIDE_CODES for c in codes):
+                    raise ExitNotProven(
+                        opening
+                        + "That reply is raised AFTER an exit was allocated — "
+                        "it reports the destination as unreachable or "
+                        "refusing from that exit, so the session token is not "
+                        "implicated and re-minting it would not help. "
+                        "Refusing to fall back to a direct connection: "
+                        "rotation is the operator's, from the host."
+                    )
+                # NEITHER OF THE ABOVE — and the message says only that.
+                #
+                # Reached by a protocol-level code (0x07 bad command, 0x08 bad
+                # address type) and by a reply that could not be parsed. The
+                # two arms above each rest on a code actually identified as
+                # theirs; nothing identifies these, so nothing about WHICH
+                # SIDE failed may be stated. `opening` is still fully earned —
+                # the CLASS establishes auth passed for every code — so this
+                # arm names the stage and stops, which is the "merely
+                # unhelpful" answer the module prefers to a confident wrong
+                # one. Saying "re-minting would not help" here would be the
+                # inverse of this ticket's purpose on a run where the code
+                # supports neither verdict.
                 raise ExitNotProven(
                     opening
-                    + "That reply is raised AFTER an exit was allocated — it "
-                    "reports the destination as unreachable or refusing from "
-                    "that exit, so the session token is not implicated and "
-                    "re-minting it would not help. Refusing to fall back to a "
-                    "direct connection: rotation is the operator's, from the "
-                    "host."
+                    + "That reply does not say which side failed, so neither "
+                    "the exit allocation nor the session token can be "
+                    "attributed from it. Refusing to fall back to a direct "
+                    "connection: rotation is the operator's, from the host."
                 )
             raise ExitNotProven(
                 f"could not observe the exit through the proxy — {detail}, "
