@@ -141,16 +141,37 @@ def _both_locale_channels_from_one_launch(monkeypatch, tmp_path, cfg_locale):
     monkeypatch.setattr(il.os, "_exit", lambda code: None)
     monkeypatch.setattr(il, "_raise_profile_window", lambda *a, **k: None)
 
-    cfg = {"profile_dir": str(tmp_path), "profile_name": "t", "seed": 1}
+    # profile_data_dir is supplied because _child refuses a cfg without it: it
+    # could not pin the child's scratch inside the profile, and launching on
+    # the host's shared temp dir in silence is the residue PS-129 closes. This
+    # test is about the LOCALE the launch declares, so a refusal here would
+    # stop it before it reached the engine kwargs it actually asserts on.
+    cfg = {
+        "profile_dir": str(tmp_path),
+        "profile_data_dir": str(tmp_path),
+        "profile_name": "t",
+        "seed": 1,
+    }
     if cfg_locale is not _UNSET:
         cfg["locale"] = cfg_locale
 
     old_term = signal.getsignal(signal.SIGTERM)
+    # _child runs IN THIS PROCESS here rather than across a real fork, so its
+    # scratch pin writes into pytest's own os.environ. Production never does
+    # that — the fork path has separate memory and the thread path is guarded
+    # precisely because it does not — so the temp vars are saved and restored
+    # for the same reason SIGTERM is.
+    old_temp = {k: os.environ.get(k) for k in ("TMPDIR", "TMP", "TEMP")}
     r, w = os.pipe()
     try:
         il._child(cfg, w)
     finally:
         signal.signal(signal.SIGTERM, old_term)
+        for _k, _v in old_temp.items():
+            if _v is None:
+                os.environ.pop(_k, None)
+            else:
+                os.environ[_k] = _v
     os.read(r, 65536)
     os.close(r)
 
