@@ -454,12 +454,26 @@ def test_boot_markers_strictly_shrank_and_gained_nothing(realms, flagged_realms,
     # while they shipped", and that is what this is.
     #
     # For THIS two-extension realm (native_ext + locale_ext) the honest gate is
-    # emptiness: `__pnaToStringPatched` went with PS-68, `__personaLocale` with
-    # PS-93, and neither file writes a cross-realm value channel. That is NOT a
-    # claim that `realm.bootMarkers` reads clean in a full browser — a realm
-    # carrying device_ext/measuretext_ext still legitimately reports
-    # `__personaScreenWH` / `__personaMtFactor`, which remain out of scope. The
-    # subset assertions for the full set live in tests/test_realm_guard.py.
+    # emptiness: `__pnaToStringPatched` went with PS-68 and `__personaLocale`
+    # with PS-93.
+    #
+    # THE CAVEAT THAT SAT HERE IS NOW NARROWER (PS-139), and it is tightened
+    # rather than struck out. It used to say this is NOT a claim that
+    # `realm.bootMarkers` reads clean in a full browser, because a realm
+    # carrying device_ext/measuretext_ext still legitimately reported
+    # `__personaScreenWH` / `__personaMtFactor`. Those two value channels have
+    # since moved into the non-enumerable per-realm slot, so that particular
+    # exception is gone: a realm carrying those extensions now reports no
+    # `__persona*` name either, and tests/test_realm_value_channels.py asserts
+    # exactly that on realms this file does not build.
+    #
+    # WHAT SURVIVES OF THE CAVEAT, because emptiness HERE still does not
+    # generalise: `__pnaName` is per-function and remains out of scope, and
+    # `__pnaRealm` hangs off `Object` where a detector walking
+    # getOwnPropertyNames(Object) still finds it. Neither is reachable by the
+    # GLOBAL sweep this probe runs, which is why this gate can be an equality
+    # gate at all. The subset assertions for the full set live in
+    # tests/test_realm_guard.py.
     before = set(_realm(flagged_realms, order, "page")["bootMarkers"]["markers"])
     after = set(_realm(realms, order, "page")["bootMarkers"]["markers"])
 

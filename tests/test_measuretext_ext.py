@@ -1,6 +1,8 @@
 import json
 import pathlib
 
+import pytest
+
 from src.services.browser.measuretext_ext import build_measuretext_extension
 from tests.native_mask_probe import CANVAS_STUBS, assert_reads_native
 
@@ -110,15 +112,56 @@ def test_measuring_node_is_not_resident(tmp_path):
 
 
 def test_measuretext_on_shared_recursive_registry(tmp_path):
-    # #3: the same noise repair must hold in a nested iframe and a Web Worker's
-    # OffscreenCanvas measureText. Route through the shared recursive registry;
-    # the session-constant factor is shared via top so a DOM-less realm repairs.
+    # #3: the same noise repair must hold in a fresh child frame and in a Web
+    # Worker's OffscreenCanvas measureText. Route through the shared recursive
+    # registry, and share the session-constant factor with realms that cannot
+    # calibrate for themselves.
     d = build_measuretext_extension(str(tmp_path / "mt"))
     js = (pathlib.Path(d) / "measuretext.js").read_text()
     assert "applyMtPatch" in js
     assert "__pnaInstall(SELF, applyMtPatch)" in js
     assert "G.Worker" in js and "HTMLIFrameElement" in js
-    assert "__personaMtFactor" in js
+    # THE FACTOR-SHARING HALF IS ASSERTED BY EXECUTION, in the test below.
+    #
+    # This line used to read `assert "__personaMtFactor" in js`, which MANDATED
+    # THE LEAK: the factor is the divisor that inverts the text-metrics spoof,
+    # and that assertion required it to be present as a plain enumerable global,
+    # so removing the leak turned this test red (PS-139). It was replaced rather
+    # than deleted, and deliberately NOT re-pointed at whatever substring the
+    # new implementation happens to use — a substring check passes on a build
+    # that merely renames the channel and fails on one that reworded a comment,
+    # which is sensitivity to exactly the wrong thing. See knowledge PS-11.
+
+
+def test_a_child_frame_repairs_text_from_the_factor_the_top_learned(tmp_path):
+    """The observable the assertion above used to stand in for.
+
+    A document_start child frame has no documentElement, so it CANNOT calibrate
+    the noise itself. It reports a repaired width only by reading the factor the
+    top realm learned, across a real realm boundary — which is the property
+    "shared via the registry" actually means. Driven through the real generated
+    scripts in real node realms.
+
+    The control that makes this non-vacuous (the same realm with no top, which
+    must report the RAW noised width) lives beside the probe in
+    tests/test_realm_value_channels.py, along with the leak gate that replaced
+    the substring assertion above.
+    """
+    from tests.test_realm_value_channels import (
+        REPAIRED_WIDTH, _build_scripts, _run,
+    )
+
+    got = _run(tmp_path / "realms", *_build_scripts(tmp_path / "build"))
+
+    assert got["topMeasured"] == pytest.approx(REPAIRED_WIDTH), (
+        "the top realm did not repair its own noised width, so there was no "
+        "learned factor for the child to share"
+    )
+    assert got["childMeasured"] == pytest.approx(got["topMeasured"]), (
+        "the child frame did not repair text to the same width as the top "
+        f"(child {got['childMeasured']} vs top {got['topMeasured']}) — a scanner "
+        "measuring text in the two realms reads two different machines"
+    )
 
 
 def test_no_perpetual_animation_frame_loop(tmp_path):
