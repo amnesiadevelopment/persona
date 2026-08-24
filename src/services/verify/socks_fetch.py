@@ -63,6 +63,67 @@ DEFAULT_TIMEOUT = 30.0
 MAX_BODY_BYTES = 4 * 1024 * 1024
 
 
+def _reported_failure(exc: BaseException) -> BaseException:
+    """The exception that actually DESCRIBES the failure.
+
+    Normally ``exc`` itself. The exception is PySocks, which destroys the
+    useful class on its way out and needs unwrapping.
+
+    WHY THIS EXISTS — measured, not inferred
+    ----------------------------------------
+    PySocks raises a specific class per SOCKS5 stage: ``SOCKS5AuthError`` when
+    the relay rejects the credential (``socks.py:487,503,511``) and
+    ``SOCKS5Error`` carrying a ``"{:#04x}: {}"`` reply code when the relay
+    ACCEPTED the credential and then failed to connect (``socks.py:533``).
+
+    Those classes never reach a caller. ``socksocket.connect`` wraps the
+    negotiation in ``except socket.error`` (``socks.py:810-814``) and re-raises
+    as ``GeneralProxyError``; because ``ProxyError`` subclasses ``OSError``
+    (i.e. ``socket.error``), that arm SHADOWS the ``except ProxyError`` arm at
+    ``:817``, which is unreachable for a negotiation failure. Driven through a
+    real loopback relay, all eight connect-stage reply codes AND an auth
+    rejection arrive identically as ``GeneralProxyError`` — so a caller reading
+    the class name cannot tell the two stages apart, or tell either from a
+    timeout.
+
+    The original survives as ``ProxyError.socket_err``, which PySocks sets in
+    its own ``__init__`` (``socks.py:59-64``) and documents as "Socket_err
+    contains original socket.error exception". That attribute is read here
+    rather than ``__context__``: ``socket_err`` is a value PySocks assigns
+    deliberately, while ``__context__`` is implicit interpreter state that any
+    intervening ``except`` block can replace. They happen to be the same object
+    today; only one of them is a promise.
+
+    ONLY A ``ProxyError`` INNER IS UNWRAPPED, and that condition is the whole
+    safety property rather than a tidiness preference. It is what keeps two
+    failures that are NOT a SOCKS stage from acquiring stage-shaped names:
+
+      * a negotiation TIMEOUT wraps a bare ``TimeoutError`` — reported as
+        ``GeneralProxyError``, unchanged, so it can never be read as a
+        connect-stage reply;
+      * an unreachable relay raises ``ProxyConnectionError`` wrapping
+        ``ConnectionRefusedError`` — reported unchanged, preserving it as the
+        contrast case it already is.
+
+    Both were driven through the same relay harness as the eight reply codes.
+    """
+    try:
+        import socks  # PySocks; a declared dependency (requirements.txt)
+    except ImportError:  # pragma: no cover - PySocks is a declared dependency
+        return exc
+
+    # Bounded rather than `while True`: this walks attacker-adjacent object
+    # state, and a self-referential chain must not hang the fetcher. PySocks
+    # nests one deep, so the bound is never reached in practice.
+    current = exc
+    for _ in range(4):
+        inner = getattr(current, "socket_err", None)
+        if not isinstance(inner, socks.ProxyError):
+            break
+        current = inner
+    return current
+
+
 class FetchFailed(RuntimeError):
     """A checker was not read.
 
@@ -182,7 +243,22 @@ def fetch(
     except Exception as exc:
         # Everything else is "we did not get an answer". Named with its class
         # so a timeout is distinguishable from a refusal in the record.
-        raise FetchFailed(f"{type(exc).__name__}: {exc}") from exc
+        #
+        # The class and the text are BOTH taken from `_reported_failure`, and
+        # they have to come from the same object or the pair contradicts each
+        # other. PySocks re-wraps a negotiation failure as `GeneralProxyError`
+        # and prefixes its text with "Socket error: " — so reporting the
+        # unwrapped class beside the WRAPPER's text would yield
+        # `SOCKS5Error: Socket error: 0x01: ...`, where the reply code has been
+        # pushed out of the position the reader parses it from. Unwrapping both
+        # gives `SOCKS5Error: 0x01: General SOCKS server failure`, which is the
+        # shape PySocks formatted at `socks.py:533` before the wrap.
+        #
+        # `from exc` still chains the OUTER exception, so a traceback keeps the
+        # whole path; only the reported summary is narrowed to the frame that
+        # actually describes the failure.
+        reported = _reported_failure(exc)
+        raise FetchFailed(f"{type(reported).__name__}: {reported}") from exc
     finally:
         if sock is not None:
             try:
