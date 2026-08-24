@@ -164,7 +164,13 @@ from .layer_differential import (
     DEFAULT_CONTROL_SEED as DIFF_DEFAULT_CONTROL_SEED,
     DEFAULT_SEED as DIFF_DEFAULT_SEED,
 )
-from .exit_guard import DEFAULT_CREDENTIAL_PATH, ExitNotProven, prove_exit, redact
+from .exit_guard import (
+    DEFAULT_CREDENTIAL_PATH,
+    ENVIRONMENT_CREDENTIAL_VAR,
+    ExitNotProven,
+    prove_exit,
+    redact,
+)
 from .evidence import is_inconclusive
 from .matrix import (
     ABSENT,
@@ -429,6 +435,7 @@ def _notes_for(
     allow_small_dev_shm: bool = False,
     install_layer: bool = True,
     layer_vectors: "tuple[str, ...] | None" = None,
+    credential_detail: "str | None" = None,
 ) -> "list[str]":
     notes = [
         "The GPU rows are PRODUCT rows, not environment notes. This container "
@@ -532,6 +539,22 @@ def _notes_for(
             f"record the SAME exit address: the exit rotates by design, and "
             f"two arms taken through different addresses are not a comparison."
         )
+    if credential_detail:
+        # WHICH CHANNEL THE CREDENTIAL CAME FROM (PS-145).
+        #
+        # In the record rather than only on stderr, because the question this
+        # answers is asked LATER: an operator comparing two records, or reading
+        # one taken weeks ago, cannot recover which channel it used from the
+        # terminal output of a run that has long since scrolled away. The
+        # credential arrives on two channels now, and when they disagree the
+        # run uses one of them — a record that does not say which is a record
+        # whose exit cannot be fully accounted for.
+        #
+        # Safe to write: `detail` names a PATH or a VARIABLE NAME and is
+        # already redacted at its source (`exit_guard.Credential`). The
+        # credential VALUE is never in it — that split is the reason the
+        # object carries `detail` separately from `proxy_url` at all.
+        notes.append(f"CREDENTIAL SOURCE: {credential_detail}")
     return notes
 
 
@@ -580,7 +603,9 @@ def _read_one(
     # The precondition. Everything below depends on it and nothing is recorded
     # until it holds.
     try:
-        proxy_url, observed = prove_exit(credential_path=args.credential)
+        proxy_url, observed, credential = prove_exit(
+            credential_path=args.credential
+        )
         # A PROVEN exit is not necessarily a PLACED one, and the difference is
         # only knowable HERE. `observe_exit` proves the exit on `ip` and
         # `country` alone, so a provider payload carrying no `timezone` key
@@ -656,6 +681,10 @@ def _read_one(
         f"{observed.org} {observed.timezone}",
         file=sys.stderr,
     )
+    # WHICH CHANNEL THE CREDENTIAL CAME FROM. `detail` is built from a path or
+    # a variable NAME and is already redacted — the value itself never reaches
+    # here (see `exit_guard.Credential`).
+    print(f"credential: {credential.detail}", file=sys.stderr)
 
     readings = []
     skipped_tiers: "list[str]" = []
@@ -766,6 +795,7 @@ def _read_one(
             allow_small_dev_shm=args.allow_small_dev_shm,
             install_layer=not args.no_masking_layer,
             layer_vectors=_resolve_layer_vectors(args, [engine]),
+            credential_detail=credential.detail,
         ),
     )
 
