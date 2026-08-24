@@ -6,6 +6,7 @@ import flet as ft
 
 from src.models.proxy import Proxy
 from src.ui.dialogs.proxy import open_proxy_dialog
+from src.utils.validation import PROXY_SCHEMES
 
 
 class _FakePage:
@@ -248,3 +249,55 @@ def test_preflight_invalid_input_does_not_flag_stored_proxy():
     _check_btn(dlg).on_click(None)
     time.sleep(0.05)
     assert failed == [], "a pre-flight input error must not flag the stored proxy"
+
+
+def test_type_dropdown_offers_every_accepted_scheme():
+    """The Type dropdown must be the schemes validation ACCEPTS, not a subset.
+
+    validation.PROXY_SCHEMES is the single source of truth for what persona
+    takes; a second hardcoded list in the dialog is the drift that comment
+    forbids, and here it silently narrows what an operator can even pick.
+    """
+    page = _FakePage()
+    open_proxy_dialog(page, _FakeService(), on_save=lambda *a: None)
+    dd = _control_under_label(page.shown, "Type", ft.Dropdown)
+    assert {o.key for o in dd.options} == set(PROXY_SCHEMES)
+
+
+def test_editing_a_socks5h_proxy_keeps_its_scheme():
+    """Opening a stored socks5h proxy and saving must not rewrite it to socks5.
+
+    socks5h is an accepted, meaningful stored scheme — exit_guard reads the
+    credential back in socks5h form, and the Chromium seam normalises it to
+    socks5 on its own. A dropdown that can't hold the value silently downgraded
+    the record on a save the operator made for an unrelated field.
+    """
+    page = _FakePage()
+    saved = []
+    px = Proxy("dc", "socks5h://u:p@1.2.3.4:1080")
+    open_proxy_dialog(
+        page,
+        _FakeService(),
+        on_save=lambda name, url, rot: saved.append((name, url, rot)),
+        proxy=px,
+    )
+    dlg = page.shown
+    assert _control_under_label(dlg, "Type", ft.Dropdown).value == "socks5h"
+    dlg.actions[1].on_click(None)
+    assert saved == [("dc", "socks5h://u:p@1.2.3.4:1080", "")]
+
+
+def test_paste_of_a_socks4_line_selects_socks4():
+    """A pasted provider line's scheme must survive into the Type dropdown.
+
+    An unrecognised scheme left the dropdown on its socks5 default, so a socks4
+    line pasted into a fresh dialog saved as socks5 — a proxy that cannot
+    connect, reported as if the paste had been understood.
+    """
+    page = _FakePage()
+    open_proxy_dialog(page, _FakeService(), on_save=lambda *a: None)
+    dlg = page.shown
+    paste = _field(dlg, "Paste proxy string")
+    paste.value = "socks4://198.51.100.7:1080"
+    paste.on_change(None)
+    assert _control_under_label(dlg, "Type", ft.Dropdown).value == "socks4"

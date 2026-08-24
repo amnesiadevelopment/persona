@@ -8,7 +8,7 @@ from ...interfaces.protocols import IProxyService
 from ...models.proxy import Proxy
 from ...utils.proxy_parse import parse_proxy_line
 from ...utils.proxy_parser import build_proxy_url, split_proxy_url
-from ...utils.validation import validate_proxy_format
+from ...utils.validation import PROXY_SCHEMES, validate_proxy_format
 from ..flags import flag_path
 from ..theme.colors import COLORS
 from ..theme.styles import (
@@ -20,7 +20,22 @@ from ..theme.styles import (
     section_header,
 )
 
-_SCHEMES = ["socks5", "http", "https"]
+#: The Type dropdown IS validation.PROXY_SCHEMES — derived, never retyped.
+#: That tuple is the single source of truth for what persona accepts, and this
+#: was a second list that had drifted below it: it offered three of the six, so
+#: socks4/socks4h/socks5h could be stored (by the API, by a hand-edited
+#: proxies.json, by an import) and validated and launched, but never SELECTED
+#: here. Two silent rewrites followed from that. Opening such a proxy to edit an
+#: unrelated field fell the dropdown back to "socks5" and saved the downgrade —
+#: for socks4 a proxy that can no longer connect, for socks5h a change of who
+#: resolves the hostname on every path that reads the credential back
+#: (verify.exit_guard wants socks5h; the Chromium seam already normalises it to
+#: socks5 by itself, so the dropdown had nothing to protect). And a pasted
+#: provider line whose scheme was not in the three left the dropdown on its
+#: default, so `socks4://...` was accepted, understood by the parser, and saved
+#: as socks5. Deriving here means adding a scheme to PROXY_SCHEMES still needs
+#: no second edit, which is exactly what its own comment promises.
+_SCHEMES = list(PROXY_SCHEMES)
 
 
 def _flag_control(country_code: str) -> ft.Control:
