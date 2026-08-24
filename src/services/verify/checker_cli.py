@@ -736,6 +736,7 @@ def _read_one(
                 layer_sink=_capture_layer,
                 install_layer=not args.no_masking_layer,
                 layer_vectors=_resolve_layer_vectors(args, [engine]),
+                include_geo=getattr(args, "match_product_geo", False),
             )
         )
         print(
@@ -1207,6 +1208,22 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "read only the browser tier. The JSON-tier rows are still RECORDED "
             "as UNOBTAINABLE, exactly as with --skip-browser"
+        ),
+    )
+    rd.add_argument(
+        "--match-product-geo", action="store_true",
+        help=(
+            "install the geolocation extension the PRODUCT installs, closing a "
+            "measured tier-versus-product gap. persona's launch path builds "
+            "build_geo_extension for EVERY proxied profile (process.py:547) — "
+            "in DENY mode when the exit carries no usable coordinates, so "
+            "getCurrentPosition cannot fall through to the real host coords "
+            "while locale and timezone already name the exit country. This "
+            "tier installed it for NONE of them, and every reading in this "
+            "campaign is proxied. Off by default so an existing reading cannot "
+            "move underneath a caller that did not ask; the record names 'geo' "
+            "in masking_layer.installed either way, so which surface was read "
+            "is never inferred. Chromium only"
         ),
     )
     rd.set_defaults(func=_cmd_read)
