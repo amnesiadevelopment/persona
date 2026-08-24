@@ -1,4 +1,6 @@
+import glob
 import json
+import logging
 import os
 import pathlib
 import shutil
@@ -1046,9 +1048,73 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
         # logged-in profiles in a recoverable store would be the interface
         # claiming a protection the code does not deliver.
         self._purge_trash_for_wipe()
-        if names:
-            logger.info("Wiped all %d profiles", len(names))
+        # Clear the file log LAST, after every step above has finished logging —
+        # the destruction path itself names profiles as it goes, so anything
+        # cleared earlier would simply be re-written by the lines that follow.
+        # LOG_DIR is a SIBLING of DATA_DIR, so nothing above reaches it: the
+        # wipe destroys the profiles and leaves a file naming every one of them,
+        # which the Activity Log then reads straight back out (src/ui/state.py
+        # _load_recent_log_lines). SESSION_MARKER DECISION: truncating today's
+        # file also destroys the marker the seed scans backwards for, so we
+        # RE-EMIT it — without it the seed silently falls through to
+        # raw[-limit:], which is correct only by accident. Re-emitting keeps the
+        # anchor the marker exists to provide, so the post-wipe Activity Log
+        # starts unambiguously at the wipe.
+        self._clear_logs_for_wipe()
+        # Logged AFTER the clear so the wipe leaves a record of itself in the
+        # fresh file (this line names no profile). Unconditional, unlike the old
+        # `if names`, because a wipe with nothing live still purges the trash.
+        logger.info("Wiped all %d profiles", len(names))
         return len(names)
+
+    def _clear_logs_for_wipe(self) -> None:
+        """Destroy the profile names the file log holds in cleartext.
+
+        Two shapes, because one file is special: the live FileHandler holds
+        today's file open, so it is TRUNCATED IN PLACE (the handler keeps
+        writing to the same open descriptor — tearing logging down and
+        rebuilding it would risk losing the handler or minting a second file).
+        Older `persona_*.log` day-files are unlinked outright; a long-lived
+        install accumulates every name it has ever run, and a planted old
+        day-file otherwise survives the wipe with its names intact.
+
+        Best-effort and NON-FATAL, mirroring _purge_trash_for_wipe: a wipe that
+        raised because a log file was locked (Windows) would be worse than the
+        residue it failed to clear. Each file is handled independently so one
+        locked file cannot stop the rest."""
+        try:
+            # Resolved at CALL time, not frozen at import: LOG_DIR tracks the
+            # cwd under a relative PERSONA_LOG_DIR override, exactly as
+            # trash_data_root() re-derives DATA_DIR's parent per call.
+            from ...core import config
+            from ...core.logging import emit_session_marker
+
+            log_dir = config.LOG_DIR
+            # The files the live handler holds open — the ones we must truncate
+            # rather than unlink, asked of logging itself instead of guessed
+            # from today's date (a session running over midnight still holds
+            # yesterday's file open).
+            held_open = set()
+            for handler in list(logging.getLogger("persona").handlers):
+                filename = getattr(handler, "baseFilename", None)
+                if filename:
+                    held_open.add(os.path.realpath(filename))
+
+            truncated_any = False
+            for path in glob.glob(os.path.join(log_dir, "persona_*.log")):
+                try:
+                    if os.path.realpath(path) in held_open:
+                        os.truncate(path, 0)
+                        truncated_any = True
+                    else:
+                        os.remove(path)
+                except OSError:
+                    logger.exception("Could not clear log file during the wipe")
+
+            if truncated_any:
+                emit_session_marker(logging.getLogger("persona"))
+        except Exception:
+            logger.exception("Could not clear the logs during the wipe")
 
     def _purge_trash_for_wipe(self) -> None:
         try:
