@@ -637,6 +637,7 @@ def _read_page_texts_chromium(
     allow_small_dev_shm: bool = False,
     layer_sink: "Callable[[LayerReport], None] | None" = None,
     install_layer: bool = True,
+    include_geo: bool = False,
 ) -> "dict[str, dict]":
     """The Chromium half: the same loop, behind a session that sets itself up.
 
@@ -668,6 +669,7 @@ def _read_page_texts_chromium(
             allow_unsandboxed=allow_unsandboxed,
             allow_small_dev_shm=allow_small_dev_shm,
             install_layer=install_layer,
+            include_geo=include_geo,
         )
     except ChromiumUnavailable as exc:
         raise EngineUnavailable(str(exc)) from exc
@@ -707,6 +709,7 @@ def read_page_texts(
     layer_sink: "Callable[[LayerReport], None] | None" = None,
     install_layer: bool = True,
     layer_vectors: "tuple[str, ...] | None" = None,
+    include_geo: bool = False,
 ) -> "dict[str, dict]":
     """Load every browser-tier checker once and return its visible text.
 
@@ -761,6 +764,7 @@ def read_page_texts(
             sleep=sleep,
             layer_sink=layer_sink,
             install_layer=install_layer,
+            include_geo=include_geo,
         )
     return _read_page_texts_firefox(
         proxy_url,
@@ -845,6 +849,7 @@ def read_browser_tier(
     layer_sink: "Callable[[LayerReport], None] | None" = None,
     install_layer: bool = True,
     layer_vectors: "tuple[str, ...] | None" = None,
+    include_geo: bool = False,
 ) -> "list[Reading]":
     """The whole browser tier: launch, INSTALL THE LAYER, load, settle, read.
 
@@ -885,6 +890,7 @@ def read_browser_tier(
             layer_sink=layer_sink,
             install_layer=install_layer,
             layer_vectors=layer_vectors,
+            include_geo=include_geo,
         )
     except EngineUnavailable as exc:
         if layer_sink is not None:
