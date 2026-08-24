@@ -8,6 +8,18 @@ from datetime import datetime
 SESSION_MARKER = "========== persona session started"
 
 
+def emit_session_marker(logger: logging.Logger) -> None:
+    """Write the once-per-session anchor line the Activity Log seed scans back
+    for. Extracted so the panic wipe can re-emit it after truncating the file:
+    the seed's contract is "show only this session", and a file with no marker
+    at all only works by falling through to raw[-limit:]."""
+    try:
+        from ..services.app_update.updater import APP_VERSION as version
+    except Exception:
+        version = "unknown"
+    logger.info("%s %s ==========", SESSION_MARKER, version)
+
+
 def setup_logging(
     log_dir: str = "logs",
     log_level: int = logging.INFO,
@@ -63,11 +75,7 @@ def setup_logging(
     logger.addHandler(file_handler)
     logger.addHandler(console_handler)
 
-    try:
-        from ..services.app_update.updater import APP_VERSION as version
-    except Exception:
-        version = "unknown"
-    logger.info("%s %s ==========", SESSION_MARKER, version)
+    emit_session_marker(logger)
 
     return logger
 
