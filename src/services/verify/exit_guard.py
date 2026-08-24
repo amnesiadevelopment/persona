@@ -163,10 +163,26 @@ def redact(text: str) -> str:
 #
 # A SOCKS5 connection is negotiated in two stages, and they fail for opposite
 # reasons. PySocks (1.7.1, pinned `PySocks>=1.7` in `requirements.txt`) raises
-# a DIFFERENT class at each, and `socks_fetch.fetch` wraps an unknown exception
-# as `f"{type(exc).__name__}: {exc}"` — so the class name survives into the
-# `FetchFailed` text this module already receives, and the stage is readable
-# here without touching the fetcher:
+# a DIFFERENT class at each, and `socks_fetch.fetch` wraps the failure as
+# `f"{type(exc).__name__}: {exc}"` — so the class name arrives in the
+# `FetchFailed` text this module receives, and the stage is readable here:
+#
+# ⚠️ THAT LAST CLAUSE ONCE READ "without touching the fetcher", AND IT WAS
+# FALSE. It is recorded here because it cost three shipped rounds. PySocks
+# raises the per-stage class at the sites named below, and then DESTROYS it on
+# the way out: `socksocket.connect` catches the negotiation in
+# `except socket.error` (`socks.py:810-814`) and re-raises as
+# `GeneralProxyError`, an arm that shadows the `except ProxyError` arm at
+# `:817` because `ProxyError` subclasses `OSError`. Driven through a real
+# relay, all eight connect-stage reply codes AND an auth rejection arrived
+# here as `GeneralProxyError`, so this predicate matched NOTHING and the
+# generic wording below was what an operator actually saw.
+#
+# The distinction reaches this module only because `socks_fetch` now recovers
+# it — see `_reported_failure` there, which unwraps `ProxyError.socket_err`.
+# This module reads a class name; it does not establish that the class name is
+# the right one. Reading the code that RAISES tells you what is raised, not
+# what arrives.
 #
 #   * AUTH     — `SOCKS5AuthError`: the relay rejected the credential itself.
 #   * CONNECT  — `SOCKS5Error`, message formatted `"{:#04x}: {}"`: the relay

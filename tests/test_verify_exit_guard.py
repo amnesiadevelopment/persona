@@ -412,20 +412,38 @@ def test_every_provider_answering_without_a_country_refuses_the_run(
 # identically to a proxy which is simply down. An operator seeing it chases
 # the wrong half.
 #
-# The stage is knowable without a network and without touching the fetcher:
-# PySocks raises a different class at each stage and `socks_fetch.fetch` wraps
-# it preserving the class name, so `SOCKS5Error` (connect) vs
-# `SOCKS5AuthError` (auth) vs `ProxyConnectionError` (relay unreachable)
-# already arrives here inside the `FetchFailed` text.
+# ⚠️ THE PREMISE THIS BLOCK ONCE CARRIED WAS FALSE, AND IT IS WHY THE ROWS
+# BELOW ARE NOT SUFFICIENT ON THEIR OWN.
 #
-# Every row below drives that text through the guard offline. The contrast
-# rows are the point: a message that fires on EVERY failure distinguishes
-# nothing, which is the defect being fixed.
+# It used to read: "the stage is knowable without a network and without
+# touching the fetcher — PySocks raises a different class at each stage and
+# `socks_fetch.fetch` wraps it preserving the class name". The first half is
+# true at the RAISE SITE. The second half is not true at the CALLER, and the
+# difference shipped a dead feature three times.
+#
+# `socksocket.connect` wraps the whole negotiation in `except socket.error`
+# (socks.py:810-814) and re-raises as `GeneralProxyError`. `ProxyError`
+# subclasses `OSError`, so that arm SHADOWS the `except ProxyError` arm at
+# :817. Driven through a real relay, all eight connect-stage reply codes AND
+# an auth rejection arrived identically as `GeneralProxyError` — the class
+# name was destroyed one frame before `socks_fetch` ever saw it.
+#
+# So `socks_fetch` now unwraps `ProxyError.socket_err` (socks.py:59-64) to
+# recover the class that describes the failure. See `_reported_failure`.
+#
+# WHAT THAT MEANS FOR THE ROWS IN THIS SECTION. They drive a hand-authored
+# `FetchFailed` text through the guard, so they pin the guard's WORDING GIVEN
+# A TEXT — and they cannot establish that the text ever occurs. Every one of
+# them passed while the feature was unreachable in production. They are kept
+# because message-shape coverage is genuinely cheap here and the wording rules
+# are fiddly, but the question "does the branch fire at all?" is answered ONLY
+# by the real-relay section further down, which drives real PySocks through
+# real `socks_fetch`. Do not let these stand in for it.
 
-# What PySocks 1.7.1 actually raises at the connect stage — the message is
-# formatted `"{:#04x}: {}"` at socks.py:533, and `socks_fetch.fetch` prefixes
-# the class name at socks_fetch.py:185. Re-confirmed against the installed
-# wheel, not transcribed.
+# What PySocks 1.7.1 raises at the connect stage, AFTER `socks_fetch` unwraps
+# the `GeneralProxyError` PySocks re-wrapped it in — the message is formatted
+# `"{:#04x}: {}"` at socks.py:533. Confirmed against a driven relay, not
+# transcribed from the wheel source (which is what got this wrong three times).
 _CONNECT_STAGE_TEXT = "SOCKS5Error: 0x01: General SOCKS server failure"
 _AUTH_STAGE_TEXT = "SOCKS5AuthError: SOCKS5 authentication failed"
 
@@ -789,3 +807,213 @@ def test_the_cli_refuses_with_exit_code_2_when_the_exit_is_unproven(
     assert code == 2
     assert not out.exists(), "a refused run must not write a record"
     assert "REFUSED" in capsys.readouterr().err
+
+
+# --- THE ROWS THAT DECIDE THIS TICKET: a REAL SOCKS5 relay ------------------
+#
+# Everything above this line drives a `FetchFailed` string the test author
+# wrote. Everything below drives a real PySocks negotiation against a real
+# loopback relay, through real `socks_fetch`, into real `exit_guard`. Nothing
+# here is monkeypatched.
+#
+# WHY THE SPLIT IS LOAD-BEARING, and not merely thorough. PS-126 shipped three
+# times and failed QA three times. Every round's tests passed. The feature was
+# unreachable on every real run, because PySocks re-wraps a negotiation failure
+# as `GeneralProxyError` (socks.py:810-814) and the hand-authored text
+# "SOCKS5Error: 0x01: ..." that every test injected never occurred in
+# production. A suite that only ever sees text it wrote itself cannot detect
+# that — it is the exact failure mode the project's own PS-11 article names.
+#
+# So these rows assert on what HAPPENS. They would all fail if the unwrapping
+# in `socks_fetch._reported_failure` were removed, while every row above would
+# still pass — which is precisely the asymmetry that let the defect through.
+
+from tests.socks5_relay import (  # noqa: E402
+    MODE_AUTH_FAIL,
+    MODE_HANG,
+    Socks5Relay,
+)
+
+_GENERIC_WORDING = "may be refused, timed out, or the credential unusable"
+
+
+def _observe_through_relay(relay, timeout=5):
+    """Run the guard against a real relay and return the refusal message."""
+    with pytest.raises(ExitNotProven) as caught:
+        observe_exit(
+            relay.proxy_url,
+            timeout=timeout,
+            urls=("https://ipinfo.io/json",),
+        )
+    return str(caught.value)
+
+
+@pytest.mark.parametrize("reply_code", [0x01, 0x02])
+def test_a_real_relay_refusing_to_allocate_names_the_session_token(reply_code):
+    """THE ACCEPTANCE CRITERION. Measured, not injected.
+
+    A relay that completes RFC1929 auth and then answers 0x01/0x02 IS the
+    dead-sticky-token shape: authentication succeeded, allocation failed. QA
+    drove exactly this and got the generic wording on 0 of 8 codes. This row
+    is that reproduction, inverted into a check.
+    """
+    with Socks5Relay(reply_code=reply_code) as relay:
+        message = _observe_through_relay(relay)
+
+    lowered = message.lower()
+    assert "authenticated" in lowered
+    assert "allocate an exit" in lowered
+    assert "sticky session token" in lowered
+    assert f"{reply_code:#04x}" in lowered
+    # The wording this ticket exists to remove, gone on the path it was
+    # measured on.
+    assert _GENERIC_WORDING not in lowered
+
+
+@pytest.mark.parametrize("reply_code", [0x03, 0x04, 0x05, 0x06])
+def test_a_real_destination_side_reply_does_not_blame_the_token(reply_code):
+    """An exit WAS allocated, so the token is not implicated — on a real run.
+
+    The distinction has to survive the trip, not just exist in the guard: if
+    the class were still being destroyed, every one of these would take the
+    generic arm instead and this row would fail on the message text.
+    """
+    with Socks5Relay(reply_code=reply_code) as relay:
+        message = _observe_through_relay(relay)
+
+    lowered = message.lower()
+    assert "authenticated" in lowered
+    assert f"{reply_code:#04x}" in lowered
+    assert "after an exit was allocated" in lowered
+    assert "sticky session token" not in lowered
+    assert _GENERIC_WORDING not in lowered
+
+
+@pytest.mark.parametrize("reply_code", [0x07, 0x08])
+def test_a_real_protocol_level_reply_attributes_neither_side(reply_code):
+    """The group whose correct behaviour is to say LESS, driven for real.
+
+    A group that withholds attribution is the easiest one to get wrong by
+    accident, because "said nothing" and "was never reached" look identical
+    from a green suite. This asserts it was reached AND said less.
+    """
+    with Socks5Relay(reply_code=reply_code) as relay:
+        message = _observe_through_relay(relay)
+
+    lowered = message.lower()
+    # It was genuinely reached: the stage and the code are reported.
+    assert "authenticated" in lowered
+    assert f"{reply_code:#04x}" in lowered
+    assert "does not say which side failed" in lowered
+    # And neither neighbour's cause was borrowed.
+    assert "sticky session token" not in lowered
+    assert "after an exit was allocated" not in lowered
+    assert _GENERIC_WORDING not in lowered
+
+
+def test_a_real_auth_rejection_is_not_reported_as_a_dead_session_token():
+    """The stage distinction, measured at the OTHER stage.
+
+    This is the row that would catch an over-eager fix. PySocks reports an auth
+    rejection with the SAME outer class as a connect failure
+    (`GeneralProxyError`), so anything keying on the outer class would report a
+    REJECTED credential as "authentication succeeded" — actively false about
+    the one thing the message claims to have observed.
+    """
+    with Socks5Relay(mode=MODE_AUTH_FAIL) as relay:
+        message = _observe_through_relay(relay)
+
+    lowered = message.lower()
+    assert "authenticated this run" not in lowered
+    assert "sticky session token" not in lowered
+    # An auth rejection genuinely IS "the credential unusable".
+    assert _GENERIC_WORDING in lowered
+
+
+def test_a_real_negotiation_timeout_does_not_acquire_connect_stage_wording():
+    """The contrast that a class-name shortcut would break.
+
+    A timeout arrives as `GeneralProxyError` too — same outer class as all
+    eight reply codes. Keying on that class would fire the stale-token wording
+    on a timeout, re-creating the over-claiming defect that failed rounds 1
+    and 2. The unwrapping only descends into a `ProxyError` inner, and a
+    timeout's inner is a bare `TimeoutError`, so it stops.
+    """
+    with Socks5Relay(mode=MODE_HANG) as relay:
+        message = _observe_through_relay(relay, timeout=1)
+
+    lowered = message.lower()
+    assert "authenticated" not in lowered
+    assert "sticky session token" not in lowered
+    assert _GENERIC_WORDING in lowered
+
+
+def test_a_real_dead_relay_keeps_the_generic_wording():
+    """The contrast case the ticket names, driven rather than injected.
+
+    Nothing is listening on port 1, so no stage was reached. `socks_fetch`
+    must not promote `ProxyConnectionError`'s inner `ConnectionRefusedError`
+    into anything stage-shaped.
+    """
+    with pytest.raises(ExitNotProven) as caught:
+        observe_exit(
+            "socks5h://127.0.0.1:1",
+            timeout=5,
+            urls=("https://ipinfo.io/json",),
+        )
+
+    lowered = str(caught.value).lower()
+    assert "authenticated" not in lowered
+    assert "sticky session token" not in lowered
+    assert _GENERIC_WORDING in lowered
+
+
+def test_a_real_connect_stage_failure_still_raises_ExitNotProven():
+    """Control flow is unchanged on the measured path too.
+
+    The `ExitNotProven` docstring is explicit that there is ONE class on
+    purpose and the MESSAGE distinguishes. A real relay must not be the thing
+    that leaks a PySocks exception to the caller.
+    """
+    with Socks5Relay(reply_code=0x01) as relay:
+        with pytest.raises(ExitNotProven) as caught:
+            observe_exit(
+                relay.proxy_url,
+                timeout=5,
+                urls=("https://ipinfo.io/json",),
+            )
+    assert type(caught.value) is ExitNotProven
+
+
+def test_a_real_connect_stage_failure_carries_no_credential():
+    """Credential-safety, asserted on the output of a REAL run.
+
+    The relay is reached through a URL carrying a credential-shaped
+    user/password, so this drives a real credential through the whole path —
+    PySocks, `socks_fetch`, the new branch — and asserts on what comes out.
+
+    WHAT THIS ROW DOES AND DOES NOT PROVE, stated because the difference is
+    easy to assert past. It does NOT assert the `***:***@` marker, and the
+    absence of that assertion is deliberate rather than an omission: PySocks
+    formats a connect-stage failure as `"{:#04x}: {}"` (socks.py:533) and puts
+    NO proxy URL in it, so on a real run there is nothing here for `redact` to
+    rewrite and demanding the marker would be demanding evidence of a
+    substitution that correctly never happened. What it proves is the property
+    that actually matters — the credential does not reach the message — and it
+    proves it against the text PySocks genuinely produces rather than against
+    a hand-built string.
+
+    That `redact` DOES rewrite a URL when one is present is a separate claim,
+    pinned separately by `test_the_connect_stage_message_carries_no_credential`
+    (which injects a URL-bearing text) and by `test_redact_strips_credentials_
+    from_a_proxy_url`. The two rows are complementary: one covers the path a
+    real failure takes, the other covers the transformation.
+    """
+    with Socks5Relay(reply_code=0x01) as relay:
+        message = _observe_through_relay(relay)
+
+    # It really did take the new branch...
+    assert "sticky session token" in message.lower()
+    # ...and neither half of the credential survived into it.
+    assert Socks5Relay.PASSWORD not in message
+    assert Socks5Relay.USERNAME not in message
