@@ -336,6 +336,25 @@ def _unread_for_unlinkability(side: Any) -> bool:
     predicate, and no :data:`probes.INDEPENDENT` probe has a legitimate
     ``null`` reading — an identity vector that reads ``null`` HAS no identity
     to compare, whatever the reason.
+
+    **That last clause now has a CONTEMPLATED exception** (PS-135).
+    ``canvas.readback`` is :data:`probes.INDEPENDENT` and declares BOTH realms,
+    and its own record describes a worker realm that cannot give a 2D context
+    as a reachable state — five paths in that expression return ``null``. No
+    baseline records one today (both engines measured read a real worker digest
+    on every seed), so the property above still HOLDS as written of the
+    committed artifacts; what changed is that it is no longer guaranteed by the
+    inventory's shape. Read it as an invariant that is currently true rather
+    than one that cannot be violated.
+
+    This predicate is exactly why that is survivable, and the reason it must
+    not be narrowed: such a ``null`` lands here, reads as UNREAD, and the pair
+    is reported INCONCLUSIVE. What it costs is the VERDICT — one inconclusive
+    entry takes the whole two-profile gate to
+    :data:`behaviour.CANNOT_RUN` — and what it does NOT cost is a false
+    COLLIDING, which is the failure that would actually mislead. A withheld
+    verdict is the correct outcome for a vector nobody read; pinned by
+    ``test_a_worker_realm_null_on_this_probe_degrades_the_unlinkability_gate``.
     """
     if _unread(side):
         return True
