@@ -556,7 +556,21 @@ def test_a_dead_tunnels_trace_says_WHAT_went_wrong_not_only_its_CLASS(
         # ...and the MESSAGE is too, which is the half that identifies it.
         # On the old code `reason` was a bare identifier with no colon.
         assert ": " in reason, f"message discarded, got bare class: {reason!r}"
-        assert "reset by peer" in reason.lower() or "[errno" in reason.lower()
+        # ...specifically the OS's OWN account of the reset — the half a class
+        # name cannot produce.
+        #
+        # ⚠️ ASSERTED ON THE ERRNO TAG, NOT ON THE PROSE, because the prose is
+        # platform-specific and the first version of this line pinned POSIX's:
+        # `[Errno 104] Connection reset by peer` on Linux/macOS versus
+        # `[WinError 64] The specified network name is no longer available` on
+        # Windows. Same event, same fix, different words — so wording is the
+        # wrong thing to hold the fix to. What must be true everywhere is that
+        # an errno-tagged detail reached the trace at all.
+        lowered = reason.lower()
+        assert "[errno" in lowered or "[winerror" in lowered, (
+            f"no OS-level detail in the reason, so the message half of the "
+            f"fix is not proven here: {reason!r}"
+        )
     finally:
         client.close()
         upstream.join(timeout=5)
