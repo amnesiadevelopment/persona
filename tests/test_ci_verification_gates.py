@@ -1844,21 +1844,43 @@ def _pywin32_bundle(tmp_path: Path) -> Path:
     return tmp_path / "build" / "windows"
 
 
-def test_falsify_the_unfixed_bundle_cannot_import_pywintypes(tmp_path) -> None:
-    """RED FIRST — the precondition, established rather than assumed.
+def _resolve_from(root: Path, module: str):
+    """Ask the import system to RESOLVE `module` with `root` as the only path.
 
-    On the shape that shipped, `pywintypes` is NOT resolvable from the
+    This is what both consumers actually do — the app via PYTHONPATH, the smoke
+    check via `sys.path[:0]` under `-S` — so resolution against a single
+    directory is the honest question, not "does a file exist somewhere".
+    `.pyd` is appended to the extension suffixes because the HOST running this
+    test is Linux, whose importer does not recognise Windows extensions; that
+    is a property of the test host, not of the bundle.
+    """
+    import importlib.machinery as machinery
+
+    finder = machinery.FileFinder(
+        str(root),
+        (machinery.ExtensionFileLoader, [*machinery.EXTENSION_SUFFIXES, ".pyd"]),
+        (machinery.SourceFileLoader, machinery.SOURCE_SUFFIXES),
+        (machinery.SourcelessFileLoader, machinery.BYTECODE_SUFFIXES),
+    )
+    return finder.find_spec(module)
+
+
+def test_falsify_the_unfixed_bundle_cannot_import_pywintypes(tmp_path) -> None:
+    """RED FIRST — the precondition, established by RESOLUTION rather than shape.
+
+    On the shape that shipped, `pywintypes` is not RESOLVABLE from the
     site-packages root, which is the only directory either consumer puts on the
-    path. This is the exact state the smoke check reported as
-    "No module named 'pywintypes'".
+    path. Asking the import system — instead of asserting where files sit — is
+    what makes this test prove the thing its name claims. This is the exact
+    state the smoke check reported as "No module named 'pywintypes'".
     """
     root = _pywin32_bundle(tmp_path)
     sp = root / "site-packages"
 
     assert (sp / "win32" / "lib" / "pywintypes.py").is_file(), "fixture is wrong"
-    assert not (sp / "pywintypes.py").exists(), (
-        "the unfixed bundle already has pywintypes at the importable level — "
-        "this test would then prove nothing"
+    assert _resolve_from(sp, "pywintypes") is None, (
+        "the unfixed bundle already resolves pywintypes from the site-packages "
+        "root — this test would then prove nothing"
     )
 
 
@@ -1934,6 +1956,154 @@ def test_flatten_refuses_a_pywin32_it_cannot_make_importable(tmp_path) -> None:
 
     rc, out = _run_flatten(tmp_path / "build" / "windows")
     assert rc != 0, f"a present-but-unflattenable pywin32 was accepted: {out}"
+    assert "refusing to ship" in out.lower()
+
+
+# --------------------------------------------------------------------------
+# PS-168 rework: the verification must be IDENTITY-shaped, not PRESENCE-shaped.
+#
+# The first version of this script asked "does a file with this name exist?",
+# which is satisfied by the very file its collision branch had just refused to
+# overwrite. A foreign pywintypes.py at the root produced: 0 files copied, both
+# sentinels "verified", exit 0 — success reported over a bundle that imports an
+# ImportError bomb as `pywintypes`. That is this ticket's OWN named failure
+# mode: "a fix that makes the check pass without pywintypes actually importing
+# from the bundle". These pin it shut.
+# --------------------------------------------------------------------------
+
+
+def test_a_foreign_pywintypes_squatting_the_name_is_fatal(tmp_path) -> None:
+    """The demonstrated exploit. Presence-shaped verification passed this.
+
+    Nothing gets copied (the name is taken), so a check that asks only "is
+    there a pywintypes.py at the root" is satisfied BY THE IMPOSTOR. The build
+    must stop instead: the bundle would import a foreign module as pywintypes,
+    which is the 3.0.0 failure wearing a different hat.
+    """
+    root = _pywin32_bundle(tmp_path)
+    sp = root / "site-packages"
+    sp.joinpath("pywintypes.py").write_text(
+        'raise ImportError("I am NOT pywin32 pywintypes")\n'
+    )
+
+    rc, out = _run_flatten(root)
+    assert rc != 0, (
+        "a bundle whose pywintypes is a FOREIGN file was accepted — the "
+        f"verification is satisfied by a file it did not write: {out}"
+    )
+    assert "refusing to ship" in out.lower()
+    assert "pywintypes.py" in out, "the error does not name the offending file"
+
+
+def test_a_foreign_companion_dll_squatting_the_name_is_fatal(tmp_path) -> None:
+    """Same hole, the other sentinel: the DLL glob only asked "any match?"."""
+    root = _pywin32_bundle(tmp_path)
+    sp = root / "site-packages"
+    sp.joinpath("pywintypes312.dll").write_bytes(b"NOT A DLL AT ALL")
+
+    rc, out = _run_flatten(root)
+    assert rc != 0, f"a FOREIGN companion DLL was accepted as verification: {out}"
+    assert "refusing to ship" in out.lower()
+
+
+def test_identity_not_size_decides_already_flattened(tmp_path) -> None:
+    """`st_size` equality was standing in for identity.
+
+    A same-size foreign file read as "already flattened by a previous run" and
+    was silently stepped over. Size is not identity; a bundle must not ship on
+    the strength of a coincidence.
+    """
+    root = _pywin32_bundle(tmp_path)
+    sp = root / "site-packages"
+    real = (sp / "win32" / "lib" / "pywintypes.py").read_text()
+    # byte-for-byte the same LENGTH, entirely different content
+    impostor = "#" + "x" * (len(real) - 2) + "\n"
+    assert len(impostor) == len(real), "the fixture must hold size constant"
+    sp.joinpath("pywintypes.py").write_text(impostor)
+
+    rc, out = _run_flatten(root)
+    assert rc != 0, (
+        "a same-SIZE but different-BYTES file was accepted as already "
+        f"flattened — size is standing in for identity: {out}"
+    )
+
+
+def test_a_load_bearing_extension_collision_is_fatal(tmp_path) -> None:
+    """win32api.pyd is one of the four modules mcp reaches for.
+
+    A collision here was printed as one line into a verbose CI log and passed.
+    """
+    root = _pywin32_bundle(tmp_path)
+    sp = root / "site-packages"
+    sp.joinpath("win32api.pyd").write_bytes(b"MZ some other extension entirely")
+
+    rc, out = _run_flatten(root)
+    assert rc != 0, f"a shadowed win32api.pyd was accepted: {out}"
+    assert "win32api.pyd" in out
+
+
+def test_a_genuine_flatten_still_succeeds_and_stays_idempotent(tmp_path) -> None:
+    """The fatal path must not fire on the honest case, including a RE-RUN.
+
+    Measured against the real cp312 wheel: 70 flattened names, zero internal
+    collisions — so making collisions fatal cannot spuriously block a
+    legitimate release. A second run copies nothing and must still exit 0,
+    because every destination is now byte-identical to its source rather than
+    merely the same size.
+    """
+    root = _pywin32_bundle(tmp_path)
+    rc, out = _run_flatten(root)
+    assert rc == 0, f"the honest case was rejected: {out}"
+
+    rc2, out2 = _run_flatten(root)
+    assert rc2 == 0, f"an idempotent re-run was rejected: {out2}"
+    assert "0 file(s) copied" in out2, (
+        f"a re-run re-copied files instead of recognising identity: {out2}"
+    )
+    assert _resolve_from(root / "site-packages", "pywintypes") is not None
+
+
+def test_a_stale_pywintypes_survives_a_wheel_layout_change_and_is_fatal(tmp_path) -> None:
+    """The provenance check, exercised on its OWN — no collision to mask it.
+
+    Constructed after a mutation test showed the collision guard fires first in
+    every other case, leaving this branch unproven. Here pywin32's payload no
+    longer SUPPLIES pywintypes.py (a wheel-layout change), while a stale foreign
+    file already owns that name at the root. There is no collision to detect —
+    the loop never sees the name — so only a provenance check can catch it. A
+    presence-shaped check reports success over a bundle that imports the stale
+    file as `pywintypes`.
+    """
+    root = _pywin32_bundle(tmp_path)
+    sp = root / "site-packages"
+    # pywin32 no longer ships the module where this script looks for it...
+    (sp / "win32" / "lib" / "pywintypes.py").unlink()
+    # ...but something else already occupies the name at the importable level.
+    sp.joinpath("pywintypes.py").write_text(
+        'raise ImportError("stale file from an earlier, different build")\n'
+    )
+
+    rc, out = _run_flatten(root)
+    assert rc != 0, (
+        "a STALE foreign pywintypes.py was accepted because the payload no "
+        f"longer supplied one — presence is not provenance: {out}"
+    )
+    assert "refusing to ship" in out.lower()
+
+
+def test_a_stale_companion_dll_not_supplied_by_the_payload_is_fatal(tmp_path) -> None:
+    """Same branch for the DLL: it must be one THIS run placed, not any match.
+
+    The original glob asked `pywintypes*.dll` of the whole directory, which a
+    leftover from an earlier build satisfies while the real DLL is absent.
+    """
+    root = _pywin32_bundle(tmp_path)
+    sp = root / "site-packages"
+    (sp / "pywin32_system32" / "pywintypes312.dll").unlink()
+    sp.joinpath("pywintypes312.dll").write_bytes(b"stale leftover, not from this wheel")
+
+    rc, out = _run_flatten(root)
+    assert rc != 0, f"a STALE companion DLL satisfied the verification: {out}"
     assert "refusing to ship" in out.lower()
 
 
