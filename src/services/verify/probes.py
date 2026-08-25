@@ -115,6 +115,99 @@ _CANVAS = (
     ":(typeof OffscreenCanvas!=='undefined'?new OffscreenCanvas(300,150):null))"
 )
 
+
+# THE canvas-2D readback: the draw AND its reduction, as ONE shared fragment.
+#
+# SHARED BECAUSE TWO SURFACES READ IT. This expression is the `canvas.readback`
+# probe below, and it is ALSO what the loopback probe page evaluates
+# (`local_probe.PROBE_JS`, PS-174). Those two instruments answer different
+# questions — the inventory asks "what does this profile read?", the loopback
+# page asks "did a change in the layer REACH the page?" — but they must agree on
+# what the NUMBER means, so they evaluate the same source rather than two
+# hand-copied drafts.
+#
+# A COPY WOULD BE THE WRONG SHAPE, and specifically it would fail silently. Two
+# surfaces reading "canvas" by even slightly different draws (a different font
+# string, a band boundary off by one, `toDataURL` instead of `getImageData`)
+# produce digests that are individually valid and MUTUALLY INCOMPARABLE — and
+# nothing would report that, because each surface's own numbers stay
+# self-consistent. The committed readings under `readings/ps135-2026-08-24/`
+# are digests of THIS draw; a second draft would quietly stop being the thing
+# they measured.
+#
+# Kept as a bare expression (no realm assumptions, no globals) so it can be
+# inlined into a window, an OffscreenCanvas worker, or a page's inline script
+# without adaptation. Returns `{digest, bytes, mid}` or null — see the inline
+# notes for why each of those is what it is.
+CANVAS_READBACK_EXPR = (
+    "(function(){"
+    "var c=" + _CANVAS + ";"
+    "if(!c)return null;"
+    "var ctx=null;try{ctx=c.getContext('2d');}catch(e){ctx=null;}"
+    "if(!ctx)return null;"
+    # A FIXED surface size. `_CANVAS` hands back a 300x150 element in a
+    # window (there the HTML default) and a 300x150 OffscreenCanvas in a
+    # worker (there a LITERAL, `new OffscreenCanvas(300,150)` at
+    # probes.py:112 — not a spec default, so nothing guarantees it stays).
+    # Either way the size is the shared surface's, not this probe's, so it
+    # is pinned here: a future change to `_CANVAS` must not silently change
+    # what this vector reads. Note this WRITES to the surface, which the
+    # module docstring's "probes READ" rule would otherwise forbid — it is
+    # safe only because `_CANVAS` mints a FRESH element per call, so the
+    # mutation cannot outlive this expression or be seen by another probe.
+    "var W=64,H=32;"
+    "try{c.width=W;c.height=H;}catch(e){return null;}"
+    # MID-RANGE fills, for the same reason webgl.readback uses them: a spoof
+    # that nudges a byte within a guard band leaves pure black and pure
+    # white untouched, so a black-or-white draw would read as a total
+    # masking failure while the masking worked perfectly. Four bands rather
+    # than one flat fill so the surface carries spatial structure for the
+    # position-sensitive digest below. Written as integer rgb() rather than
+    # float channels — there is no float->byte conversion to land on a tie.
+    "var bands=['rgb(79,115,154)','rgb(140,90,163)',"
+    "'rgb(107,160,92)','rgb(168,129,74)'];"
+    "for(var b=0;b<bands.length;b++){"
+    "ctx.fillStyle=bands[b];ctx.fillRect(0,b*(H/4),W,H/4);}"
+    # Text and a curve: the two things a canvas-2D fingerprint actually
+    # reads. Band fills alone are flat colour that any renderer reproduces
+    # exactly, so a fills-only draw would be stable everywhere and observe
+    # nothing — it is glyph rasterisation and antialiasing that carry the
+    # host signal, which is the same reason `fonts.measureText` is already
+    # ENV-sensitive. Deliberately drawn OVER the bands so the antialiased
+    # edges blend against a mid-range background rather than against black.
+    "try{ctx.font='14px sans-serif';ctx.fillStyle='rgb(60,90,140)';"
+    "ctx.fillText('Persona mMwWgjpq\\u00c9\\u4e2d',2,20);"
+    "ctx.strokeStyle='rgb(150,110,80)';ctx.lineWidth=2;"
+    "ctx.beginPath();ctx.arc(50,16,9,0,Math.PI*1.5);ctx.stroke();}"
+    "catch(e){}"
+    # getImageData, NOT toDataURL. Both are canvas-2D readbacks, but
+    # toDataURL routes through a PNG encoder, so its output mixes the pixels
+    # with a compressor's own choices; getImageData hands back the raw RGBA
+    # bytes the renderer produced. Wrapped because a tainted canvas throws
+    # SecurityError — this surface is never tainted (nothing external is
+    # drawn into it), so the guard is for a future edit, not for today.
+    "var d=null;"
+    "try{d=ctx.getImageData(0,0,W,H).data;}catch(e){return null;}"
+    "if(!d)return null;"
+    # FNV-1a over EVERY byte — the same reduction webgl.readback uses, and
+    # for the same two reasons. Not a sample: a spoof's touched offsets are
+    # not on a fixed comb, and a narrow sample reads a false "no variance".
+    # Not a sum: small per-byte deltas make a sum a random walk in which two
+    # seeds collide by ARITHMETIC rather than by identity, which would make
+    # a vector look POOLED whatever its declaration says. An integer digest,
+    # so there is no float formatting for a snapshot comparison to trip on.
+    "var h=2166136261,mid=0;"
+    "for(var i=0;i<d.length;i++){var v=d[i];"
+    "if(v>1&&v<254)mid++;"
+    "h=Math.imul(h^v,16777619);}"
+    # `mid` is the self-check that keeps a green from being empty: how many
+    # bytes were even ELIGIBLE to be nudged. If a future edit makes the draw
+    # black or white, `mid` collapses toward the alpha-only floor and the
+    # digest stops moving — this says WHICH of the two happened rather than
+    # leaving "identical digests" to be read as a masking failure.
+    "return {digest:h>>>0,bytes:d.length,mid:mid};"
+    "})()"
+)
 # Normalise a WebGL getParameter return: typed arrays become plain arrays,
 # floats are rounded, everything else passes through. Kept as a function
 # expression so each probe can inline it without a shared global.
@@ -515,73 +608,7 @@ PROBES: tuple[Probe, ...] = (
         # probe has a legitimate null reading. This probe is the first
         # INDEPENDENT record that contemplates one, and that note now says so.
         BOTH,
-        "(function(){"
-        "var c=" + _CANVAS + ";"
-        "if(!c)return null;"
-        "var ctx=null;try{ctx=c.getContext('2d');}catch(e){ctx=null;}"
-        "if(!ctx)return null;"
-        # A FIXED surface size. `_CANVAS` hands back a 300x150 element in a
-        # window (there the HTML default) and a 300x150 OffscreenCanvas in a
-        # worker (there a LITERAL, `new OffscreenCanvas(300,150)` at
-        # probes.py:112 — not a spec default, so nothing guarantees it stays).
-        # Either way the size is the shared surface's, not this probe's, so it
-        # is pinned here: a future change to `_CANVAS` must not silently change
-        # what this vector reads. Note this WRITES to the surface, which the
-        # module docstring's "probes READ" rule would otherwise forbid — it is
-        # safe only because `_CANVAS` mints a FRESH element per call, so the
-        # mutation cannot outlive this expression or be seen by another probe.
-        "var W=64,H=32;"
-        "try{c.width=W;c.height=H;}catch(e){return null;}"
-        # MID-RANGE fills, for the same reason webgl.readback uses them: a spoof
-        # that nudges a byte within a guard band leaves pure black and pure
-        # white untouched, so a black-or-white draw would read as a total
-        # masking failure while the masking worked perfectly. Four bands rather
-        # than one flat fill so the surface carries spatial structure for the
-        # position-sensitive digest below. Written as integer rgb() rather than
-        # float channels — there is no float->byte conversion to land on a tie.
-        "var bands=['rgb(79,115,154)','rgb(140,90,163)',"
-        "'rgb(107,160,92)','rgb(168,129,74)'];"
-        "for(var b=0;b<bands.length;b++){"
-        "ctx.fillStyle=bands[b];ctx.fillRect(0,b*(H/4),W,H/4);}"
-        # Text and a curve: the two things a canvas-2D fingerprint actually
-        # reads. Band fills alone are flat colour that any renderer reproduces
-        # exactly, so a fills-only draw would be stable everywhere and observe
-        # nothing — it is glyph rasterisation and antialiasing that carry the
-        # host signal, which is the same reason `fonts.measureText` is already
-        # ENV-sensitive. Deliberately drawn OVER the bands so the antialiased
-        # edges blend against a mid-range background rather than against black.
-        "try{ctx.font='14px sans-serif';ctx.fillStyle='rgb(60,90,140)';"
-        "ctx.fillText('Persona mMwWgjpq\\u00c9\\u4e2d',2,20);"
-        "ctx.strokeStyle='rgb(150,110,80)';ctx.lineWidth=2;"
-        "ctx.beginPath();ctx.arc(50,16,9,0,Math.PI*1.5);ctx.stroke();}"
-        "catch(e){}"
-        # getImageData, NOT toDataURL. Both are canvas-2D readbacks, but
-        # toDataURL routes through a PNG encoder, so its output mixes the pixels
-        # with a compressor's own choices; getImageData hands back the raw RGBA
-        # bytes the renderer produced. Wrapped because a tainted canvas throws
-        # SecurityError — this surface is never tainted (nothing external is
-        # drawn into it), so the guard is for a future edit, not for today.
-        "var d=null;"
-        "try{d=ctx.getImageData(0,0,W,H).data;}catch(e){return null;}"
-        "if(!d)return null;"
-        # FNV-1a over EVERY byte — the same reduction webgl.readback uses, and
-        # for the same two reasons. Not a sample: a spoof's touched offsets are
-        # not on a fixed comb, and a narrow sample reads a false "no variance".
-        # Not a sum: small per-byte deltas make a sum a random walk in which two
-        # seeds collide by ARITHMETIC rather than by identity, which would make
-        # a vector look POOLED whatever its declaration says. An integer digest,
-        # so there is no float formatting for a snapshot comparison to trip on.
-        "var h=2166136261,mid=0;"
-        "for(var i=0;i<d.length;i++){var v=d[i];"
-        "if(v>1&&v<254)mid++;"
-        "h=Math.imul(h^v,16777619);}"
-        # `mid` is the self-check that keeps a green from being empty: how many
-        # bytes were even ELIGIBLE to be nudged. If a future edit makes the draw
-        # black or white, `mid` collapses toward the alpha-only floor and the
-        # digest stops moving — this says WHICH of the two happened rather than
-        # leaving "identical digests" to be read as a masking failure.
-        "return {digest:h>>>0,bytes:d.length,mid:mid};"
-        "})()",
+        CANVAS_READBACK_EXPR,
         note=(
             "Deterministic 2D draw (four mid-range bands, text, a stroked arc) "
             "on the shared detached surface, reduced by FNV-1a over the raw "

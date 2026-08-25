@@ -39,6 +39,17 @@ a DIFFERENT part of the layer, so a differential can point at which part moved:
 * ``audio_digest`` — a sum over an ``AnalyserNode`` float readback. The one
   vector the probe inventory grades INDEPENDENT (``probes.py:365``): every other
   seed-derived vector is drawn from a finite pool, so a collision proves nothing.
+* ``canvas_pixel_hash`` — FNV-1a over raw ``getImageData`` bytes. The vector
+  persona **delegates** rather than spoofs itself: on chromium it comes from
+  fingerprint-chromium's C++ patch driven by ``--fingerprint=``
+  (``chromium_tier.py:438``), and on firefox nothing drives it at all, because
+  that flag is chromium-only and the firefox arm returns at ``process.py:353``
+  well before it. That delegation is exactly why it needs a loopback reading:
+  ``diff.compare_profiles`` can report canvas COLLIDING, and until this vector
+  existed nothing could answer the follow-up the differential is FOR — *did the
+  reading fail to move because the layer failed, or because the probe never
+  reached the page?* Being unable to tell those apart is the PS-97 shape, and
+  canvas is where it is most live.
 * ``navigator_language`` / ``intl_locale`` — read through
   ``Intl.DateTimeFormat(...).resolvedOptions().locale`` for a REQUESTED locale,
   which is a direct read of the override's presence. Deliberately not a bare
@@ -65,12 +76,14 @@ from typing import Any
 # The vectors this page reads, in the record's own vocabulary.
 WEBGL_PIXEL_HASH = "webgl_pixel_hash"
 AUDIO_DIGEST = "audio_digest"
+CANVAS_PIXEL_HASH = "canvas_pixel_hash"
 NAVIGATOR_LANGUAGE = "navigator_language"
 INTL_LOCALE = "intl_locale"
 
 PROBE_VECTORS = (
     WEBGL_PIXEL_HASH,
     AUDIO_DIGEST,
+    CANVAS_PIXEL_HASH,
     NAVIGATOR_LANGUAGE,
     INTL_LOCALE,
 )
@@ -181,6 +194,48 @@ PROBE_JS = r"""
     }
   })();
 
+  // --- canvas_pixel_hash: the vector persona DELEGATES rather than spoofs ---
+  // The expression below is not written here — it is `probes.CANVAS_READBACK_EXPR`,
+  // substituted in, so this page and the inventory evaluate ONE source. Two
+  // surfaces reading "canvas" by different draws would produce numbers that are
+  // each self-consistent and mutually incomparable, and nothing would report
+  // that. See the constant's own comment in probes.py.
+  //
+  // WHY THIS VECTOR IS THE ONE WORTH ADDING HERE. The other three are spoofed
+  // by persona's own layer, so a differential on them tests code this repo
+  // owns. Canvas 2D is DELEGATED: on chromium it comes from
+  // fingerprint-chromium's C++ patch driven by --fingerprint=, and on firefox
+  // nothing drives it at all. That is precisely why the reading is needed —
+  // `diff.compare_profiles` can report canvas COLLIDING, and without a probe
+  // that reaches a page there is no way to tell a dead SPOOF from a dead PROBE.
+  //
+  // Reduced to a STRING like every other vector here, because the record
+  // compares vectors for equality and `differential` is a string comparison.
+  // The shape fields ride along rather than being dropped: `bytes` and `mid`
+  // are the self-check that keeps a green from being empty — if a future edit
+  // makes the draw black or white, `mid` collapses and the digest stops moving,
+  // and this says WHICH of the two happened instead of leaving "identical
+  // digests" to be misread as a masking failure. Committed live readings are
+  // bytes:8192 mid:6144 on every engine and seed (readings/ps135-2026-08-24/).
+  try {
+    const canvas = %%CANVAS_READBACK_EXPR%%;
+    if (!canvas) {
+      // null is the expression's own "I could not read this" — five distinct
+      // paths return it (no canvas, no 2D context, a throwing width assignment,
+      // a throwing getImageData, empty data). It must be reported as
+      // UNAVAILABLE, never as a digest: `_computed_vectors` drops
+      // `unavailable:`/`error:` readings from the comparison, and a null that
+      // stringified into a value would be compared instead — two sides agreeing
+      // on "no canvas here" would then read as a spoof that failed to land.
+      out.canvas_pixel_hash = 'unavailable:no-canvas-2d-readback';
+    } else {
+      out.canvas_pixel_hash =
+        canvas.digest + ':bytes' + canvas.bytes + ':mid' + canvas.mid;
+    }
+  } catch (e) {
+    out.canvas_pixel_hash = 'error:' + (e && e.name);
+  }
+
   // --- the locale pair -----------------------------------------------------
   try {
     out.navigator_language = String(navigator.language);
@@ -210,8 +265,22 @@ PROBE_JS = r"""
 
 
 def probe_js(*, intl_request_locale: str = INTL_REQUEST_LOCALE) -> str:
-    """The probe source, with its requested locale substituted in."""
-    return PROBE_JS.replace("%%INTL_REQUEST_LOCALE%%", intl_request_locale)
+    """The probe source, with its substitutions applied.
+
+    The canvas expression is pulled from the INVENTORY (``probes``) at build
+    time rather than copied into ``PROBE_JS``, so this page and the
+    ``canvas.readback`` probe can never drift into reading canvas by two
+    different draws. See ``probes.CANVAS_READBACK_EXPR``.
+
+    Imported inside the function rather than at module scope on purpose: this
+    module is imported by the differential to print help and to parse a page's
+    text, and neither of those should have to load the whole probe inventory.
+    """
+    from .probes import CANVAS_READBACK_EXPR
+
+    return PROBE_JS.replace(
+        "%%INTL_REQUEST_LOCALE%%", intl_request_locale
+    ).replace("%%CANVAS_READBACK_EXPR%%", CANVAS_READBACK_EXPR)
 
 
 PROBE_PAGE_TEMPLATE = """<!doctype html>
