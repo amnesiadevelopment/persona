@@ -1083,3 +1083,103 @@ jobs:
         with:
           files: out/*
           generate_release_notes: true
+
+      # ---------------------------------------------------------------------
+      # Refresh the committed runtime-fingerprint baseline (PS-173).
+      #
+      # requires_full_install is decided at :855 by comparing the build's
+      # runtime fingerprint against the one COMMITTED in runtime-fingerprint.txt.
+      # That comparison is correct; its INPUT was hand-maintained ("Bump
+      # runtime-fingerprint.txt only when the runtime actually changes"), and
+      # nothing enforced the bump. So one dependency change did not cost ONE
+      # full install — it cost EVERY release a full install until a human
+      # remembered a file. Measured on the published manifests: the baseline was
+      # last bumped 2026-08-07 (4c52a0c) and matches v2.9.13's fingerprint
+      # exactly; every release after it shipped requires_full_install: true,
+      # including v2.9.16, whose fingerprint is byte-identical to v2.9.15's and
+      # whose requirements.txt/pyproject.toml diff is empty. A release with a
+      # provably unchanged runtime still shipped the 64.84 MiB installer instead
+      # of the 5.02 MiB app.zip — a 12.9x payload for nothing.
+      #
+      # This is the workflow's THIRD stale-fingerprint incident (:811 hashed
+      # build bytes and pinned the flag true forever; :839/#238 read prevFp from
+      # the releases API and raced the publish). Both earlier fixes corrected how
+      # the fingerprint is COMPUTED or FETCHED. Neither closed the case where the
+      # mechanism is right and the baseline is simply never refreshed.
+      #
+      # The value written is the one the Windows job already computed and
+      # published in update-manifest.json — NOT a recomputation (the inputs
+      # include `pip show flet` / `python --version` / `flutter --version` as
+      # resolved ON THE WINDOWS RUNNER, which this ubuntu job cannot reproduce)
+      # and NOT a releases-API read (that is exactly the #238 race; the file
+      # here is the artifact this job just published, already on disk).
+      #
+      # Deliberately NOT weakening what counts as a dependency change: the
+      # fingerprint inputs at :816-826 are untouched. A release that genuinely
+      # moves a dependency still flips the flag to true and still gets the full
+      # installer. This only stops a runtime that did NOT change from being
+      # reported as changed.
+      #
+      # release.yml triggers on `v*` TAGS only (:8-10), so pushing to main here
+      # cannot re-trigger a release. ci.yml does run on main — that is intended.
+      - name: Refresh the committed runtime fingerprint baseline
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          MANIFEST: out/update-manifest.json
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ ! -f "$MANIFEST" ]; then
+            echo "::error::update-manifest.json missing — cannot refresh baseline"; exit 1
+          fi
+          fp="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("runtime_fingerprint",""))' "$MANIFEST")"
+          # Fail CLOSED on a missing/malformed fingerprint rather than writing an
+          # empty baseline: prevFp == "" forces requires_full_install true for
+          # every future release (:855), which is the very failure being fixed.
+          case "$fp" in
+            [0-9a-f]*) [ "${#fp}" -eq 64 ] || { echo "::error::bad fingerprint '$fp'"; exit 1; } ;;
+            *) echo "::error::missing/invalid runtime_fingerprint in manifest"; exit 1 ;;
+          esac
+          echo "published runtime fingerprint: $fp"
+          mkdir -p /tmp/baseline && cd /tmp/baseline
+          # Fresh, minimal checkout of the DEFAULT branch. The build jobs ran
+          # third-party code with no write token (:891-895); this job runs none,
+          # which is why the credential lives only here.
+          git clone --depth 1 --branch main \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
+          cd repo
+          prev="$(tr -d '[:space:]' < runtime-fingerprint.txt 2>/dev/null || true)"
+          if [ "$prev" = "$fp" ]; then
+            echo "baseline already current ($fp) — nothing to commit"
+            exit 0
+          fi
+          echo "baseline moving: '$prev' -> '$fp'"
+          printf '%s\n' "$fp" > runtime-fingerprint.txt
+          git config user.name  "persona-release-bot"
+          git config user.email "noreply@persona.dev"
+          git add runtime-fingerprint.txt
+          {
+            echo "release: refresh runtime-fingerprint baseline for ${GITHUB_REF_NAME}"
+            echo
+            echo "The runtime this release actually shipped, so the NEXT release"
+            echo "compares against it instead of a stale baseline and takes the"
+            echo "seconds-fast app.zip path when the runtime did not change."
+            echo "Automated (PS-173); previously a hand-bumped file that went"
+            echo "stale and pinned requires_full_install true for every release"
+            echo "after 2026-08-07."
+          } > /tmp/fp_msg.txt
+          git commit -F /tmp/fp_msg.txt
+          # A concurrent release/bump may have landed; rebase rather than force.
+          for attempt in 1 2 3; do
+            if git push origin main; then
+              echo "baseline pushed"; exit 0
+            fi
+            echo "push rejected (attempt $attempt) — rebasing on main"
+            git pull --rebase origin main || break
+          done
+          # A failed refresh must not fail a release that already published
+          # successfully: the assets are live and correct. The cost of missing
+          # it is one more full-install release, and the next run retries.
+          echo "::warning::could not push the refreshed baseline — next release will retry"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
