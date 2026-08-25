@@ -109,23 +109,68 @@ reading you get depends on the arm** — see the warning immediately below.
 > **Consequence: `n`, `threads_total` and `rss_mb_total` are NOT comparable
 > across the two groups of arms.** Arms **B and F are the same configuration**
 > (layer OFF, headless, `new_page`, `about:blank`) and report `n=2` vs `n=11–12`
-> at the stall — that gap is the instrument, not the browser. Arm B's ~750 MB RSS
-> is an undercount of the same shape as arm F's 1.2 GB; the **1.2 GB figure in
-> the headline is arm F's** and is a whole-tree number.
+> at the stall — that gap is the instrument, not the browser. The **1.2 GB figure
+> in the headline is arm F's** and is a whole-tree number.
 >
-> **The uncorrected arms still point the same way, and the arithmetic is worth
-> having.** Over the 90 samples after arm B's process death (t=125.2→304.3),
-> `cpu_total` decays 58.1 → 24.2 monotonically and fits
+> **Arm B's ~750 MB is NOT a parent-only undercount of that quantity, and an
+> earlier draft of this record said it was. That is withdrawn.** At `t=109.0`,
+> `rss_mb_total = 769.2` is a **sum over two processes that are not both this
+> run's browser** — see the contamination note below. It is not a reading of arm
+> F's quantity at any scale, so the two numbers are not two views of one thing
+> and must not be compared.
+>
+> ### Arm B ran on a box that already had a firefox process on it
+>
+> **`ctrl_nolayer.txt:68` — the first watchdog sample, taken BEFORE `LAUNCH`
+> returned at `t=1.86s`:**
+>
+> ```
+> WD {"t": 0.0, "n": 1, "cpu_total": 6.4, "rss_mb_total": 489.6, "threads_total": 85, ...}
+> ```
+>
+> A 490 MB, 85-thread firefox process the harness had not started. This is not an
+> ordering artifact: `abd_harness.py` starts the watchdog thread *before* it
+> constructs the engine, so `t=0.0` genuinely precedes this run's browser.
+> **Arm D is the control on this and is clean** (`D.txt`, `t=0.0` → `"n": 0`), so
+> this is arm B specifically, not a property of the instrument.
+>
+> **Where it lands: the survivor of the `2 → 1` drop is 0.5 MB and 2 threads from
+> the pre-launch process, and the fit is over the survivor alone.** All 90 fitted
+> samples (`t=125.2→304.3`) are `n=1`. Survivor at `t=304.3`: `rss 490.1 MB,
+> 87 thr`; pre-launch process at `t=0.0`: `rss 489.6 MB, 85 thr`. The process that
+> *vanished* at `t=111.1` accounted for `~275 MB / 74 threads`.
+>
+> **What the fit does and does not establish.** Over those 90 samples `cpu_total`
+> decays 58.1 → 24.2 monotonically and fits
 >
 > ```
 > cpu = 7433 / (t + 2.3)        max relative error 0.34%
 > ```
 >
-> A hyperbola that tight *is* `cumulative_cpu_seconds / elapsed`. The constant
-> numerator means cumulative CPU stayed pinned at **~74.3 s across 179 s of wall
-> clock** — the process burned **zero additional CPU** while wedged. So arm B
-> does corroborate "idle-waiting, not spinning"; it simply cannot show it
-> *directly*.
+> A hyperbola that tight *is* `cumulative_cpu_seconds / elapsed`, and **that is
+> the whole of what it proves: the `cpu_total` column is a lifetime average.**
+> It is a clean demonstration of the *instrument* defect and needs no claim about
+> which process produced it.
+>
+> **The claim it was previously used for — "the process burned zero additional
+> CPU while wedged, so arm B corroborates idle-waiting" — is WITHDRAWN.** Flat
+> cumulative CPU over the tail is what an *untouched* process trivially shows;
+> it corroborates nothing about a wedged browser. **The idle-wait reading rests
+> on arm F alone**, as stated below.
+>
+> **One correction to the reasoning that produced this withdrawal, because it was
+> re-derived here rather than taken on trust.** The age offset `k = +2.3s` is a
+> sharp minimum (3–5× better than any value in `(-1.86, 0)`, the band this run's
+> browser could occupy), which is what first placed the fitted process before the
+> harness clock. But `k` identifies a process only under "cumulative CPU exactly
+> constant", and that holds **only in the tail**: the `t=0.0` sample lies off the
+> fitted curve by a factor of ~500, and under `k=+2.3` the fitted process must
+> have gained **~74 s of CPU between `t=0` and `t=125`** — about 58% of a core
+> sustained. So the survivor is **not** an idle bystander either, and 490 MB /
+> 85 threads is not a 2.3 s-old process. **Identity is not settled by the fit in
+> either direction, and it cannot be settled from this tree at all** — see the
+> PID gap below. The withdrawal stands regardless of which process it was: the
+> fit cannot bear the idle-wait claim under any of the readings.
 >
 > **The direct reading comes from arm F, and from arm F alone.** It is worth
 > being exact about which sample, because an earlier draft of this record
@@ -246,6 +291,21 @@ path — `add_init_script` plus the replay into already-open tabs
 required to produce this**. The ticket's first lead ("the masking extensions run
 per tab… tab three would be where it shows") is **not supported**.
 
+**Arm D carries most of this weight, and more of it than earlier drafts credited
+it with.** Arm B's evidentiary value is reduced by the pre-launch foreign process
+disclosed above, so of the two layer-off arms **only arm D is *both* layer-off
+*and* verifiably uncontaminated at `t=0.0`** (`D.txt` → `"n": 0` before launch).
+Arm D's single matched process also **stayed alive across the whole stall**
+(`n=1` continuously from `t=4.1` to the final sample at `t=98.8`), so it carries
+no unexplained process loss of its own.
+
+**Note what the contamination does and does not touch.** It bears on arm B's
+*process-count and CPU aggregates*. It does **not** touch the layer-off finding,
+which rests on the **stall still occurring** with the layer absent — observed in
+arm D and arm F through `new_page` blocking and the tab-1 ping blocking on the
+automation channel, neither of which is a process count. The load-bearing finding
+is unaffected.
+
 ### Arm H — the two instruments do not count the same processes
 
 The round-2 code review observed from the *source* that the two harnesses might
@@ -287,8 +347,19 @@ Arms **B** and **F** are the *same configuration* — layer OFF, headless,
 
 | | Arm B (`ps comm`) | Arm F (`/proc cmdline`) |
 |---|---|---|
-| `n` at tab 1 | 1 | 6 |
-| `n` at the stall | **2** | **11–12** |
+| `n` at tab 1 | **2** (`ctrl_nolayer.txt:76`, `t=5.3`) | **6** (`F_new_page.txt:3`, `t=4.0`) |
+| `n` at the stall | **2, then 1** from `t=111.1` (`:134`) | **12** (`F_new_page.txt:7`, `t=53.1`) |
+
+> **Both arm-B cells in this table were previously wrong, and inverted.** They
+> read `1` at tab 1 and `2` at the stall — the file says `2` at tab 1, and `2`
+> falling to `1` at the stall. The figures had been **transcribed from a review
+> comment rather than re-derived from the file**, which is the same defect class
+> this record has spent three rounds closing. Every figure above is now taken
+> from the named line: arm B's `n` is `1` at `t=0.0`, `2` from `t=2.0`, and `1`
+> from `t=111.1` to the end at `t=304.3` — those are the only two transitions in
+> the file. **The single early `n=1` sample is at `t=0.0`, which predates this
+> run's browser** (see the contamination note above); it is not a tab-1 reading
+> and must not be used as one.
 
 That is the instrument, not the browser. **The stall observations themselves are
 unaffected** — they rest on `new_page` blocking and the tab-1 ping blocking, both
@@ -329,6 +400,30 @@ is a `2 → 1` drop **within a matched subset that never contained the content
 processes at all**. An unknown number of engine processes may have been alive and
 simply unmatched throughout. It is **not** the same observation as A2's `12 → 0`,
 and the two cannot be counted as instances of one thing.
+
+**But the drop must not be read as benign either, and an earlier draft left it
+implying that.** The withdrawal above rests on the *denominator* — arm B's `n`
+counts a subset that excludes every content process — and that argument is sound.
+It does **not** establish which process died. Two readings survive it, and they
+point opposite ways:
+
+- the process that vanished at `t=111.1` (`~275 MB / 74 threads`) is a
+  **bystander**, and the survivor is this run's browser; or
+- the vanished process is **this run's own parent**, and the survivor is the
+  pre-launch process disclosed above — in which case arm B's drop is a *closer*
+  relative of A2's engine loss, not a more distant one.
+
+The RSS/thread arithmetic favours the second (the `t=304.3` survivor sits within
+**0.5 MB and 2 threads** of the pre-launch process at `t=0.0`), but that is a
+resemblance between two coarse aggregates, not an identification.
+
+**It cannot be settled from this tree, and the reason is a one-line harness
+defect.** `abd_harness.py:65` parses `pid` for every matched process, and
+`sample_procs()` at `:69-76` **discards it** — only the aggregates `n`,
+`cpu_total`, `rss_mb_total`, `threads_total` and `stats` are emitted. **No PID
+appears in any arm-B sample**, so process identity across the drop is
+unrecoverable. This is recorded as an open question, not resolved in either
+direction.
 
 **`D.txt` shows directly why `n` is not a death signal under this matcher.** It
 carries an undisclosed drop of exactly the same shape —
@@ -416,6 +511,16 @@ Also untested, deliberately: **Chromium** (out of scope) and **checker verdicts*
    (parent-only) and A2/E/F (whole tree) cannot be compared on `n`,
    `threads_total` or `rss_mb_total`. `h_matchers.py` shows the check that
    catches this in under ten seconds.
+6. **Record PIDs, and assert a clean box before launching.** Two one-line fixes
+   to `abd_harness.py`, both learned the hard way in arm B:
+   - **Keep the `pid` field it already parses.** `:65` reads a pid for every
+     matched process and `sample_procs()` at `:69-76` throws it away, which is
+     the sole reason arm B's `2 → 1` drop cannot be attributed to a process.
+   - **Take one pre-flight sample and assert it matched nothing**, before
+     constructing the engine. Arm B began with a 490 MB firefox process already
+     running that the harness had not started; arm D shows `n=0` at `t=0.0`, so
+     a clean box is the norm and a foreign process is worth failing loudly on
+     rather than silently folding into every aggregate for the rest of the run.
 
 ---
 
@@ -424,8 +529,8 @@ Also untested, deliberately: **Chromium** (out of scope) and **checker verdicts*
 | File | What it is |
 |---|---|
 | `A2.txt` | **Arm A2 — the layer-ON arm**, headless, corrected instrument. Replaces the lost arm A. Includes the engine dying during the recovery watch. |
-| `ctrl_nolayer.txt` | Arm B — **control arm**, layer OFF, headless. **Captioned: lifetime-average CPU column, and a PARENT-ONLY process count** — its `2 → 1` drop is not an engine death. |
-| `D.txt` | Arm D — layer OFF, **headful** under Xvfb. **Captioned: lifetime-average CPU, parent-only count** — carries the startup `2 → 1` drop that shows `n` is not a death signal here. |
+| `ctrl_nolayer.txt` | Arm B — layer OFF, headless. **Captioned three times: lifetime-average CPU column, a PARENT-ONLY process count, and a PRE-LAUNCH FOREIGN PROCESS.** Its `2 → 1` drop is **not comparable** to A2's `12 → 0` and is **unattributable** — no PID was recorded. Reduced evidentiary value; **arm D is the cleaner control.** |
+| `D.txt` | Arm D — layer OFF, **headful** under Xvfb. **The cleanest control arm**: the only arm that is *both* layer-off *and* verifiably uncontaminated at `t=0.0` (`n=0`). **Captioned: lifetime-average CPU, parent-only count** — carries the startup `2 → 1` drop that shows `n` is not a death signal here. |
 | `F_new_page.txt` | Arm F — **the characterisation**: bounded deadline, tab-1 ping, recovery watch. Corrected instrument. |
 | `E1.txt` | Arm E — the **null instrument**, kept as the record of a failed measurement. |
 | `H_matchers.txt` | **Arm H — the instrument comparison.** Both matchers applied to one live engine at the same instant. Settles that `ps comm` counts the **parent only**. |
