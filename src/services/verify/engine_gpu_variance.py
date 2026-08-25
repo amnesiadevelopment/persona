@@ -144,23 +144,46 @@ def collision_probability(values: "list[str]") -> float:
     return sum((c / n) ** 2 for c in counts.values())
 
 
+# The arms this module knows persona ships a fallback pool for, and the JS
+# variable each one is emitted as. Separated from the scrape itself so
+# "this arm has no pool by design" and "this arm HAS a pool and we failed to
+# read it" can be told apart — they are different facts and must not share a
+# return value.
+_POOL_VAR_FOR_ARM = {
+    "windows": "WIN_GPUS",
+    "macos": "MAC_GPUS",
+    "linux": "LINUX_GPUS",
+    "android": "ANDROID_GPUS",
+}
+
+
+def has_known_pool(arm: str) -> bool:
+    """Whether persona is KNOWN to ship a fallback pool for this arm.
+
+    Answered from the arm name alone, never from the scrape — so a scrape that
+    returns nothing on an arm that IS in this map reads as a broken scrape
+    rather than as an arm with no pool.
+    """
+    return arm in _POOL_VAR_FOR_ARM
+
+
 def fallback_pool_size(arm: str) -> int:
     """How many entries OUR OWN pool for this arm holds.
 
     Read out of the emitted extension source rather than duplicated here, so
-    the bar tracks the pool automatically. Returns 0 when the arm has no pool
-    this module can find, which callers must treat as "no bar to compare
-    against" rather than as a bar of zero.
+    the bar tracks the pool automatically.
+
+    Returns 0 in TWO different situations, which callers must NOT conflate:
+    the arm has no pool at all (:func:`has_known_pool` is False), or the arm
+    has one and this scrape could not find it — a regex that drifted out of
+    step with the pool literals' formatting. Pair every call with
+    :func:`has_known_pool`: 0 on a known-pool arm means WE FAILED TO LOOK, and
+    a missing bar must never be read as a bar that was met.
     """
     from .. import browser  # noqa: F401  (kept for a stable import root)
     from ..browser import gpu_ext
 
-    name = {
-        "windows": "WIN_GPUS",
-        "macos": "MAC_GPUS",
-        "linux": "LINUX_GPUS",
-        "android": "ANDROID_GPUS",
-    }.get(arm)
+    name = _POOL_VAR_FOR_ARM.get(arm)
     if not name:
         return 0
     src = gpu_ext._CONTENT_SCRIPT
@@ -202,7 +225,18 @@ def classify(readings: "dict[str, dict[int, str | None]]") -> dict:
     ``CONSTANT``      every profile got the SAME identity — the severe form of
                       TOO_NARROW, called out separately because it is a flat
                       Level 2 breach rather than a degradation.
-    ``INCONCLUSIVE``  too few readable seeds to say. NOT a pass.
+    ``INCONCLUSIVE``  we could not say. Too few readable seeds, OR the arm's
+                      own bar could not be read (see ``bar_missing`` below).
+                      NOT a pass.
+
+    ⚠️ A MISSING BAR IS NOT A MET BAR. When an arm persona ships a pool for
+    (:func:`has_known_pool`) yields no bar, the comparison this gate exists to
+    make cannot be made at all, and the arm is ``INCONCLUSIVE`` rather than
+    falling through to ``OK`` on the weaker "did it vary at all?" question.
+    That weaker question is demonstrably insufficient here: macos varies (2
+    distinct values) while colliding 76.9% of the time, so it passes "varied"
+    and fails the bar. The same "we failed to look ≠ we looked and it was fine"
+    discipline this module applies to ``MIN_SEEDS``, applied to the other input.
     """
     per_arm: "dict[str, dict]" = {}
     for arm in sorted(readings):
@@ -210,6 +244,7 @@ def classify(readings: "dict[str, dict[int, str | None]]") -> dict:
         readable = [v for v in by_seed.values() if v]
         distinct = sorted(set(readable))
         bar = bar_for(arm)
+        bar_missing = bar is None and has_known_pool(arm)
         entry: dict = {
             "seeds_requested": len(by_seed),
             "seeds_readable": len(readable),
@@ -241,6 +276,22 @@ def classify(readings: "dict[str, dict[int, str | None]]") -> dict:
                 "unlinkability). This arm must NOT be left engine-authored: "
                 "remove it from gpu_ext.ENGINE_AUTHORED_IDENTITY_ARMS so "
                 "persona's own pool authors the identity again."
+            )
+        elif bar_missing:
+            # The arm HAS a pool and we could not read it — the bar this gate
+            # compares against is missing, so the comparison cannot be made.
+            # Falling through to OK here would silently downgrade the gate to
+            # "did it vary at all?", which macos passes while colliding 76.9%
+            # of the time. A missing bar is a failure to look, not a pass.
+            entry["verdict"] = "INCONCLUSIVE"
+            entry["detail"] = (
+                f"persona ships a fallback pool for {arm!r}, but this module "
+                "could not read its size out of the emitted extension source "
+                "— most likely the pool literals were reformatted and "
+                "fallback_pool_size's regex no longer matches. Without the bar "
+                "there is nothing to compare against, so this is NOT a pass: "
+                f"the {p:.1%} collision rate measured here is unjudged. Fix "
+                "the scrape in fallback_pool_size and re-run."
             )
         elif bar is not None and p > bar * (1.0 + BAR_TOLERANCE):
             entry["verdict"] = "TOO_NARROW"

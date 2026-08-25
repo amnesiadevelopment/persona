@@ -765,10 +765,54 @@ __REALM_BOOTSTRAP__
 #
 # ⚠️ THIS SET IS A CLAIM ABOUT A THIRD PARTY'S BUILD, not a permanent property.
 # The engine autobumps daily and could narrow its pool at any time, which would
-# silently cost us unlinkability on any arm listed here. That is why
-# `verify.engine_gate` fails the bump when an engine-authored arm stops varying
-# by seed — the check that makes this set safe to hold.
+# silently cost us unlinkability on any arm listed here.
+#
+# `verify.engine_gpu_variance` is the check written for exactly that, and its
+# status must be read as it actually is, because this set is only as safe as
+# the thing watching it:
+#   * Its JUDGEMENT (`classify`) is pure and IS exercised in CI on every run,
+#     including the cases where it must go red.
+#   * Its READING (`measure`) needs the product's own engine, and CI provisions
+#     `browser_firefox` only. So it runs where the engine exists — an operator
+#     machine — via `python -m src.services.verify.engine_gpu_variance check`.
+#   * NOTHING RUNS IT ON THE BUMP PATH TODAY. `engine-autoupdate.yml` calls
+#     `engine_gate record`/`compare` and nothing else, so a bump that narrowed
+#     an engine-authored arm would NOT be failed by it. Wiring it there is the
+#     remaining step and is named here rather than quietly assumed.
+# Read that before treating an arm in this set as watched: the check exists and
+# can fail, but the daily bump is not currently gated on it.
 ENGINE_AUTHORED_IDENTITY_ARMS = frozenset({"windows"})
+
+
+# The RAW ``os_type`` spellings the fold recognises. Derived FROM the fold's own
+# table rather than restated beside it, so the two cannot drift: teach
+# ``_OS_NORM_TABLE`` a new spelling and it is recognised here automatically.
+_OS_NORM_TABLE = (
+    (("ios", "iphone", "ipad", "ipados"), "ios"),
+    (("macos", "mac", "darwin"), "macos"),
+    (("android",), "android"),
+    (("linux",), "linux"),
+    (("windows", "win"), "windows"),
+)
+
+RECOGNISED_OS_TYPES = frozenset(
+    spelling for spellings, _arm in _OS_NORM_TABLE for spelling in spellings
+)
+
+
+def _os_norm(os_type: str) -> str:
+    """Fold a raw ``os_type`` onto the arm vocabulary the content script uses.
+
+    Unrecognised values fold to ``"windows"``, which is what the GPU POOL
+    selection wants (a plausible desktop card beats no card). Authorship is a
+    SEPARATE question and must not be read off this value — see
+    :func:`engine_authors_identity_for_os_type`.
+    """
+    ot = str(os_type).lower()
+    for spellings, arm in _OS_NORM_TABLE:
+        if ot in spellings:
+            return arm
+    return "windows"
 
 
 def engine_authors_identity(os_norm: str) -> bool:
@@ -776,10 +820,35 @@ def engine_authors_identity(os_norm: str) -> bool:
 
     Takes an already-normalised arm (the ``os_norm`` vocabulary the builder
     computes), so an unknown value is simply not in the set and this module
-    keeps authorship — the fail-safe direction: a profile whose arm we do not
-    recognise gets our spoof rather than whatever the host happens to report.
+    keeps authorship.
+
+    ⚠️ CALLERS MUST NOT ASK THIS ABOUT A RAW ``os_type``. ``os_norm`` folds
+    every unrecognised spelling into ``"windows"`` — the one engine-authored
+    arm — so the fold runs BEFORE this function would ever see the unknown
+    value, and asking here is too late to be fail-safe. That is not a
+    hypothetical: the engine is handed the RAW ``os_type``
+    (``process.py``'s ``--fingerprint-platform``), so on an unrecognised arm
+    the engine is told a platform it does not spoof while this layer stands
+    down expecting it to — neither author writes the pair and the HOST's GL
+    strings reach the page (Invariant #0). Use
+    :func:`engine_authors_identity_for_os_type`, which resolves authorship
+    from the raw value before the fold can swallow it.
     """
     return os_norm in ENGINE_AUTHORED_IDENTITY_ARMS
+
+
+def engine_authors_identity_for_os_type(os_type: str) -> bool:
+    """Fail-safe authorship resolution from a RAW ``os_type``.
+
+    An arm nobody has measured keeps OUR spoof rather than being folded into
+    ``windows`` and deferred to an engine that was never told to spoof it.
+    This is the fail-safe direction stated as behaviour: unrecognised in,
+    ``False`` out — persona authors the identity.
+    """
+    ot = str(os_type).lower()
+    if ot not in RECOGNISED_OS_TYPES:
+        return False
+    return engine_authors_identity(_os_norm(ot))
 
 
 _MANIFEST = {
@@ -820,13 +889,7 @@ def build_gpu_extension(
     ext_dir = pathlib.Path(base_dir)
     ext_dir.mkdir(parents=True, exist_ok=True)
     ot = str(os_type).lower()
-    os_norm = (
-        "ios" if ot in ("ios", "iphone", "ipad", "ipados")
-        else "macos" if ot in ("macos", "mac", "darwin")
-        else "android" if ot in ("android",)
-        else "linux" if ot in ("linux",)
-        else "windows"
-    )
+    os_norm = _os_norm(ot)
     script = (
         _CONTENT_SCRIPT
         .replace("__SEED__", str(int(seed) & 0xFFFFFFFF))
@@ -834,7 +897,12 @@ def build_gpu_extension(
         .replace("__OS__", os_norm)
         .replace(
             "__ENGINE_AUTHORS_IDENTITY__",
-            "true" if engine_authors_identity(os_norm) else "false",
+            # Resolved from the RAW os_type, NOT from os_norm. The fold above
+            # sends every unrecognised spelling to "windows", the one
+            # engine-authored arm, so reading authorship off os_norm would make
+            # an unmeasured platform defer to an engine that was never told to
+            # spoof it — and neither author would write the pair.
+            "true" if engine_authors_identity_for_os_type(ot) else "false",
         )
         .replace("__REALM_BOOTSTRAP__", realm_bootstrap_js("applyGpuPatch"))
         .replace("__REALM_GUARD__", realm_guard_js("gpu"))
