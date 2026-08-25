@@ -9,7 +9,44 @@ dependencies = [
     "aiohttp>=3.9.0",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
-    "cryptography>=42.0.0",
+    # UPPER BOUND IS macOS PACKAGING, NOT A SECURITY PREFERENCE — and it is a
+    # MEASURED mechanism, not a guess at one. Do not lift it without re-reading
+    # the wheel matrix below; a bare `>=42.0.0` ships a BROKEN macOS bundle.
+    #
+    # flet/serious_python builds macOS as TWO INDEPENDENT pip resolutions and
+    # then merges them (package_command.dart -> macos_utils.mergeMacOsSitePackages):
+    #     build/site-packages/arm64   <- resolved for macosx_11_0_arm64
+    #     build/site-packages/x86_64  <- resolved for macosx_10_9_x86_64
+    # cryptography 49.0.0 (2026-06-12) DROPPED the macosx universal2 wheel and
+    # ships arm64-only from then on. So the two passes cannot agree:
+    #     arm64  >=42.0.0 -> cryptography-50.0.0-cp311-abi3-macosx_11_0_arm64.whl
+    #     x86_64 >=42.0.0 -> cryptography-48.0.1-cp311-abi3-macosx_10_9_universal2.whl
+    # (both reproduced exactly with pip's own resolver — this IS the observed pair).
+    #
+    # The merge then makes the disagreement invisible instead of loud. It lipo's
+    # or copies file-by-file, and cryptography's compiled extension is named
+    # `_rust.abi3.so` — a STABLE-ABI, VERSION-AGNOSTIC filename. The x86_64 copy
+    # therefore overwrites the arm64 copy at the same path while 50.0.0's Python
+    # files and .dist-info survive, producing ONE bundle whose metadata says
+    # 50.0.0 and whose shared object says 48.0.1. cryptography checks exactly
+    # that at import and raises, which is what killed the 3.0.0 release:
+    #   "The version of cryptography does not match the loaded shared object.
+    #    Loaded python version: 50.0.0, shared object version: b'48.0.1'"
+    # NOTE for anyone who reads `abi3` as "safe": abi3 protects against an
+    # INTERPRETER-version mismatch and nothing else. It is precisely what let two
+    # different LIBRARY versions collide on one filename without a rename.
+    #
+    # <49 keeps both arches on the last universal2 line (48.0.x), so ONE version
+    # satisfies both passes and the merge is a no-op instead of a corruption.
+    # Verified against pip for all four targets we ship: macosx arm64 and x86_64
+    # both resolve 48.0.1 universal2, and win_amd64/manylinux are UNCHANGED at
+    # 48.0.1 — this bound costs the other two platforms nothing.
+    # It is a RANGE, not an == pin, so 48.0.x security patches still land.
+    #
+    # The way OUT of this bound is a product decision, not a packaging one:
+    # either cryptography restores universal2, or persona drops Intel macOS and
+    # builds `--arch arm64` only. Until one of those happens, this stays.
+    "cryptography>=42.0.0,<49",
     # Cap below 2.0: mcp 2.x removed the mcp.server.fastmcp path we import
     # (build_mcp uses FastMCP), so an unpinned >=1.28.0 let the macOS build
     # resolve 2.x and raise ModuleNotFoundError, silently killing the /mcp server.
