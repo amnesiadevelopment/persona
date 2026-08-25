@@ -1293,18 +1293,103 @@ def test_a_refusal_does_not_outlive_a_failed_manual_update_either(monkeypatch):
     assert "can't go back while an update is pending" not in found, found
 
 
+def _read_panel_during_a_live_download(app, monkeypatch, start):
+    """Render the version panel from INSIDE a download that is still in
+    flight, driving the download through the REAL entry point `start`.
+
+    WHY THE ENTRY POINT AND NOT THE SETTER. The transition under test is the
+    routing of the `True` write through `_set_update_in_progress`, which lives
+    at the CALL SITE (_start_app_update entry / _apply_update_now's thread) —
+    not in the setter body. So calling `app._set_update_in_progress(True)` by
+    hand asserts only that the setter does what its body plainly says, and
+    stays green when the call site is un-routed back to a raw write: the
+    regression it is named for walks straight past it. That is one level up
+    from assigning the flag directly, and it fails for exactly the reason
+    _click_rollback_during_a_failing_download and _stage_an_update_for_real
+    already give — the code under test is the WRITE, so anything that reaches
+    the state without going through the caller is not exercising it.
+
+    WHY THE PANEL IS READ MID-FLIGHT. The stale instruction is only
+    contradictory while a download is actually running, so the window has to
+    be held open to see it: the download is blocked on an Event, the panel is
+    rendered, and only then is it released. Reading afterwards would report on
+    a finished download, where the `False` transition (already pinned) has
+    fired and cleared the field for a different reason."""
+    from src.ui import app as app_mod
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def _download(*a, **k):
+        started.set()
+        release.wait(5)
+        return ""
+
+    monkeypatch.setattr(app_mod.app_update, "download_update", _download)
+
+    start()
+    assert started.wait(5), "download thread never started"
+
+    try:
+        found = _panel_texts_keeping_staged(app, monkeypatch)
+    finally:
+        release.set()
+        for _ in range(500):                   # let the thread run its finally
+            if not app._update_in_progress:
+                break
+            time.sleep(0.01)
+    return found
+
+
 def test_starting_a_download_retires_a_stale_restart_instruction(monkeypatch):
     # The OTHER transition of the same setter, and it retires a DIFFERENT
     # message. Going True must clear "restart to run the previous version" for
     # the same reason staging does: the operator is being told to restart into
-    # a version they are in the act of replacing. Without this, the canonical
-    # sequence (revert, then upstream ships the fix, which begins downloading)
-    # leaves that instruction standing over a download.
+    # a version they are in the act of replacing.
+    #
+    # This is the canonical sequence for the whole feature: you revert BECAUSE
+    # a release was bad, and upstream THEN ships the fix, which begins
+    # downloading. Both steps run through their real entry points, and the
+    # assertion is on the RENDERED PANEL rather than on _app_rollback_status,
+    # for the reason the two failing-download tests above already give — the
+    # defect is what the operator READS. What they read without this is an
+    # instruction to restart into the very version being replaced, with the
+    # progress bar for its replacement ticking directly beneath it.
     app = _rollback_app_mid_download(monkeypatch)
 
-    app._on_app_rollback()                     # the revert succeeds, for real
+    app._on_app_rollback()                     # step 1: the revert succeeds
     assert app._app_rollback_status == "restart to run the previous version"
 
-    app._set_update_in_progress(True)          # ...and a download begins
+    found = _read_panel_during_a_live_download(
+        app, monkeypatch, lambda: app._start_app_update("http://x")
+    )                                          # step 2: upstream ships the fix
 
-    assert app._app_rollback_status == "", app._app_rollback_status
+    # Positive control: the panel really was rendered mid-download, so the
+    # absence asserted below is a retired message and not an unbuilt panel.
+    assert any("updating to new version" in t for t in found), found
+    # ...and the instruction to restart into the version being replaced is
+    # not standing over it.
+    assert "restart to run the previous version" not in found, found
+
+
+def test_a_manual_update_retires_a_stale_restart_instruction_too(monkeypatch):
+    # The SAME transition at the OTHER site. _apply_update_now runs its own
+    # thread with its own entry into the flag, so routing only
+    # _start_app_update would leave this path rendering the stale instruction
+    # while the test above went green — one arm of one method is not the
+    # gesture. This is the `True` counterpart of
+    # test_a_refusal_does_not_outlive_a_failed_manual_update_either, which
+    # covers the same site's `False` arm.
+    app = _rollback_app_mid_download(monkeypatch)
+    app._app_update_url = "http://x"
+    app._update_staged = ""
+
+    app._on_app_rollback()
+    assert app._app_rollback_status == "restart to run the previous version"
+
+    found = _read_panel_during_a_live_download(
+        app, monkeypatch, app._apply_update_now
+    )
+
+    assert any("updating to new version" in t for t in found), found
+    assert "restart to run the previous version" not in found, found
