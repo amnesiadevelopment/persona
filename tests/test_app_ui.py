@@ -1,5 +1,6 @@
 import asyncio
 import threading
+import time
 from types import SimpleNamespace
 
 from src.ui.app import App
@@ -1189,4 +1190,121 @@ def test_a_refusal_does_not_outlive_the_update_that_caused_it(monkeypatch):
     app._apply_update("/tmp/persona-3.0.0.dmg")   # file never existed -> un-stages
 
     assert app._update_staged == ""
+    assert app._app_rollback_status == "", app._app_rollback_status
+
+
+def _click_rollback_during_a_failing_download(app, monkeypatch, start):
+    """Drive a download that FAILS, with the operator clicking the stale
+    rollback row while it is still in flight, through the REAL entry point.
+
+    `start` is the entry point to call (_start_app_update / _apply_update_now),
+    because there are TWO sites that own this flag and they are separate
+    `finally` blocks — a helper that only ever drove one would report the other
+    as covered.
+
+    Nothing here is hand-set. The clearing rule lives on the WRITE to
+    _update_in_progress, so a test that assigns the flag directly bypasses the
+    code under test and asserts on a state no real sequence can reach — the
+    same reasoning as _stage_an_update_for_real above. The download is held
+    open just long enough for the click to land inside the in-flight window,
+    then released, so the sequence is the operator's real one rather than a
+    simulation of its end state."""
+    from src.ui import app as app_mod
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def _download(*a, **k):
+        started.set()
+        release.wait(5)
+        return ""            # the download FAILS -> _update_staged is never written
+
+    monkeypatch.setattr(app_mod.app_update, "download_update", _download)
+
+    start()
+    assert started.wait(5), "download thread never started"
+
+    # The click lands while the update really is pending, so the refusal is
+    # TRUE at the moment it is written. That is the whole point: this test is
+    # about a true message that later stops being true.
+    app._on_app_rollback()
+    assert app._app_rollback_status == "can't go back while an update is pending"
+
+    release.set()
+    for _ in range(500):                       # let the thread run its finally
+        if not app._update_in_progress:
+            break
+        time.sleep(0.01)
+    assert not app._update_in_progress, "download thread never finished"
+
+
+def _rollback_app_mid_download(monkeypatch):
+    app = _rollback_app(
+        monkeypatch, went="/Applications/p.app", retained="/Applications/p.app.bak"
+    )
+    app._update_start_t = 0.0
+    app._app_update_done = 0
+    app._app_update_total = 0
+    return app
+
+
+def test_a_refusal_does_not_outlive_a_download_that_failed(monkeypatch):
+    # THE SECOND ARM of the same guard, and the one the staged setter cannot
+    # reach. `_on_app_rollback` refuses on `_update_in_progress or
+    # _update_staged`, but a download that FAILS never writes _update_staged —
+    # it takes the `else` arm to _app_update_status = "failed" and clears the
+    # in-flight flag in its `finally` — so the staged setter never fires and
+    # the refusal used to survive an update that is no longer pending.
+    #
+    # Asserted on the RENDERED PANEL, not on the flag, because the defect is
+    # what the operator READS: the row offering "go back to the previous
+    # version" and, directly beneath it, a line saying they can't. A flag-only
+    # assertion would pass over a panel still carrying that pair.
+    app = _rollback_app_mid_download(monkeypatch)
+
+    _click_rollback_during_a_failing_download(
+        app, monkeypatch, lambda: app._start_app_update("http://x")
+    )
+
+    found = _panel_texts_keeping_staged(app, monkeypatch)
+
+    # the gesture is live again — nothing is pending, so it must be offered...
+    assert "go back to the previous version" in found, found
+    # ...and the refusal that denied it must not still be sitting under it.
+    assert "can't go back while an update is pending" not in found, found
+
+
+def test_a_refusal_does_not_outlive_a_failed_manual_update_either(monkeypatch):
+    # The SAME defect at the OTHER site. _apply_update_now runs its own thread
+    # with its own `finally`, so fixing only _start_app_update would leave this
+    # path sticky while the test above went green — one arm of one method is
+    # not the gesture. Driven through the real manual-update entry point.
+    app = _rollback_app_mid_download(monkeypatch)
+    app._app_update_url = "http://x"
+    app._update_staged = ""
+
+    _click_rollback_during_a_failing_download(
+        app, monkeypatch, app._apply_update_now
+    )
+
+    found = _panel_texts_keeping_staged(app, monkeypatch)
+
+    assert "go back to the previous version" in found, found
+    assert "can't go back while an update is pending" not in found, found
+
+
+def test_starting_a_download_retires_a_stale_restart_instruction(monkeypatch):
+    # The OTHER transition of the same setter, and it retires a DIFFERENT
+    # message. Going True must clear "restart to run the previous version" for
+    # the same reason staging does: the operator is being told to restart into
+    # a version they are in the act of replacing. Without this, the canonical
+    # sequence (revert, then upstream ships the fix, which begins downloading)
+    # leaves that instruction standing over a download.
+    app = _rollback_app_mid_download(monkeypatch)
+
+    app._on_app_rollback()                     # the revert succeeds, for real
+    assert app._app_rollback_status == "restart to run the previous version"
+
+    app._set_update_in_progress(True)          # ...and a download begins
+
     assert app._app_rollback_status == "", app._app_rollback_status
