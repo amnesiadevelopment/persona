@@ -756,3 +756,199 @@ def test_the_three_exit_codes_are_distinct():
     }
     assert len(codes) == 3
     assert engine_gate.EXIT_PASS == 0  # only 0 lets the bump proceed
+
+
+# --- an UNREADABLE recording is a refusal, never drift ----------------------
+#
+# Exit 1 out of this module means one thing: the engine moved what a site sees.
+# It is the loudest signal this subsystem produces, and the remedy an operator
+# reaches for on a genuine red (investigate the fingerprint, re-record, refuse
+# the bump) is not the remedy for a corrupt artifact or a mistyped path.
+#
+# The two recordings are written by a SEPARATE `record` step and the epilog
+# requires them re-recorded per-runner in the same job, which is exactly the
+# configuration where a partial write or a wrong path happens. So a file that
+# was never successfully read must refuse on exit 2 and must never be reported
+# as the engine having moved.
+#
+# THE FIXTURES ARE REAL BYTES ON A REAL FILESYSTEM, and the directory case is a
+# real directory. What reaches this arm is a property of `open()` and
+# `json.load`, so a raised stub would let the guard be "tested" against an
+# exception those two never actually produce.
+
+
+def _unreadable(tmp_path, kind):
+    """One genuinely unreadable recording of each class, built from real bytes."""
+    if kind == "binary":
+        # Non-UTF-8 bytes: UnicodeDecodeError, which IS a ValueError but is NOT
+        # a JSONDecodeError — the case a narrower guard silently misses.
+        path = tmp_path / "binary.json"
+        path.write_bytes(b"\xff\xfe\x00\x81\x82\x83 not utf-8 at all")
+    elif kind == "invalid_json":
+        # A proxy/CDN error page saved under a .json name.
+        path = tmp_path / "invalid.json"
+        path.write_text("<html><body>502 Bad Gateway</body></html>", encoding="utf-8")
+    elif kind == "empty":
+        path = tmp_path / "empty.json"
+        path.write_bytes(b"")
+    elif kind == "truncated":
+        # A recording killed mid-write — the per-runner failure this gate's own
+        # epilog makes likely.
+        path = tmp_path / "truncated.json"
+        path.write_text('{"schema_version": 1, "engine_build": "firef', encoding="utf-8")
+    elif kind == "directory":
+        # An OSError (IsADirectoryError) and NOT a ValueError. This is the case
+        # that proves the guard's width: a fix written only to the corrupt-bytes
+        # story passes every row above and still tracebacks on this one.
+        path = tmp_path / "a_directory"
+        path.mkdir()
+    else:  # pragma: no cover - guards the parametrisation itself
+        raise AssertionError(f"unknown fixture kind {kind!r}")
+    return str(path)
+
+
+UNREADABLE_KINDS = ["binary", "invalid_json", "empty", "truncated", "directory"]
+
+
+@pytest.mark.parametrize("kind", UNREADABLE_KINDS)
+@pytest.mark.parametrize("position", ["before", "after"])
+def test_an_unreadable_recording_is_cannot_run_not_drift(tmp_path, kind, position):
+    """Exit 2, and specifically NOT 1, for every class of file that cannot be read.
+
+    Both argument positions, because there are two `load()` calls and guarding
+    only the first leaves the `after` recording tracebacking out identically.
+    """
+    good = _write(tmp_path, "good.json", _snap())
+    bad = _unreadable(tmp_path, kind)
+    argv = [bad, good] if position == "before" else [good, bad]
+
+    code = engine_gate.main(["compare", *argv])
+
+    assert code == engine_gate.EXIT_CANNOT_RUN
+    # The whole point of the ticket: 1 is the DRIFT code and this is not drift.
+    assert code != engine_gate.EXIT_DRIFT
+
+
+@pytest.mark.parametrize("kind", UNREADABLE_KINDS)
+@pytest.mark.parametrize("position", ["before", "after"])
+def test_an_unreadable_recording_does_not_traceback(tmp_path, kind, position):
+    """It must REFUSE, not crash. An escaping exception is what produced the
+    false drift signal in the first place: an unhandled raise out of `main()`
+    exits 1, which this module documents as "the engine moved what a site sees".
+    """
+    good = _write(tmp_path, "good.json", _snap())
+    bad = _unreadable(tmp_path, kind)
+    argv = [bad, good] if position == "before" else [good, bad]
+
+    # No pytest.raises: any exception escaping here fails the test, which is
+    # precisely the behaviour being pinned.
+    assert engine_gate.main(["compare", *argv]) == engine_gate.EXIT_CANNOT_RUN
+
+
+@pytest.mark.parametrize("kind", UNREADABLE_KINDS)
+@pytest.mark.parametrize("position", ["before", "after"])
+def test_the_unreadable_refusal_names_the_file_and_denies_drift(
+    tmp_path, kind, position, capsys
+):
+    """An operator has to be able to act on it: WHICH file, and the explicit
+    statement that nothing was compared so this is not a drift finding.
+    """
+    good = _write(tmp_path, "good.json", _snap())
+    bad = _unreadable(tmp_path, kind)
+    argv = [bad, good] if position == "before" else [good, bad]
+
+    engine_gate.main(["compare", *argv])
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+
+    # It must name the file the operator typed. Literally — `quote_path` exists
+    # so a Windows path is not repr()-escaped into a path that does not exist.
+    assert bad in combined
+    # It must say which of the two arguments was the bad one.
+    assert position in combined
+    assert "NOT drift" in combined
+    assert "Nothing was compared" in combined
+    # And it must never print the gate's agreement signal for a comparison that
+    # never happened.
+    assert "PASS" not in captured.out
+
+
+@pytest.mark.parametrize("kind", UNREADABLE_KINDS)
+def test_an_unreadable_recording_is_refused_even_against_a_drifting_pair(
+    tmp_path, kind
+):
+    """The refusal OUTRANKS a verdict it could otherwise have computed.
+
+    Without this, a test could pass merely because the readable side happened
+    to agree. Here the readable side is one half of a genuinely DRIFTING pair,
+    so the only way to reach exit 1 is to have read both files — and the only
+    honest answer is still the refusal.
+    """
+    before, after = _pair(after_window={"navigator.userAgent": {"value": "X"}})
+    good = _write(tmp_path, "b.json", before)
+    bad = _unreadable(tmp_path, kind)
+
+    assert engine_gate.main(["compare", good, bad]) == engine_gate.EXIT_CANNOT_RUN
+
+
+# --- the controls: this change must not move any of them --------------------
+
+
+def test_a_missing_recording_still_refuses_in_its_own_words(tmp_path, capsys):
+    """CONTROL, not a target. `FileNotFoundError` is an `OSError`, so the new
+    guard could have swallowed the absent-file case and re-labelled it "could
+    not be read". An absent recording and a corrupt one are different operator
+    problems and keep their own messages.
+    """
+    code = engine_gate.main(
+        ["compare", _write(tmp_path, "b.json", _snap()), str(tmp_path / "nope.json")]
+    )
+    assert code == engine_gate.EXIT_CANNOT_RUN
+    combined = "".join(capsys.readouterr())
+    assert "nothing is certified" in combined
+    # The unreadable-guard's wording must NOT have taken over this arm.
+    assert "could not be read" not in combined
+
+
+def test_a_valid_json_non_snapshot_still_refuses_via_not_a_snapshot(tmp_path, capsys):
+    """CONTROL. `NotASnapshot` subclasses `ValueError`, so a guard placed around
+    `gate()` instead of around the two `load()` calls would catch a file that
+    read back perfectly well and mislabel it as unreadable. It parsed fine; it
+    simply is not a snapshot, and it keeps saying so.
+    """
+    code = engine_gate.main(
+        [
+            "compare",
+            _write(tmp_path, "b.json", _snap()),
+            _write(tmp_path, "a.json", [1, 2, 3]),
+        ]
+    )
+    assert code == engine_gate.EXIT_CANNOT_RUN
+    combined = "".join(capsys.readouterr())
+    assert "is not a snapshot" in combined
+    assert "could not be read" not in combined
+
+
+def test_the_guard_leaves_a_genuine_drift_and_a_genuine_pass_alone(tmp_path):
+    """CONTROL. The refusal must not have cost the gate its other two verdicts:
+    a real difference is still 1 and a real clean bump is still 0.
+    """
+    before, after = _pair(after_window={"navigator.userAgent": {"value": "X"}})
+    assert (
+        engine_gate.main(
+            ["compare", _write(tmp_path, "db.json", before), _write(tmp_path, "da.json", after)]
+        )
+        == engine_gate.EXIT_DRIFT
+    )
+
+    clean_before, clean_after = _pair()
+    assert (
+        engine_gate.main(
+            [
+                "compare",
+                _write(tmp_path, "pb.json", clean_before),
+                _write(tmp_path, "pa.json", clean_after),
+            ]
+        )
+        == engine_gate.EXIT_PASS
+    )
