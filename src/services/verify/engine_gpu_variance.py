@@ -107,7 +107,9 @@ wedge the app. The remedy for a red run is therefore to name the tag in
 ``policy.check()``, so that refusal reaches operators by name without waiting
 for a persona release. The record this module writes carries ``engine_build``
 for exactly that reason: a finding you cannot attribute to a tag cannot be
-acted on.
+acted on. ``replay`` therefore PRESERVES that field rather than re-deriving
+it — the machine re-reading an artifact is not the machine that measured, and
+a re-stamped tag would point the blocklist at the wrong build.
 """
 
 from __future__ import annotations
@@ -535,17 +537,49 @@ def engine_build() -> str:
         return "unknown"
 
 
-def _record(readings: dict, result: dict) -> dict:
-    """The artifact written by both ``check`` and ``replay``."""
-    return {
-        "measured_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "engine_build": engine_build(),
+def _record(
+    readings: dict, result: dict, *, source: "dict | None" = None
+) -> dict:
+    """The artifact written by both ``check`` and ``replay``.
+
+    ``source`` is the record being RE-VERDICTED, and is passed by ``replay``
+    only. Its provenance — ``measured_at`` and ``engine_build`` — is
+    PRESERVED, never re-derived.
+
+    ⚠️ This is load-bearing, not tidiness. ``replay`` runs on a machine that
+    is NOT the machine that measured: the documented case is a laptop with no
+    engine, no display and no runner, reading an artifact long after the
+    runner that produced it was destroyed. Re-deriving there does not blank
+    the field — it substitutes a real-looking version string (or ``"unknown"``
+    where no engine is installed) for the tag that was actually measured.
+
+    The whole documented remedy for a red run is to name the bad tag in
+    ``policy.KNOWN_BAD_VERSIONS``. An operator who blocklists the REPLAYING
+    machine's build refuses a good build and leaves the bad one installing
+    hourly — the same shape of failure this module exists to catch: a value
+    that stays perfectly plausible, so no per-row tell fires.
+
+    ``replayed_at`` records when the re-verdict happened, so the moment of
+    measurement and the moment of re-reading are both present and cannot be
+    mistaken for one another.
+    """
+    src = source or {}
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    record = {
+        # A falsy source value is treated as absent, so a record written
+        # before this field existed still resolves to something rather than
+        # to an empty string that reads like a value.
+        "measured_at": src.get("measured_at") or now,
+        "engine_build": src.get("engine_build") or engine_build(),
         "engine_authored_arms": sorted(ENGINE_AUTHORED_IDENTITY_ARMS),
         "readings": {
             a: {str(s): v for s, v in by.items()} for a, by in readings.items()
         },
         "result": result,
     }
+    if source is not None:
+        record["replayed_at"] = now
+    return record
 
 
 def _cmd_check(args: argparse.Namespace) -> int:
@@ -595,7 +629,11 @@ def _cmd_replay(args: argparse.Namespace) -> int:
     none should be assumed to — verified by grep, not by reading.
 
     It deliberately cannot be mistaken for a measurement: it takes no reading
-    and is a separate subcommand from ``check``.
+    and is a separate subcommand from ``check``. With ``--output`` it inherits
+    the source record's ``measured_at`` and ``engine_build`` rather than
+    stamping its own (see :func:`_record`), and records its own moment as
+    ``replayed_at`` — so the re-verdict can never be read as a fresh reading,
+    and the tag an operator blocklists is the one that was actually measured.
     """
     try:
         with open(args.record, encoding="utf-8") as fh:
@@ -634,7 +672,9 @@ def _cmd_replay(args: argparse.Namespace) -> int:
     print(format_result(result))
     if args.output:
         with open(args.output, "w", encoding="utf-8") as fh:
-            json.dump(_record(readings, result), fh, indent=2)
+            # source=doc: this machine did not take the reading, so the
+            # record's own provenance survives the re-verdict.
+            json.dump(_record(readings, result, source=doc), fh, indent=2)
     return exit_code_for(result)
 
 
