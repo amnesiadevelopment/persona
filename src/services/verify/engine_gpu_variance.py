@@ -583,17 +583,19 @@ def _cmd_check(args: argparse.Namespace) -> int:
 def _cmd_replay(args: argparse.Namespace) -> int:
     """Re-verdict readings from a record file, taking no new measurement.
 
-    THIS IS WHAT MAKES THE WIRING'S REDNESS PROVABLE. A live ``check`` can only
-    demonstrate the outcome the engine happens to produce today — which is a
-    pass, and a gate only ever seen passing is a gate nobody has evidence can
-    fail. Replaying a synthesised low-variance record drives the SAME
-    ``classify`` → ``exit_code_for`` → process-exit-code path the scheduled job
-    gates on, so the job's red half is exercised on every run rather than
-    asserted in a comment.
+    This is the FORENSIC half. When the scheduled job goes red it uploads its
+    record as an artifact (``engine-gpu-variance.yml`` step "Keep the reading
+    when the gate goes red"), and this re-reads that file to reproduce the
+    verdict — on a machine with no engine, no display and no runner, long after
+    the runner that measured it was destroyed.
 
-    It deliberately CANNOT be mistaken for a measurement: it takes no reading,
-    it is a separate subcommand from ``check``, and the workflow runs it only
-    against a file it generated itself.
+    ⚠️ It is NOT what proves the gate can go red. That is ``selftest``, which
+    the workflow runs FIRST (before the engine is even downloaded) and which
+    needs no engine. ``replay`` is OPERATOR-INVOKED: no workflow calls it, and
+    none should be assumed to — verified by grep, not by reading.
+
+    It deliberately cannot be mistaken for a measurement: it takes no reading
+    and is a separate subcommand from ``check``.
     """
     try:
         with open(args.record, encoding="utf-8") as fh:
@@ -735,7 +737,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     r = sub.add_parser(
         "replay",
-        help="re-verdict a record file without measuring (proves the gate red)",
+        help="re-verdict a red run's uploaded record, without measuring",
     )
     r.add_argument("record", help="a record file written by `check --output`")
     r.add_argument("--output", default="", help="write the re-verdict here")

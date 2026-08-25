@@ -372,10 +372,11 @@ def test_selftest_defaults_to_the_arms_the_product_actually_defers_on():
 
 
 def test_replay_reproduces_the_verdict_without_taking_a_reading(tmp_path):
-    # Replay is how a red run's evidence is re-read after the fact, and how the
-    # gate's redness is demonstrated against a synthesised record. It must NOT
-    # be able to take a measurement: if it ever reached the live half, a replay
-    # would silently become a fresh reading of a different build.
+    # Replay is how a red run's evidence is re-read after the fact — the
+    # forensic half, operator-invoked, called by no workflow. (What proves the
+    # gate can go red is `selftest`, which the scheduled job runs first.)
+    # It must NOT be able to take a measurement: if it ever reached the live
+    # half, a replay would silently become a fresh reading of a different build.
     record = tmp_path / "reading.json"
     record.write_text(json.dumps({
         "readings": {"windows": {str(s): "Vendor | SAME" for s in SEEDS}}
