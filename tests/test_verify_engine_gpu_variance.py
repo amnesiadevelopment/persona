@@ -11,6 +11,9 @@ negative cases: a gate only ever verified against good data is a check that
 could not have failed, which this project does not count as coverage.
 """
 
+import argparse
+import json
+
 import pytest
 
 from src.services.browser import gpu_ext
@@ -321,3 +324,155 @@ def test_format_says_so_when_there_is_nothing_to_police():
     # that reads like a clean bill of health.
     text = v.format_result(v.classify({}))
     assert "nothing to police" in text.lower()
+
+
+# --------------------------------------------------------------------------
+# PS-176: the WIRING. Everything above tests the judgement; these test the
+# things a scheduled job depends on to be able to go red.
+# --------------------------------------------------------------------------
+
+def test_selftest_passes_and_actually_exercises_all_three_red_paths():
+    # The self-test is what the workflow runs BEFORE trusting a green from the
+    # live check. Assert both halves of its contract: that it passes today, and
+    # that what it exercises really is the three failure modes at the exit
+    # codes they must produce. Asserting only "it exits 0" would let it degrade
+    # into a check of nothing while still reporting success.
+    assert v._cmd_selftest(argparse.Namespace(arm="windows")) == v.EXIT_PASS
+
+    cases = v._selftest_cases("windows")
+    assert [name for name, _, _ in cases] == [
+        "CONSTANT", "TOO_NARROW", "INCONCLUSIVE"
+    ]
+    for name, readings, expected in cases:
+        verdict = v.classify(readings)["per_arm"]["windows"]["verdict"]
+        assert verdict == name, f"{name} case no longer produces a {name} verdict"
+        assert v.exit_code_for(v.classify(readings)) == expected
+
+
+def test_selftest_goes_red_when_the_judgement_stops_being_able_to_fail():
+    # The point of the self-test is to catch a classify() that has lost its
+    # teeth. Simulate exactly that — a judgement that calls everything OK — and
+    # assert the self-test REFUSES to pass. Without this, the self-test itself
+    # is a check that has never been shown to fail.
+    original = v.classify
+    try:
+        v.classify = lambda readings: {           # type: ignore[assignment]
+            "per_arm": {a: {"verdict": "OK"} for a in readings},
+            "findings": [], "inconclusive": [], "arms_checked": sorted(readings),
+        }
+        assert v._cmd_selftest(argparse.Namespace(arm="windows")) == v.EXIT_FINDING
+    finally:
+        v.classify = original                     # type: ignore[assignment]
+
+
+def test_selftest_defaults_to_the_arms_the_product_actually_defers_on():
+    # Called with no --arm (which is how the workflow calls it), it must police
+    # a real engine-authored arm rather than silently checking nothing.
+    assert v._cmd_selftest(argparse.Namespace(arm="")) == v.EXIT_PASS
+
+
+def test_replay_reproduces_the_verdict_without_taking_a_reading(tmp_path):
+    # Replay is how a red run's evidence is re-read after the fact, and how the
+    # gate's redness is demonstrated against a synthesised record. It must NOT
+    # be able to take a measurement: if it ever reached the live half, a replay
+    # would silently become a fresh reading of a different build.
+    record = tmp_path / "reading.json"
+    record.write_text(json.dumps({
+        "readings": {"windows": {str(s): "Vendor | SAME" for s in SEEDS}}
+    }), encoding="utf-8")
+
+    def _explode(*a, **k):                        # pragma: no cover - must not run
+        raise AssertionError("replay must never take a live reading")
+
+    original = v.measure
+    try:
+        v.measure = _explode                      # type: ignore[assignment]
+        out = tmp_path / "verdict.json"
+        code = v._cmd_replay(
+            argparse.Namespace(record=str(record), output=str(out))
+        )
+    finally:
+        v.measure = original                      # type: ignore[assignment]
+
+    assert code == v.EXIT_FINDING
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert written["result"]["per_arm"]["windows"]["verdict"] == "CONSTANT"
+
+
+def test_replay_restores_integer_seeds_so_a_record_round_trips(tmp_path):
+    # JSON keys are strings. A record written by `check --output` and read back
+    # by `replay` must produce the same verdict as the in-memory readings did,
+    # or the evidence file disagrees with the run that produced it.
+    live = {"windows": {s: f"Vendor | GPU-{i}" for i, s in enumerate(SEEDS)}}
+    record = tmp_path / "reading.json"
+    record.write_text(json.dumps(v._record(live, v.classify(live))), encoding="utf-8")
+
+    out = tmp_path / "verdict.json"
+    assert v._cmd_replay(
+        argparse.Namespace(record=str(record), output=str(out))
+    ) == v.EXIT_PASS
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert list(written["readings"]["windows"]) == [str(s) for s in SEEDS]
+    assert written["result"]["per_arm"]["windows"]["seeds_readable"] == len(SEEDS)
+
+
+def test_replay_refuses_a_record_it_cannot_read_rather_than_passing(tmp_path):
+    # A missing/corrupt/empty record established NOTHING. It must exit
+    # CANNOT_RUN, never PASS — the same "we failed to look" discipline the
+    # module applies to MIN_SEEDS, applied to the file.
+    missing = tmp_path / "nope.json"
+    assert v._cmd_replay(
+        argparse.Namespace(record=str(missing), output="")
+    ) == v.EXIT_CANNOT_RUN
+
+    corrupt = tmp_path / "corrupt.json"
+    corrupt.write_text("{not json", encoding="utf-8")
+    assert v._cmd_replay(
+        argparse.Namespace(record=str(corrupt), output="")
+    ) == v.EXIT_CANNOT_RUN
+
+    empty = tmp_path / "empty.json"
+    empty.write_text(json.dumps({"readings": {}}), encoding="utf-8")
+    assert v._cmd_replay(
+        argparse.Namespace(record=str(empty), output="")
+    ) == v.EXIT_CANNOT_RUN
+
+
+def test_an_undersampled_replay_is_cannot_run_so_the_job_cannot_launder_it():
+    # The wired path must not be able to turn INCONCLUSIVE into a pass. The
+    # workflow relies on the exit code alone, so this is the property that
+    # keeps a half-failed reading from reading as "the engine varies".
+    readings = {"windows": {s: (f"Vendor | GPU-{i}" if i < 3 else None)
+                            for i, s in enumerate(SEEDS)}}
+    result = v.classify(readings)
+    assert result["per_arm"]["windows"]["verdict"] == "INCONCLUSIVE"
+    assert v.exit_code_for(result) == v.EXIT_CANNOT_RUN
+    assert v.exit_code_for(result) != v.EXIT_PASS
+
+
+def test_the_record_carries_the_engine_build_so_a_finding_can_be_blocklisted():
+    # The remedy for a finding is to name the bad tag in
+    # policy.KNOWN_BAD_VERSIONS. A record that does not say WHICH BUILD it
+    # measured cannot be acted on, so the build is part of the artifact.
+    live = {"windows": {s: "Vendor | SAME" for s in SEEDS}}
+    doc = v._record(live, v.classify(live))
+    assert "engine_build" in doc
+    assert doc["engine_build"]
+    assert doc["engine_authored_arms"] == sorted(v.ENGINE_AUTHORED_IDENTITY_ARMS)
+    assert doc["measured_at"]
+
+
+def test_engine_build_reads_unknown_rather_than_empty_when_unresolvable(
+    monkeypatch,
+):
+    # An empty string in the record would read like a value. Mirrors
+    # snapshot.engine_build's contract: never raise, and say "unknown".
+    import src.services.engine.updater as updater
+    monkeypatch.setattr(updater, "current_version", lambda: "")
+    assert v.engine_build() == "unknown"
+
+    def _raise():
+        raise RuntimeError("engine package not importable")
+
+    monkeypatch.setattr(updater, "current_version", _raise)
+    assert v.engine_build() == "unknown"

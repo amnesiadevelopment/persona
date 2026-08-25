@@ -54,27 +54,60 @@ quietly satisfied by a cheap two-seed run.
 
 WHERE IT RUNS — STATED PLAINLY, INCLUDING WHERE IT DOES NOT
 -------------------------------------------------------------
-The live half needs the product's own engine (fingerprint-chromium). Measured
-at this commit: CI provisions ``browser_firefox`` only and names
-``browser_chromium`` as a real capability nothing declares (``ci.yml``), and
-``engine-autoupdate.yml``'s gate is firefox-only for its own recorded reason.
-So this lane CANNOT run on the current CI jobs, and pretending otherwise would
-be the false green this package is most careful about.
+Since PS-176 this reading is WIRED TO A PATH THAT CAN GO RED:
+``.github/workflows/engine-gpu-variance.yml``, daily at 06:40 UTC. That job
+provisions the engine itself (xvfb + the tree's own driver pins + a
+``download_engine`` of whatever upstream is serving) and fails on a narrowed
+arm. Before PS-176 the judgement was gated and the reading was wired to
+nothing; the header below used to say so, and no longer needs to.
 
-What that leaves is a two-part shape, and both parts are real:
+⚠️ THE JOB IS DELIBERATELY UNPINNED, and that is the whole design. The
+tempting shape is to pin a known engine build so the job is reproducible — but
+THE RISK IS UPSTREAM'S ``/releases/latest``, which is exactly what a pin hides.
+A gate on a pinned build stays green forever while the build users actually
+receive goes bad. So the job measures the same bytes ``updater.fetch_latest()``
+hands the operator's app. The cost is accepted knowingly: this job can go red
+because upstream changed something, which IS the signal.
+
+It is NOT wired into ``engine-autoupdate.yml``, and that is not an oversight.
+Verified by re-running the greps: that job bumps the FIREFOX engine and only
+Firefox (``engine-baseline.txt`` is ``firefox-20``, both provisioning steps
+import ``services.engine.firefox``), and fingerprint-chromium is touched by no
+workflow at all. A chromium variance check hosted there would be a gate that
+can never fire on the event it exists to catch.
+
+The two halves, and both are real:
 
 * :func:`classify` is a PURE function over readings. It carries the whole
   verdict — the bar, the skew sensitivity, the sample-size floor — and it is
   exercised in CI on every run, including the cases where it must go RED. A
   regression in the judgement is caught by the normal test suite.
-* :func:`measure` is the live half. It runs wherever the engine is installed
-  (an operator machine, or the runner that eventually provisions the engine)
+* :func:`measure` is the live half. It needs the product's own engine, which
+  the normal CI jobs do not provision (``browser_firefox`` only, see
+  ``ci.yml``). It runs in the scheduled job above, and on any operator machine
   via ``python -m src.services.verify.engine_gpu_variance check``.
 
-The honest summary: the JUDGEMENT is automatically gated today; the READING is
-automated but runs only where the engine exists. Wiring it into the chromium
-engine's own bump is the remaining step, and it is named here rather than
-quietly assumed.
+Because a live ``check`` can only ever demonstrate the outcome the engine
+happens to produce today — a pass — the scheduled job runs
+``... engine_gpu_variance selftest`` FIRST. That drives synthesised
+low-variance readings through the same ``classify`` → ``exit_code_for`` path
+and asserts each lands on the exit code it must, so the gate's ability to FAIL
+is demonstrated on every run rather than assumed. A check only ever observed
+passing is not coverage.
+
+⚠️ WHAT IS STILL NOT COVERED, named rather than left to be discovered:
+DETECTION IS DAILY, INSTALLATION IS HOURLY. ``app.py:_check_engines_periodic``
+polls every hour, unattended, and installs whatever upstream published, with
+``policy.KNOWN_BAD_VERSIONS`` empty and no ceiling — so a bad build can reach
+machines up to ~24h before this gate reads it. That window is NOT closable by
+measuring at install time: you cannot seed-vary a build before installing it,
+and a 15-launch, minutes-long measurement inside an unattended install would
+wedge the app. The remedy for a red run is therefore to name the tag in
+``policy.KNOWN_BAD_VERSIONS`` — every chromium install passes through
+``policy.check()``, so that refusal reaches operators by name without waiting
+for a persona release. The record this module writes carries ``engine_build``
+for exactly that reason: a finding you cannot attribute to a tag cannot be
+acted on.
 """
 
 from __future__ import annotations
@@ -479,6 +512,42 @@ def measure(
     return readings
 
 
+def engine_build() -> str:
+    """The chromium build this reading was taken under, or ``"unknown"``.
+
+    A variance reading whose build is unknown cannot be acted on: the whole
+    remedy for a finding is to name the bad tag (``policy.KNOWN_BAD_VERSIONS``),
+    and you cannot blocklist a build you cannot name. So the record carries it.
+
+    ⚠️ Resolved from ``version.txt``, which ``download_engine`` does NOT write —
+    the UI writes it after a successful install (``app.py``). A provisioning
+    step that only downloads therefore leaves this ``"unknown"``, which is why
+    the workflow writes it explicitly. Mirrors ``snapshot.engine_build``'s
+    contract: never raises, and an unresolved value reads as ``"unknown"``
+    rather than as an empty string that looks like a value.
+    """
+    try:
+        from ..engine.updater import current_version
+
+        resolved = current_version()
+        return str(resolved) if resolved else "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _record(readings: dict, result: dict) -> dict:
+    """The artifact written by both ``check`` and ``replay``."""
+    return {
+        "measured_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "engine_build": engine_build(),
+        "engine_authored_arms": sorted(ENGINE_AUTHORED_IDENTITY_ARMS),
+        "readings": {
+            a: {str(s): v for s, v in by.items()} for a, by in readings.items()
+        },
+        "result": result,
+    }
+
+
 def _cmd_check(args: argparse.Namespace) -> int:
     arms = tuple(
         a.strip() for a in (args.arms or "").split(",") if a.strip()
@@ -507,20 +576,148 @@ def _cmd_check(args: argparse.Namespace) -> int:
     print(format_result(result))
     if args.output:
         with open(args.output, "w", encoding="utf-8") as fh:
-            json.dump(
-                {
-                    "measured_at": datetime.datetime.now(
-                        datetime.timezone.utc).isoformat(),
-                    "engine_authored_arms": sorted(ENGINE_AUTHORED_IDENTITY_ARMS),
-                    "readings": {
-                        a: {str(s): v for s, v in by.items()}
-                        for a, by in readings.items()
-                    },
-                    "result": result,
-                },
-                fh, indent=2,
-            )
+            json.dump(_record(readings, result), fh, indent=2)
     return exit_code_for(result)
+
+
+def _cmd_replay(args: argparse.Namespace) -> int:
+    """Re-verdict readings from a record file, taking no new measurement.
+
+    THIS IS WHAT MAKES THE WIRING'S REDNESS PROVABLE. A live ``check`` can only
+    demonstrate the outcome the engine happens to produce today — which is a
+    pass, and a gate only ever seen passing is a gate nobody has evidence can
+    fail. Replaying a synthesised low-variance record drives the SAME
+    ``classify`` → ``exit_code_for`` → process-exit-code path the scheduled job
+    gates on, so the job's red half is exercised on every run rather than
+    asserted in a comment.
+
+    It deliberately CANNOT be mistaken for a measurement: it takes no reading,
+    it is a separate subcommand from ``check``, and the workflow runs it only
+    against a file it generated itself.
+    """
+    try:
+        with open(args.record, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError) as exc:
+        print(f"REFUSED: cannot read {args.record}: {exc}", file=sys.stderr)
+        return EXIT_CANNOT_RUN
+
+    raw = doc.get("readings")
+    if not isinstance(raw, dict) or not raw:
+        print(
+            f"REFUSED: {args.record} carries no readings to re-verdict.",
+            file=sys.stderr,
+        )
+        return EXIT_CANNOT_RUN
+
+    # Seeds round-trip through JSON as strings; classify only counts values, but
+    # the ints are restored so a replayed record is shaped like a measured one.
+    readings: "dict[str, dict[int, str | None]]" = {}
+    for arm, by_seed in raw.items():
+        if not isinstance(by_seed, dict):
+            print(f"REFUSED: {arm!r} readings are malformed.", file=sys.stderr)
+            return EXIT_CANNOT_RUN
+        restored: "dict[int, str | None]" = {}
+        for seed, value in by_seed.items():
+            try:
+                key = int(seed)
+            except (TypeError, ValueError):
+                print(f"REFUSED: {arm!r} has non-integer seed {seed!r}.",
+                      file=sys.stderr)
+                return EXIT_CANNOT_RUN
+            restored[key] = value if isinstance(value, str) and value else None
+        readings[arm] = restored
+
+    result = classify(readings)
+    print(format_result(result))
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as fh:
+            json.dump(_record(readings, result), fh, indent=2)
+    return exit_code_for(result)
+
+
+# The synthesised readings the self-test drives the gate with. Each is a
+# (name, builder, expected exit code) triple. Built from a size the arm's own
+# pool makes meaningful rather than from literals, so these keep testing the
+# real bar if a pool is ever edited.
+def _selftest_cases(arm: str) -> "list[tuple[str, dict, int]]":
+    seeds = list(DEFAULT_SEEDS)
+    n = len(seeds)
+    one = "Vendor | RENDERER-A"
+    two = "Vendor | RENDERER-B"
+    return [
+        # Every profile handed the same card: a flat Level 2 breach.
+        ("CONSTANT", {arm: {s: one for s in seeds}}, EXIT_FINDING),
+        # Varies (2 distinct, so "did it vary?" would PASS it) but skewed hard,
+        # which is the macOS-shaped failure the collision metric exists to catch.
+        ("TOO_NARROW",
+         {arm: {s: (two if i >= n - 2 else one) for i, s in enumerate(seeds)}},
+         EXIT_FINDING),
+        # Too few readable seeds. Must be CANNOT_RUN, never PASS.
+        ("INCONCLUSIVE",
+         {arm: {s: (one if i < 3 else None) for i, s in enumerate(seeds)}},
+         EXIT_CANNOT_RUN),
+    ]
+
+
+def _cmd_selftest(args: argparse.Namespace) -> int:
+    """Prove this gate can still FAIL, before trusting a green from it.
+
+    A gate is only worth wiring if it can go red, and the live ``check`` cannot
+    demonstrate that: the engine currently varies, so a scheduled job would
+    only ever be observed passing. That is precisely the "check that could not
+    have failed" this project does not count as coverage.
+
+    So the job runs this FIRST. It drives synthesised low-variance readings
+    through the same ``classify`` → ``exit_code_for`` path the live check
+    gates on and asserts each lands on the exit code it must. If the judgement
+    is ever broken such that a shared graphics card reads as a pass, THIS goes
+    red — on the gate's own path, on every run — instead of the job quietly
+    reporting a green it is no longer able to withhold.
+    """
+    arm = (args.arm or "").strip() or next(
+        iter(sorted(ENGINE_AUTHORED_IDENTITY_ARMS)), ""
+    )
+    if not arm:
+        print(
+            "No arm is engine-authored, so there is nothing to police.",
+            file=sys.stderr,
+        )
+        return EXIT_PASS
+
+    failures = []
+    for name, readings, expected in _selftest_cases(arm):
+        actual = exit_code_for(classify(readings))
+        ok = actual == expected
+        print(
+            f"[selftest] {name:<13} expected exit {expected}, got {actual} "
+            f"— {'ok' if ok else 'WRONG'}"
+        )
+        if not ok:
+            failures.append((name, expected, actual))
+
+    if failures:
+        print(
+            "\nSELF-TEST FAILED: this gate can no longer be trusted to fail.",
+            file=sys.stderr,
+        )
+        for name, expected, actual in failures:
+            print(
+                f"  {name}: should exit {expected}, exited {actual}",
+                file=sys.stderr,
+            )
+        print(
+            "A green from the live check below would be meaningless while this "
+            "is broken, so the job stops here rather than reporting one.",
+            file=sys.stderr,
+        )
+        return EXIT_FINDING
+
+    print(
+        f"[selftest] the gate still goes red on {arm!r} for a narrowed pool, "
+        "and refuses to pass an under-sampled run."
+    )
+    return EXIT_PASS
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -535,6 +732,21 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--seeds", default="", help="override the seeds to use")
     c.add_argument("--output", default="", help="write the record here")
     c.set_defaults(func=_cmd_check)
+
+    r = sub.add_parser(
+        "replay",
+        help="re-verdict a record file without measuring (proves the gate red)",
+    )
+    r.add_argument("record", help="a record file written by `check --output`")
+    r.add_argument("--output", default="", help="write the re-verdict here")
+    r.set_defaults(func=_cmd_replay)
+
+    s = sub.add_parser(
+        "selftest",
+        help="prove the gate can still go red, without needing the engine",
+    )
+    s.add_argument("--arm", default="", help="arm to synthesise readings for")
+    s.set_defaults(func=_cmd_selftest)
     return ap
 
 
