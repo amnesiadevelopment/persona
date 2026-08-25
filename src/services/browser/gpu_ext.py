@@ -1,12 +1,34 @@
 """MAIN-world extension that gives each profile a believable, deterministic
 real-GPU WebGL signature.
 
-The engine renders WebGL through ANGLE's software fallback (SwiftShader) on a
-GPU-less VM, so UNMASKED_VENDOR_WEBGL / UNMASKED_RENDERER_WEBGL read as a
-generic "Google Inc. (Google)" / SwiftShader pair. Detectors (CreepJS,
-Pixelscan, anti-bot WAFs) hash the WebGL vendor/renderer plus the getParameter
-limits against real-device datasets; a SwiftShader value is an instant
-headless/VM tell.
+ON THE LINUX ARM, and there only, the engine renders WebGL through ANGLE's
+software fallback (SwiftShader) on a GPU-less VM, so UNMASKED_VENDOR_WEBGL /
+UNMASKED_RENDERER_WEBGL read as a generic "Google Inc. (Google)" / SwiftShader
+pair. Detectors (CreepJS, Pixelscan, anti-bot WAFs) hash the WebGL
+vendor/renderer plus the getParameter limits against real-device datasets; a
+SwiftShader value is an instant headless/VM tell.
+
+⚠️ THE SENTENCE ABOVE IS ARM-SPECIFIC AND USED TO BE STATED UNQUALIFIED — it
+described the linux arm while reading as a claim about "the engine". Measured
+2026-08-25 against ``fingerprint-chromium/148.0.7778.215``, layer OFF, 15 seeds
+per arm (PS-161; ``readings/ps161-armsweep-2026-08-25/``):
+
+    linux    every seed -> "Google Inc. (Google)" / SwiftShader   <- HOLDS
+    windows  7 distinct real IHV cards across 15 seeds            <- STALE
+    macos    "Google Inc. (Apple)" / a real Metal renderer        <- STALE
+
+So on windows and macos the engine ALREADY authors a plausible, seed-derived
+identity, and this extension was overriding an already-working spoofer. That
+double authorship is not a cosmetic duplication: two independent spoofers that
+disagree is precisely the same-vector contradiction PS-155/PS-161 exist to fix
+(creepjs read the engine's card while pixelscan read ours, from one profile in
+one run). Keep this paragraph qualified — it is the sentence that would
+otherwise justify re-adding our identity override on an arm that does not need
+it.
+
+WHO AUTHORS THE IDENTITY, PER ARM — see ENGINE_AUTHORED_IDENTITY_ARMS below.
+Exactly one author per vector per arm, which is the property that makes the
+contradiction structurally impossible rather than merely fixed once.
 
 This extension picks one real desktop GPU deterministically from the seed and
 overrides gl.getParameter() (plus getExtension for the WEBGL_debug_renderer_info
@@ -203,6 +225,36 @@ __REALM_GUARD__
   // Do not route iOS through pick(): there is no pool to pick from, and the
   // seed must not reach this value.
   var GPU = (OS === "ios") ? IOS_GPU : pick(POOL, 0x67900);
+
+  // WHO AUTHORS THE IDENTITY on this arm. Baked at build time from
+  // ENGINE_AUTHORED_IDENTITY_ARMS (see the Python side, which carries the
+  // measurement and the reasoning). When true, this extension does NOT write
+  // UNMASKED_VENDOR_WEBGL / UNMASKED_RENDERER_WEBGL and the engine's own
+  // seed-derived value reaches the page unopposed.
+  //
+  // THIS GATE IS DELIBERATELY NARROW — it covers the IDENTITY PAIR ONLY, and
+  // every other vector below (limits, extension set, shader precision, the
+  // masked VENDOR/RENDERER) stays ours on every arm. Measured 2026-08-25,
+  // layer OFF, which is what an un-overridden arm actually gets:
+  //
+  //   * limits    — the engine DOES author these per declared arm (windows
+  //     32767x32767 / linux 8192x8192 / macos 16384x16384). On windows its
+  //     values are IDENTICAL to COMMON_DESKTOP, so there is nothing to defer.
+  //   * extensions — the engine does NOT author these at all. Layer off, the
+  //     set is 36 entries and BYTE-IDENTICAL on all three arms: it is the
+  //     HOST's set, not a spoof. It advertises the mobile GLES compression
+  //     families (ASTC/ETC/ETC1) ALONGSIDE the Direct3D BC families
+  //     (S3TC/BPTC/RGTC) — the "supports everything" software-rasteriser
+  //     signature. On a claimed "AMD Radeon ... Direct3D11" card that is the
+  //     renderer<->extension impossibility this module already calls a hard
+  //     cross-check failure (audit7 #3, see DESKTOP_EXTS).
+  //
+  // So "defer to the engine" can NEVER mean "do not install this extension".
+  // Dropping it wholesale would hand the extension set to a GPU-less
+  // SwiftShader VM and leak the host — trading a contradiction for a leak,
+  // against Invariant #0. One author PER VECTOR is the property that makes the
+  // contradiction structurally impossible; one author per MODULE is not.
+  var ENGINE_AUTHORS_IDENTITY = __ENGINE_AUTHORS_IDENTITY__;
 
   // Stable Chrome desktop limits for these GPU tiers on the ANGLE/D3D11 & Metal
   // backends. Float ranges are Float32Array so they read identically to a
@@ -550,8 +602,13 @@ __REALM_GUARD__
     if (!Ctor || !Ctor.prototype) return;
     var proto = Ctor.prototype;
 
+    // Synthesising the debug-renderer-info handle only makes sense when WE
+    // answer the two constants it carries. When the engine authors the
+    // identity, getExtension is left completely alone: a synthesised handle
+    // whose constants then fall through to a context that never enabled the
+    // extension is a state no real browser is in.
     var realGetExtension = proto.getExtension;
-    if (realGetExtension) {
+    if (realGetExtension && !ENGINE_AUTHORS_IDENTITY) {
       proto.getExtension = nativeWrap(realGetExtension, function (name) {
         if (name === 'WEBGL_debug_renderer_info') {
           var r = null;
@@ -570,8 +627,14 @@ __REALM_GUARD__
     if (!realGetParameter) return;
     proto.getParameter = nativeWrap(realGetParameter, function (pname) {
       try {
-        if (pname === UNMASKED_VENDOR) return GPU.unmaskedVendor;
-        if (pname === UNMASKED_RENDERER) return GPU.unmaskedRenderer;
+        // The IDENTITY PAIR — the one vector whose authorship is arm-dependent.
+        // When the engine authors it, fall through to the real getParameter so
+        // the engine's own seed-derived value reaches the page. Everything
+        // below this point stays ours on every arm.
+        if (!ENGINE_AUTHORS_IDENTITY) {
+          if (pname === UNMASKED_VENDOR) return GPU.unmaskedVendor;
+          if (pname === UNMASKED_RENDERER) return GPU.unmaskedRenderer;
+        }
         if (extraMap && Object.prototype.hasOwnProperty.call(extraMap, pname)) {
           var ev = extraMap[pname];
           return (ev instanceof Float32Array) ? new Float32Array(ev) : ev;
@@ -653,6 +716,72 @@ __REALM_BOOTSTRAP__
 })();
 """
 
+# The arms on which the ENGINE authors the WebGL identity pair
+# (UNMASKED_VENDOR_WEBGL / UNMASKED_RENDERER_WEBGL) and this extension stands
+# down for that ONE vector. Every other vector this module spoofs stays ours on
+# every arm — see the ENGINE_AUTHORS_IDENTITY comment in the content script for
+# why the gate is deliberately this narrow.
+#
+# WHY THIS IS A SET AND NOT A BOOLEAN: the answer is per arm, because the
+# engine's behaviour is per arm. Measured 2026-08-25 against
+# fingerprint-chromium/148.0.7778.215, masking layer OFF, one profile per seed,
+# reading UNMASKED_RENDERER_WEBGL (PS-161):
+#
+#   arm      seeds  distinct  P(two profiles collide)  effective pool
+#   linux      15      1              100.0%                1.00
+#   windows    15      7               15.6%                6.43
+#   macos      30      2               76.9%                1.30
+#
+# and, for comparison, THIS module's own pools:
+#
+#   LINUX_GPUS  8 entries -> 12.5%      WIN_GPUS 5 -> 20.0%     MAC_GPUS 2 -> 50.0%
+#
+# * windows  -> ENGINE. It authors 7 distinct real IHV cards and is strictly
+#   better than WIN_GPUS (15.6% vs 20.0%). Deferring removes the second author
+#   without costing unlinkability. This is the whole (b) arm.
+# * linux    -> OURS. The engine returns ONE identical SwiftShader string on
+#   every seed. Deferring would give every linux profile the same "GPU" — a
+#   shared cross-profile identifier, which Level 2 (mutual unlinkability)
+#   forbids outright. (a) is forced here by measurement, not preference.
+# * macos    -> OURS. The engine varies, but across 30 seeds it produced only
+#   TWO values (Apple M2 87%, Apple M4 13%): a 76.9% chance that two profiles
+#   share a card, WORSE than the 50.0% of our own two-entry MAC_GPUS. The
+#   owner's decision selected (b) for macos "subject to the seed requirement",
+#   and the planner pre-registered the outcome: "if macos turns out to vary
+#   weakly — a pool small enough that profiles collide often — that is a
+#   finding that changes macos to (a) on the same Level 2 grounds as linux".
+#   The extra seeds were run and that condition fired, so this line EXECUTES a
+#   conditional the decision-maker already wrote down rather than making a new
+#   choice. Note "small pool" and "colliding often" are different claims and
+#   only the second one matters here: Apple ships M1-M4 in Pro/Max/Ultra
+#   variants, so two values is not forced by Apple's real product line.
+#
+# android and ios are absent deliberately, and not merely for want of a
+# measurement. The engine has no android or ios platform at all — process.py
+# backs those profiles with the nearest desktop platform it DOES spoof — so an
+# engine-authored desktop identity on a phone UA would be the impossible value
+# this module's ANDROID_GPUS arm exists to prevent. iOS additionally pins one
+# constant pair for every device on earth by design (see IOS_GPU).
+#
+# ⚠️ THIS SET IS A CLAIM ABOUT A THIRD PARTY'S BUILD, not a permanent property.
+# The engine autobumps daily and could narrow its pool at any time, which would
+# silently cost us unlinkability on any arm listed here. That is why
+# `verify.engine_gate` fails the bump when an engine-authored arm stops varying
+# by seed — the check that makes this set safe to hold.
+ENGINE_AUTHORED_IDENTITY_ARMS = frozenset({"windows"})
+
+
+def engine_authors_identity(os_norm: str) -> bool:
+    """Whether the ENGINE, not this extension, authors the identity pair.
+
+    Takes an already-normalised arm (the ``os_norm`` vocabulary the builder
+    computes), so an unknown value is simply not in the set and this module
+    keeps authorship — the fail-safe direction: a profile whose arm we do not
+    recognise gets our spoof rather than whatever the host happens to report.
+    """
+    return os_norm in ENGINE_AUTHORED_IDENTITY_ARMS
+
+
 _MANIFEST = {
     "manifest_version": 3,
     "name": "persona-gpu",
@@ -703,6 +832,10 @@ def build_gpu_extension(
         .replace("__SEED__", str(int(seed) & 0xFFFFFFFF))
         .replace("__GEN__", str(normalize_generation(generation)))
         .replace("__OS__", os_norm)
+        .replace(
+            "__ENGINE_AUTHORS_IDENTITY__",
+            "true" if engine_authors_identity(os_norm) else "false",
+        )
         .replace("__REALM_BOOTSTRAP__", realm_bootstrap_js("applyGpuPatch"))
         .replace("__REALM_GUARD__", realm_guard_js("gpu"))
     )
