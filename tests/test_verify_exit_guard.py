@@ -27,6 +27,7 @@ from __future__ import annotations
 import builtins
 import json
 import os
+import subprocess
 import sys
 
 import pytest
@@ -363,11 +364,23 @@ def test_a_refusal_message_never_carries_either_channels_credential(
 # stub: what reaches this arm is a property of `open()`, and a stub would let
 # the arm be tested on an exception `open()` never actually produces.
 #
-# ⚠️ Only these two shapes reach it. `_from_file` tests `os.path.exists`
-# FIRST, and ELOOP (`Errno 40`) and name-too-long (`Errno 36`) both answer
-# False there — measured — so they take the "no proxy credential at" arm and
-# never reach the `except OSError`. A test built on those would assert this
-# arm's wording against text this arm did not write.
+# ⚠️ THREE shapes reach it, and this enumeration said TWO until PS-166 — the
+# omission is very likely WHY the third went unhandled for a release. The two
+# below are the `OSError` pair; the third is a file of UNDECODABLE BYTES,
+# which raises `UnicodeDecodeError` from the `.read()`, NOT from `open()`.
+# It is easy to miss precisely because it does not look like an I/O failure:
+# `UnicodeDecodeError` inherits from `ValueError`, so for a release it was not
+# caught by an `except OSError` at all and escaped as a raw traceback. It is
+# covered in the PS-166 section further down; the arm is now
+# `except (OSError, UnicodeDecodeError)`.
+#
+# What does NOT reach it: `_from_file` tests `os.path.exists` FIRST, and ELOOP
+# (`Errno 40`) and name-too-long (`Errno 36`) both answer False there —
+# measured — so they take the "no proxy credential at" arm. A test built on
+# those would assert this arm's wording against text this arm did not write.
+# ⚠️ Note the binary file is NOT excluded that way: it EXISTS, so it passes
+# the `os.path.exists` gate and reaches the read. That is the asymmetry the
+# original "only these two" reading missed.
 
 
 def _unreadable_dir(tmp_path):
@@ -597,6 +610,253 @@ def test_the_FALLBACK_reports_redaction_holds_on_every_platform_too(
     assert "alice" not in resolved.detail
     assert "0th3r" not in resolved.detail
     assert "***:***@" in resolved.detail
+
+
+# --- PS-166: a file of UNDECODABLE BYTES is "unusable", not "we crashed" ----
+#
+# THE THIRD SHAPE the PS-160 enumeration above missed. `open(..., "r",
+# encoding="utf-8")` does not fail on binary content — the `.read()` does, with
+# `UnicodeDecodeError`, which inherits from `ValueError` and is therefore NOT
+# caught by `except OSError`. So it escaped the guard entirely and reached the
+# operator as a raw traceback with **exit 1** — the code `checker_cli`'s own
+# docstring reserves for "the run itself broke", explicitly "distinct from 2 so
+# 'we declined to measure' is never confused with 'we crashed'". An unreadable
+# credential is definitionally the latter.
+#
+# ⚠️ The staging is REAL BYTES ON THE REAL FILESYSTEM, never a raised stub —
+# the house rule stated in the PS-160 header, and it bites harder here: the
+# whole defect is that the exception's real ANCESTRY (`ValueError`, not
+# `OSError`) is not what the arm assumed. A stub raising a hand-built error
+# would let this be "tested" against an exception `open()`/`read()` never
+# actually produces, which is precisely how the class was mis-filed to begin
+# with.
+
+# `user:` then bytes that are not valid UTF-8 in any position. 0xff is an
+# invalid START byte, so the failure is unambiguous rather than a truncation
+# artefact — and the prefix makes the file look credential-ish, so nothing here
+# passes by virtue of the file being obviously junk.
+_UNDECODABLE = b"user:\xff\xfe\x00pass\n"
+
+
+def _binary_credential(tmp_path):
+    """A path that EXISTS, is readable, and is not decodable as UTF-8."""
+    path = tmp_path / "cred.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(_UNDECODABLE)
+    return str(path)
+
+
+def test_a_binary_credential_file_REFUSES_rather_than_raising(tmp_path):
+    """AC1, at the public seam: the guard refuses, it does not explode.
+
+    `ExitNotProven` is this module's refusal; a `UnicodeDecodeError` escaping
+    to the caller is the defect. `pytest.raises(ExitNotProven)` alone would NOT
+    catch the regression — an unhandled `UnicodeDecodeError` fails the test as
+    an error rather than passing, which is the point: the assertion is that the
+    refusal is REACHED.
+    """
+    with pytest.raises(ExitNotProven) as exc:
+        load_credential(_binary_credential(tmp_path))
+
+    message = str(exc.value)
+    assert "could not be read" in message.lower()
+    # Names the CAUSE (AC3) — the class, so the operator can tell this from a
+    # permissions problem without guessing.
+    assert "UnicodeDecodeError" in message
+    # ...and the offending PATH, so they know WHICH file to go and look at.
+    assert "cred.txt" in message
+
+
+def test_the_internal_candidate_carries_the_refusal_shape_not_an_exception(
+    tmp_path,
+):
+    """AC1 at `_from_file` itself — the module's normal refusal shape.
+
+    The seam test above proves the public behaviour; this one pins that the
+    refusal is expressed the SAME way every other unreadable-file arm expresses
+    it (a `_Candidate` with `proxy_url=None` and a populated `why`), rather
+    than by some new bespoke path that happens to look right from outside.
+    """
+    candidate = exit_guard._from_file(_binary_credential(tmp_path))
+
+    assert candidate.proxy_url is None
+    assert candidate.source == exit_guard.SOURCE_FILE
+    assert "UnicodeDecodeError" in candidate.why
+
+
+def test_the_binary_and_OSError_causes_are_distinguishable_on_sight(tmp_path):
+    """AC4 — THE CONTRAST ROW, mirroring the PS-160 test of the same name.
+
+    A message that fires on everything distinguishes nothing. The positive
+    tests above pass on wording that merely got longer; this one fails unless
+    the text actually SEPARATES the new cause from its neighbour — and, in the
+    other direction, unless widening the arm left the `OSError` wording
+    untouched. The negative half is the half that catches an over-broad fix:
+    an `except Exception` that reported one generic class for both would sail
+    through every assertion except these.
+    """
+    with pytest.raises(ExitNotProven) as binary:
+        load_credential(_binary_credential(tmp_path / "a"))
+    with pytest.raises(ExitNotProven) as is_dir:
+        load_credential(_unreadable_dir(tmp_path / "b"))
+
+    binary_text, is_dir_text = str(binary.value), str(is_dir.value)
+    assert binary_text != is_dir_text
+
+    # The new class fires for the binary file...
+    assert "UnicodeDecodeError" in binary_text
+    # ...and NOT for the neighbouring OSError input, whose wording is unchanged.
+    assert "UnicodeDecodeError" not in is_dir_text
+    assert "is a directory" in is_dir_text.lower()
+    assert "is a directory" not in binary_text.lower()
+
+
+def test_an_undecodable_file_falls_back_to_the_environment(
+    tmp_path, monkeypatch
+):
+    """AC5 — the availability consequence, which is the real severity here.
+
+    The file channel is consulted FIRST, so before the fix this did not merely
+    print an ugly traceback: it KILLED a run that had a perfectly good
+    credential in the environment. The missing-file and directory arms already
+    degrade into the fallback; this one crashed instead. Measured on the real
+    CLI at the time of the fix: directory → exit 0, binary → exit 1.
+
+    So the assertion is that the run PROCEEDS, on the other channel, with the
+    file's disposition recorded in the committed `detail`.
+    """
+    _set_env(monkeypatch, OTHER_CRED)
+
+    resolved = exit_guard.resolve_credential(_binary_credential(tmp_path))
+
+    # The run proceeded, on the environment's credential...
+    assert resolved.source == exit_guard.SOURCE_ENVIRONMENT
+    assert resolved.proxy_url == (
+        "socks5h://bob:0th3r@relay.example.net:20000"
+    )
+    # ...and the record still says why the file was unusable.
+    assert "UnicodeDecodeError" in resolved.detail
+
+
+@_credential_shaped_path
+def test_the_undecodable_arms_message_is_redacted_like_the_OSError_arms(
+    tmp_path,
+):
+    """AC3's redaction half — the constraint that must not be reasoned away.
+
+    `UnicodeDecodeError`'s own message is tame: it carries the offending byte
+    in hex and its position, never the path and never file content. That is a
+    reason to be UNWORRIED, not a reason to bypass `redact` — this module's
+    doctrine is that the risky part is the one nobody thought of, and widening
+    an `except` arm is exactly the change that could later admit an exception
+    whose message is not so tame.
+
+    But the refusal text is not only the exception: this module interpolates
+    the PATH beside it, and an operator can point `--credential` at a
+    credential-shaped path. So there IS a secret on this path, from the
+    module's own f-string. Mirrors
+    `test_an_exception_message_cannot_smuggle_the_credential_past_redact`.
+    """
+    # A real FILE (not a directory, as in the OSError mirror) named like a
+    # proxy URL, whose CONTENT is undecodable — so the path reaches the message
+    # while the failure is the new arm's, not the old one's.
+    nest = tmp_path / "socks5:"
+    nest.mkdir(parents=True)
+    (nest / "alice:s3cr3t@gate.example.com:10000").write_bytes(_UNDECODABLE)
+    passed = f"{tmp_path}/socks5://alice:s3cr3t@gate.example.com:10000"
+
+    with pytest.raises(ExitNotProven) as exc:
+        load_credential(passed)
+
+    message = str(exc.value)
+    # The failure still names itself...
+    assert "UnicodeDecodeError" in message
+    # ...and the credential did not survive into it.
+    assert "s3cr3t" not in message
+    assert "***:***@" in message
+
+
+# --- PS-166: the CONTRACT, driven through the real operator entry point -----
+#
+# Everything above asserts on the library seam. The ticket's headline claim is
+# about an EXIT CODE, which no in-process test can observe: `checker_cli`'s 1
+# and 2 are produced by the process, and the traceback is produced by the
+# interpreter unwinding. Asserting on the driven process is the only way to
+# assert on what an operator actually sees.
+#
+# ⚠️ The subprocess inherits this shell's environment, and the CI/dev container
+# EXPORTS a real credential in `PERSONA_TEST_PROXY` — the same trap the autouse
+# fixture at the top of this file exists for, which does NOT reach a subprocess
+# because it patches this process's `os.environ`. Removed explicitly below;
+# without that, the fallback would answer and the run would exit 0 having
+# measured nothing about refusal.
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _drive_checker_cli(credential_path):
+    """Run the real CLI in a child process, with NO ambient credential."""
+    env = dict(os.environ)
+    env.pop(exit_guard.ENVIRONMENT_CREDENTIAL_VAR, None)
+    return subprocess.run(
+        [sys.executable, "-m", "src.services.verify.checker_cli",
+         "read", "--credential", credential_path],
+        cwd=_REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        # Refusal is decided before any network work, so this is generous.
+        # It is a guard against a hang becoming a silent pass, not a budget.
+        timeout=120,
+    )
+
+
+def test_the_CLI_exits_2_and_shows_no_traceback_for_a_binary_credential(
+    tmp_path,
+):
+    """AC2 — THE ROW THAT CARRIES THIS TICKET.
+
+    Asserted on the driven process's exit code and output, not on the diff.
+    Before the fix this was exit 1 with a raw `UnicodeDecodeError` traceback;
+    the contract in `checker_cli`'s docstring reserves 2 for "REFUSED — ... a
+    missing credential, AN UNUSABLE ONE, a refused connection ... all land
+    here", and 1 for "the run itself broke".
+    """
+    result = _drive_checker_cli(_binary_credential(tmp_path))
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 2, (
+        f"expected REFUSED(2), got {result.returncode}. Output:\n{output}"
+    )
+    # Exit 1 came with an unhandled exception; a refusal must not.
+    assert "Traceback" not in output
+    assert "REFUSED" in output
+
+
+def test_the_CLI_names_the_undecodable_cause_but_not_for_the_OSError_input(
+    tmp_path,
+):
+    """AC2 + AC4 through the operator's eyes: both inputs refuse, and the
+    refusals do not read identically.
+
+    The directory arm is the control. It refused with 2 before this ticket and
+    must still do so, with its wording untouched — if a fix made every
+    unreadable file report the same new class, the operator would have lost the
+    distinction this module's messages exist to draw.
+    """
+    binary = _drive_checker_cli(_binary_credential(tmp_path / "a"))
+    is_dir = _drive_checker_cli(_unreadable_dir(tmp_path / "b"))
+
+    # Both are refusals, neither is a crash.
+    assert binary.returncode == 2
+    assert is_dir.returncode == 2
+
+    binary_out = binary.stdout + binary.stderr
+    is_dir_out = is_dir.stdout + is_dir.stderr
+
+    assert "UnicodeDecodeError" in binary_out
+    assert "UnicodeDecodeError" not in is_dir_out
+    assert "IsADirectoryError" in is_dir_out
 
 
 # --- socks5h is enforced, not preferred -------------------------------------

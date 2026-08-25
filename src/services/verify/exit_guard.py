@@ -405,7 +405,23 @@ def _from_file(path: str) -> _Candidate:
     try:
         with open(path, "r", encoding="utf-8") as handle:
             raw = handle.read().strip()
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
+        # `UnicodeDecodeError` is here because it is NOT an `OSError` — it
+        # inherits from `ValueError`, so a credential of undecodable bytes
+        # escaped this guard entirely and reached the operator as a raw
+        # traceback with exit 1: the code `checker_cli` reserves for "the run
+        # itself broke", never for "we declined to measure". An unreadable
+        # credential is definitionally the latter, and this module's exit codes
+        # are worth only as much as that distinction. Worse, the file channel
+        # is consulted FIRST, so the crash PREEMPTED the environment fallback —
+        # the sibling unreadable-file arms degrade into it and complete, while
+        # this one killed a run that had a usable credential in the
+        # environment. Named and narrow, deliberately: NOT bare `Exception`,
+        # NOT `ValueError` — widening past the measured cause would swallow the
+        # unexpected errors that exit 1 exists to report. (`checker_cli:1044`
+        # can afford `ValueError` because it wraps a `json.load`; this does
+        # not. `matrix_silence:345` is the precedent for naming this class.)
+        #
         # The MESSAGE, not only the class. `OSError` alone cannot tell
         # permission-denied from is-a-directory from a genuine I/O error, and
         # this arm stops a run — so it stopped one without saying why. Shaped
