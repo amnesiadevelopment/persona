@@ -24,6 +24,7 @@ import subprocess
 
 import pytest
 
+from src.services.browser.engine_platform import engine_platform_for
 from src.services.browser.gpu_ext import build_gpu_extension
 from src.services.browser.voice_ext import build_voice_extension
 
@@ -302,7 +303,7 @@ def _gpu(tmp_path, seed, os_type):
     node = shutil.which("node")
     if not node:
         pytest.skip("node not available")
-    d = pathlib.Path(build_gpu_extension(seed, os_type, str(tmp_path / f"g_{seed}_{os_type}"), 0))
+    d = pathlib.Path(build_gpu_extension(seed, os_type, str(tmp_path / f"g_{seed}_{os_type}"), 0, engine_platform=engine_platform_for(os_type, "desktop")))
     harness = d / "harness.js"
     harness.write_text(_GPU_PROBE, encoding="utf-8")
     out = subprocess.run(

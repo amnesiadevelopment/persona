@@ -28,6 +28,7 @@ from .env_policy import (
 )
 from .resolution import parse_resolution, resolve_resolution
 from .device_presets import is_mobile_os, pick_preset, pick_touch_points
+from .engine_platform import engine_platform_for
 from .engine_version import (
     ChromiumVersion,
     EngineVersionUnreadableError,
@@ -404,6 +405,15 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
         # family (android/ios) — device_type is kept on the model for the API but
         # the OS is the source of truth so the UI only needs the OS dropdown.
         is_mobile = is_mobile_os(profile.os_type) or profile.device_type == "mobile"
+        # The one string the engine is told, computed ONCE, here, BEFORE the
+        # extensions are built — because build_gpu_extension takes it and
+        # resolves WHO AUTHORS the WebGL identity pair from it. It used to be
+        # computed further down, next to the flag that consumes it, and
+        # gpu_ext re-derived its own answer from os_type; the two disagreed on
+        # windows+mobile (engine told `linux`, our layer standing down for a
+        # `windows` identity nobody wrote) and the host's SwiftShader reached
+        # the page. One value, both consumers, no second computation to drift.
+        engine_platform = engine_platform_for(profile.os_type, profile.device_type)
         # the mobile OS family for preset selection (android unless explicitly ios)
         mobile_os = profile.os_type if is_mobile_os(profile.os_type) else "android"
         preset = (
@@ -523,6 +533,9 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
                 profile.os_type,
                 os.path.join(profile_dir, ".persona-gpu-ext"),
                 profile.hardware_generation,
+                # The SAME string emitted as --fingerprint-platform below. Not
+                # os_type: authorship is resolved from what the ENGINE is told.
+                engine_platform=engine_platform,
             )
         )
         # Safari's legacy webkit-3d context alias. iOS-only, and the extension
@@ -550,14 +563,6 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
                     os.path.join(profile_dir, ".persona-geo-ext"),
                 )
             )
-
-        # The engine has no android/ios platform; back a mobile profile with the
-        # nearest desktop platform the engine DOES spoof (linux for Android, macos
-        # for iOS) so its native spoofs stay coherent, while the UA, window size
-        # and the mobile extension supply the actual mobile signals.
-        engine_platform = profile.os_type
-        if is_mobile:
-            engine_platform = "macos" if profile.os_type == "ios" else "linux"
 
         args = [FINGERPRINT_CHROMIUM]
         # Chromium honors only the LAST --disable-features switch on the command
