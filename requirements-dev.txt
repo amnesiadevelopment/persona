@@ -1,2 +1,22 @@
 pytest>=9.0
 pytest-timeout>=2.4
+
+# Type checker (PS-165). Declared here because it was previously installed by
+# nothing and invoked by nowhere — mypy.ini had sat in the repo unused, and the
+# ONLY reason it went unrun was this absence.
+#
+# BOUNDED DELIBERATELY, not merely floored. mypy's diagnostics are
+# version-sensitive: new releases add checks and reword messages, so a bare
+# `mypy>=2.3.1` would let a fresh minor change the checker's verdict with no
+# change to this repo — a gate that answers differently on Tuesday is not a
+# gate. The upper bound keeps the advisory run's error count reproducible;
+# raise it deliberately, by running the check and re-measuring, not reflexively.
+#
+# MEASURED AT 2.3.1 (Python 3.12): `python3 -m mypy --config-file mypy.ini src`
+# reports 136 errors in 33 files across 206 source files. That number is the
+# advisory baseline, and it is expected to move when this bound moves.
+#
+# The narrow CONFORMANCE gate does not depend on this pin at all — it compares
+# signatures with the stdlib `ast` module and would hold its verdict even if
+# mypy were absent. See .github/scripts/check_protocol_conformance.py.
+mypy>=2.3.1,<3
