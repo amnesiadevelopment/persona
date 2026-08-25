@@ -40,6 +40,38 @@ $ git grep -c "device_type" origin/main -- src/services/browser/gpu_ext.py
 was present at the very commit that failed audit. So I did not stop at symbol presence — I checked
 that round 4's **structure** is on `main`:
 
+> ### ⚠️ The replacement gate cannot fail either — reported, not glossed
+>
+> The gate returned the right answer. **Its second clause did not earn it.** The ticket names that
+> clause "the real gate" and justifies it as *"round 4's fix must thread the engine platform into
+> extension construction; if `device_type` is absent from that module, round 4 has not landed."*
+>
+> **All three `device_type` hits in `gpu_ext.py` are docstring prose** — `:883`, `:899`, `:952`,
+> none of them code. Line 952 reads, verbatim:
+>
+> ```
+> ``engine_platform`` is a function of ``(os_type, device_type)`` and
+> ``device_type`` is deliberately not passed here
+> ```
+>
+> The clause requiring `device_type` to be threaded **into** the module is satisfied by a sentence
+> explaining why it is deliberately kept **out**. The signature confirms it:
+> `build_gpu_extension(seed, os_type, base_dir, generation, *, engine_platform: str)` — there is no
+> `device_type` parameter, **by design**, and PS-161's own `fix_round_4` note records that the
+> planner *forbade* passing one.
+>
+> So the gate would pass identically on a `main` where round 4 had been reverted but the docstring
+> survived, and could fail on a correct implementation whose comments were worded differently.
+> `grep` cannot tell code from prose, and documentation clusters densely around exactly the concept
+> a gate names — so the better-documented the module, the likelier a symbol-presence gate passes
+> vacuously.
+>
+> **This is the second consecutive gate on this ticket that could not fail**, the first having been
+> caught by a confirm review and rewritten specifically to fix that. The failure mode survived being
+> explicitly hunted. Recorded here because the *next* reader of this ticket will otherwise inherit
+> the same false assurance — and because the conclusion below rests on the structural checks in the
+> table, **not** on the grep.
+
 | round-4 claim | verified on `origin/main` @ `3989f97` |
 |---|---|
 | a new module OWNS the value | `src/services/browser/engine_platform.py` **exists** |
