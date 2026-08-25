@@ -1308,16 +1308,47 @@ class App:
     def _engine_rollback_row(self) -> ft.Control:
         """The undo gesture for a bad CHROMIUM update, and its way back.
 
-        Three states, and only one is ever shown — the same shape as
+        Four states, and only one is ever shown — the same shape as
         _engine2_rollback_row next door, deliberately, because the two engines
         must not describe the same situation differently:
           * PINNED — the operator already went back. Offer "resume updates",
             because a pin holds the automatic update off and there must be a
             way out of that state from the same place they entered it.
           * a previous build is RECORDED — offer "go back to <tag>".
-          * nothing recorded — render nothing at all. A revert with no recorded
-            previous build cannot work, and a button that cannot work is worse
-            than no button: it promises an undo the machine cannot perform.
+          * an engine IS INSTALLED but nothing is recorded for it — say so, as
+            a plain line with no gesture on it. See below.
+          * no engine at all — render nothing. There is no update to undo.
+
+        WHY THE THIRD STATE EXISTS (PS-172). The rule "a button that cannot work
+        is worse than no button" is still right and is NOT overturned here: this
+        state offers no button. But an empty space is a claim too, and it was
+        read as the wrong one. The owner installed v3.0.0, saw Firefox's revert
+        and nothing here, and concluded the capability was Firefox-only — it
+        wasn't, it simply had nothing to point at yet. A sentence explaining why
+        there is no button beats both a broken button and silence.
+
+        Chromium's retention is a RECORD (the "previous" entry in builds.json,
+        written on a swap) while Firefox's is the FILESYSTEM (versioned cache
+        dirs that are themselves the retention). So a Chromium machine that
+        upgraded INTO v3.0.0 with an engine already present has a version.txt
+        and no record — ensure_engine short-circuits on is_installed() and never
+        records — and gets no target from its first bump. That is the population
+        this line is for, and on 25 Aug it is nearly every reporting operator.
+
+        THE EXPOSURE IS A FIXED NUMBER OF BUMPS AND THEN SELF-HEALS, and the
+        number is NOT the same for both machines — which is why the message is
+        chosen by _engine_rollback_pending_row rather than being one constant.
+        A machine with `current` recorded is one bump from a rollback target; a
+        machine with nothing recorded is two, because its next swap has nothing
+        to demote and only records what it installs. Both are stated literally:
+        the wording names when the gesture starts working, and is not a
+        euphemism for later.
+
+        THE "no engine" CASE STAYS SILENT and is not folded in with it. Before
+        the engine is installed there is no update to go back FROM, so promising
+        a rollback "after the next update" would be answering a question the
+        operator has not asked yet — and this row renders during the fresh
+        download, where that line would be pure noise.
 
         THE ONE PLACE THIS DIFFERS FROM THE FIREFOX ROW IS THE TOOLTIP, and the
         difference is the whole of PS-79's trade. Firefox's revert moves no
@@ -1354,7 +1385,20 @@ class App:
                 self._on_engine_rollback,
             )
         else:
-            return ft.Container(height=0)
+            # No target — but WHICH of the three "no target" states is this?
+            # is_installed() swallows its own OSError and answers False, so it
+            # needs no guard of its own, and False is the safe direction: it
+            # renders nothing, exactly as this row did before the state existed.
+            if not engine.is_installed():
+                return ft.Container(height=0)
+            try:
+                recorded = engine.current_build_recorded()
+            except Exception as e:
+                # Same fail-quiet direction as above: an unreadable record must
+                # not promise a specific number of updates. Log and say nothing.
+                self._log(f"Chromium engine: couldn't read the build record ({e})")
+                return ft.Container(height=0)
+            return self._engine_rollback_pending_row(recorded)
 
         return ft.Container(
             padding=ft.Padding.only(left=36, right=10, top=4, bottom=2),
@@ -1372,6 +1416,82 @@ class App:
                     ),
                     ft.Text(
                         label, size=10, color=COLORS["text_dim"],
+                        font_family="monospace",
+                    ),
+                ],
+            ),
+        )
+
+    def _engine_rollback_pending_row(self, recorded: bool) -> ft.Control:
+        """The line an operator sees when the engine is installed but nothing is
+        recorded to go back TO — Chromium only.
+
+        NOT A BUTTON AND NOT A DISABLED BUTTON. It is a statement, and it must
+        not look clickable: `on_click`, `ink` and the HISTORY icon are all
+        deliberately absent, because the whole complaint this closes was a
+        gesture that appeared to exist and did not. A greyed-out control invites
+        the same click and answers it with nothing.
+
+        `recorded` IS engine.current_build_recorded(), AND IT CHANGES THE COUNT,
+        which is why this takes an argument instead of asking one question. Both
+        machines below have an engine and an empty rollback_target(), and the
+        number of updates until the gesture appears is NOT the same:
+          * recorded=True — a clean install. "current" names the build on disk,
+            so the NEXT swap demotes it: ONE update.
+          * recorded=False — upgraded into v3.0.0 with an engine already there.
+            ensure_engine short-circuited on is_installed() and wrote nothing,
+            so the next swap has nothing to demote and records only what it
+            installs; the swap AFTER that is the first reversible one. TWO.
+
+        SAYING "the next update" TO THE SECOND MACHINE WOULD BE A NEW BROKEN
+        PROMISE — the operator watches an update land, looks here, and finds the
+        same emptiness plus a sentence that just proved itself wrong. That is
+        the defect this row exists to close, re-committed in words. The second
+        machine is also the LARGER population: PS-79's record shipped in v3.0.0,
+        so on 25 Aug essentially every operator who upgraded is in it. The
+        counts are measured against record_installed_build, not reasoned from
+        its docstring — see tests/test_engine_retention_origin.py.
+
+        THE WORDING CARRIES THE BOUND, not just the fact — the gap is a fixed
+        number of update cycles, not a permanent state, and an operator who
+        reads "the next update"/"the next two" knows it ends. That is the
+        difference between an explanation and an apology.
+
+        Sized and coloured as the row it replaces (size 10, text_dim, monospace,
+        the same left inset) so the panel's rhythm is unchanged whichever state
+        is showing — this line sits exactly where the button would.
+        """
+        if recorded:
+            label = "rollback available after the next engine update"
+            tip = (
+                "Chromium keeps one engine build at a time, so going back needs "
+                "the build it replaced to be recorded first. The build you have "
+                "now is recorded, so the next update leaves you a way back to it."
+            )
+        else:
+            label = "rollback available after the next two engine updates"
+            tip = (
+                "Chromium keeps one engine build at a time, so going back needs "
+                "the build it replaced to be recorded first. This engine was "
+                "installed before that record existed, so the next update has "
+                "nothing to record — the one after it does, and from then on "
+                "you can go back."
+            )
+
+        return ft.Container(
+            padding=ft.Padding.only(left=36, right=10, top=4, bottom=2),
+            tooltip=tip,
+            content=ft.Row(
+                spacing=6,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Icon(
+                        ft.Icons.INFO_OUTLINE, size=13, color=COLORS["text_dim"]
+                    ),
+                    ft.Text(
+                        label,
+                        size=10,
+                        color=COLORS["text_dim"],
                         font_family="monospace",
                     ),
                 ],

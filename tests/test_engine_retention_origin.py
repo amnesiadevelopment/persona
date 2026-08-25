@@ -135,16 +135,50 @@ class _RowOnly:
 
     `_engine_rollback_row` IS THE REAL METHOD, bound off the class — stubbing it
     would leave a test that renders a fake and proves nothing about what the
-    operator sees.
+    operator sees. `_engine_rollback_pending_row` is bound the same way and for
+    the same reason: it is the control under test in half this file, so a
+    stand-in version of it would assert only that the stand-in works.
     """
 
     _engine_rollback_row = _app_mod.App._engine_rollback_row
+    _engine_rollback_pending_row = _app_mod.App._engine_rollback_pending_row
 
     def __init__(self):
         self.logs = []
+        self.fired = []
 
     def _log(self, message):
         self.logs.append(message)
+
+    # The two HANDLERS the row wires. Recorders rather than the real methods:
+    # those claim _engine_busy and spawn a download thread, which is a different
+    # subject with its own tests. What matters HERE is which handler the row
+    # attaches, so the tests assert identity against these and never call them —
+    # a row that wired the wrong gesture would still be "clickable".
+    def _on_engine_resume(self):
+        self.fired.append("resume")
+
+    def _on_engine_rollback(self):
+        self.fired.append("rollback")
+
+
+def _row_text(control) -> str:
+    """What the row actually SAYS, read out of the rendered control tree.
+
+    Deliberately not a substring search over some larger blob: it walks to the
+    ft.Text the operator reads. A row that renders nothing has no text, and this
+    returns "" for it rather than raising, so "says nothing" and "says X" are
+    the same kind of answer and can be compared in one assertion.
+    """
+    content = getattr(control, "content", None)
+    if content is None:
+        return ""
+    parts = []
+    for child in getattr(content, "controls", []) or []:
+        value = getattr(child, "value", None)
+        if isinstance(value, str):
+            parts.append(value)
+    return " ".join(parts)
 
 
 # --------------------------------------------------------------------------
@@ -181,10 +215,23 @@ def test_a_fresh_install_offers_no_rollback_and_the_row_renders_nothing(
         "a fresh install has only one build; there is nothing to go back to"
     )
 
+    # PS-172 (owner's decision): the EMPTINESS is unchanged and correct — there
+    # is still no button, because a button that cannot work is worse than none.
+    # What changed is that the row now SAYS why. The silence this replaces is
+    # pinned in this file's first commit; the defect the owner reported was
+    # reading that silence as "Chromium has no revert at all".
     row = _RowOnly()._engine_rollback_row()
-    assert row.height == 0, (
-        "with nothing recorded the row must render nothing at all — this is the "
-        "empty space beside Firefox's revert that the owner reported"
+    assert row.height != 0, (
+        "the row must no longer be an empty space — silence is what the owner "
+        "misread as 'возврат реализован только у фф'"
+    )
+    assert row.on_click is None, (
+        "this state must NOT be clickable: the complaint being closed was a "
+        "gesture that looked available and was not"
+    )
+    assert _row_text(row) == "rollback available after the next engine update", (
+        "a FRESH install has its current build recorded, so exactly one more "
+        "update leaves it a way back — see the next test, which drives it"
     )
 
 
@@ -271,6 +318,18 @@ def test_an_engine_installed_before_the_record_existed_gets_no_target_from_its_f
     assert updater.is_installed() is True
     assert not (eng.dir / "builds.json").exists(), "precondition: no record"
 
+    # PS-172, BEFORE the bump: nothing at all is recorded, so the next swap has
+    # no `current` to demote and the one AFTER it is the first reversible one.
+    # The row must say TWO here — saying "the next update" would be a promise
+    # this machine watches fail one bump from now, which is the same defect as
+    # the silence it replaces, only louder.
+    legacy_row = _RowOnly()._engine_rollback_row()
+    assert legacy_row.height != 0, "the row must explain the gap rather than be empty"
+    assert legacy_row.on_click is None, "an explanation is not a gesture"
+    assert _row_text(legacy_row) == (
+        "rollback available after the next two engine updates"
+    )
+
     tag_b = "145.0.7600.100"
     zip_b = tmp_path / "b.zip"
     _build_zip(zip_b, b"BBB")
@@ -284,7 +343,16 @@ def test_an_engine_installed_before_the_record_existed_gets_no_target_from_its_f
         "THE DEFECT: this machine was bumped off a working build and has no "
         "way back to it"
     )
-    assert _RowOnly()._engine_rollback_row().height == 0
+
+    # AND THE COUNT THE ROW PROMISED IS NOW ONE LOWER — driven, not asserted
+    # from a docstring. This bump recorded the incoming build as `current`, so
+    # the next one demotes it. The machine still has no way back, which is the
+    # part PS-172 accepts and does not fix; what it no longer does is say
+    # nothing about it.
+    bumped_row = _RowOnly()._engine_rollback_row()
+    assert _row_text(bumped_row) == (
+        "rollback available after the next engine update"
+    ), "the countdown must actually count down as updates land"
 
 
 # --------------------------------------------------------------------------
@@ -367,3 +435,154 @@ def test_windows_destroys_the_asset_so_a_tree_derived_digest_fails_the_revert(
         "upstream asset — if this passes, the verify gate is not being applied"
     )
     assert "144.0.7559.132" in message
+
+
+# --------------------------------------------------------------------------
+# 5. the states the new line must NOT have disturbed (PS-172)
+# --------------------------------------------------------------------------
+# The information fix adds a fourth state to a row that had three working ones.
+# These four pin the boundary from the other side: the new line must appear in
+# EXACTLY one state and change nothing in the rest. A message that renders too
+# eagerly is its own defect — it would be a promise made to a machine that has
+# not asked the question yet, or a sentence sitting where a working button used
+# to be.
+def test_with_no_engine_installed_at_all_the_row_still_renders_nothing(
+    monkeypatch, tmp_path
+):
+    """THE OVER-FIRE GUARD, and the reason the new state checks is_installed().
+
+    Before the engine exists there is no update to go back FROM, so "rollback
+    available after the next engine update" would be answering a question the
+    operator has not asked — and this row renders during the very first
+    download, where that line is pure noise beside a progress bar.
+
+    Silence is correct here and stays correct.
+    """
+    _force_os(monkeypatch, win=True)
+    _Engine(monkeypatch, tmp_path)  # repointed, and deliberately EMPTY
+
+    assert updater.is_installed() is False, "precondition: nothing installed"
+    assert updater.rollback_target() == ("", "")
+
+    row = _RowOnly()._engine_rollback_row()
+    assert row.height == 0, (
+        "with no engine on disk the row must render nothing — the explanation "
+        "is for machines that HAVE an engine and cannot go back from it"
+    )
+    assert _row_text(row) == ""
+
+
+def test_a_machine_with_a_recorded_previous_build_still_gets_the_working_button(
+    monkeypatch, tmp_path
+):
+    """THE REGRESSION GUARD for the state that already worked.
+
+    Named for what it asserts: not merely that something renders, but that the
+    row is still the CLICKABLE revert naming the tag, with its handler wired.
+    The whole risk of adding a message state is that it swallows the gesture it
+    was meant to explain the absence of.
+    """
+    _force_os(monkeypatch, win=True)
+    eng = _Engine(monkeypatch, tmp_path)
+
+    (eng.dir / "chrome.exe").write_bytes(b"MZ" + b"BBB")
+    (eng.dir / ".engine-complete").write_text("ok")
+    updater.write_version("145.0.7600.100")
+    updater.atomic_write_json(
+        updater.BUILDS_FILE,
+        {
+            "current": {"tag": "145.0.7600.100", "digest": "b" * 64},
+            "previous": {"tag": "144.0.7559.132", "digest": "a" * 64},
+        },
+    )
+    assert updater.rollback_target()[0] == "144.0.7559.132"
+
+    row = _RowOnly()._engine_rollback_row()
+    assert _row_text(row) == "go back to 144.0.7559.132", (
+        "a machine WITH a way back must still be offered it, unchanged"
+    )
+    assert row.on_click is not None, (
+        "the revert must still be CLICKABLE — an explanation must never "
+        "replace the working gesture"
+    )
+    app = _RowOnly()
+    clickable = app._engine_rollback_row()
+    clickable.on_click(None)
+    assert app.fired == ["rollback"], (
+        "and it must be wired to the REVERT, not merely to something — a row "
+        "that renders the right words on the wrong handler still cannot go back"
+    )
+    assert "Re-download" in row.tooltip, (
+        "PS-79's cost warning must survive: this revert moves hundreds of MB "
+        "and the operator is told before clicking, not after"
+    )
+
+
+def test_a_pinned_machine_still_gets_the_resume_gesture(monkeypatch, tmp_path):
+    """The pin state outranks everything and is untouched.
+
+    An operator who already went back is PINNED, and the way out of that state
+    must stay where they entered it. This is checked with a real pin written
+    through the real settings API (isolated by the autouse fixture), not by
+    stubbing pinned_build().
+    """
+    _force_os(monkeypatch, win=True)
+    eng = _Engine(monkeypatch, tmp_path)
+
+    (eng.dir / "chrome.exe").write_bytes(b"MZ" + b"AAA")
+    (eng.dir / ".engine-complete").write_text("ok")
+    updater.write_version("144.0.7559.132")
+
+    from src.core import settings
+
+    settings.set_chromium_build_pin("144.0.7559.132")
+    assert updater.pinned_build() == "144.0.7559.132"
+
+    # NOTE the pinned machine here ALSO has no record, so without the pin it
+    # would take the new message branch. The pin must win.
+    assert updater.rollback_target() == ("", "")
+    assert updater.current_build_recorded() is False
+
+    row = _RowOnly()._engine_rollback_row()
+    assert _row_text(row) == "resume updates (pinned to 144.0.7559.132)", (
+        "a pinned operator must be offered the way out of the pin, not an "
+        "explanation of why there is no rollback"
+    )
+    app = _RowOnly()
+    clickable = app._engine_rollback_row()
+    clickable.on_click(None)
+    assert app.fired == ["resume"], (
+        "and it must be wired to RESUME — the pinned operator's only way "
+        "forward out of the state they entered"
+    )
+
+
+def test_an_unreadable_build_record_renders_nothing_and_says_why_in_the_log(
+    monkeypatch, tmp_path
+):
+    """THE FAIL-QUIET DIRECTION for the new branch.
+
+    A record that cannot be read cannot support a claim about HOW MANY updates
+    remain, so the row degrades to silence rather than guessing a number — and
+    logs the reason, matching the sibling handler above it that was given the
+    same treatment for the same reason (a control vanishing with nothing on
+    screen saying why).
+    """
+    _force_os(monkeypatch, win=True)
+    eng = _Engine(monkeypatch, tmp_path)
+
+    (eng.dir / "chrome.exe").write_bytes(b"MZ" + b"AAA")
+    (eng.dir / ".engine-complete").write_text("ok")
+    updater.write_version("144.0.7559.132")
+
+    def boom():
+        raise OSError("builds.json is unreadable")
+
+    monkeypatch.setattr(updater, "current_build_recorded", boom)
+
+    app = _RowOnly()
+    row = app._engine_rollback_row()
+    assert row.height == 0, "an unreadable record must not promise a countdown"
+    assert any("build record" in line for line in app.logs), (
+        "the reason must reach the log rather than the control silently vanishing"
+    )
