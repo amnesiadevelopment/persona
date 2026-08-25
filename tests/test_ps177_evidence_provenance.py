@@ -95,9 +95,14 @@ def _prose(doc):
 
 def test_verify_passes_on_the_committed_tree():
     """The shipped document agrees with the shipped logs. The headline check."""
+    # encoding is explicit: text=True would decode the child's stdout with the
+    # LOCALE codec, which is cp1252 on the Windows CI runner, and the verifier
+    # prints "§". Every file read in this test tree is likewise explicitly utf-8
+    # — the first version of this suite passed on ubuntu/macos and failed on
+    # windows-latest for exactly that reason.
     result = subprocess.run(
         [sys.executable, PROBE_TOOL, "--verify"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8",
     )
     assert result.returncode == 0, (
         "EVIDENCE.md §2 disagrees with its own committed artifacts:\n"

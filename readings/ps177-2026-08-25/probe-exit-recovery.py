@@ -58,7 +58,7 @@ def parse_probe_log(path: Path = PROBE_LOG) -> list[tuple[datetime, str]]:
     date; the run did not cross midnight, so a bare time is unambiguous.
     """
     rows: list[tuple[datetime, str]] = []
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
             continue
@@ -82,7 +82,7 @@ def derive_figures() -> dict:
         (stamps[i + 1] - stamps[i]).total_seconds() for i in range(len(stamps) - 1)
     ]
     span = (stamps[-1] - stamps[0]).total_seconds()
-    text = PROBE_LOG.read_text()
+    text = PROBE_LOG.read_text(encoding="utf-8")
 
     return {
         "probes": len(rows),
@@ -97,9 +97,9 @@ def derive_figures() -> dict:
         "failures": sum(1 for o in outcomes if o == "FAIL"),
         "socks5_auth_failures": text.count("SOCKS5 authentication failed"),
         # sweep.log's independent corroboration, and its LIMIT as a source.
-        "sweep_refusals": SWEEP_LOG.read_text().count("REFUSED:"),
+        "sweep_refusals": SWEEP_LOG.read_text(encoding="utf-8").count("REFUSED:"),
         "sweep_timestamp_lines": len(
-            re.findall(r"\d{2}:\d{2}", SWEEP_LOG.read_text())
+            re.findall(r"\d{2}:\d{2}", SWEEP_LOG.read_text(encoding="utf-8"))
         ),
         # The ONE clock time in §2 that has a committed source, and where it is.
         "record_observed_at": _record_observed_at(),
@@ -107,7 +107,7 @@ def derive_figures() -> dict:
 
 
 def _record_observed_at() -> str | None:
-    m = re.search(r'"observed_at"\s*:\s*"([^"]+)"', RECORD.read_text())
+    m = re.search(r'"observed_at"\s*:\s*"([^"]+)"', RECORD.read_text(encoding="utf-8"))
     return m.group(1) if m else None
 
 
@@ -122,7 +122,7 @@ def verify() -> int:
     the defect round 3 was opened to fix, so it must fail loudly.
     """
     f = derive_figures()
-    doc = EVIDENCE.read_text()
+    doc = EVIDENCE.read_text(encoding="utf-8")
     checks: list[tuple[str, bool, str]] = []
 
     def check(label: str, ok: bool, detail: str) -> None:
@@ -291,7 +291,7 @@ def variants() -> int:
               "without it.", file=sys.stderr)
         return 1
 
-    raw = cred_file.read_text().strip()
+    raw = cred_file.read_text(encoding="utf-8").strip()
 
     def redact(url: str) -> str:
         return re.sub(r"//[^@]+@", "//<redacted>@", url)
