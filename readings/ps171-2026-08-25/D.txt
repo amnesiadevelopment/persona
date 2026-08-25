@@ -1,3 +1,38 @@
+# ============================================================================
+# CAPTION — ADDED AFTER THE FACT (PS-171 code review). READ BEFORE THE NUMBERS.
+#
+# THE `cpu_total` COLUMN IN THIS FILE IS A LIFETIME AVERAGE, NOT AN
+# INSTANTANEOUS READING. DO NOT READ IT AS "the browser is burning N% of a core
+# right now".
+#
+# This arm was taken with `abd_harness.py`, which sampled CPU via `ps pcpu`.
+# `pcpu` averages over the process's WHOLE LIFETIME, so a process that spun hard
+# early and then blocked forever keeps reporting a high number. The corrected
+# sampler (utime+stime deltas from /proc, in `e2.py` / `a2.py`) was written only
+# AFTER this arm was taken. The two schemas are distinguishable on sight:
+#
+#     this file (lifetime average) : cpu_total / threads_total / stats / phase
+#     corrected instrument         : cpu / rss_mb / thr
+#
+# WHY THIS MATTERS HERE: at t=304.3 this file shows "cpu_total": 24.2 with every
+# thread in S. Read naively that is a wedged browser apparently burning a quarter
+# of a core — the exact spinning-vs-blocked confusion the record turns on. It is
+# an artifact of the averaging, not a measurement of activity.
+#
+# THE NUMBERS ARE STILL EVIDENCE, AND THEY POINT THE SAME WAY. Over the 90
+# samples after the process death (t=125.2 -> 304.3) cpu_total decays 58.1 ->
+# 24.2 monotonically and fits
+#
+#     cpu = 7433 / (t + 2.3)      max relative error 0.34%
+#
+# A hyperbola that tight IS cumulative_cpu_seconds / elapsed. The constant
+# numerator means cumulative CPU stayed pinned at ~74.3 s across 179 s of wall
+# clock: the process burned ZERO additional CPU while wedged. So this arm does
+# support "idle-waiting, not spinning" — it just cannot show it directly, and
+# the corrected arms (A2, F) are where that reading is taken from.
+#
+# Original content follows unmodified.
+# ============================================================================
 wrapper started 2026-08-25T14:26:00+00:00
   WD {"t": 0.0, "n": 0, "cpu_total": 0, "rss_mb_total": 0, "threads_total": 0, "stats": "", "phase": "startup"}
   WD {"t": 2.0, "n": 2, "cpu_total": 185.0, "rss_mb_total": 203.1, "threads_total": 61, "stats": "RR", "phase": "startup"}

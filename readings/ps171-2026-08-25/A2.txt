@@ -1,0 +1,10 @@
+START arm A re-run | layer=ON headless ntabs=4 deadline=40s | INSTANTANEOUS cpu sampler
+LAUNCH 2.91s | the engine returned a Browser (no add_init_script, no pages), so ONE explicit context was opened to carry the layer
+LAYER INSTALLED installed=['audio', 'locale', 'webgl'] failed={}
+tab1 open | {"t": 6.3, "n": 8, "cpu": 0.0, "rss_mb": 967.2, "thr": {"R": 4, "S": 185}}
+--- tab2 open ok=True 17.09s 
+    ping-tab1 ok=True 1.42s  pages=2 | {"t": 24.8, "n": 8, "cpu": 63.7, "rss_mb": 880.6, "thr": {"R": 3, "S": 185}}
+--- tab3 open ok=False 40.03s BLOCKED>40s
+    ping-tab1 ok=False 8.0s BLOCKED>8s pages=2 | {"t": 72.9, "n": 12, "cpu": 54.4, "rss_mb": 1337.3, "thr": {"R": 2, "S": 277}}
+*** STALL at tab3: watching 40s for recovery
+RECOVERY after 40s: ping ok=False 8.0s BLOCKED>8s | {"t": 120.9, "n": 0, "cpu": 0.0, "rss_mb": 0, "thr": {}}
