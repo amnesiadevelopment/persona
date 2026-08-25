@@ -23,6 +23,7 @@ import subprocess
 import pytest
 
 from src.services.browser.canvas_ctx_ext import build_canvas_ctx_extension
+from src.services.browser.engine_platform import engine_platform_for
 from src.services.browser.gpu_ext import build_gpu_extension
 from tests.native_mask_probe import assert_reads_native
 
@@ -160,7 +161,7 @@ def _run(tmp_path, os_type, probe, *, with_gpu=False, tag="", stubs=None):
     scripts = []
     if with_gpu:
         # gpu_ext installs the identity PS-12 landed; the alias must carry it.
-        gpu_dir = build_gpu_extension(1, os_type, str(work / "gpu"), 0)
+        gpu_dir = build_gpu_extension(1, os_type, str(work / "gpu"), 0, engine_platform=engine_platform_for(os_type, "desktop"))
         scripts.append(str(pathlib.Path(gpu_dir) / "gpu.js"))
     cc_dir = build_canvas_ctx_extension(os_type, str(work / "cc"))
     scripts.append(str(pathlib.Path(cc_dir) / "canvas_ctx.js"))

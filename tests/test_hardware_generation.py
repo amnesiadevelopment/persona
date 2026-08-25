@@ -62,6 +62,7 @@ from src.services.browser.device_presets import (
     pick_touch_points,
     presets_for,
 )
+from src.services.browser.engine_platform import engine_platform_for
 from src.services.browser.gpu_ext import build_gpu_extension
 from src.services.browser.resolution import (
     DESKTOP_RESOLUTIONS,
@@ -262,7 +263,7 @@ def _gpu_seen(tmp_path, seed, generation, tag):
     if not node:
         pytest.skip("node not available")
     d = pathlib.Path(
-        build_gpu_extension(seed, "linux", str(tmp_path / f"{tag}{seed}"), generation)
+        build_gpu_extension(seed, "linux", str(tmp_path / f"{tag}{seed}"), generation, engine_platform=engine_platform_for("linux", "desktop"))
     )
     harness = d / "harness.js"
     harness.write_text(_GPU_READ, encoding="utf-8")
