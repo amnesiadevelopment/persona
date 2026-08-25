@@ -723,8 +723,29 @@ def capabilities_for_skip(
 ) -> Iterator[Capability]:
     """EVERY capability this skip belongs to, not merely the first one found.
 
-    An explicit marker wins over reason matching: a test that names its own
-    capability is never re-classified by the text it happened to print.
+    A marker ADDS to reason matching; it does not REPLACE it. The marker states
+    what a test needs, and the reason states what was actually missing — two
+    different facts, and a skip belongs to both. Letting the marker suppress
+    the reason made a test's guarding STRICTLY WEAKER the more precisely it
+    declared itself, which is backwards.
+
+    THE FAILURE THAT FORCED THIS, and it is worth stating concretely because
+    the symptom points away from the cause. A two-armed test marked
+    ``("browser_chromium", "browser_firefox")`` skipped with "chromium engine
+    not runnable here"; CI declares `browser`, which expands to
+    `browser_firefox`. Under marker-only classification the skip was reported
+    as a `browser_firefox` FAILURE — printing "this environment declares
+    browser_firefox, so this test must RUN" directly above a skip reason
+    naming CHROMIUM. The message contradicted itself, and Firefox was never
+    the missing thing. Reason matching lands it on `browser_chromium`, which
+    nothing declares, so it stays the honest inconclusive skip it is.
+
+    THE UNION IS THE SAFE DIRECTION, deliberately. It only ever yields MORE
+    capabilities, so it can turn a skip that was silently tolerated into a
+    policed one, and can never do the reverse — a guard cannot go quiet
+    because of this. That matters for the case the union exists to protect: a
+    test whose marker names only the engine that GATES it must still be caught
+    when its OTHER engine is the thing that is missing.
 
     ALL of a marker's names are yielded, and that is the whole point. Returning
     only one — say the alphabetically first — would make the outcome depend on
@@ -750,15 +771,21 @@ def capabilities_for_skip(
     its member qualify, the reader is handed "install the Firefox binary"
     rather than "provision the engines this umbrella covers".
     """
+    seen: set[str] = set()
     if declared:
         for name in sorted(expand_capabilities(sorted(declared)), key=_specificity_key):
             cap = CAPABILITIES.get(name)
-            if cap is not None:
+            if cap is not None and cap.name not in seen:
+                seen.add(cap.name)
                 yield cap
-        return
+    # ...and then what the skip's own wording says was missing, which the
+    # marker cannot know. Yielded SECOND so a marker still writes the failure
+    # message wherever both qualify: the marker is the test's own statement
+    # about itself, and nothing here changes which capability gets to speak.
     for cap in CAPABILITIES.values():
         if cap.matches_reason(reason):
-            yield cap
+            if cap.name not in seen:
+                yield cap
             return
 
 

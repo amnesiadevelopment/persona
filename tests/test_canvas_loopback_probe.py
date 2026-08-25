@@ -502,7 +502,20 @@ def _run_seed_axis(engine: str) -> dict:
     )
 
 
-@pytest.mark.requires_capability("browser_chromium", "browser_firefox")
+# CHROMIUM ALONE, and the omission of `browser_firefox` is deliberate rather
+# than an oversight. This marker names what GATES the test, and only chromium
+# does: the firefox arm is unreachable unless chromium ran first (see the
+# docstring — that ordering is Condition 1, not a style choice). Marking
+# firefox too made a correct "chromium engine not runnable here" skip report as
+# a `browser_firefox` FAILURE under CI's `PERSONA_REQUIRED_CAPABILITIES=browser`
+# — a red whose own message named the one engine that was not missing.
+#
+# The firefox guard is NOT lost by narrowing this. conftest's
+# `capabilities_for_skip` unions a marker's names with what the skip's REASON
+# matched, so a genuine "firefox not runnable here" still classifies as
+# `browser_firefox` and still fails wherever that capability is declared.
+# Verified both ways in tests/test_skip_visibility.py.
+@pytest.mark.requires_capability("browser_chromium")
 def test_the_seed_axis_moves_canvas_on_chromium_and_collides_on_firefox():
     """THE ACCEPTANCE CRITERION: ONE test, BOTH arms.
 
