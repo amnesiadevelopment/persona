@@ -455,6 +455,46 @@ jobs:
           python-version: "3.12"
           update-environment: false
 
+      - name: Report how pywin32 actually landed in the bundle
+        # DIAGNOSTIC ONLY — this step never fails the build and never changes a
+        # verdict. It exists because the 3.0.0 Windows failure
+        # ("mcp (ModuleNotFoundError: No module named 'pywintypes')") does NOT
+        # distinguish two very different states, and the artifact needed to tell
+        # them apart is destroyed with the runner:
+        #
+        #   (a) pywin32 is absent from the bundle          -> a packaging defect
+        #   (b) pywin32 is present but pywintypes is not
+        #       IMPORTABLE, because it lives at win32/lib/
+        #       and is reachable only through pywin32.pth  -> a reachability fact
+        #
+        # (b) is not exotic. It is how the wheel is built: pywintypes.py is NOT
+        # at the site-packages top level, and `.pth` files are processed only by
+        # the `site` module, only for site directories derived from sys.prefix.
+        # The bundle's app dependencies land in <exeDir>/site-packages, which the
+        # runtime puts on PYTHONPATH — and a PYTHONPATH entry is NOT a site
+        # directory, so a pywin32.pth sitting there is inert at runtime too.
+        #
+        # Print the evidence rather than inferring it, so the NEXT run answers
+        # this from the artifact instead of from argument. `|| true` is
+        # deliberate and is NOT a swallowed check: there is nothing here to fail,
+        # and a missing directory is itself part of the answer.
+        shell: bash
+        run: |
+          echo "=== does the bundle carry pywin32 at all? ==="
+          find build/windows -maxdepth 4 -iname "pywin32*" -o -maxdepth 4 -iname "pywintypes*" | head -20 || true
+          echo
+          echo "=== the file the import actually needs (win32/lib/pywintypes.py) ==="
+          find build/windows -path "*win32/lib/pywintypes.py" | head -5 || true
+          echo
+          echo "=== any pywin32.pth, and which site-packages holds it ==="
+          find build/windows -name "*.pth" | head -20 || true
+          echo
+          echo "=== top level of each bundled site-packages ==="
+          for sp in build/windows/site-packages build/windows/Lib/site-packages; do
+            echo "--- $sp ---"
+            ls "$sp" 2>/dev/null | head -30 || echo "(absent)"
+          done
+
       - name: Open the frozen bundle before packaging it
         # The counterpart of the Linux job's step, on the Windows bundle shape.
         # Runs BEFORE Inno Setup and before upload, so a bundle that will not
