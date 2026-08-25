@@ -534,3 +534,227 @@ def test_a_colliding_import_re_mints_differently_on_two_installs(
     b = _import_on(tmp_path / "install-b")
 
     assert a != b
+
+
+# --- PS-167: the secret follows config's fallback like every other data file --
+#
+# THE DEFECT THESE PIN. `config._ensure_home` falls back to ~/.persona when the
+# configured PERSONA_HOME cannot be created, and states the contract: "Returns
+# the directory actually in use, so every path below is derived from the home
+# that really exists." `install_secret._path()` was the ONE runtime data path
+# that was not — it re-read PERSONA_HOME from the environment and joined the
+# REQUESTED home, the one `_ensure_home` had just proved could not be made. So
+# `_create` raised, the handler returned a process-lifetime secret, and that
+# repeated EVERY LAUNCH, permanently, while all the install's real data
+# persisted happily in the fallback home.
+#
+# These assert on BYTES READ BACK IN A SECOND PROCESS, never that a helper was
+# called — a call-shape assertion passes against an inert implementation.
+
+
+def _isec_filename():
+    import src.core.install_secret as isec
+
+    return isec._SECRET_FILENAME
+
+
+def _blocked_home(tmp_path):
+    """A PERSONA_HOME that genuinely cannot be created: its PARENT IS A FILE, so
+    `os.makedirs` raises NotADirectoryError rather than us mocking a failure.
+    Returns (unmakeable_home, sandbox_HOME) — the caller must redirect HOME to
+    the latter, or the fallback writes into the developer's real ~/.persona."""
+    sandbox_home = tmp_path / "real-home"
+    sandbox_home.mkdir(parents=True, exist_ok=True)
+    parent_that_is_a_file = tmp_path / "iamafile"
+    parent_that_is_a_file.write_text("a file, not a directory")
+    return parent_that_is_a_file / "persona", sandbox_home
+
+
+def test_an_uncreatable_home_persists_the_secret_where_config_fell_back(
+    tmp_path, monkeypatch
+):
+    # AC1. The secret lands in the home that REALLY EXISTS, and a second
+    # process reads THE SAME BYTES. On origin/main this is RED: nothing is
+    # persisted at all and the second read is fresh entropy.
+    import src.core.install_secret as isec
+
+    blocked, sandbox_home = _blocked_home(tmp_path)
+    monkeypatch.setenv("HOME", str(sandbox_home))
+    monkeypatch.setenv("USERPROFILE", str(sandbox_home))  # expanduser on Windows
+    monkeypatch.setenv("PERSONA_HOME", str(blocked))
+    monkeypatch.delenv("PERSONA_INSTALL_SECRET_FILE", raising=False)
+
+    isec.reset_cache_for_tests()
+    first = isec.install_secret()
+
+    # It is ON DISK, in the fallback home, and it is the bytes we were handed.
+    landed = sandbox_home / ".persona" / _isec_filename()
+    assert landed.exists(), "the secret was never persisted anywhere"
+    assert landed.read_bytes() == first
+
+    # ...and it did NOT land under the home that could not be made.
+    assert not (blocked / _isec_filename()).exists()
+
+    # A SECOND PROCESS: caches gone, the FILE is not. This is the assertion the
+    # ticket is about — bytes read back, not a helper call.
+    isec.reset_cache_for_tests()
+    assert isec.install_secret() == first
+
+
+def _isec_filename():
+    import src.core.install_secret as isec
+
+    return isec._SECRET_FILENAME
+
+
+def test_two_creatable_homes_still_mint_different_secrets(tmp_path):
+    # AC3, the property `_path`'s docstring exists for, and the one this fix
+    # must not break: routing through the fallback must NOT collapse two real
+    # installs onto one secret. If this goes green-by-accident the fix is
+    # wrong, so it asserts on two mints made under two genuinely creatable
+    # homes — reusing the existing second-install harness rather than a new one.
+    assert _mint_under_install(tmp_path / "install-a", "acme-bank") != (
+        _mint_under_install(tmp_path / "install-b", "acme-bank")
+    )
+
+
+def test_two_creatable_homes_keep_separate_secret_files(tmp_path, monkeypatch):
+    # AC3 at the layer this ticket actually changed: the same isolation stated
+    # about the SECRET rather than the seed derived from it, so a regression in
+    # `_path` is caught here even if the mint were to stop consuming it.
+    import src.core.install_secret as isec
+
+    monkeypatch.delenv("PERSONA_INSTALL_SECRET_FILE", raising=False)
+    secrets_by_home = {}
+    for leaf in ("install-a", "install-b"):
+        home = tmp_path / leaf
+        home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("PERSONA_HOME", str(home))
+        isec.reset_cache_for_tests()
+        secrets_by_home[leaf] = isec.install_secret()
+        assert (home / isec._SECRET_FILENAME).exists()  # its OWN file
+
+    assert secrets_by_home["install-a"] != secrets_by_home["install-b"]
+
+
+def test_the_explicit_secret_file_override_still_wins_over_the_fallback(
+    tmp_path, monkeypatch
+):
+    # AC4. The override is the operator's most explicit instruction, so an
+    # unmakeable PERSONA_HOME must not redirect it into ~/.persona.
+    import src.core.install_secret as isec
+
+    blocked, sandbox_home = _blocked_home(tmp_path)
+    chosen = tmp_path / "elsewhere" / "my_secret"
+    monkeypatch.setenv("HOME", str(sandbox_home))
+    monkeypatch.setenv("USERPROFILE", str(sandbox_home))
+    monkeypatch.setenv("PERSONA_HOME", str(blocked))
+    monkeypatch.setenv("PERSONA_INSTALL_SECRET_FILE", str(chosen))
+
+    isec.reset_cache_for_tests()
+    assert isec._path() == str(chosen)
+
+    secret = isec.install_secret()
+    assert chosen.read_bytes() == secret
+    assert not (sandbox_home / ".persona" / isec._SECRET_FILENAME).exists()
+
+
+def test_the_could_not_persist_error_stops_firing_under_an_uncreatable_home(
+    tmp_path, monkeypatch, caplog
+):
+    # AC7 of PS-167, and the OBSERVABLE proof that the persistence guarantee
+    # now holds: the operator's symptom was an install_secret error on every
+    # single launch. It is stronger evidence than any assertion about internals
+    # — if this line is absent, the secret really was written.
+    #
+    # The CONFIG line is deliberately NOT asserted absent: PERSONA_HOME still
+    # cannot be created and the operator should still be told so, exactly once.
+    import logging
+
+    import src.core.install_secret as isec
+
+    blocked, sandbox_home = _blocked_home(tmp_path)
+    monkeypatch.setenv("HOME", str(sandbox_home))
+    monkeypatch.setenv("USERPROFILE", str(sandbox_home))
+    monkeypatch.setenv("PERSONA_HOME", str(blocked))
+    monkeypatch.delenv("PERSONA_INSTALL_SECRET_FILE", raising=False)
+
+    isec.reset_cache_for_tests()
+    with caplog.at_level(logging.ERROR, logger="install_secret"):
+        isec.install_secret()
+        isec.reset_cache_for_tests()
+        isec.install_secret()  # a second launch: still no complaint
+
+    offending = [r for r in caplog.records if r.name == "install_secret"]
+    assert offending == [], (
+        f"still failing to persist: {[r.getMessage() for r in offending]}"
+    )
+
+
+def test_repeated_mints_do_not_re_log_the_unmakeable_home(
+    tmp_path, monkeypatch, caplog
+):
+    # The cadence half of the fix, stated as a test so a later refactor cannot
+    # quietly reintroduce it. `config._ensure_home` is EFFECTFUL — it logs — and
+    # `_path()` runs on every mint, so a naive routing turns one error line per
+    # launch into one per mint. The operator's log volume must not depend on how
+    # many profiles they create.
+    import logging
+
+    import src.core.install_secret as isec
+
+    blocked, sandbox_home = _blocked_home(tmp_path)
+    monkeypatch.setenv("HOME", str(sandbox_home))
+    monkeypatch.setenv("USERPROFILE", str(sandbox_home))
+    monkeypatch.setenv("PERSONA_HOME", str(blocked))
+    monkeypatch.delenv("PERSONA_INSTALL_SECRET_FILE", raising=False)
+
+    isec.reset_cache_for_tests()
+    with caplog.at_level(logging.ERROR, logger="config"):
+        for _ in range(25):
+            isec._path()
+
+    complaints = [r for r in caplog.records if "could not be created" in r.getMessage()]
+    assert len(complaints) <= 1, f"{len(complaints)} error lines for 25 mints"
+
+
+def test_two_installs_that_both_fail_to_make_their_homes_share_one_secret(
+    tmp_path, monkeypatch
+):
+    # THE DELIBERATE BEHAVIOUR CHANGE, pinned so it is a decision rather than a
+    # discovery (PS-167 consequence #3). Two installs whose configured homes
+    # BOTH cannot be created now resolve to the same ~/.persona and therefore
+    # share one secret.
+    #
+    # This is believed CORRECT, and the reason is the control in the ticket's
+    # transcript: those two installs are already sharing ~/.persona for
+    # profiles.json and every other data file, because that is where config put
+    # them. Sharing the secret matches where their data actually lives. The
+    # alternative — inventing a third, per-request home just for the secret —
+    # would put the secret somewhere none of their other data is.
+    #
+    # NOTE THE BOUND: this is emphatically NOT the isolation property. Two
+    # CREATABLE homes still mint different secrets — pinned directly above in
+    # test_two_creatable_homes_keep_separate_secret_files, which is the test
+    # that would catch a fix that over-reached.
+    import src.core.install_secret as isec
+
+    sandbox_home = tmp_path / "real-home"
+    sandbox_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HOME", str(sandbox_home))
+    monkeypatch.setenv("USERPROFILE", str(sandbox_home))
+    monkeypatch.delenv("PERSONA_INSTALL_SECRET_FILE", raising=False)
+
+    secrets_seen = []
+    for leaf in ("blocked-a", "blocked-b"):
+        parent_that_is_a_file = tmp_path / leaf
+        parent_that_is_a_file.write_text("a file, not a directory")
+        monkeypatch.setenv("PERSONA_HOME", str(parent_that_is_a_file / "persona"))
+        isec.reset_cache_for_tests()
+        secrets_seen.append(isec.install_secret())
+
+    # Same bytes, because both genuinely run out of ~/.persona.
+    assert secrets_seen[0] == secrets_seen[1]
+    assert (sandbox_home / ".persona" / isec._SECRET_FILENAME).read_bytes() == (
+        secrets_seen[0]
+    )
