@@ -393,22 +393,40 @@ class App:
     def _build_sidebar(self) -> ft.Container:
         r = self.refs
         assert r is not None
+        # DIRECTION C: the log panel EXPANDS to fill the rail's lower half, so
+        # its header sits at the top of that half and the event list takes the
+        # rest. `expand=True` on the list is what turns extra window height into
+        # extra history instead of empty rail.
         log_panel = ft.Column(
             spacing=4,
+            expand=True,
             controls=[
                 ft.Row(
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     controls=[
-                        r.log_toggle_btn,
+                        ft.Row(
+                            spacing=8,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            controls=[
+                                ft.Icon(
+                                    ft.Icons.TERMINAL,
+                                    size=14,
+                                    color=COLORS["accent"],
+                                ),
+                                r.log_toggle_btn,
+                            ],
+                        ),
                         ft.IconButton(
                             icon=ft.Icons.OPEN_IN_FULL,
                             icon_size=14,
                             icon_color=COLORS["text_sub"],
+                            tooltip="Open full Activity Log",
                             on_click=lambda _: self.h.open_log_fullscreen(),
                         ),
                     ],
                 ),
-                r.log_column,
+                ft.Container(expand=True, content=r.log_column),
             ],
         )
         engine_panel = self._build_engines_panel()
@@ -3641,14 +3659,17 @@ class App:
         text = self.state.flush_log()
         if text is not None and self.refs:
             lines = [ln for ln in text.split("\n") if ln]
-            sidebar_lines = lines[-6:]
-            # Wrap long lines (Mars: they were clipping) — the ListView scrolls,
-            # so the panel keeps a comfortable fixed height instead of growing
-            # per line and the wrapped continuation stays readable.
+            # DIRECTION C: the rail is 300px wide and the log owns its lower
+            # half, so there is room for a deeper tail AND for the line to stay
+            # readable. Rows do not wrap (uniform height, so the region does not
+            # change extent on every repaint), but at ~46 characters most real
+            # events fit without being cut. The height is NOT set here: the
+            # panel expands to fill the rail, so a taller window turns into more
+            # history by itself.
+            sidebar_lines = lines[-40:]
             self.refs.log_list.controls = [
-                log_line_control(ln, wrap=True) for ln in sidebar_lines
+                log_line_control(ln, wrap=False) for ln in sidebar_lines
             ]
-            self.refs.log_column.height = 150
             self.refs.log_column.visible = (
                 bool(sidebar_lines) and not self.state.log_collapsed
             )
