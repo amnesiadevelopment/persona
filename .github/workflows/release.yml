@@ -429,10 +429,36 @@ jobs:
           $ver = (Select-String -Path src/services/app_update/updater.py -Pattern 'APP_VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
           flet build windows -v --no-rich-output --build-version $ver
 
+      - name: Make pywin32 importable from the bundle
+        # THE PS-168 FIX. Runs BEFORE the smoke check, because the smoke check is
+        # what proves it worked, and before Inno Setup, so the installer wraps
+        # the corrected tree.
+        #
+        # pywin32 ships `pywintypes` at win32/lib/, reachable ONLY through
+        # pywin32.pth. A .pth is executed by the `site` module, and only for
+        # directories `site` derives from sys.prefix — which is NEITHER consumer
+        # here: the shipped app puts site-packages on PYTHONPATH, and the smoke
+        # runs -S -E. So the .pth is inert in the gate AND in the product, which
+        # is why 3.0.0 failed with "No module named 'pywintypes'" on a bundle
+        # that demonstrably CONTAINED pywin32.
+        #
+        # This is therefore a BUNDLE fix, not a checker fix. Making the checker
+        # process the .pth would turn this job green over an app that still
+        # fails in front of a user.
+        shell: bash
+        run: python .github/scripts/flatten_pywin32.py build/windows
+
       - name: Assert required packages are bundled
         # audit6 #3: the Linux job asserts both engines are in the bundle; Windows
         # had no such check. flet's Windows layout differs, so match the package
         # dir anywhere under build/windows rather than a fixed site-packages path.
+        #
+        # pywin32 is checked by MODULE, not by package directory (PS-168). The
+        # defect it shipped was a bundle that carried the win32/ directory and
+        # still could not import pywintypes, so `find -type d -name pywin32`
+        # would have passed on the exact tree that failed. Assert the flattened
+        # module and its companion DLL — the two things the import actually
+        # needs — so this step can only pass on a bundle that is importable.
         shell: bash
         run: |
           for pkg in invisible_playwright invisible_core; do
@@ -442,6 +468,18 @@ jobs:
             fi
           done
           echo "bundled engine packages OK"
+
+          if [ -z "$(find build/windows -name "pywintypes.py" -not -path "*/win32/lib/*" -print -quit)" ]; then
+            echo "ERROR: pywintypes.py is not importable from any bundled site-packages" >&2
+            echo "       (only the unreachable win32/lib/ copy is present)." >&2
+            exit 1
+          fi
+          if [ -z "$(find build/windows -name "pywintypes*.dll" -not -path "*/pywin32_system32/*" -print -quit)" ]; then
+            echo "ERROR: no pywintypes*.dll beside the flattened module - the import" >&2
+            echo "       would resolve the module and then fail loading its DLL." >&2
+            exit 1
+          fi
+          echo "bundled pywin32 OK (module + companion DLL importable)"
 
       - name: Provision the interpreter the BUNDLE was frozen for
         # Same rationale as the Linux job: flet freezes site-packages against its
