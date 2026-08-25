@@ -39,6 +39,32 @@ actively scrubbed so this cannot pass by accident on a runner that has a screen.
 Stated plainly, so no reader mistakes its reach:
   * The interpreter running the payload is the RUNNER's, not the one embedded in
     the Flutter host. A bundle can carry an interpreter; it cannot lend it out.
+    persona's Linux bundle carries `lib/libpython3.12.so.1.0` and a directory of
+    stdlib .pyc — a SHARED LIBRARY the Flutter host embeds, with no executable
+    to invoke. So borrowing it is not merely awkward, it is unavailable.
+  * BECAUSE the runner's interpreter is the one that runs, its VERSION must match
+    the one the bundle was frozen for. This is not a nicety; it is the difference
+    between a real check and a false alarm. flet freezes site-packages against the
+    python-build-standalone runtime it downloads (cpython-3.12.9 today), and a
+    compiled extension is stamped with that exact ABI: 3.12 builds
+    `_pydantic_core.cpython-312-*.so`, and 3.13 looks ONLY for `-313-`. Import it
+    from 3.13 and you get `ModuleNotFoundError` for a file sitting right there on
+    disk.
+    MEASURED, because this shipped as a release-blocking false alarm (PS-158):
+    run against the REAL, PUBLISHED v2.9.17 bundle — one that users are running
+    successfully right now — this script under the runner's 3.13 reported
+    fastapi, pydantic, paramiko, mcp and invisible_playwright all "missing". The
+    same script, the same bundle, under 3.12: every import resolved and the entry
+    point printed SELFTEST_OK. The bundle was never the problem.
+    The named module was innocent in every case; what actually failed was a
+    TRANSITIVE import (`pydantic_core._pydantic_core`, `_cffi_backend`), and the
+    bootstrap recorded only the exception's CLASS, discarding the message that
+    said so. It now reports the message, because that one omission is what turned
+    a one-line diagnosis into a blocked release.
+    So the ABI is DETECTED from the bundle's own compiled extensions and an
+    interpreter matching it is required. If none can be found this ERRORS — it
+    does not fall back to a convenient interpreter, because "check it with the
+    wrong Python" is precisely the bug being fixed.
   * The Flutter host layer itself is NOT exercised. That needs a display and is
     explicitly out of scope.
   * This proves the frozen PYTHON tree is complete, importable and correctly
@@ -167,35 +193,167 @@ def find_app_payload(root: Path, workdir: Path) -> Path:
     )
 
 
-def find_site_packages(root: Path) -> Path:
-    """The bundle's OWN site-packages — the thing that makes -S meaningful."""
-    exact = [p for p in root.rglob("site-packages") if p.is_dir()]
-    if len(exact) > 1:
-        # Same stance as find_app_payload: an arbitrary pick would decide WHICH
-        # dependency set the -S run resolves against, which is the whole point
-        # of the check. Refuse rather than guess.
+def find_site_packages(root: Path) -> list[Path]:
+    """EVERY site-packages the bundle ships — the thing that makes -S meaningful.
+
+    Returns a LIST, and that is the fix for the Windows case rather than a
+    relaxation of it. This used to refuse outright when it found more than one,
+    reasoning that picking an arbitrary directory would silently decide which
+    dependency set the -S run resolves against. The refusal was right; the
+    premise was not. On Windows flet ships TWO, and neither is a decoy:
+
+        site-packages       <- the app's dependencies, installed by flet
+        Lib/site-packages   <- the embedded interpreter's OWN
+
+    Both are inside the bundle and both are on the real app's import path at
+    runtime, so "which one does the app ship with?" had no answer: it ships
+    both. Using all of them is what the running app actually does, so this is
+    MORE faithful than picking one, not more forgiving.
+
+    It stays honest in the direction that matters. Every path here is inside the
+    bundle, the runner's own site-packages is still excluded by -S -E, and a
+    module absent from ALL of them still fails the check. Nothing is waved
+    through — the search got complete, not lenient.
+    """
+    found = [p for p in root.rglob("site-packages") if p.is_dir()]
+    if not found:
+        # flet's layouts differ per OS; fall back to the directories that
+        # actually carry the engine packages rather than assuming a fixed path.
+        probed: list[Path] = []
+        for probe in ("invisible_core", "flet"):
+            probed.extend(p.parent for p in root.rglob(probe) if p.is_dir())
+        found = sorted(set(probed))
+    if not found:
         fail(
-            f"{len(exact)} site-packages directories under {root}: "
-            f"{[str(p.relative_to(root)) for p in exact]}. Refusing to guess "
-            "which one the app ships with"
+            f"no bundled site-packages under {root} — without it every import would "
+            "silently resolve from the runner instead, and this check would prove nothing"
         )
-    if exact:
-        return exact[0]
-    # flet's layouts differ per OS; fall back to the directory that actually
-    # carries the engine packages rather than assuming a fixed path.
-    for probe in ("invisible_core", "flet"):
-        hits = sorted({p.parent for p in root.rglob(probe) if p.is_dir()})
-        if len(hits) > 1:
-            fail(
-                f"{probe} appears in {len(hits)} different directories under "
-                f"{root}: {[str(p.relative_to(root)) for p in hits]}. Refusing "
-                "to guess which is the bundle's site-packages"
+    return sorted(set(found))
+
+
+# A compiled extension carries the EXACT interpreter it was built for in its
+# filename: CPython 3.12 produces `_pydantic_core.cpython-312-x86_64-linux-gnu.so`
+# on Linux/macOS and `_pydantic_core.cp312-win_amd64.pyd` on Windows. 3.13 does
+# not look at those files at all — it searches for `-313-` — so importing a
+# 3.12-built bundle from 3.13 raises ModuleNotFoundError for a file that is
+# sitting right there. That filename is therefore the bundle's own statement of
+# which interpreter it requires, and it is what this script must obey.
+ABI_TAG_RE = re.compile(r"\.cp(?:ython-)?(\d)(\d+)[.-]")
+
+# `foo.abi3.so` is deliberately NOT matched above. The stable ABI is exactly the
+# case that works across versions (it is why cryptography imported fine from
+# 3.13 while pydantic_core did not), so it is evidence of nothing and must not
+# be allowed to vote on the version.
+
+
+def detect_bundle_abi(site_packages: list[Path]) -> tuple[int, int]:
+    """Which CPython the bundle was frozen for, read off its own binaries.
+
+    Deliberately measured from the artifact rather than configured. A constant
+    here would be a second source of truth that says 3.12 while flet quietly
+    moves to 3.13 — and the failure would look exactly like the one this fixes.
+    """
+    tags: dict[tuple[int, int], list[str]] = {}
+    for sp in site_packages:
+        for ext in (".so", ".pyd"):
+            for lib in sp.rglob(f"*{ext}"):
+                m = ABI_TAG_RE.search(lib.name)
+                if m:
+                    # Tag "312" is 3.12 and "310" is 3.10: first digit major,
+                    # the remainder minor.
+                    tags.setdefault((int(m.group(1)), int(m.group(2))), []).append(lib.name)
+    if not tags:
+        # Fail closed, like everywhere else here. persona's bundle carries ~24
+        # compiled extensions (pydantic_core, cryptography, bcrypt, ...), so
+        # finding NONE means we are looking at the wrong tree or at a bundle
+        # that lost them. Continuing would mean picking an interpreter at random
+        # — which is the exact defect this function exists to remove.
+        fail(
+            f"no compiled extension modules under {[str(p) for p in site_packages]}, "
+            "so the interpreter version the bundle was frozen for cannot be "
+            "determined — refusing to guess which Python to check it with"
+        )
+    if len(tags) > 1:
+        pretty = {f"{a}.{b}": sorted(v)[:3] for (a, b), v in sorted(tags.items())}
+        fail(
+            f"the bundle carries extensions built for MORE THAN ONE Python: {pretty}. "
+            "No single interpreter can import all of them, so the bundle itself is "
+            "inconsistent — this is a real packaging defect, not a check problem"
+        )
+    return next(iter(tags))
+
+
+def resolve_interpreter(abi: tuple[int, int], explicit: str | None) -> str:
+    """An interpreter matching the bundle's ABI — or an ERROR, never a fallback.
+
+    "Could not find the right Python, so I used the one I had" is precisely how
+    a green release turned into five phantom ModuleNotFoundErrors. If the right
+    interpreter is absent the honest outcome is a red build that says so.
+    """
+    major, minor = abi
+
+    def version_of(exe: str) -> tuple[int, int] | None:
+        try:
+            proc = subprocess.run(
+                [exe, "-c", "import sys; print('%d %d' % sys.version_info[:2])"],
+                capture_output=True, text=True, timeout=60,
             )
-        if hits:
-            return hits[0]
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if proc.returncode != 0:
+            return None
+        try:
+            a, b = proc.stdout.split()
+            return int(a), int(b)
+        except ValueError:
+            return None
+
+    if explicit:
+        got = version_of(explicit)
+        if got is None:
+            fail(f"--python {explicit} could not be run to report its version")
+        if got != abi:
+            # Refused rather than silently ignored: an explicit --python that
+            # does not match means the WORKFLOW is wired wrong, and quietly
+            # substituting a different interpreter would hide that.
+            fail(
+                f"--python {explicit} is {got[0]}.{got[1]}, but the bundle was frozen "
+                f"for {major}.{minor} — it cannot import this bundle's extensions"
+            )
+        return explicit
+
+    if sys.version_info[:2] == abi:
+        return sys.executable
+
+    for cand in (f"python{major}.{minor}", f"python{major}{minor}"):
+        exe = shutil.which(cand)
+        if exe and version_of(exe) == abi:
+            return exe
+    # The Windows launcher knows about interpreters that are not on PATH.
+    if os.name == "nt":
+        launcher = shutil.which("py")
+        if launcher:
+            probe = f"{launcher}"
+            try:
+                proc = subprocess.run(
+                    [probe, f"-{major}.{minor}", "-c",
+                     "import sys; print(sys.executable)"],
+                    capture_output=True, text=True, timeout=60,
+                )
+                if proc.returncode == 0:
+                    exe = proc.stdout.strip()
+                    if exe and version_of(exe) == abi:
+                        return exe
+            except (OSError, subprocess.SubprocessError):
+                pass
+
     fail(
-        f"no bundled site-packages under {root} — without it every import would "
-        "silently resolve from the runner instead, and this check would prove nothing"
+        f"the bundle was frozen for Python {major}.{minor} (read from its own compiled "
+        f"extensions) but no {major}.{minor} interpreter is available here — this check "
+        f"is running under {sys.version_info[0]}.{sys.version_info[1]}, which cannot "
+        f"import {major}.{minor} extension modules and would report every one of them "
+        "as missing. Provision the matching Python (release.yml does this with a "
+        "second setup-python step) rather than letting the check run under the wrong one"
     )
 
 
@@ -217,17 +375,25 @@ def expected_version(repo_root: Path) -> str:
 
 BOOTSTRAP = r'''
 import sys, os
-sys.path[:0] = [APP_DIR, SITE_PACKAGES]
+sys.path[:0] = [APP_DIR] + list(SITE_PACKAGES)
 
 # Import the hard dependencies FIRST, from inside the frozen tree. Opening the
 # app alone does not prove these are present: the lazily-imported ones would let
 # the app open, print its version, and only die later in front of a user.
+#
+# Report the exception's MESSAGE, not just its class. The class alone says
+# "ModuleNotFoundError" against the name being checked, which reads as "fastapi
+# is not in the bundle" — and that sentence was wrong and cost a release
+# (PS-158). What had actually failed was a TRANSITIVE import: fastapi was
+# present and importing pydantic_core._pydantic_core, a 3.12-built extension,
+# under 3.13. The message names the module that really could not be found and
+# turns a phantom into a one-line diagnosis.
 missing = []
 for name in REQUIRED:
     try:
         __import__(name)
     except Exception as exc:
-        missing.append("%s (%s)" % (name, exc.__class__.__name__))
+        missing.append("%s (%s: %s)" % (name, exc.__class__.__name__, exc))
 if missing:
     print("PERSONA_BUNDLE_MISSING=" + ",".join(missing), flush=True)
     sys.exit(3)
@@ -257,10 +423,15 @@ sys.exit(4)
 '''
 
 
-def run_bundle(app_dir: Path, site_packages: Path, timeout: int) -> subprocess.CompletedProcess:
+def run_bundle(
+    app_dir: Path,
+    site_packages: list[Path],
+    interpreter: str,
+    timeout: int,
+) -> subprocess.CompletedProcess:
     code = (
         BOOTSTRAP.replace("APP_DIR", repr(str(app_dir)))
-        .replace("SITE_PACKAGES", repr(str(site_packages)))
+        .replace("SITE_PACKAGES", repr([str(p) for p in site_packages]))
         .replace("REQUIRED", repr(REQUIRED_IMPORTS))
     )
     env = {
@@ -273,8 +444,12 @@ def run_bundle(app_dir: Path, site_packages: Path, timeout: int) -> subprocess.C
     env["PERSONA_SELFTEST"] = "1"
     # -S: no runner site-packages.  -E: ignore PYTHONPATH/PYTHONHOME.
     # Together they force every import to resolve from inside the bundle.
+    #
+    # `interpreter` is the ABI-matched Python resolved from the bundle's own
+    # compiled extensions, NOT necessarily sys.executable. Running the wrong
+    # version here is what made this check condemn a healthy shipped release.
     return subprocess.run(
-        [sys.executable, "-S", "-E", "-c", code],
+        [interpreter, "-S", "-E", "-c", code],
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -288,6 +463,16 @@ def main() -> None:
     ap.add_argument("bundle_root", help="the tree flet build produced (or the .app)")
     ap.add_argument("--repo-root", default=".", help="checkout root, for APP_VERSION")
     ap.add_argument("--timeout", type=int, default=180)
+    ap.add_argument(
+        "--python",
+        default=None,
+        help=(
+            "interpreter to run the payload with. Must match the CPython version "
+            "the bundle was frozen for (detected from its own compiled "
+            "extensions); a mismatch is refused rather than silently accepted. "
+            "Omit to let this script find one."
+        ),
+    )
     args = ap.parse_args()
 
     root = Path(args.bundle_root).resolve()
@@ -301,8 +486,20 @@ def main() -> None:
     try:
         app_dir = find_app_payload(root, workdir)
         site_packages = find_site_packages(root)
+        abi = detect_bundle_abi(site_packages)
+        interpreter = resolve_interpreter(abi, args.python)
         print(f"app payload:   {app_dir}", flush=True)
-        print(f"site-packages: {site_packages}", flush=True)
+        for sp in site_packages:
+            print(f"site-packages: {sp}", flush=True)
+        # State the interpreter and WHY it was chosen. When this check next goes
+        # red, the first question is "was it checked with the right Python?" —
+        # and that must be answerable from the log alone.
+        print(
+            f"bundle ABI:    CPython {abi[0]}.{abi[1]} (read from the bundle's own "
+            f"compiled extensions)",
+            flush=True,
+        )
+        print(f"interpreter:   {interpreter}", flush=True)
 
         for rel in REQUIRED_ASSETS:
             # The EXACT path, with no "is it anywhere?" fallback. The failure
@@ -326,7 +523,7 @@ def main() -> None:
                 )
 
         try:
-            proc = run_bundle(app_dir, site_packages, args.timeout)
+            proc = run_bundle(app_dir, site_packages, interpreter, args.timeout)
         except subprocess.TimeoutExpired:
             fail(
                 f"the bundle did not reach its selftest gate within {args.timeout}s — "
