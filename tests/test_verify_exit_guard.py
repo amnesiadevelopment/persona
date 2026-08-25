@@ -433,6 +433,25 @@ _credential_shaped_path = pytest.mark.skipif(
            "is illegal in an NTFS filename",
 )
 
+# The directory arm's CLASS NAME is the platform's, not this module's. Opening
+# a directory is EISDIR on POSIX (`IsADirectoryError`, prose "Is a directory")
+# and access-denied on Windows (`PermissionError`, WinError 5) — the same arm,
+# the same refusal, a different name for the cause. Since the refusal text is
+# `f"...({type(exc).__name__}: {exc})"`, any assertion that spells the
+# NEIGHBOUR'S name is asserting on the platform.
+#
+# Guards the STAGING, never the contract, exactly like the two above: what this
+# ticket actually claims — that the new class fires for the undecodable file
+# and NOT for its neighbour — is asserted UNGUARDED in the companion test of
+# each pair, and holds on Windows unchanged (a `PermissionError` is still not a
+# `UnicodeDecodeError`, so the contrast still separates the two causes there).
+_posix_eisdir = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only STAGING: opening a directory raises EISDIR here and "
+           "PermissionError (WinError 5) on Windows — the CLASS NAME is the "
+           "platform's, not this arm's",
+)
+
 
 @_unprivileged_posix
 def test_an_unreadable_credential_says_WHY_not_merely_THAT(tmp_path):
@@ -707,7 +726,30 @@ def test_the_binary_and_OSError_causes_are_distinguishable_on_sight(tmp_path):
     assert "UnicodeDecodeError" in binary_text
     # ...and NOT for the neighbouring OSError input, whose wording is unchanged.
     assert "UnicodeDecodeError" not in is_dir_text
+
+
+@_posix_eisdir
+def test_the_OSError_arms_own_PROSE_survives_the_widening(tmp_path):
+    """The POSIX-named half of the contrast above, split out rather than lost.
+
+    The companion test asserts the part that is about THIS ticket — the new
+    class fires for the undecodable file and not for its neighbour — and it
+    runs everywhere. This one adds the part that is about the PLATFORM: that
+    the neighbour still reports itself in the operator's own errno prose,
+    unchanged by the widening. `IsADirectoryError`/"is a directory" is EISDIR,
+    which Windows does not raise here (it answers PermissionError), so the
+    wording is the platform's and only this half is staged behind the marker.
+    """
+    with pytest.raises(ExitNotProven) as binary:
+        load_credential(_binary_credential(tmp_path / "a"))
+    with pytest.raises(ExitNotProven) as is_dir:
+        load_credential(_unreadable_dir(tmp_path / "b"))
+
+    binary_text, is_dir_text = str(binary.value), str(is_dir.value)
+
+    # The directory arm's own prose is intact — the widening did not relabel it...
     assert "is a directory" in is_dir_text.lower()
+    # ...and did not smear it across the new arm either.
     assert "is a directory" not in binary_text.lower()
 
 
@@ -856,6 +898,23 @@ def test_the_CLI_names_the_undecodable_cause_but_not_for_the_OSError_input(
 
     assert "UnicodeDecodeError" in binary_out
     assert "UnicodeDecodeError" not in is_dir_out
+
+
+@_posix_eisdir
+def test_the_CLI_still_names_the_OSError_inputs_own_class(tmp_path):
+    """The POSIX-named half of the CLI contrast above, split out not dropped.
+
+    The companion asserts what this ticket claims — both inputs refuse with 2,
+    and the new class appears for one and not the other — on every platform.
+    What is left here is the platform's own vocabulary: EISDIR is POSIX, and
+    Windows reports the same arm as PermissionError (WinError 5). Asserting the
+    class name that the OPERATING SYSTEM chose is staging, so it is marked;
+    the distinction the ticket restores is not, so it is not.
+    """
+    is_dir = _drive_checker_cli(_unreadable_dir(tmp_path / "b"))
+    is_dir_out = is_dir.stdout + is_dir.stderr
+
+    assert is_dir.returncode == 2
     assert "IsADirectoryError" in is_dir_out
 
 
