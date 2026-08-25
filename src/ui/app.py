@@ -2503,7 +2503,7 @@ class App:
 
         if self._update_in_progress:
             return
-        self._update_in_progress = True
+        self._set_update_in_progress(True)
 
         def work() -> None:
             import time
@@ -2546,7 +2546,7 @@ class App:
                 self._log(f"Update download failed: {e}")
                 self._refresh_sidebar()
             finally:
-                self._update_in_progress = False
+                self._set_update_in_progress(False)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -2660,11 +2660,53 @@ class App:
         stopped being true, because every one of those messages is about an
         action they can no longer coherently take.
 
-        Clearing on the transition in BOTH directions is deliberate and covers
-        the sticky refusal too: `_apply_update` un-stages through here when a
-        verify-refusal deleted the file, which is what retires "can't go back
-        while an update is pending" once nothing is pending any more."""
+        Clearing on the transition in BOTH directions is deliberate: the
+        un-stage direction matters as much as the stage one, because
+        `_apply_update` un-stages through here when a verify-refusal deleted
+        the file, which retires "can't go back while an update is pending"
+        once nothing is staged any more.
+
+        THE SCOPE OF THAT LAST SENTENCE, STATED EXACTLY, because an earlier
+        version of this docstring overclaimed it and a reader who trusts an
+        overclaim stops checking. This setter retires the sticky refusal only
+        on the `_update_staged` route. The guard at `_on_app_rollback` is a
+        two-arm disjunction (`_update_in_progress or _update_staged`), and the
+        download-failure path never writes `_update_staged` at all, so this
+        setter never fires on it. The other arm is retired by
+        `_set_update_in_progress` below, which exists for that reason."""
         self._update_staged = staged
+        self._app_rollback_status = ""
+
+    def _set_update_in_progress(self, running: bool) -> None:
+        """The single writer for _update_in_progress, for exactly the reason
+        _set_update_staged is the single writer for the other arm of the same
+        guard: a rollback status line must not outlive the state it describes.
+
+        WHY THIS FLAG NEEDS ITS OWN SETTER. The refusal at _on_app_rollback is
+        written when EITHER flag is set, but only one of them had a clearing
+        rule. A download that FAILS never writes _update_staged — it goes down
+        the `else` arm to _app_update_status = "failed" and then clears this
+        flag in its `finally` — so the staged setter never fires, and the
+        refusal survives an update that is no longer pending. The panel then
+        offers "go back to the previous version" and, directly beneath it,
+        explains that you can't: the live gesture and a false denial of it in
+        the same box.
+
+        BOTH transitions are legitimate clear points, and they retire
+        different messages. Going True retires "restart to run the previous
+        version" — a download starting makes that stale for the same reason
+        staging does, since the operator is being told to restart into a
+        version they are in the act of replacing. Going False retires "can't
+        go back while an update is pending", which is simply false once
+        nothing is pending.
+
+        THERE IS NO SUPPRESSION TRAP ON THIS ARM, which is what makes clearing
+        on the write safe here. The mirror-image concern on _set_update_staged
+        was that a gate could erase the very refusal it explains; here the
+        ordering rules that out — _on_app_rollback reads this flag, writes the
+        refusal AFTER it, and returns, so it never re-enters this setter and
+        cannot erase its own message."""
+        self._update_in_progress = running
         self._app_rollback_status = ""
 
     def _apply_update(self, staged: str) -> None:
@@ -2709,7 +2751,7 @@ class App:
             def work() -> None:
                 import time
 
-                self._update_in_progress = True
+                self._set_update_in_progress(True)
                 try:
                     self._update_start_t = time.monotonic()
                     self._app_update_status = "downloading"
@@ -2733,7 +2775,7 @@ class App:
                     self._log(f"Update download failed: {e}")
                     self._refresh_sidebar()
                 finally:
-                    self._update_in_progress = False
+                    self._set_update_in_progress(False)
 
             threading.Thread(target=work, daemon=True).start()
 
