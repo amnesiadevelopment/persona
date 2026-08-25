@@ -5129,6 +5129,85 @@ def test_reset_prefs_noop_when_build_changed_but_no_prefs(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# PS-175: an engine build bump lost every open tab.
+#
+# The mechanism, and why it hid: the build change DELETES prefs.js, and the
+# re-seed that follows wrote only the chrome/theme prefs. Firefox decides
+# whether to RESTORE at STARTUP, reading prefs.js — while persona's session
+# prefs travel over the juggler protocol and are applied AFTER startup, then
+# persisted by Firefox. So on the one launch after a reset the decision is made
+# with restore unset, and prefs.js READS perfectly correct afterwards.
+#
+# That is why these tests assert on what is on disk BEFORE Firefox is started,
+# never on the pref set the engine is handed. Live-reproduced and live-verified
+# with a real engine (scripts/ps175_bump_probe.py): a tab open before the bump
+# came back as about:blank, and comes back as the tab after the fix.
+# ---------------------------------------------------------------------------
+
+
+def _prefs_js_pairs(prof) -> dict:
+    """The prefs actually on disk for Firefox to read at startup."""
+    import re
+
+    text = (prof / "prefs.js").read_text()
+    return dict(re.findall(r'user_pref\("([^"]+)",\s*([^)]+)\);', text))
+
+
+def test_engine_build_change_leaves_session_restore_prefs_on_disk(tmp_path):
+    # THE REGRESSION. After a build change resets prefs.js, the session-restore
+    # prefs must be back on disk BEFORE Firefox starts — otherwise the first
+    # launch on the new build opens with the user's tabs gone.
+    prof = tmp_path
+    (prof / "prefs.js").write_text('user_pref("stale.pref", 1);\n')
+    _write_compat(prof, "/cache/firefox-18")
+
+    lines = list(invisible_launch._migrate_profile_for_engine_build(
+        str(prof), "/cache/firefox-19"
+    ))
+    assert lines == [
+        "ENGINE_BUILD_CHANGED: reset prefs for the new Firefox build"
+    ], lines
+
+    on_disk = _prefs_js_pairs(prof)
+    assert on_disk.get("browser.sessionstore.resume_session_once") == "true"
+    assert on_disk.get("browser.startup.page") == "0"
+    assert on_disk.get("browser.sessionstore.resume_from_crash") == "true"
+    assert on_disk.get("browser.sessionstore.interval") == "1500"
+
+
+def test_engine_build_change_still_restores_the_chrome_prefs(tmp_path):
+    # COUNTERWEIGHT. The session prefs were added ALONGSIDE the chrome/theme
+    # re-seed (#242: a reset profile opened LIGHT). A fix that replaced that set
+    # instead of extending it would pass the test above and regress the theme,
+    # so both halves are pinned in one place.
+    prof = tmp_path
+    (prof / "prefs.js").write_text('user_pref("stale.pref", 1);\n')
+    _write_compat(prof, "/cache/firefox-18")
+
+    invisible_launch._migrate_profile_for_engine_build(
+        str(prof), "/cache/firefox-19"
+    )
+
+    on_disk = _prefs_js_pairs(prof)
+    for pref in invisible_launch._WARMUP_CHROME_PREFS:
+        assert pref in on_disk, f"the build-change re-seed dropped {pref}"
+    assert "stale.pref" not in on_disk, "the stale pref must still be gone"
+
+
+def test_session_restore_prefs_have_one_owner(tmp_path):
+    # The same prefs must be written in two places (the engine's extra_prefs,
+    # applied after startup; and prefs.js, read at startup). Pin that they come
+    # from ONE constant, or the two copies drift and only the post-startup one
+    # gets updated — which is the shape of the original defect.
+    prefs = invisible_launch._profile_prefs({})
+    for pref, value in invisible_launch._SESSION_RESTORE_PREFS.items():
+        assert prefs[pref] == value, (
+            f"{pref} in the engine's pref set does not match the shared "
+            f"_SESSION_RESTORE_PREFS owner"
+        )
+
+
+# ---------------------------------------------------------------------------
 # PS-18: the bookmark warm-up starts a REAL Firefox against the profile's own
 # directory with the profile's own fingerprint seed. It must reach the network
 # over the profile's assigned proxy, never over the operator's real address.
