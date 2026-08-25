@@ -616,8 +616,67 @@ def _cmd_record(args: argparse.Namespace) -> int:
     return EXIT_PASS
 
 
+def _load_recording(path: str, *, side: str) -> dict:
+    """Read one of the two recordings, or refuse — never traceback.
+
+    The guard is here at the CALL SITE and not in ``snapshot.load()`` because
+    that is already the unanimous convention among its callers: ``cli.py`` and
+    ``baseline.py`` both guard their own ``load()`` on exactly this pair, and
+    this module was the only one of the three that did not.
+
+    ``(OSError, ValueError)``, and the width is deliberate and load-bearing on
+    BOTH sides:
+
+      * ``ValueError`` covers the file that opened and would not parse — a
+        truncated or half-written recording, an empty file, an ``<html>`` error
+        page saved under a ``.json`` name, and non-UTF-8 bytes. That last one
+        raises ``UnicodeDecodeError``, which IS a ``ValueError`` but is NOT a
+        ``JSONDecodeError``, so catching the narrower type would still let a
+        corrupt-bytes recording out.
+      * ``OSError`` covers the read that never gets that far — a path that
+        lands on a DIRECTORY, a permission denial, a broken link. Those are
+        ``OSError`` and NOT ``ValueError``, so a guard written only to the
+        corrupt-content story leaves the mistyped path tracebacking out.
+
+    Either omission lands on exit 1, and exit 1 out of this module means the
+    engine moved what a site sees — the loudest signal this subsystem has,
+    announced for a file nobody managed to read. Whatever went wrong here,
+    nothing was compared, so it is a refusal (exit 2) and never drift.
+
+    ``FileNotFoundError`` is the one ``OSError`` this does NOT keep: it is
+    re-raised below so ``main()``'s existing arm still answers the absent-file
+    case in its own words. Both routes end on the same exit 2; this message
+    additionally names WHICH of the two arguments was unreadable.
+    """
+    try:
+        return load(path)
+    except FileNotFoundError:
+        # Deliberately re-raised, NOT folded into the guard below. A missing
+        # file is an OSError and would otherwise be swallowed here, and
+        # `main()` already refuses it with its own message on the same exit 2.
+        # That arm is a control for this change rather than a target of it, so
+        # it is left reachable and untouched: an absent recording and an
+        # unreadable one are different operator problems, and the existing
+        # wording for the first one is not this fix's to rewrite.
+        raise
+    except (OSError, ValueError) as exc:
+        raise GateCannotRun(
+            f"the {side} recording at {quote_path(path)} could not be read: "
+            f"{exc}. Nothing was compared, so this is NOT drift — the "
+            "recording itself is unusable. Re-record it, and check that the "
+            "file was written completely."
+        ) from exc
+
+
 def _cmd_compare(args: argparse.Namespace) -> int:
-    code, report = gate(load(args.before), load(args.after))
+    # Loaded OUTSIDE the gate() call, deliberately. The guard belongs on the
+    # reads and nothing else: NotASnapshot subclasses ValueError, so widening
+    # this to cover gate() would catch a file that read back perfectly well and
+    # re-label it "could not be read" — and would swallow real comparison
+    # errors, destroying the 0/1/2 distinction this refusal exists to protect.
+    before = _load_recording(args.before, side="before")
+    after = _load_recording(args.after, side="after")
+    code, report = gate(before, after)
     print(report)
     return code
 
