@@ -784,9 +784,48 @@ __REALM_BOOTSTRAP__
 ENGINE_AUTHORED_IDENTITY_ARMS = frozenset({"windows"})
 
 
+# The platform values the ENGINE itself honours — the vocabulary
+# ``process.py`` hands to ``--fingerprint-platform`` (it passes the RAW
+# ``profile.os_type``, see ``process.py``'s ``engine_platform``). Kept
+# identical to ``verify.browser_tier.DECLARED_MACHINES``, which is the repo's
+# statement of the same fact, and pinned equal to it by
+# ``test_engine_honoured_platforms_match_the_declared_machines`` so the two
+# cannot drift. It is restated here rather than imported because ``gpu_ext``
+# sits on the launch path and must not pull the whole verify tier in to build
+# an extension.
+#
+# ⚠️ THIS IS A DIFFERENT CONTRACT FROM ``RECOGNISED_OS_TYPES`` BELOW, AND THE
+# DIFFERENCE IS THE WHOLE POINT. Our fold recognises ALIASES the engine does
+# not: ``win``, ``mac``, ``darwin``, ``iphone``… Authorship must be resolved
+# from what the ENGINE accepts, because deferring on a spelling the engine
+# rejects means NEITHER author writes the identity pair and the host's real GL
+# strings reach the page (Invariant #0).
+#
+# Measured 2026-08-25 against fingerprint-chromium/148.0.7778.215, layer OFF,
+# seed 9001 (``readings/ps161-engine-vocabulary-2026-08-25/``):
+#
+#   --fingerprint-platform=   engine's own identity, layer OFF
+#   windows / WINDOWS         Google Inc. (AMD) / …Radeon(TM) (0x00001638) D3D11
+#   macos   / MACOS           Google Inc. (Apple) / …Metal Renderer: Apple M2
+#   win     / Win             Google Inc. (Google) / SwiftShader   <- NOT HONOURED
+#
+# Two things that reading establishes, neither of them assumed:
+#   * ``win`` is rejected by the engine even though our fold accepts it. That
+#     is the alias class this set exists to exclude.
+#   * The engine LOWERCASES its platform argument, so the ``.lower()`` below is
+#     load-bearing and MEASURED rather than hoped for. It is still a claim
+#     about a third party's build — if a future engine stops folding case, the
+#     reading above is the thing to re-run.
+ENGINE_HONOURED_PLATFORMS = frozenset({"windows", "macos", "linux"})
+
+
 # The RAW ``os_type`` spellings the fold recognises. Derived FROM the fold's own
 # table rather than restated beside it, so the two cannot drift: teach
 # ``_OS_NORM_TABLE`` a new spelling and it is recognised here automatically.
+#
+# NOTE this set is about GPU POOL selection, NOT about authorship — see
+# ``ENGINE_HONOURED_PLATFORMS`` above for why asking it the authorship question
+# is what produced the ``win`` host leak.
 _OS_NORM_TABLE = (
     (("ios", "iphone", "ipad", "ipados"), "ios"),
     (("macos", "mac", "darwin"), "macos"),
@@ -840,13 +879,35 @@ def engine_authors_identity(os_norm: str) -> bool:
 def engine_authors_identity_for_os_type(os_type: str) -> bool:
     """Fail-safe authorship resolution from a RAW ``os_type``.
 
-    An arm nobody has measured keeps OUR spoof rather than being folded into
-    ``windows`` and deferred to an engine that was never told to spoof it.
-    This is the fail-safe direction stated as behaviour: unrecognised in,
-    ``False`` out — persona authors the identity.
+    An arm the ENGINE does not honour keeps OUR spoof rather than being
+    deferred to an engine that was never told to spoof it. This is the
+    fail-safe direction stated as behaviour: not-engine-honoured in, ``False``
+    out — persona authors the identity.
+
+    ⚠️ RESOLVED FROM ``ENGINE_HONOURED_PLATFORMS``, NOT FROM
+    ``RECOGNISED_OS_TYPES``, AND THE DIFFERENCE IS A HOST LEAK. The two are
+    different contracts: our fold recognises aliases (``win``, ``mac``,
+    ``darwin``) that the engine rejects. Keying authorship on OUR vocabulary
+    asks "is this a spelling we understand?" when the question that governs the
+    leak is "is this a spelling the ENGINE honours?".
+
+    Measured, not reasoned: ``--fingerprint-platform=win`` makes the engine
+    report ``Google Inc. (Google)`` / SwiftShader — it does not honour the
+    alias — while ``windows`` yields a real AMD card. So on ``win`` this layer
+    stood down for an engine that never wrote the pair, ``getParameter`` fell
+    through to the real implementation, and the HOST's software rasteriser
+    reached the page. That is Invariant #0, and ``matrix_consistency``
+    classifies it as ``HOST_LEAK`` on a single row.
+
+    Keying on the engine's own vocabulary closes the CLASS, not the instance:
+    the two lists can no longer diverge, because authorship now asks the same
+    question ``process.py`` answers when it builds ``--fingerprint-platform``.
     """
+    # Lowercased because the engine itself lowercases its platform argument —
+    # MEASURED (see ENGINE_HONOURED_PLATFORMS), so "WINDOWS" genuinely does
+    # reach the engine's windows spoofer and deferring on it is correct.
     ot = str(os_type).lower()
-    if ot not in RECOGNISED_OS_TYPES:
+    if ot not in ENGINE_HONOURED_PLATFORMS:
         return False
     return engine_authors_identity(_os_norm(ot))
 
