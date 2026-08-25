@@ -1428,3 +1428,366 @@ def test_the_bundle_interpreter_does_not_become_the_jobs_default(release_yaml, j
             f"{job} lets the bundle's 3.12 become the job default, which would "
             "change the interpreter every later packaging step runs under"
         )
+
+
+# ==========================================================================
+# PS-163: the frozen-bundle gate's REQUIRED_IMPORTS list vs the DECLARED deps.
+#
+# smoke_frozen_bundle.py:118-127 documents a blind spot in its own words: the
+# list "IS A SNAPSHOT, AND IT DOES NOT UPDATE ITSELF", and a dependency missing
+# from it "is simply never checked inside the bundle, so a lazily-imported one
+# can go missing from the frozen tree and still sail through this gate green."
+# Nothing enforced that maintenance, and it had ALREADY drifted four times over
+# (python-dotenv, aiohttp, psutil, pywin32) by the time this was written.
+#
+# These tests make the drift LOUD. They do NOT derive the list: that
+# alternative is declined at :118-127 and the decision stands — an import scan
+# that cannot resolve conditional and in-function imports under-reports
+# invisibly, which is worse than a hand-list that is visibly a hand-list.
+# REQUIRED_IMPORTS stays hand-written; forgetting to write it is what is caught.
+#
+# The comparison is a PURE FUNCTION over (declared, required_imports,
+# dist_import_names, exempt, undeclared_allowed). That shape is load-bearing:
+# a check that can only ever run against the real files cannot be SHOWN to
+# fail, and a check that has never been shown to fail has not been built. The
+# falsification tests below inject synthetic declaration sets to drive it red
+# in both directions.
+#
+# Asserted on OUTCOME (the real list, as data, imported via _load_smoke) and
+# never on the script's source text — see PS-11 and PS-158's round-2 reject.
+# ==========================================================================
+
+
+def _normalize_dist(name: str) -> str:
+    """PEP 503 normalization, so PySocks/pysocks/py_socks are one key."""
+    return re.sub(r"[-_.]+", "-", name).strip().lower()
+
+
+def _default_import_name(dist: str) -> str:
+    """The import name a distribution has when nothing says otherwise."""
+    return _normalize_dist(dist).replace("-", "_")
+
+
+class CrossCheckResult:
+    """What the two directions of the comparison found.
+
+    `unchecked`   -- declared, but no module of it is verified in the bundle.
+    `unexplained` -- verified in the bundle, but nothing declares it and no
+                     allow-list entry explains where it comes from.
+    """
+
+    def __init__(self, unchecked: dict[str, list[str]], unexplained: list[str]) -> None:
+        self.unchecked = unchecked
+        self.unexplained = unexplained
+
+    @property
+    def ok(self) -> bool:
+        return not self.unchecked and not self.unexplained
+
+
+def cross_check(
+    declared: set[str],
+    required_imports: list[str],
+    dist_import_names: dict[str, tuple[str, ...]],
+    exempt: dict[str, str],
+    undeclared_allowed: dict[str, str],
+) -> CrossCheckResult:
+    """Compare DECLARED dependencies against the modules the bundle verifies.
+
+    Pure: every input is a parameter, nothing is read from disk, no marker is
+    evaluated against the running platform. Injecting a synthetic `declared`
+    is how this is driven red on demand.
+
+    FORWARD  (the direction the maintenance comment says fails silently):
+      every declared distribution must have at least one of its import names in
+      REQUIRED_IMPORTS, unless it is exempt with a written reason.
+    REVERSE:
+      every entry in REQUIRED_IMPORTS must be traceable to a declared
+      distribution, unless an allow-list entry records the transitive edge.
+    """
+    exempt_keys = {_normalize_dist(k) for k in exempt}
+    names_for: dict[str, tuple[str, ...]] = {}
+    for dist in declared:
+        key = _normalize_dist(dist)
+        names_for[key] = dist_import_names.get(key, (_default_import_name(key),))
+
+    required = set(required_imports)
+
+    unchecked: dict[str, list[str]] = {}
+    for key, modules in names_for.items():
+        if key in exempt_keys:
+            continue
+        if not required.intersection(modules):
+            unchecked[key] = sorted(modules)
+
+    explained = set(undeclared_allowed)
+    covered = {m for key, mods in names_for.items() for m in mods}
+    unexplained = sorted(m for m in required if m not in covered and m not in explained)
+
+    return CrossCheckResult(unchecked, unexplained)
+
+
+def _declared_dependencies() -> set[str]:
+    """The distribution names pyproject.toml's [project].dependencies declares.
+
+    pyproject is the AUTHORITY for what the bundle contains, because `flet
+    build` resolves the bundle's dependencies from it. requirements.txt is NOT
+    read here: the two genuinely disagree (it omits invisible_playwright and
+    invisible_core), and letting it define the bundle claim would be a second,
+    separate concern silently taking over this one.
+
+    Extras (`uvicorn[standard]`), version specifiers, PEP 508 environment
+    markers (`; sys_platform == 'win32'`) and direct references
+    (`invisible_playwright @ git+https://...`) all have to come off, which is
+    why this parses with packaging rather than splitting on punctuation.
+    """
+    import tomllib
+
+    from packaging.requirements import Requirement
+
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    return {Requirement(dep).name for dep in data["project"]["dependencies"]}
+
+
+# ---- The real tree. These are the ones that go red when the list drifts. ----
+
+
+def test_every_declared_dependency_is_checked_inside_the_bundle(smoke) -> None:
+    """FORWARD direction — the one :118-127 says fails silently.
+
+    Add a dependency to pyproject without adding it to REQUIRED_IMPORTS (or to
+    the exemption map with a reason) and this goes red NAMING the module. That
+    is the whole point: the failure mode being closed is a lazily-imported
+    dependency going missing from the frozen tree while the gate stays green.
+    """
+    result = cross_check(
+        declared=_declared_dependencies(),
+        required_imports=smoke.REQUIRED_IMPORTS,
+        dist_import_names=smoke.DISTRIBUTION_IMPORT_NAMES,
+        exempt=smoke.EXEMPT_FROM_BUNDLE_IMPORT_CHECK,
+        undeclared_allowed=smoke.UNDECLARED_REQUIRED_IMPORTS,
+    )
+    assert not result.unchecked, (
+        "pyproject declares these dependencies, but the frozen-bundle gate "
+        "never imports them inside the bundle, so one could go missing from the "
+        "frozen tree and still pass green:\n"
+        + "\n".join(
+            f"  - {dist} (imports as: {', '.join(mods)})"
+            for dist, mods in sorted(result.unchecked.items())
+        )
+        + "\n\nAdd the import name to REQUIRED_IMPORTS in "
+        ".github/scripts/smoke_frozen_bundle.py, or — only if it is genuinely "
+        "optional-by-design at every call site — add it to "
+        "EXEMPT_FROM_BUNDLE_IMPORT_CHECK with a specific written reason. "
+        "Do NOT derive the list (declined at :118-127)."
+    )
+
+
+def test_every_checked_module_is_traceable_to_a_declaration(smoke) -> None:
+    """REVERSE direction, which must not fire naively.
+
+    pydantic and httpx are each in REQUIRED_IMPORTS while being declared
+    NOWHERE (zero occurrences across all three requirement files); they arrive
+    transitively. They are handled by an allow-list carrying a reason per entry
+    — not by a bare exclusion, and not by dropping the assertion.
+    """
+    result = cross_check(
+        declared=_declared_dependencies(),
+        required_imports=smoke.REQUIRED_IMPORTS,
+        dist_import_names=smoke.DISTRIBUTION_IMPORT_NAMES,
+        exempt=smoke.EXEMPT_FROM_BUNDLE_IMPORT_CHECK,
+        undeclared_allowed=smoke.UNDECLARED_REQUIRED_IMPORTS,
+    )
+    assert not result.unexplained, (
+        "the frozen-bundle gate checks these modules, but nothing declares "
+        f"them and no allow-list entry says where they come from: "
+        f"{', '.join(result.unexplained)}. Establish the transitive edge and "
+        "record it in UNDECLARED_REQUIRED_IMPORTS, or declare the dependency."
+    )
+
+
+def test_the_four_dependencies_that_had_already_drifted_are_resolved(smoke) -> None:
+    """The four gaps PS-163 found, pinned individually so a future edit that
+    quietly drops one is named rather than absorbed into a set-difference.
+
+    Each is EITHER checked in the bundle OR exempt with a reason — decided on
+    its own merits, not by a blanket rule.
+    """
+    required = set(smoke.REQUIRED_IMPORTS)
+
+    # Added: silent-wrong when absent (the operator's .env is ignored, quietly).
+    assert "dotenv" in required, "python-dotenv is declared but not checked"
+    # Added: fails closed at use, but the proxy-checking feature is dead.
+    assert "aiohttp" in required, "aiohttp is declared but not checked"
+    # Added: pyproject calls >=6.0 a SECURITY floor; absent, both loopback
+    # listeners stop authenticating their caller (peerauth.py:120-133).
+    assert "psutil" in required, (
+        "psutil is declared but not checked — a bundle without it silently "
+        "drops peer authentication on both loopback listeners"
+    )
+
+    # Exempt, because REQUIRED_IMPORTS has no notion of platform and is imported
+    # unconditionally by the bootstrap: listing pywintypes would break the gate
+    # on Linux and macOS. The reason must be RECORDED, not implied.
+    exempt = {_normalize_dist(k): v for k, v in smoke.EXEMPT_FROM_BUNDLE_IMPORT_CHECK.items()}
+    assert "pywin32" in exempt, "pywin32 must be resolved explicitly, not ignored"
+    reason = exempt["pywin32"]
+    assert len(reason) > 80, "an exemption needs a specific reason, not a label"
+
+
+def test_no_windows_only_module_is_imported_unconditionally(smoke) -> None:
+    """Platform correctness: the gate runs on Linux, macOS AND Windows.
+
+    REQUIRED_IMPORTS is injected into the bootstrap at run_bundle() and every
+    entry is imported unconditionally, so a Windows-only module in that list
+    would make the gate fail on the two platforms where the module is correctly
+    absent. This is the test that would catch the naive fix.
+    """
+    required = set(smoke.REQUIRED_IMPORTS)
+    for dist, (_platform, modules) in smoke.PLATFORM_CONDITIONAL_IMPORTS.items():
+        leaked = required.intersection(modules)
+        assert not leaked, (
+            f"{dist} is platform-conditional, but {', '.join(sorted(leaked))} "
+            "is in the flat REQUIRED_IMPORTS list, which the bootstrap imports "
+            "unconditionally — this fails the gate on Linux and macOS"
+        )
+
+
+def test_the_import_name_map_covers_every_distribution_that_needs_one(smoke) -> None:
+    """The dist-name != import-name cases are mapped EXPLICITLY.
+
+    A naive set-difference is wrong on nearly every interesting entry here
+    (PySocks -> socks, python-dotenv -> dotenv, pywin32 -> four modules). If a
+    mapping silently went missing the forward check would report a false gap,
+    so pin the ones this repo actually depends on.
+    """
+    mapped = {_normalize_dist(k): v for k, v in smoke.DISTRIBUTION_IMPORT_NAMES.items()}
+    assert mapped.get("pysocks") == ("socks",)
+    assert mapped.get("python-dotenv") == ("dotenv",)
+    assert set(mapped.get("pywin32", ())) == {
+        "pywintypes", "win32api", "win32con", "win32job",
+    }
+
+
+def test_declared_dependencies_parse_past_extras_markers_and_direct_refs() -> None:
+    """The parsing step itself, on the real file's genuinely awkward entries.
+
+    `uvicorn[standard]>=0.30.0` (extra), `pywin32>=311; sys_platform ==
+    'win32'` (marker) and `invisible_playwright @ git+https://...` (direct
+    reference) must all reduce to bare distribution names. A regex that
+    "mostly works" under-reports, which is the failure this whole check exists
+    to prevent.
+    """
+    declared = {_normalize_dist(d) for d in _declared_dependencies()}
+    assert "uvicorn" in declared, "the [standard] extra was not stripped"
+    assert "pywin32" in declared, "the environment marker was not parsed off"
+    assert "invisible-playwright" in declared, "the direct reference did not resolve"
+    assert not any(c in d for d in declared for c in "[]<>=@; "), (
+        f"a declared name kept specifier punctuation: {sorted(declared)}"
+    )
+
+
+# ---- Falsification. A check that passes on everything has not been built. ----
+#
+# Every test below drives `cross_check` RED with a synthetic declaration set.
+# This is why the comparison is a pure function: against the real files alone
+# these cases are unreachable, and a check that cannot be shown to fail is not
+# evidence of anything. Each mirrors a drift that has actually happened here.
+
+
+def _real(smoke, **override):
+    """cross_check against the real list/maps, with one input swapped out."""
+    kwargs = dict(
+        declared=_declared_dependencies(),
+        required_imports=smoke.REQUIRED_IMPORTS,
+        dist_import_names=smoke.DISTRIBUTION_IMPORT_NAMES,
+        exempt=smoke.EXEMPT_FROM_BUNDLE_IMPORT_CHECK,
+        undeclared_allowed=smoke.UNDECLARED_REQUIRED_IMPORTS,
+    )
+    kwargs.update(override)
+    return cross_check(**kwargs)
+
+
+def test_falsify_a_new_dependency_added_to_pyproject_but_not_to_the_list(smoke) -> None:
+    """THE headline case: someone adds a dependency and forgets the list.
+
+    This is the exact scenario :118-127 says goes silently unchecked today.
+    """
+    result = _real(smoke, declared=_declared_dependencies() | {"tenacity"})
+
+    assert not result.ok, "adding an unlisted dependency did NOT go red"
+    assert "tenacity" in result.unchecked, "the drifting module was not NAMED"
+    assert result.unchecked["tenacity"] == ["tenacity"]
+
+
+def test_falsify_each_of_the_four_real_gaps_by_removing_it_again(smoke) -> None:
+    """Re-open each closed gap one at a time and confirm it is caught.
+
+    This is what proves the check would have named the four rather than that
+    the four merely happen to be present now.
+    """
+    for module, dist in (
+        ("dotenv", "python-dotenv"),
+        ("aiohttp", "aiohttp"),
+        ("psutil", "psutil"),
+    ):
+        shrunk = [m for m in smoke.REQUIRED_IMPORTS if m != module]
+        result = _real(smoke, required_imports=shrunk)
+        assert dist in result.unchecked, (
+            f"dropping {module} from REQUIRED_IMPORTS was not caught — this is "
+            "precisely the silent drift the check exists to make loud"
+        )
+        assert result.unchecked[dist] == [module]
+
+    # pywin32 is the fourth, and it is resolved by EXEMPTION rather than by
+    # listing. Drop the exemption and it must surface as unchecked.
+    result = _real(smoke, exempt={})
+    assert "pywin32" in result.unchecked, (
+        "pywin32 is neither checked nor exempt, and nothing noticed"
+    )
+
+
+def test_falsify_an_unexplained_module_in_the_list(smoke) -> None:
+    """REVERSE direction red: a module checked in the bundle that nothing
+    declares and no allow-list entry explains."""
+    result = _real(smoke, required_imports=[*smoke.REQUIRED_IMPORTS, "boto3"])
+
+    assert not result.ok, "an undeclared, unexplained module did NOT go red"
+    assert "boto3" in result.unexplained, "the unexplained module was not NAMED"
+
+
+def test_falsify_dropping_the_transitive_allow_list_entries(smoke) -> None:
+    """Removing the reasons for pydantic/httpx must make the reverse direction
+    fire on BOTH — the check is not quietly hard-coded to tolerate them, and a
+    reverse assertion built for one anomaly would miss the other."""
+    result = _real(smoke, undeclared_allowed={})
+
+    assert "pydantic" in result.unexplained
+    assert "httpx" in result.unexplained, (
+        "httpx is the SECOND reverse anomaly; a check built around pydantic "
+        "alone silently under-reports here"
+    )
+
+
+def test_falsify_a_missing_import_name_mapping(smoke) -> None:
+    """Without the explicit map, the dist-name != import-name entries report a
+    FALSE gap — which is why the mapping is explicit rather than regex-guessed.
+
+    PySocks is declared and `socks` IS checked; drop the mapping and the naive
+    comparison claims PySocks is unchecked while calling `socks` unexplained.
+    """
+    result = _real(smoke, dist_import_names={})
+
+    assert "pysocks" in result.unchecked, "the naive comparison did not misfire"
+    assert "socks" in result.unexplained
+    # ...and with the real map, neither happens.
+    assert _real(smoke).ok
+
+
+def test_the_check_is_green_on_the_real_tree(smoke) -> None:
+    """The other side of falsification: green here is only meaningful because
+    every test above showed the same function red on a constructed case."""
+    result = _real(smoke)
+    assert result.ok, (
+        f"unchecked={result.unchecked} unexplained={result.unexplained}"
+    )
