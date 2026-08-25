@@ -23,12 +23,17 @@ seed-migration that would re-roll fingerprints across the installed base.
 """
 
 import json as _json
+import os as _os
+import subprocess as _subprocess
 import sys as _sys
+import textwrap as _textwrap
 import zlib as _zlib
 
 import pytest
 
 from src.services.profile.manager import ProfileManager
+
+_REPO_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
 
 
 def _crc32(s: str) -> int:
@@ -601,23 +606,6 @@ def test_an_uncreatable_home_persists_the_secret_where_config_fell_back(
     assert isec.install_secret() == first
 
 
-def _isec_filename():
-    import src.core.install_secret as isec
-
-    return isec._SECRET_FILENAME
-
-
-def test_two_creatable_homes_still_mint_different_secrets(tmp_path):
-    # AC3, the property `_path`'s docstring exists for, and the one this fix
-    # must not break: routing through the fallback must NOT collapse two real
-    # installs onto one secret. If this goes green-by-accident the fix is
-    # wrong, so it asserts on two mints made under two genuinely creatable
-    # homes — reusing the existing second-install harness rather than a new one.
-    assert _mint_under_install(tmp_path / "install-a", "acme-bank") != (
-        _mint_under_install(tmp_path / "install-b", "acme-bank")
-    )
-
-
 def test_two_creatable_homes_keep_separate_secret_files(tmp_path, monkeypatch):
     # AC3 at the layer this ticket actually changed: the same isolation stated
     # about the SECRET rather than the seed derived from it, so a regression in
@@ -691,16 +679,122 @@ def test_the_could_not_persist_error_stops_firing_under_an_uncreatable_home(
     )
 
 
-def test_repeated_mints_do_not_re_log_the_unmakeable_home(
+def _launch_under_unmakeable_home(tmp_path, body):
+    """ONE REAL LAUNCH: a fresh interpreter whose PERSONA_HOME cannot be created,
+    with `HOME` redirected into the sandbox so the fallback cannot touch the
+    developer's real ~/.persona. Returns the CompletedProcess.
+
+    WHY A SUBPROCESS IS NOT OPTIONAL HERE — this is the whole point of the
+    harness, so it is stated rather than left to be rediscovered. The cadence
+    fix has two branches in `install_secret._existing_home`, and WHICH ONE FIRES
+    IS DECIDED BY WHETHER `core.config` WAS IMPORTED BEFORE OR AFTER
+    `PERSONA_HOME` WAS SET:
+
+      * A REAL LAUNCH sets the env first, so `config` binds `_REQUESTED_HOME` to
+        the unmakeable home and `_existing_home` takes the REUSE branch —
+        reusing config's already-resolved answer and emitting NO second line.
+      * ANY IN-PROCESS TEST is the reverse. `core.config` is imported at
+        collection with the developer's real HOME, so `_REQUESTED_HOME` is
+        `~/.persona` and never equals a `tmp_path` home. The reuse branch is
+        therefore STRUCTURALLY UNREACHABLE from in-process pytest, whatever the
+        monkeypatching, and the `else` (resolve-it-here) branch always fires.
+
+    So an in-process caplog test cannot observe the reuse branch AT ALL: delete
+    it outright and the in-process suite stays entirely green while a real
+    launch starts logging the operator's error TWICE (measured 1 -> 2). That is
+    exactly the PS-11 shape — an assertion whose name claims more than its
+    mechanism can observe — and it is why this test pays for a subprocess.
+    """
+    sandbox_home = tmp_path / "real-home"
+    sandbox_home.mkdir(parents=True, exist_ok=True)
+    parent_that_is_a_file = tmp_path / "iamafile"
+    parent_that_is_a_file.write_text("a file, not a directory")
+
+    code = "import src.core.install_secret as isec\n" + _textwrap.dedent(body).strip()
+    env = dict(
+        _os.environ,
+        HOME=str(sandbox_home),
+        USERPROFILE=str(sandbox_home),
+        PERSONA_HOME=str(parent_that_is_a_file / "persona"),
+        PYTHONPATH=_REPO_ROOT,
+    )
+    env.pop("PERSONA_INSTALL_SECRET_FILE", None)
+    proc = _subprocess.run(
+        [_sys.executable, "-c", code],
+        cwd=_REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc, sandbox_home
+
+
+def test_a_real_launch_reports_the_unmakeable_home_exactly_once(tmp_path):
+    # THE CADENCE GUARD, asserted where it is actually observable (PS-167
+    # consequence #1: "do not trade a silent defect for log spam").
+    #
+    # This is the test that defends the cross-module coupling — `config`
+    # exposing `_REQUESTED_HOME` so `install_secret` can reuse its resolved
+    # answer instead of re-deriving it. Without that branch a real launch emits
+    # the operator's "could not be created" error TWICE: once from config's
+    # import, once more from `_path()` re-resolving the same home. Measured
+    # 1 -> 2 by deleting the branch, which the in-process suite calls GREEN.
+    #
+    # It asserts on LINES ON STDERR FROM A REAL LAUNCH, never that a helper was
+    # called — a call-shape assertion passes against an inert implementation.
+    proc, _ = _launch_under_unmakeable_home(
+        tmp_path,
+        "isec.install_secret()\nisec.reset_cache_for_tests()\nisec.install_secret()",
+    )
+
+    complaints = [
+        line for line in proc.stderr.splitlines() if "could not be created" in line
+    ]
+    assert len(complaints) == 1, (
+        f"a launch under an unmakeable home must tell the operator ONCE, not "
+        f"{len(complaints)} times:\n" + "\n".join(complaints)
+    )
+
+
+def test_a_real_launch_does_not_re_log_however_many_secrets_it_mints(tmp_path):
+    # The same guard against the OTHER regression: the memo in `_existing_home`.
+    # `_path()` runs on every mint, so an unmemoised routing through the
+    # effectful `_ensure_home` makes the operator's log volume scale with how
+    # many profiles they create. 25 mints, still one line.
+    proc, _ = _launch_under_unmakeable_home(
+        tmp_path,
+        "\n".join(
+            [
+                "for _ in range(25):",
+                "    isec.reset_cache_for_tests()",
+                "    isec.install_secret()",
+            ]
+        ),
+    )
+
+    complaints = [
+        line for line in proc.stderr.splitlines() if "could not be created" in line
+    ]
+    assert len(complaints) == 1, (
+        f"{len(complaints)} error lines for 25 mints — the operator's log volume "
+        "must not scale with profile count"
+    )
+
+
+def test_repeated_mints_reuse_one_resolved_home_within_a_process(
     tmp_path, monkeypatch, caplog
 ):
-    # The cadence half of the fix, stated as a test so a later refactor cannot
-    # quietly reintroduce it. `config._ensure_home` is EFFECTFUL — it logs — and
-    # `_path()` runs on every mint, so a naive routing turns one error line per
-    # launch into one per mint. The operator's log volume must not depend on how
-    # many profiles they create.
+    # NARROWED AND RENAMED (was test_repeated_mints_do_not_re_log_the_unmakeable
+    # _home, which claimed the launch-wide cadence this CANNOT observe — see
+    # `_launch_under_unmakeable_home` for why the reuse branch is unreachable
+    # in-process). What it pins is real and worth keeping: the `_home_cache`
+    # memo, so 25 `_path()` calls resolve the home ONCE rather than 25 times.
+    # The launch-wide cadence is pinned by the two subprocess tests above.
     import logging
 
+    import src.core.config as cfg
     import src.core.install_secret as isec
 
     blocked, sandbox_home = _blocked_home(tmp_path)
@@ -709,13 +803,23 @@ def test_repeated_mints_do_not_re_log_the_unmakeable_home(
     monkeypatch.setenv("PERSONA_HOME", str(blocked))
     monkeypatch.delenv("PERSONA_INSTALL_SECRET_FILE", raising=False)
 
+    resolutions = []
+    real_ensure_home = cfg._ensure_home
+    monkeypatch.setattr(
+        cfg,
+        "_ensure_home",
+        lambda p: (resolutions.append(p), real_ensure_home(p))[1],
+    )
+
     isec.reset_cache_for_tests()
     with caplog.at_level(logging.ERROR, logger="config"):
         for _ in range(25):
             isec._path()
 
+    # The memo held: one resolution, and therefore one error line, for 25 calls.
+    assert len(resolutions) == 1, f"{len(resolutions)} resolutions for 25 calls"
     complaints = [r for r in caplog.records if "could not be created" in r.getMessage()]
-    assert len(complaints) <= 1, f"{len(complaints)} error lines for 25 mints"
+    assert len(complaints) == 1, f"{len(complaints)} error lines for 25 calls"
 
 
 def test_two_installs_that_both_fail_to_make_their_homes_share_one_secret(
