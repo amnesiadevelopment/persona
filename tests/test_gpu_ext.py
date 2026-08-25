@@ -341,7 +341,7 @@ def test_shader_precision_and_extensions_spoofed(tmp_path):
 
     js = pathlib.Path(
         build_gpu_extension(1, "windows", str(tmp_path / "g"), 0, engine_platform=engine_platform_for("windows", "desktop")) + "/gpu.js"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     assert "getShaderPrecisionFormat = nativeWrap" in js
     assert "getSupportedExtensions = nativeWrap" in js
     # canonical ANGLE-D3D11 float precision (127/127/23) present
@@ -362,7 +362,7 @@ def test_android_extensions_and_limits_are_gles_coherent(tmp_path):
 
     js = pathlib.Path(
         build_gpu_extension(1, "android", str(tmp_path / "a"), 0, engine_platform=engine_platform_for("android", "desktop")) + "/gpu.js"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     # the ANDROID set is what the code selects for OS==="android"
     assert 'STABLE_EXTS = (OS === "android") ? ANDROID_EXTS' in js
     assert "WEBGL_compressed_texture_etc" in js
@@ -381,7 +381,7 @@ def test_apple_extensions_drop_s3tc(tmp_path):
 
     js = pathlib.Path(
         build_gpu_extension(1, "macos", str(tmp_path / "m"), 0, engine_platform=engine_platform_for("macos", "desktop")) + "/gpu.js"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     assert '(OS === "macos") ? APPLE_EXTS' in js
     # APPLE_EXTS must not contain s3tc (verify the array itself, not the whole
     # file — DESKTOP_EXTS still has it for windows profiles)
@@ -1259,6 +1259,7 @@ def test_the_product_hands_one_string_to_both_consumers(tmp_path, monkeypatch):
     import os as _os
     import re as _re
     from src.services.browser import process
+    from src.services.browser.engine_version import ChromiumVersion
     from src.models.profile import Profile
 
     captured = {}
@@ -1278,6 +1279,26 @@ def test_the_product_hands_one_string_to_both_consumers(tmp_path, monkeypatch):
     class _Bookmarks:
         def resolve_selection(self, *a, **k):
             return []
+
+    # A MOBILE profile reads the INSTALLED engine's Chromium version, and
+    # refuses to launch when it cannot (process._mobile_chromium_version fails
+    # CLOSED, deliberately — advertising a guessed version is the mismatch a
+    # checker notices). That refusal is correct product behaviour and is covered
+    # by its own tests; it is not what this test is about, and without a stub
+    # this test would silently measure "is an engine installed on this machine?"
+    # instead of the authorship property.
+    #
+    # ⚠️ THIS STUB IS NARROW ON PURPOSE, AND IT IS AN INSTRUMENT NOTE WORTH
+    # KEEPING. The first version of this test carried no stub and passed
+    # locally — because the dev container HAS the engine installed — then failed
+    # on every CI runner, which provisions Firefox only. Same test, same code,
+    # opposite results from the ENVIRONMENT: PS-14's lesson arriving from the
+    # green direction, where it is much easier to miss. Only the version READ is
+    # replaced; the refusal path itself is untouched, so this cannot turn a real
+    # engine-version regression green.
+    monkeypatch.setattr(
+        process, "installed_chromium_version",
+        lambda: ChromiumVersion("148.0.7778.215"))
 
     # Every (os_type, device_type) pair the model can hold, including the ones
     # the create door refuses: coherence.py's own docstring records that
@@ -1308,7 +1329,7 @@ def test_the_product_hands_one_string_to_both_consumers(tmp_path, monkeypatch):
                     gpu_js = pathlib.Path(root) / "gpu.js"
             assert gpu_js is not None, f"no gpu extension emitted for {os_type}/{device_type}"
             gate = _re.search(
-                r"var ENGINE_AUTHORS_IDENTITY = (\w+);", gpu_js.read_text()).group(1)
+                r"var ENGINE_AUTHORS_IDENTITY = (\w+);", gpu_js.read_text(encoding="utf-8")).group(1)
 
             # The property: the gate is exactly what the FLAG's own value
             # implies. Computed from `flag` — the string actually on the command
