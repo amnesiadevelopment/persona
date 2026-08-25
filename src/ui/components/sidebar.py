@@ -99,35 +99,51 @@ def build_sidebar(
             on_tap=lambda _: on_logo_click(),
             content=header,
         )
+    # DIRECTION C: the rail widens to 300px and is split into two explicit
+    # halves — a NAVIGATION half that takes only the height it needs, and a
+    # LOG half that takes everything left over.
+    #
+    # The premise is the opposite of B's: the operator watches the log while he
+    # works, so it should be the biggest thing in the rail rather than a strip
+    # squeezed under the nav. 300px is what makes that worth doing — at 200px a
+    # log line is ~26 characters and wraps whatever else you change, while at
+    # 300px it is ~46 and most real events fit on one row.
+    top = ft.Column(
+        spacing=0,
+        controls=[
+            header,
+            ft.Text(
+                app_subtitle(),
+                size=10,
+                color=COLORS["text_sub"],
+                font_family=MONO,
+            ),
+            ft.Divider(height=20, color=COLORS["border"]),
+            nav,
+            ft.Container(height=14),
+            *(
+                [ft.Divider(height=1, color=COLORS["border"]), engine_panel]
+                if engine_panel is not None
+                else []
+            ),
+            *([version_panel] if version_panel is not None else []),
+        ],
+    )
     return ft.Container(
-        width=200,
+        width=300,
         bgcolor=COLORS["sidebar"],
         padding=ft.Padding.symmetric(horizontal=16, vertical=22),
         content=ft.Column(
             spacing=0,
             expand=True,
             controls=[
-                header,
-                ft.Text(
-                    app_subtitle(),
-                    size=10,
-                    color=COLORS["text_sub"],
-                    font_family=MONO,
-                ),
-                ft.Divider(height=24, color=COLORS["border"]),
-                nav,
-                # Push the bottom cluster down, but keep a guaranteed gap + a
-                # hairline above it so the engines panel never sits flush against
-                # the 'connect' nav item when the window is short and the expand
-                # spacer collapses to nothing.
-                ft.Container(expand=True, height=16),
-                *(
-                    [ft.Divider(height=1, color=COLORS["border"]), engine_panel]
-                    if engine_panel is not None
-                    else []
-                ),
-                *([version_panel] if version_panel is not None else []),
-                log_panel,
+                top,
+                ft.Divider(height=14, color=COLORS["border"]),
+                # expand=True: the log claims the whole remainder of the rail
+                # rather than a fixed 150px, so a taller window gives its height
+                # to LOG HISTORY instead of to empty space — which is the thing
+                # the current layout wastes most of.
+                ft.Container(expand=True, content=log_panel),
             ],
         ),
     )
