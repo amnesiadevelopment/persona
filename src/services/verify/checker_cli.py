@@ -203,6 +203,17 @@ from .matrix_silence import (
     load_record as load_silence_record,
     silence_pass,
 )
+from .matrix_consistency import (
+    consistency_pass,
+    coverage_holes,
+    # Aliased: `matrix_diff.findings` is already imported above and is used by
+    # the `compare` lane. Two lanes, two different questions, same word — the
+    # alias keeps them apart rather than letting the later import silently
+    # shadow the earlier one.
+    findings as consistency_findings,
+    format_consistency,
+    host_leaks,
+)
 from .snapshot import quote_path
 
 
@@ -1115,6 +1126,64 @@ def _cmd_silence(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_consistency(args: argparse.Namespace) -> int:
+    """Ask ONE record whether it agrees with ITSELF.
+
+    The one lane in this CLI whose input is a single record. `compare` needs a
+    pair because "what moved" is a question about a pair, and `silence` needs a
+    set because "never" is a quantifier over a set. A SELF-CONTRADICTION needs
+    neither: it is a property of one record, which is what makes this runnable
+    over the committed corpus exactly as it stands.
+
+    Reads files already on disk and nothing else. No network, no exit, no
+    reading taken.
+
+    The exit codes mirror the discipline the other lanes keep rather than
+    inventing a scheme:
+
+    ``2``
+        REFUSED — the file could not be read, or is not a checker-matrix
+        record. Nothing was established, so it can never wear a code that
+        means something was. This is the code the ps135-shaped files and
+        `arm-c-stock-vs-packaged.json` take: they carry no ``readings`` list,
+        and "I could not read this record" must never be reported as "this
+        record is fine".
+    ``1``
+        A vector CONTRADICTS ITSELF — the record says the machine has more
+        than one GPU. This is a finding ABOUT THE PRODUCT, which is what 1
+        means in this CLI, and it is deliberately not 3: the contradiction is
+        a real defect the record demonstrates, not a gap in coverage.
+    ``3``
+        No contradiction, but at least one comparable vector could not be read
+        well enough to establish agreement. 3 already means "no finding about
+        the product, but the coverage this rests on is not what you think",
+        which is exactly a record whose GPU rows are all null. It is NOT 0 —
+        a set of identical nulls is a set of size one, and letting that exit
+        clean is precisely how "we never looked" comes to read as "they
+        agreed".
+    ``0``
+        Every comparable vector was read and names one identity.
+    """
+    try:
+        record = _load_record(args.record)
+        entries = consistency_pass(record)
+    except (NotARecord, RecordUnreadable) as exc:
+        print(f"REFUSED: {exc}", file=sys.stderr)
+        print(
+            "Nothing was established, so this is NOT 'the record is "
+            "consistent'.",
+            file=sys.stderr,
+        )
+        return 2
+
+    print(format_consistency(entries, source=args.record))
+    if consistency_findings(entries):
+        return 1
+    if coverage_holes(entries):
+        return 3
+    return 0
+
+
 def _cmd_list(args: argparse.Namespace) -> int:
     for checker in JSON_CHECKERS + BROWSER_CHECKERS:
         print(f"{checker.tier}\t{checker.id}\t{len(checker.items)} item(s)")
@@ -1473,6 +1542,31 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     sil.set_defaults(func=_cmd_silence)
+
+    con = sub.add_parser(
+        "consistency",
+        help="ask ONE record whether it agrees with ITSELF",
+        description=(
+            "Reports vectors in which a single record carries two materially "
+            "different values — one profile claiming more than one GPU in one "
+            "run. This is the question NEITHER other lane can be asked: "
+            "`compare` is strictly pairwise and keyed per row, so two rows "
+            "inside one record are never brought into contact and a "
+            "self-contradiction reads to it as two rows that each held "
+            "still; `silence` quantifies over a set. Per-row `adverse` "
+            "scoring cannot see it either, because both halves of a "
+            "contradiction are individually plausible. Comparability is "
+            "DECLARED per vector, never inferred: `gpu_claimed` values are "
+            "strings persona chooses and must agree, while `gpu_rendered` "
+            "rows are per-checker hashes over pixels each checker drew "
+            "itself and can never be equal even on a healthy run. A vector "
+            "whose rows are null or unidentifiable is a COVERAGE HOLE (exit "
+            "3), never a pass — a set of identical nulls is a set of size "
+            "one. Reads one file; no network, no exit."
+        ),
+    )
+    con.add_argument("record", help="the record file to judge")
+    con.set_defaults(func=_cmd_consistency)
 
     ls = sub.add_parser("list", help="print the checker inventory")
     ls.set_defaults(func=_cmd_list)
