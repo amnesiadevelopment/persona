@@ -325,8 +325,9 @@ def test_ci_runs_mypy_repo_wide(ci_yaml) -> None:
 def test_ci_advisory_mypy_run_cannot_fail_the_build(ci_yaml, tmp_path: Path) -> None:
     """AC4: the repo-wide run must PRINT, not BLOCK.
 
-    97 pre-existing errors remain on this tree. A gating repo-wide run would be
-    red permanently, and the reflex fix for that (a blanket `ignore_errors`) is
+    The tree still carries pre-existing errors — read the count from the run
+    rather than from this docstring. A gating repo-wide run would be red
+    permanently, and the reflex fix for that (a blanket `ignore_errors`) is
     the exact defect this ticket removed.
 
     ASSERTED BEHAVIOURALLY, by RUNNING the step's script, not by looking for

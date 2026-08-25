@@ -59,7 +59,7 @@ jobs:
     # either step:
     #
     #   * the repo-wide mypy run is ADVISORY — it prints and cannot fail the
-    #     build, because the tree carries 96 pre-existing errors;
+    #     build, because the tree still carries pre-existing errors;
     #   * the protocol-conformance check is GATING — it is narrow, it is clean
     #     today, and its red is a real red.
     #
@@ -112,16 +112,18 @@ jobs:
         # misread that error as mypy catching this class.)
         # The reasoning is written out at the top of the script.
         #
-        # Runs BEFORE the advisory step so its verdict is not buried under ~96
-        # lines of pre-existing output.
+        # Runs BEFORE the advisory step so its verdict is not buried under the
+        # advisory run's many lines of pre-existing output.
         shell: bash
         run: python .github/scripts/check_protocol_conformance.py
 
       - name: Type check, repo-wide (advisory)
         # ADVISORY ON PURPOSE — a red here does NOT block a merge. The tree
-        # carries 96 pre-existing errors (measured at PS-165, mypy 2.3.1:
-        # `python -m mypy --config-file mypy.ini src`), and a gate that is red
-        # before anyone touches it teaches people to ignore it.
+        # still carries pre-existing errors — read the count from this step's
+        # own output, or reproduce it with the config alone
+        # (`python -m mypy --config-file mypy.ini src`) rather than trusting a
+        # figure written here. A gate that is red before anyone touches it
+        # teaches people to ignore it.
         #
         # NOT `continue-on-error`. This step is made non-gating the same way the
         # GPU reading below is: it CATCHES the exit status and reports it, so
