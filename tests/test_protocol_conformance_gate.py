@@ -318,6 +318,10 @@ def test_ci_runs_mypy_repo_wide(ci_yaml) -> None:
     assert "mypy" in step.get("run", ""), f"the advisory step does not invoke mypy: {step}"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the advisory step is ubuntu-only (shell: bash); no Windows behaviour to assert",
+)
 def test_ci_advisory_mypy_run_cannot_fail_the_build(ci_yaml, tmp_path: Path) -> None:
     """AC4: the repo-wide run must PRINT, not BLOCK.
 
@@ -361,7 +365,16 @@ def test_ci_advisory_mypy_run_cannot_fail_the_build(ci_yaml, tmp_path: Path) -> 
         capture_output=True,
         text=True,
         cwd=str(REPO_ROOT),
-        env={**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        env={
+            **os.environ,
+            # os.pathsep, not a hardcoded ":". The separator is ";" on Windows,
+            # so a literal colon builds one nonsense entry, the stub is never
+            # found, and the REAL mypy runs instead — the test then measures
+            # today's error count rather than the script's error handling.
+            # (That is exactly how this failed on the Windows leg: it passed
+            # locally for the wrong reason and CI caught it.)
+            "PATH": f"{stub_dir}{os.pathsep}{os.environ['PATH']}",
+        },
     )
     assert result.returncode == 0, (
         "the repo-wide mypy step FAILS when mypy reports errors, but the tree "
