@@ -1145,7 +1145,14 @@ jobs:
           # Fresh, minimal checkout of the DEFAULT branch. The build jobs ran
           # third-party code with no write token (:891-895); this job runs none,
           # which is why the credential lives only here.
-          git clone --depth 1 --branch main \
+          #
+          # --depth 50 rather than 1: the retry below rebases when a concurrent
+          # commit lands on main, and a rebase needs enough history to find a
+          # merge base. At depth 1 that fails on any real divergence and the
+          # refresh degrades to the ::warning:: path for a reason that has
+          # nothing to do with the baseline. 50 covers the realistic window
+          # between this job starting and a push landing, and is still minimal.
+          git clone --depth 50 --branch main \
             "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
           cd repo
           prev="$(tr -d '[:space:]' < runtime-fingerprint.txt 2>/dev/null || true)"
@@ -1170,16 +1177,18 @@ jobs:
           } > /tmp/fp_msg.txt
           git commit -F /tmp/fp_msg.txt
           # A concurrent release/bump may have landed; rebase rather than force.
+          # Fetch (deepening if needed) BEFORE rebasing: on a shallow clone the
+          # merge base may not be present yet, and `pull --rebase` would fail
+          # for want of history rather than for a real conflict.
           for attempt in 1 2 3; do
             if git push origin main; then
               echo "baseline pushed"; exit 0
             fi
             echo "push rejected (attempt $attempt) — rebasing on main"
-            git pull --rebase origin main || break
+            git fetch --deepen=50 origin main || git fetch origin main || break
+            git rebase FETCH_HEAD || { git rebase --abort || true; break; }
           done
           # A failed refresh must not fail a release that already published
           # successfully: the assets are live and correct. The cost of missing
           # it is one more full-install release, and the next run retries.
           echo "::warning::could not push the refreshed baseline — next release will retry"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

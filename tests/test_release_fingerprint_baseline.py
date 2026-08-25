@@ -48,9 +48,45 @@ WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 BASELINE = ROOT / "runtime-fingerprint.txt"
 
 
+class _StrictLoader(yaml.SafeLoader):
+    """A SafeLoader that REFUSES a mapping with a repeated key.
+
+    yaml.safe_load is last-key-wins, so a step that declares `env:` twice parses
+    happily and silently drops everything in the first block. That is not
+    hypothetical: the first cut of the refresh step below did exactly that, and
+    the dropped variable was MANIFEST — the one the step reads on its second
+    line under `set -euo pipefail`, so the step died with "unbound variable"
+    ABOVE its own ::warning:: retry net and would have hard-failed the publish
+    job on every tagged release, after the assets were already live.
+
+    Every test in this file reads a strictly-parsed document, so the next
+    duplicate `env:`/`with:`/`run:` anywhere in this workflow is a test failure
+    rather than a silently-dropped key.
+    """
+
+
+def _no_duplicate_keys(loader, node, deep=False):
+    seen: dict = {}
+    for key_node, _ in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in seen:
+            raise AssertionError(
+                f"duplicate key {key!r} in {WORKFLOW.name} at line "
+                f"{key_node.start_mark.line + 1} (first seen at line {seen[key]}) — "
+                "YAML is last-key-wins, so the earlier block is silently dropped"
+            )
+        seen[key] = key_node.start_mark.line + 1
+    return yaml.SafeLoader.construct_mapping(loader, node, deep=deep)
+
+
+_StrictLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_duplicate_keys
+)
+
+
 @pytest.fixture(scope="module")
 def workflow() -> dict:
-    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    return yaml.load(WORKFLOW.read_text(encoding="utf-8"), _StrictLoader)
 
 
 @pytest.fixture(scope="module")
@@ -167,7 +203,17 @@ def test_the_refresh_takes_the_fingerprint_from_the_published_manifest(refresh_s
     """
     run = refresh_step.get("run") or ""
     env = refresh_step.get("env") or {}
-    assert "update-manifest.json" in (env.get("MANIFEST", "") + run)
+    # Assert on the PARSED env, not on `env + run`. The concatenated form is
+    # satisfied by the step's own failure-message prose
+    # (`::error::update-manifest.json missing`), so it passed green against a
+    # step whose MANIFEST had been dropped by a duplicate `env:` key and which
+    # could not execute at all. Prose the code itself generated must never be
+    # allowed to stand in for the wiring (PS-11).
+    assert env.get("MANIFEST", "").endswith("update-manifest.json"), (
+        "the step must locate the published manifest through env.MANIFEST; "
+        f"got {env.get('MANIFEST')!r}"
+    )
+    assert "$MANIFEST" in run, "the body must actually read the manifest it was given"
     assert "runtime_fingerprint" in run
     # must not re-derive the runtime inputs on the wrong OS
     for forbidden in ("pip show flet", "flutter --version", "Get-FileHash"):
@@ -227,6 +273,29 @@ def test_a_failed_baseline_push_does_not_fail_a_published_release(refresh_step):
     assert "::warning::" in run
     tail = run[run.index("git push origin main") :]
     assert "::error::" not in tail
+
+
+def test_the_push_retry_has_the_history_it_needs_to_rebase(refresh_step):
+    """The retry rebases when a concurrent commit lands on main, and a rebase
+    needs a merge base. A `--depth 1` clone does not have one, so the rebase
+    would fail for want of history rather than for a real conflict, and the
+    refresh would degrade to the ::warning:: path for a reason that has nothing
+    to do with the baseline — leaving the flag pinned true for another release.
+
+    Asserted on COMMENT-STRIPPED code: the rationale comments in this step name
+    the mechanisms they replaced, so a naive scan finds `git pull --rebase` in
+    the prose explaining why it is gone and reports the old code as present.
+    That is the PS-11 pattern (asserting on text the code itself generated),
+    and it caught me writing this very fix.
+    """
+    code = _strip_comments(refresh_step.get("run") or "")
+    assert "--depth 1 " not in code, "a depth-1 clone cannot rebase"
+    assert re.search(r"--depth\s+(?!1\b)\d+", code), "the clone must carry history"
+    # fetch BEFORE rebasing, and rebase on what was fetched
+    assert "git fetch" in code, "must fetch (deepening) before rebasing"
+    fetch = code.index("git fetch")
+    rebase = code.index("git rebase")
+    assert fetch < rebase, "the rebase must follow the fetch that deepens history"
 
 
 # --- the committed baseline itself -------------------------------------------
