@@ -88,7 +88,14 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
         # right before its data dir is rmtree'd, so delete/wipe never rmtree a
         # profile dir out from under a live browser (corrupt cache / Windows
         # rmtree failure). No-op by default (headless/tests).
-        self._stop_hook: "Callable[[str], None] | None" = None
+        #
+        # RETURNS `object`, not None (PS-165): the hook this is actually set to
+        # is BrowserLauncher.stop_profile, which returns bool. _stop_if_running
+        # DISCARDS whatever comes back — the contract is "call this with a name",
+        # not "call this and observe the result" — so `object` states the truth,
+        # where `None` claimed the callee must return nothing and made the one
+        # real call site a type error.
+        self._stop_hook: "Callable[[str], object] | None" = None
         # Set by the app once the launcher exists: called with a profile name
         # whose IDENTITY has gone away (delete, wipe, rename-away, overwrite),
         # so per-name state the launcher holds is not inherited by whatever
@@ -876,7 +883,7 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
             self.save_profiles()
         return True
 
-    def set_stop_hook(self, hook: "Callable[[str], None] | None") -> None:
+    def set_stop_hook(self, hook: "Callable[[str], object] | None") -> None:
         self._stop_hook = hook
 
     def _stop_if_running(self, name: str) -> None:
