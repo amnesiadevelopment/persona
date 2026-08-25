@@ -1,0 +1,62 @@
+wrapper started 2026-08-25T14:26:00+00:00
+  WD {"t": 0.0, "n": 0, "cpu_total": 0, "rss_mb_total": 0, "threads_total": 0, "stats": "", "phase": "startup"}
+  WD {"t": 2.0, "n": 2, "cpu_total": 185.0, "rss_mb_total": 203.1, "threads_total": 61, "stats": "RR", "phase": "startup"}
+LAUNCH 2.29s | the engine returned a Browser (no add_init_script, no pages), so ONE explicit context was opened to carry the layer
+LAYER: NOT INSTALLED (control arm: packaged engine only)
+--- tab 1: new_page() at t=2.3s
+  WD {"t": 4.1, "n": 1, "cpu_total": 101.0, "rss_mb_total": 361.9, "threads_total": 81, "stats": "R", "phase": "new_page1"}
+    new_page returned in 1.76s
+    goto True in 0.28s
+TAB {"tab": 1, "t_new_page_s": 1.76, "goto_ok": true, "t_goto_s": 0.28, "t_ping_tab0_s": 0.103, "procs": {"t": 4.5, "n": 1, "cpu_total": 104.0, "rss_mb_total": 400.1, "threads_total": 84, "stats": "R"}}
+--- tab 2: new_page() at t=4.5s
+    new_page returned in 0.89s
+    goto True in 0.14s
+TAB {"tab": 2, "t_new_page_s": 0.89, "goto_ok": true, "t_goto_s": 0.14, "t_ping_tab0_s": 0.023, "procs": {"t": 5.5, "n": 1, "cpu_total": 106.0, "rss_mb_total": 504.4, "threads_total": 95, "stats": "R"}}
+--- tab 3: new_page() at t=5.5s
+  WD {"t": 6.1, "n": 1, "cpu_total": 107.0, "rss_mb_total": 558.0, "threads_total": 99, "stats": "R", "phase": "new_page3"}
+  WD {"t": 8.1, "n": 1, "cpu_total": 94.1, "rss_mb_total": 570.4, "threads_total": 95, "stats": "S", "phase": "new_page3"}
+  WD {"t": 10.1, "n": 1, "cpu_total": 74.5, "rss_mb_total": 555.1, "threads_total": 94, "stats": "S", "phase": "new_page3"}
+  WD {"t": 12.2, "n": 1, "cpu_total": 62.7, "rss_mb_total": 444.1, "threads_total": 93, "stats": "S", "phase": "new_page3"}
+  WD {"t": 14.2, "n": 1, "cpu_total": 53.2, "rss_mb_total": 442.4, "threads_total": 93, "stats": "S", "phase": "new_page3"}
+  WD {"t": 16.2, "n": 1, "cpu_total": 46.7, "rss_mb_total": 434.1, "threads_total": 93, "stats": "S", "phase": "new_page3"}
+  WD {"t": 18.2, "n": 1, "cpu_total": 41.3, "rss_mb_total": 434.1, "threads_total": 92, "stats": "S", "phase": "new_page3"}
+  WD {"t": 20.2, "n": 1, "cpu_total": 37.4, "rss_mb_total": 428.0, "threads_total": 92, "stats": "S", "phase": "new_page3"}
+  WD {"t": 22.2, "n": 1, "cpu_total": 33.9, "rss_mb_total": 428.2, "threads_total": 92, "stats": "S", "phase": "new_page3"}
+  WD {"t": 24.2, "n": 1, "cpu_total": 31.2, "rss_mb_total": 429.3, "threads_total": 92, "stats": "S", "phase": "new_page3"}
+  WD {"t": 26.3, "n": 1, "cpu_total": 32.4, "rss_mb_total": 473.6, "threads_total": 93, "stats": "S", "phase": "new_page3"}
+  WD {"t": 28.3, "n": 1, "cpu_total": 30.0, "rss_mb_total": 450.2, "threads_total": 92, "stats": "S", "phase": "new_page3"}
+  WD {"t": 30.3, "n": 1, "cpu_total": 27.9, "rss_mb_total": 450.2, "threads_total": 92, "stats": "S", "phase": "new_page3"}
+  WD {"t": 32.3, "n": 1, "cpu_total": 26.9, "rss_mb_total": 468.7, "threads_total": 94, "stats": "R", "phase": "new_page3"}
+  WD {"t": 34.3, "n": 1, "cpu_total": 29.8, "rss_mb_total": 559.0, "threads_total": 94, "stats": "S", "phase": "new_page3"}
+  WD {"t": 36.3, "n": 1, "cpu_total": 32.1, "rss_mb_total": 604.7, "threads_total": 94, "stats": "S", "phase": "new_page3"}
+  WD {"t": 38.4, "n": 1, "cpu_total": 35.6, "rss_mb_total": 623.8, "threads_total": 95, "stats": "S", "phase": "new_page3"}
+  WD {"t": 40.4, "n": 1, "cpu_total": 35.8, "rss_mb_total": 631.8, "threads_total": 94, "stats": "S", "phase": "new_page3"}
+  WD {"t": 42.4, "n": 1, "cpu_total": 36.1, "rss_mb_total": 560.6, "threads_total": 94, "stats": "S", "phase": "new_page3"}
+  WD {"t": 44.4, "n": 1, "cpu_total": 36.0, "rss_mb_total": 560.9, "threads_total": 94, "stats": "S", "phase": "new_page3"}
+  WD {"t": 46.4, "n": 1, "cpu_total": 37.5, "rss_mb_total": 591.6, "threads_total": 98, "stats": "R", "phase": "new_page3"}
+  WD {"t": 48.4, "n": 1, "cpu_total": 40.8, "rss_mb_total": 594.4, "threads_total": 94, "stats": "S", "phase": "new_page3"}
+  WD {"t": 50.4, "n": 1, "cpu_total": 39.5, "rss_mb_total": 561.9, "threads_total": 92, "stats": "S", "phase": "new_page3"}
+  WD {"t": 52.5, "n": 1, "cpu_total": 38.6, "rss_mb_total": 523.0, "threads_total": 92, "stats": "S", "phase": "new_page3"}
+  WD {"t": 54.5, "n": 1, "cpu_total": 37.2, "rss_mb_total": 503.4, "threads_total": 91, "stats": "S", "phase": "new_page3"}
+  WD {"t": 56.5, "n": 1, "cpu_total": 36.5, "rss_mb_total": 483.6, "threads_total": 91, "stats": "S", "phase": "new_page3"}
+  WD {"t": 58.5, "n": 1, "cpu_total": 35.2, "rss_mb_total": 483.6, "threads_total": 91, "stats": "S", "phase": "new_page3"}
+  WD {"t": 60.5, "n": 1, "cpu_total": 34.1, "rss_mb_total": 478.6, "threads_total": 91, "stats": "S", "phase": "new_page3"}
+  WD {"t": 62.5, "n": 1, "cpu_total": 33.4, "rss_mb_total": 485.9, "threads_total": 91, "stats": "S", "phase": "new_page3"}
+  WD {"t": 64.6, "n": 1, "cpu_total": 32.3, "rss_mb_total": 484.3, "threads_total": 91, "stats": "S", "phase": "new_page3"}
+  WD {"t": 66.6, "n": 1, "cpu_total": 31.3, "rss_mb_total": 484.4, "threads_total": 91, "stats": "S", "phase": "new_page3"}
+  WD {"t": 68.6, "n": 1, "cpu_total": 30.4, "rss_mb_total": 483.6, "threads_total": 90, "stats": "S", "phase": "new_page3"}
+  WD {"t": 70.6, "n": 1, "cpu_total": 29.5, "rss_mb_total": 483.6, "threads_total": 90, "stats": "S", "phase": "new_page3"}
+  WD {"t": 72.6, "n": 1, "cpu_total": 28.7, "rss_mb_total": 483.6, "threads_total": 90, "stats": "S", "phase": "new_page3"}
+  WD {"t": 74.6, "n": 1, "cpu_total": 27.9, "rss_mb_total": 483.6, "threads_total": 90, "stats": "S", "phase": "new_page3"}
+  WD {"t": 76.6, "n": 1, "cpu_total": 27.2, "rss_mb_total": 479.9, "threads_total": 90, "stats": "S", "phase": "new_page3"}
+  WD {"t": 78.6, "n": 1, "cpu_total": 26.6, "rss_mb_total": 479.9, "threads_total": 88, "stats": "S", "phase": "new_page3"}
+  WD {"t": 80.7, "n": 1, "cpu_total": 25.9, "rss_mb_total": 478.9, "threads_total": 88, "stats": "S", "phase": "new_page3"}
+  WD {"t": 82.7, "n": 1, "cpu_total": 25.2, "rss_mb_total": 478.9, "threads_total": 88, "stats": "S", "phase": "new_page3"}
+  WD {"t": 84.7, "n": 1, "cpu_total": 24.6, "rss_mb_total": 478.9, "threads_total": 87, "stats": "S", "phase": "new_page3"}
+  WD {"t": 86.7, "n": 1, "cpu_total": 24.1, "rss_mb_total": 478.9, "threads_total": 87, "stats": "S", "phase": "new_page3"}
+  WD {"t": 88.7, "n": 1, "cpu_total": 23.5, "rss_mb_total": 478.9, "threads_total": 87, "stats": "S", "phase": "new_page3"}
+  WD {"t": 90.7, "n": 1, "cpu_total": 23.0, "rss_mb_total": 478.4, "threads_total": 87, "stats": "S", "phase": "new_page3"}
+  WD {"t": 92.7, "n": 1, "cpu_total": 22.5, "rss_mb_total": 478.4, "threads_total": 84, "stats": "S", "phase": "new_page3"}
+  WD {"t": 94.8, "n": 1, "cpu_total": 22.0, "rss_mb_total": 478.4, "threads_total": 84, "stats": "S", "phase": "new_page3"}
+  WD {"t": 96.8, "n": 1, "cpu_total": 21.5, "rss_mb_total": 478.2, "threads_total": 84, "stats": "S", "phase": "new_page3"}
+  WD {"t": 98.8, "n": 1, "cpu_total": 21.1, "rss_mb_total": 478.2, "threads_total": 84, "stats": "S", "phase": "new_page3"}
