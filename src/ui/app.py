@@ -149,6 +149,13 @@ class App:
         self._update_in_progress = False
         self._update_staged = ""
         self._update_start_t = 0.0
+        # Why a REFUSED app rollback needs its own rendered field: the gesture
+        # is a rename, so it finishes in milliseconds with no progress bar to
+        # watch. Without a status line on the row, a refusal is
+        # indistinguishable from a dead button — and _log alone is not a
+        # surface, because the sidebar log panel is hidden entirely when
+        # collapsed. Mirrors _engine2_status on the Firefox engine row.
+        self._app_rollback_status: str = ""
         self._checking_proxies: set[str] = set()
         self._engine_latest: str = ""
         # _engine_busy = a real download is in flight (show the progress bar).
@@ -436,6 +443,135 @@ class App:
             ),
         )
 
+    def _app_rollback_row(self) -> ft.Control | None:
+        """The undo gesture for a bad app update — the macOS .app counterpart of
+        _engine2_rollback_row, and it follows the same rule that row states:
+
+          * a previous bundle is retained — offer "go back to it".
+          * nothing retained — render NOTHING AT ALL (return None). A revert
+            with no retained bundle cannot work, and a button that cannot work
+            is worse than no button: it promises the machine can undo something
+            it cannot.
+
+        There is no PINNED state to mirror here: the app updater has no pin to
+        hold updates off, so the two states are "retained" and "not"."""
+        if self._update_in_progress or self._update_staged:
+            return None
+        try:
+            target = app_update.rollback_target()
+        except Exception:
+            # the panel must render even if the install location is unreadable
+            return None
+        if not target:
+            return None
+
+        return ft.Container(
+            on_click=lambda _: self._on_app_rollback(),
+            ink=True,
+            tooltip=(
+                "Go back to the previous version of persona, kept from the "
+                "last update — no download needed"
+            ),
+            padding=ft.Padding.only(top=4, bottom=2),
+            content=ft.Row(
+                spacing=6,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Icon(
+                        ft.Icons.HISTORY, size=13, color=COLORS["text_dim"]
+                    ),
+                    ft.Text(
+                        "go back to the previous version",
+                        size=10,
+                        color=COLORS["text_dim"],
+                        font_family="monospace",
+                    ),
+                ],
+            ),
+        )
+
+    def _on_app_rollback(self) -> None:
+        """Put the retained previous bundle back. Instant — it is a rename, not
+        a download — so there is no progress bar, which is exactly why a
+        refusal must be VISIBLE rather than log-only: without it a refused
+        revert is indistinguishable from a dead button. The service call owns
+        the decision; this only reports it.
+
+        _log is NOT that visible surface: it reaches the sidebar log panel,
+        which renders only when the operator has it expanded, so a refusal
+        that goes solely to the log has no user-visible surface at all with the
+        panel collapsed. The status line on the row is where they are already
+        looking, and it is set on every exit below.
+
+        REFUSED WHILE AN UPDATE IS PENDING, and this guard is not decoration
+        just because _app_rollback_row() already declines to render in the same
+        condition: reaching here means the row was built BEFORE the update
+        arrived and the operator clicked one that has since gone stale — which
+        is precisely the window the guard exists for, not a case it may assume
+        away.
+
+          * The race. On macOS the install runs in a daemon thread spawned
+            AFTER the dialog is popped (_offer_install -> on_install), so the
+            sidebar stays live for the whole of a sha256 re-verify, a checksum
+            fetch, `hdiutil attach` and `ditto` — seconds to minutes. A click
+            in that window renames app -> app.reverting and app.bak -> app
+            while _apply_macos is mid-`ditto` INTO app: two uncoordinated
+            renames of the same paths, one of them mid-copy. _apply_update
+            refuses the mirror-image case one gesture over ("execv would kill
+            the writer mid-extract"); the artifact corrupted here would be the
+            .app itself — the exact brick this ticket ships retention to make
+            survivable.
+          * The contradiction. _update_staged survives a revert untouched, so
+            without this the panel renders "[ restart to update ]" and
+            "restart to run the previous version" at once, telling the operator
+            to restart into two opposite versions with no way to tell which
+            wins.
+
+        BOTH flags are needed and neither is redundant: _update_in_progress
+        does not by itself cover the install, because its `finally` clears it
+        when the DOWNLOAD thread ends, long before the operator clicks "install
+        now" — _update_staged is what spans the install window itself.
+
+        THE ONE PLACE THIS DIFFERS FROM THE ENGINE SIBLING is that it says so
+        instead of returning silently. That sibling's panel carries its own
+        busy/checking indicator, so its silent return is still legible; this
+        panel has none, and a stale row that swallows the click with no
+        explanation is the dead-button defect this whole group of tests exists
+        to prevent. "An update is pending" is also a state the operator can act
+        on."""
+        if self._update_in_progress or self._update_staged:
+            self._app_rollback_status = "can't go back while an update is pending"
+            self._refresh_sidebar()
+            return
+        try:
+            went = app_update.revert_to_previous_build(log=self._log)
+        except Exception as e:
+            self._log(f"Update: going back failed ({e})")
+            self._app_rollback_status = "couldn't go back — see the log"
+            self._refresh_sidebar()
+            return
+        if went:
+            self._log("Update: restart persona to run the previous version.")
+            # No refusal to explain, and any stale complaint from an earlier
+            # failed attempt must not outlive the attempt that succeeded.
+            self._app_rollback_status = "restart to run the previous version"
+        else:
+            # Re-derive WHICH refusal it was rather than restating "no": the
+            # two are not interchangeable. A retained bundle still on disk
+            # means the RENAME was refused (a non-writable /Applications is the
+            # ordinary case) and the log carries the OS error; no retained
+            # bundle means there was never anything to go back to.
+            try:
+                retained = bool(app_update.rollback_target())
+            except Exception:
+                retained = False
+            self._app_rollback_status = (
+                "couldn't go back — see the log"
+                if retained
+                else "nothing to go back to"
+            )
+        self._refresh_sidebar()
+
     def _build_version_panel(self) -> ft.Control:
         from . import progress_fmt as pf
 
@@ -550,6 +686,28 @@ class App:
         elif has_update:
             rows.append(
                 self._update_button(f"[ update to {self._app_latest} ]")
+            )
+
+        rollback = self._app_rollback_row()
+        if rollback is not None:
+            rows.append(rollback)
+
+        # The status line is rendered INDEPENDENTLY of the rollback row above,
+        # and that separation is load-bearing rather than tidiness. The row
+        # obeys the "nothing retained — render nothing at all" rule and so
+        # returns None in exactly the case one of the two refusals reports:
+        # a bundle that vanished between the render and the click. Hanging the
+        # status off the row would therefore drop the refusal precisely when it
+        # needs to be read. Rendered here, every outcome of the gesture has a
+        # visible surface whether or not the button survives it.
+        if self._app_rollback_status:
+            rows.append(
+                ft.Text(
+                    self._app_rollback_status,
+                    size=10,
+                    color=COLORS["text_dim"],
+                    font_family="monospace",
+                )
             )
 
         return ft.Container(
@@ -2331,7 +2489,7 @@ class App:
                 url, size=self._app_update_size, tag=self._app_update_tag
             )
             if ready:
-                self._update_staged = ready
+                self._set_update_staged(ready)
                 self._app_update_status = "ready"
                 self._log(f"Update {tag} ready — restart to apply.")
                 self._refresh_sidebar()
@@ -2345,7 +2503,7 @@ class App:
 
         if self._update_in_progress:
             return
-        self._update_in_progress = True
+        self._set_update_in_progress(True)
 
         def work() -> None:
             import time
@@ -2370,7 +2528,7 @@ class App:
                         pass
                     staged = ""
                 if staged:
-                    self._update_staged = staged
+                    self._set_update_staged(staged)
                     self._app_update_status = "ready"
                     self._log("Update downloaded.")
                     self._refresh_sidebar()
@@ -2388,7 +2546,7 @@ class App:
                 self._log(f"Update download failed: {e}")
                 self._refresh_sidebar()
             finally:
-                self._update_in_progress = False
+                self._set_update_in_progress(False)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -2480,6 +2638,77 @@ class App:
         self._app_update_total = total
         self._refresh_sidebar()
 
+    def _set_update_staged(self, staged: str) -> None:
+        """The single writer for _update_staged, so a rollback status line can
+        never outlive the state it describes.
+
+        WHY THIS IS A SETTER AND NOT A GATE AT THE RENDER SITE. The defect is
+        the REVERSE ORDER, which is the canonical sequence for this feature:
+        you revert precisely BECAUSE a release was bad, and upstream then ships
+        the fix. The revert leaves "restart to run the previous version" on the
+        panel; the poll then stages the fix and adds "[ restart to update ]"
+        beside it, telling the operator to restart into two opposite versions
+        with no way to tell which wins.
+
+        Gating the status render on `not self._update_staged` would suppress
+        that pair, and would ALSO suppress "can't go back while an update is
+        pending" — which must render EXACTLY when an update is pending, since
+        it is the refusal explaining a click the guard just swallowed. That
+        gate would silently reintroduce the dead-button defect one gesture
+        over. So the fix is on the WRITE, not the read: the moment the staged
+        pointer changes, whatever the operator was last told about a rollback
+        stopped being true, because every one of those messages is about an
+        action they can no longer coherently take.
+
+        Clearing on the transition in BOTH directions is deliberate: the
+        un-stage direction matters as much as the stage one, because
+        `_apply_update` un-stages through here when a verify-refusal deleted
+        the file, which retires "can't go back while an update is pending"
+        once nothing is staged any more.
+
+        THE SCOPE OF THAT LAST SENTENCE, STATED EXACTLY, because an earlier
+        version of this docstring overclaimed it and a reader who trusts an
+        overclaim stops checking. This setter retires the sticky refusal only
+        on the `_update_staged` route. The guard at `_on_app_rollback` is a
+        two-arm disjunction (`_update_in_progress or _update_staged`), and the
+        download-failure path never writes `_update_staged` at all, so this
+        setter never fires on it. The other arm is retired by
+        `_set_update_in_progress` below, which exists for that reason."""
+        self._update_staged = staged
+        self._app_rollback_status = ""
+
+    def _set_update_in_progress(self, running: bool) -> None:
+        """The single writer for _update_in_progress, for exactly the reason
+        _set_update_staged is the single writer for the other arm of the same
+        guard: a rollback status line must not outlive the state it describes.
+
+        WHY THIS FLAG NEEDS ITS OWN SETTER. The refusal at _on_app_rollback is
+        written when EITHER flag is set, but only one of them had a clearing
+        rule. A download that FAILS never writes _update_staged — it goes down
+        the `else` arm to _app_update_status = "failed" and then clears this
+        flag in its `finally` — so the staged setter never fires, and the
+        refusal survives an update that is no longer pending. The panel then
+        offers "go back to the previous version" and, directly beneath it,
+        explains that you can't: the live gesture and a false denial of it in
+        the same box.
+
+        BOTH transitions are legitimate clear points, and they retire
+        different messages. Going True retires "restart to run the previous
+        version" — a download starting makes that stale for the same reason
+        staging does, since the operator is being told to restart into a
+        version they are in the act of replacing. Going False retires "can't
+        go back while an update is pending", which is simply false once
+        nothing is pending.
+
+        THERE IS NO SUPPRESSION TRAP ON THIS ARM, which is what makes clearing
+        on the write safe here. The mirror-image concern on _set_update_staged
+        was that a gate could erase the very refusal it explains; here the
+        ordering rules that out — _on_app_rollback reads this flag, writes the
+        refusal AFTER it, and returns, so it never re-enters this setter and
+        cannot erase its own message."""
+        self._update_in_progress = running
+        self._app_rollback_status = ""
+
     def _apply_update(self, staged: str) -> None:
         """Launch the staged installer/AppImage. apply_and_restart doesn't return
         on success (the process is replaced), so reaching here means it failed.
@@ -2504,7 +2733,7 @@ class App:
             self.bl.shutdown_all()
         app_update.apply_and_restart(staged, log=self._log)
         if not staged or not os.path.isfile(staged):
-            self._update_staged = ""
+            self._set_update_staged("")
             self._app_update_status = ""
         else:
             self._app_update_status = "ready"
@@ -2522,7 +2751,7 @@ class App:
             def work() -> None:
                 import time
 
-                self._update_in_progress = True
+                self._set_update_in_progress(True)
                 try:
                     self._update_start_t = time.monotonic()
                     self._app_update_status = "downloading"
@@ -2534,7 +2763,7 @@ class App:
                         tag=self._app_update_tag,
                     )
                     if staged:
-                        self._update_staged = staged
+                        self._set_update_staged(staged)
                         self._log("Update downloaded — restarting...")
                         self._apply_update(staged)
                     else:
@@ -2546,7 +2775,7 @@ class App:
                     self._log(f"Update download failed: {e}")
                     self._refresh_sidebar()
                 finally:
-                    self._update_in_progress = False
+                    self._set_update_in_progress(False)
 
             threading.Thread(target=work, daemon=True).start()
 

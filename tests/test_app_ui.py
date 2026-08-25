@@ -1,5 +1,6 @@
 import asyncio
 import threading
+import time
 from types import SimpleNamespace
 
 from src.ui.app import App
@@ -40,6 +41,22 @@ def make_app(page):
     app._ui_ready.set()
     app._ui_backlog = []
     app._ui_backlog_lock = threading.Lock()
+    # App.__init__ sets both (app.py:149-150) and this stub goes through
+    # __new__, so without them any code reading them raises AttributeError
+    # here while working fine in the real app — the stub must not be a
+    # weaker object than the one it stands in for. Individual tests still
+    # override them; these are only the idle defaults.
+    app._update_in_progress = False
+    app._update_staged = ""
+    # Same reasoning, for the update-discovery fields __init__ sets at
+    # app.py:142-147. A test that drives the REAL staging path
+    # (_on_update_found) reads all of these, and without them the stub
+    # raises AttributeError on code that works fine in the real app.
+    app._app_latest = ""
+    app._app_update_url = ""
+    app._app_update_size = 0
+    app._app_update_tag = ""
+    app._app_update_status = ""
     return app
 
 
@@ -718,3 +735,661 @@ def test_profile_dir_is_absolute_and_ignores_cwd(monkeypatch, tmp_path):
 
     assert os.path.isabs(before)
     assert before == after == str(tmp_path / "persona_data" / "acme")
+
+
+# --- the app-update rollback row: a refused revert must be VISIBLE ----------
+#
+# These mirror the Firefox engine row's tests (test_engine_rollback.py:568-620),
+# which are the encoded memory of the lesson _on_app_rollback's own docstring
+# quotes: the gesture is a rename, so it finishes in milliseconds with no
+# progress bar, and a refusal that reaches only the log is indistinguishable
+# from a dead button. _log is not a surface here — the sidebar log panel does
+# not render at all while collapsed.
+
+
+def _rollback_app(monkeypatch, *, went, retained, boom=False):
+    """An App stub for the app-rollback CLICK, with the service decision
+    stubbed. `retained` is what rollback_target() reports AFTER the attempt,
+    which is how the handler tells the two refusals apart."""
+    from src.ui import app as app_mod
+
+    def _revert(**k):
+        if boom:
+            raise OSError("permission denied")
+        return went
+
+    monkeypatch.setattr(app_mod.app_update, "revert_to_previous_build", _revert)
+    monkeypatch.setattr(app_mod.app_update, "rollback_target", lambda: retained)
+
+    app = make_app(None)
+    app._app_rollback_status = ""
+    app._log = lambda *a, **k: None
+    app._refresh_sidebar = lambda *a, **k: None
+    return app
+
+
+def test_a_refused_app_revert_says_so_on_the_row(monkeypatch):
+    # The retained bundle is still there after the attempt, so it was the
+    # RENAME that was refused — /Applications not being writable by this user
+    # is the ordinary case, and it is likelier on the rollback path than the
+    # update path, because the update may have run with different privileges.
+    # The OS error is in the log, so the row points at it.
+    app = _rollback_app(monkeypatch, went="", retained="/Applications/p.app.bak")
+
+    app._on_app_rollback()
+
+    assert app._app_rollback_status == "couldn't go back — see the log", (
+        app._app_rollback_status
+    )
+
+
+def test_an_app_revert_with_nothing_retained_says_that_instead(monkeypatch):
+    # The two refusals are not interchangeable. Sending someone to the log to
+    # read an error when there was simply never a retained bundle points them
+    # at something that will not explain anything.
+    app = _rollback_app(monkeypatch, went="", retained="")
+
+    app._on_app_rollback()
+
+    assert app._app_rollback_status == "nothing to go back to", (
+        app._app_rollback_status
+    )
+
+
+def test_an_app_revert_that_raises_still_says_something(monkeypatch):
+    # The service is documented to answer "" rather than raise, but the
+    # handler must not depend on that: an exception escaping it would leave
+    # the row silent, which is the exact defect these tests exist to prevent.
+    app = _rollback_app(monkeypatch, went="", retained="", boom=True)
+
+    app._on_app_rollback()
+
+    assert app._app_rollback_status == "couldn't go back — see the log", (
+        app._app_rollback_status
+    )
+
+
+def test_a_successful_app_revert_replaces_any_stale_complaint(monkeypatch):
+    # A refusal from an earlier attempt must not outlive the attempt that
+    # succeeded. Unlike the engine row, this one does not clear to "": nothing
+    # restarts persona for the operator, so the one thing they must still do
+    # is the thing the row says.
+    app = _rollback_app(
+        monkeypatch, went="/Applications/p.app", retained="/Applications/p.app.bak"
+    )
+    app._app_rollback_status = "couldn't go back — see the log"
+
+    app._on_app_rollback()
+
+    assert app._app_rollback_status == "restart to run the previous version", (
+        app._app_rollback_status
+    )
+
+
+# --- the render rule: nothing retained -> render nothing at all -------------
+
+
+def _row_app(monkeypatch, *, retained, boom=False):
+    from src.ui import app as app_mod
+
+    def _target():
+        if boom:
+            raise OSError("install location unreadable")
+        return retained
+
+    monkeypatch.setattr(app_mod.app_update, "rollback_target", _target)
+    return make_app(None)
+
+
+def test_app_rollback_row_renders_nothing_when_nothing_is_retained(monkeypatch):
+    # A revert with no retained bundle cannot work, and a button that cannot
+    # work is worse than no button: it promises the machine can undo something
+    # it cannot.
+    app = _row_app(monkeypatch, retained="")
+
+    assert app._app_rollback_row() is None
+
+
+def test_app_rollback_row_renders_nothing_when_the_target_is_unreadable(monkeypatch):
+    # The panel must still render if the install location cannot be resolved.
+    app = _row_app(monkeypatch, retained="", boom=True)
+
+    assert app._app_rollback_row() is None
+
+
+def test_app_rollback_row_is_offered_when_a_bundle_is_retained(monkeypatch):
+    # The positive control for the two above: without it, an always-None
+    # implementation would pass them both.
+    app = _row_app(monkeypatch, retained="/Applications/p.app.bak")
+
+    assert app._app_rollback_row() is not None
+
+
+# --- the status must REACH THE PANEL, not just be assigned to a field -------
+#
+# This is the test that would have caught the defect these were written for.
+# The original implementation set nothing; but an implementation that sets
+# _app_rollback_status and never renders it would pass every assertion above
+# while the operator still sees nothing move. The only way to tell those apart
+# is to build the panel and read the text out of it.
+
+
+def _walk_texts(panel):
+    """Collect every string the built panel renders."""
+    found: list[str] = []
+
+    def walk(c):
+        v = getattr(c, "value", None)
+        if isinstance(v, str):
+            found.append(v)
+        for attr in ("content", "controls"):
+            child = getattr(c, attr, None)
+            if child is None:
+                continue
+            for k in (child if isinstance(child, list) else [child]):
+                walk(k)
+
+    walk(panel)
+    return found
+
+
+def _panel_texts_keeping_staged(app, monkeypatch):
+    """Build the version panel WITHOUT disturbing the update state.
+
+    _panel_texts below clears _update_staged to get a quiet panel, which is
+    right for the refusal tests but would erase the very state the
+    contradiction tests are about — a staged update is half of the pair being
+    asserted on. So this variant leaves _update_staged and _app_update_status
+    exactly as the code under test left them."""
+    from src.ui import app as app_mod
+
+    monkeypatch.setattr(
+        app_mod.app_settings, "is_auto_update_enabled", lambda: False
+    )
+    app._app_latest = ""
+    return _walk_texts(app._build_version_panel())
+
+
+def _panel_texts(app, monkeypatch):
+    """Build the version panel and collect every string it renders."""
+    from src.ui import app as app_mod
+
+    monkeypatch.setattr(
+        app_mod.app_settings, "is_auto_update_enabled", lambda: False
+    )
+    app._app_latest = ""
+    app._app_update_status = ""
+    app._update_staged = ""
+    return _walk_texts(app._build_version_panel())
+
+
+def test_a_refused_app_revert_is_rendered_in_the_version_panel(monkeypatch):
+    # The whole point: after a refused click the operator must SEE the reason
+    # in the panel they clicked in. _log does not count — the sidebar log
+    # panel renders only while expanded.
+    app = _rollback_app(monkeypatch, went="", retained="/Applications/p.app.bak")
+    app._app_rollback_row = lambda: None
+
+    app._on_app_rollback()
+
+    assert "couldn't go back — see the log" in _panel_texts(app, monkeypatch)
+
+
+def test_the_nothing_retained_refusal_is_rendered_even_though_the_row_is_not(
+    monkeypatch,
+):
+    # The case the separation exists for. When nothing is retained the row
+    # itself renders NOTHING AT ALL, so a status hung off the row would
+    # disappear in exactly the case it is reporting on. It must survive the
+    # row's absence.
+    app = _rollback_app(monkeypatch, went="", retained="")
+    app._app_rollback_row = lambda: None
+
+    app._on_app_rollback()
+
+    texts = _panel_texts(app, monkeypatch)
+    assert "nothing to go back to" in texts
+    assert "go back to the previous version" not in texts  # the row is gone
+
+
+def test_a_quiet_panel_renders_no_rollback_status_line(monkeypatch):
+    # The negative control: with no attempt made, the panel carries no status
+    # line at all, so the assertions above are reporting the click rather than
+    # a line that is always present.
+    app = _rollback_app(monkeypatch, went="", retained="")
+    app._app_rollback_row = lambda: None
+
+    assert _panel_texts(app, monkeypatch) == [
+        "persona v" + __import__(
+            "src.ui.app", fromlist=["app_update"]
+        ).app_update.APP_VERSION,
+        "[ auto-update: off ]",
+    ]
+
+
+# --- the gesture is REFUSED while an update is pending ----------------------
+#
+# Two distinct problems share one guard, and the tests below cover them
+# separately because they fail in different ways.
+#
+#   (a) A concurrent-rename race on the very bundle this ticket exists to
+#       protect. On macOS the install runs in a daemon thread spawned AFTER
+#       the dialog is popped (_offer_install -> on_install), so the sidebar
+#       stays interactive through a sha256 re-verify, a checksum fetch,
+#       `hdiutil attach` and `ditto`. A click in that window renames
+#       app -> app.reverting and app.bak -> app while _apply_macos is
+#       mid-`ditto` INTO app.
+#   (b) Two contradictory instructions in one panel: _update_staged survives a
+#       revert untouched, so "[ restart to update ]" and "restart to run the
+#       previous version" render together.
+#
+# Note the axis: _update_in_progress alone does NOT cover the install, because
+# its `finally` clears it when the DOWNLOAD thread ends — long before the
+# operator clicks "install now". _update_staged is what spans the install
+# itself, which is why both flags appear and why the staged cases below are
+# the load-bearing ones rather than the redundant ones.
+
+
+def test_the_app_rollback_row_is_not_offered_while_an_update_is_staged(monkeypatch):
+    # The (a) race, closed at the surface the operator touches: a retained
+    # bundle IS present, so the row would otherwise render and be clickable
+    # for the whole of the install.
+    app = _row_app(monkeypatch, retained="/Applications/p.app.bak")
+    app._update_in_progress = False
+    app._update_staged = "/tmp/persona-3.0.0.dmg"
+
+    assert app._app_rollback_row() is None
+
+
+def test_the_app_rollback_row_is_not_offered_while_a_download_is_running(monkeypatch):
+    # The other half of the same axis — the download window, which is the one
+    # _update_in_progress does cover.
+    app = _row_app(monkeypatch, retained="/Applications/p.app.bak")
+    app._update_in_progress = True
+    app._update_staged = ""
+
+    assert app._app_rollback_row() is None
+
+
+def test_the_app_rollback_row_returns_when_no_update_is_pending(monkeypatch):
+    # The positive control for the two above: without it, the guard could be
+    # `return None` unconditionally and both would still pass. This is the
+    # same row the retention feature exists to offer, so it must survive.
+    app = _row_app(monkeypatch, retained="/Applications/p.app.bak")
+    app._update_in_progress = False
+    app._update_staged = ""
+
+    assert app._app_rollback_row() is not None
+
+
+def test_a_click_while_an_update_is_staged_does_not_reach_the_service(monkeypatch):
+    # The guard the race actually turns on. The row can go stale — it is built
+    # BEFORE the update arrives — so refusing to render is not enough on its
+    # own; the handler must refuse the click that the stale row still carries.
+    # Asserting the service was NOT called is the one assertion that can show
+    # the rename never started.
+    calls = []
+    app = _rollback_app(
+        monkeypatch, went="/Applications/p.app", retained="/Applications/p.app.bak"
+    )
+    from src.ui import app as app_mod
+
+    monkeypatch.setattr(
+        app_mod.app_update,
+        "revert_to_previous_build",
+        lambda **k: calls.append(1) or "/Applications/p.app",
+    )
+    app._update_in_progress = False
+    app._update_staged = "/tmp/persona-3.0.0.dmg"
+
+    app._on_app_rollback()
+
+    assert calls == [], "the rename must not start while an update is in flight"
+
+
+def test_a_click_while_a_download_is_running_does_not_reach_the_service(monkeypatch):
+    calls = []
+    app = _rollback_app(
+        monkeypatch, went="/Applications/p.app", retained="/Applications/p.app.bak"
+    )
+    from src.ui import app as app_mod
+
+    monkeypatch.setattr(
+        app_mod.app_update,
+        "revert_to_previous_build",
+        lambda **k: calls.append(1) or "/Applications/p.app",
+    )
+    app._update_in_progress = True
+    app._update_staged = ""
+
+    app._on_app_rollback()
+
+    assert calls == []
+
+
+def test_a_click_with_no_update_pending_still_reaches_the_service(monkeypatch):
+    # The positive control for the two above — a guard that refused everything
+    # would pass them both while breaking the feature outright.
+    calls = []
+    app = _rollback_app(
+        monkeypatch, went="/Applications/p.app", retained="/Applications/p.app.bak"
+    )
+    from src.ui import app as app_mod
+
+    monkeypatch.setattr(
+        app_mod.app_update,
+        "revert_to_previous_build",
+        lambda **k: calls.append(1) or "/Applications/p.app",
+    )
+    app._update_in_progress = False
+    app._update_staged = ""
+
+    app._on_app_rollback()
+
+    assert calls == [1]
+
+
+def test_a_refused_click_says_why_rather_than_swallowing_it(monkeypatch):
+    # A silent return would reintroduce the exact dead-button defect this
+    # whole group exists to prevent: the stale row is still clickable, and
+    # nothing moving with no explanation is indistinguishable from a broken
+    # button. This is the one place the engine sibling is deliberately NOT
+    # mirrored — its panel has a busy indicator, this one does not.
+    app = _rollback_app(
+        monkeypatch, went="/Applications/p.app", retained="/Applications/p.app.bak"
+    )
+    app._update_in_progress = False
+    app._update_staged = "/tmp/persona-3.0.0.dmg"
+
+    app._on_app_rollback()
+
+    assert app._app_rollback_status == "can't go back while an update is pending", (
+        app._app_rollback_status
+    )
+
+
+def _stage_an_update_for_real(app, monkeypatch, staged="/tmp/persona-3.0.0.dmg"):
+    """Drive the REAL staging path (_on_update_found -> find_ready_staged),
+    rather than assigning _update_staged by hand.
+
+    This matters for what the tests below can prove. The clearing rule lives on
+    the WRITE to _update_staged, so a test that sets the attribute directly
+    bypasses the very code under test and then reports a contradiction that no
+    real sequence can produce. Going through the handler means the panel state
+    being asserted on is one the running app can actually reach."""
+    from src.ui import app as app_mod
+
+    monkeypatch.setattr(app_mod.app_update, "can_self_update", lambda: True)
+    monkeypatch.setattr(
+        app_mod.app_update, "find_ready_staged", lambda *a, **k: staged
+    )
+    # don't pop a dialog / install anything in a unit test
+    monkeypatch.setattr(app_mod.App, "_when_update_ready", lambda s, t, st: None)
+    app._on_update_found("v3.0.0", "http://x")
+
+
+def test_the_panel_never_shows_both_restart_instructions_at_once(monkeypatch):
+    # Problem (b), asserted on the RENDERED PANEL rather than on the flags,
+    # because the defect was that the operator reads two opposite instructions
+    # in one box.
+    #
+    # THE ORDER HERE IS THE POINT, and it is the reverse of the one first
+    # tested. The canonical sequence for this feature is: you revert BECAUSE a
+    # release was bad, and upstream THEN ships the fix. So the revert lands
+    # first and the staged update arrives second — and the guard, which only
+    # refuses a revert while an update is already pending, does nothing about
+    # this direction. Both steps run through their real entry points for that
+    # reason; hand-setting either field would assert on a state the app cannot
+    # actually reach.
+    app = _rollback_app(
+        monkeypatch, went="/Applications/p.app", retained="/Applications/p.app.bak"
+    )
+    app._update_in_progress = False
+    app._update_staged = ""
+
+    app._on_app_rollback()                      # step 1: the revert succeeds
+    assert app._app_rollback_status == "restart to run the previous version"
+
+    _stage_an_update_for_real(app, monkeypatch)  # step 2: upstream ships the fix
+
+    found = _panel_texts_keeping_staged(app, monkeypatch)
+
+    # the staged update's own instruction is the one that stands...
+    assert "[ restart to update ]" in found, found
+    # ...and the gesture that would contradict it is not offered beside it
+    assert "go back to the previous version" not in found, found
+    # ...NOR is the STATUS TEXT that contradicts it. THIS is the assertion the
+    # test is named for, and the row label above is not: the row is a GESTURE,
+    # and the guard already removes it. The string that actually tells the
+    # operator to restart into the OTHER version is this one. Asserting only on
+    # the label passes over a panel still carrying the contradiction — it goes
+    # red for the row's presence, never for the contradiction, so it cannot
+    # tell a fixed panel from a broken one.
+    assert "restart to run the previous version" not in found, found
+
+
+def test_a_refusal_does_not_outlive_the_update_that_caused_it(monkeypatch):
+    # The other half of the same stickiness: "can't go back while an update is
+    # pending" is TRUE when written and false as soon as nothing is pending,
+    # but nothing used to retire it. Here the pending update goes away through
+    # the real un-stage path (_apply_update finding the staged file gone,
+    # app.py:2693-2695), and the stale complaint must not survive it.
+    app = _rollback_app(
+        monkeypatch, went="/Applications/p.app", retained="/Applications/p.app.bak"
+    )
+    app._update_in_progress = False
+    app._update_staged = "/tmp/persona-3.0.0.dmg"
+
+    app._on_app_rollback()
+    assert app._app_rollback_status == "can't go back while an update is pending"
+
+    from src.ui import app as app_mod
+
+    monkeypatch.setattr(app_mod.app_update, "apply_and_restart", lambda *a, **k: None)
+    app.bl = SimpleNamespace(shutdown_all=lambda: None)
+    app._apply_update("/tmp/persona-3.0.0.dmg")   # file never existed -> un-stages
+
+    assert app._update_staged == ""
+    assert app._app_rollback_status == "", app._app_rollback_status
+
+
+def _click_rollback_during_a_failing_download(app, monkeypatch, start):
+    """Drive a download that FAILS, with the operator clicking the stale
+    rollback row while it is still in flight, through the REAL entry point.
+
+    `start` is the entry point to call (_start_app_update / _apply_update_now),
+    because there are TWO sites that own this flag and they are separate
+    `finally` blocks — a helper that only ever drove one would report the other
+    as covered.
+
+    Nothing here is hand-set. The clearing rule lives on the WRITE to
+    _update_in_progress, so a test that assigns the flag directly bypasses the
+    code under test and asserts on a state no real sequence can reach — the
+    same reasoning as _stage_an_update_for_real above. The download is held
+    open just long enough for the click to land inside the in-flight window,
+    then released, so the sequence is the operator's real one rather than a
+    simulation of its end state."""
+    from src.ui import app as app_mod
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def _download(*a, **k):
+        started.set()
+        release.wait(5)
+        return ""            # the download FAILS -> _update_staged is never written
+
+    monkeypatch.setattr(app_mod.app_update, "download_update", _download)
+
+    start()
+    assert started.wait(5), "download thread never started"
+
+    # The click lands while the update really is pending, so the refusal is
+    # TRUE at the moment it is written. That is the whole point: this test is
+    # about a true message that later stops being true.
+    app._on_app_rollback()
+    assert app._app_rollback_status == "can't go back while an update is pending"
+
+    release.set()
+    for _ in range(500):                       # let the thread run its finally
+        if not app._update_in_progress:
+            break
+        time.sleep(0.01)
+    assert not app._update_in_progress, "download thread never finished"
+
+
+def _rollback_app_mid_download(monkeypatch):
+    app = _rollback_app(
+        monkeypatch, went="/Applications/p.app", retained="/Applications/p.app.bak"
+    )
+    app._update_start_t = 0.0
+    app._app_update_done = 0
+    app._app_update_total = 0
+    return app
+
+
+def test_a_refusal_does_not_outlive_a_download_that_failed(monkeypatch):
+    # THE SECOND ARM of the same guard, and the one the staged setter cannot
+    # reach. `_on_app_rollback` refuses on `_update_in_progress or
+    # _update_staged`, but a download that FAILS never writes _update_staged —
+    # it takes the `else` arm to _app_update_status = "failed" and clears the
+    # in-flight flag in its `finally` — so the staged setter never fires and
+    # the refusal used to survive an update that is no longer pending.
+    #
+    # Asserted on the RENDERED PANEL, not on the flag, because the defect is
+    # what the operator READS: the row offering "go back to the previous
+    # version" and, directly beneath it, a line saying they can't. A flag-only
+    # assertion would pass over a panel still carrying that pair.
+    app = _rollback_app_mid_download(monkeypatch)
+
+    _click_rollback_during_a_failing_download(
+        app, monkeypatch, lambda: app._start_app_update("http://x")
+    )
+
+    found = _panel_texts_keeping_staged(app, monkeypatch)
+
+    # the gesture is live again — nothing is pending, so it must be offered...
+    assert "go back to the previous version" in found, found
+    # ...and the refusal that denied it must not still be sitting under it.
+    assert "can't go back while an update is pending" not in found, found
+
+
+def test_a_refusal_does_not_outlive_a_failed_manual_update_either(monkeypatch):
+    # The SAME defect at the OTHER site. _apply_update_now runs its own thread
+    # with its own `finally`, so fixing only _start_app_update would leave this
+    # path sticky while the test above went green — one arm of one method is
+    # not the gesture. Driven through the real manual-update entry point.
+    app = _rollback_app_mid_download(monkeypatch)
+    app._app_update_url = "http://x"
+    app._update_staged = ""
+
+    _click_rollback_during_a_failing_download(
+        app, monkeypatch, app._apply_update_now
+    )
+
+    found = _panel_texts_keeping_staged(app, monkeypatch)
+
+    assert "go back to the previous version" in found, found
+    assert "can't go back while an update is pending" not in found, found
+
+
+def _read_panel_during_a_live_download(app, monkeypatch, start):
+    """Render the version panel from INSIDE a download that is still in
+    flight, driving the download through the REAL entry point `start`.
+
+    WHY THE ENTRY POINT AND NOT THE SETTER. The transition under test is the
+    routing of the `True` write through `_set_update_in_progress`, which lives
+    at the CALL SITE (_start_app_update entry / _apply_update_now's thread) —
+    not in the setter body. So calling `app._set_update_in_progress(True)` by
+    hand asserts only that the setter does what its body plainly says, and
+    stays green when the call site is un-routed back to a raw write: the
+    regression it is named for walks straight past it. That is one level up
+    from assigning the flag directly, and it fails for exactly the reason
+    _click_rollback_during_a_failing_download and _stage_an_update_for_real
+    already give — the code under test is the WRITE, so anything that reaches
+    the state without going through the caller is not exercising it.
+
+    WHY THE PANEL IS READ MID-FLIGHT. The stale instruction is only
+    contradictory while a download is actually running, so the window has to
+    be held open to see it: the download is blocked on an Event, the panel is
+    rendered, and only then is it released. Reading afterwards would report on
+    a finished download, where the `False` transition (already pinned) has
+    fired and cleared the field for a different reason."""
+    from src.ui import app as app_mod
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def _download(*a, **k):
+        started.set()
+        release.wait(5)
+        return ""
+
+    monkeypatch.setattr(app_mod.app_update, "download_update", _download)
+
+    start()
+    assert started.wait(5), "download thread never started"
+
+    try:
+        found = _panel_texts_keeping_staged(app, monkeypatch)
+    finally:
+        release.set()
+        for _ in range(500):                   # let the thread run its finally
+            if not app._update_in_progress:
+                break
+            time.sleep(0.01)
+    return found
+
+
+def test_starting_a_download_retires_a_stale_restart_instruction(monkeypatch):
+    # The OTHER transition of the same setter, and it retires a DIFFERENT
+    # message. Going True must clear "restart to run the previous version" for
+    # the same reason staging does: the operator is being told to restart into
+    # a version they are in the act of replacing.
+    #
+    # This is the canonical sequence for the whole feature: you revert BECAUSE
+    # a release was bad, and upstream THEN ships the fix, which begins
+    # downloading. Both steps run through their real entry points, and the
+    # assertion is on the RENDERED PANEL rather than on _app_rollback_status,
+    # for the reason the two failing-download tests above already give — the
+    # defect is what the operator READS. What they read without this is an
+    # instruction to restart into the very version being replaced, with the
+    # progress bar for its replacement ticking directly beneath it.
+    app = _rollback_app_mid_download(monkeypatch)
+
+    app._on_app_rollback()                     # step 1: the revert succeeds
+    assert app._app_rollback_status == "restart to run the previous version"
+
+    found = _read_panel_during_a_live_download(
+        app, monkeypatch, lambda: app._start_app_update("http://x")
+    )                                          # step 2: upstream ships the fix
+
+    # Positive control: the panel really was rendered mid-download, so the
+    # absence asserted below is a retired message and not an unbuilt panel.
+    assert any("updating to new version" in t for t in found), found
+    # ...and the instruction to restart into the version being replaced is
+    # not standing over it.
+    assert "restart to run the previous version" not in found, found
+
+
+def test_a_manual_update_retires_a_stale_restart_instruction_too(monkeypatch):
+    # The SAME transition at the OTHER site. _apply_update_now runs its own
+    # thread with its own entry into the flag, so routing only
+    # _start_app_update would leave this path rendering the stale instruction
+    # while the test above went green — one arm of one method is not the
+    # gesture. This is the `True` counterpart of
+    # test_a_refusal_does_not_outlive_a_failed_manual_update_either, which
+    # covers the same site's `False` arm.
+    app = _rollback_app_mid_download(monkeypatch)
+    app._app_update_url = "http://x"
+    app._update_staged = ""
+
+    app._on_app_rollback()
+    assert app._app_rollback_status == "restart to run the previous version"
+
+    found = _read_panel_during_a_live_download(
+        app, monkeypatch, app._apply_update_now
+    )
+
+    assert any("updating to new version" in t for t in found), found
+    assert "restart to run the previous version" not in found, found

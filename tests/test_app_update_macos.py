@@ -162,9 +162,17 @@ def test_apply_and_restart_macos_swaps_app_and_relaunches(monkeypatch, tmp_path)
     attach = next(c for c in runs if c[:2] == ["hdiutil", "attach"])
     assert "-nobrowse" in attach and str(staged) in attach
     assert any(c[:2] == ["hdiutil", "detach"] for c in runs)
-    # the installed bundle now holds the new build, no backup left behind
+    # the installed bundle now holds the new build
     assert os.path.exists(os.path.join(str(installed), "Contents", "new"))
-    assert not os.path.exists(str(installed) + ".bak")
+    # ...and the PREVIOUS one is retained rather than destroyed. This assertion
+    # was inverted (`assert not ... ".bak"`): it pinned the defect PS-152 fixes,
+    # where the success path rmtree'd the aside-renamed bundle the instant ditto
+    # returned 0, leaving nothing to go back to. Corrected, not deleted — the
+    # surviving invariants above and below are still the point of this test.
+    assert os.path.isdir(str(installed) + ".bak")
+    assert os.path.exists(
+        os.path.join(str(installed) + ".bak", "Contents", "old")
+    )
     # a helper waits for this pid to die, then reopens the app
     sh = next(p for p in popens if p[0] == "/bin/sh")
     assert f"kill -0 {os.getpid()}" in sh[2]
@@ -404,10 +412,19 @@ def test_apply_and_restart_translocated_updates_the_original(
     msgs = []
     with pytest.raises(SystemExit):
         au.apply_and_restart(str(staged), log=msgs.append)
-    # the ORIGINAL bundle got the new build, no backup left behind
+    # the ORIGINAL bundle got the new build
     assert os.path.exists(os.path.join(str(original), "Contents", "new"))
     assert not os.path.exists(os.path.join(str(original), "Contents", "old"))
-    assert not os.path.exists(str(original) + ".bak")
+    # ...and the previous one is retained beside it. Same inverted assertion as
+    # in test_apply_and_restart_macos_swaps_app_and_relaunches: it was pinning
+    # the PS-152 defect (success-path rmtree of the aside-renamed bundle).
+    # Retention applies on the translocated path too — the bundle that got moved
+    # aside is the ORIGINAL, which is what was replaced, so that is what a
+    # revert must be able to restore. Corrected, not deleted.
+    assert os.path.isdir(str(original) + ".bak")
+    assert os.path.exists(
+        os.path.join(str(original) + ".bak", "Contents", "old")
+    )
     # and the relaunch opens the original, not the dead translocated mirror
     sh = next(p for p in popens if p[0] == "/bin/sh")
     assert f'open "{original}"' in sh[2]
@@ -505,3 +522,225 @@ def test_apply_and_restart_macos_from_source_hands_over_the_dmg(
     assert au.apply_and_restart(str(staged), log=msgs.append) is False
     assert popens and popens[0] == ["open", str(staged)]
     assert staged.exists()
+
+
+# --- PS-152: the previous bundle SURVIVES a successful update, and there is a
+# --- way back to it.
+#
+# Before this, the success path rmtree'd the aside-renamed bundle the instant
+# ditto returned 0. A release that is authentically what upstream published,
+# passes its sha256, installs perfectly and then does not launch left the
+# operator with nothing to go back to — while the FAILED-ditto arm restored
+# cleanly. The arm where everything succeeded was the one keeping nothing.
+#
+# Every assertion below is on FILES ON DISK after a real apply_and_restart /
+# revert_to_previous_build call. None of them asserts that a helper was called.
+
+
+def _tree_manifest(root):
+    """Every file under `root` as {relative path: bytes} — the whole bundle's
+    content, so "byte-identical to before the swap" is a real comparison rather
+    than a spot check on one file."""
+    out = {}
+    for dirpath, _dirs, files in os.walk(root):
+        for name in files:
+            full = os.path.join(dirpath, name)
+            with open(full, "rb") as f:
+                out[os.path.relpath(full, root)] = f.read()
+    return out
+
+
+def _drive_mac_update(monkeypatch, staged, payload="new"):
+    """Run apply_and_restart end to end, faking hdiutil/ditto exactly as the
+    swap tests above do (attach materialises a bundle under the mountpoint,
+    ditto is a copytree). Re-callable, so a SECOND update can be driven over the
+    result of the first."""
+    popens = []
+
+    def fake_run(cmd, **kw):
+        class R:
+            returncode = 0
+
+        if cmd[0] == "hdiutil" and cmd[1] == "attach":
+            mount = cmd[cmd.index("-mountpoint") + 1]
+            new_app = os.path.join(mount, "persona.app", "Contents")
+            os.makedirs(new_app, exist_ok=True)
+            with open(os.path.join(new_app, payload), "w") as f:
+                f.write(payload)
+        if cmd[0] == "ditto":
+            import shutil
+
+            shutil.copytree(cmd[1], cmd[2])
+        return R()
+
+    def fake_popen(args, **kw):
+        popens.append(args)
+
+        class P:
+            pid = 1
+
+        return P()
+
+    def fake_exit(code):
+        raise SystemExit(code)
+
+    monkeypatch.setattr(au.subprocess, "run", fake_run)
+    monkeypatch.setattr(au.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(au.os, "_exit", fake_exit)
+    with pytest.raises(SystemExit):
+        au.apply_and_restart(str(staged), log=lambda m: None)
+    return popens
+
+
+def _retained_siblings(installed):
+    """Everything the update left beside the install target — the basis for
+    "bounded to one", counted rather than spot-checked."""
+    parent = os.path.dirname(str(installed))
+    base = os.path.basename(str(installed))
+    return sorted(n for n in os.listdir(parent) if n.startswith(base))
+
+
+def test_macos_update_retains_the_previous_bundle_byte_identical(
+    monkeypatch, tmp_path
+):
+    # AC1. The whole point: after a SUCCESSFUL update the previous bundle is
+    # still on disk and unchanged. On origin/main this fails — nothing survives.
+    staged, installed = _mac_apply_fixture(monkeypatch, tmp_path)
+    (installed / "Contents" / "Info.plist").write_bytes(b"<plist>v1</plist>")
+    before = _tree_manifest(str(installed))
+
+    _drive_mac_update(monkeypatch, staged)
+
+    backup = str(installed) + ".bak"
+    assert os.path.isdir(backup), "the previous bundle must survive a success"
+    assert _tree_manifest(backup) == before, (
+        "the retained bundle must be byte-identical to what was installed "
+        "before the swap"
+    )
+    # and the new build really did land in the install location
+    assert os.path.exists(os.path.join(str(installed), "Contents", "new"))
+
+
+def test_macos_retained_bundle_is_relocated_not_reconstructed(
+    monkeypatch, tmp_path
+):
+    # AC4. The retained bundle must be the ORIGINAL DIRECTORY, moved — not a
+    # reconstruction of it. os.rename preserves the directory's inode; no
+    # copytree variant does (plain, copy_function=os.link and symlinks=True were
+    # all measured to allocate a new inode), so inode identity is what tells
+    # rename from copy here.
+    #
+    # HONEST BOUND, and it is the reason this assertion exists in this shape:
+    # the real consequence is that `ditto`/rename preserve the code signature
+    # and resource forks a python copy destroys, so Gatekeeper still accepts the
+    # restored bundle. That CANNOT be observed in this container — the harness
+    # fakes ditto into a shutil.copytree, so no fixture bundle carries a
+    # signature or a resource fork at all. This asserts that the bundle was
+    # RELOCATED rather than RECONSTRUCTED, which is the mechanism the signature
+    # property rides on; Gatekeeper accepting it is the consequence and is out
+    # of reach here. Swap the implementation to copytree and this goes red.
+    staged, installed = _mac_apply_fixture(monkeypatch, tmp_path)
+    ino_before = os.stat(str(installed)).st_ino
+
+    _drive_mac_update(monkeypatch, staged)
+
+    backup = str(installed) + ".bak"
+    assert os.stat(backup).st_ino == ino_before, (
+        "the retained bundle must be the original directory relocated, not a "
+        "copy of it"
+    )
+
+
+def test_second_macos_update_replaces_the_retained_bundle(
+    monkeypatch, tmp_path
+):
+    # AC3. Depth, not duration: at most ONE retained bundle. The second update
+    # must REPLACE the first's retained copy rather than accumulate a third.
+    staged, installed = _mac_apply_fixture(monkeypatch, tmp_path)
+    _drive_mac_update(monkeypatch, staged, payload="v2")
+
+    # the dmg is consumed on success — stage another one for the second update
+    staged.write_bytes(b"dmg")
+    _drive_mac_update(monkeypatch, staged, payload="v3")
+
+    siblings = _retained_siblings(installed)
+    assert siblings == ["persona.app", "persona.app.bak"], (
+        f"exactly one retained bundle must remain, found {siblings}"
+    )
+    # and it is the build the SECOND update displaced (v2), not the original
+    backup = str(installed) + ".bak"
+    assert os.path.exists(os.path.join(backup, "Contents", "v2"))
+    assert not os.path.exists(os.path.join(backup, "Contents", "old"))
+    assert os.path.exists(os.path.join(str(installed), "Contents", "v3"))
+
+
+def test_macos_fresh_install_retains_nothing(monkeypatch, tmp_path):
+    # AC5. Nothing was there to move aside, so retention is a clean no-op and
+    # the way back is correctly not offered.
+    _force_os(monkeypatch, mac=True)
+    staged = tmp_path / "persona-update-v9.9.9.dmg"
+    staged.write_bytes(b"dmg")
+    target = tmp_path / "Applications" / "persona.app"
+    (tmp_path / "Applications").mkdir()
+    monkeypatch.setattr(au, "installed_macos_app", lambda: str(target))
+    monkeypatch.setattr(
+        au, "verify_staged_installer", lambda s, tag="", log=None: True
+    )
+
+    _drive_mac_update(monkeypatch, staged)
+
+    assert os.path.isdir(str(target))
+    assert not os.path.exists(str(target) + ".bak")
+    assert au.rollback_target() == ""
+
+
+def test_rollback_target_reports_the_retained_bundle(monkeypatch, tmp_path):
+    staged, installed = _mac_apply_fixture(monkeypatch, tmp_path)
+    # nothing retained yet: the gesture must not be offered
+    assert au.rollback_target() == ""
+
+    _drive_mac_update(monkeypatch, staged)
+
+    assert au.rollback_target() == str(installed) + ".bak"
+
+
+def test_revert_restores_the_retained_bundle_by_relocating_it(
+    monkeypatch, tmp_path
+):
+    # AC4's second half: the reversal restores the retained bundle, and does it
+    # by relocating that directory rather than reconstructing it — same inode
+    # assertion, same honest bound as above (signature preservation is the real
+    # consequence and is unobservable in this container).
+    staged, installed = _mac_apply_fixture(monkeypatch, tmp_path)
+    original = _tree_manifest(str(installed))
+
+    _drive_mac_update(monkeypatch, staged)
+
+    backup = str(installed) + ".bak"
+    retained_ino = os.stat(backup).st_ino
+
+    msgs = []
+    assert au.revert_to_previous_build(log=msgs.append) == str(installed)
+
+    # the previous version is installed again, whole
+    assert _tree_manifest(str(installed)) == original
+    assert os.stat(str(installed)).st_ino == retained_ino, (
+        "the revert must relocate the retained bundle, not copy it"
+    )
+    # still exactly one retained bundle — now holding the build we reverted
+    # FROM, so the revert is itself reversible
+    assert _retained_siblings(installed) == ["persona.app", "persona.app.bak"]
+    assert os.path.exists(os.path.join(backup, "Contents", "new"))
+
+
+def test_revert_refuses_when_nothing_is_retained(monkeypatch, tmp_path):
+    # The "render nothing at all" rule's service-side counterpart: a revert with
+    # no retained bundle must refuse rather than damage the install.
+    staged, installed = _mac_apply_fixture(monkeypatch, tmp_path)
+    before = _tree_manifest(str(installed))
+
+    msgs = []
+    assert au.revert_to_previous_build(log=msgs.append) == ""
+
+    assert _tree_manifest(str(installed)) == before
+    assert _retained_siblings(installed) == ["persona.app"]
