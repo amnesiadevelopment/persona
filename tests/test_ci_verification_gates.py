@@ -1060,6 +1060,177 @@ def _touch(path: Path) -> None:
     path.write_bytes(b"")
 
 
+# --------------------------------------------------------------------------
+# A real bundle, driven end-to-end through the real script.
+#
+# The tests below spawn `smoke_frozen_bundle.py` as a subprocess and assert on
+# its EXIT CODE and what it NAMES, because that is the only thing a source-level
+# assertion cannot fake. The gate this ticket exists to repair was previously
+# pinned by `assert "exc.__class__.__name__, exc" in smoke_text` — a grep, which
+# fails when someone REWORDS the line and passes when someone DISABLES it. The
+# reviewer demonstrated exactly that: `if missing and False:` left the greppable
+# literal intact, the whole suite stayed green, and the checker green-lit a
+# bundle with no paramiko in it. These tests are the replacement.
+# --------------------------------------------------------------------------
+
+
+def _bundle_ext_suffix() -> str:
+    """The RUNNING interpreter's real extension suffix.
+
+    Not a hardcoded `.cpython-312-...so`: the point of detect_bundle_abi is that
+    the bundle states its own ABI, so the fixture must stamp itself for whichever
+    Python is running the suite (3.12 on Linux, .pyd on Windows). A fixture
+    hardcoded to one ABI would make these tests assert "the interpreter is
+    mismatched" on every other platform instead of what they mean to assert.
+    """
+    import sysconfig
+
+    return sysconfig.get_config_var("EXT_SUFFIX") or ".so"
+
+
+def _make_bundle(root: Path, omit: set[str] = frozenset(), split: bool = False) -> Path:
+    """A minimal frozen bundle the real script accepts: app payload, the
+    required asset, a version-stating updater, a selftest-gated entry point, and
+    every REQUIRED_IMPORTS module as an importable package.
+
+    `omit` leaves modules out — that is the genuinely-missing-dependency case.
+    `split` reproduces the Windows two-site-packages shape, spreading the modules
+    across BOTH directories so neither alone is sufficient.
+    """
+    smoke = _load_smoke()
+    version = re.search(
+        r'APP_VERSION\s*=\s*"([^"]+)"',
+        (REPO_ROOT / "src" / "services" / "app_update" / "updater.py").read_text(
+            encoding="utf-8"
+        ),
+    ).group(1)
+
+    app = root / "flutter_assets" / "app"
+    _touch(app / "assets" / "icon.png")
+    updater = app / "src" / "services" / "app_update"
+    updater.mkdir(parents=True, exist_ok=True)
+    for pkg in (app / "src", app / "src" / "services", updater):
+        _touch(pkg / "__init__.py")
+    (updater / "updater.py").write_text(f'APP_VERSION = "{version}"\n', encoding="utf-8")
+    # Mirrors src/main.py's real gate: pre-GUI, pre-port-bind, prints the token
+    # the self-updater waits for and hard-exits.
+    (app / "main.py").write_text(
+        'import os\n'
+        'if __name__ == "__main__":\n'
+        '    if os.environ.get("PERSONA_SELFTEST") == "1":\n'
+        '        print("SELFTEST_OK", flush=True)\n'
+        '        os._exit(0)\n',
+        encoding="utf-8",
+    )
+
+    dirs = [root / "site-packages"]
+    if split:
+        dirs.append(root / "Lib" / "site-packages")
+    for d in dirs:
+        d.mkdir(parents=True, exist_ok=True)
+    for i, name in enumerate(n for n in smoke.REQUIRED_IMPORTS if n not in omit):
+        # Round-robin so a split bundle needs BOTH directories to import cleanly.
+        _touch(dirs[i % len(dirs)] / name / "__init__.py")
+
+    # The bundle must state which interpreter it was frozen for, or the script
+    # correctly refuses to guess one (test_a_bundle_with_no_compiled_extensions_
+    # fails_closed). Stamp it for the interpreter running this suite.
+    _touch(dirs[0] / "_speedup" / f"_core{_bundle_ext_suffix()}")
+    return root
+
+
+def _run_smoke(bundle_root: Path):
+    import subprocess
+    import sys as _sys
+
+    proc = subprocess.run(
+        [
+            _sys.executable,
+            str(SMOKE_SCRIPT),
+            str(bundle_root),
+            "--repo-root",
+            str(REPO_ROOT),
+            "--python",
+            _sys.executable,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+
+def test_the_fixture_bundle_is_actually_accepted(tmp_path) -> None:
+    """The control for every red case below.
+
+    Without this, a fixture broken for some unrelated reason would make the
+    failing tests pass for the wrong reason — they would be asserting "the
+    script rejects my malformed fixture", not "the script catches a missing
+    dependency". This proves the only difference in those cases is the omission.
+    """
+    code, out = _run_smoke(_make_bundle(tmp_path / "bundle"))
+    assert code == 0, f"the healthy fixture bundle was rejected:\n{out}"
+    assert "PERSONA_BUNDLE_IMPORTS_OK" in out
+    assert "SELFTEST_OK" in out
+
+
+def test_a_genuinely_missing_dependency_fails_the_build(tmp_path) -> None:
+    """THE boundary between a repaired check and a removed one, DRIVEN.
+
+    This is the guarantee the whole ticket exists to protect: the smoke check
+    was repaired so it stops condemning healthy bundles, and the one thing that
+    repair must not cost is its ability to condemn a genuinely broken one.
+
+    Asserted as an OUTCOME (non-zero exit, the module named in the output) and
+    deliberately not as a property of the source, so that disabling the gate
+    without touching a single greppable literal — `if missing and False:` —
+    turns this red. Deleting paramiko is the measured case, not a hypothetical:
+    the app imports it lazily on the SSH path, so the bundle still opens and
+    still prints its correct version. Opening is not evidence of completeness.
+    """
+    bundle = _make_bundle(tmp_path / "bundle", omit={"paramiko"})
+    code, out = _run_smoke(bundle)
+    assert code != 0, (
+        "the smoke check passed a bundle with NO paramiko in it — the gate has "
+        f"been removed rather than repaired:\n{out}"
+    )
+    assert "paramiko" in out, (
+        f"the build failed but never named the missing module:\n{out}"
+    )
+
+
+def test_a_failed_import_reports_the_module_that_actually_failed(tmp_path) -> None:
+    """A TRANSITIVE import failure must name the module that really could not be
+    found, not the package being checked.
+
+    Recording only `exc.__class__.__name__` printed "fastapi
+    (ModuleNotFoundError)", which reads as "fastapi is not in the bundle" — and
+    that sentence was false and cost a release. What had actually failed was a
+    transitive import of `pydantic_core._pydantic_core`, a 3.12-built extension,
+    under 3.13.
+
+    That distinction is the ticket's per-module discriminator, so it is asserted
+    on OUTPUT rather than on source text:
+
+        names ITSELF       -> the module is genuinely absent
+        names a DEPENDENCY -> present, but built for another interpreter
+
+    This REPLACES a `assert "exc.__class__.__name__, exc" in smoke_text` grep,
+    which broke on a rewording and survived a disabling.
+    """
+    bundle = _make_bundle(tmp_path / "bundle")
+    present = bundle / "site-packages" / "mcp" / "__init__.py"
+    assert present.is_file(), "fixture drift: mcp is not where this test patches it"
+    present.write_text("import _persona_absent_backend\n", encoding="utf-8")
+
+    code, out = _run_smoke(bundle)
+    assert code != 0, f"an unimportable dependency was waved through:\n{out}"
+    assert "_persona_absent_backend" in out, (
+        "the report discards the exception MESSAGE, so a transitive import "
+        f"failure is misreported as the top-level package being absent:\n{out}"
+    )
+
+
 def test_bundle_abi_is_read_from_the_bundles_own_extensions(smoke, tmp_path) -> None:
     """The required interpreter is MEASURED from the artifact, not configured.
 
@@ -1131,19 +1302,46 @@ def test_every_bundled_site_packages_is_used(smoke, tmp_path) -> None:
 
 
 def test_using_both_site_packages_is_not_leniency(smoke, tmp_path) -> None:
-    """The search got COMPLETE, not forgiving.
+    """The search got COMPLETE, not forgiving — asserted as an OUTCOME.
 
-    Every directory used is inside the bundle, the runner's own site-packages is
-    still excluded by -S -E, and a module in NONE of them must still fail. This
-    pins the boundary that separates a repaired check from a removed one.
+    Using every bundled site-packages instead of refusing to choose between them
+    is the fix for the Windows job, and it is also the change most easily
+    mistaken for a relaxation. So the boundary is DRIVEN here, both directions,
+    on the Windows two-directory shape:
+
+      * a dependency in ONE of the two directories -> the build passes, because
+        the real app imports from both and refusing was a false dilemma
+      * a dependency in NEITHER -> the build still FAILS and names it
+
+    This test previously stated exactly that property in its docstring and then
+    asserted only that the returned paths were inside the bundle. The docstring
+    described the case; the code never ran it, so the name promised a boundary
+    that nothing pinned.
     """
-    root = tmp_path / "bundle"
+    root = tmp_path / "paths"
     _touch(root / "site-packages" / "flet" / "__init__.py")
     _touch(root / "Lib" / "site-packages" / "paramiko" / "__init__.py")
     for found in smoke.find_site_packages(root):
         assert root in found.parents or found == root, (
             f"{found} is outside the bundle — imports could resolve from the runner"
         )
+
+    # Split across BOTH directories: neither alone carries every dependency, so
+    # this passes only if all of them are really used.
+    code, out = _run_smoke(_make_bundle(tmp_path / "split", split=True))
+    assert code == 0, (
+        "a bundle whose dependencies are spread across the two site-packages "
+        f"directories flet ships on Windows was rejected:\n{out}"
+    )
+
+    # Same two-directory shape, one module in NEITHER. The completeness above
+    # must not have cost the check its ability to say no.
+    code, out = _run_smoke(_make_bundle(tmp_path / "gap", split=True, omit={"mcp"}))
+    assert code != 0, (
+        "a module present in NEITHER site-packages was waved through — using "
+        f"both directories has become leniency:\n{out}"
+    )
+    assert "mcp" in out, f"the build failed but never named the missing module:\n{out}"
 
 
 def test_no_bundled_site_packages_still_fails_closed(smoke, tmp_path) -> None:
@@ -1179,21 +1377,6 @@ def test_an_unobtainable_interpreter_errors_rather_than_falling_back(smoke) -> N
     downgrade to whatever is on PATH."""
     with pytest.raises(SystemExit):
         smoke.resolve_interpreter((3, 99), None)
-
-
-def test_a_failed_import_reports_the_module_that_actually_failed(smoke_text) -> None:
-    """The bootstrap must report the exception MESSAGE, not just its class.
-
-    Recording only `exc.__class__.__name__` printed "fastapi
-    (ModuleNotFoundError)", which reads as "fastapi is not in the bundle" — and
-    that sentence was false and cost a release. What had really failed was a
-    TRANSITIVE import of pydantic_core._pydantic_core. The message names it and
-    turns a phantom into a one-line diagnosis.
-    """
-    assert "exc.__class__.__name__, exc" in smoke_text, (
-        "the bootstrap discards the exception message, so a transitive import "
-        "failure is misreported as the top-level package being absent"
-    )
 
 
 @pytest.mark.parametrize("job", BUILD_JOBS)
