@@ -46,7 +46,14 @@ def _ensure_home(path: str) -> str:
 
 # Resolve AND create the home up front so every _under_home path below is built
 # from the directory that actually exists (a fallback must apply to them too).
-PERSONA_HOME = _ensure_home(_home())
+#: The home that was REQUESTED, kept beside the one actually created. A caller
+#: resolving the home per call (core.install_secret._path) can compare against
+#: this to tell that its request is the SAME one already resolved here, and
+#: reuse PERSONA_HOME instead of re-running _ensure_home — which is effectful
+#: and LOGS, so re-running it would emit a second identical error line on every
+#: launch of an install whose home cannot be made (PS-167).
+_REQUESTED_HOME = _home()
+PERSONA_HOME = _ensure_home(_REQUESTED_HOME)
 
 
 def _is_already_absolute(val: str, _path: ModuleType = os.path) -> bool:
