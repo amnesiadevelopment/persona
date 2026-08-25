@@ -3,6 +3,7 @@ from typing import Protocol
 
 from ..models.profile import Profile
 from ..services.browser.refusal import Refusal
+from ..services.profile.pool_assignment import POOL_UNCHANGED, PoolDirective
 from ..services.profile.proxy_assignment import PROXY_UNCHANGED, ProxyDirective
 
 
@@ -25,6 +26,18 @@ class IProfileManager(Protocol):
         # nothing — see services/profile/proxy_assignment.py.
         new_proxy: str | ProxyDirective | None = PROXY_UNCHANGED,
         new_os: str | None = None,
+        # Declared so this protocol's POSITIONS match the concrete
+        # ProfileManager's. Callers do call positionally (ui/actions/profile.py
+        # passes new_search 5th and new_pool 6th through an IProfileManager-typed
+        # reference), so omitting it here would have made position 5 read as
+        # new_bookmark_pool and position 6 as nothing that exists — a claim
+        # nothing would catch, since mypy is in neither requirements-dev.txt nor
+        # CI.
+        new_search_engine: str | None = None,
+        # A pool NAME, or POOL_UNCHANGED / POOL_NONE. Defaulted to
+        # POOL_UNCHANGED for the same reason — see
+        # services/profile/pool_assignment.py.
+        new_bookmark_pool: str | PoolDirective | None = POOL_UNCHANGED,
     ) -> bool: ...
 
     def set_cookie_status(self, name: str, status: str) -> bool: ...

@@ -13,6 +13,11 @@ from ...services.browser.profile_seed import (
 )
 from ...services.bookmark.store import DEFAULT_BOOKMARKS
 from ...services.browser.device_presets import is_mobile_os
+from ...services.profile.pool_assignment import (
+    POOL_NONE,
+    POOL_UNCHANGED,
+    PoolDirective,
+)
 from ...services.profile.proxy_assignment import (
     PROXY_NONE,
     PROXY_UNCHANGED,
@@ -53,13 +58,16 @@ def open_profile_dialog(
     #: the dialog sends ``PROXY_NONE`` for a deliberate direct connection and
     #: ``PROXY_UNCHANGED`` when it could not account for the profile's assigned
     #: proxy, so that absence is never mistaken for "clear the assignment".
+    #: The pool position accepts a ``PoolDirective`` on the same terms: the
+    #: dialog sends ``POOL_NONE`` for a deliberate "(none)", because the model
+    #: no longer reads an empty string as a clear.
     on_save: Callable[
         [
             str,
             str | ProxyDirective,
             str,
             str,
-            str,
+            str | PoolDirective,
             list[str],
             list[str],
             str,
@@ -534,18 +542,74 @@ def open_profile_dialog(
         on_os_change(None)  # type: ignore[arg-type]
 
     current_pool = (profile.bookmark_pool or "") if profile is not None else ""
-    pool_value = current_pool if current_pool in pool_names else _NO_POOL
+    # The same three-state treatment the proxy dropdown gets above, for the
+    # same reason and against the same two conditions.
+    #
+    # A profile whose assigned pool is NOT in the available list must NOT be
+    # rendered as "(none)". That fallback is visually identical to a profile
+    # the operator deliberately gave no pool, and submitting from it turned a
+    # display fallback into an explicit POOL_NONE — which the model is now
+    # obliged to honour, destroying the reference.
+    #
+    # The list can legitimately be missing a name the profile still references:
+    # the bookmark store skips a single malformed pool record (populated
+    # dropdown, one name absent) or quarantines the whole file (every name
+    # absent) — services/bookmark/store.py. Neither reaches this dialog in any
+    # form, so an unaccounted-for pool is indistinguishable from a deliberate
+    # "(none)" unless it is given its own option.
+    #
+    # What it costs is recoverability, not exposure: delete_pool records the
+    # profiles referencing a pool so restore_pool can put them back, and it
+    # computes that list from this field. A quarantined bookmarks.json is
+    # exactly when pool_names is empty — so without this, an operator opening
+    # the dialog to rename a profile reaches delete_pool with the reference
+    # already gone.
+    #
+    # So the unaccounted-for assignment gets its OWN option, carrying the name,
+    # selected and visibly distinct from "(none)". Submitting while it is
+    # selected sends POOL_UNCHANGED, so an operator who opened the dialog to
+    # rename the profile comes out with the same assignment they went in with.
+    pool_unresolved = bool(current_pool) and current_pool not in pool_names
+    unresolved_pool_key = f"{_UNRESOLVED_PREFIX}{current_pool}"
+    if pool_unresolved:
+        pool_value = unresolved_pool_key
+    elif current_pool:
+        pool_value = current_pool
+    else:
+        pool_value = _NO_POOL
+    pool_options = [ft.dropdown.Option(_NO_POOL)]
+    if pool_unresolved:
+        pool_options.append(
+            ft.dropdown.Option(
+                key=unresolved_pool_key,
+                text=f"{current_pool} — NOT FOUND (keep assigned)",
+            )
+        )
+    pool_options += [ft.dropdown.Option(n) for n in pool_names]
     pool_dropdown = ft.Dropdown(
         value=pool_value,
         expand=True,
-        options=[ft.dropdown.Option(_NO_POOL)]
-        + [ft.dropdown.Option(n) for n in pool_names],
+        options=pool_options,
         bgcolor=COLORS["input_bg"],
         color=COLORS["text_main"],
-        border_color=COLORS["card_border"],
+        border_color=(
+            COLORS["warning"] if pool_unresolved else COLORS["card_border"]
+        ),
         focused_border_color=COLORS["accent"],
         border_radius=3,
         text_style=ft.TextStyle(font_family=MONO),
+    )
+    pool_hint = ft.Text(
+        (
+            f"pool {current_pool!r} is assigned but was not found — "
+            "saving keeps it assigned"
+            if pool_unresolved
+            else ""
+        ),
+        size=11,
+        color=COLORS["warning"],
+        font_family=MONO,
+        visible=pool_unresolved,
     )
 
     # On create nothing is pre-checked — the user picks their own selection
@@ -741,8 +805,24 @@ def open_profile_dialog(
             if engine == "firefox"
             else (search_dropdown.value or DEFAULT_SEARCH_ENGINE)
         )
-        pool = pool_dropdown.value or _NO_POOL
-        pool = "" if pool == _NO_POOL else pool
+        # Three outcomes, not two — mirroring the proxy block above properly.
+        # The unresolved option means "I could not account for this
+        # assignment", which must travel as POOL_UNCHANGED so saving an
+        # unrelated edit cannot discard the pool. Sending POOL_NONE from that
+        # state would promote a display fallback to an assertion the model is
+        # then obliged to honour. "(none)" stays expressible as a deliberate
+        # choice and SAYS so with POOL_NONE, instead of relying on an empty
+        # string the model used to read as a clear — it no longer does, so
+        # sending "" here would leave the old pool in place and the dialog
+        # would silently fail to clear it.
+        _picked_pool = pool_dropdown.value or _NO_POOL
+        pool: str | PoolDirective
+        if _picked_pool.startswith(_UNRESOLVED_PREFIX):
+            pool = POOL_UNCHANGED
+        elif _picked_pool == _NO_POOL:
+            pool = POOL_NONE
+        else:
+            pool = _picked_pool
         certificate = cert_dropdown.value or _NO_CERT
         certificate = "" if certificate == _NO_CERT else certificate
         bookmarks = [b.name for b in all_bookmarks if b.name in bookmark_selected]
@@ -901,6 +981,7 @@ def open_profile_dialog(
                         pool_dropdown,
                         icon=ft.Icons.FOLDER_OUTLINED,
                     ),
+                    pool_hint,
                     *bookmark_section,
                     *cookie_controls,
                       ]),
