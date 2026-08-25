@@ -23,6 +23,7 @@ import time
 from urllib.parse import unquote, urlparse
 
 from ...core.peerauth import PeerGate, allows_async
+from ...core.redaction import redact
 
 # Time budget for ONE upstream CONNECT attempt (TCP to the proxy + SOCKS5
 # greeting/auth/CONNECT). Over Tor the proxy leg double-hops, so a single attempt
@@ -56,11 +57,32 @@ _conn_seq = 0
 
 
 def _trace(msg: str) -> None:
+    """Append one trace line, with anything credential-shaped stripped out.
+
+    ⚠️ REDACTION IS APPLIED HERE, AT THE SINK, AND THAT PLACEMENT IS THE POINT.
+    PS-160 made these lines carry exception MESSAGES (`{exc}`) rather than only
+    class names, and an exception message is text this module did not author
+    reaching a FILE ON DISK that outlives the process. `redact` could have been
+    applied at each call site that interpolates `{exc}`; putting it on the sink
+    instead makes the guarantee a property of TRACING rather than of
+    remembering, so the next call site added here is covered without its author
+    having to know this comment exists.
+
+    That follows `exit_guard`'s doctrine literally — "applied to the WHOLE
+    message rather than to the parts believed to be risky: the risky part is
+    the one nobody thought of" — and it is the SAME `redact`, imported from
+    `core.redaction`, not a second copy of the regex.
+
+    This is not a hypothetical exposure. This module holds `_up_user` /
+    `_up_pass` unquoted and is constructed from a credential-shaped
+    `upstream_url`, so it is the one place in the codebase that has the secret
+    in hand while writing diagnostics about the connection that uses it.
+    """
     if not _TRACE_PATH:
         return
     try:
         with _trace_lock, open(_TRACE_PATH, "a", encoding="utf-8") as f:
-            f.write(f"{time.time():.3f} {msg}\n")
+            f.write(f"{time.time():.3f} {redact(msg)}\n")
     except OSError:
         pass
 
@@ -290,14 +312,18 @@ class ProxyBridge:
                     # failing the browser, so one unlucky circuit doesn't leave a
                     # Sheets channel unopened and stuck on "Working".
                     last_exc = exc
+                    # The message too: this is the trace that says WHY a
+                    # circuit was retried, and "TimeoutError" alone does not
+                    # separate a slow circuit from a refused one.
                     _trace(f"conn={cid} host={host}:{port} UPSTREAM-TRY{attempt} "
-                           f"{type(exc).__name__} t={time.monotonic()-t0:.1f}s")
+                           f"{type(exc).__name__}: {exc} "
+                           f"t={time.monotonic()-t0:.1f}s")
                     if attempt < _UPSTREAM_ATTEMPTS - 1:
                         await asyncio.sleep(0.5)
             if last_exc is not None:
                 rep = last_exc.rep if isinstance(last_exc, _ConnectRejected) else 0x01
                 _trace(f"conn={cid} host={host}:{port} UPSTREAM-FAIL "
-                       f"{type(last_exc).__name__} rep={rep} "
+                       f"{type(last_exc).__name__}: {last_exc} rep={rep} "
                        f"t={time.monotonic()-t0:.1f}s")
                 writer.write(b"\x05" + bytes([rep]) + b"\x00\x01" + b"\x00" * 6)
                 await writer.drain()
@@ -311,7 +337,11 @@ class ProxyBridge:
             _tune_tunnel_socket(_sock_of(writer))
             await _splice(reader, up_w, up_r, writer, cid=cid, host=host)
         except Exception as exc:
-            _trace(f"conn={cid} host={host} HANDLER-EXC {type(exc).__name__}")
+            # The catch-all, so this is the arm that fires when the handler
+            # dies for a reason nobody anticipated — precisely the case where a
+            # bare class name says least. The message is the only account of it.
+            _trace(f"conn={cid} host={host} HANDLER-EXC "
+                   f"{type(exc).__name__}: {exc}")
         finally:
             _trace(f"conn={cid} host={host} CLOSE t={time.monotonic()-t0:.1f}s")
             with _suppress():
