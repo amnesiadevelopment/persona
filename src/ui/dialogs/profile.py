@@ -13,6 +13,10 @@ from ...services.browser.profile_seed import (
 )
 from ...services.bookmark.store import DEFAULT_BOOKMARKS
 from ...services.browser.device_presets import is_mobile_os
+from ...services.profile.pool_assignment import (
+    POOL_NONE,
+    PoolDirective,
+)
 from ...services.profile.proxy_assignment import (
     PROXY_NONE,
     PROXY_UNCHANGED,
@@ -53,13 +57,16 @@ def open_profile_dialog(
     #: the dialog sends ``PROXY_NONE`` for a deliberate direct connection and
     #: ``PROXY_UNCHANGED`` when it could not account for the profile's assigned
     #: proxy, so that absence is never mistaken for "clear the assignment".
+    #: The pool position accepts a ``PoolDirective`` on the same terms: the
+    #: dialog sends ``POOL_NONE`` for a deliberate "(none)", because the model
+    #: no longer reads an empty string as a clear.
     on_save: Callable[
         [
             str,
             str | ProxyDirective,
             str,
             str,
-            str,
+            str | PoolDirective,
             list[str],
             list[str],
             str,
@@ -741,8 +748,14 @@ def open_profile_dialog(
             if engine == "firefox"
             else (search_dropdown.value or DEFAULT_SEARCH_ENGINE)
         )
-        pool = pool_dropdown.value or _NO_POOL
-        pool = "" if pool == _NO_POOL else pool
+        # Two outcomes, mirroring the proxy block above. "(none)" is a
+        # deliberate choice and now SAYS so with POOL_NONE, instead of relying
+        # on an empty string the model used to read as a clear — it no longer
+        # does, so sending "" here would leave the old pool in place and the
+        # dialog would silently fail to clear it.
+        _picked_pool = pool_dropdown.value or _NO_POOL
+        pool: str | PoolDirective
+        pool = POOL_NONE if _picked_pool == _NO_POOL else _picked_pool
         certificate = cert_dropdown.value or _NO_CERT
         certificate = "" if certificate == _NO_CERT else certificate
         bookmarks = [b.name for b in all_bookmarks if b.name in bookmark_selected]

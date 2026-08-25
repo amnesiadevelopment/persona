@@ -24,6 +24,12 @@ from .coherence import (
     coherent_engine,
     normalize_engine,
 )
+from .pool_assignment import (
+    POOL_UNCHANGED,
+    PoolDirective,
+    pool_for_new_profile,
+    resolve_pool_assignment,
+)
 from .proxy_assignment import (
     PROXY_NONE,
     PROXY_UNCHANGED,
@@ -360,7 +366,7 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
         proxy: str | ProxyDirective | None,
         os_type: str,
         search_engine: str = "duckduckgo",
-        bookmark_pool: str | None = None,
+        bookmark_pool: str | PoolDirective | None = None,
         bookmarks: list[str] | None = None,
         tags: list[str] | None = None,
         device_type: str = "desktop",
@@ -407,7 +413,13 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                 engine=engine,
                 resolution=resolution,
                 search_engine=search_engine,
-                bookmark_pool=bookmark_pool or None,
+                # Creation has nothing to preserve, so both directives mean "no
+                # pool" here — exactly as proxy_for_new_profile documents for
+                # proxy. Routed through the helper because the profile dialog
+                # shares one value across create and edit, so a directive
+                # legitimately reaches this path and must never be stored as if
+                # it were a pool name.
+                bookmark_pool=pool_for_new_profile(bookmark_pool),
                 bookmarks=bookmarks,
                 certificate=certificate or None,
                 tags=tags or [],
@@ -458,7 +470,7 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
         new_proxy: str | ProxyDirective | None = PROXY_UNCHANGED,
         new_os: str | None = None,
         new_search_engine: str | None = None,
-        new_bookmark_pool: str | None = None,
+        new_bookmark_pool: str | PoolDirective | None = POOL_UNCHANGED,
         new_bookmarks: list[str] | None = None,
         new_tags: list[str] | None = None,
         new_ai_control: bool | None = None,
@@ -476,6 +488,15 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
         DIRECT). An empty value reads as UNCHANGED, never as a clear: clearing a
         proxy is something a caller has to SAY. See that module for why absence
         used to mean "clear" and what that cost.
+
+        ``new_bookmark_pool`` takes a pool name, or one of the two directives in
+        ``pool_assignment.py``: ``POOL_UNCHANGED`` (the default — leave the
+        stored assignment alone) or ``POOL_NONE`` (clear it, the operator chose
+        no pool). An empty value reads as UNCHANGED, never as a clear, for the
+        same reason the proxy does: an edit made for an unrelated reason must
+        not discard the assignment. Here what it costs is recoverability —
+        ``delete_pool`` records the profiles referencing a pool so ``restore``
+        can put them back, and it computes that list from this very field.
 
         ``new_os`` defaults to None = leave unchanged, for the same reason and
         because Python cannot have a required argument follow a defaulted one.
@@ -667,7 +688,21 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                 profile.resolution = new_resolution
             if new_search_engine is not None:
                 profile.search_engine = new_search_engine
-            profile.bookmark_pool = new_bookmark_pool or None
+            # The last surviving instance of the shape the comment above ends,
+            # twenty-four lines below it. `profile.bookmark_pool =
+            # new_bookmark_pool or None` made absence and emptiness both CLEAR
+            # the assignment, so an edit made for an unrelated reason (a note, a
+            # search engine, a rename) silently discarded it. What that defeats
+            # is recoverability, not a protection: delete_pool RECORDS the
+            # profiles referencing a pool before clearing them, and computes
+            # that list from THIS field — so a reference wiped beforehand meant
+            # the trash entry named nobody and a restore returned a pool nothing
+            # pointed at, the exact end-state delete_pool owns both halves to
+            # make impossible. Clearing is now something a caller SAYS
+            # (POOL_NONE), never something it does by omitting a value.
+            profile.bookmark_pool = resolve_pool_assignment(
+                new_bookmark_pool, profile.bookmark_pool
+            )
             if new_bookmarks is not None:
                 profile.bookmarks = new_bookmarks
             if new_tags is not None:
