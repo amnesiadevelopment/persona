@@ -393,17 +393,25 @@ class App:
     def _build_sidebar(self) -> ft.Container:
         r = self.refs
         assert r is not None
+        # DIRECTION B: the log keeps its place in the rail, but its header
+        # stops spending a whole row on a full-size TextButton + IconButton.
+        # A compact header leaves the height for the events themselves.
         log_panel = ft.Column(
-            spacing=4,
+            spacing=2,
             controls=[
                 ft.Row(
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     controls=[
                         r.log_toggle_btn,
                         ft.IconButton(
                             icon=ft.Icons.OPEN_IN_FULL,
-                            icon_size=14,
+                            icon_size=13,
                             icon_color=COLORS["text_sub"],
+                            tooltip="Open full Activity Log",
+                            padding=ft.Padding.all(0),
+                            width=26,
+                            height=26,
                             on_click=lambda _: self.h.open_log_fullscreen(),
                         ),
                     ],
@@ -3641,14 +3649,19 @@ class App:
         text = self.state.flush_log()
         if text is not None and self.refs:
             lines = [ln for ln in text.split("\n") if ln]
-            sidebar_lines = lines[-6:]
-            # Wrap long lines (Mars: they were clipping) — the ListView scrolls,
-            # so the panel keeps a comfortable fixed height instead of growing
-            # per line and the wrapped continuation stays readable.
+            # DIRECTION B: rows stop WRAPPING. In a 200px rail a wrapped line
+            # spends two or three rows on one event, so the panel's height went
+            # to wrapping rather than to history — and because wrapped rows have
+            # different heights, the region's extent changed on every flush,
+            # which is what makes the scroll feel like it jumps. One line per
+            # event, ellipsised, keeps every row the same height: the strip now
+            # holds ~9 events in LESS vertical space than 6 wrapped ones took,
+            # and the full text stays one click away in the fullscreen log.
+            sidebar_lines = lines[-9:]
             self.refs.log_list.controls = [
-                log_line_control(ln, wrap=True) for ln in sidebar_lines
+                log_line_control(ln, wrap=False) for ln in sidebar_lines
             ]
-            self.refs.log_column.height = 150
+            self.refs.log_column.height = 138
             self.refs.log_column.visible = (
                 bool(sidebar_lines) and not self.state.log_collapsed
             )

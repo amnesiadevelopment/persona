@@ -99,6 +99,39 @@ def build_sidebar(
             on_tap=lambda _: on_logo_click(),
             content=header,
         )
+    # DIRECTION B (minimal change): the rail keeps its width and its contents,
+    # but stops being a fixed stack that crushes itself.
+    #
+    # The nav + engines + version cluster now lives in ONE scrollable column.
+    # Previously an `expand=True` spacer pushed the bottom cluster down, which
+    # works only while there is slack: at the app's own minimum window height
+    # (1024x680) the spacer collapses to nothing and 'trash' — the entry 3.0.0
+    # added — ends up flush against the engines dropdown with no gap at all.
+    # A scrolling column degrades gracefully instead: when the rail runs out of
+    # room the operator scrolls it, and every row keeps its full spacing.
+    upper = ft.Column(
+        spacing=0,
+        expand=True,
+        scroll=ft.ScrollMode.AUTO,
+        controls=[
+            header,
+            ft.Text(
+                app_subtitle(),
+                size=10,
+                color=COLORS["text_sub"],
+                font_family=MONO,
+            ),
+            ft.Divider(height=24, color=COLORS["border"]),
+            nav,
+            ft.Container(height=18),
+            *(
+                [ft.Divider(height=1, color=COLORS["border"]), engine_panel]
+                if engine_panel is not None
+                else []
+            ),
+            *([version_panel] if version_panel is not None else []),
+        ],
+    )
     return ft.Container(
         width=200,
         bgcolor=COLORS["sidebar"],
@@ -107,26 +140,12 @@ def build_sidebar(
             spacing=0,
             expand=True,
             controls=[
-                header,
-                ft.Text(
-                    app_subtitle(),
-                    size=10,
-                    color=COLORS["text_sub"],
-                    font_family=MONO,
-                ),
-                ft.Divider(height=24, color=COLORS["border"]),
-                nav,
-                # Push the bottom cluster down, but keep a guaranteed gap + a
-                # hairline above it so the engines panel never sits flush against
-                # the 'connect' nav item when the window is short and the expand
-                # spacer collapses to nothing.
-                ft.Container(expand=True, height=16),
-                *(
-                    [ft.Divider(height=1, color=COLORS["border"]), engine_panel]
-                    if engine_panel is not None
-                    else []
-                ),
-                *([version_panel] if version_panel is not None else []),
+                upper,
+                # The log is pinned to the BOTTOM of the rail, outside the
+                # scrolling region, so it keeps a guaranteed size no matter how
+                # short the window gets — and a hairline above it means it can
+                # never read as another nav row.
+                ft.Divider(height=1, color=COLORS["border"]),
                 log_panel,
             ],
         ),
