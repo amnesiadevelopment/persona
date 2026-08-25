@@ -1129,6 +1129,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          # Fail CLOSED here, unlike the git failures below. This is
+          # unreachable in practice: the "Flatten artifacts" step already
+          # fails closed on a missing update-manifest.json BEFORE the release
+          # is published, so reaching this means the asset vanished between
+          # two steps of the same job. That is a broken release, not a broken
+          # network, and it should be loud.
           if [ ! -f "$MANIFEST" ]; then
             echo "::error::update-manifest.json missing — cannot refresh baseline"; exit 1
           fi
@@ -1152,9 +1158,21 @@ jobs:
           # refresh degrades to the ::warning:: path for a reason that has
           # nothing to do with the baseline. 50 covers the realistic window
           # between this job starting and a push landing, and is still minimal.
-          git clone --depth 50 --branch main \
-            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
-          cd repo
+          # Every git command from here on degrades to ::warning:: instead of
+          # aborting. `set -e` would otherwise exit non-zero and red a release
+          # whose assets are ALREADY LIVE (the publish step ran two steps
+          # above), for a transient clone/DNS/token blip that says nothing
+          # about the release. Only `git push` used to fall through to the
+          # warning net at the bottom; a failure in any command above it hit
+          # `set -e` first and never reached it. The fail-closed `exit 1`s
+          # above are deliberately NOT softened: a bad FINGERPRINT is a real
+          # defect, a bad NETWORK is not.
+          if ! git clone --depth 50 --branch main \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo; then
+            echo "::warning::could not clone main to refresh the baseline — next release will retry"
+            exit 0
+          fi
+          cd repo || { echo "::warning::clone produced no repo dir — next release will retry"; exit 0; }
           prev="$(tr -d '[:space:]' < runtime-fingerprint.txt 2>/dev/null || true)"
           if [ "$prev" = "$fp" ]; then
             echo "baseline already current ($fp) — nothing to commit"
@@ -1162,9 +1180,12 @@ jobs:
           fi
           echo "baseline moving: '$prev' -> '$fp'"
           printf '%s\n' "$fp" > runtime-fingerprint.txt
-          git config user.name  "persona-release-bot"
-          git config user.email "noreply@persona.dev"
-          git add runtime-fingerprint.txt
+          git config user.name  "persona-release-bot" \
+            || { echo "::warning::git config failed — next release will retry"; exit 0; }
+          git config user.email "noreply@persona.dev" \
+            || { echo "::warning::git config failed — next release will retry"; exit 0; }
+          git add runtime-fingerprint.txt \
+            || { echo "::warning::git add failed — next release will retry"; exit 0; }
           {
             echo "release: refresh runtime-fingerprint baseline for ${GITHUB_REF_NAME}"
             echo
@@ -1175,7 +1196,8 @@ jobs:
             echo "stale and pinned requires_full_install true for every release"
             echo "after 2026-08-07."
           } > /tmp/fp_msg.txt
-          git commit -F /tmp/fp_msg.txt
+          git commit -F /tmp/fp_msg.txt \
+            || { echo "::warning::git commit failed — next release will retry"; exit 0; }
           # A concurrent release/bump may have landed; rebase rather than force.
           # Fetch (deepening if needed) BEFORE rebasing: on a shallow clone the
           # merge base may not be present yet, and `pull --rebase` would fail

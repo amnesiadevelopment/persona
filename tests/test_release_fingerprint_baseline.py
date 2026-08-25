@@ -275,6 +275,93 @@ def test_a_failed_baseline_push_does_not_fail_a_published_release(refresh_step):
     assert "::error::" not in tail
 
 
+def test_no_git_failure_before_the_warning_net_can_red_a_published_release(
+    refresh_step,
+):
+    """The step runs under `set -euo pipefail`, AFTER the release is published.
+
+    The previous version of this test sliced from `git push origin main`
+    onward and asserted no `::error::` in the tail. That inspects only the
+    region that is ALREADY guarded by the retry loop — every command that can
+    actually red a published release sits ABOVE the slice point and was
+    structurally invisible to it. It passed green while `git clone`, `git
+    config`, `git add` and `git commit` all exited 128 under `set -e` and
+    failed the publish job (measured, by running the extracted body against a
+    stubbed git).
+
+    That matters because of the ORDERING: this is step [3] of the publish job
+    and step [2] already published the GitHub Release. A network blip, a
+    token hiccup or a runner DNS flake during the clone would report a release
+    whose assets are live and correct as a FAILED build.
+
+    So pin the property the step's own closing comment promises — that no git
+    command before the warning net can abort — rather than a symptom of it.
+    """
+    # Fold line continuations first: the guards are written as
+    #     git add runtime-fingerprint.txt \
+    #       || { echo "::warning::..."; exit 0; }
+    # and a naive per-line scan would see a bare `git add ...` and report a
+    # guarded command as unguarded.
+    code = re.sub(r"\\\n\s*", " ", _strip_comments(refresh_step.get("run") or ""))
+    assert "set -euo pipefail" in code, "this test's premise is `set -e`"
+
+    head = code[: code.index("git push origin main")]
+    unguarded = [
+        line.strip()
+        for line in head.splitlines()
+        # `if ! git clone ...; then` handles its own failure; `||` degrades.
+        if line.strip().startswith("git ")
+        and "||" not in line
+        and not line.strip().startswith("if !")
+    ]
+    assert not unguarded, (
+        "these run under `set -e` BEFORE the ::warning:: net, so any one of "
+        "them failing reds a release that already published successfully: "
+        f"{unguarded}"
+    )
+
+
+def test_a_bad_fingerprint_still_fails_closed(refresh_step):
+    """The counterweight to the test above: making git failures harmless must
+    NOT make everything harmless.
+
+    A missing/malformed fingerprint must still `exit 1` loudly. Writing an
+    empty baseline sets prevFp == "" for the next build, which forces
+    requires_full_install true for EVERY future release (:855) — the exact
+    failure this ticket exists to fix, so it must never be silently swallowed.
+    This is why the fix is explicit per-command guards rather than
+    `continue-on-error: true` on the step, which would swallow these too.
+    """
+    code = _strip_comments(refresh_step.get("run") or "")
+
+    # NOT `assert "exit 1" in code`: the step has three fail-closed paths, so
+    # that assertion stays green while any ONE of them is softened. It passed
+    # against a deliberately broken arm (catch-all changed to `::warning::` /
+    # `exit 0`) and therefore verified nothing. Pin the validation BLOCK.
+    block = code[code.index('case "$fp" in') : code.index("esac")]
+    assert "exit 0" not in block, (
+        "the fingerprint validation must never continue on a bad value — "
+        "an empty baseline pins requires_full_install true for every future "
+        f"release:\n{block}"
+    )
+    # both non-hex and wrong-length must abort, not just one of them
+    assert block.count("exit 1") >= 2, (
+        f"every invalid-fingerprint branch must exit 1:\n{block}"
+    )
+    assert "$MANIFEST" in code and "exit 1" in code[: code.index('case "$fp" in')], (
+        "a missing manifest must still fail closed"
+    )
+
+    # `continue-on-error: true` would make the step's exit code moot and
+    # swallow the fail-closed exits above along with the git failures.
+    assert not refresh_step.get("continue-on-error"), (
+        "continue-on-error would swallow the fail-closed exits too — the git "
+        "commands are guarded individually for exactly this reason"
+    )
+    # the guarded git commands degrade to a warning, never to a silent success
+    assert code.count("::warning::") >= 2
+
+
 def test_the_push_retry_has_the_history_it_needs_to_rebase(refresh_step):
     """The retry rebases when a concurrent commit lands on main, and a rebase
     needs a merge base. A `--depth 1` clone does not have one, so the rebase
