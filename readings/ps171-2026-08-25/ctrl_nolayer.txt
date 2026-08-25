@@ -14,6 +14,38 @@
 #     this file (lifetime average) : cpu_total / threads_total / stats / phase
 #     corrected instrument         : cpu / rss_mb / thr
 #
+# ---------------------------------------------------------------------------
+# SECOND DIFFERENCE, AND IT IS NOT THE CPU COLUMN: THE TWO INSTRUMENTS DO NOT
+# COUNT THE SAME PROCESSES. DO NOT COMPARE `n`, `threads_total` OR
+# `rss_mb_total` IN THIS FILE AGAINST ANY READING FROM A2 / E / F.
+#
+# This file's matcher is `ps -eo ...,comm` filtered by `"firefox" in comm`.
+# `comm` is the kernel's TASK_COMM_LEN field, capped at 15 characters, and
+# Firefox's children are named `Web Content`, `Socket Process`, `RDD Process`,
+# `WebExtensions`, `Utility Process`, `forkserver` — NONE of which contains the
+# substring "firefox". So this file counts THE PARENT ONLY. The corrected
+# harnesses walk /proc and match the engine path in `cmdline`, which matches
+# THE WHOLE PROCESS TREE.
+#
+# Measured, not inferred — arm H (`h_matchers.py` / `H_matchers.txt`) applied
+# both matchers to one live engine at the same instant:
+#     ps comm       n=1  at tab 1,  n=1  at tab 2   (parent only, zero children)
+#     /proc cmdline n=6  at tab 1,  n=11 at tab 2
+#
+# CONSEQUENCE FOR THIS FILE SPECIFICALLY: the `n: 2 -> 1` drop at t=109.0 ->
+# t=111.1 is a drop WITHIN A MATCHED SUBSET THAT NEVER CONTAINED THE CONTENT
+# PROCESSES. An unknown number of engine processes may have been alive and
+# simply unmatched the whole time. It is NOT the same observation as arm A2's
+# `12 -> 0` (a genuine whole-tree engine loss), and an earlier draft of REPRO.md
+# wrongly paired the two as one "processes died in two of four arms" pattern.
+# That pairing is WITHDRAWN. See D.txt for the same 2 -> 1 shape occurring
+# during startup, before tab 1 had even finished opening — which nobody would
+# call a death.
+#
+# The ~750 MB RSS in this file is likewise a parent-only undercount of the same
+# shape as arm F's whole-tree 1.2 GB.
+# ---------------------------------------------------------------------------
+#
 # WHY THIS MATTERS HERE: at t=304.3 this file shows "cpu_total": 24.2 with every
 # thread in S. Read naively that is a wedged browser apparently burning a quarter
 # of a core — the exact spinning-vs-blocked confusion the record turns on. It is

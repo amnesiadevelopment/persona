@@ -14,6 +14,36 @@
 #     this file (lifetime average) : cpu_total / threads_total / stats / phase
 #     corrected instrument         : cpu / rss_mb / thr
 #
+# ---------------------------------------------------------------------------
+# SECOND DIFFERENCE, AND IT IS NOT THE CPU COLUMN: THE TWO INSTRUMENTS DO NOT
+# COUNT THE SAME PROCESSES. DO NOT COMPARE `n`, `threads_total` OR
+# `rss_mb_total` IN THIS FILE AGAINST ANY READING FROM A2 / E / F.
+#
+# This file's matcher is `ps -eo ...,comm` filtered by `"firefox" in comm`.
+# `comm` is the kernel's TASK_COMM_LEN field, capped at 15 characters, and
+# Firefox's children are named `Web Content`, `Socket Process`, `RDD Process`,
+# `WebExtensions`, `Utility Process`, `forkserver` — NONE of which contains the
+# substring "firefox". So this file counts THE PARENT ONLY. The corrected
+# harnesses walk /proc and match the engine path in `cmdline`, which matches
+# THE WHOLE PROCESS TREE.
+#
+# Measured, not inferred — arm H (`h_matchers.py` / `H_matchers.txt`) applied
+# both matchers to one live engine at the same instant:
+#     ps comm       n=1  at tab 1,  n=1  at tab 2   (parent only, zero children)
+#     /proc cmdline n=6  at tab 1,  n=11 at tab 2
+#
+# THIS FILE CARRIES THE CLEAREST PROOF THAT `n` IS NOT A DEATH SIGNAL UNDER THIS
+# MATCHER. Note the drop at the very top of the run:
+#
+#     t=2.0  n=2   (startup)
+#     t=4.1  n=1   (still in new_page1, BEFORE tab 1 had finished opening)
+#
+# That is the same `2 -> 1` shape an earlier draft of REPRO.md read as a process
+# death in arm B (ctrl_nolayer.txt) — occurring here during startup, before the
+# first tab even existed. Nobody would call it a death. The "processes died in
+# two of four arms" claim that rested on it is WITHDRAWN.
+# ---------------------------------------------------------------------------
+#
 # WHY THIS MATTERS HERE: at t=304.3 this file shows "cpu_total": 24.2 with every
 # thread in S. Read naively that is a wedged browser apparently burning a quarter
 # of a core — the exact spinning-vs-blocked confusion the record turns on. It is
