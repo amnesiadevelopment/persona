@@ -814,7 +814,7 @@ def test_revert_double_rename_failure_still_leaves_a_launchable_bundle(
     # share the destination
     attempts, failed = _dest_failing_rename(monkeypatch, app, fail_first=2)
     msgs = []
-    au.revert_to_previous_build(log=msgs.append)
+    went = au.revert_to_previous_build(log=msgs.append)
 
     # PRECONDITION, part two: the induced failure was actually observable —
     # both restore attempts were made, from DIFFERENT sources, and both failed.
@@ -835,6 +835,25 @@ def test_revert_double_rename_failure_still_leaves_a_launchable_bundle(
     )
     # and the revert stayed reversible: still exactly one retained sibling
     assert _retained_siblings(installed) == ["persona.app", "persona.app.bak"]
+
+    # THE CONSEQUENCE THE UI ACTS ON. Reaching the goal the hard way is still
+    # reaching it: the previous version IS installed above, so this arm must
+    # report success. src/ui/app.py:553 branches on this exact return value,
+    # and a falsy one there tells the operator "couldn't go back — see the
+    # log" while they sit in front of a successfully reverted app, with no
+    # prompt to restart into it. Asserting the disk state alone leaves that
+    # one-token regression green.
+    assert went == app, (
+        "the revert reached its goal the hard way — the previous version IS "
+        "installed, so the UI must render 'restart to run the previous "
+        "version', not 'couldn't go back' (src/ui/app.py:553 branches on "
+        "this exact value)"
+    )
+    assert "now installed" in msgs[0] and "restart" in msgs[0], (
+        "the recovered arm is the third of Work #3's three situations and "
+        "the only one carrying an action the operator must take; it must "
+        "read as neither refusal"
+    )
 
 
 def test_revert_recovers_when_the_install_location_is_occupied(
@@ -909,14 +928,50 @@ def test_revert_reports_the_double_failure_distinctly(monkeypatch, tmp_path):
         "nothing could be put back"
     )
 
-    assert single and double
-    assert single[0] != double[0], (
-        "the two situations differ radically — one has a working app, the "
-        "other has none — so they must not report the same sentence"
+    # THE THIRD SITUATION. Work #3 is a three-way distinction, not a two-way
+    # one: between "your app is fine" and "you have no app" sits the arm where
+    # the restore failed but the revert's GOAL was reached anyway — the
+    # previous version is installed. That is the only one of the three
+    # carrying an instruction the operator must act on, so it is the one that
+    # must least be allowed to read as either refusal.
+    third = tmp_path / "third"
+    third.mkdir()
+    staged3, installed3 = _mac_apply_fixture(monkeypatch, third)
+    _drive_mac_update(monkeypatch, staged3)
+    app3 = str(installed3)
+    recovered = []
+    _, failed3 = _dest_failing_rename(monkeypatch, app3, fail_first=2)
+    went3 = au.revert_to_previous_build(log=recovered.append)
+    assert len(failed3) == 2, "precondition: this arm really did fail twice"
+    assert os.path.isdir(app3), (
+        "precondition for the message assertion: this is the arm where the "
+        "previous version DID land at the install location"
+    )
+    assert went3 == app3, (
+        "precondition: and the function reports that it got there — the "
+        "sentence and the return value must agree about which arm this is"
+    )
+
+    assert single and double and recovered
+    # all THREE mutually distinct, not two of three: a message that is unique
+    # against one arm but shared with the other still leaves the operator
+    # unable to tell which situation they are in.
+    assert len({single[0], double[0], recovered[0]}) == 3, (
+        "the three situations differ radically — a working app, no app, and "
+        "a completed revert — so no two may report the same sentence: "
+        f"{single[0]!r} / {double[0]!r} / {recovered[0]!r}"
     )
     assert app2 in double[0] and "could not be put back" in double[0], (
         "the unrecoverable arm must say plainly that there is no app at the "
         "install location, and where it is"
+    )
+    assert "now installed" in recovered[0] and "restart" in recovered[0], (
+        "the recovered arm must carry its action — the operator has to "
+        "restart to actually run the version they asked to go back to"
+    )
+    assert "could not be put back" not in recovered[0], (
+        "and it must not borrow the unrecoverable arm's language: there IS "
+        "an app at the install location on this arm"
     )
     # narrowed honestly: BOTH bundles are safe beside the install location, so
     # the situation is recoverable by the operator
