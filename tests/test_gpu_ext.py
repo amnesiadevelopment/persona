@@ -1105,7 +1105,7 @@ def test_the_split_is_identity_only_every_other_vector_stays_ours(tmp_path):
         assert p["version_gl1"] == "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
 
 
-def test_an_unrecognised_arm_keeps_our_authorship(tmp_path):
+def test_an_arm_the_engine_does_not_honour_keeps_our_authorship(tmp_path):
     # FAIL-SAFE DIRECTION, asserted on the EMITTED ARTIFACT rather than on the
     # helper. The helper answering correctly in isolation is not the property
     # that matters: os_norm folds every unrecognised os_type into "windows",
@@ -1116,26 +1116,45 @@ def test_an_unrecognised_arm_keeps_our_authorship(tmp_path):
     # the page — Invariant #0, reached through the direction the docstring
     # promises is safe. An earlier version of this test called only the helper
     # and so could not have caught that; assert the real consequence.
-    for unknown in ("freebsd", "chromeos", "plan9", ""):
+    #
+    # ⚠️ "DOES NOT HONOUR", NOT "DOES NOT RECOGNISE" — the two sets differ and
+    # the gap between them WAS the defect. `win` is a spelling our fold maps to
+    # windows, so an earlier version of this test asserted it should DEFER. It
+    # must not: the engine rejects `win` as a --fingerprint-platform value and
+    # answers SwiftShader, so deferring on it produced exactly the host leak the
+    # rest of this test exists to forbid. Measured on the product's own engine
+    # (fingerprint-chromium/148.0.7778.215, layer OFF, seed 9001,
+    # readings/ps161-engine-vocabulary-2026-08-25/):
+    #
+    #   windows / WINDOWS -> Google Inc. (AMD)    / …Radeon(TM) (0x00001638)
+    #   win     / Win     -> Google Inc. (Google) / SwiftShader   <- NOT honoured
+    #
+    # so `win` is covered here, alongside the never-recognised spellings.
+    for unknown in ("freebsd", "chromeos", "plan9", "", "win", "Win"):
         js = _read(
             build_gpu_extension(1, unknown, str(tmp_path / f"u{unknown or 'empty'}"), 0),
             "gpu.js",
         )
         assert 'ENGINE_AUTHORS_IDENTITY = false' in js, (
-            f"os_type={unknown!r}: stood our layer down on an UNMEASURED arm. "
-            "The windows fold reached the authorship decision."
+            f"os_type={unknown!r}: stood our layer down on an arm the ENGINE "
+            "does not honour. Authorship was resolved from our fold's "
+            "vocabulary instead of the engine's."
         )
 
     # And what a page actually sees, executed rather than grepped. The probe's
     # stub answers HOST_VALUE_NOT_SPOOFED whenever the patch falls through to
     # the real getParameter, so this is the host leak stated as an observation.
-    p = _probe(tmp_path, 1, "freebsd")
-    assert p["unmaskedVendor"] != "HOST_VALUE_NOT_SPOOFED", (
-        "an unrecognised arm fell through to the host's UNMASKED_VENDOR"
-    )
-    assert p["unmaskedRenderer"] != "HOST_VALUE_NOT_SPOOFED", (
-        "an unrecognised arm fell through to the host's UNMASKED_RENDERER"
-    )
+    # `win` is probed for the same reason it is built above: it is the spelling
+    # that actually shipped the leak, and the artifact assertion alone would not
+    # show that a page stops seeing the host's GL strings.
+    for leaky in ("freebsd", "win"):
+        p = _probe(tmp_path, 1, leaky)
+        assert p["unmaskedVendor"] != "HOST_VALUE_NOT_SPOOFED", (
+            f"os_type={leaky!r} fell through to the host's UNMASKED_VENDOR"
+        )
+        assert p["unmaskedRenderer"] != "HOST_VALUE_NOT_SPOOFED", (
+            f"os_type={leaky!r} fell through to the host's UNMASKED_RENDERER"
+        )
 
     # The recognised arms are unchanged by the fix: windows still defers, and
     # the arms measured back onto our own authorship still keep it. Without
@@ -1157,11 +1176,54 @@ def test_an_unrecognised_arm_keeps_our_authorship(tmp_path):
     assert engine_authors_identity("") is False
     assert engine_authors_identity_for_os_type("freebsd") is False
     assert engine_authors_identity_for_os_type("") is False
-    # Raw spellings that DO normalise must survive the raw-value resolution.
+    # Spellings the ENGINE honours defer; spellings only OUR fold recognises do
+    # NOT. `win` normalises for POOL selection but the engine rejects it as a
+    # --fingerprint-platform value, so deferring on it left neither author
+    # writing the pair. Case folds because the engine folds case — measured.
     assert engine_authors_identity_for_os_type("windows") is True
-    assert engine_authors_identity_for_os_type("win") is True
     assert engine_authors_identity_for_os_type("WINDOWS") is True
+    assert engine_authors_identity_for_os_type("win") is False
     assert engine_authors_identity_for_os_type("darwin") is False
+
+
+def test_engine_honoured_platforms_match_the_declared_machines(tmp_path):
+    # ENGINE_HONOURED_PLATFORMS is RESTATED in gpu_ext rather than imported —
+    # gpu_ext sits on the launch path and must not pull the whole verify tier in
+    # just to build an extension. A restated list is a list that can drift, so
+    # pin it to the repo's other statement of the same fact.
+    #
+    # This is the check that would have caught the defect this test file's
+    # sibling documents: authorship and --fingerprint-platform are two names for
+    # ONE vocabulary, and the leak happened precisely because a second,
+    # different list (RECOGNISED_OS_TYPES) was consulted instead. If the engine
+    # ever gains or loses a platform, DECLARED_MACHINES is where the repo says
+    # so, and this fails until gpu_ext is told too.
+    from src.services.browser.gpu_ext import ENGINE_HONOURED_PLATFORMS
+    from src.services.verify.browser_tier import DECLARED_MACHINES
+
+    assert ENGINE_HONOURED_PLATFORMS == set(DECLARED_MACHINES), (
+        "gpu_ext's engine vocabulary drifted from browser_tier.DECLARED_MACHINES. "
+        "Authorship must be keyed on what the engine honours, so these two "
+        "cannot be allowed to disagree."
+    )
+
+    # And the property that actually matters, stated as behaviour rather than as
+    # set equality: our fold recognises spellings the engine does NOT honour,
+    # and every one of them must keep OUR authorship. This is the gap the
+    # `win` host leak lived in, asserted as a class rather than as one alias.
+    from src.services.browser.gpu_ext import (
+        RECOGNISED_OS_TYPES,
+        engine_authors_identity_for_os_type,
+    )
+
+    alias_only = RECOGNISED_OS_TYPES - ENGINE_HONOURED_PLATFORMS
+    assert alias_only, "expected our fold to recognise aliases the engine does not"
+    for alias in sorted(alias_only):
+        assert engine_authors_identity_for_os_type(alias) is False, (
+            f"os_type={alias!r} is recognised by OUR fold but not honoured by "
+            "the engine, yet authorship deferred — neither author would write "
+            "the identity pair and the host's GL strings would reach the page."
+        )
 
 
 def test_recognised_os_types_cover_every_spelling_the_fold_accepts(tmp_path):
