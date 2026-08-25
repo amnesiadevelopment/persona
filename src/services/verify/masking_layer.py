@@ -443,6 +443,7 @@ def build_chromium_layer(
     from ..browser.audio_ext import build_audio_extension
     from ..browser.canvas_ctx_ext import build_canvas_ctx_extension
     from ..browser.device_ext import build_device_extension
+    from ..browser.engine_platform import engine_platform_for
     from ..browser.geo_ext import build_geo_extension
     from ..browser.gpu_ext import build_gpu_extension
     from ..browser.locale_ext import build_locale_extension
@@ -472,8 +473,17 @@ def build_chromium_layer(
             seed, _dir(".persona-device-ext"), generation, os_type=os_type)),
         (WEBGL, lambda: build_webgl_extension(
             seed, _dir(".persona-webgl-ext"))),
+        # ``engine_platform`` is computed by the SAME function ``process.py``
+        # uses, from the same inputs, rather than being assumed equal to
+        # ``os_type`` — the assumption that they are equal is what leaked in the
+        # product. This harness is a DESKTOP checker run by construction (it
+        # declares one of browser_tier.DECLARED_MACHINES and carries no mobile
+        # preset), so ``device_type`` is "desktop" here as a stated fact, not a
+        # default that hides a case: a mobile declared machine is not a thing
+        # this tier can be asked for.
         (GPU, lambda: build_gpu_extension(
-            seed, os_type, _dir(".persona-gpu-ext"), generation)),
+            seed, os_type, _dir(".persona-gpu-ext"), generation,
+            engine_platform=engine_platform_for(os_type, "desktop"))),
         (CANVAS_CTX, lambda: build_canvas_ctx_extension(
             os_type, _dir(".persona-canvas-ctx-ext"))),
     ]
