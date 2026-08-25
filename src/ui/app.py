@@ -393,29 +393,15 @@ class App:
     def _build_sidebar(self) -> ft.Container:
         r = self.refs
         assert r is not None
-        log_panel = ft.Column(
-            spacing=4,
-            controls=[
-                ft.Row(
-                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                    controls=[
-                        r.log_toggle_btn,
-                        ft.IconButton(
-                            icon=ft.Icons.OPEN_IN_FULL,
-                            icon_size=14,
-                            icon_color=COLORS["text_sub"],
-                            on_click=lambda _: self.h.open_log_fullscreen(),
-                        ),
-                    ],
-                ),
-                r.log_column,
-            ],
-        )
+        # DIRECTION A: the Activity Log no longer lives in the sidebar at all —
+        # it is docked full-width along the bottom of the window (see
+        # _build_log_dock). The sidebar keeps only navigation and the engine /
+        # version cluster, so nothing is crushed when the window is short.
         engine_panel = self._build_engines_panel()
         return build_sidebar(
             active_page=self._active_page,
             on_navigate=self._navigate,
-            log_panel=log_panel,
+            log_panel=None,
             engine_panel=engine_panel,
             version_panel=self._build_version_panel(),
             on_logo_click=self._on_logo_click,
@@ -718,11 +704,64 @@ class App:
             content=ft.Column(spacing=4, controls=rows),
         )
 
-    def _build_root_layout(self, r: UIRefs) -> ft.Row:
+    def _build_log_dock(self) -> ft.Control:
+        """DIRECTION A: the Activity Log as a full-width console docked along
+        the bottom of the window, spanning sidebar AND content.
+
+        The log is a dense stream of events; the 200px sidebar gave it ~26
+        readable characters, so nearly every line wrapped onto two or three
+        rows and the panel spent its height on wrapping rather than on
+        history. Docked full-width it gets ~10x the horizontal room, so a line
+        fits on ONE row — which is also what makes the fixed-height rows
+        uniform, and a uniform row is what makes the region scan and scroll
+        predictably.
+        """
+        r = self.refs
+        assert r is not None
+        header = ft.Container(
+            padding=ft.Padding.only(left=16, right=10, top=4, bottom=4),
+            content=ft.Row(
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Row(
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Icon(
+                                ft.Icons.TERMINAL,
+                                size=15,
+                                color=COLORS["accent"],
+                            ),
+                            r.log_toggle_btn,
+                        ],
+                    ),
+                    ft.IconButton(
+                        icon=ft.Icons.OPEN_IN_FULL,
+                        icon_size=14,
+                        icon_color=COLORS["text_sub"],
+                        tooltip="Open full Activity Log",
+                        on_click=lambda _: self.h.open_log_fullscreen(),
+                    ),
+                ],
+            ),
+        )
+        return ft.Container(
+            bgcolor=COLORS["log_bg"],
+            border=ft.Border.only(
+                top=ft.BorderSide(1, COLORS["border"]),
+            ),
+            content=ft.Column(
+                spacing=0,
+                controls=[header, r.log_column],
+            ),
+        )
+
+    def _build_root_layout(self, r: UIRefs) -> ft.Control:
         r.log_toggle_btn.on_click = lambda _: self.h.toggle_log()
         self._sidebar_host = ft.Container(content=self._build_sidebar())
         self._page_host = ft.Container(expand=True)
-        return ft.Row(
+        upper = ft.Row(
             expand=True,
             spacing=0,
             controls=[
@@ -730,6 +769,13 @@ class App:
                 ft.VerticalDivider(width=1, color=COLORS["border"]),
                 self._page_host,
             ],
+        )
+        # The dock spans the FULL window width, beneath both the sidebar and
+        # the page — so the log's width is no longer hostage to the sidebar's.
+        return ft.Column(
+            expand=True,
+            spacing=0,
+            controls=[upper, self._build_log_dock()],
         )
 
     def _on_logo_click(self) -> None:
@@ -3641,14 +3687,17 @@ class App:
         text = self.state.flush_log()
         if text is not None and self.refs:
             lines = [ln for ln in text.split("\n") if ln]
-            sidebar_lines = lines[-6:]
-            # Wrap long lines (Mars: they were clipping) — the ListView scrolls,
-            # so the panel keeps a comfortable fixed height instead of growing
-            # per line and the wrapped continuation stays readable.
+            # DIRECTION A: the dock spans the whole window, so a line fits on
+            # ONE row without wrapping. That buys two things at once — every
+            # row is the same height (so the region scrolls predictably instead
+            # of jittering as wrapped rows change height), and the same 150px
+            # now holds ~7 EVENTS instead of ~2.5 wrapped ones. Keep a deeper
+            # tail than the sidebar could: the width is no longer the limit.
+            sidebar_lines = lines[-14:]
             self.refs.log_list.controls = [
-                log_line_control(ln, wrap=True) for ln in sidebar_lines
+                log_line_control(ln, wrap=False) for ln in sidebar_lines
             ]
-            self.refs.log_column.height = 150
+            self.refs.log_column.height = 132
             self.refs.log_column.visible = (
                 bool(sidebar_lines) and not self.state.log_collapsed
             )

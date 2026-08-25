@@ -54,7 +54,7 @@ def _nav_button(
 def build_sidebar(
     active_page: str,
     on_navigate: Callable[[str], None],
-    log_panel: ft.Control,
+    log_panel: ft.Control | None = None,
     engine_panel: ft.Control | None = None,
     version_panel: ft.Control | None = None,
     on_logo_click: Callable[[], None] | None = None,
@@ -127,7 +127,7 @@ def build_sidebar(
                     else []
                 ),
                 *([version_panel] if version_panel is not None else []),
-                log_panel,
+                *([log_panel] if log_panel is not None else []),
             ],
         ),
     )
