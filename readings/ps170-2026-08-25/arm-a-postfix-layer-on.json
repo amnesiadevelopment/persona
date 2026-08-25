@@ -1,0 +1,628 @@
+{
+  "counts": {
+    "absent": 8,
+    "read": 42,
+    "total": 61,
+    "unobtainable": 11
+  },
+  "declared_machine": "windows",
+  "declared_machine_honoured": true,
+  "engine": "fingerprint-chromium/148.0.7778.215",
+  "environment": "linux-x86_64 (agent sandbox)",
+  "evidence": {
+    "cause": "",
+    "checkers_contributing": [
+      "bot.sannysoft.com",
+      "creepjs",
+      "iphey.com",
+      "pixelscan.net"
+    ],
+    "fingerprint_fraction": 0.8571,
+    "fingerprint_obtained": 24,
+    "fingerprint_total": 28,
+    "floor": {
+      "checkers": 2,
+      "fraction": 0.2
+    },
+    "never_asked": 0,
+    "reasons": [],
+    "verdict": "sufficient"
+  },
+  "exit": {
+    "city": "Warsaw",
+    "country": "PL",
+    "ip": "79.184.244.189",
+    "org": "AS5617 Orange Polska Spolka Akcyjna",
+    "region": "Mazovia",
+    "timezone": "Europe/Warsaw"
+  },
+  "masking_layer": {
+    "complete": true,
+    "failed": {},
+    "installed": [
+      "audio",
+      "canvas_ctx",
+      "device",
+      "gpu",
+      "locale",
+      "measuretext",
+      "native",
+      "stealth",
+      "voice",
+      "webgl"
+    ],
+    "route": "extensions"
+  },
+  "notes": [
+    "The GPU rows are PRODUCT rows, not environment notes. This container has no GPU, and that is NOT an exemption: the owner ruled (2026-08-22, PS-10) that there will be no dev-VM and no GPU machine in the loop, and that the engine is expected to present a plausible GPU wherever it runs, including on a host that has none. A red on either GPU row is therefore a masking finding, filed against undetectable-masking with the reading attached — never written off as the container's fault.",
+    "The two GPU vectors are recorded SEPARATELY and must be reported that way: vector=gpu_claimed is what the renderer SAYS IT IS (the WEBGL_debug_renderer_info strings, which persona chooses), and vector=gpu_rendered is what the checker's OWN RENDERING PRODUCED (canvas/WebGL hashes computed from pixels, which persona does not choose). They have different fixes, so a merged 'GPU red' cannot be acted on. A plausible claimed string beside a hash produced by software rendering is the 'the string is right but the render gives us away' case the owner called a defect rather than an accepted limit — and neither row alone can show it.",
+    "The exit is a rotating mobile address. Rotation WITHIN Poland is the design, not a fault: an exit-driven reading is expected to move between runs, and a FINGERPRINT-driven reading that moves when only the address moved is a coupling worth its own ticket.",
+    "Chromium cannot authenticate to a SOCKS5 proxy, so the credential was carried by persona's own hardened loopback relay (services/proxy/bridge.ProxyBridge) and the browser was pointed at 127.0.0.1. The relay's peer gate was claimed for this browser process, so no other local process could use the operator's exit.",
+    "THIS READING WAS TAKEN WITH --no-sandbox. The host forbids the unprivileged user namespace chromium's sandbox needs, and the operator waived it explicitly (--allow-unsandboxed-chromium). persona's own launch path passes that flag NOWHERE, so this is NOT the surface the product presents to a checker: treat any difference against a sandboxed reading as possibly environmental until it is reproduced on a host where the sandbox works.",
+    "CREDENTIAL SOURCE: used the file (/workspace/_secrets/test-proxy.txt); the environment (PERSONA_TEST_PROXY) holds the same credential"
+  ],
+  "observed_at": "2026-08-25T20:11:11Z",
+  "readings": [
+    {
+      "adverse": false,
+      "checker": "amiunique.org",
+      "item": "(whole checker)",
+      "reason": "Click-gated: the verdict is behind a user gesture.",
+      "sort": "",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": true,
+      "checker": "bot-detector.rebrowser.net",
+      "item": "detected",
+      "reason": "Error: Page.goto: net::ERR_SOCKS_CONNECTION_FAILED at https://bot-detector.rebrowser.net/\nCall log:\n  - navigating to \"https://bot-detector.rebrowser.net/\", waiting until \"domcontentloaded\"\n — Answered NS_ERROR_CONNECTION_REFUSED through the mobile exit on 2026-08-21, same as deviceandbrowserinfo.com. Recorded as unobtainable per run, not dropped.",
+      "sort": "fingerprint",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": false,
+      "checker": "bot-detector.rebrowser.net",
+      "item": "verdicts_rendered",
+      "reason": "Error: Page.goto: net::ERR_SOCKS_CONNECTION_FAILED at https://bot-detector.rebrowser.net/\nCall log:\n  - navigating to \"https://bot-detector.rebrowser.net/\", waiting until \"domcontentloaded\"\n — Answered NS_ERROR_CONNECTION_REFUSED through the mobile exit on 2026-08-21, same as deviceandbrowserinfo.com. Recorded as unobtainable per run, not dropped.",
+      "sort": "fingerprint",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": true,
+      "checker": "bot.sannysoft.com",
+      "item": "phantom_js",
+      "pattern": "phantom\\s+js\\b",
+      "reason": "the pattern did not match",
+      "sort": "fingerprint",
+      "state": "absent"
+    },
+    {
+      "adverse": false,
+      "checker": "bot.sannysoft.com",
+      "item": "webdriver_advanced_passed",
+      "matched_text": "WebDriver Advanced\tpassed",
+      "pattern": "webdriver advanced\\s*passed",
+      "sort": "fingerprint",
+      "state": "read",
+      "value": true
+    },
+    {
+      "adverse": false,
+      "checker": "bot.sannysoft.com",
+      "item": "webdriver_missing_passed",
+      "matched_text": "WebDriver\n(New)\n\tmissing (passed)",
+      "pattern": "webdriver\\s*(?:\\(new\\)\\s*)?missing \\(passed\\)",
+      "sort": "fingerprint",
+      "state": "read",
+      "value": true
+    },
+    {
+      "adverse": true,
+      "checker": "bot.sannysoft.com",
+      "item": "webdriver_present",
+      "pattern": "webdriver\\s*(?:\\(new\\)\\s*)?\\bpresent\\b",
+      "reason": "the pattern did not match",
+      "sort": "fingerprint",
+      "state": "absent"
+    },
+    {
+      "adverse": false,
+      "checker": "browserscan.net",
+      "item": "(whole checker)",
+      "reason": "Text-only verdict with no stable ids, and its internal API requires signed params (returns 401). Carried as unreadable rather than matched loosely against unanchored prose.",
+      "sort": "",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": false,
+      "checker": "coveryourtracks.eff.org",
+      "item": "(whole checker)",
+      "reason": "Click-gated, and observed returning HTTP 500.",
+      "sort": "",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": false,
+      "checker": "creepjs",
+      "item": "canvas_data_hash",
+      "matched_text": "Canvas 2df18e9571\ndata: 4c7ac378",
+      "pattern": "canvas\\s*[0-9a-f]{8,}\\s*data:\\s*([0-9a-f]{8,})",
+      "sort": "fingerprint",
+      "state": "read",
+      "value": "4c7ac378",
+      "vector": "gpu_rendered"
+    },
+    {
+      "adverse": false,
+      "checker": "creepjs",
+      "item": "chromium_claim",
+      "matched_text": "chromium: true",
+      "pattern": "chromium:\\s*(true|false)",
+      "sort": "fingerprint",
+      "state": "read",
+      "value": "true"
+    },
+    {
+      "adverse": false,
+      "checker": "creepjs",
+      "item": "gpu_renderer",
+      "matched_text": "ANGLE (AMD, AMD Radeon(TM) Graphics (0x00001638) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "pattern": "(angle \\([^\\n]+\\))",
+      "sort": "fingerprint",
+      "state": "read",
+      "value": "ANGLE (AMD, AMD Radeon(TM) Graphics (0x00001638) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "vector": "gpu_claimed"
+    },
+    {
+      "adverse": false,
+      "checker": "creepjs",
+      "item": "gpu_vendor",
+      "matched_text": "gpu:\nGoogle Inc. (AMD)",
+      "pattern": "(?<![a-z])gpu:\\s*(?:confidence:[^\\n]*\\n)?([^\\n]+)",
+      "sort": "fingerprint",
+      "state": "read",
+      "value": "Google Inc. (AMD)",
+      "vector": "gpu_claimed"
+    },
+    {
+      "adverse": false,
+      "checker": "creepjs",
+      "item": "headless_rating",
+      "matched_text": "33% headless",
+      "pattern": "(\\d+(?:\\.\\d+)?)%\\s*headless\\b",
+      "sort": "fingerprint",
+      "state": "read",
+      "value": "33"
+    },
+    {
+      "adverse": false,
+      "checker": "creepjs",
+      "item": "like_headless_rating",
+      "matched_text": "38% like headless",
+      "pattern": "(\\d+(?:\\.\\d+)?)%\\s*like headless",
+      "sort": "fingerprint",
+      "state": "read",
+      "value": "38"
+    },
+    {
+      "adverse": false,
+      "checker": "creepjs",
+      "item": "stealth_rating",
+      "matched_text": "20% stealth",
+      "pattern": "(\\d+(?:\\.\\d+)?)%\\s*stealth",
+      "sort": "fingerprint",
+      "state": "read",
+      "value": "20"
+    },
+    {
+      "adverse": false,
+      "checker": "creepjs",
+      "item": "webgl_image_hash",
+      "matched_text": "images:d9cb9c5b",
+      "pattern": "images:\\s*([0-9a-f]{8,})",
+      "sort": "fingerprint",
+      "state": "read",
+      "value": "d9cb9c5b",
+      "vector": "gpu_rendered"
+    },
+    {
+      "adverse": false,
+      "checker": "creepjs",
+      "item": "webgl_pixel_hash",
+      "matched_text": "pixels:b8dba17f",
+      "pattern": "pixels:\\s*([0-9a-f]{8,})",
+      "sort": "fingerprint",
+      "state": "read",
+      "value": "b8dba17f",
+      "vector": "gpu_rendered"
+    },
+    {
+      "adverse": false,
+      "checker": "deviceandbrowserinfo.com",
+      "item": "bot_verdict_negative",
+      "reason": "Error: Page.goto: net::ERR_SOCKS_CONNECTION_FAILED at https://deviceandbrowserinfo.com/are_you_a_bot\nCall log:\n  - navigating to \"https://deviceandbrowserinfo.com/are_you_a_bot\", waiting until \"domcontentloaded\"\n — Answered NS_ERROR_CONNECTION_REFUSED through the mobile exit on 2026-08-21 — reachable on a datacenter address, refused from this carrier. Kept in the matrix and recorded as UNOBTAINABLE per run rather than dropped: 'this checker did not answer us' is a reading, and deleting the row would silently shrink the matrix.",
+      "sort": "fingerprint",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": true,
+      "checker": "deviceandbrowserinfo.com",
+      "item": "bot_verdict_positive",
+      "reason": "Error: Page.goto: net::ERR_SOCKS_CONNECTION_FAILED at https://deviceandbrowserinfo.com/are_you_a_bot\nCall log:\n  - navigating to \"https://deviceandbrowserinfo.com/are_you_a_bot\", waiting until \"domcontentloaded\"\n — Answered NS_ERROR_CONNECTION_REFUSED through the mobile exit on 2026-08-21 — reachable on a datacenter address, refused from this carrier. Kept in the matrix and recorded as UNOBTAINABLE per run rather than dropped: 'this checker did not answer us' is a reading, and deleting the row would silently shrink the matrix.",
+      "sort": "fingerprint",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": false,
+      "checker": "engine-exit",
+      "item": "city",
+      "matched_text": "\"city\": \"Warsaw\"",
+      "pattern": "\"city\"\\s*:\\s*\"([^\"]+)\"",
+      "sort": "exit",
+      "state": "read",
+      "value": "Warsaw"
+    },
+    {
+      "adverse": false,
+      "checker": "engine-exit",
+      "item": "country",
+      "matched_text": "\"country\": \"PL\"",
+      "pattern": "\"country(?:_code)?\"\\s*:\\s*\"([A-Za-z]{2})\"",
+      "sort": "exit",
+      "state": "read",
+      "value": "PL"
+    },
+    {
+      "adverse": false,
+      "checker": "engine-exit",
+      "item": "observed_ip",
+      "matched_text": "\"ip\": \"79.184.244.189\"",
+      "pattern": "\"ip\"\\s*:\\s*\"([^\"]+)\"",
+      "sort": "exit",
+      "state": "read",
+      "value": "79.184.244.189"
+    },
+    {
+      "adverse": false,
+      "checker": "engine-exit",
+      "item": "org",
+      "matched_text": "\"org\": \"AS5617 Orange Polska Spolka Akcyjna\"",
+      "pattern": "\"(?:org|isp)\"\\s*:\\s*\"([^\"]+)\"",
+      "sort": "exit",
+      "state": "read",
+      "value": "AS5617 Orange Polska Spolka Akcyjna"
+    },
+    {
+      "adverse": false,
+      "checker": "engine-exit",
+      "item": "timezone",
+      "matched_text": "\"timezone\": \"Europe/Warsaw\"",
+      "pattern": "\"timezone\"\\s*:\\s*(?:\"|\\{\\s*\"id\"\\s*:\\s*\")([^\"]+)\"",
+      "sort": "exit",
+      "state": "read",
+      "value": "Europe/Warsaw"
+    },
+    {
+      "adverse": false,
+      "checker": "fv.pro",
+      "item": "(whole checker)",
+      "reason": "The fields worth reading are paywalled.",
+      "sort": "",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": false,
+      "checker": "iphey.com",
+      "item": "hardware_fine",
+      "matched_text": "HARDWARE\n\nEverything is fine",
+      "pattern": "hardware\\s+everything is fine",
+      "sort": "host",
+      "state": "read",
+      "value": true
+    },
+    {
+      "adverse": true,
+      "checker": "iphey.com",
+      "item": "not_trustworthy",
+      "pattern": "looks\\s+(?:not\\s+trustworthy|suspicious)",
+      "reason": "the pattern did not match",
+      "sort": "fingerprint",
+      "state": "absent"
+    },
+    {
+      "adverse": false,
+      "checker": "iphey.com",
+      "item": "software_fine",
+      "matched_text": "SOFTWARE\n\nEverything is fine",
+      "pattern": "software\\s+everything is fine",
+      "sort": "fingerprint",
+      "state": "read",
+      "value": true
+    },
+    {
+      "adverse": false,
+      "checker": "iphey.com",
+      "item": "trustworthy",
+      "matched_text": "Looks \nTrustworthy",
+      "pattern": "looks\\s+trustworthy",
+      "sort": "fingerprint",
+      "state": "read",
+      "value": true
+    },
+    {
+      "adverse": false,
+      "checker": "ipleak.net",
+      "item": "as_number",
+      "sort": "exit",
+      "state": "read",
+      "value": 5617
+    },
+    {
+      "adverse": false,
+      "checker": "ipleak.net",
+      "item": "city_name",
+      "sort": "exit",
+      "state": "read",
+      "value": "Warsaw"
+    },
+    {
+      "adverse": false,
+      "checker": "ipleak.net",
+      "item": "country_code",
+      "sort": "exit",
+      "state": "read",
+      "value": "PL"
+    },
+    {
+      "adverse": false,
+      "checker": "ipleak.net",
+      "item": "isp_name",
+      "sort": "exit",
+      "state": "read",
+      "value": "Orange Polska Spolka Akcyjna"
+    },
+    {
+      "adverse": false,
+      "checker": "ipleak.net",
+      "item": "observed_ip",
+      "sort": "exit",
+      "state": "read",
+      "value": "2a01:110f:530a:da00:e830:f043:4894:a4c"
+    },
+    {
+      "adverse": false,
+      "checker": "ipleak.net",
+      "item": "time_zone",
+      "sort": "exit",
+      "state": "read",
+      "value": "Europe/Warsaw"
+    },
+    {
+      "adverse": true,
+      "checker": "pixelscan.net",
+      "item": "automation_detected",
+      "pattern": "automated behaviou?r detected",
+      "reason": "the pattern matched 1 time(s), every one of them negated by 'no'",
+      "sort": "fingerprint",
+      "state": "absent"
+    },
+    {
+      "adverse": false,
+      "checker": "pixelscan.net",
+      "item": "canvas_hash",
+      "matched_text": "Canvas Hash\n2bcfee1204804fa8ed34ccae53f2362a",
+      "pattern": "canvas hash\\s+([0-9a-f]{8,})",
+      "sort": "fingerprint",
+      "state": "read",
+      "value": "2bcfee1204804fa8ed34ccae53f2362a",
+      "vector": "gpu_rendered"
+    },
+    {
+      "adverse": false,
+      "checker": "pixelscan.net",
+      "item": "fingerprint_consistent",
+      "pattern": "your browser fingerprint is consistent",
+      "reason": "the pattern did not match",
+      "sort": "fingerprint",
+      "state": "absent"
+    },
+    {
+      "adverse": true,
+      "checker": "pixelscan.net",
+      "item": "fingerprint_inconsistent",
+      "matched_text": "Your Browser Fingerprint is inconsistent",
+      "pattern": "your browser fingerprint is inconsistent",
+      "sort": "fingerprint",
+      "state": "read",
+      "value": true
+    },
+    {
+      "adverse": false,
+      "checker": "pixelscan.net",
+      "item": "geo_country_city",
+      "matched_text": "Poland / Warsaw",
+      "pattern": "(poland\\s*/\\s*[^\\n]+)",
+      "sort": "exit",
+      "state": "read",
+      "value": "Poland / Warsaw"
+    },
+    {
+      "adverse": true,
+      "checker": "pixelscan.net",
+      "item": "masking_detected",
+      "matched_text": "Masking detected",
+      "pattern": "masking detected",
+      "sort": "fingerprint",
+      "state": "read",
+      "value": true
+    },
+    {
+      "adverse": true,
+      "checker": "pixelscan.net",
+      "item": "proxy_detected",
+      "pattern": "proxy detected",
+      "reason": "the pattern matched 1 time(s), every one of them negated by 'no'",
+      "sort": "exit",
+      "state": "absent"
+    },
+    {
+      "adverse": false,
+      "checker": "pixelscan.net",
+      "item": "timezone_from_js",
+      "matched_text": "Timezone from JS\nEurope/Warsaw",
+      "pattern": "timezone from js\\s+(\\S+)",
+      "sort": "exit",
+      "state": "read",
+      "value": "Europe/Warsaw"
+    },
+    {
+      "adverse": true,
+      "checker": "pixelscan.net",
+      "item": "timezone_spoofed",
+      "pattern": "timezone spoofed",
+      "reason": "the pattern did not match",
+      "sort": "exit",
+      "state": "absent"
+    },
+    {
+      "adverse": false,
+      "checker": "pixelscan.net",
+      "item": "webgl_hash",
+      "matched_text": "WebGL Hash\n036072f321775c68b7ec0a1863d20ee5",
+      "pattern": "webgl hash\\s+([0-9a-f]{8,})",
+      "sort": "fingerprint",
+      "state": "read",
+      "value": "036072f321775c68b7ec0a1863d20ee5",
+      "vector": "gpu_rendered"
+    },
+    {
+      "adverse": false,
+      "checker": "pixelscan.net",
+      "item": "webgl_renderer",
+      "matched_text": "WebGL Renderer\nANGLE (AMD, AMD Radeon(TM) Graphics (0x00001638) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "pattern": "webgl renderer\\s+([^\\n]+)",
+      "sort": "fingerprint",
+      "state": "read",
+      "value": "ANGLE (AMD, AMD Radeon(TM) Graphics (0x00001638) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "vector": "gpu_claimed"
+    },
+    {
+      "adverse": false,
+      "checker": "pixelscan.net",
+      "item": "webgl_vendor",
+      "matched_text": "WebGL Vendor\nGoogle Inc. (AMD)",
+      "pattern": "webgl vendor\\s+([^\\n]+)",
+      "sort": "fingerprint",
+      "state": "read",
+      "value": "Google Inc. (AMD)",
+      "vector": "gpu_claimed"
+    },
+    {
+      "adverse": false,
+      "checker": "tls.browserleaks.com",
+      "item": "akamai_hash",
+      "sort": "harness",
+      "state": "read",
+      "value": ""
+    },
+    {
+      "adverse": false,
+      "checker": "tls.browserleaks.com",
+      "item": "ja3n_hash",
+      "sort": "harness",
+      "state": "read",
+      "value": "c10fd3671baaf8a4479e88d2214f11a9"
+    },
+    {
+      "adverse": false,
+      "checker": "tls.browserleaks.com",
+      "item": "ja4",
+      "sort": "harness",
+      "state": "read",
+      "value": "t13d171200_ab0a1bf427ad_ecd0401ec68b"
+    },
+    {
+      "adverse": false,
+      "checker": "tls.browserleaks.com",
+      "item": "user_agent",
+      "sort": "harness",
+      "state": "read",
+      "value": "curl/8.14.1"
+    },
+    {
+      "adverse": false,
+      "checker": "tls.peet.ws",
+      "item": "akamai_fingerprint",
+      "reason": "the response carries no http2.akamai_fingerprint",
+      "sort": "harness",
+      "state": "absent"
+    },
+    {
+      "adverse": false,
+      "checker": "tls.peet.ws",
+      "item": "http_version",
+      "sort": "harness",
+      "state": "read",
+      "value": "HTTP/1.1"
+    },
+    {
+      "adverse": false,
+      "checker": "tls.peet.ws",
+      "item": "ja4",
+      "sort": "harness",
+      "state": "read",
+      "value": "t13d1712_ab0a1bf427ad_ecd0401ec68b"
+    },
+    {
+      "adverse": false,
+      "checker": "tls.peet.ws",
+      "item": "observed_ip",
+      "sort": "exit",
+      "state": "read",
+      "value": "79.184.244.189:21510"
+    },
+    {
+      "adverse": false,
+      "checker": "tls.peet.ws",
+      "item": "peetprint_hash",
+      "sort": "harness",
+      "state": "read",
+      "value": "0d1922bf480c74e7dc5b78c827cb3e6a"
+    },
+    {
+      "adverse": false,
+      "checker": "tls.peet.ws",
+      "item": "user_agent",
+      "sort": "harness",
+      "state": "read",
+      "value": "curl/8.14.1"
+    },
+    {
+      "adverse": false,
+      "checker": "tools.scrapfly.io",
+      "item": "akamai_hash",
+      "reason": "FetchFailed: SOCKS5Error: 0x02: Connection not allowed by ruleset",
+      "sort": "harness",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": false,
+      "checker": "tools.scrapfly.io",
+      "item": "ja4",
+      "reason": "FetchFailed: SOCKS5Error: 0x02: Connection not allowed by ruleset",
+      "sort": "harness",
+      "state": "unobtainable"
+    },
+    {
+      "adverse": false,
+      "checker": "whoer.net",
+      "item": "(whole checker)",
+      "reason": "Cloudflare challenge. Defeating it is out of scope by charter — that is a different product.",
+      "sort": "",
+      "state": "unobtainable"
+    }
+  ],
+  "schema_version": 4,
+  "seed": 9001,
+  "skipped_tiers": []
+}
