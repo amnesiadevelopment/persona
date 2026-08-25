@@ -117,9 +117,9 @@ bullet:
 ```
   PS-177 was written to close exactly this and did not close it BY SWEEP: it planned 8
   configurations across both engines, three declared machines and two seeds (5150, 24601), and
-  obtained 1 — the proxy credential stopped authenticating 96 seconds in, and the other 7
-  configurations were REFUSED rather than read over a direct connection. One record is one
-  profile, so the ARM PS-177 READ remains unmeasured for Level 2.
+  obtained 1 — the proxy credential stopped authenticating after the first record was written,
+  and the other 7 configurations were REFUSED rather than read over a direct connection. One
+  record is one profile, so the ARM PS-177 READ remains unmeasured for Level 2.
 
   But building the comparator surfaced that the CORPUS already held a two-seed arm nobody had
   ever diffed: readings/ps128-2026-08-23/run1-matrix/, firefox/windows at seeds 1337 and 4242,

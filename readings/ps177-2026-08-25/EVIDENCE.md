@@ -1,14 +1,29 @@
-# PS-177 — the baseline sweep, and the exit that died 96 seconds into it
+# PS-177 — the baseline sweep, and the exit that died after the first record
 
 **Date:** 2026-08-25 · **Ref under test:** `origin/main` @ `c04e15d` · **Branch:** `readings/PS-177-baseline-sweep`
-**Instrument:** `take-sweep.sh` (committed beside the records) · **Re-derivation:** `derive.py`
+**Instrument:** `take-sweep.sh` (committed beside the records) · **Re-derivation:** `derive.py` · **§2 verifier:** `probe-exit-recovery.py`
 **Artifacts:** `reading.firefox.windows.seed5150.json` (61 rows) · `sweep.log` (the full run, refusals included) · `exit-recovery-probe.log` (20 recovery attempts) · `derived-output.txt` (this sweep, re-derived) · `derived-output.ps128-level2.txt` (the Level 2 comparison of §4b)
-**Pinned by:** `tests/test_ps177_linkage_class.py` (19 tests over the committed records)
+**Pinned by:** `tests/test_ps177_linkage_class.py` (19 tests — the Level 2 comparator) · `tests/test_ps177_evidence_provenance.py` (13 tests — §2's figures against the logs they cite)
 
 > **Round 2 note.** `sweep.log` and `exit-recovery-probe.log` are the evidence for §2 and were
 > **missing from the first submission** — `.gitignore:183` (`*.log`) excluded them silently, so the
 > measurements establishing the exit failure as account-level were unverifiable. They are now
-> force-added and tracked. Everything in §2 can be checked against them.
+> force-added and tracked.
+>
+> **Round 3 correction.** Round 2 followed that with *"Everything in §2 can be checked against
+> them."* **That sentence was false, and committing the logs is what made it checkable.** Three
+> figures disagreed with the log they were attributed to (38 min → **24.8**; one-per-minute → **78s**;
+> `21:49–22:29` → **22:01:07–22:25:55**), two timeline stamps came from an uncommitted run transcript,
+> and three of §2's four measurements have no artifact at all. All of that is corrected below, and the
+> blanket claim is **replaced by a per-row source column and a checkable command**:
+>
+> ```
+> ./probe-exit-recovery.py --verify     # offline; no credential needed
+> ```
+>
+> It re-derives every figure §2 quotes from the committed logs and **exits non-zero if the prose and
+> the artifacts disagree** — including regression guards on the three withdrawn figures. A claim that
+> can drift silently is what produced this defect; this one fails a command instead.
 
 ---
 
@@ -75,29 +90,61 @@ that survived is the one that answers nothing.
 failure across every cell is the shape to distrust.** Seven identical failures across seven cells is
 that shape exactly. It was chased down rather than reported.
 
-Timeline (UTC, all from `sweep.log` and `exit-recovery-probe.log`):
+Timeline (UTC). **Each row names its own source, because the two logs do not carry the same kind of
+evidence and round 2 wrongly attributed all of it to both.** `sweep.log` carries **no timestamps at
+all** (`grep -cE '[0-9]{2}:[0-9]{2}' sweep.log` → `0`); it establishes *order and outcome*, never
+*time*. Only `exit-recovery-probe.log` and the record's own `observed_at` carry clock time.
 
-| time | event |
-|---|---|
-| 21:41 | exit **proven** on a cheap `--skip-browser` probe: `83.6.111.143` Warsaw/PL, AS5617 Orange Polska, `Europe/Warsaw` |
-| 21:47:16 | sweep launched; exit **proven again**, same address |
-| 21:48:53 | record 1 written — the only one |
-| ~21:49 | configuration 2 onward: `SOCKS5AuthError: SOCKS5 authentication failed`, on **both** providers (`ipinfo.io`, `ipwho.is`) |
-| 21:49–22:29 | **20 recovery probes over 38 minutes. Zero successes.** |
+| time | event | source |
+|---|---|---|
+| *(untimed)* | exit **proven**: `83.6.111.143` Warsaw/PL, AS5617 Orange Polska, `Europe/Warsaw` | `sweep.log` — the fact, **not** a time |
+| **21:48:53** | record 1 written — the only one | `reading.firefox.windows.seed5150.json` → `observed_at: 2026-08-25T21:48:53Z` |
+| *(untimed, after it)* | configurations 2–8: `SOCKS5AuthError: SOCKS5 authentication failed` on **both** providers (`ipinfo.io`, `ipwho.is`); **7 REFUSED** | `sweep.log` — order is the file's own |
+| **22:01:07 – 22:25:55** | **20 recovery probes over 24.8 minutes, mean cadence 78s (min 78, max 79). Zero successes.** | `exit-recovery-probe.log` |
 
-**Four measurements establish this is the credential and not the product, the harness, or the network:**
+> **Withdrawn in round 3.** Round 2 gave this table the stamps `21:41` and `21:47:16` and the window
+> `21:49–22:29`, and called the recovery run *"38 minutes, one per minute"*. **The first two came from
+> the run transcript, which is not committed; the last three are contradicted by the log that is.**
+> The corrected figures above are re-derived from `exit-recovery-probe.log` by
+> `probe-exit-recovery.py --verify` (below), not typed. The document's round-2 title — *"the exit that
+> died 96 seconds into it"* — rested on the `21:47:16`→`21:48:53` pair, and **half that pair has no
+> committed source**, so the claim is withdrawn rather than restated: what is evidenced is that the
+> exit died **after the first record and before the second**, which is what the argument actually needs.
 
-1. **It fails from outside the harness.** A plain `requests` call through the same credential file
-   fails identically. Nothing of persona's is in that path.
-2. **Direct egress works throughout.** `https://ipwho.is/` answers `159.195.144.196` direct, at the
-   same moments the proxy refuses. The network is up; the credential is what stopped working.
-3. **It is not sticky-session expiry.** The credential is a Decodo sticky session
+**Four measurements establish this is the credential and not the product, the harness, or the network.
+Their evidence is not uniform, and the split is stated rather than smoothed over:**
+
+| # | measurement | committed evidence? |
+|---|---|---|
+| 1 | fails from outside the harness | ⚠️ **ad hoc — no artifact** |
+| 2 | direct egress works throughout | ⚠️ **ad hoc — no artifact** |
+| 3 | not sticky-session expiry (3 variants) | ⚠️ **ad hoc — no artifact** |
+| 4 | not a transient blip | ✅ `exit-recovery-probe.log`, 20 rows |
+
+1. ⚠️ **It fails from outside the harness.** A plain `requests` call through the same credential file
+   failed identically. Nothing of persona's is in that path. **Taken ad hoc at the terminal; no
+   artifact was captured and none is committed.** `probe-exit-recovery.py --variants` re-runs this
+   probe, but it was written *after* the fact and did **not** produce this reading.
+2. ⚠️ **Direct egress works throughout.** `https://ipwho.is/` answered `159.195.144.196` direct, at the
+   same moments the proxy refused. The network is up; the credential is what stopped working.
+   **Same status: ad hoc, no artifact.**
+3. ⚠️ **It is not sticky-session expiry.** The credential is a Decodo sticky session
    (`gate.decodo.com:10000`, `…-country-pl-city-warsaw-session-…`). Three variants were probed:
    as-stored, a **freshly rotated session token**, and the **session segments stripped entirely**
    (plain rotating exit). **All three failed identically.** A session that had merely expired would
-   have been fixed by the second or third. This is account-level and operator-owned.
-4. **It is not a transient blip.** 20 consecutive failures across 38 minutes, logged one per minute
-   in `exit-recovery-probe.log`.
+   have been fixed by the second or third. **Same status: ad hoc, no artifact.**
+4. ✅ **It is not a transient blip.** **20 consecutive failures across 24.8 minutes at a mean 78s
+   cadence**, every one `SOCKS5 authentication failed`, in `exit-recovery-probe.log`. This is the one
+   of the four that is fully evidenced, and `sweep.log` independently corroborates all 7 refusals with
+   the identical error.
+
+**What the correction does and does not move.** Measurements 1–3 are now marked as what they are —
+**unevidenced ad hoc probes** — so they should be read as the author's testimony, not as artifacts.
+**The conclusion is unchanged and rests on 4 alone:** 20 consecutive identical auth failures across
+24.8 minutes establishes *account-level, not transient* just as firmly as the longer window round 2
+wrongly claimed would have — the overstatement was never load-bearing, which is precisely why it
+survived two rounds unnoticed. Measurement 4 is the fully-evidenced one. Not blocking with
+`retry_in_one_hour` remains correct.
 
 **`checker_cli` did the right thing and it is worth recording.** It refused 7 configurations rather
 than falling back to a direct connection, and wrote nothing for them:
