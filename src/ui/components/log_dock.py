@@ -490,8 +490,14 @@ class LogDock:
             self._peek.value = f"{stamp}   {msg}" if stamp else msg
 
         if self.variant == "E":
+            # The digest is keyed on the profiles this console KNOWS (set from
+            # the real profile manager via set_profiles), not on a per-call
+            # argument — the app's flush has no reason to carry a second copy
+            # of the roster, and passing none left the digest permanently
+            # empty ("no profile activity yet" beside a stream full of named
+            # events).
             self.digest.controls = self._digest_controls(
-                digest_rows or [], lines
+                list(digest_rows or self.profiles), lines
             )
         self._apply_collapse()
         self._paint_stream_state()
