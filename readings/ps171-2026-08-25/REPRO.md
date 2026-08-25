@@ -13,9 +13,16 @@ produce it.** With the layer *entirely absent* — the packaged engine and nothi
 else — opening the **third** tab blocks indefinitely and **never recovers**. It
 reproduces headless (arm B) and headful (arm D), it reproduces *with* the layer
 installed (arm A2), and it reproduces on **`about:blank`**, so neither the
-per-tab spoof path nor the weight of checker pages is required. At the stall the
-browser is **idle-waiting, not exhausted**: every thread in `S`, ~1% CPU, 1.2 GB
-RSS on a 16 GB host. That shape is a deadlock, not resource starvation.
+per-tab spoof path nor the weight of checker pages is required.
+
+At the stall the browser looks **idle-waiting, not exhausted** — but that
+reading belongs to **one arm, and it is named rather than generalised.** In
+**arm F**, the characterisation arm, every thread is in `S` (interruptible
+sleep) at the stall and CPU decays **35.1% → 1.4%** across the following 40s
+recovery watch, at **1.2 GB RSS on a 16 GB host**. That shape is a deadlock, not
+resource starvation. **Arm A2 does not show the same picture at its own stall**
+(54.4% CPU, `R=2` threads still running) and is not evidence for this claim; see
+[the instrument warning](#method) before reading either number.
 
 **The precise claim, stated at the strength the evidence carries it.** The
 layer-off arms show the stall does not *need* persona's masking layer — that is
@@ -46,7 +53,7 @@ and does not require persona's masking layer; whether the *browser* or the
 | GPU | **none** — `/dev/dri` absent | real GPU |
 | Compositor | **none** — no `DISPLAY`; Xvfb where headful was needed | real compositor |
 | CPU / RAM | 8 cores / 16 GB | unknown |
-| `/dev/shm` | 1.0 GB (not exhausted at any point) | unknown |
+| `/dev/shm` | 1.0 GB (size only — occupancy during the arms was **never sampled**) | unknown |
 
 **The gap is material and cuts both ways.** A headless, GPU-less container can
 fail to show a defect a real Windows desktop does. It can *also* produce a stall
@@ -82,10 +89,29 @@ reading you get depends on the arm** — see the warning immediately below.
 > uncorrected `ps pcpu` instrument** and their readings are captioned in-file to
 > say so. The two schemas are distinguishable on sight:
 >
-> | Schema | Meaning | Arms | Harness |
-> |---|---|---|---|
-> | `cpu_total` / `threads_total` / `stats` / `phase` | **lifetime average** | B, D | `abd_harness.py` |
-> | `cpu` / `rss_mb` / `thr` | **instantaneous** | A2, E, F | `a2.py`, `e2.py` |
+> | Schema | CPU column | **Processes counted** | Arms | Harness |
+> |---|---|---|---|---|
+> | `cpu_total` / `threads_total` / `stats` / `phase` | **lifetime average** | **PARENT ONLY** — `ps comm`, matched on `"firefox" in comm` | B, D | `abd_harness.py` |
+> | `cpu` / `rss_mb` / `thr` | **instantaneous** | **WHOLE PROCESS TREE** — `/proc/<pid>/cmdline`, matched on the engine path | A2, E, F | `a2.py`, `e2.py` |
+>
+> **⚠️ THE TWO INSTRUMENTS DIFFER IN MORE THAN THEIR CPU COLUMN — THEY DO NOT
+> COUNT THE SAME PROCESSES.** `comm` is the kernel's `TASK_COMM_LEN` field,
+> capped at **15 characters**, and Firefox's children are named `Web Content`,
+> `Socket Process`, `RDD Process`, `WebExtensions`, `Utility Process`,
+> `forkserver` — **none of which contains the string "firefox"**. So the `ps
+> comm` matcher sees the parent and nothing else.
+>
+> **This is measured, not inferred — see [arm H](#arm-h--the-two-instruments-do-not-count-the-same-processes).**
+> Both matchers were applied to one real engine at the same instant: `ps comm`
+> found **1** process (the parent) at both tab 1 and tab 2, while `/proc cmdline`
+> found **6** and then **11**.
+>
+> **Consequence: `n`, `threads_total` and `rss_mb_total` are NOT comparable
+> across the two groups of arms.** Arms **B and F are the same configuration**
+> (layer OFF, headless, `new_page`, `about:blank`) and report `n=2` vs `n=11–12`
+> at the stall — that gap is the instrument, not the browser. Arm B's ~750 MB RSS
+> is an undercount of the same shape as arm F's 1.2 GB; the **1.2 GB figure in
+> the headline is arm F's** and is a whole-tree number.
 >
 > **The uncorrected arms still point the same way, and the arithmetic is worth
 > having.** Over the 90 samples after arm B's process death (t=125.2→304.3),
@@ -99,8 +125,24 @@ reading you get depends on the arm** — see the warning immediately below.
 > numerator means cumulative CPU stayed pinned at **~74.3 s across 179 s of wall
 > clock** — the process burned **zero additional CPU** while wedged. So arm B
 > does corroborate "idle-waiting, not spinning"; it simply cannot show it
-> *directly*, and the direct reading comes from the corrected arms (A2: 1.4%
-> instantaneous at the stall in arm F, every thread in `S`).
+> *directly*.
+>
+> **The direct reading comes from arm F, and from arm F alone.** It is worth
+> being exact about which sample, because an earlier draft of this record
+> attributed arm F's quietest sample to arm A2 and that is false under every
+> reading of it:
+>
+> | Arm | at the stall | at the end of the 40s recovery watch |
+> |---|---|---|
+> | **F** (`F_new_page.txt:7,9`) | `cpu 35.1`, `thr {"S": 275}` | **`cpu 1.4`, `thr {"S": 267}`** ← the idle-wait reading |
+> | **A2** (`A2.txt:8,10`) | `cpu 54.4`, `thr {"R": 2, "S": 277}` | `n=0` — engine gone, no live sample |
+>
+> **Arm A2 cannot supply a 1.4% figure at all**: by `t=120.9` it had no
+> processes left to sample. And at its *own* stall A2 shows **54.4%** with **two
+> threads in `R`**, so "every thread in `S`, ~1% CPU" is **not** true of A2 and
+> must not be stated across the arms. The idle-wait characterisation rests on
+> **arm F**, exactly as the no-recovery characterisation does
+> ([below](#process-loss-in-arm-a2--and-why-arm-bs-apparent-death-is-not-comparable)).
 >
 > Read `ctrl_nolayer.txt:163`'s `"cpu_total": 24.2` with that in mind: it is an
 > averaging artifact, **not** a browser burning a quarter of a core while wedged.
@@ -115,11 +157,12 @@ the proxied exit would have been mandatory with no direct-connection fallback.)
 | Arm | Layer | Display | Tab open path | Instrument | Result |
 |---|---|---|---|---|---|
 | ~~A~~ | ~~ON~~ | ~~headless~~ | ~~`new_page`~~ | lifetime avg | **READING LOST — struck, see below** |
-| **A2** | **ON** | headless | `new_page` | **instantaneous** | tab1 ok, tab2 17.1s, **tab3 BLOCKED>40s**, no recovery |
-| B | **OFF** (control) | headless | `new_page` | lifetime avg | tab1 1.9s, tab2 **12.0s**, **tab3 hung >280s** |
-| D | **OFF** | **headful** (Xvfb) | `new_page` | lifetime avg | tab1 1.8s, tab2 0.9s, **tab3 stalled** |
-| F | **OFF** | headless | `new_page` | **instantaneous** | **the characterisation — below** |
-| E | OFF | headless | `window.open` | instantaneous | **null instrument — see Limitations** |
+| **A2** | **ON** | headless | `new_page` | **instantaneous**, whole tree | tab1 ok, tab2 17.1s, **tab3 BLOCKED>40s**, no recovery |
+| B | **OFF** (control) | headless | `new_page` | lifetime avg, **parent only** | tab1 1.9s, tab2 **12.0s**, **tab3 hung >280s** |
+| D | **OFF** | **headful** (Xvfb) | `new_page` | lifetime avg, **parent only** | tab1 1.8s, tab2 0.9s, **tab3 stalled** |
+| F | **OFF** | headless | `new_page` | **instantaneous**, whole tree | **the characterisation — below** |
+| E | OFF | headless | `window.open` | instantaneous, whole tree | **null instrument — see Limitations** |
+| **H** | OFF | headless | `new_page` (2 tabs only) | **both, side by side** | **instrument comparison — not a stall arm** |
 
 **Arm A's original reading was lost and its numbers are struck from this record.**
 It was written to `A.log`, and `.gitignore:183` is `*.log`, so it was never
@@ -167,11 +210,13 @@ Against the four modes the ticket asks to distinguish:
   40s; arm A2 likewise still blocked after a further 40s, and arm B sat blocked
   for **>280s**.
 
-**And it is not exhaustion.** At the stall: **every thread in `S`** (interruptible
-sleep — idle-waiting, not running), CPU decaying **35% → 1.4%**, RSS **1.2 GB of
-16 GB**, `/dev/shm` untouched. A browser that had run out of something would be
-thrashing or dying. This one is *waiting for something that never arrives* —
-deadlock-shaped.
+**And it is not exhaustion.** At the stall, **in arm F**: **every thread in `S`**
+(interruptible sleep — idle-waiting, not running), CPU decaying **35.1% → 1.4%**
+across the recovery watch, RSS **1.2 GB of 16 GB**. A browser that had run out of
+something would be thrashing or dying. This one is *waiting for something that
+never arrives* — deadlock-shaped. (**`/dev/shm` occupancy was never sampled
+during any arm** — see [below](#process-loss-in-arm-a2--and-why-arm-bs-apparent-death-is-not-comparable);
+it is not part of this reading.)
 
 ### How many tabs — hard limit or load-dependent?
 
@@ -201,41 +246,123 @@ path — `add_init_script` plus the replay into already-open tabs
 required to produce this**. The ticket's first lead ("the masking extensions run
 per tab… tab three would be where it shows") is **not supported**.
 
-### A process died in arm B — and again in arm A2
+### Arm H — the two instruments do not count the same processes
 
-Arm B's watchdog caught a firefox process **disappearing** mid-stall:
+The round-2 code review observed from the *source* that the two harnesses might
+not be counting the same processes. **Arm H measures it** rather than leaving it
+as an inference: one real engine, **both matchers applied at the same instant**,
+each printing what it actually matched (`h_matchers.py` → `H_matchers.txt`).
 
 ```
-t=109.0s  n=2 procs  threads=169  rss=769.2 MB
-t=111.1s  n=1 proc   threads=95   rss=494.2 MB
+--- tab 1 open
+    ps comm       n=1   pids=[3791]
+    /proc cmdline n=6   pids=[3791, 3835, 3893, 3899, 3907, 3941]
+    SEEN ONLY BY /proc cmdline: Socket Process, forkserver, WebExtensions,
+                                RDD Process, Web Content
+--- tab 2 open
+    ps comm       n=1   pids=[3791]
+    /proc cmdline n=11  pids=[3791, 3835, 3893, 3899, 3907, 3941, 3990,
+                              4023, 4028, 4042, 4044]
+    SEEN ONLY BY /proc cmdline: + Utility Process, 4x Web Content
+RESULT {"ps_comm_n": {"tab1": 1, "tab2": 1},
+        "proc_cmdline_n": {"tab1": 6, "tab2": 11},
+        "matchers_agree": false}
 ```
 
-**Arm A2 did the same thing, and more completely.** At the stall it had 12
-processes; by the end of the 40s recovery watch there were **none left**:
+**The `ps comm` matcher matched the parent and nothing else — not one child, at
+either sample.** The reason is mechanical: `comm` is the kernel's
+`TASK_COMM_LEN` field, capped at **15 characters**, and every child is named
+`Web Content` / `Socket Process` / `RDD Process` / `WebExtensions` /
+`Utility Process` / `forkserver`. **None contains the substring "firefox"**, so
+`"firefox" in comm` cannot match any of them. (The 15-char cap is itself
+verifiable: `prctl(PR_SET_NAME, "IsolatedWebContentProcess")` reads back from
+`ps comm` as `IsolatedWebCont`.)
+
+**What this invalidates.** Arms **B/D** report a **parent-only** count; arms
+**A2/E/F** report the **whole tree**. So across those two groups, `n`,
+`threads_total` and `rss_mb_total` are **not comparable at all**:
+
+Arms **B** and **F** are the *same configuration* — layer OFF, headless,
+`new_page`, `about:blank` — so their process counts ought to agree. They do not:
+
+| | Arm B (`ps comm`) | Arm F (`/proc cmdline`) |
+|---|---|---|
+| `n` at tab 1 | 1 | 6 |
+| `n` at the stall | **2** | **11–12** |
+
+That is the instrument, not the browser. **The stall observations themselves are
+unaffected** — they rest on `new_page` blocking and the tab-1 ping blocking, both
+measured through the automation channel, not on any process count.
+
+### Process loss in arm A2 — and why arm B's apparent "death" is not comparable
+
+**Arm A2 lost its entire engine.** At the stall it had 12 processes; by the end
+of the 40s recovery watch there were **none left**:
 
 ```
 t=72.9s   n=12 procs  cpu 54.4%  rss 1337.3 MB  thr R=2 S=277   <- stalled
 t=120.9s  n=0  procs  cpu 0.0    rss 0          thr {}          <- all gone
 ```
 
-So in arm A2 the ping that "still blocked after a further 40s" was, by the end of
-that window, blocking against a browser that **no longer existed**. That does not
-change the stall observation at t=72.9 — tab 3 blocked >40s and the tab-1 ping
-blocked >8s while all 12 processes were alive and idle in `S` — but the *recovery*
-line for A2 must be read as "never recovered, and then the engine died", not as
-"a live browser still wedged at t=120.9". Arm F, which kept its processes
-throughout (12 procs at both the stall and after the recovery watch), is the arm
-that carries the clean no-recovery reading.
+A2's matcher walks `/proc` for the engine path, so it counts the **whole tree**.
+`12 → 0` is therefore a real and complete engine loss, and it means the ping that
+"still blocked after a further 40s" was, by the end of that window, blocking
+against a browser that **no longer existed**. That does not change the stall
+observation at `t=72.9` — tab 3 blocked >40s and the tab-1 ping blocked >8s while
+all 12 processes were alive and idle in `S` — but the *recovery* line for A2 must
+be read as "never recovered, and then the engine died", not as "a live browser
+still wedged at `t=120.9`". **Arm F, which kept its processes throughout (12 at
+both the stall and after the recovery watch), is the arm that carries the clean
+no-recovery reading.**
 
-No minidumps were found and `/dev/shm` was not exhausted in either arm, so the
-cause is unrecorded. Flagged rather than explained — and it is exactly the case
-the confirm-review comment warned about (PS-110: a run whose browser died can
-still report like a clean one). In arm B the parent stayed up and kept
-not-answering; in arm A2 nothing stayed up at all.
+**Arm B's watchdog also shows a drop, and an earlier draft of this record paired
+the two as one pattern. That pairing was wrong and is withdrawn.** Arm B was
+taken on the `ps comm` matcher, which — as [arm H](#arm-h--the-two-instruments-do-not-count-the-same-processes)
+measures — **matches the parent only and never a single child**. So arm B's
 
-**Whether the death is part of the defect or an artifact of this container is
-not settled here.** Two arms out of four losing processes is a pattern worth the
-next session's attention, not a conclusion this record can draw.
+```
+t=109.0s  n=2 procs  threads=169  rss=769.2 MB
+t=111.1s  n=1 proc   threads=95   rss=494.2 MB
+```
+
+is a `2 → 1` drop **within a matched subset that never contained the content
+processes at all**. An unknown number of engine processes may have been alive and
+simply unmatched throughout. It is **not** the same observation as A2's `12 → 0`,
+and the two cannot be counted as instances of one thing.
+
+**`D.txt` shows directly why `n` is not a death signal under this matcher.** It
+carries an undisclosed drop of exactly the same shape —
+
+```
+t=2.0s  n=2   (startup)
+t=4.1s  n=1   (still in new_page1, before tab 1 had finished opening)
+```
+
+— during startup, *before the first tab was even open*. Nobody would call that a
+death. It is the same `2 → 1` shape the record previously read as one in arm B.
+
+**What survives:** arm A2 lost its engine during the recovery watch, and that is
+recorded and unexplained. **What does not survive:** any claim that processes
+died in *two of four* arms. The data cannot support it as stated, because the two
+numbers have different denominators. Whether A2's death is part of the defect or
+an artifact of this container is **not settled here** — it is flagged for the
+next session, and it is exactly the case the confirm-review comment warned about
+(PS-110: a run whose browser died can still report like a clean one).
+
+**Two checks that would bear on it were not recorded at the time, and are marked
+as what they are rather than dressed up.** No harness in this directory looks for
+minidumps or samples `/dev/shm`, so for the arms as run these are **unverified**:
+
+- **`/dev/shm`** — a reading taken *now*, on the same container, shows
+  `1.0G total, 0 used`. That is the size and the idle state; it is **not**
+  evidence about occupancy *during* the arms, which nothing recorded.
+  `/dev/shm` exhaustion is a known false-attribution source on this project
+  (PS-14), so it is worth an explicit sample in the next run rather than an
+  assumption in this one.
+- **Minidumps** — a `find / -name '*.dmp'` run now returns nothing, but the
+  engine's crash reporter path was never checked at the time and the container
+  has been reused since. Treat "no minidump" as **not looked for properly**,
+  not as "no crash".
 
 ---
 
@@ -282,6 +409,13 @@ Also untested, deliberately: **Chromium** (out of scope) and **checker verdicts*
 3. **A reading on the owner's Windows machine remains worth taking** — this
    container has no GPU and no compositor, and his report is from hardware that
    has both.
+4. **Sample `/dev/shm` and the crash-reporter directory in the next run.**
+   Neither was recorded during these arms, so arm A2's engine loss has no
+   attributable cause in this tree. Both are one line in the watchdog.
+5. **Re-run any arm you intend to compare on the SAME matcher.** Arms B/D
+   (parent-only) and A2/E/F (whole tree) cannot be compared on `n`,
+   `threads_total` or `rss_mb_total`. `h_matchers.py` shows the check that
+   catches this in under ten seconds.
 
 ---
 
@@ -290,13 +424,15 @@ Also untested, deliberately: **Chromium** (out of scope) and **checker verdicts*
 | File | What it is |
 |---|---|
 | `A2.txt` | **Arm A2 — the layer-ON arm**, headless, corrected instrument. Replaces the lost arm A. Includes the engine dying during the recovery watch. |
-| `ctrl_nolayer.txt` | Arm B — **control arm**, layer OFF, headless. Includes the process death. **Captioned: its CPU column is a lifetime average.** |
-| `D.txt` | Arm D — layer OFF, **headful** under Xvfb. **Captioned: lifetime-average CPU column.** |
+| `ctrl_nolayer.txt` | Arm B — **control arm**, layer OFF, headless. **Captioned: lifetime-average CPU column, and a PARENT-ONLY process count** — its `2 → 1` drop is not an engine death. |
+| `D.txt` | Arm D — layer OFF, **headful** under Xvfb. **Captioned: lifetime-average CPU, parent-only count** — carries the startup `2 → 1` drop that shows `n` is not a death signal here. |
 | `F_new_page.txt` | Arm F — **the characterisation**: bounded deadline, tab-1 ping, recovery watch. Corrected instrument. |
 | `E1.txt` | Arm E — the **null instrument**, kept as the record of a failed measurement. |
-| `abd_harness.py` | Harness for arms **A (lost), B and D**. Samples CPU with `ps pcpu` — the **uncorrected** instrument. |
-| `a2.py` | Harness for arm **A2**. Corrected `/proc`-delta instrument, layer ON. |
-| `e2.py` | Harness for arms E/F. Corrected `/proc`-delta instrument. |
+| `H_matchers.txt` | **Arm H — the instrument comparison.** Both matchers applied to one live engine at the same instant. Settles that `ps comm` counts the **parent only**. |
+| `abd_harness.py` | Harness for arms **A (lost), B and D**. `ps pcpu` (**uncorrected** CPU) **and** `ps comm` (**parent-only** process matcher). |
+| `a2.py` | Harness for arm **A2**. Corrected `/proc`-delta instrument, whole-tree matcher, layer ON. |
+| `e2.py` | Harness for arms E/F. Corrected `/proc`-delta instrument, whole-tree matcher. |
+| `h_matchers.py` | Harness for arm **H**. Runs *both* matchers side by side and prints what each matched. |
 | `g_wchan.py` | Arm G — wait-channel dump at the stall. **Written, never successfully run.** |
 
 Every arm in this record now has both its **reading** and the **harness that
