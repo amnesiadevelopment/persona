@@ -137,7 +137,127 @@ REQUIRED_IMPORTS = [
     "mcp",
     "invisible_core",
     "invisible_playwright",
+    # --- added by PS-163, each on its own merits ---
+    # All three were DECLARED hard dependencies in pyproject that this list had
+    # silently stopped covering. Every one of them is imported behind a
+    # try/except or lazily, which is exactly the blind spot the comment above
+    # describes: absent from the frozen tree, they never raise at import time.
+    #
+    # The guard at a call site protects the IMPORT SITE; it does not license the
+    # BUNDLE to omit the package. A bundle missing any of these is malformed —
+    # the degraded path exists for a dev checkout, not for a shipped build.
+    #
+    # dotenv (python-dotenv): src/core/config.py:4-9, `except ImportError: pass`.
+    # Absent, load_dotenv() never runs and the operator's .env is silently
+    # ignored — config reads as "defaults", with nothing printed. Silent-wrong,
+    # not fail-closed, so the gate is the only place this can be caught.
+    "dotenv",
+    # aiohttp: src/utils/proxy_checker.py:9-14 -> AIOHTTP_AVAILABLE=False.
+    # It does fail CLOSED at use (proxy_checker.py:867, :1014, :1137 refuse to
+    # send rather than leaking the real IP), so this is not a disclosure risk —
+    # but absent, the entire proxy-checking feature is dead in the bundle while
+    # the app still opens. Feature-killing and invisible until a user tries it.
+    "aiohttp",
+    # psutil: src/core/peerauth.py:120-133, lazy, returns None on failure.
+    # pyproject calls >=6.0 a SECURITY floor and peerauth's own docstring says a
+    # bundle without it "degrades to the documented no-mechanism position" —
+    # i.e. BOTH loopback listeners (proxy bridge + mTLS terminator) stop
+    # authenticating their caller, quietly. Of the four gaps this is the one
+    # that degrades a security property rather than a feature.
+    "psutil",
 ]
+
+# ---------------------------------------------------------------------------
+# CROSS-CHECK DATA (PS-163)
+#
+# REQUIRED_IMPORTS above remains a HAND-MAINTAINED literal and must stay one.
+# The derivation alternative is declined in the maintenance comment above and
+# that decision STANDS: an import scan of src/ that cannot resolve conditional
+# and in-function imports would under-report invisibly, which is strictly worse
+# than a stale list that is visibly a hand-list.
+#
+# What is new is that the drift the comment warns about is no longer SILENT.
+# tests/test_ci_verification_gates.py cross-checks pyproject.toml's
+# [project].dependencies against this list and fails, NAMING the module, when a
+# declared dependency is neither checked here nor deliberately exempted below.
+# The list is still written by hand; forgetting to write it is now caught.
+#
+# AUTHORITY: pyproject.toml, not requirements.txt. `flet build` resolves the
+# bundle's dependencies from pyproject, so that file defines what the bundle
+# contains. The two genuinely DISAGREE today — requirements.txt omits
+# invisible_playwright and invisible_core, both of which pyproject declares.
+# Naming that divergence is deliberate; reconciling it is a separate concern
+# and is NOT done here.
+# ---------------------------------------------------------------------------
+
+# Distribution name (as declared) -> the module name(s) it imports as.
+# A set-difference over raw declared names is wrong on nearly every interesting
+# entry here, so the mapping is EXPLICIT rather than regex-guessed: a regex that
+# "mostly works" under-reports, which is the precise failure this check exists
+# to prevent. Only distributions whose import name differs from their own name
+# need an entry — everything else maps to itself.
+DISTRIBUTION_IMPORT_NAMES = {
+    "pysocks": ("socks",),
+    "python-dotenv": ("dotenv",),
+    # One distribution, FOUR top-level modules. src/api/app.py:36 stubs exactly
+    # these four when pywin32 is absent, which is where the list comes from.
+    "pywin32": ("pywintypes", "win32api", "win32con", "win32job"),
+}
+
+# Declared dependencies the bootstrap deliberately does NOT import, each with
+# the reason. An entry here is an admission that the pyproject declaration is
+# broader than what this gate can verify — so it needs a reason, not a rule.
+EXEMPT_FROM_BUNDLE_IMPORT_CHECK = {
+    "pywin32": (
+        "PLATFORM-CONDITIONAL, and this list has no notion of platform. "
+        "pyproject declares it `sys_platform == 'win32'`, but REQUIRED_IMPORTS "
+        "is a flat array injected into the bootstrap at run_bundle() and "
+        "imported UNCONDITIONALLY, so listing pywintypes here would make the "
+        "gate fail on Linux and macOS — where the module is correctly absent. "
+        "The modules are named in DISTRIBUTION_IMPORT_NAMES and in "
+        "PLATFORM_CONDITIONAL_IMPORTS below so the cross-check can still see "
+        "them; what is exempted is only the in-bundle IMPORT, not the "
+        "dependency's importance. "
+        "KNOWN GAP, STATED PLAINLY: on Windows this is covered only by "
+        "ACCIDENT — `mcp` (which IS checked) imports pywintypes transitively, "
+        "which is the only reason PS-162's missing-pywin32 Windows bundle went "
+        "red at all. Had that transitive edge not existed the bundle would have "
+        "shipped green. Making the gate check it DIRECTLY needs a "
+        "platform-aware bootstrap, which is machinery PS-163 is explicitly "
+        "scoped out of touching; it is the obvious follow-up."
+    ),
+}
+
+# The modules a platform-conditional declaration resolves to, recorded so the
+# exemption above names real modules rather than hand-waving at a distribution.
+# NOT consumed by the bootstrap — see the pywin32 reason for why not.
+PLATFORM_CONDITIONAL_IMPORTS = {
+    "pywin32": ("win32", ("pywintypes", "win32api", "win32con", "win32job")),
+}
+
+# The reverse direction: modules in REQUIRED_IMPORTS that NOTHING declares.
+# Checking them is correct — they must be in the bundle — but a naive reverse
+# assertion would fire on them, so each carries the transitive edge that puts it
+# there. Both were MEASURED via importlib.metadata against the resolved
+# environment, not assumed from the requirement text.
+UNDECLARED_REQUIRED_IMPORTS = {
+    "pydantic": (
+        "Ships transitively via fastapi (fastapi==0.141.1 requires pydantic; "
+        "measured, pydantic==2.13.4). Zero occurrences across pyproject.toml, "
+        "requirements.txt and requirements-dev.txt. Checked here because "
+        "PS-158's release-costing failure WAS a pydantic transitive break: "
+        "fastapi was present and importing pydantic_core._pydantic_core, a "
+        "3.12-built extension, under 3.13."
+    ),
+    "httpx": (
+        "Ships transitively via fastapi's `standard` extra AND flet "
+        "(flet==0.85.3 requires httpx on every non-Emscripten platform) AND "
+        "starlette's `full` extra; measured, httpx==0.28.1. Zero occurrences "
+        "across all three requirement files. Kept checked rather than dropped: "
+        "it arrives through three independent edges, any of which could stop "
+        "carrying it without a declaration changing."
+    ),
+}
 
 # Assets addressed by filesystem path at runtime. These are the ones that stop
 # existing once frozen if the packaging step drops them.
