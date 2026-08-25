@@ -2,7 +2,13 @@
 
 **Date:** 2026-08-25 · **Ref under test:** `origin/main` @ `c04e15d` · **Branch:** `readings/PS-177-baseline-sweep`
 **Instrument:** `take-sweep.sh` (committed beside the records) · **Re-derivation:** `derive.py`
-**Artifacts:** `reading.firefox.windows.seed5150.json` (61 rows) · `sweep.log` (the full run, refusals included) · `exit-recovery-probe.log` (20 recovery attempts)
+**Artifacts:** `reading.firefox.windows.seed5150.json` (61 rows) · `sweep.log` (the full run, refusals included) · `exit-recovery-probe.log` (20 recovery attempts) · `derived-output.txt` (this sweep, re-derived) · `derived-output.ps128-level2.txt` (the Level 2 comparison of §4b)
+**Pinned by:** `tests/test_ps177_linkage_class.py` (19 tests over the committed records)
+
+> **Round 2 note.** `sweep.log` and `exit-recovery-probe.log` are the evidence for §2 and were
+> **missing from the first submission** — `.gitignore:183` (`*.log`) excluded them silently, so the
+> measurements establishing the exit failure as account-level were unverifiable. They are now
+> force-added and tracked. Everything in §2 can be checked against them.
 
 ---
 
@@ -184,14 +190,16 @@ under test. Only the browser tier (`engine-exit`, `bot.sannysoft`, `iphey` here)
 
 ---
 
-## 4. Level 2 (mutual unlinkability) — NOT ANSWERED. Recorded as not covered.
+## 4. Level 2 (mutual unlinkability) — NOT answered by THIS SWEEP, but answered for ONE arm from the existing corpus
 
-**This is the deliverable the ticket was written for, and this sweep did not deliver it.**
+**This section was rewritten in round 2.** As submitted it said Level 2 was unanswered, full stop.
+That was true of *this sweep* and remains true — but it was **not** true of the corpus, and the
+difference matters enough that the reviewer's blocker on the comparator is what exposed it.
 
-`derive.py` reaches the conclusion mechanically rather than by assertion:
+### 4a. This sweep: still UNANSWERABLE, unchanged
 
 ```
-arm firefox / windows / desktop — seeds [5150]
+arm invisible_playwright / windows / desktop — seeds [5150]
   UNANSWERABLE from this sweep: only ONE seed was read on this arm.
   A single profile cannot answer whether TWO profiles are linkable, at any
   level of detail. NOT a pass — recorded as not covered.
@@ -199,19 +207,98 @@ arm firefox / windows / desktop — seeds [5150]
 
 The ticket's own framing is the reason this cannot be softened: *"Level 2 asks whether two profiles
 can be tied to each other — which no single-profile reading can answer, at any level of detail,
-ever."* One record is one profile. **PS-16's characterisation of Level 2 as _structurally unmeasured_
-is unchanged by this ticket.**
+ever."* One record is one profile.
 
-The comparator that would answer it is written, committed and exercised — it simply had no second
-record to consume. The moment a `seed24601` record on any arm exists, `derive.py` diffs the
-fingerprint-bearing rows read on both sides and names any row that ties the two profiles together.
+### 4b. The corpus already held a two-seed arm, and nobody had diffed it
 
-> **A bug found in that comparator while writing it, worth recording.** It first keyed the diff on the
-> row's `vector` field. Only **9 of 61 rows** carry a `vector`, while the record's own
-> fingerprint axis is `sort == "fingerprint"` (**28 rows**, the figure `evidence.fingerprint_total`
-> reports). Keyed on `vector`, an unlinkability claim would have rested on a third of the available
-> evidence while appearing to consider all of it. Fixed to key on `sort`, with the reasoning in the
-> code so it is not silently re-broken.
+Fixing the comparator (§4c) meant finding real two-seed data to test it against. There is some, and
+it was committed three days before this ticket was written:
+
+| | seed 1337 | seed 4242 |
+|---|---|---|
+| record | `ps128-2026-08-23/run1-matrix/reading.firefox.windows.seed1337.json` | `…seed4242.json` |
+| engine | `invisible_playwright/firefox-20` | identical |
+| exit | `95.49.113.111` Warsaw/PL | **identical** |
+| masking layer | `init_scripts`, audio+locale+webgl, complete | **identical** |
+| observed | `2026-08-23T21:46:11Z` | `2026-08-23T21:42:42Z` |
+
+Same arm, same exit, same masking layer, 3.5 minutes apart, differing only in seed. That is exactly
+the comparison Level 2 asks for. Both records are schema v4, as is this sweep's — so they are
+directly diffable and no conversion was involved.
+
+**The result (`derived-output.ps128-level2.txt`, committed):**
+
+```
+arm invisible_playwright / windows / desktop — seeds [1337, 4242]
+  15 fingerprint row(s) read on both sides: 9 entropy-bearing, 6 verdict/low-cardinality
+  of the 9 entropy-bearing row(s): 8 DIFFER, 1 IDENTICAL
+  ⚠ ROWS THAT TIE THE TWO PROFILES TOGETHER (identical high-entropy values):
+      creepjs :: webgl_pixel_hash = 51df3565
+  LEVEL 2 FAILS on this arm: a checker reading these rows can tie the two
+  profiles to each other.
+```
+
+**Eight of nine entropy-bearing rows differ** across the two seeds — `canvas_data_hash`,
+`webgl_image_hash`, `gpu_renderer`, `gpu_vendor` on creepjs, and canvas/webgl/renderer/vendor on
+pixelscan. The masking is doing its job on those. **One does not:**
+`creepjs :: webgl_pixel_hash` reads `51df3565` for both profiles.
+
+**Why this is a finding and not a checker constant.** The same row across every chromium record in
+`readings/` takes **three distinct values at three seeds** (`f801a1b3` @1337, `a96eedf0` @2024,
+`b8dba17f` @9001). So the value is seed-derived on chromium and appears seed-INVARIANT on firefox —
+which is the shape of a masking gap on the firefox leg, not of a value the checker always reports
+the same.
+
+**The honest bound on it: n = 2.** Two firefox records at two seeds is enough to *raise* this and not
+enough to *prove* it is invariant across all seeds. A third firefox seed settles it, and that is the
+single cheapest reading this project can now take (§8). Stated as a finding with its n, per PS-16's
+rule that a theoretical figure presented as a measurement is worse than a blank cell.
+
+**Out of scope to fix, per the ticket** (*"a defect it reveals is a new ticket; this one measures"*).
+Not filed as a product issue from here — n=2 warrants confirmation first.
+
+### 4c. The comparator itself — the reviewer's blocker, and what was wrong
+
+The reviewer executed the comparison branch by hand and found it **had never run**: with one record
+it always took the `len(seeds) < 2` early-`continue`. Executed, it reported two maximally-different
+synthetic profiles as **linked**, because the only rows read on both sides in this sweep's record are
+four boolean detector verdicts (`webdriver_advanced_passed`, `webdriver_missing_passed`,
+`software_fine`, `trustworthy`) — all `True`.
+
+**That inverts the question the ticket exists to answer.** Identical *high-entropy* values (a canvas
+hash, a GPU renderer string) mean the two profiles are **linkable**. Identical *verdict* values mean
+both profiles are **clean**. Reporting the second as the first would have written a fabricated
+linkage finding into PS-16.
+
+The fix classifies every row as `entropy` or `verdict` before any comparison
+(`linkage_class()`), and:
+
+* a **verdict** row can never tie two profiles at any value — it is excluded from the finding and
+  printed separately, labelled as non-evidence, so nothing is hidden;
+* an arm whose overlap is verdict-only reports **UNANSWERABLE (coverage, not a clean result)** — the
+  branch that was already correct for a zero-overlap arm;
+* the record's own `vector` tag outranks the value-shape heuristic, so a catalogue-tagged leak vector
+  is entropy-bearing whatever its value looks like.
+
+This is the same failure class recorded on PS-67: **an override must never be able to produce the
+tool's loudest finding.** Here the least informative rows in the record were producing the strongest
+claim.
+
+**Pinned by `tests/test_ps177_linkage_class.py` (19 tests), against real records, both branches:**
+the ps128 pair above is the answerable fixture, and this sweep's record reseeded is the
+verdict-only fixture. Two tests exist purely to stop the dangerous direction — a verdict-only overlap
+must never print `LEVEL 2 HOLDS`, and mutating every verdict row must not move the answerable arm's
+counts.
+
+> **A second bug found in the same comparator, and the correction to how it was reported.** It first
+> keyed the diff on the row's `vector` field. Only **9 of 61 rows** carry a `vector`, while the
+> record's own fingerprint axis is `sort == "fingerprint"` (**28 rows**). Keyed on `vector`, an
+> unlinkability claim would have rested on a subset while appearing to consider all of it. Fixed to
+> key on `sort`. **As submitted, this note claimed the fix moved the comparison from a third of the
+> evidence to all 28 rows. It does not** — `readable()` also filters `state == "read"`, and only
+> **4 of those 28** are read in this record (21 unobtainable, 3 absent). The fix moved the
+> comparison from 9 rows to 4. The reviewer caught the overstatement; it is corrected here rather
+> than quietly dropped.
 
 ---
 
@@ -315,11 +402,27 @@ multi-config so it takes a directory correctly, and the distinction is commented
 
 The exit is the blocker; nothing below is actionable until a working credential exists.
 
-1. **`firefox / windows / seed 24601`.** One record. It pairs with the record already committed here
-   and **answers Level 2 for that arm** — converting a mandatory bar level from "assumed" to "known"
-   for the cost of a single ~3 min run. Cheapest high-value reading available on this project.
+> **⚠️ Round 2 correction — the recommendation this section led with was wrong.**
+> As submitted, item 1 was *"`firefox / windows / seed 24601`, one record, pairs with the record
+> committed here and answers Level 2 for that arm."* **It would not have answered Level 2.** Pairing
+> a second seed with *this sweep's* record can only diff the rows read in **both** — and the only
+> fingerprint rows this record carries are four boolean detector verdicts. The entropy-bearing
+> checkers on this arm (pixelscan, creepjs) are precisely the ones the exit killed, so the pair would
+> have yielded no entropy row on both sides and the correct answer would have been UNANSWERABLE.
+> Under the *old* comparator it would have printed a false linkage warning instead. Corrected below.
+
+1. **A third Firefox seed on `windows`, through a healthy exit — e.g. `seed 24601`.** Not to pair
+   with this sweep's record, but to pair with the **ps128 pair** (§4b), which already reads
+   pixelscan and creepjs. This is the reading that settles the open question this ticket produced:
+   whether `creepjs :: webgl_pixel_hash` is genuinely seed-invariant on Firefox (n=2 today) or
+   whether 1337/4242 collided by chance. One ~3 min run, and it either confirms a real masking gap
+   or retires it.
+   **Verify the record actually carries the row before drawing any conclusion** — if the exit kills
+   creepjs again, the run has answered nothing and must be re-taken, not written up.
 2. **`chromium / windows / {5150, 24601}`.** Answers Level 2 on the arm the whole existing corpus
-   sits in, and is directly comparable to `ps143`/`ps150`/`ps161-live`/`ps170`.
+   sits in, and is directly comparable to `ps143`/`ps150`/`ps161-live`/`ps170`. Chromium already
+   shows `webgl_pixel_hash` varying across three seeds, so this measures the arm that looks
+   *healthy* on that vector — a useful control for item 1.
 3. **`chromium / macos / {5150, 24601}`.** PS-16's worst counted cell (50% theoretical GPU collision)
    and never read by any checker.
 4. **`chromium / linux / {5150, 24601}`.**

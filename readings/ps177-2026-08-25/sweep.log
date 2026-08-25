@@ -1,0 +1,40 @@
+note: firefox: asked for 3 declared machines (windows, macos, linux) but this engine has no OS parameter and presents windows regardless — collapsed to one run rather than writing near-identical records claiming different machines
+plan: 8 configuration(s) — firefox/windows/seed5150, firefox/windows/seed24601, chromium/windows/seed5150, chromium/windows/seed24601, chromium/macos/seed5150, chromium/macos/seed24601, chromium/linux/seed5150, chromium/linux/seed24601
+
+=== firefox/windows/seed5150 ===
+exit proven: 83.6.111.143 Warsaw/PL AS5617 Orange Polska Spolka Akcyjna Europe/Warsaw
+credential: used the file (/workspace/_secrets/test-proxy.txt); the environment (PERSONA_TEST_PROXY) holds the same credential
+json tier: 15 read, 1 absent (2 unobtainable, 18 rows)
+browser tier: 10 read, 3 absent (25 unobtainable, 38 rows)
+wrote /tmp/ps177-sweep/reading.firefox.windows.seed5150.json: 25 read, 4 absent (32 unobtainable, 61 rows)
+  evidence: SUFFICIENT (7/28 fingerprint rows, 2 checkers)
+
+=== firefox/windows/seed24601 ===
+REFUSED: could not observe the exit through the proxy — 2 provider(s) tried (https://ipinfo.io/json: SOCKS5AuthError: SOCKS5 authentication failed; https://ipwho.is/: SOCKS5AuthError: SOCKS5 authentication failed), none answered. The connection may be refused, timed out, or the credential unusable. Refusing to fall back to a direct connection: rotation is the operator's, from the host.
+Nothing was read and nothing was written for firefox/windows/seed24601.
+
+=== chromium/windows/seed5150 ===
+REFUSED: could not observe the exit through the proxy — 2 provider(s) tried (https://ipinfo.io/json: SOCKS5AuthError: SOCKS5 authentication failed; https://ipwho.is/: SOCKS5AuthError: SOCKS5 authentication failed), none answered. The connection may be refused, timed out, or the credential unusable. Refusing to fall back to a direct connection: rotation is the operator's, from the host.
+Nothing was read and nothing was written for chromium/windows/seed5150.
+
+=== chromium/windows/seed24601 ===
+REFUSED: could not observe the exit through the proxy — 2 provider(s) tried (https://ipinfo.io/json: SOCKS5AuthError: SOCKS5 authentication failed; https://ipwho.is/: SOCKS5AuthError: SOCKS5 authentication failed), none answered. The connection may be refused, timed out, or the credential unusable. Refusing to fall back to a direct connection: rotation is the operator's, from the host.
+Nothing was read and nothing was written for chromium/windows/seed24601.
+
+=== chromium/macos/seed5150 ===
+REFUSED: could not observe the exit through the proxy — 2 provider(s) tried (https://ipinfo.io/json: SOCKS5AuthError: SOCKS5 authentication failed; https://ipwho.is/: SOCKS5AuthError: SOCKS5 authentication failed), none answered. The connection may be refused, timed out, or the credential unusable. Refusing to fall back to a direct connection: rotation is the operator's, from the host.
+Nothing was read and nothing was written for chromium/macos/seed5150.
+
+=== chromium/macos/seed24601 ===
+REFUSED: could not observe the exit through the proxy — 2 provider(s) tried (https://ipinfo.io/json: SOCKS5AuthError: SOCKS5 authentication failed; https://ipwho.is/: SOCKS5AuthError: SOCKS5 authentication failed), none answered. The connection may be refused, timed out, or the credential unusable. Refusing to fall back to a direct connection: rotation is the operator's, from the host.
+Nothing was read and nothing was written for chromium/macos/seed24601.
+
+=== chromium/linux/seed5150 ===
+REFUSED: could not observe the exit through the proxy — 2 provider(s) tried (https://ipinfo.io/json: SOCKS5AuthError: SOCKS5 authentication failed; https://ipwho.is/: SOCKS5AuthError: SOCKS5 authentication failed), none answered. The connection may be refused, timed out, or the credential unusable. Refusing to fall back to a direct connection: rotation is the operator's, from the host.
+Nothing was read and nothing was written for chromium/linux/seed5150.
+
+=== chromium/linux/seed24601 ===
+REFUSED: could not observe the exit through the proxy — 2 provider(s) tried (https://ipinfo.io/json: SOCKS5AuthError: SOCKS5 authentication failed; https://ipwho.is/: SOCKS5AuthError: SOCKS5 authentication failed), none answered. The connection may be refused, timed out, or the credential unusable. Refusing to fall back to a direct connection: rotation is the operator's, from the host.
+Nothing was read and nothing was written for chromium/linux/seed24601.
+
+REFUSED 7 of 8 configuration(s); 1 record(s) written. A partial matrix must not read as a whole one.

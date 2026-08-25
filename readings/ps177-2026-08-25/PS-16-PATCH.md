@@ -6,12 +6,26 @@ worker toolset exposes `get_knowledge_article`, `search_knowledge_articles`, `li
 and `link_ticket_to_knowledge` — all read-or-link. There is no create/update counterpart, and
 `add_comment` does not accept a knowledge article as a commentable.
 
-So the edit is delivered here, **fully derived and ready to apply verbatim**, rather than skipped or
-described vaguely. Every figure below was printed by `derive.py` from the committed record
-(`derived-output.txt` is that script's output, committed alongside). Nothing was hand-typed, per
-PS-16's own maintenance rule.
+So the edit is delivered here, ready to apply verbatim, rather than skipped or described vaguely.
 
-**Whoever applies this: apply it as written.** If you re-type a number, re-run `derive.py` instead.
+**Which figures are derived, and which are judgement — read this before applying.** The original
+version of this file claimed *"every figure below was printed by `derive.py`… nothing was hand-typed"*.
+**That was false for the four scores in Edit 2**, and the reviewer was right to block on it: a false
+provenance claim in a document whose entire value is provenance is worse than no claim at all.
+The honest split:
+
+* **Derived** — printed by `derive.py` from the committed record, and reproducible by re-running it
+  (`derived-output.txt` is that output, committed alongside): all row counts, per-checker
+  read/absent/unobtainable tallies, the evidence verdict and its fraction, the fired-verdict count,
+  and the Level 2 comparison in Edit 6.
+* **Judgement** — the four 0-100 scores in Edit 2 (`90 / 90 / 90 / 85`). `derive.py` emits no scores;
+  the word `score` appears nowhere in its output. These are **my reading of the derived row data**,
+  which is what a PS-16 score has always been — the article itself says a score is *"my judgement
+  from the row data, not a number any checker emits"*. A score is inherently judgement and **cannot**
+  be derived. Each one's reasoning is stated inline so it can be argued with.
+
+**Whoever applies this: apply it as written.** If you re-type a *derived* number, re-run `derive.py`
+instead. If you disagree with a *judgement* score, change it — and say why.
 
 ---
 
@@ -45,6 +59,23 @@ Replace with:
 | **firefox / windows / desktop** | — ‡ | — ‡ | **90** † | **90** † | **90** † | **85** † |
 ```
 
+**The four scores are JUDGEMENT, not derived output** — see the provenance note at the top of this
+file. `derive.py` emits no scores; what it derives is the row data underneath them. Each score is my
+reading of that data, in PS-16's own convention:
+
+* **iphey 90, sannysoft 90, ipleak 90** — every row these checkers returned was read and *none* was
+  adverse (0 rows both `read` and `adverse`), but each checker contributed only 2-6 rows and the
+  entropy-bearing vectors were never reached, so the cell is "asked and silent", not "proven clean".
+  90 rather than 100 is the discount for that narrowness.
+* **TLS 85** — lower than the others for a specific, checkable reason: `tls.peet.ws ::
+  akamai_fingerprint` is `absent` in this record, so one of the two TLS endpoints did not yield its
+  headline fingerprint. The other 9 TLS rows read clean.
+
+⚠️ These four values coincide with the chromium/windows row of Table 1. That is **not** a
+transplant — it is what the same judgement scale produces on similar row data — but if you are
+re-deriving this row later, treat the coincidence as a prompt to re-argue the numbers rather than
+as corroboration.
+
 And add these two footnotes below the existing `⚠` note:
 
 ```
@@ -63,9 +94,10 @@ And add these two footnotes below the existing `⚠` note:
 ‡ = **NOT MEASURED, and specifically NOT a Firefox limitation.** pixelscan (12 rows) and creepjs
     (9 rows) came back `unobtainable` with `NS_ERROR_CONNECTION_REFUSED` because THE EXIT DIED
     MID-RECORD — they are the last two checkers in browser-tier catalogue order. Both are
-    demonstrably readable on this engine: `readings/ps128-2026-08-23/reading.firefox.windows.
-    seed1337.json` has creepjs 9 read / pixelscan 8 read, and the seed4242 record has creepjs
-    9 read / pixelscan 7 read. The owner's `~100` / `~75` eyesight figures are NOT carried
+    demonstrably readable on this engine: `readings/ps128-2026-08-23/run1-matrix/reading.firefox.
+    windows.seed1337.json` has creepjs 9 read / pixelscan 8 read, and the sibling
+    `…/run1-matrix/reading.firefox.windows.seed4242.json` has creepjs 9 read / pixelscan 7 read.
+    The owner's `~100` / `~75` eyesight figures are NOT carried
     forward into these cells: they were never in `readings/`, cannot be diffed, and a blank is
     honest where a borrowed number would be a false green.
 ```
@@ -78,19 +110,45 @@ cell to `—` if the thing it described changed. A stale score is a false green.
 
 ## Edit 3 — §"The headline", the Level 2 bullet
 
-The bullet currently states Level 2 is structurally unmeasured. **That is still true and must not be
-softened.** Append to that bullet:
+The bullet currently states Level 2 is structurally unmeasured. **That claim needs a narrower
+correction than "still true", and it must not be softened in the wrong direction.** Append to that
+bullet:
 
 ```
-  PS-177 was written to close exactly this and DID NOT: it planned 8 configurations across both
-  engines, three declared machines and two seeds (5150, 24601), and obtained 1 — the proxy
-  credential stopped authenticating 96 seconds in, and the other 7 configurations were REFUSED
-  rather than read over a direct connection. One record is one profile, so Level 2 remains
-  **structurally unmeasured**. The comparator that answers it is written and committed
-  (`readings/ps177-2026-08-25/derive.py`); it needs a second record at a different seed on any
-  one arm. The cheapest path to closing this bar level is `firefox / windows / seed 24601` —
-  a single ~3 minute run that pairs with the record already committed.
+  PS-177 was written to close exactly this and did not close it BY SWEEP: it planned 8
+  configurations across both engines, three declared machines and two seeds (5150, 24601), and
+  obtained 1 — the proxy credential stopped authenticating 96 seconds in, and the other 7
+  configurations were REFUSED rather than read over a direct connection. One record is one
+  profile, so the ARM PS-177 READ remains unmeasured for Level 2.
+
+  But building the comparator surfaced that the CORPUS already held a two-seed arm nobody had
+  ever diffed: readings/ps128-2026-08-23/run1-matrix/, firefox/windows at seeds 1337 and 4242,
+  same exit (95.49.113.111), same masking layer, 3.5 minutes apart. Diffed, it ANSWERS Level 2
+  for that one arm, and the answer is a FAILURE:
+
+      8 of 9 entropy-bearing rows differ across the two seeds (canvas_data_hash,
+      webgl_image_hash, gpu_renderer, gpu_vendor on creepjs; canvas/webgl/renderer/vendor on
+      pixelscan) — but creepjs :: webgl_pixel_hash reads 51df3565 for BOTH profiles.
+
+  A checker reading that row can tie the two profiles to each other. The same row across every
+  chromium record in readings/ takes three distinct values at three seeds (f801a1b3 @1337,
+  a96eedf0 @2024, b8dba17f @9001), so it is seed-derived on chromium and appears seed-INVARIANT
+  on firefox — the shape of a masking gap on the firefox leg, not a constant of the checker.
+
+  BOUND: n = 2. Two firefox records at two seeds raise this; they do not prove invariance across
+  all seeds. A third firefox seed through a healthy exit settles it, and that is now the cheapest
+  high-value reading available on this project. Level 2 is therefore MEASURED-AND-FAILING on
+  firefox/windows/desktop (n=2, one linking row) and STRUCTURALLY UNMEASURED on every other arm.
+  Re-derive with readings/ps177-2026-08-25/derive.py; the comparison is committed as
+  derived-output.ps128-level2.txt.
 ```
+
+**Note for whoever applies this.** The comparator behind that result was blocking-rejected in review
+and rebuilt: it previously treated boolean detector verdicts (`webdriver_passed=True`,
+`trustworthy=True`) as linkage evidence, which reports two *unlinkable* profiles as linked. It now
+classifies every row as entropy-bearing or verdict and refuses to answer from verdicts alone. That
+matters here because **the arm PS-177 itself read would still be UNANSWERABLE** under the corrected
+tool — its only overlapping rows are those verdicts.
 
 ---
 
