@@ -72,13 +72,37 @@ non-Windows caller, so it stays safe if it is ever wired more broadly.
 
 What IS an error is pywin32 being present in a shape this script cannot make
 importable — that is the state that shipped 3.0.0's failure, and it must stop
-the build rather than be reported and stepped over. The verification at the end
-re-derives the result from the filesystem instead of trusting the copy loop.
+the build rather than be reported and stepped over.
+
+The verification at the end asks about IDENTITY, not presence, and that
+distinction is the whole point. An earlier version of this script asked "is
+there a file called pywintypes.py at the top level?" — a question the impostor
+answers for you. Dropping a foreign `pywintypes.py` and `pywintypes312.dll` at
+the root produced: nothing copied (the names were taken), both sentinels
+"verified", exit 0 — success reported over a bundle that imports an
+`ImportError` as `pywintypes`. That is this ticket's own named failure mode, a
+check that passes without the module actually importing from the bundle.
+
+So the copy loop now RECORDS what it placed, and verification is satisfied only
+by a file this run copied or one already byte-identical to pywin32's own. Two
+consequences worth stating, because they are what make the check able to fail:
+
+  * a collision on a LOAD_BEARING name is fatal, not a printed line. The bundle
+    would import something other than pywin32 under a name `mcp` needs, which
+    is the shipped failure wearing a different hat;
+  * "already flattened" is decided by bytes, not by `st_size`. Size standing in
+    for identity let a same-size foreign file pass as a previous run's work.
+
+Measured against the real cp312 wheel before making collisions fatal: 70
+flattened names, zero internal collisions, zero same-size-different-bytes. The
+honest case does not collide, so failing closed here cannot spuriously block a
+legitimate release.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import shutil
 import sys
 from pathlib import Path
@@ -87,6 +111,21 @@ from pathlib import Path
 # named in the 3.0.0 failure, and the one every other pywin32 module needs
 # first, so it is the honest single probe for "did this work".
 SENTINEL_MODULE = "pywintypes.py"
+
+# The names whose shadowing would break the very import this script exists to
+# fix: the four modules `mcp` reaches for, plus the loader `pywintypes.py` uses
+# to find its DLL. A foreign file under one of these names is not a cosmetic
+# clash — it is the bundle failing in exactly the way 3.0.0 failed, so it stops
+# the build rather than being reported and stepped over.
+LOAD_BEARING = frozenset(
+    {
+        "pywintypes.py",
+        "_win32sysloader.pyd",
+        "win32api.pyd",
+        "win32con.py",
+        "win32job.pyd",
+    }
+)
 
 # Payload directories, in the order they are flattened. `pythonwin` is
 # deliberately NOT here: it is the GUI/IDE layer, nothing in this app imports
@@ -121,6 +160,29 @@ def _iter_payload(site_packages: Path) -> list[tuple[Path, Path]]:
     return pairs
 
 
+def _same_bytes(a: Path, b: Path) -> bool:
+    """True when two files are byte-identical.
+
+    Identity, not size. The previous version of this script used equal
+    `st_size` as a stand-in for "this is already the pywin32 file", which a
+    same-size foreign file satisfies — so a shadowed bundle read as success.
+    Hashing is affordable here: the payload is ~70 files, once per build.
+    """
+    if not (a.is_file() and b.is_file()):
+        return False
+    if a.stat().st_size != b.stat().st_size:
+        return False  # cheap reject before reading either file
+    return _digest(a) == _digest(b)
+
+
+def _digest(p: Path) -> str:
+    h = hashlib.sha256()
+    with p.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def flatten(site_packages: Path) -> int:
     """Copy pywin32's payload to the top level of `site_packages`.
 
@@ -144,22 +206,51 @@ def flatten(site_packages: Path) -> int:
             "ship a bundle whose pywin32 is unreachable."
         )
 
+    # `placed[name] = source` for every name this run put at the top level or
+    # confirmed was ALREADY the pywin32 file (byte-identical). This is what the
+    # verification below reads: a name that is merely occupied is not in here,
+    # so "something else owns that name" can no longer masquerade as success.
+    placed: dict[str, Path] = {}
+    collisions: list[str] = []
     copied = 0
+
     for src, dst in pairs:
-        # Never clobber something already at the top level. A real collision
-        # would mean pywin32 is shadowing a genuine dependency, which is a
-        # different and worse problem than the one being fixed.
         if dst.exists():
-            if dst.stat().st_size == src.stat().st_size:
-                continue  # already flattened by a previous run — idempotent
-            print(f"  skip (name already taken by a different file): {dst.name}")
+            # Identity, not size. Size standing in for identity is what let a
+            # same-size foreign file read as "already flattened".
+            if dst.is_file() and _same_bytes(src, dst):
+                placed[dst.name] = src  # idempotent re-run: this IS the pywin32 file
+                continue
+            collisions.append(dst.name)
             continue
         shutil.copy2(src, dst)
+        placed[dst.name] = src
         copied += 1
 
-    # VERIFY FROM THE FILESYSTEM, not from the loop above. The whole point of
-    # this script is that "the files were installed" was already true and the
-    # import still failed, so a copy count proves nothing on its own.
+    # A collision on a load-bearing name means the module the bundle will
+    # import is NOT pywin32's. That is the 3.0.0 failure wearing a different
+    # hat — the files are present and the import still gets the wrong thing —
+    # so it stops the build, as the docstring promises.
+    fatal = sorted(set(collisions) & LOAD_BEARING)
+    if fatal:
+        sys.exit(
+            f"ERROR: pywin32's payload collided with pre-existing, DIFFERENT files "
+            f"under {site_packages} for load-bearing name(s): {', '.join(fatal)}. "
+            "The bundle would import something other than pywin32 under those "
+            "names — refusing to ship a bundle whose pywin32 may be shadowed."
+        )
+    if collisions:
+        # Not load-bearing: report loudly, but this genuinely is the "pywin32 is
+        # shadowing something else" case, and nothing mcp imports is affected.
+        print(
+            "  WARNING: name(s) already taken by different files, left alone: "
+            f"{', '.join(sorted(set(collisions)))}"
+        )
+
+    # VERIFY FROM THE FILESYSTEM, not from the loop above — but verify IDENTITY,
+    # not mere presence. The whole point of this script is that "the files were
+    # installed" was already true and the import still failed, so neither a copy
+    # count nor an occupied filename proves anything on its own.
     sentinel = site_packages / SENTINEL_MODULE
     if not sentinel.is_file():
         sys.exit(
@@ -167,16 +258,32 @@ def flatten(site_packages: Path) -> int:
             f"{site_packages} after flattening. pywin32 would remain unimportable "
             "in the bundle — refusing to ship."
         )
+    sentinel_src = placed.get(SENTINEL_MODULE)
+    if sentinel_src is None or not _same_bytes(sentinel_src, sentinel):
+        sys.exit(
+            f"ERROR: {SENTINEL_MODULE} at the top level of {site_packages} is not "
+            "the file this script flattened from pywin32's own win32/lib. The name "
+            "is occupied by something else, so the bundle would import a foreign "
+            f"module as `pywintypes` — refusing to ship."
+        )
 
     # pywintypes.py resolves `pywintypesXX.dll` relative to its own __file__ as
     # one of its fallbacks; that is the branch this layout is relying on, so the
-    # DLL must have landed beside it.
-    dlls = sorted(p.name for p in site_packages.glob("pywintypes*.dll"))
+    # DLL must have landed beside it — and must be pywin32's own, for the same
+    # reason the module must be.
+    dlls = sorted(
+        name
+        for name in placed
+        if name.lower().startswith("pywintypes") and name.lower().endswith(".dll")
+    )
     if not dlls:
+        occupied = sorted(p.name for p in site_packages.glob("pywintypes*.dll"))
         sys.exit(
             f"ERROR: {SENTINEL_MODULE} is at the top level of {site_packages} but "
-            "no pywintypes*.dll landed beside it. The import would resolve the "
-            "module and then fail loading its DLL — refusing to ship."
+            "no pywintypes*.dll from pywin32's own payload landed beside it"
+            + (f" (found, but not ours: {', '.join(occupied)})" if occupied else "")
+            + ". The import would resolve the module and then fail loading its "
+            "DLL — refusing to ship."
         )
 
     print(f"pywin32 flattened into {site_packages}: {copied} file(s) copied.")
