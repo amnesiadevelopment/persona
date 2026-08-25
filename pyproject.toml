@@ -38,15 +38,32 @@ dependencies = [
     #
     # <49 keeps both arches on the last universal2 line (48.0.x), so ONE version
     # satisfies both passes and the merge is a no-op instead of a corruption.
-    # Verified against pip for all four targets we ship: macosx arm64 and x86_64
-    # both resolve 48.0.1 universal2, and win_amd64/manylinux are UNCHANGED at
-    # 48.0.1 — this bound costs the other two platforms nothing.
-    # It is a RANGE, not an == pin, so 48.0.x security patches still land.
+    #
+    # THE CAP IS SCOPED TO darwin, AND THAT SCOPE IS LOAD-BEARING. The mechanism
+    # above is macOS-ONLY: it exists because flet builds macOS as TWO arch passes
+    # and merges them. Windows and Linux each run a SINGLE resolution pass, have
+    # no merge step, and therefore cannot hit this failure at all.
+    # Measured with pip's own resolver against the four targets we ship:
+    #     >=42.0.0        arm64  -> 50.0.0 | x86_64 -> 48.0.1   <- the collision
+    #     >=42.0.0        win    -> 50.0.0 | linux  -> 50.0.0
+    #     >=42.0.0,<49    win    -> 48.0.1 | linux  -> 48.0.1   <- CHANGED
+    # So an UNCONDITIONAL cap does NOT cost the other two platforms nothing — it
+    # silently drags both back two major versions of a SECURITY library, onto a
+    # version neither has ever built against. Linux was the one platform that
+    # passed 11/11 imports in the failed 3.0.0 run (on 50.0.0); re-resolving it
+    # to fix macOS would convert that measurement back into an assumption.
+    # An earlier revision of this file made exactly that claim and it was false.
+    # Keep the marker. If you are tempted to simplify these two lines into one,
+    # that is the mistake this paragraph exists to stop.
+    #
+    # It is a RANGE, not an == pin, so 48.0.x security patches still land — and
+    # non-darwin stays fully open, so Windows/Linux keep tracking latest.
     #
     # The way OUT of this bound is a product decision, not a packaging one:
     # either cryptography restores universal2, or persona drops Intel macOS and
     # builds `--arch arm64` only. Until one of those happens, this stays.
-    "cryptography>=42.0.0,<49",
+    "cryptography>=42.0.0,<49; sys_platform == 'darwin'",
+    "cryptography>=42.0.0; sys_platform != 'darwin'",
     # Cap below 2.0: mcp 2.x removed the mcp.server.fastmcp path we import
     # (build_mcp uses FastMCP), so an unpinned >=1.28.0 let the macOS build
     # resolve 2.x and raise ModuleNotFoundError, silently killing the /mcp server.
