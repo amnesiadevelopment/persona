@@ -72,6 +72,70 @@ _SECRET_BYTES = 32
 _cache: dict[str, bytes] = {}
 _lock = threading.Lock()
 
+#: Resolved-home memo, KEYED BY REQUESTED HOME -> the home that really exists.
+#: This exists to bound an EFFECT, not to save work. `config._ensure_home` is
+#: not pure: it calls makedirs and, when the configured home cannot be made, it
+#: LOGS AN ERROR. `_path()` runs on every `install_secret()` call, so routing it
+#: through `_ensure_home` unmemoised would turn one error line per launch into
+#: one per mint — trading a silent defect for log spam. Keyed by the REQUESTED
+#: home (not a single slot) so that per-call environment resolution survives:
+#: two homes are two keys, and a second install still resolves its own.
+_home_cache: dict[str, str] = {}
+
+#: Separate from `_lock` on purpose. `_lock` is held across the read/create of
+#: the secret itself and `threading.Lock` is not reentrant, so guarding the home
+#: memo with its own lock keeps `_path()` safe to call from either side.
+_home_lock = threading.Lock()
+
+
+def _existing_home(requested: str) -> str:
+    """The home that REALLY EXISTS for `requested` — i.e. `requested` itself,
+    or the `~/.persona` fallback when it could not be created.
+
+    This is the one line that makes the secret follow config's fallback like
+    every other data file. `config._ensure_home` already computes exactly this
+    value and documents the contract ("Returns the directory actually in use, so
+    every path below is derived from the home that really exists"); before this,
+    `_path()` was the single runtime data path that re-derived the home from the
+    environment and joined the home that `_ensure_home` had just proved could
+    NOT be made — so `_create` raised, and every launch fell back to a
+    process-lifetime secret while all the install's real data persisted happily
+    in the fallback home.
+
+    The import is INSIDE the function, following the lazy `from .config import
+    PERSONA_HOME` already used below: `core.config` loads extremely early and a
+    module-level import here would risk a cycle at this depth.
+    """
+    with _home_lock:
+        cached = _home_cache.get(requested)
+        if cached is not None:
+            return cached
+
+    # FAST PATH, and it is about the EFFECT rather than the speed: when the
+    # home is already there — every healthy install, on every call — there is
+    # nothing to create and nothing to report, so `_path()` stays exactly as
+    # PURE as it was before this change. Only a missing or unmakeable home
+    # reaches the effectful resolver below.
+    if os.path.isdir(requested):
+        return requested
+
+    from . import config
+
+    if requested == config._REQUESTED_HOME:
+        # SAME home core.config already resolved at import, so its answer is
+        # already the right one and re-deriving it would only re-emit the
+        # "could not be created" error a second time on every launch. The
+        # operator gets exactly ONE such line, from config, as before.
+        actual = config.PERSONA_HOME
+    else:
+        # A genuinely different home (a second install, a test's tmp_path):
+        # nobody has resolved this one yet, so it must be resolved here.
+        actual = config._ensure_home(requested)
+
+    with _home_lock:
+        # Whoever won a benign race resolved the same path; keep the first.
+        return _home_cache.setdefault(requested, actual)
+
 
 def _path() -> str:
     """Where the secret lives. Honours PERSONA_HOME like every other data file
@@ -100,13 +164,25 @@ def _path() -> str:
     ``TrashStore.trash_file()`` and ``mcp_token._path()`` are: an isolated
     instance must get its OWN secret. The fallback is the config constant, so
     an install that sets nothing still lands where every other data file does.
+
+    THE ENV-READ HOME IS RESOLVED THROUGH ``config._ensure_home`` (PS-167), so
+    this answers with the home that ACTUALLY EXISTS rather than the one that was
+    asked for. Reading ``PERSONA_HOME`` from the environment and joining it RAW
+    was a distinct bug from the import-time binding argued against above, and
+    fixing one had silently reintroduced the other: when the configured home
+    cannot be created, ``config`` falls back to ``~/.persona`` and puts every
+    other data file there, while this path kept pointing at the unmakeable
+    directory — so ``_create`` raised on every launch and the install ran
+    forever on a process-lifetime secret. Per-call resolution is UNCHANGED and
+    is what the isolation property rests on; only the home it resolves TO is
+    corrected. See ``_existing_home`` for why the effect is memoised.
     """
     override = os.getenv("PERSONA_INSTALL_SECRET_FILE")
     if override:
         return override
     home = os.getenv("PERSONA_HOME")
     if home:
-        return os.path.join(os.path.expanduser(home), _SECRET_FILENAME)
+        return os.path.join(_existing_home(os.path.expanduser(home)), _SECRET_FILENAME)
     from .config import PERSONA_HOME
 
     return os.path.join(PERSONA_HOME, _SECRET_FILENAME)
@@ -200,6 +276,14 @@ def reset_cache_for_tests() -> None:
     INSTALL. Named for what it is rather than hidden behind an underscore: a
     test reaching for this is doing something legitimate, and a reader finding
     it in product code is looking at a bug.
+
+    BOTH caches are dropped. The resolved-home memo is process state exactly
+    like the secret cache, so leaving it would let a "second process" reuse the
+    first's home resolution instead of re-deriving it — the second half of the
+    restart would then be modelled only partially, and a persistence test would
+    assert less than its name claims (PS-167).
     """
     with _lock:
         _cache.clear()
+    with _home_lock:
+        _home_cache.clear()
