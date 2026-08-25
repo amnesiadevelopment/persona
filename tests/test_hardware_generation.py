@@ -62,6 +62,7 @@ from src.services.browser.device_presets import (
     pick_touch_points,
     presets_for,
 )
+from src.services.browser.engine_platform import engine_platform_for
 from src.services.browser.gpu_ext import build_gpu_extension
 from src.services.browser.resolution import (
     DESKTOP_RESOLUTIONS,
@@ -214,29 +215,55 @@ console.log(JSON.stringify({
 }));
 """
 
-# The append a maintainer's commit would make to WIN_GPUS: one more card, tagged
-# with the bumped generation. Anchored on the last entry's renderer string so the
-# patch fails loudly if the list is edited, rather than silently not appending.
-_WIN_GPUS_TAIL = (
-    '(0x000073FF) Direct3D11 vs_5_0 ps_5_0, D3D11)" }\n  ];'
+# The append a maintainer's commit would make to a GPU pool: one more card,
+# tagged with the bumped generation. Anchored on the last entry's renderer string
+# so the patch fails loudly if the list is edited, rather than silently
+# appending nothing.
+#
+# MEASURED ON THE LINUX POOL, NOT THE WINDOWS ONE (PS-161). The invariant under
+# test — appending to a pool must not re-index any existing profile — lives in
+# the shared `visible()`/`pick()` pair and is arm-agnostic, so any pool can
+# carry it. The arm is not: windows is now an engine-authored-identity arm, so
+# `gpu_ext` deliberately does not write UNMASKED_VENDOR/RENDERER there and a
+# page reads the engine's own value instead. Probing windows would therefore
+# read the harness's fall-through sentinel on BOTH sides of the append and
+# "pass" while measuring nothing at all — which is precisely what `_gpu_seen`'s
+# own guard caught. linux keeps persona's authorship (the engine returns one
+# identical SwiftShader string on every seed there, so deferring would breach
+# mutual unlinkability), so the reading stays real.
+#
+# The appended entry is a fabricated card that exists only inside this
+# monkeypatch, never in the shipped pool. It is deliberately built in the LINUX
+# form — an ANGLE-over-Mesa string ending "OpenGL 4.6", not a Direct3D11 one —
+# because a D3D11 string on a linux profile is an impossible value, and a test
+# fixture that models an impossible append would not model a maintainer's real
+# commit. The name is obviously synthetic so it can never be mistaken for one of
+# the harvested tuples in tests/fixtures/linux-webgl-reference.md.
+_LINUX_GPUS_TAIL = (
+    '(ADL-S GT1), OpenGL 4.6)" }\n  ];'
 )
-_WIN_GPUS_APPENDED = (
-    '(0x000073FF) Direct3D11 vs_5_0 ps_5_0, D3D11)" },\n'
-    '    { unmaskedVendor: "Google Inc. (NVIDIA)",\n'
-    '      unmaskedRenderer: "ANGLE (NVIDIA, NVIDIA GeForce RTX 5090 '
-    '(0x00002685) Direct3D11 vs_5_0 ps_5_0, D3D11)", since: %d }\n  ];'
+_LINUX_GPUS_APPENDED = (
+    '(ADL-S GT1), OpenGL 4.6)" },\n'
+    '    { unmaskedVendor: "Google Inc. (AMD)",\n'
+    '      unmaskedRenderer: "ANGLE (AMD, AMD Radeon RX 9999 TEST '
+    '(radeonsi testonly ACO), OpenGL 4.6)", since: %d }\n  ];'
     % NEXT_GEN
 )
-_APPENDED_GPU = "NVIDIA GeForce RTX 5090"
+_APPENDED_GPU = "AMD Radeon RX 9999 TEST"
 
 
 def _gpu_seen(tmp_path, seed, generation, tag):
-    """What a page in this profile actually reads for vendor/renderer."""
+    """What a page in this profile actually reads for vendor/renderer.
+
+    The arm is ``linux`` deliberately — see the note on ``_LINUX_GPUS_TAIL``.
+    A windows probe would read the engine-authored fall-through on both sides
+    of the append and measure nothing, which the sentinel guard below catches.
+    """
     node = shutil.which("node")
     if not node:
         pytest.skip("node not available")
     d = pathlib.Path(
-        build_gpu_extension(seed, "windows", str(tmp_path / f"{tag}{seed}"), generation)
+        build_gpu_extension(seed, "linux", str(tmp_path / f"{tag}{seed}"), generation, engine_platform=engine_platform_for("linux", "desktop"))
     )
     harness = d / "harness.js"
     harness.write_text(_GPU_READ, encoding="utf-8")
@@ -252,26 +279,26 @@ def _gpu_seen(tmp_path, seed, generation, tag):
     return seen
 
 
-def _append_win_gpu(monkeypatch):
-    assert _WIN_GPUS_TAIL in gpu_ext._CONTENT_SCRIPT, (
-        "WIN_GPUS tail anchor no longer matches — re-derive it before trusting "
-        "this test, which otherwise silently appends nothing"
+def _append_gpu(monkeypatch):
+    assert _LINUX_GPUS_TAIL in gpu_ext._CONTENT_SCRIPT, (
+        "LINUX_GPUS tail anchor no longer matches — re-derive it before "
+        "trusting this test, which otherwise silently appends nothing"
     )
     monkeypatch.setattr(
         gpu_ext, "_CONTENT_SCRIPT",
-        gpu_ext._CONTENT_SCRIPT.replace(_WIN_GPUS_TAIL, _WIN_GPUS_APPENDED),
+        gpu_ext._CONTENT_SCRIPT.replace(_LINUX_GPUS_TAIL, _LINUX_GPUS_APPENDED),
     )
 
 
 # A handful of seeds rather than all 60: each one spawns a node process. Chosen
-# to cover every residue of the live 5-entry WIN_GPUS pool, so a divisor change
-# from 5 to 6 must move at least one of them.
+# to cover every residue of the live 8-entry LINUX_GPUS pool, so a divisor
+# change from 8 to 9 must move at least one of them.
 _GPU_SEEDS = [1, 2, 3, 4, 5, 6, 7, 11, 42, 0xABCDEF]
 
 
 def test_appending_a_gpu_moves_no_existing_profile(tmp_path, monkeypatch):
     before = {s: _gpu_seen(tmp_path, s, 0, "before") for s in _GPU_SEEDS}
-    _append_win_gpu(monkeypatch)
+    _append_gpu(monkeypatch)
     after = {s: _gpu_seen(tmp_path, s, 0, "after") for s in _GPU_SEEDS}
 
     assert after == before
@@ -281,7 +308,7 @@ def test_appending_a_gpu_moves_no_existing_profile(tmp_path, monkeypatch):
 
 
 def test_appended_gpu_is_reachable_by_a_new_profile(tmp_path, monkeypatch):
-    _append_win_gpu(monkeypatch)
+    _append_gpu(monkeypatch)
     # Scan until found rather than sampling a fixed handful: with a 6-entry pool
     # a small fixed sample can miss the new entry by chance, which would make
     # this test's verdict depend on which seeds happen to be listed. The scan is

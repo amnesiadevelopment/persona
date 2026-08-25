@@ -1,12 +1,34 @@
 """MAIN-world extension that gives each profile a believable, deterministic
 real-GPU WebGL signature.
 
-The engine renders WebGL through ANGLE's software fallback (SwiftShader) on a
-GPU-less VM, so UNMASKED_VENDOR_WEBGL / UNMASKED_RENDERER_WEBGL read as a
-generic "Google Inc. (Google)" / SwiftShader pair. Detectors (CreepJS,
-Pixelscan, anti-bot WAFs) hash the WebGL vendor/renderer plus the getParameter
-limits against real-device datasets; a SwiftShader value is an instant
-headless/VM tell.
+ON THE LINUX ARM, and there only, the engine renders WebGL through ANGLE's
+software fallback (SwiftShader) on a GPU-less VM, so UNMASKED_VENDOR_WEBGL /
+UNMASKED_RENDERER_WEBGL read as a generic "Google Inc. (Google)" / SwiftShader
+pair. Detectors (CreepJS, Pixelscan, anti-bot WAFs) hash the WebGL
+vendor/renderer plus the getParameter limits against real-device datasets; a
+SwiftShader value is an instant headless/VM tell.
+
+⚠️ THE SENTENCE ABOVE IS ARM-SPECIFIC AND USED TO BE STATED UNQUALIFIED — it
+described the linux arm while reading as a claim about "the engine". Measured
+2026-08-25 against ``fingerprint-chromium/148.0.7778.215``, layer OFF, 15 seeds
+per arm (PS-161; ``readings/ps161-armsweep-2026-08-25/``):
+
+    linux    every seed -> "Google Inc. (Google)" / SwiftShader   <- HOLDS
+    windows  7 distinct real IHV cards across 15 seeds            <- STALE
+    macos    "Google Inc. (Apple)" / a real Metal renderer        <- STALE
+
+So on windows and macos the engine ALREADY authors a plausible, seed-derived
+identity, and this extension was overriding an already-working spoofer. That
+double authorship is not a cosmetic duplication: two independent spoofers that
+disagree is precisely the same-vector contradiction PS-155/PS-161 exist to fix
+(creepjs read the engine's card while pixelscan read ours, from one profile in
+one run). Keep this paragraph qualified — it is the sentence that would
+otherwise justify re-adding our identity override on an arm that does not need
+it.
+
+WHO AUTHORS THE IDENTITY, PER ARM — see ENGINE_AUTHORED_IDENTITY_ARMS below.
+Exactly one author per vector per arm, which is the property that makes the
+contradiction structurally impossible rather than merely fixed once.
 
 This extension picks one real desktop GPU deterministically from the seed and
 overrides gl.getParameter() (plus getExtension for the WEBGL_debug_renderer_info
@@ -26,6 +48,8 @@ import json
 import pathlib
 
 from ...models.hardware_generation import normalize_generation
+from .engine_platform import ENGINE_HONOURED_PLATFORMS as _ENGINE_HONOURED_PLATFORMS
+from .engine_platform import engine_honours
 from .worker_wrap import realm_bootstrap_js, realm_guard_js
 
 _CONTENT_SCRIPT = r"""
@@ -203,6 +227,45 @@ __REALM_GUARD__
   // Do not route iOS through pick(): there is no pool to pick from, and the
   // seed must not reach this value.
   var GPU = (OS === "ios") ? IOS_GPU : pick(POOL, 0x67900);
+
+  // WHO AUTHORS THE IDENTITY on this profile. Baked at build time from the
+  // string the ENGINE IS TOLD (--fingerprint-platform), checked against
+  // ENGINE_AUTHORED_IDENTITY_ARMS — see the Python side, which carries the
+  // measurement and the reasoning. When true, this extension does NOT write
+  // UNMASKED_VENDOR_WEBGL / UNMASKED_RENDERER_WEBGL and the engine's own
+  // seed-derived value reaches the page unopposed.
+  //
+  // ⚠️ "ON THIS PROFILE", NOT "ON THIS ARM", AND THE DIFFERENCE LEAKED TWICE.
+  // OS above is the GPU POOL's arm, folded from os_type. It is NOT what the
+  // engine was told and must never be used to answer this question: a mobile
+  // profile is backed by linux/macos at the engine while its pool stays on its
+  // own arm, and an alias like `win` folds to windows here while the engine
+  // rejects it outright. Deferring on either means NEITHER author writes the
+  // pair and the host's real GL strings reach the page.
+  //
+  // THIS GATE IS DELIBERATELY NARROW — it covers the IDENTITY PAIR ONLY, and
+  // every other vector below (limits, extension set, shader precision, the
+  // masked VENDOR/RENDERER) stays ours on every arm. Measured 2026-08-25,
+  // layer OFF, which is what an un-overridden arm actually gets:
+  //
+  //   * limits    — the engine DOES author these per declared arm (windows
+  //     32767x32767 / linux 8192x8192 / macos 16384x16384). On windows its
+  //     values are IDENTICAL to COMMON_DESKTOP, so there is nothing to defer.
+  //   * extensions — the engine does NOT author these at all. Layer off, the
+  //     set is 36 entries and BYTE-IDENTICAL on all three arms: it is the
+  //     HOST's set, not a spoof. It advertises the mobile GLES compression
+  //     families (ASTC/ETC/ETC1) ALONGSIDE the Direct3D BC families
+  //     (S3TC/BPTC/RGTC) — the "supports everything" software-rasteriser
+  //     signature. On a claimed "AMD Radeon ... Direct3D11" card that is the
+  //     renderer<->extension impossibility this module already calls a hard
+  //     cross-check failure (audit7 #3, see DESKTOP_EXTS).
+  //
+  // So "defer to the engine" can NEVER mean "do not install this extension".
+  // Dropping it wholesale would hand the extension set to a GPU-less
+  // SwiftShader VM and leak the host — trading a contradiction for a leak,
+  // against Invariant #0. One author PER VECTOR is the property that makes the
+  // contradiction structurally impossible; one author per MODULE is not.
+  var ENGINE_AUTHORS_IDENTITY = __ENGINE_AUTHORS_IDENTITY__;
 
   // Stable Chrome desktop limits for these GPU tiers on the ANGLE/D3D11 & Metal
   // backends. Float ranges are Float32Array so they read identically to a
@@ -550,8 +613,13 @@ __REALM_GUARD__
     if (!Ctor || !Ctor.prototype) return;
     var proto = Ctor.prototype;
 
+    // Synthesising the debug-renderer-info handle only makes sense when WE
+    // answer the two constants it carries. When the engine authors the
+    // identity, getExtension is left completely alone: a synthesised handle
+    // whose constants then fall through to a context that never enabled the
+    // extension is a state no real browser is in.
     var realGetExtension = proto.getExtension;
-    if (realGetExtension) {
+    if (realGetExtension && !ENGINE_AUTHORS_IDENTITY) {
       proto.getExtension = nativeWrap(realGetExtension, function (name) {
         if (name === 'WEBGL_debug_renderer_info') {
           var r = null;
@@ -570,8 +638,14 @@ __REALM_GUARD__
     if (!realGetParameter) return;
     proto.getParameter = nativeWrap(realGetParameter, function (pname) {
       try {
-        if (pname === UNMASKED_VENDOR) return GPU.unmaskedVendor;
-        if (pname === UNMASKED_RENDERER) return GPU.unmaskedRenderer;
+        // The IDENTITY PAIR — the one vector whose authorship is arm-dependent.
+        // When the engine authors it, fall through to the real getParameter so
+        // the engine's own seed-derived value reaches the page. Everything
+        // below this point stays ours on every arm.
+        if (!ENGINE_AUTHORS_IDENTITY) {
+          if (pname === UNMASKED_VENDOR) return GPU.unmaskedVendor;
+          if (pname === UNMASKED_RENDERER) return GPU.unmaskedRenderer;
+        }
         if (extraMap && Object.prototype.hasOwnProperty.call(extraMap, pname)) {
           var ev = extraMap[pname];
           return (ev instanceof Float32Array) ? new Float32Array(ev) : ev;
@@ -653,6 +727,186 @@ __REALM_BOOTSTRAP__
 })();
 """
 
+# The arms on which the ENGINE authors the WebGL identity pair
+# (UNMASKED_VENDOR_WEBGL / UNMASKED_RENDERER_WEBGL) and this extension stands
+# down for that ONE vector. Every other vector this module spoofs stays ours on
+# every arm — see the ENGINE_AUTHORS_IDENTITY comment in the content script for
+# why the gate is deliberately this narrow.
+#
+# WHY THIS IS A SET AND NOT A BOOLEAN: the answer is per arm, because the
+# engine's behaviour is per arm. Measured 2026-08-25 against
+# fingerprint-chromium/148.0.7778.215, masking layer OFF, one profile per seed,
+# reading UNMASKED_RENDERER_WEBGL (PS-161):
+#
+#   arm      seeds  distinct  P(two profiles collide)  effective pool
+#   linux      15      1              100.0%                1.00
+#   windows    15      7               15.6%                6.43
+#   macos      30      2               76.9%                1.30
+#
+# and, for comparison, THIS module's own pools:
+#
+#   LINUX_GPUS  8 entries -> 12.5%      WIN_GPUS 5 -> 20.0%     MAC_GPUS 2 -> 50.0%
+#
+# * windows  -> ENGINE. It authors 7 distinct real IHV cards and is strictly
+#   better than WIN_GPUS (15.6% vs 20.0%). Deferring removes the second author
+#   without costing unlinkability. This is the whole (b) arm.
+# * linux    -> OURS. The engine returns ONE identical SwiftShader string on
+#   every seed. Deferring would give every linux profile the same "GPU" — a
+#   shared cross-profile identifier, which Level 2 (mutual unlinkability)
+#   forbids outright. (a) is forced here by measurement, not preference.
+# * macos    -> OURS. The engine varies, but across 30 seeds it produced only
+#   TWO values (Apple M2 87%, Apple M4 13%): a 76.9% chance that two profiles
+#   share a card, WORSE than the 50.0% of our own two-entry MAC_GPUS. The
+#   owner's decision selected (b) for macos "subject to the seed requirement",
+#   and the planner pre-registered the outcome: "if macos turns out to vary
+#   weakly — a pool small enough that profiles collide often — that is a
+#   finding that changes macos to (a) on the same Level 2 grounds as linux".
+#   The extra seeds were run and that condition fired, so this line EXECUTES a
+#   conditional the decision-maker already wrote down rather than making a new
+#   choice. Note "small pool" and "colliding often" are different claims and
+#   only the second one matters here: Apple ships M1-M4 in Pro/Max/Ultra
+#   variants, so two values is not forced by Apple's real product line.
+#
+# android and ios are absent deliberately, and not merely for want of a
+# measurement. The engine has no android or ios platform at all — process.py
+# backs those profiles with the nearest desktop platform it DOES spoof — so an
+# engine-authored desktop identity on a phone UA would be the impossible value
+# this module's ANDROID_GPUS arm exists to prevent. iOS additionally pins one
+# constant pair for every device on earth by design (see IOS_GPU).
+#
+# ⚠️ THIS SET IS A CLAIM ABOUT A THIRD PARTY'S BUILD, not a permanent property.
+# The engine autobumps daily and could narrow its pool at any time, which would
+# silently cost us unlinkability on any arm listed here.
+#
+# `verify.engine_gpu_variance` is the check written for exactly that, and its
+# status must be read as it actually is, because this set is only as safe as
+# the thing watching it:
+#   * Its JUDGEMENT (`classify`) is pure and IS exercised in CI on every run,
+#     including the cases where it must go red.
+#   * Its READING (`measure`) needs the product's own engine, and CI provisions
+#     `browser_firefox` only. So it runs where the engine exists — an operator
+#     machine — via `python -m src.services.verify.engine_gpu_variance check`.
+#   * NOTHING RUNS IT ON THE BUMP PATH TODAY. `engine-autoupdate.yml` calls
+#     `engine_gate record`/`compare` and nothing else, so a bump that narrowed
+#     an engine-authored arm would NOT be failed by it. Wiring it there is the
+#     remaining step and is named here rather than quietly assumed.
+# Read that before treating an arm in this set as watched: the check exists and
+# can fail, but the daily bump is not currently gated on it.
+ENGINE_AUTHORED_IDENTITY_ARMS = frozenset({"windows"})
+
+
+# The engine's own vocabulary lives in ``engine_platform``, which OWNS the value
+# ``--fingerprint-platform`` is set to. Re-exported here so this module's
+# existing readers still find it beside the set it constrains, but NOT restated:
+# a second copy is exactly the drift that produced the `win` leak.
+ENGINE_HONOURED_PLATFORMS = _ENGINE_HONOURED_PLATFORMS
+
+
+# The RAW ``os_type`` spellings the fold recognises. Derived FROM the fold's own
+# table rather than restated beside it, so the two cannot drift: teach
+# ``_OS_NORM_TABLE`` a new spelling and it is recognised here automatically.
+#
+# NOTE this set is about GPU POOL selection, NOT about authorship — see
+# ``ENGINE_HONOURED_PLATFORMS`` above for why asking it the authorship question
+# is what produced the ``win`` host leak.
+_OS_NORM_TABLE = (
+    (("ios", "iphone", "ipad", "ipados"), "ios"),
+    (("macos", "mac", "darwin"), "macos"),
+    (("android",), "android"),
+    (("linux",), "linux"),
+    (("windows", "win"), "windows"),
+)
+
+RECOGNISED_OS_TYPES = frozenset(
+    spelling for spellings, _arm in _OS_NORM_TABLE for spelling in spellings
+)
+
+
+def _os_norm(os_type: str) -> str:
+    """Fold a raw ``os_type`` onto the arm vocabulary the content script uses.
+
+    Unrecognised values fold to ``"windows"``, which is what the GPU POOL
+    selection wants (a plausible desktop card beats no card). Authorship is a
+    SEPARATE question and must not be read off this value — see
+    :func:`engine_authors_identity_for_engine_platform`.
+    """
+    ot = str(os_type).lower()
+    for spellings, arm in _OS_NORM_TABLE:
+        if ot in spellings:
+            return arm
+    return "windows"
+
+
+def engine_authors_identity(os_norm: str) -> bool:
+    """Whether the ENGINE, not this extension, authors the identity pair.
+
+    Takes an already-normalised arm (the ``os_norm`` vocabulary the builder
+    computes), so an unknown value is simply not in the set and this module
+    keeps authorship.
+
+    ⚠️ CALLERS MUST NOT ASK THIS ABOUT A RAW ``os_type``, AND MUST NOT ASK IT
+    ABOUT ``os_norm`` EITHER. ``os_norm`` folds every unrecognised spelling
+    into ``"windows"`` — the one engine-authored arm — so the fold runs BEFORE
+    this function would ever see the unknown value, and asking here is too late
+    to be fail-safe. Nor is ``os_type`` the right question: it is not what the
+    engine receives. A mobile profile is backed by ``linux``/``macos`` at the
+    engine, so a ``windows`` + ``mobile`` profile is handed ``linux`` — and
+    this layer standing down for a ``windows`` identity nobody wrote is the
+    same host leak by a different route. Either way neither author writes the
+    pair and the HOST's GL strings reach the page (Invariant #0). Use
+    :func:`engine_authors_identity_for_engine_platform`, which resolves
+    authorship from the value ``--fingerprint-platform`` is actually set to.
+    """
+    return os_norm in ENGINE_AUTHORED_IDENTITY_ARMS
+
+
+def engine_authors_identity_for_engine_platform(engine_platform: str) -> bool:
+    """Fail-safe authorship resolution from the value THE ENGINE IS TOLD.
+
+    Takes ``--fingerprint-platform``'s own string — the one
+    ``engine_platform.engine_platform_for`` computed and ``process.py`` put on
+    the command line — never an ``os_type`` this module re-derived it from.
+    That is the entire point, and it is what makes the two provably one value
+    instead of two copies that agree by coincidence.
+
+    A platform the ENGINE does not honour keeps OUR spoof rather than being
+    deferred to an engine that was never told to spoof it: not-honoured in,
+    ``False`` out — persona authors the identity.
+
+    ⚠️ ASKING THIS ABOUT ``os_type`` IS THE BUG, TWICE OVER. ``os_type`` is not
+    what the engine receives, and the gap between them has now leaked in two
+    different directions:
+
+      * ``win`` — a spelling OUR fold recognises and the engine REJECTS.
+        Measured: ``--fingerprint-platform=win`` returns ``Google Inc.
+        (Google)`` / SwiftShader, while ``windows`` returns a real AMD card.
+      * ``windows`` + ``device_type=mobile`` — an ``os_type`` the engine
+        honours, on a profile where the engine is handed ``linux`` instead,
+        because a mobile profile is backed by the nearest desktop platform.
+        Our layer stood down expecting a ``windows`` identity the engine was
+        never asked for, and the engine's linux arm returns SwiftShader on
+        every seed.
+
+    Both are ONE failure: whoever answers this question from anything other
+    than the value on the command line is guessing, and a wrong guess means
+    NEITHER author writes the identity pair. ``getParameter(UNMASKED_*)`` falls
+    through to the real implementation and the HOST's GL strings reach the page
+    — Invariant #0, and a ``HOST_LEAK`` row under ``matrix_consistency``, which
+    ranks it above ``CONTRADICTION`` and fires on a single row.
+
+    Keying on the value itself closes the CLASS rather than either instance:
+    there is no second computation left to diverge from, so a future axis
+    nobody has enumerated cannot reopen this the way ``device_type`` reopened
+    the alias fix.
+    """
+    # Lowercased because the engine itself lowercases its platform argument —
+    # MEASURED (see ENGINE_HONOURED_PLATFORMS), so "WINDOWS" genuinely does
+    # reach the engine's windows spoofer and deferring on it is correct.
+    if not engine_honours(engine_platform):
+        return False
+    return engine_authors_identity(str(engine_platform).lower())
+
+
 _MANIFEST = {
     "manifest_version": 3,
     "name": "persona-gpu",
@@ -670,7 +924,8 @@ _MANIFEST = {
 
 
 def build_gpu_extension(
-    seed: int, os_type: str, base_dir: str, generation: int
+    seed: int, os_type: str, base_dir: str, generation: int,
+    *, engine_platform: str,
 ) -> str:
     """Generate an unpacked extension that spoofs the WebGL getParameter GPU
     signature deterministically per profile seed, constrained to the profile's
@@ -686,23 +941,41 @@ def build_gpu_extension(
     entry is a literal Direct3D11 string, and Direct3D is a Windows-only API, so
     serving one to a --fingerprint-platform=linux profile is an impossible value
     rather than merely an implausible one.
+
+    ``engine_platform`` is the string the ENGINE is launched with — the value
+    ``engine_platform.engine_platform_for`` computed and ``process.py`` puts on
+    the command line as ``--fingerprint-platform``. AUTHORSHIP IS RESOLVED FROM
+    IT, and it is a REQUIRED, SEPARATE argument from ``os_type`` because the two
+    genuinely differ: a mobile profile is backed by ``linux``/``macos`` at the
+    engine while its GPU POOL must stay on its own arm. This module cannot
+    derive one from the other — ``engine_platform`` is a function of
+    ``(os_type, device_type)`` and ``device_type`` is deliberately not passed
+    here — which is precisely why it is handed in rather than recomputed. Two
+    review rounds were spent on two different re-derivations of it, each leaking
+    on the axis the other did not cover.
+
     Returns its directory.
     """
     ext_dir = pathlib.Path(base_dir)
     ext_dir.mkdir(parents=True, exist_ok=True)
     ot = str(os_type).lower()
-    os_norm = (
-        "ios" if ot in ("ios", "iphone", "ipad", "ipados")
-        else "macos" if ot in ("macos", "mac", "darwin")
-        else "android" if ot in ("android",)
-        else "linux" if ot in ("linux",)
-        else "windows"
-    )
+    os_norm = _os_norm(ot)
     script = (
         _CONTENT_SCRIPT
         .replace("__SEED__", str(int(seed) & 0xFFFFFFFF))
         .replace("__GEN__", str(normalize_generation(generation)))
         .replace("__OS__", os_norm)
+        .replace(
+            "__ENGINE_AUTHORS_IDENTITY__",
+            # Resolved from the value the ENGINE IS TOLD, not from os_type and
+            # not from os_norm. os_norm folds every unrecognised spelling to
+            # "windows" (the one engine-authored arm), and os_type is not what
+            # the engine receives on a mobile profile — reading authorship off
+            # either one makes a profile defer to an engine that was never
+            # asked to spoof that platform, and neither author writes the pair.
+            "true" if engine_authors_identity_for_engine_platform(
+                engine_platform) else "false",
+        )
         .replace("__REALM_BOOTSTRAP__", realm_bootstrap_js("applyGpuPatch"))
         .replace("__REALM_GUARD__", realm_guard_js("gpu"))
     )

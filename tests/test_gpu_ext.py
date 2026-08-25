@@ -3,6 +3,7 @@ import pathlib
 
 import pytest
 
+from src.services.browser.engine_platform import engine_platform_for
 from src.services.browser.gpu_ext import build_gpu_extension
 from tests.native_mask_probe import GL_STUBS, assert_reads_native
 
@@ -12,7 +13,7 @@ def _read(d, name):
 
 
 def test_builds_files(tmp_path):
-    d = build_gpu_extension(0xDEADBEEF, "windows", str(tmp_path / "g"), 0)
+    d = build_gpu_extension(0xDEADBEEF, "windows", str(tmp_path / "g"), 0, engine_platform=engine_platform_for("windows", "desktop"))
     p = pathlib.Path(d)
     assert (p / "gpu.js").is_file()
     assert (p / "manifest.json").is_file()
@@ -29,7 +30,7 @@ def test_native_tostring_masking(tmp_path):
     # would fail on a marker-free implementation that is strictly better.
     # assert_reads_native also runs the counterfactual: without native_ext's
     # patch the same probe must NOT read native.
-    d = build_gpu_extension(1, "windows", str(tmp_path / "g"), 0)
+    d = build_gpu_extension(1, "windows", str(tmp_path / "g"), 0, engine_platform=engine_platform_for("windows", "desktop"))
     js = _read(d, "gpu.js")
     assert_reads_native(
         tmp_path,
@@ -45,7 +46,7 @@ def test_carries_gpu_spoof_into_workers(tmp_path):
     # A detector reads the WebGL vendor/renderer from an OffscreenCanvas inside a
     # Web Worker to catch a page-only spoof — the real GPU (a different IHV than
     # the page reports) leaks there. The spoof must be carried into workers.
-    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g"), 0), "gpu.js")
+    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g"), 0, engine_platform=engine_platform_for("windows", "desktop")), "gpu.js")
     assert "applyGpuPatch" in js
     assert "G.Worker" in js
     assert "SharedWorker" in js
@@ -57,7 +58,7 @@ def test_carries_gpu_spoof_into_workers(tmp_path):
 
 
 def test_manifest_mv3_main_world(tmp_path):
-    d = build_gpu_extension(1, "windows", str(tmp_path / "g"), 0)
+    d = build_gpu_extension(1, "windows", str(tmp_path / "g"), 0, engine_platform=engine_platform_for("windows", "desktop"))
     m = json.loads(_read(d, "manifest.json"))
     cs = m["content_scripts"][0]
     assert cs["world"] == "MAIN"
@@ -66,8 +67,8 @@ def test_manifest_mv3_main_world(tmp_path):
 
 
 def test_seed_and_os_baked(tmp_path):
-    w = _read(build_gpu_extension(0xABCDEF, "windows", str(tmp_path / "w"), 0), "gpu.js")
-    m = _read(build_gpu_extension(0xABCDEF, "macos", str(tmp_path / "m"), 0), "gpu.js")
+    w = _read(build_gpu_extension(0xABCDEF, "windows", str(tmp_path / "w"), 0, engine_platform=engine_platform_for("windows", "desktop")), "gpu.js")
+    m = _read(build_gpu_extension(0xABCDEF, "macos", str(tmp_path / "m"), 0, engine_platform=engine_platform_for("macos", "desktop")), "gpu.js")
     assert str(0xABCDEF) in w
     assert 'var OS = "windows";' in w
     assert 'var OS = "macos";' in m
@@ -75,21 +76,21 @@ def test_seed_and_os_baked(tmp_path):
 
 
 def test_unmasked_constants_and_extension(tmp_path):
-    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g"), 0), "gpu.js")
+    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g"), 0, engine_platform=engine_platform_for("windows", "desktop")), "gpu.js")
     assert "0x9245" in js and "0x9246" in js
     assert "UNMASKED_VENDOR_WEBGL" in js and "UNMASKED_RENDERER_WEBGL" in js
     assert "WEBGL_debug_renderer_info" in js
 
 
 def test_real_windows_strings(tmp_path):
-    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g"), 0), "gpu.js")
+    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g"), 0, engine_platform=engine_platform_for("windows", "desktop")), "gpu.js")
     assert "Direct3D11 vs_5_0 ps_5_0, D3D11)" in js
     assert "Google Inc. (NVIDIA)" in js
     assert "Google Inc. (Intel)" in js
 
 
 def test_real_macos_strings(tmp_path):
-    js = _read(build_gpu_extension(1, "macos", str(tmp_path / "g"), 0), "gpu.js")
+    js = _read(build_gpu_extension(1, "macos", str(tmp_path / "g"), 0, engine_platform=engine_platform_for("macos", "desktop")), "gpu.js")
     assert "ANGLE Metal Renderer: Apple M1, Unspecified Version" in js
     assert "Google Inc. (Apple)" in js
 
@@ -122,7 +123,7 @@ _LINUX_RENDERERS = {
 
 def test_real_linux_strings(tmp_path):
     # AC 7 — mirrors test_real_windows_strings / test_real_macos_strings.
-    js = _read(build_gpu_extension(1, "linux", str(tmp_path / "g"), 0), "gpu.js")
+    js = _read(build_gpu_extension(1, "linux", str(tmp_path / "g"), 0, engine_platform=engine_platform_for("linux", "desktop")), "gpu.js")
     for vendor, renderers in _LINUX_RENDERERS.items():
         assert vendor in js
         for r in renderers:
@@ -132,7 +133,7 @@ def test_real_linux_strings(tmp_path):
 def test_linux_resolves_to_its_own_os_marker_not_windows(tmp_path):
     # os_norm's else-branch used to swallow linux into "windows", which is what
     # made every downstream selection serve a Windows D3D11 GPU.
-    js = _read(build_gpu_extension(1, "linux", str(tmp_path / "l"), 0), "gpu.js")
+    js = _read(build_gpu_extension(1, "linux", str(tmp_path / "l"), 0, engine_platform=engine_platform_for("linux", "desktop")), "gpu.js")
     assert 'var OS = "linux";' in js
     assert 'var OS = "windows";' not in js
 
@@ -162,19 +163,31 @@ def test_linux_page_reads_a_mesa_gpu_and_never_direct3d(tmp_path):
 
 
 def test_linux_and_windows_no_longer_emit_the_same_renderer(tmp_path):
-    # AC 2 — premise inversion. BEFORE this arm these two were byte-identical
-    # (linux fell through os_norm's else to "windows"); if this ever passes
-    # trivially again, the arm has regressed.
+    # AC 2 — premise inversion. BEFORE the linux arm these two were
+    # byte-identical (linux fell through os_norm's else to "windows"); if this
+    # ever passes trivially again, the arm has regressed.
+    #
+    # PS-161 CHANGED THE CONTROL, NOT THE CLAIM. Windows is now an
+    # engine-authored-identity arm, so this extension deliberately does NOT
+    # write the identity pair there and the probe's stub getParameter answers
+    # its sentinel. Asserting "Direct3D11 in win" would now assert the bug this
+    # ticket fixes. The control it provided — "the probe observes a real
+    # difference rather than a no-op" — is preserved by pinning what windows
+    # must do INSTEAD (fall through), which is an equally strong statement and
+    # fails just as loudly if the arm silently reverts to spoofing.
     for seed in (1, 42, 0xABCDEF, 7):
         lin = _probe(tmp_path / f"l{seed}", seed, "linux")
         win = _probe(tmp_path / f"w{seed}", seed, "windows")
         assert lin["unmaskedRenderer"] != win["unmaskedRenderer"], (
             f"seed {seed}: linux still emits the windows renderer"
         )
-        assert "Direct3D11" in win["unmaskedRenderer"], (
-            "windows must keep its D3D11 string — this is the control that "
-            "proves the probe observes a real difference rather than a no-op"
+        assert win["unmaskedRenderer"] == "HOST_VALUE_NOT_SPOOFED", (
+            "windows must FALL THROUGH for the identity pair so the engine's "
+            f"own value reaches the page; got {win['unmaskedRenderer']!r}"
         )
+        # And the linux side must still be genuinely ours — the half of this
+        # comparison that proves the difference is not two fall-throughs.
+        assert "OpenGL 4.6" in lin["unmaskedRenderer"], lin["unmaskedRenderer"]
 
 
 def test_linux_emits_no_kernel_drm_or_mesa_build_version(tmp_path):
@@ -245,13 +258,13 @@ def test_linux_vendor_agrees_with_the_renderer_it_is_paired_with(tmp_path):
 
 
 def test_deterministic_linux_build(tmp_path):
-    a = _read(build_gpu_extension(42, "linux", str(tmp_path / "a"), 0), "gpu.js")
-    b = _read(build_gpu_extension(42, "linux", str(tmp_path / "b"), 0), "gpu.js")
+    a = _read(build_gpu_extension(42, "linux", str(tmp_path / "a"), 0, engine_platform=engine_platform_for("linux", "desktop")), "gpu.js")
+    b = _read(build_gpu_extension(42, "linux", str(tmp_path / "b"), 0, engine_platform=engine_platform_for("linux", "desktop")), "gpu.js")
     assert a == b
 
 
 def test_os_gate_present(tmp_path):
-    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g"), 0), "gpu.js")
+    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g"), 0, engine_platform=engine_platform_for("windows", "desktop")), "gpu.js")
     # 4-way pool gate: macOS→Apple/Metal, android→Adreno/Mali, linux→Mesa/GL,
     # else Windows/D3D11. (iOS bypasses the pool entirely — see IOS_GPU.)
     assert '(OS === "macos") ? MAC_GPUS' in js
@@ -263,27 +276,27 @@ def test_os_gate_present(tmp_path):
 def test_android_profile_gets_mobile_gpu(tmp_path):
     # #5 (audit4): an Android profile (phone UA + touch) returning a D3D11 desktop
     # GPU is impossible — it must get the Adreno/Mali ANGLE-over-GLES pool.
-    js = _read(build_gpu_extension(1, "android", str(tmp_path / "g"), 0), "gpu.js")
+    js = _read(build_gpu_extension(1, "android", str(tmp_path / "g"), 0, engine_platform=engine_platform_for("android", "desktop")), "gpu.js")
     assert 'var OS = "android"' in js
     assert "Adreno" in js and "Mali" in js
     assert "OpenGL ES 3.2" in js
 
 
 def test_version_strings(tmp_path):
-    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g"), 0), "gpu.js")
+    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g"), 0, engine_platform=engine_platform_for("windows", "desktop")), "gpu.js")
     assert "WebGL 1.0 (OpenGL ES 2.0 Chromium)" in js
     assert "WebGL 2.0 (OpenGL ES 3.0 Chromium)" in js
 
 
 def test_required_limits(tmp_path):
-    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g"), 0), "gpu.js")
+    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g"), 0, engine_platform=engine_platform_for("windows", "desktop")), "gpu.js")
     for p in ["3379:", "3386:", "34024:", "34921:", "36348:", "35661:", "33902:"]:
         assert p in js, f"missing param {p}"
 
 
 def test_deterministic_build(tmp_path):
-    a = _read(build_gpu_extension(42, "windows", str(tmp_path / "a"), 0), "gpu.js")
-    b = _read(build_gpu_extension(42, "windows", str(tmp_path / "b"), 0), "gpu.js")
+    a = _read(build_gpu_extension(42, "windows", str(tmp_path / "a"), 0, engine_platform=engine_platform_for("windows", "desktop")), "gpu.js")
+    b = _read(build_gpu_extension(42, "windows", str(tmp_path / "b"), 0, engine_platform=engine_platform_for("windows", "desktop")), "gpu.js")
     assert a == b
 
 
@@ -306,7 +319,7 @@ def test_carries_gpu_spoof_into_iframes(tmp_path):
     # creepjs reads WebGL from a fresh about:blank/srcdoc iframe; on real hardware
     # the pristine iframe leaks the real GPU (a VM's SwiftShader hides it). The
     # spoof must be carried into same-realm child frames.
-    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g"), 0), "gpu.js")
+    js = _read(build_gpu_extension(1, "windows", str(tmp_path / "g"), 0, engine_platform=engine_platform_for("windows", "desktop")), "gpu.js")
     assert "contentWindow" in js and "HTMLIFrameElement" in js
     # the leaf is routed through the shared realm bootstrap, which chains the
     # iframe accessors and re-runs the installer in the child (recursively).
@@ -327,8 +340,8 @@ def test_shader_precision_and_extensions_spoofed(tmp_path):
     from src.services.browser.gpu_ext import build_gpu_extension
 
     js = pathlib.Path(
-        build_gpu_extension(1, "windows", str(tmp_path / "g"), 0) + "/gpu.js"
-    ).read_text()
+        build_gpu_extension(1, "windows", str(tmp_path / "g"), 0, engine_platform=engine_platform_for("windows", "desktop")) + "/gpu.js"
+    ).read_text(encoding="utf-8")
     assert "getShaderPrecisionFormat = nativeWrap" in js
     assert "getSupportedExtensions = nativeWrap" in js
     # canonical ANGLE-D3D11 float precision (127/127/23) present
@@ -348,8 +361,8 @@ def test_android_extensions_and_limits_are_gles_coherent(tmp_path):
     from src.services.browser.gpu_ext import build_gpu_extension
 
     js = pathlib.Path(
-        build_gpu_extension(1, "android", str(tmp_path / "a"), 0) + "/gpu.js"
-    ).read_text()
+        build_gpu_extension(1, "android", str(tmp_path / "a"), 0, engine_platform=engine_platform_for("android", "desktop")) + "/gpu.js"
+    ).read_text(encoding="utf-8")
     # the ANDROID set is what the code selects for OS==="android"
     assert 'STABLE_EXTS = (OS === "android") ? ANDROID_EXTS' in js
     assert "WEBGL_compressed_texture_etc" in js
@@ -367,8 +380,8 @@ def test_apple_extensions_drop_s3tc(tmp_path):
     from src.services.browser.gpu_ext import build_gpu_extension
 
     js = pathlib.Path(
-        build_gpu_extension(1, "macos", str(tmp_path / "m"), 0) + "/gpu.js"
-    ).read_text()
+        build_gpu_extension(1, "macos", str(tmp_path / "m"), 0, engine_platform=engine_platform_for("macos", "desktop")) + "/gpu.js"
+    ).read_text(encoding="utf-8")
     assert '(OS === "macos") ? APPLE_EXTS' in js
     # APPLE_EXTS must not contain s3tc (verify the array itself, not the whole
     # file — DESKTOP_EXTS still has it for windows profiles)
@@ -519,15 +532,26 @@ _GPU_PROBE = _GPU_PROBE.replace(
 )
 
 
-def _probe(tmp_path, seed, os_type):
-    """Run the emitted extension in node and report what a page actually sees."""
+def _probe(tmp_path, seed, os_type, device_type="desktop"):
+    """Run the emitted extension in node and report what a page actually sees.
+
+    ``device_type`` is a real parameter rather than a fixed "desktop", because
+    the platform the ENGINE is told is a function of BOTH — and a probe that
+    could only ask about ``os_type`` is structurally unable to observe the
+    windows+mobile host leak. It is built through ``engine_platform_for``, the
+    product's own single source, so the probe cannot answer a question the
+    product does not ask.
+    """
     import shutil
     import subprocess
 
     node = shutil.which("node")
     if not node:
         pytest.skip("node not available")
-    d = pathlib.Path(build_gpu_extension(seed, os_type, str(tmp_path / f"p{seed}{os_type}"), 0))
+    tag = f"p{seed}{os_type or 'empty'}{device_type}"
+    d = pathlib.Path(build_gpu_extension(
+        seed, os_type, str(tmp_path / tag), 0,
+        engine_platform=engine_platform_for(os_type, device_type)))
     harness = d / "harness.js"
     harness.write_text(_GPU_PROBE, encoding="utf-8")
     out = subprocess.run(
@@ -583,7 +607,7 @@ _IOS_GL1_EXTS = [
 def test_ios_resolves_to_its_own_os_marker_not_macos(tmp_path):
     # AC 1. `ios` used to normalize to "macos", which is what made every
     # downstream selection (pool, limits, extensions) serve a Mac.
-    js = _read(build_gpu_extension(1, "ios", str(tmp_path / "i"), 0), "gpu.js")
+    js = _read(build_gpu_extension(1, "ios", str(tmp_path / "i"), 0, engine_platform=engine_platform_for("ios", "desktop")), "gpu.js")
     assert 'var OS = "ios";' in js
     assert 'var OS = "macos";' not in js
 
@@ -592,7 +616,7 @@ def test_ipad_and_iphone_aliases_also_resolve_to_ios(tmp_path):
     # os_type is an unvalidated free-text str on the profile model, so the
     # obvious spellings must not silently fall through to the windows default.
     for alias in ("ios", "iOS", "iPhone", "ipad", "ipados"):
-        js = _read(build_gpu_extension(1, alias, str(tmp_path / alias), 0), "gpu.js")
+        js = _read(build_gpu_extension(1, alias, str(tmp_path / alias), 0, engine_platform=engine_platform_for(alias, "desktop")), "gpu.js")
         assert 'var OS = "ios";' in js, f"{alias} did not resolve to ios"
 
 
@@ -938,14 +962,18 @@ def test_non_ios_platforms_select_unchanged_values(tmp_path, os_type):
         assert "ANGLE (" in p["unmaskedRenderer"] and "OpenGL ES 3.2" in p["unmaskedRenderer"]
         assert p["maxViewportDims"] == [16384, 16384]
     else:
-        assert "Direct3D11" in p["unmaskedRenderer"]
+        # PS-161: windows is an engine-authored-IDENTITY arm, so the identity
+        # pair is deliberately NOT written here — asserting "Direct3D11" would
+        # now assert the two-spoofer bug. The LIMITS are still ours on every
+        # arm (the gate is identity-only), which is what this row now pins.
+        assert p["unmaskedRenderer"] == "HOST_VALUE_NOT_SPOOFED"
         assert p["maxViewportDims"] == [32767, 32767]
 
 
 def test_deterministic_ios_build(tmp_path):
     # AC 8, mirroring test_deterministic_build for the new arm.
-    a = _read(build_gpu_extension(42, "ios", str(tmp_path / "a"), 0), "gpu.js")
-    b = _read(build_gpu_extension(42, "ios", str(tmp_path / "b"), 0), "gpu.js")
+    a = _read(build_gpu_extension(42, "ios", str(tmp_path / "a"), 0, engine_platform=engine_platform_for("ios", "desktop")), "gpu.js")
+    b = _read(build_gpu_extension(42, "ios", str(tmp_path / "b"), 0, engine_platform=engine_platform_for("ios", "desktop")), "gpu.js")
     assert a == b
 
 
@@ -973,9 +1001,453 @@ def test_emitted_script_is_syntactically_valid_for_every_os(tmp_path):
     if not node:
         pytest.skip("node not available")
     for os_type in ("windows", "macos", "android", "ios", "linux"):
-        d = build_gpu_extension(1, os_type, str(tmp_path / f"s{os_type}"), 0)
+        d = build_gpu_extension(1, os_type, str(tmp_path / f"s{os_type}"), 0, engine_platform=engine_platform_for(os_type, "desktop"))
         out = subprocess.run(
             [node, "--check", str(pathlib.Path(d) / "gpu.js")],
             capture_output=True, text=True, timeout=60,
         )
         assert out.returncode == 0, f"{os_type}: {out.stderr}"
+
+
+# ---------------------------------------------------------------------------
+# PS-161 — the per-arm identity-authorship split.
+#
+# The bug: TWO independent GPU spoofers, both live, disagreeing. Ours won on
+# pixelscan's read path while the engine's won on creepjs's, so ONE profile in
+# ONE run reported two different graphics cards. The fix is not "spoof harder"
+# — it is to make exactly ONE author exist per vector per arm, so the
+# contradiction is structurally impossible rather than merely fixed once.
+#
+# Every test below asserts on what a PAGE RECEIVES (via _probe, which runs the
+# emitted script against stub contexts and CALLS the patched methods), never on
+# the text of gpu.js. Every pool and both branches are literals in every emitted
+# file — the arm is selected at runtime — so a substring check against the
+# source would prove nothing here.
+# ---------------------------------------------------------------------------
+
+
+def test_engine_authored_arm_does_not_write_the_identity_pair(tmp_path):
+    # THE fix. On an engine-authored arm this extension must not answer the two
+    # debug-renderer-info constants at all, so the engine's own seed-derived
+    # value reaches the page unopposed. The probe's stub returns a sentinel for
+    # anything that falls through, so seeing the sentinel IS seeing the
+    # fall-through.
+    from src.services.browser.gpu_ext import ENGINE_AUTHORED_IDENTITY_ARMS
+
+    assert ENGINE_AUTHORED_IDENTITY_ARMS, (
+        "no arm is engine-authored, so this ticket's fix is not installed"
+    )
+    for arm in sorted(ENGINE_AUTHORED_IDENTITY_ARMS):
+        p = _probe(tmp_path / f"e{arm}", 42, arm)
+        assert p["unmaskedVendor"] == "HOST_VALUE_NOT_SPOOFED", (
+            f"{arm} is engine-authored but this extension still wrote the "
+            f"unmasked VENDOR: {p['unmaskedVendor']!r} — two authors again"
+        )
+        assert p["unmaskedRenderer"] == "HOST_VALUE_NOT_SPOOFED", (
+            f"{arm} is engine-authored but this extension still wrote the "
+            f"unmasked RENDERER: {p['unmaskedRenderer']!r} — two authors again"
+        )
+
+
+def test_persona_authored_arms_still_write_the_identity_pair(tmp_path):
+    # The other half, and the control that stops the test above from passing
+    # for an extension that simply stopped working everywhere. linux and macos
+    # keep OUR identity — linux because the engine hands every seed the same
+    # SwiftShader string, macos because across 30 seeds it produced only two
+    # values skewed 87/13 (a 76.9% collision, worse than our own pool's 50%).
+    for arm, marker in (("linux", "OpenGL 4.6"),
+                        ("macos", "ANGLE Metal Renderer"),
+                        ("android", "OpenGL ES 3.2")):
+        p = _probe(tmp_path / f"o{arm}", 42, arm)
+        assert p["unmaskedRenderer"] != "HOST_VALUE_NOT_SPOOFED", (
+            f"{arm} must keep persona's own identity, but the extension fell "
+            "through to the host"
+        )
+        assert marker in p["unmaskedRenderer"], p["unmaskedRenderer"]
+        assert p["unmaskedVendor"].startswith("Google Inc. ("), p["unmaskedVendor"]
+
+
+def test_ios_identity_is_untouched_by_the_split(tmp_path):
+    # iOS pins ONE constant pair for every device on earth by design, and the
+    # engine has no ios platform at all. It must not be swept into either arm.
+    p = _probe(tmp_path / "i", 42, "ios")
+    assert p["unmaskedVendor"] == "Apple Inc."
+    assert p["unmaskedRenderer"] == "Apple GPU"
+
+
+def test_the_split_is_identity_only_every_other_vector_stays_ours(tmp_path):
+    # THE SCOPE OF (b), and the measurement that set it. Layer OFF, the engine
+    # authors the identity and the limits, but NOT the extension set: that set
+    # was 36 entries and BYTE-IDENTICAL across all three declared arms, i.e. the
+    # HOST's own set rather than a spoof. It advertises the mobile GLES
+    # compression families (ASTC/ETC/ETC1) ALONGSIDE the Direct3D BC families —
+    # on a claimed D3D11 card that is the renderer<->extension impossibility
+    # this module already calls a hard cross-check failure (audit7 #3).
+    #
+    # So "defer to the engine" must never mean "do not install this extension":
+    # dropping it wholesale would hand the extension set to a GPU-less
+    # SwiftShader VM and leak the host. This pins the gate as identity-ONLY.
+    from src.services.browser.gpu_ext import ENGINE_AUTHORED_IDENTITY_ARMS
+
+    for arm in sorted(ENGINE_AUTHORED_IDENTITY_ARMS):
+        p = _probe(tmp_path / f"s{arm}", 42, arm)
+
+        # The extension set is still OURS — not the host's stub value.
+        assert p["exts_gl1"] != ["HOST_EXT"], (
+            f"{arm}: getSupportedExtensions fell through to the host — this is "
+            "the host leak the identity split must not cause"
+        )
+        assert "WEBGL_debug_renderer_info" in p["exts_gl1"]
+        # And it must NOT advertise the mobile GLES families on a desktop arm.
+        for mobile_only in ("WEBGL_compressed_texture_astc",
+                            "WEBGL_compressed_texture_etc",
+                            "WEBGL_compressed_texture_etc1"):
+            assert mobile_only not in p["exts_gl1"], (
+                f"{arm}: advertised {mobile_only} on a desktop arm — the "
+                "renderer<->extension impossibility (audit7 #3)"
+            )
+
+        # The limits are still ours.
+        assert p["maxViewportDims"] == [32767, 32767]
+        assert p["maxTextureSize"] == 16384
+        # The masked VENDOR/RENDERER are still ours.
+        assert p["vendor"] == "WebKit"
+        assert p["renderer"] == "WebKit WebGL"
+        # And the WebGL version strings.
+        assert p["version_gl1"] == "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+
+
+def test_a_platform_the_engine_does_not_honour_keeps_our_authorship(tmp_path):
+    # FAIL-SAFE DIRECTION, asserted on the EMITTED ARTIFACT rather than on the
+    # helper. The helper answering correctly in isolation is not the property
+    # that matters: what reaches the page is decided by the gate baked into
+    # gpu.js, so that is what this asserts.
+    #
+    # ⚠️ THE SUBJECT IS THE PLATFORM THE ENGINE IS TOLD, NOT `os_type`, and the
+    # rename from "arm" to "platform" is the finding rather than tidying. Two
+    # rounds leaked here, in two directions, because authorship was resolved
+    # from something OTHER than the value on the command line:
+    #
+    #   * `win`  — a spelling OUR fold recognises and the engine REJECTS.
+    #   * `windows` + device_type=mobile — an os_type the engine honours, on a
+    #     profile where the engine is handed `linux` instead.
+    #
+    # Both produced the same outcome: our layer stood down for an identity the
+    # engine was never asked to write, getParameter fell through, and the
+    # HOST's GL strings reached the page (Invariant #0). Measured on the
+    # product's own engine (fingerprint-chromium/148.0.7778.215, layer OFF,
+    # seed 9001, readings/ps161-engine-vocabulary-2026-08-25/):
+    #
+    #   windows / WINDOWS -> Google Inc. (AMD)    / …Radeon(TM) (0x00001638)
+    #   win     / Win     -> Google Inc. (Google) / SwiftShader   <- NOT honoured
+    #   linux             -> SwiftShader on EVERY seed  <- engine authors nothing
+    #
+    # so both classes are covered here, each built through the product's own
+    # single source rather than through a value this test invented.
+    for unknown in ("freebsd", "chromeos", "plan9", "", "win", "Win"):
+        js = _read(
+            build_gpu_extension(
+                1, unknown, str(tmp_path / f"u{unknown or 'empty'}"), 0,
+                engine_platform=engine_platform_for(unknown, "desktop")),
+            "gpu.js",
+        )
+        assert 'ENGINE_AUTHORS_IDENTITY = false' in js, (
+            f"os_type={unknown!r}: stood our layer down on a platform the "
+            "ENGINE does not honour. Authorship was resolved from our fold's "
+            "vocabulary instead of from the value the engine is told."
+        )
+
+    # THE device_type AXIS, in BOTH directions on the SAME os_type. This is the
+    # combination no test in this file referenced at all, and the one that
+    # leaked: `windows` is genuinely engine-honoured, so nothing about os_type
+    # distinguishes these two rows — only the value the engine is handed does.
+    # Built through engine_platform_for so the test asks the question the
+    # PRODUCT asks; a test that hard-coded "linux" here would pass even if the
+    # product stopped computing it that way.
+    desktop_js = _read(
+        build_gpu_extension(
+            1, "windows", str(tmp_path / "wd"), 0,
+            engine_platform=engine_platform_for("windows", "desktop")),
+        "gpu.js")
+    mobile_js = _read(
+        build_gpu_extension(
+            1, "windows", str(tmp_path / "wm"), 0,
+            engine_platform=engine_platform_for("windows", "mobile")),
+        "gpu.js")
+    assert 'ENGINE_AUTHORS_IDENTITY = true' in desktop_js, (
+        "windows+desktop: the engine IS told `windows` and DOES author the "
+        "identity pair there, so our layer must stand down — otherwise the two "
+        "spoofers contradict each other, which is the defect this ticket began "
+        "with."
+    )
+    assert 'ENGINE_AUTHORS_IDENTITY = false' in mobile_js, (
+        "windows+mobile: the engine is handed `linux` (a mobile profile is "
+        "backed by the nearest desktop platform), and the engine's linux arm "
+        "returns SwiftShader on every seed. Deferring here means NEITHER author "
+        "writes the identity pair, getParameter falls through, and the host's "
+        "software rasteriser reaches the page — Invariant #0, and a HOST_LEAK "
+        "row under matrix_consistency on a single row."
+    )
+
+    # And what a page actually sees, executed rather than grepped. The probe's
+    # stub answers HOST_VALUE_NOT_SPOOFED whenever the patch falls through to
+    # the real getParameter, so this is the host leak stated as an observation.
+    # windows+mobile is probed for the same reason `win` is: it is the pair that
+    # actually shipped the leak, and the artifact assertion alone would not show
+    # that a page stops seeing the host's GL strings.
+    for leaky_os, leaky_dt in (
+        ("freebsd", "desktop"), ("win", "desktop"), ("windows", "mobile"),
+    ):
+        p = _probe(tmp_path, 1, leaky_os, leaky_dt)
+        assert p["unmaskedVendor"] != "HOST_VALUE_NOT_SPOOFED", (
+            f"os_type={leaky_os!r} device_type={leaky_dt!r} fell through to "
+            "the host's UNMASKED_VENDOR"
+        )
+        assert p["unmaskedRenderer"] != "HOST_VALUE_NOT_SPOOFED", (
+            f"os_type={leaky_os!r} device_type={leaky_dt!r} fell through to "
+            "the host's UNMASKED_RENDERER"
+        )
+
+    # The recognised arms are unchanged by the fix: windows still defers, and
+    # the arms measured back onto our own authorship still keep it. Without
+    # this, "nothing defers ever" would also pass the assertions above.
+    for ours in ("linux", "macos", "android", "ios"):
+        assert 'ENGINE_AUTHORS_IDENTITY = false' in _read(
+            build_gpu_extension(
+                1, ours, str(tmp_path / f"k{ours}"), 0,
+                engine_platform=engine_platform_for(ours, "desktop")), "gpu.js")
+
+    # The helper's own contract, kept as a unit-level pin beneath the artifact
+    # assertions rather than instead of them. Asked about the value the ENGINE
+    # IS TOLD — there is deliberately no os_type-taking helper left to ask.
+    from src.services.browser.gpu_ext import (
+        engine_authors_identity,
+        engine_authors_identity_for_engine_platform as authors,
+    )
+
+    assert engine_authors_identity("plan9") is False
+    assert engine_authors_identity("") is False
+    assert authors("freebsd") is False
+    assert authors("") is False
+    # Platforms the ENGINE honours defer; everything else keeps our spoof.
+    # `win` normalises for POOL selection but the engine rejects it as a
+    # --fingerprint-platform value. Case folds because the engine folds case —
+    # measured, not assumed.
+    assert authors("windows") is True
+    assert authors("WINDOWS") is True
+    assert authors("win") is False
+    assert authors("darwin") is False
+    # linux IS honoured by the engine, but is not an arm we defer on — the
+    # engine's linux identity is constant across seeds, which Level 2 forbids.
+    # Honoured and deferred-to are two different questions.
+    assert authors("linux") is False
+
+
+def test_the_product_hands_one_string_to_both_consumers(tmp_path, monkeypatch):
+    # THE CLASS, NOT THE INSTANCE. Every previous round fixed the leak for the
+    # axis that had just been found — our-fold-vs-engine (round 2), then
+    # os_type-vs-engine_platform (round 3) — and each fix left the NEXT
+    # unenumerated axis open, because the authorship decision was still being
+    # RE-DERIVED somewhere other than where the flag is built.
+    #
+    # This asserts the property that makes a round 5 impossible on this vector:
+    # the string emitted as --fingerprint-platform and the string authorship is
+    # resolved from are ONE value, taken from ONE computation. It does not
+    # enumerate axes at all — it reads both consumers off a real spawn_browser
+    # call and requires them to agree, so an axis nobody has thought of yet
+    # cannot separate them without failing here.
+    import os as _os
+    import re as _re
+    from src.services.browser import process
+    from src.services.browser.engine_version import ChromiumVersion
+    from src.models.profile import Profile
+
+    captured = {}
+
+    class _FakePopen:
+        def __init__(self, args, **kwargs):
+            captured["args"] = args
+            self.pid = _os.getpid()
+
+    class _Store:
+        def resolve(self, name):
+            return None
+
+        def get(self, name):
+            return None
+
+    class _Bookmarks:
+        def resolve_selection(self, *a, **k):
+            return []
+
+    # A MOBILE profile reads the INSTALLED engine's Chromium version, and
+    # refuses to launch when it cannot (process._mobile_chromium_version fails
+    # CLOSED, deliberately — advertising a guessed version is the mismatch a
+    # checker notices). That refusal is correct product behaviour and is covered
+    # by its own tests; it is not what this test is about, and without a stub
+    # this test would silently measure "is an engine installed on this machine?"
+    # instead of the authorship property.
+    #
+    # ⚠️ THIS STUB IS NARROW ON PURPOSE, AND IT IS AN INSTRUMENT NOTE WORTH
+    # KEEPING. The first version of this test carried no stub and passed
+    # locally — because the dev container HAS the engine installed — then failed
+    # on every CI runner, which provisions Firefox only. Same test, same code,
+    # opposite results from the ENVIRONMENT: PS-14's lesson arriving from the
+    # green direction, where it is much easier to miss. Only the version READ is
+    # replaced; the refusal path itself is untouched, so this cannot turn a real
+    # engine-version regression green.
+    monkeypatch.setattr(
+        process, "installed_chromium_version",
+        lambda: ChromiumVersion("148.0.7778.215"))
+
+    # Every (os_type, device_type) pair the model can hold, including the ones
+    # the create door refuses: coherence.py's own docstring records that
+    # import_profile does NOT reconcile Rule 3, restore_profile is "intentionally
+    # EXEMPT", and legacy records predate it — so windows+mobile is storable and
+    # LAUNCHABLE even though it is not creatable. A test that only covered
+    # creatable pairs would not have covered the pair that leaked.
+    for os_type in ("windows", "macos", "linux", "android", "ios", "win", "freebsd"):
+        for device_type in ("desktop", "mobile"):
+            d = tmp_path / f"{os_type or 'empty'}-{device_type}"
+            monkeypatch.setattr(process, "DATA_DIR", str(d))
+            monkeypatch.setattr(process, "ProxyStore", _Store)
+            monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
+            monkeypatch.setattr(process, "write_window_entry", lambda name: None)
+            monkeypatch.setattr(process.subprocess, "Popen", _FakePopen)
+            monkeypatch.setattr(process._platform, "IS_LINUX", False)
+            process.spawn_browser(Profile(
+                name=f"{os_type}-{device_type}",
+                os_type=os_type, device_type=device_type))
+
+            flag = next(
+                a.split("=", 1)[1] for a in captured["args"]
+                if a.startswith("--fingerprint-platform="))
+
+            gpu_js = None
+            for root, _dirs, files in _os.walk(d):
+                if "gpu.js" in files and ".persona-gpu-ext" in root:
+                    gpu_js = pathlib.Path(root) / "gpu.js"
+            assert gpu_js is not None, f"no gpu extension emitted for {os_type}/{device_type}"
+            gate = _re.search(
+                r"var ENGINE_AUTHORS_IDENTITY = (\w+);", gpu_js.read_text(encoding="utf-8")).group(1)
+
+            # The property: the gate is exactly what the FLAG's own value
+            # implies. Computed from `flag` — the string actually on the command
+            # line — never from os_type, so this cannot be satisfied by a second
+            # copy of the derivation agreeing with the first by luck.
+            from src.services.browser.gpu_ext import (
+                engine_authors_identity_for_engine_platform as authors,
+            )
+            expected = "true" if authors(flag) else "false"
+            assert gate == expected, (
+                f"os_type={os_type!r} device_type={device_type!r}: the engine is "
+                f"told --fingerprint-platform={flag!r} but the GPU extension's "
+                f"authorship gate says {gate!r} (expected {expected!r}). The two "
+                "consumers disagree, which means either both authors write the "
+                "identity pair (a contradiction) or NEITHER does (a host leak)."
+            )
+
+
+def test_engine_honoured_platforms_match_the_declared_machines(tmp_path):
+    # ENGINE_HONOURED_PLATFORMS is RESTATED in the browser layer rather than
+    # imported from verify — engine_platform sits on the launch path and must
+    # not pull the whole verify tier in to answer one question. A restated list
+    # is a list that can drift, so pin it to the repo's other statement of the
+    # same fact.
+    #
+    # This is the check that would have caught the round-2 defect: authorship
+    # and --fingerprint-platform are two names for ONE vocabulary, and that leak
+    # happened precisely because a second, different list (RECOGNISED_OS_TYPES)
+    # was consulted instead. If the engine ever gains or loses a platform,
+    # DECLARED_MACHINES is where the repo says so, and this fails until the
+    # browser layer is told too.
+    from src.services.browser.engine_platform import ENGINE_HONOURED_PLATFORMS
+    from src.services.verify.browser_tier import DECLARED_MACHINES
+
+    assert ENGINE_HONOURED_PLATFORMS == set(DECLARED_MACHINES), (
+        "the browser layer's engine vocabulary drifted from "
+        "browser_tier.DECLARED_MACHINES. Authorship must be keyed on what the "
+        "engine honours, so these two cannot be allowed to disagree."
+    )
+
+    # gpu_ext must not hold a SECOND copy of it. It re-exports the one in
+    # engine_platform; a restatement here would be the round-2 defect's exact
+    # shape (two lists, written independently, free to drift).
+    from src.services.browser import gpu_ext
+
+    assert gpu_ext.ENGINE_HONOURED_PLATFORMS is ENGINE_HONOURED_PLATFORMS, (
+        "gpu_ext restated the engine vocabulary instead of re-exporting the "
+        "one in engine_platform — two copies can drift, and that is the class "
+        "of defect this pins."
+    )
+
+    # And the property that actually matters, stated as behaviour rather than as
+    # set equality: our fold recognises spellings the engine does NOT honour,
+    # and every one of them must keep OUR authorship. This is the gap the
+    # `win` host leak lived in, asserted as a class rather than as one alias.
+    from src.services.browser.gpu_ext import (
+        RECOGNISED_OS_TYPES,
+        engine_authors_identity_for_engine_platform,
+    )
+
+    alias_only = RECOGNISED_OS_TYPES - ENGINE_HONOURED_PLATFORMS
+    assert alias_only, "expected our fold to recognise aliases the engine does not"
+    for alias in sorted(alias_only):
+        # An alias reaches the engine unchanged — engine_platform_for passes a
+        # desktop os_type straight through — so this is the value the engine
+        # would genuinely be told.
+        assert engine_authors_identity_for_engine_platform(
+            engine_platform_for(alias, "desktop")) is False, (
+            f"os_type={alias!r} is recognised by OUR fold but not honoured by "
+            "the engine, yet authorship deferred — neither author would write "
+            "the identity pair and the host's GL strings would reach the page."
+        )
+
+
+
+def test_recognised_os_types_cover_every_spelling_the_fold_accepts(tmp_path):
+    # The fail-safe above is only as good as the agreement between the two: a
+    # spelling the fold maps to a real arm but RECOGNISED_OS_TYPES omits would
+    # lose its deferral silently, and one recognised but unmapped would be
+    # treated as measured. Derived from one table so they cannot drift — pin
+    # that, rather than a hand-copied list that would restate the bug.
+    from src.services.browser.gpu_ext import (
+        RECOGNISED_OS_TYPES,
+        _OS_NORM_TABLE,
+        _os_norm,
+    )
+
+    from_table = {s for spellings, _ in _OS_NORM_TABLE for s in spellings}
+    assert RECOGNISED_OS_TYPES == from_table
+
+    # Every recognised spelling folds to a real arm, never to the default.
+    for spellings, arm in _OS_NORM_TABLE:
+        for spelling in spellings:
+            assert _os_norm(spelling) == arm
+
+    # And the default is still what an unrecognised value POOLS as — the fold
+    # itself is unchanged, only the authorship read off it.
+    assert _os_norm("plan9") == "windows"
+
+
+def test_engine_authored_set_names_only_arms_the_engine_actually_has(tmp_path):
+    # The engine has no android or ios platform — process.py backs those with
+    # the nearest desktop platform it DOES spoof — so an engine-authored
+    # identity there would be a desktop card on a phone UA, the exact
+    # impossibility the ANDROID_GPUS arm exists to prevent.
+    from src.services.browser.gpu_ext import ENGINE_AUTHORED_IDENTITY_ARMS
+
+    assert "android" not in ENGINE_AUTHORED_IDENTITY_ARMS
+    assert "ios" not in ENGINE_AUTHORED_IDENTITY_ARMS
+    # linux is measured CONSTANT across seeds — deferring there would give every
+    # linux profile one shared card, which Level 2 forbids outright.
+    assert "linux" not in ENGINE_AUTHORED_IDENTITY_ARMS
+
+
+def test_no_unsubstituted_placeholder_survives_into_any_emitted_script(tmp_path):
+    # A placeholder that reaches the page is a JS syntax error, which means the
+    # whole GPU spoof silently never installs — on every profile of that arm.
+    for arm in ("windows", "macos", "android", "ios", "linux"):
+        js = _read(build_gpu_extension(7, arm, str(tmp_path / f"ph{arm}"), 0, engine_platform=engine_platform_for(arm, "desktop")), "gpu.js")
+        assert "__ENGINE_AUTHORS_IDENTITY__" not in js
+        assert "var ENGINE_AUTHORS_IDENTITY = " in js

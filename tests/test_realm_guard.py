@@ -47,6 +47,7 @@ import subprocess
 import pytest
 
 from src.services.browser.audio_ext import _CHROMIUM_NATIVE_WRAP, _audio_patch_js
+from src.services.browser.engine_platform import engine_platform_for
 from src.services.browser.worker_wrap import realm_guard_js, realm_slot_js
 from tests.realm_harness import HARNESS
 
@@ -465,7 +466,7 @@ def _generated_scripts(tmp_path):
         "canvas_ctx": js(canvas_ctx_ext.build_canvas_ctx_extension("ios", str(d / "canvas"))),
         "device": js(device_ext.build_device_extension(SEED, str(d / "device"), 3, None, "windows")),
         "geo": js(geo_ext.build_geo_extension(52.52, 13.40, str(d / "geo"))),
-        "gpu": js(gpu_ext.build_gpu_extension(SEED, "windows", str(d / "gpu"), 3)),
+        "gpu": js(gpu_ext.build_gpu_extension(SEED, "windows", str(d / "gpu"), 3, engine_platform=engine_platform_for("windows", "desktop"))),
         "locale": js(locale_ext.build_locale_extension("de-DE", str(d / "locale"))),
         "measuretext": js(measuretext_ext.build_measuretext_extension(str(d / "mt"))),
         "mobile": js(mobile_ext.build_mobile_extension(
