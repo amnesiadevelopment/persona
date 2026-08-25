@@ -477,3 +477,118 @@ def test_engine_build_reads_unknown_rather_than_empty_when_unresolvable(
 
     monkeypatch.setattr(updater, "current_version", _raise)
     assert v.engine_build() == "unknown"
+
+
+# The tag is HARDCODED, and deliberately cannot be this machine's. A fixture
+# built with `v._record(...)` on the machine that then replays it makes source
+# and local provenance identical BY CONSTRUCTION, so the substitution this
+# guards against is invisible — the probe computes its expected value from the
+# thing under test and agrees with itself. That confound is what let the defect
+# ship: the neighbouring round-trip test uses it and stayed green throughout.
+FOREIGN_BUILD = "999.0.NOT-THIS-MACHINES-BUILD"
+FOREIGN_MEASURED_AT = "2026-08-20T06:40:00+00:00"
+
+
+def _foreign_record(values) -> dict:
+    """A record as some OTHER machine's `check --output` would have written it."""
+    return {
+        "measured_at": FOREIGN_MEASURED_AT,
+        "engine_build": FOREIGN_BUILD,
+        "engine_authored_arms": ["windows"],
+        "readings": {"windows": {str(s): v_ for s, v_ in zip(SEEDS, values)}},
+        "result": {"verdict": "FINDING"},
+    }
+
+
+def test_replay_preserves_the_measuring_machines_build_rather_than_restamping_it(
+    tmp_path,
+):
+    # The documented remedy for a red run is to name the bad tag in
+    # policy.KNOWN_BAD_VERSIONS. `replay` is the forensic tool for reading that
+    # artifact after the runner that measured it was destroyed — on a machine
+    # with no engine at all. If it re-derives the build, it does not blank the
+    # field, it substitutes a PLAUSIBLE WRONG tag: the operator blocklists the
+    # replaying machine's build, refuses a good build, and leaves the bad one
+    # installing hourly. Same failure shape as the breach this module catches.
+    assert v.engine_build() != FOREIGN_BUILD, (
+        "fixture must not collide with the local build, or this test cannot fail"
+    )
+
+    record = tmp_path / "from-the-runner.json"
+    record.write_text(
+        json.dumps(_foreign_record(["Vendor | SAME"] * len(SEEDS))),
+        encoding="utf-8",
+    )
+
+    out = tmp_path / "re-verdict.json"
+    assert v._cmd_replay(
+        argparse.Namespace(record=str(record), output=str(out))
+    ) == v.EXIT_FINDING
+
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert written["engine_build"] == FOREIGN_BUILD
+    assert written["measured_at"] == FOREIGN_MEASURED_AT
+    # The re-verdict's own moment is recorded SEPARATELY, so the moment of
+    # measurement and the moment of re-reading cannot be confused.
+    assert written["replayed_at"]
+    assert written["replayed_at"] != FOREIGN_MEASURED_AT
+
+
+def test_replay_preserves_the_build_even_where_no_engine_is_installed(
+    tmp_path, monkeypatch
+):
+    # The environment `replay`'s own docstring describes: "a machine with no
+    # engine, no display and no runner". There engine_build() resolves
+    # "unknown" — so a re-derived record would report `engine_build: "unknown"`
+    # for a run that knew its tag perfectly well. This is the case that makes
+    # the whole artifact unactionable, so it is asserted directly.
+    monkeypatch.setattr(v, "engine_build", lambda: "unknown")
+
+    record = tmp_path / "from-the-runner.json"
+    record.write_text(
+        json.dumps(_foreign_record(["Vendor | SAME"] * len(SEEDS))),
+        encoding="utf-8",
+    )
+
+    out = tmp_path / "re-verdict.json"
+    v._cmd_replay(argparse.Namespace(record=str(record), output=str(out)))
+
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert written["engine_build"] == FOREIGN_BUILD
+    assert written["engine_build"] != "unknown"
+
+
+def test_check_still_stamps_THIS_machine_because_it_is_the_one_measuring(
+    monkeypatch,
+):
+    # The mirror image, so the fix cannot over-apply. `check` IS the measuring
+    # machine, so local values are the truth there and must still be recorded;
+    # only `replay` inherits. A record with no source carries no `replayed_at`.
+    monkeypatch.setattr(v, "engine_build", lambda: "148.0.LOCAL")
+    live = {"windows": {s: f"Vendor | GPU-{i}" for i, s in enumerate(SEEDS)}}
+
+    doc = v._record(live, v.classify(live))
+    assert doc["engine_build"] == "148.0.LOCAL"
+    assert "replayed_at" not in doc
+
+
+def test_a_record_predating_the_provenance_fields_still_resolves_them(tmp_path):
+    # A source record missing/blank provenance must not propagate an empty
+    # string that reads like a value. Falsy source values fall back to locally
+    # derived ones — the only case where re-derivation is correct.
+    record = tmp_path / "old.json"
+    record.write_text(
+        json.dumps({
+            "engine_build": "",
+            "readings": {"windows": {str(s): "Vendor | SAME" for s in SEEDS}},
+        }),
+        encoding="utf-8",
+    )
+
+    out = tmp_path / "re-verdict.json"
+    v._cmd_replay(argparse.Namespace(record=str(record), output=str(out)))
+
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert written["engine_build"] == v.engine_build()
+    assert written["engine_build"]
+    assert written["measured_at"]
