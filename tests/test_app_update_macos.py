@@ -744,3 +744,268 @@ def test_revert_refuses_when_nothing_is_retained(monkeypatch, tmp_path):
 
     assert _tree_manifest(str(installed)) == before
     assert _retained_siblings(installed) == ["persona.app"]
+
+
+# --- PS-164: the CORRELATED double rename failure -------------------------
+#
+# revert_to_previous_build parks the current build, then renames the retained
+# .bak into place. When BOTH renames fail the install location was left EMPTY,
+# while the function's own docstring guaranteed the opposite ("a rename that
+# fails midway leaves the operator with something rather than an empty install
+# location").
+#
+# WHERE THE CORRELATION ACTUALLY LIVES — this was measured, not assumed, and it
+# is NOT where the ticket said. A pre-existing non-writable /Applications
+# (EACCES) cannot produce the empty-install state at all: the FIRST rename
+# (app -> .reverting) is not inside its own except, so it fails first, hits the
+# outer handler, and nothing has moved yet — the app survives untouched. The
+# real correlation is that every restore attempt shares ONE destination
+# (`app`), so a condition attached to THAT DESTINATION defeats the retained
+# bundle and the parked bundle identically, with the same errno from both
+# sources. The tests below drive that shape.
+#
+# Every assertion is on FILES ON DISK after a real revert_to_previous_build
+# call, and each one first proves its own precondition: that an app WAS
+# installed, and that BOTH restore attempts were genuinely made and failed. An
+# assertion that would pass against an inert implementation is not coverage.
+
+
+def _dest_failing_rename(monkeypatch, app, *, fail_first):
+    """Instrument ONLY os.rename so that renames landing at `app` fail, for the
+    first `fail_first` such attempts (use a large number for "always").
+
+    Keyed on the DESTINATION rather than on a source or a call index, because
+    that is the actual correlated shape: one condition on `app`, every source
+    defeated identically. Returns the list of (src, dst) basenames attempted,
+    so a test can prove both restore attempts really happened."""
+    import errno
+
+    real_rename = au.os.rename
+    attempts = []
+    failed = []
+
+    def failing_rename(src, dst):
+        attempts.append((os.path.basename(src), os.path.basename(dst)))
+        if dst == app and len(failed) < fail_first:
+            failed.append((os.path.basename(src), os.path.basename(dst)))
+            raise OSError(errno.EACCES, "Permission denied")
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(au.os, "rename", failing_rename)
+    return attempts, failed
+
+
+def test_revert_double_rename_failure_still_leaves_a_launchable_bundle(
+    monkeypatch, tmp_path
+):
+    # AC1 + AC2. The load-bearing one: drive the correlated double failure
+    # through the REAL revert_to_previous_build and assert on files on disk.
+    staged, installed = _mac_apply_fixture(monkeypatch, tmp_path)
+    previous = _tree_manifest(str(installed))
+    _drive_mac_update(monkeypatch, staged)
+    app = str(installed)
+
+    # PRECONDITION, proved rather than assumed: there IS an app installed and a
+    # retained bundle beside it before anything is induced to fail.
+    assert os.path.isdir(app), "precondition: an app is installed"
+    assert _retained_siblings(installed) == ["persona.app", "persona.app.bak"]
+
+    # fail the revert's own restore AND the compensating one — the two that
+    # share the destination
+    attempts, failed = _dest_failing_rename(monkeypatch, app, fail_first=2)
+    msgs = []
+    went = au.revert_to_previous_build(log=msgs.append)
+
+    # PRECONDITION, part two: the induced failure was actually observable —
+    # both restore attempts were made, from DIFFERENT sources, and both failed.
+    assert len(failed) == 2, f"both renames must be attempted and fail: {attempts}"
+    assert {src for src, _dst in failed} == {
+        "persona.app.bak",
+        "persona.app.reverting",
+    }, f"the two failures must be the two different sources: {failed}"
+
+    # THE CONSEQUENCE: something launchable is at the install location.
+    assert os.path.isdir(app), (
+        "the double rename failure left NO bundle at the install location, "
+        "which is exactly what the docstring guarantees cannot happen"
+    )
+    assert _tree_manifest(app) == previous, (
+        "what is installed must be a whole, real bundle — the retained "
+        "previous build, relocated rather than reconstructed"
+    )
+    # and the revert stayed reversible: still exactly one retained sibling
+    assert _retained_siblings(installed) == ["persona.app", "persona.app.bak"]
+
+    # THE CONSEQUENCE THE UI ACTS ON. Reaching the goal the hard way is still
+    # reaching it: the previous version IS installed above, so this arm must
+    # report success. src/ui/app.py:553 branches on this exact return value,
+    # and a falsy one there tells the operator "couldn't go back — see the
+    # log" while they sit in front of a successfully reverted app, with no
+    # prompt to restart into it. Asserting the disk state alone leaves that
+    # one-token regression green.
+    assert went == app, (
+        "the revert reached its goal the hard way — the previous version IS "
+        "installed, so the UI must render 'restart to run the previous "
+        "version', not 'couldn't go back' (src/ui/app.py:553 branches on "
+        "this exact value)"
+    )
+    assert "now installed" in msgs[0] and "restart" in msgs[0], (
+        "the recovered arm is the third of Work #3's three situations and "
+        "the only one carrying an action the operator must take; it must "
+        "read as neither refusal"
+    )
+
+
+def test_revert_recovers_when_the_install_location_is_occupied(
+    monkeypatch, tmp_path
+):
+    # AC2 against the correlated cause with NO injected failure at all: a real
+    # ENOTEMPTY from the OS. Something occupies `app` in the window after the
+    # current build is parked, which defeats BOTH restore renames identically.
+    staged, installed = _mac_apply_fixture(monkeypatch, tmp_path)
+    _drive_mac_update(monkeypatch, staged)
+    app = str(installed)
+    current = _tree_manifest(app)
+    assert os.path.isdir(app), "precondition: an app is installed"
+
+    real_rename = au.os.rename
+    squatted = []
+
+    def rename_then_squat(src, dst):
+        result = real_rename(src, dst)
+        if dst.endswith(".reverting"):
+            # the install location was just vacated — something else takes it
+            os.makedirs(os.path.join(app, "Contents"), exist_ok=True)
+            with open(os.path.join(app, "Contents", "squatter"), "w") as f:
+                f.write("not ours")
+            squatted.append(dst)
+        return result
+
+    monkeypatch.setattr(au.os, "rename", rename_then_squat)
+    msgs = []
+    au.revert_to_previous_build(log=msgs.append)
+
+    assert squatted, "precondition: the install location was actually occupied"
+    assert os.path.isdir(app), "an occupied destination must not end as no app"
+    manifest = _tree_manifest(app)
+    assert "Contents/squatter" not in manifest, (
+        "the obstruction must be cleared, not left as the installed app"
+    )
+    assert manifest == current, (
+        "the build the operator was running must be back at the install "
+        "location, whole"
+    )
+    # the retained bundle is untouched, so a second attempt can still work
+    assert _retained_siblings(installed) == ["persona.app", "persona.app.bak"]
+
+
+def test_revert_reports_the_double_failure_distinctly(monkeypatch, tmp_path):
+    # Work #3. In the single-failure case the operator's app is fine; in the
+    # unrecoverable double-failure case there is no app. The same sentence for
+    # both tells the operator nothing about which situation they are in.
+    staged, installed = _mac_apply_fixture(monkeypatch, tmp_path)
+    _drive_mac_update(monkeypatch, staged)
+    app = str(installed)
+
+    single = []
+    _dest_failing_rename(monkeypatch, app, fail_first=1)
+    au.revert_to_previous_build(log=single.append)
+    assert os.path.isdir(app), "single failure: the app is fine"
+    assert _tree_manifest(app), "single failure: and it is a real bundle"
+
+    # rebuild the same starting state for the unrecoverable arm
+    second = tmp_path / "second"
+    second.mkdir()
+    staged2, installed2 = _mac_apply_fixture(monkeypatch, second)
+    _drive_mac_update(monkeypatch, staged2)
+    app2 = str(installed2)
+    double = []
+    _, failed = _dest_failing_rename(monkeypatch, app2, fail_first=99)
+    au.revert_to_previous_build(log=double.append)
+    assert len(failed) >= 2, "precondition: this arm really did fail twice"
+    assert not os.path.isdir(app2), (
+        "precondition for the message assertion: this is the arm where "
+        "nothing could be put back"
+    )
+
+    # THE THIRD SITUATION. Work #3 is a three-way distinction, not a two-way
+    # one: between "your app is fine" and "you have no app" sits the arm where
+    # the restore failed but the revert's GOAL was reached anyway — the
+    # previous version is installed. That is the only one of the three
+    # carrying an instruction the operator must act on, so it is the one that
+    # must least be allowed to read as either refusal.
+    third = tmp_path / "third"
+    third.mkdir()
+    staged3, installed3 = _mac_apply_fixture(monkeypatch, third)
+    _drive_mac_update(monkeypatch, staged3)
+    app3 = str(installed3)
+    recovered = []
+    _, failed3 = _dest_failing_rename(monkeypatch, app3, fail_first=2)
+    went3 = au.revert_to_previous_build(log=recovered.append)
+    assert len(failed3) == 2, "precondition: this arm really did fail twice"
+    assert os.path.isdir(app3), (
+        "precondition for the message assertion: this is the arm where the "
+        "previous version DID land at the install location"
+    )
+    assert went3 == app3, (
+        "precondition: and the function reports that it got there — the "
+        "sentence and the return value must agree about which arm this is"
+    )
+
+    assert single and double and recovered
+    # all THREE mutually distinct, not two of three: a message that is unique
+    # against one arm but shared with the other still leaves the operator
+    # unable to tell which situation they are in.
+    assert len({single[0], double[0], recovered[0]}) == 3, (
+        "the three situations differ radically — a working app, no app, and "
+        "a completed revert — so no two may report the same sentence: "
+        f"{single[0]!r} / {double[0]!r} / {recovered[0]!r}"
+    )
+    assert app2 in double[0] and "could not be put back" in double[0], (
+        "the unrecoverable arm must say plainly that there is no app at the "
+        "install location, and where it is"
+    )
+    assert "now installed" in recovered[0] and "restart" in recovered[0], (
+        "the recovered arm must carry its action — the operator has to "
+        "restart to actually run the version they asked to go back to"
+    )
+    assert "could not be put back" not in recovered[0], (
+        "and it must not borrow the unrecoverable arm's language: there IS "
+        "an app at the install location on this arm"
+    )
+    # narrowed honestly: BOTH bundles are safe beside the install location, so
+    # the situation is recoverable by the operator
+    assert _retained_siblings(installed2) == [
+        "persona.app.bak",
+        "persona.app.reverting",
+    ]
+
+
+def test_reverting_orphan_does_not_survive_the_next_update(
+    monkeypatch, tmp_path
+):
+    # AC3, the same depth-not-duration bound PS-152 established for `.bak`:
+    # counted, not spot-checked. Before this, the orphan was cleaned only by
+    # the NEXT REVERT's own pre-clean — so an operator who reverted once and
+    # never again kept a full bundle forever.
+    staged, installed = _mac_apply_fixture(monkeypatch, tmp_path)
+    _drive_mac_update(monkeypatch, staged)
+    app = str(installed)
+
+    _, failed = _dest_failing_rename(monkeypatch, app, fail_first=99)
+    au.revert_to_previous_build(log=lambda m: None)
+
+    # PRECONDITION: an orphan really was produced by a real failed revert
+    assert len(failed) >= 2
+    assert "persona.app.reverting" in _retained_siblings(installed), (
+        "precondition: the failed revert left a parked bundle behind"
+    )
+
+    # a later successful update must bound it, exactly as it bounds a stale .bak
+    staged.write_bytes(b"dmg")
+    _drive_mac_update(monkeypatch, staged, payload="newer")
+
+    assert _retained_siblings(installed) == ["persona.app"], (
+        "the .reverting orphan must not outlive the next update — a full "
+        "bundle kept forever is the leak this bound exists to prevent"
+    )
