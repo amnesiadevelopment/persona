@@ -875,6 +875,15 @@ def _apply_macos(staged: str, say) -> bool:
             return False
         say("Update: installing the new version…")
         shutil.rmtree(backup, ignore_errors=True)
+        # The revert's parked bundle gets the SAME depth-not-duration bound as
+        # the stale .bak above. A revert that is refused after moving the
+        # current build aside can leave `app + ".reverting"` behind, and until
+        # now the only thing that removed it was the NEXT revert's own
+        # pre-clean (revert_to_previous_build) — so an operator who reverted
+        # once and never again kept a full bundle forever. Bounding it here,
+        # beside its sibling, is the same self-bounding shape the Firefox
+        # engine states in place at browser/engine_install.py:628-631.
+        shutil.rmtree(app + ".reverting", ignore_errors=True)
         # the target may not exist yet (translocated run falling back to a
         # fresh /Applications install) — then there is nothing to move aside
         moved_aside = os.path.exists(app)
@@ -992,6 +1001,57 @@ def rollback_target() -> str:
         return ""
 
 
+def _restore_install_location(app: str, *candidates: str) -> str:
+    """Put SOMETHING launchable back at `app`, trying each candidate bundle in
+    order. Returns the candidate that landed there, or "" when none could.
+
+    This exists because the revert's restore attempts all share ONE
+    destination, and that is exactly where the correlation lives: a condition
+    attached to `app` defeats every source identically, so "try the other
+    bundle" is not on its own a recovery. Two failures here are the expected
+    shape, not a surprise.
+
+    RENAME ONLY — never a copy, for the reason revert_to_previous_build states
+    at length: a copytree-restored bundle has a broken code signature and
+    Gatekeeper refuses to launch it, so a "recovery" that copies would leave
+    something that is not a launchable app at all.
+
+    The one correlated cause that IS recoverable is an OCCUPIED destination
+    (ENOTEMPTY defeats every source with the same errno). Only then, and only
+    after every plain attempt has failed, is the obstruction cleared and the
+    candidates retried — safe because we renamed our own bundle out of `app`
+    moments ago, so whatever sits there now is not the bundle we are holding.
+    A destination that is unwritable rather than occupied (the volume going
+    read-only mid-flight) is NOT recoverable by any rename, and this returns
+    "" rather than pretending otherwise."""
+    import shutil
+
+    live = [c for c in candidates if c and os.path.isdir(c)]
+
+    def _try(cand: str) -> bool:
+        try:
+            os.rename(cand, app)
+            return True
+        except OSError:
+            return False
+
+    for cand in live:
+        if _try(cand):
+            return cand
+    if live and os.path.exists(app):
+        try:
+            if os.path.isdir(app) and not os.path.islink(app):
+                shutil.rmtree(app, ignore_errors=True)
+            else:
+                os.remove(app)
+        except OSError:
+            pass
+        for cand in live:
+            if _try(cand):
+                return cand
+    return ""
+
+
 def revert_to_previous_build(log=None) -> str:
     """Go BACK to the retained previous .app bundle. Returns the bundle path now
     installed, or "" when the revert was refused or could not be completed.
@@ -1010,7 +1070,20 @@ def revert_to_previous_build(log=None) -> str:
     The new bundle is moved aside first, so a rename that fails midway leaves
     the operator with something rather than an empty install location, and the
     build being reverted FROM lands in the retained slot — making the revert
-    itself undoable by the same gesture."""
+    itself undoable by the same gesture.
+
+    That "something rather than an empty install location" is a guarantee this
+    function now actually keeps, and it took real work: the restore attempts
+    all share ONE destination (`app`), which is precisely where a correlated
+    failure lives — a condition attached to that destination defeats the
+    retained bundle and the parked bundle identically, so the compensating
+    rename is attempted under the very condition that just defeated its twin.
+    Both are therefore tried, and an OCCUPIED destination is cleared and
+    retried, by _restore_install_location. The one case that stays empty is a
+    destination no rename can write at all (the volume going read-only
+    mid-flight); the refusal message says so explicitly rather than reporting
+    it as the ordinary "your app is fine" refusal, because the operator's
+    situation differs radically between the two."""
     def _say(m):
         if log:
             log(m)
@@ -1033,12 +1106,45 @@ def revert_to_previous_build(log=None) -> str:
         try:
             os.rename(target, app)
         except OSError as e:
-            _say(f"Update: couldn't go back to the previous version ({e}).")
             if current_exists:
-                try:
-                    os.rename(parked, app)  # put the new build back
-                except OSError:
-                    pass
+                # Put SOMETHING launchable back. Preference order matters: the
+                # build we just moved aside is what the operator was running a
+                # moment ago, so it is restored first and the retained bundle
+                # is the fallback — either outcome beats an empty install
+                # location, and both are real signed bundles because this only
+                # ever renames.
+                landed = _restore_install_location(app, parked, target)
+                if landed == parked:
+                    # Case A, the ordinary refusal: their app is exactly as it
+                    # was and nothing else needs saying.
+                    _say("Update: couldn't go back to the previous version "
+                         f"({e}).")
+                elif landed == target:
+                    # The revert's restore failed but its own goal was reached
+                    # anyway — the previous version IS what is installed now.
+                    # The retained slot was just vacated by that landing, so
+                    # move the reverted-FROM build into it exactly as the
+                    # success path does; otherwise this arm would strand the
+                    # new build under `.reverting` and leave the revert not
+                    # undoable, which is the property the docstring promises.
+                    try:
+                        os.rename(parked, target)
+                    except OSError:
+                        pass
+                    _say("Update: couldn't complete going back cleanly "
+                         f"({e}), but the previous version is now installed — "
+                         "restart persona to run it.")
+                    return app
+                else:
+                    # Case B: nothing could be put back. Say so plainly — this
+                    # operator has no app to launch, which is a different
+                    # situation from the refusal above, not a louder one.
+                    _say("Update: couldn't go back to the previous version "
+                         f"({e}), and the app could not be put back at "
+                         f"{app}. Both bundles are safe beside it — "
+                         "try going back again, or reinstall persona.")
+            else:
+                _say(f"Update: couldn't go back to the previous version ({e}).")
             return ""
         # the reverted-from build now occupies the single retained slot
         if current_exists:
