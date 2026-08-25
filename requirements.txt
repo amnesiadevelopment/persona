@@ -11,8 +11,16 @@ uvicorn[standard]>=0.30.0
 # `_rust.abi3.so` filename — yielding a bundle whose metadata says 50.0.0 and
 # whose shared object says 48.0.1, which cryptography refuses to import.
 # <49 keeps both arches on the last universal2 line. Not a security pin; a
-# range, so 48.0.x patches still land. Windows/Linux resolve 48.0.1 either way.
-cryptography>=42.0.0,<49
+# range, so 48.0.x patches still land.
+#
+# THE darwin MARKER IS LOAD-BEARING — do not collapse these two lines into one.
+# The two-pass merge is macOS-ONLY; Windows and Linux resolve once and cannot
+# hit it. Measured with pip: without the cap win/linux resolve 50.0.0, WITH an
+# unconditional cap they resolve 48.0.1 — so an unscoped bound would downgrade
+# a security library two major versions on the platforms that were never broken
+# (Linux passed 11/11 imports on 50.0.0). Scoped, it costs them nothing.
+cryptography>=42.0.0,<49; sys_platform == "darwin"
+cryptography>=42.0.0; sys_platform != "darwin"
 mcp>=1.28.0,<2
 paramiko>=3.4
 PySocks>=1.7
