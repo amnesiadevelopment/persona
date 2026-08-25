@@ -58,6 +58,81 @@ def test_unknown_arm_has_no_bar_rather_than_a_zero_one():
     assert v.fallback_pool_size("plan9") == 0
 
 
+def test_a_known_pool_arm_whose_bar_cannot_be_read_is_inconclusive_not_ok(
+    monkeypatch,
+):
+    # THE BAR DISAPPEARING MUST NOT READ AS THE BAR BEING MET.
+    #
+    # fallback_pool_size SCRAPES the pool literals out of gpu_ext's emitted
+    # source, so any reformatting there — a changed indent, a trailing comment,
+    # a reflow — can make its regex miss and return 0. Before this was fixed,
+    # bar_for then returned None, classify's TOO_NARROW branch was skipped for
+    # want of a bar, and the arm fell through to `else: OK`.
+    #
+    # That silently downgrades this gate from "did it vary at LEAST as well as
+    # the pool we gave up?" to "did it vary AT ALL?" — and the weaker question
+    # is demonstrably insufficient: macos varies (2 distinct values) while two
+    # profiles collide 76.9% of the time, so it passes "varied" and fails the
+    # bar. Simulate the drift by making the scrape miss.
+    monkeypatch.setattr(v, "fallback_pool_size", lambda arm: 0)
+
+    # Readings that are otherwise perfectly healthy: 10 seeds, 5 evenly-used
+    # identities. The ONLY thing wrong is that we could not read the bar.
+    result = v.classify(_arm(["c0", "c1", "c2", "c3", "c4"] * 2))
+    entry = result["per_arm"]["windows"]
+
+    assert entry["verdict"] == "INCONCLUSIVE", (
+        "a known-pool arm whose bar could not be read fell through to a PASS; "
+        "we failed to look must never wear the code that means we looked and "
+        "it was fine"
+    )
+    assert result["inconclusive"] == ["windows"]
+    assert v.exit_code_for(result) == v.EXIT_CANNOT_RUN
+    # The detail must name the actual cause so the next reader fixes the scrape
+    # rather than hunting the engine.
+    assert "fallback_pool_size" in entry["detail"]
+
+
+def test_a_missing_bar_does_not_downgrade_a_constant_arm_to_inconclusive(
+    monkeypatch,
+):
+    # CONSTANT is a flat Level 2 breach, not a COMPARISON against the bar, so it
+    # must still be a FINDING when the bar is unreadable. Ordering the missing-
+    # bar check ahead of it would turn the severest verdict this gate has into
+    # "we could not say" — trading a false pass for a lost finding.
+    monkeypatch.setattr(v, "fallback_pool_size", lambda arm: 0)
+
+    result = v.classify(_arm(["one-card"] * 10))
+    assert result["per_arm"]["windows"]["verdict"] == "CONSTANT"
+    assert result["findings"] == ["windows"]
+    assert v.exit_code_for(result) == v.EXIT_FINDING
+
+
+def test_an_arm_with_no_pool_by_design_is_not_forced_inconclusive(monkeypatch):
+    # The two reasons fallback_pool_size returns 0 are different facts and only
+    # one is a failure. An arm persona ships NO pool for has nothing to compare
+    # against by construction, and must keep judging on what it can (distinct-
+    # ness) rather than being reported as a broken run forever.
+    assert v.has_known_pool("windows") is True
+    assert v.has_known_pool("plan9") is False
+
+    result = v.classify(_arm(["c0", "c1", "c2", "c3", "c4"] * 2, arm="plan9"))
+    assert result["per_arm"]["plan9"]["verdict"] == "OK"
+    assert v.exit_code_for(result) == v.EXIT_PASS
+
+
+def test_has_known_pool_agrees_with_the_arms_the_scrape_can_actually_read():
+    # has_known_pool is what promotes a 0 into a finding, so it must not claim
+    # an arm the scrape cannot in fact read — that would make every run of a
+    # healthy gate INCONCLUSIVE. Assert the two agree on the shipped source.
+    for arm in ("windows", "macos", "linux", "android"):
+        assert v.has_known_pool(arm) is True
+        assert v.fallback_pool_size(arm) > 0, (
+            f"{arm} is declared a known-pool arm but its size scrapes as 0 — "
+            "the regex and the map have drifted apart"
+        )
+
+
 # --------------------------------------------------------------------------
 # Collision probability — the metric, and WHY it is not a distinct count
 # --------------------------------------------------------------------------

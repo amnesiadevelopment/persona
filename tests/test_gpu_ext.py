@@ -1106,17 +1106,87 @@ def test_the_split_is_identity_only_every_other_vector_stays_ours(tmp_path):
 
 
 def test_an_unrecognised_arm_keeps_our_authorship(tmp_path):
-    # FAIL-SAFE DIRECTION. An arm nobody has measured must fall to persona's own
-    # spoof, never to whatever the host happens to report. os_norm folds unknown
-    # values into "windows", so this also pins that the fold cannot smuggle an
-    # unmeasured platform into the engine-authored set by accident... which it
-    # WOULD, since windows is engine-authored. Assert the real consequence
-    # rather than a comfortable one: the value must at minimum never be the
-    # host's, and the helper must refuse to claim an unknown arm is deferred.
-    from src.services.browser.gpu_ext import engine_authors_identity
+    # FAIL-SAFE DIRECTION, asserted on the EMITTED ARTIFACT rather than on the
+    # helper. The helper answering correctly in isolation is not the property
+    # that matters: os_norm folds every unrecognised os_type into "windows",
+    # which IS engine-authored, so a build that consulted the folded value would
+    # stand our layer down on an arm the engine was never told to spoof
+    # (process.py passes the RAW os_type as --fingerprint-platform). Neither
+    # author would write the identity pair and the HOST's GL strings would reach
+    # the page — Invariant #0, reached through the direction the docstring
+    # promises is safe. An earlier version of this test called only the helper
+    # and so could not have caught that; assert the real consequence.
+    for unknown in ("freebsd", "chromeos", "plan9", ""):
+        js = _read(
+            build_gpu_extension(1, unknown, str(tmp_path / f"u{unknown or 'empty'}"), 0),
+            "gpu.js",
+        )
+        assert 'ENGINE_AUTHORS_IDENTITY = false' in js, (
+            f"os_type={unknown!r}: stood our layer down on an UNMEASURED arm. "
+            "The windows fold reached the authorship decision."
+        )
+
+    # And what a page actually sees, executed rather than grepped. The probe's
+    # stub answers HOST_VALUE_NOT_SPOOFED whenever the patch falls through to
+    # the real getParameter, so this is the host leak stated as an observation.
+    p = _probe(tmp_path, 1, "freebsd")
+    assert p["unmaskedVendor"] != "HOST_VALUE_NOT_SPOOFED", (
+        "an unrecognised arm fell through to the host's UNMASKED_VENDOR"
+    )
+    assert p["unmaskedRenderer"] != "HOST_VALUE_NOT_SPOOFED", (
+        "an unrecognised arm fell through to the host's UNMASKED_RENDERER"
+    )
+
+    # The recognised arms are unchanged by the fix: windows still defers, and
+    # the arms measured back onto our own authorship still keep it. Without
+    # this, "nothing defers ever" would also pass the assertions above.
+    assert 'ENGINE_AUTHORS_IDENTITY = true' in _read(
+        build_gpu_extension(1, "windows", str(tmp_path / "kw"), 0), "gpu.js")
+    for ours in ("linux", "macos", "android", "ios"):
+        assert 'ENGINE_AUTHORS_IDENTITY = false' in _read(
+            build_gpu_extension(1, ours, str(tmp_path / f"k{ours}"), 0), "gpu.js")
+
+    # The helper's own contract, kept as a unit-level pin beneath the artifact
+    # assertions rather than instead of them.
+    from src.services.browser.gpu_ext import (
+        engine_authors_identity,
+        engine_authors_identity_for_os_type,
+    )
 
     assert engine_authors_identity("plan9") is False
     assert engine_authors_identity("") is False
+    assert engine_authors_identity_for_os_type("freebsd") is False
+    assert engine_authors_identity_for_os_type("") is False
+    # Raw spellings that DO normalise must survive the raw-value resolution.
+    assert engine_authors_identity_for_os_type("windows") is True
+    assert engine_authors_identity_for_os_type("win") is True
+    assert engine_authors_identity_for_os_type("WINDOWS") is True
+    assert engine_authors_identity_for_os_type("darwin") is False
+
+
+def test_recognised_os_types_cover_every_spelling_the_fold_accepts(tmp_path):
+    # The fail-safe above is only as good as the agreement between the two: a
+    # spelling the fold maps to a real arm but RECOGNISED_OS_TYPES omits would
+    # lose its deferral silently, and one recognised but unmapped would be
+    # treated as measured. Derived from one table so they cannot drift — pin
+    # that, rather than a hand-copied list that would restate the bug.
+    from src.services.browser.gpu_ext import (
+        RECOGNISED_OS_TYPES,
+        _OS_NORM_TABLE,
+        _os_norm,
+    )
+
+    from_table = {s for spellings, _ in _OS_NORM_TABLE for s in spellings}
+    assert RECOGNISED_OS_TYPES == from_table
+
+    # Every recognised spelling folds to a real arm, never to the default.
+    for spellings, arm in _OS_NORM_TABLE:
+        for spelling in spellings:
+            assert _os_norm(spelling) == arm
+
+    # And the default is still what an unrecognised value POOLS as — the fold
+    # itself is unchanged, only the authorship read off it.
+    assert _os_norm("plan9") == "windows"
 
 
 def test_engine_authored_set_names_only_arms_the_engine_actually_has(tmp_path):
