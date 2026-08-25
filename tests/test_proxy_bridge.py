@@ -502,3 +502,62 @@ def test_dead_upstream_eof_tears_the_tunnel_down():
         client.close()
         upstream.join(timeout=5)
         bridge.stop()
+
+
+def test_a_dead_tunnels_trace_says_WHAT_went_wrong_not_only_its_CLASS(
+    tmp_path, monkeypatch
+):
+    """PS-160: the pipe recorded `reason=<ClassName>` and dropped the message.
+
+    Every proxied browser session runs through `_pipe`, so when a tunnel dies
+    this trace is the whole account of it. `OSError` alone says a kind of
+    thing went wrong; `[Errno 104] Connection reset by peer` says what did.
+
+    Driven through a REAL reset rather than a raised stub: the client aborts
+    with SO_LINGER 0, which sends an RST instead of a FIN, so the bridge's
+    read genuinely raises instead of returning EOF. A stub would let this
+    assert wording against an exception the socket layer never produces.
+    """
+    trace = tmp_path / "bridge.log"
+    monkeypatch.setattr(bridge_mod, "_TRACE_PATH", str(trace))
+
+    upstream, reply, client, bridge = _run_bridge_case("ok")
+    try:
+        assert reply[1] == 0x00
+        client.sendall(b"ping")
+        assert _recvn(client, 4) == b"ping"
+        # RST, not FIN: an orderly close is EOF (`reason=eof`) and never
+        # reaches the `except` arm this test is about.
+        client.setsockopt(
+            socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
+        )
+        client.close()
+
+        deadline = time.time() + 5
+        line = None
+        while time.time() < deadline and line is None:
+            if trace.exists():
+                for entry in trace.read_text().splitlines():
+                    if "DONE" in entry and "reason=" in entry:
+                        reason = entry.split("reason=", 1)[1]
+                        if reason != "eof":
+                            line = entry
+                            break
+            if line is None:
+                time.sleep(0.05)
+
+        assert line is not None, (
+            "no non-eof DONE line in the trace: "
+            + (trace.read_text() if trace.exists() else "<no trace written>")
+        )
+        reason = line.split("reason=", 1)[1]
+        # The class is still there...
+        assert "Error" in reason or "OSError" in reason
+        # ...and the MESSAGE is too, which is the half that identifies it.
+        # On the old code `reason` was a bare identifier with no colon.
+        assert ": " in reason, f"message discarded, got bare class: {reason!r}"
+        assert "reset by peer" in reason.lower() or "[errno" in reason.lower()
+    finally:
+        client.close()
+        upstream.join(timeout=5)
+        bridge.stop()

@@ -492,7 +492,12 @@ async def _pipe(
             if transport is not None and transport.get_write_buffer_size() > 262144:
                 await writer.drain()
     except Exception as exc:
-        reason = type(exc).__name__
+        # The message too, not only the class. Every proxied browser session
+        # runs through here, and a dead tunnel recorded as a bare `OSError`
+        # says what KIND of thing went wrong without saying what did:
+        # `[Errno 104] Connection reset by peer` is the half that identifies
+        # the failure. Trace text only - the pipe's behaviour is unchanged.
+        reason = f"{type(exc).__name__}: {exc}"
     finally:
         _trace(f"conn={cid} host={host} pipe={dir} DONE bytes={total} reason={reason}")
         # Half-close: signal EOF to the peer (write_eof) but leave the reverse

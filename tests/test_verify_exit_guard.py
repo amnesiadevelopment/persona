@@ -353,6 +353,146 @@ def test_a_refusal_message_never_carries_either_channels_credential(
     assert "0th3r" not in message
 
 
+# --- PS-160: an unreadable file says WHY, and still redacts -----------------
+#
+# The arm reported only `OSError`/`IsADirectoryError` and threw the message
+# away, so "permission denied" and "is a directory" arrived identical. The
+# tests below are driven through the REAL filesystem rather than a raised
+# stub: what reaches this arm is a property of `open()`, and a stub would let
+# the arm be tested on an exception `open()` never actually produces.
+#
+# ⚠️ Only these two shapes reach it. `_from_file` tests `os.path.exists`
+# FIRST, and ELOOP (`Errno 40`) and name-too-long (`Errno 36`) both answer
+# False there — measured — so they take the "no proxy credential at" arm and
+# never reach the `except OSError`. A test built on those would assert this
+# arm's wording against text this arm did not write.
+
+
+def _unreadable_dir(tmp_path):
+    """A path that EXISTS and cannot be read: a directory where a file goes."""
+    path = tmp_path / "cred.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.mkdir()
+    return str(path)
+
+
+def _unreadable_perms(tmp_path):
+    """A path that exists and denies reading. Requires a non-root uid."""
+    path = tmp_path / "cred.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(CRED)
+    path.chmod(0)
+    return str(path)
+
+
+@pytest.mark.skipif(
+    os.geteuid() == 0,
+    reason="root reads a mode-000 file regardless, so this cannot be driven",
+)
+def test_an_unreadable_credential_says_WHY_not_merely_THAT(tmp_path):
+    """The reason reaches the caller, in the operator's own words.
+
+    Asserted on the ERRNO PROSE (`permission denied`), which only the
+    exception's message carries — the class name alone cannot produce it, so
+    this cannot pass on the old code.
+    """
+    with pytest.raises(ExitNotProven) as exc:
+        load_credential(_unreadable_perms(tmp_path))
+
+    message = str(exc.value).lower()
+    assert "could not be read" in message
+    assert "permissionerror" in message
+    assert "permission denied" in message
+
+
+@pytest.mark.skipif(
+    os.geteuid() == 0,
+    reason="root reads a mode-000 file regardless, so this cannot be driven",
+)
+def test_the_two_unreadable_CAUSES_are_distinguishable_on_sight(tmp_path):
+    """THE ROW THAT CARRIES THE FIX.
+
+    A message that fires identically on every failure distinguishes nothing —
+    which is the original defect restated. The positive test above passes on
+    wording that is merely longer; this one fails unless the text actually
+    SEPARATES the two causes an operator has to act on differently (fix a
+    mode, versus remove a directory that is sitting where a file belongs).
+    """
+    with pytest.raises(ExitNotProven) as denied:
+        load_credential(_unreadable_perms(tmp_path / "a"))
+    with pytest.raises(ExitNotProven) as is_dir:
+        load_credential(_unreadable_dir(tmp_path / "b"))
+
+    denied_text, is_dir_text = str(denied.value), str(is_dir.value)
+    assert denied_text != is_dir_text
+
+    assert "permission denied" in denied_text.lower()
+    assert "permission denied" not in is_dir_text.lower()
+    assert "is a directory" in is_dir_text.lower()
+    assert "is a directory" not in denied_text.lower()
+
+
+def test_an_exception_message_cannot_smuggle_the_credential_past_redact(
+    tmp_path,
+):
+    """THE ONE THAT MUST NOT REGRESS.
+
+    This arm now interpolates text this module did NOT author, so it is the
+    one `why` whose safety cannot be argued from "we only ever put a
+    coordinate in it". `OSError` names the path it failed on, and a path is
+    attacker-shaped in the only sense that matters here: an operator can point
+    `--credential` at one that is credential-shaped, and the module would
+    write it into a refusal that gets printed, logged and pasted into tickets.
+
+    Driven through the real filesystem: the directory below is genuinely
+    NAMED like a proxy URL, so the secret reaches the exception message from
+    `open()` itself rather than from a string this test wrote.
+    """
+    # `socks5://alice:s3cr3t@gate...` as a real path. POSIX collapses the
+    # doubled separator when resolving, but `open()` reports the name AS
+    # PASSED — which is what lands in the message.
+    nest = tmp_path / "socks5:" / "alice:s3cr3t@gate.example.com:10000"
+    nest.mkdir(parents=True)
+    passed = f"{tmp_path}/socks5://alice:s3cr3t@gate.example.com:10000"
+
+    with pytest.raises(ExitNotProven) as exc:
+        load_credential(passed)
+
+    message = str(exc.value)
+    # The failure still names itself...
+    assert "is a directory" in message.lower()
+    # ...and the credential did not survive into it.
+    assert "s3cr3t" not in message
+    assert "***:***@" in message
+
+
+def test_the_FALLBACK_report_redacts_the_unreadable_files_message_too(
+    tmp_path, monkeypatch
+):
+    """The second reader of `why`, which is the easier one to miss.
+
+    When the file is unusable and the ENVIRONMENT answers, the run does not
+    refuse — it proceeds and records the file's disposition in `detail`, which
+    is written into the COMMITTED record. That is a different code path from
+    the refusal above (`detail` at the `else` arm, not the `not usable` arm),
+    so redaction proven on one is not proven on the other.
+    """
+    nest = tmp_path / "socks5:" / "alice:s3cr3t@gate.example.com:10000"
+    nest.mkdir(parents=True)
+    passed = f"{tmp_path}/socks5://alice:s3cr3t@gate.example.com:10000"
+    _set_env(monkeypatch, OTHER_CRED)
+
+    resolved = exit_guard.resolve_credential(passed)
+
+    # The run proceeded on the other channel...
+    assert resolved.source == exit_guard.SOURCE_ENVIRONMENT
+    # ...the record still says why the file was unusable...
+    assert "is a directory" in resolved.detail.lower()
+    # ...and neither channel's secret is in the text that gets committed.
+    assert "s3cr3t" not in resolved.detail
+    assert "0th3r" not in resolved.detail
+
+
 # --- socks5h is enforced, not preferred -------------------------------------
 
 
