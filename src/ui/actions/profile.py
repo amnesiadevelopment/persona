@@ -6,6 +6,7 @@ from ...core.strings import get_string
 from ...interfaces.protocols import IBrowserLauncher, IProfileManager, IProxyService
 from ...models.bookmark import Bookmark
 from ...services.profile.coherence import IncoherentProfile
+from ...services.profile.pool_assignment import PoolDirective
 from ...services.profile.proxy_assignment import ProxyDirective
 from ..dialogs import open_bulk_dialog, open_confirm_dialog, open_profile_dialog
 
@@ -60,7 +61,7 @@ def edit_profile(
         new_proxy: str | ProxyDirective,
         new_os: str,
         new_search: str,
-        new_pool: str,
+        new_pool: str | PoolDirective,
         new_bookmarks: list[str],
         new_tags: list[str],
         new_notes: str = "",
@@ -132,7 +133,7 @@ def add_profile(
         proxy: str | ProxyDirective,
         os_type: str,
         search: str,
-        pool: str,
+        pool: str | PoolDirective,
         bookmarks: list[str],
         tags: list[str],
         notes: str = "",
