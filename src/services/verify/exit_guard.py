@@ -51,6 +51,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from ...core.redaction import redact  # noqa: F401  (re-exported: see below)
 from .socks_fetch import DEFAULT_TIMEOUT, FetchFailed, ProxyRefused, fetch_json
 
 # Where the operator's credential lives. Read at call time, never cached to
@@ -175,20 +176,15 @@ class Exit:
         }
 
 
-def redact(text: str) -> str:
-    """Strip anything credential-shaped out of a message before it is shown.
-
-    The credential must not reach a log, a commit, a ticket, a test fixture or
-    a captured artefact. Messages in this module are built from exception text
-    that can contain a proxy URL, so every one of them goes through here.
-
-    Applied to the WHOLE message rather than to the parts believed to be
-    risky: the risky part is the one nobody thought of.
-    """
-    import re
-
-    # scheme://user:pass@host -> scheme://***:***@host
-    return re.sub(r"(\w+://)[^/@\s]+:[^/@\s]+@", r"\1***:***@", text)
+# `redact` USED TO BE DEFINED HERE, and is now imported at the top of this
+# module and re-exported. It moved to `core.redaction` in PS-160 so
+# `proxy.bridge` — which also writes un-authored exception text to an
+# operator-visible place, and may not import this package — runs the SAME rule
+# rather than a second copy of the regex. A redaction bug fixed in one copy and
+# not the other is worse than no redaction, because the second copy still looks
+# guarded. The name stays importable from THIS module because that is where
+# every existing caller reaches for it, and because this module's redaction
+# discipline is the reason the rule exists at all.
 
 
 # The two SOCKS5 stages, told apart by the class name PySocks raised.
@@ -362,10 +358,20 @@ class _Candidate:
     used" is one check rather than a re-reading of the prose.
 
     ``origin`` is a PATH or a VARIABLE NAME — a coordinate, never a value — so
-    it is safe in a refusal message. ``why`` is likewise built only from that
-    coordinate and a fixed phrase: no branch here interpolates the credential
-    itself, which is what keeps a second source from becoming the one path
-    that bypasses :func:`redact`.
+    it is safe in a refusal message. ``why`` is built from that coordinate and
+    a fixed phrase: no branch here interpolates the credential itself, which
+    is what keeps a second source from becoming the one path that bypasses
+    :func:`redact`.
+
+    ⚠️ ONE EXCEPTION, and it is the reason this paragraph is not a proof:
+    ``_from_file``'s ``OSError`` arm interpolates the EXCEPTION TEXT, which
+    this module did not author and cannot make promises about. The safety
+    there does not come from the value being known-harmless — it comes from
+    both readers of ``why`` passing it through :func:`redact` (the refusal in
+    the ``not usable`` arm, and ``detail`` on the fallback arm). Anything that
+    adds a THIRD reader of ``why`` must redact it too, and a branch that
+    interpolates un-authored text without that is the leak this split exists
+    to prevent. Asserted on output, not assumed — see the exit-guard tests.
     """
 
     source: str
@@ -400,10 +406,21 @@ def _from_file(path: str) -> _Candidate:
         with open(path, "r", encoding="utf-8") as handle:
             raw = handle.read().strip()
     except OSError as exc:
+        # The MESSAGE, not only the class. `OSError` alone cannot tell
+        # permission-denied from is-a-directory from a genuine I/O error, and
+        # this arm stops a run — so it stopped one without saying why. Shaped
+        # `{type(exc).__name__}: {exc}` to match this module's own convention
+        # (see `_wrapped_class_name` and the `socks_fetch` comment above).
+        #
+        # `exc` is exception text this module did not author, so it is the one
+        # `why` that is not built purely from a coordinate — see `_Candidate`.
+        # Both consumers of `why` pass it through `redact` (the refusal at the
+        # `not usable` arm, and `detail` on the fallback arm), which is what
+        # keeps that safe; it is asserted on output rather than assumed.
         return _Candidate(
             SOURCE_FILE, path, None,
             f"the proxy credential at {path} could not be read "
-            f"({type(exc).__name__})",
+            f"({type(exc).__name__}: {exc})",
         )
     if not raw:
         return _Candidate(

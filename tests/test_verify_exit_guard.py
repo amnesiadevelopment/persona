@@ -24,8 +24,10 @@ the credential.
 
 from __future__ import annotations
 
+import builtins
 import json
 import os
+import sys
 
 import pytest
 
@@ -351,6 +353,250 @@ def test_a_refusal_message_never_carries_either_channels_credential(
     message = str(exc.value)
     assert "s3cr3t" not in message
     assert "0th3r" not in message
+
+
+# --- PS-160: an unreadable file says WHY, and still redacts -----------------
+#
+# The arm reported only `OSError`/`IsADirectoryError` and threw the message
+# away, so "permission denied" and "is a directory" arrived identical. The
+# tests below are driven through the REAL filesystem rather than a raised
+# stub: what reaches this arm is a property of `open()`, and a stub would let
+# the arm be tested on an exception `open()` never actually produces.
+#
+# ⚠️ Only these two shapes reach it. `_from_file` tests `os.path.exists`
+# FIRST, and ELOOP (`Errno 40`) and name-too-long (`Errno 36`) both answer
+# False there — measured — so they take the "no proxy credential at" arm and
+# never reach the `except OSError`. A test built on those would assert this
+# arm's wording against text this arm did not write.
+
+
+def _unreadable_dir(tmp_path):
+    """A path that EXISTS and cannot be read: a directory where a file goes."""
+    path = tmp_path / "cred.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.mkdir()
+    return str(path)
+
+
+def _unreadable_perms(tmp_path):
+    """A path that exists and denies reading. Requires a non-root uid."""
+    path = tmp_path / "cred.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(CRED)
+    path.chmod(0)
+    return str(path)
+
+
+# ⚠️ WHY FOUR TESTS BELOW DECLINE TO RUN ON WINDOWS, AND WHAT IS *NOT* GIVEN
+# UP BY THAT.
+#
+# Both markers guard the STAGING, never the contract. The every-platform pair
+# at the end of this section re-asserts the same redaction guarantee through
+# the seam directly, so nothing below is proven on POSIX only.
+#
+# The first form of this file shipped `os.geteuid() == 0` bare and took the
+# ENTIRE 88-test file down on Windows CI with an AttributeError at COLLECTION
+# time — not two skips, an interrupted run. `tests/test_browser_env_policy.py`
+# had already written the fix down; this is it.
+_unprivileged_posix = pytest.mark.skipif(
+    # hasattr short-circuits: os.geteuid does NOT exist on Windows, and a
+    # skipif condition is evaluated at COLLECTION time, so calling it
+    # unguarded fails the whole job rather than one test.
+    not hasattr(os, "geteuid") or os.geteuid() == 0,
+    reason="POSIX-only STAGING: root reads a mode-000 file regardless, and "
+           "Windows does not deny reads through POSIX mode bits — the "
+           "unreadable file this needs cannot be built there",
+)
+
+# The redaction tests need a path that is genuinely NAMED like a proxy URL, so
+# the secret reaches the message from `open()` itself rather than from a string
+# the test wrote. `redact` matches `scheme://user:pass@host`, so such a name
+# REQUIRES a `:` — which is not a legal NTFS filename character (it is the
+# alternate-data-stream separator). The staging is unbuildable on Windows;
+# `mkdir` raises OSError before the assertion is reached.
+_credential_shaped_path = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only STAGING: a credential-NAMED path requires ':', which "
+           "is illegal in an NTFS filename",
+)
+
+
+@_unprivileged_posix
+def test_an_unreadable_credential_says_WHY_not_merely_THAT(tmp_path):
+    """The reason reaches the caller, in the operator's own words.
+
+    Asserted on the ERRNO PROSE (`permission denied`), which only the
+    exception's message carries — the class name alone cannot produce it, so
+    this cannot pass on the old code.
+    """
+    with pytest.raises(ExitNotProven) as exc:
+        load_credential(_unreadable_perms(tmp_path))
+
+    message = str(exc.value).lower()
+    assert "could not be read" in message
+    assert "permissionerror" in message
+    assert "permission denied" in message
+
+
+@_unprivileged_posix
+def test_the_two_unreadable_CAUSES_are_distinguishable_on_sight(tmp_path):
+    """THE ROW THAT CARRIES THE FIX.
+
+    A message that fires identically on every failure distinguishes nothing —
+    which is the original defect restated. The positive test above passes on
+    wording that is merely longer; this one fails unless the text actually
+    SEPARATES the two causes an operator has to act on differently (fix a
+    mode, versus remove a directory that is sitting where a file belongs).
+    """
+    with pytest.raises(ExitNotProven) as denied:
+        load_credential(_unreadable_perms(tmp_path / "a"))
+    with pytest.raises(ExitNotProven) as is_dir:
+        load_credential(_unreadable_dir(tmp_path / "b"))
+
+    denied_text, is_dir_text = str(denied.value), str(is_dir.value)
+    assert denied_text != is_dir_text
+
+    assert "permission denied" in denied_text.lower()
+    assert "permission denied" not in is_dir_text.lower()
+    assert "is a directory" in is_dir_text.lower()
+    assert "is a directory" not in denied_text.lower()
+
+
+@_credential_shaped_path
+def test_an_exception_message_cannot_smuggle_the_credential_past_redact(
+    tmp_path,
+):
+    """THE ONE THAT MUST NOT REGRESS.
+
+    This arm now interpolates text this module did NOT author, so it is the
+    one `why` whose safety cannot be argued from "we only ever put a
+    coordinate in it". `OSError` names the path it failed on, and a path is
+    attacker-shaped in the only sense that matters here: an operator can point
+    `--credential` at one that is credential-shaped, and the module would
+    write it into a refusal that gets printed, logged and pasted into tickets.
+
+    Driven through the real filesystem: the directory below is genuinely
+    NAMED like a proxy URL, so the secret reaches the exception message from
+    `open()` itself rather than from a string this test wrote.
+    """
+    # `socks5://alice:s3cr3t@gate...` as a real path. POSIX collapses the
+    # doubled separator when resolving, but `open()` reports the name AS
+    # PASSED — which is what lands in the message.
+    nest = tmp_path / "socks5:" / "alice:s3cr3t@gate.example.com:10000"
+    nest.mkdir(parents=True)
+    passed = f"{tmp_path}/socks5://alice:s3cr3t@gate.example.com:10000"
+
+    with pytest.raises(ExitNotProven) as exc:
+        load_credential(passed)
+
+    message = str(exc.value)
+    # The failure still names itself...
+    assert "is a directory" in message.lower()
+    # ...and the credential did not survive into it.
+    assert "s3cr3t" not in message
+    assert "***:***@" in message
+
+
+@_credential_shaped_path
+def test_the_FALLBACK_report_redacts_the_unreadable_files_message_too(
+    tmp_path, monkeypatch
+):
+    """The second reader of `why`, which is the easier one to miss.
+
+    When the file is unusable and the ENVIRONMENT answers, the run does not
+    refuse — it proceeds and records the file's disposition in `detail`, which
+    is written into the COMMITTED record. That is a different code path from
+    the refusal above (`detail` at the `else` arm, not the `not usable` arm),
+    so redaction proven on one is not proven on the other.
+    """
+    nest = tmp_path / "socks5:" / "alice:s3cr3t@gate.example.com:10000"
+    nest.mkdir(parents=True)
+    passed = f"{tmp_path}/socks5://alice:s3cr3t@gate.example.com:10000"
+    _set_env(monkeypatch, OTHER_CRED)
+
+    resolved = exit_guard.resolve_credential(passed)
+
+    # The run proceeded on the other channel...
+    assert resolved.source == exit_guard.SOURCE_ENVIRONMENT
+    # ...the record still says why the file was unusable...
+    assert "is a directory" in resolved.detail.lower()
+    # ...and neither channel's secret is in the text that gets committed.
+    assert "s3cr3t" not in resolved.detail
+    assert "0th3r" not in resolved.detail
+
+
+# --- the same guarantee, on EVERY platform ----------------------------------
+#
+# THE WINDOWS-RUNNABLE HALF, and the reason the four tests above may decline to
+# run without a guarantee being dropped. What is POSIX-only up there is the
+# STAGING — a mode-000 file, and a path NAMED like a proxy URL — not the
+# contract. Both are ways of getting a credential-shaped string into the
+# exception message from OUTSIDE this module; neither is the claim being made.
+#
+# The claim is narrower and platform-independent: WHATEVER text arrives in that
+# `OSError`, both readers of `why` put it through `redact` before it is shown.
+# That rests on exactly one seam — `open()` raising `OSError` inside
+# `_from_file` — so these stage that seam directly and assert the same thing
+# everywhere, including on a filesystem that cannot express either POSIX
+# staging.
+#
+# The trade is stated rather than hidden: the message here is one this TEST
+# wrote, so unlike the POSIX pair these do not also prove the secret can arrive
+# from `open()` unaided. That is why both halves exist and neither replaces the
+# other.
+
+
+def _open_raising(monkeypatch, exc):
+    """Make `open()` raise `exc` for the credential read, and only for it."""
+    real_open = builtins.open
+
+    def _fake(file, *args, **kwargs):
+        if str(file).endswith("cred.txt"):
+            raise exc
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", _fake)
+
+
+def test_a_credential_in_the_exceptions_message_is_redacted_on_every_platform(
+    tmp_path, monkeypatch
+):
+    """The refusal path's redaction, staged through the seam not the filesystem."""
+    path = tmp_path / "cred.txt"
+    path.write_text(CRED)
+    # An OSError whose message carries a credential-shaped URL — the shape the
+    # POSIX tests obtain from a real path, obtained here from the seam.
+    _open_raising(monkeypatch, OSError(f"I/O error reading {CRED}"))
+
+    with pytest.raises(ExitNotProven) as exc:
+        load_credential(str(path))
+
+    message = str(exc.value)
+    # The failure still says what went wrong...
+    assert "i/o error" in message.lower()
+    # ...and the credential did not survive into it.
+    assert "s3cr3t" not in message
+    assert "alice" not in message
+    assert "***:***@" in message
+
+
+def test_the_FALLBACK_reports_redaction_holds_on_every_platform_too(
+    tmp_path, monkeypatch
+):
+    """The second reader (`detail`, which is COMMITTED), same staging."""
+    path = tmp_path / "cred.txt"
+    path.write_text(CRED)
+    _set_env(monkeypatch, OTHER_CRED)
+    _open_raising(monkeypatch, OSError(f"I/O error reading {CRED}"))
+
+    resolved = exit_guard.resolve_credential(str(path))
+
+    assert resolved.source == exit_guard.SOURCE_ENVIRONMENT
+    assert "i/o error" in resolved.detail.lower()
+    assert "s3cr3t" not in resolved.detail
+    assert "alice" not in resolved.detail
+    assert "0th3r" not in resolved.detail
+    assert "***:***@" in resolved.detail
 
 
 # --- socks5h is enforced, not preferred -------------------------------------

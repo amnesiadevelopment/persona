@@ -502,3 +502,177 @@ def test_dead_upstream_eof_tears_the_tunnel_down():
         client.close()
         upstream.join(timeout=5)
         bridge.stop()
+
+
+def test_a_dead_tunnels_trace_says_WHAT_went_wrong_not_only_its_CLASS(
+    tmp_path, monkeypatch
+):
+    """PS-160: the pipe recorded `reason=<ClassName>` and dropped the message.
+
+    Every proxied browser session runs through `_pipe`, so when a tunnel dies
+    this trace is the whole account of it. `OSError` alone says a kind of
+    thing went wrong; `[Errno 104] Connection reset by peer` says what did.
+
+    Driven through a REAL reset rather than a raised stub: the client aborts
+    with SO_LINGER 0, which sends an RST instead of a FIN, so the bridge's
+    read genuinely raises instead of returning EOF. A stub would let this
+    assert wording against an exception the socket layer never produces.
+    """
+    trace = tmp_path / "bridge.log"
+    monkeypatch.setattr(bridge_mod, "_TRACE_PATH", str(trace))
+
+    upstream, reply, client, bridge = _run_bridge_case("ok")
+    try:
+        assert reply[1] == 0x00
+        client.sendall(b"ping")
+        assert _recvn(client, 4) == b"ping"
+        # RST, not FIN: an orderly close is EOF (`reason=eof`) and never
+        # reaches the `except` arm this test is about.
+        client.setsockopt(
+            socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
+        )
+        client.close()
+
+        deadline = time.time() + 5
+        line = None
+        while time.time() < deadline and line is None:
+            if trace.exists():
+                for entry in trace.read_text().splitlines():
+                    if "DONE" in entry and "reason=" in entry:
+                        reason = entry.split("reason=", 1)[1]
+                        if reason != "eof":
+                            line = entry
+                            break
+            if line is None:
+                time.sleep(0.05)
+
+        assert line is not None, (
+            "no non-eof DONE line in the trace: "
+            + (trace.read_text() if trace.exists() else "<no trace written>")
+        )
+        reason = line.split("reason=", 1)[1]
+        # The class is still there...
+        assert "Error" in reason or "OSError" in reason
+        # ...and the MESSAGE is too, which is the half that identifies it.
+        # On the old code `reason` was a bare identifier with no colon.
+        assert ": " in reason, f"message discarded, got bare class: {reason!r}"
+        # ...specifically the OS's OWN account of the reset — the half a class
+        # name cannot produce.
+        #
+        # ⚠️ ASSERTED ON THE ERRNO TAG, NOT ON THE PROSE, because the prose is
+        # platform-specific and the first version of this line pinned POSIX's:
+        # `[Errno 104] Connection reset by peer` on Linux/macOS versus
+        # `[WinError 64] The specified network name is no longer available` on
+        # Windows. Same event, same fix, different words — so wording is the
+        # wrong thing to hold the fix to. What must be true everywhere is that
+        # an errno-tagged detail reached the trace at all.
+        lowered = reason.lower()
+        assert "[errno" in lowered or "[winerror" in lowered, (
+            f"no OS-level detail in the reason, so the message half of the "
+            f"fix is not proven here: {reason!r}"
+        )
+    finally:
+        client.close()
+        upstream.join(timeout=5)
+        bridge.stop()
+
+
+# --- PS-160: the trace is credential-adjacent, and now carries exception text -
+
+
+def test_a_credential_shaped_string_cannot_reach_the_TRACE_FILE(
+    tmp_path, monkeypatch
+):
+    """THE ONE THAT MUST NOT REGRESS on this side.
+
+    PS-160 made four trace sites carry the exception MESSAGE rather than only
+    its class. That is un-authored text, and unlike `exit_guard`'s in-process
+    refusal it lands in a FILE ON DISK that outlives the process — while this
+    module holds `_up_user`/`_up_pass` unquoted and is built from a
+    credential-shaped `upstream_url`. So the talkative change and the secret
+    live in the same module, which is exactly the case `exit_guard`'s doctrine
+    exists for: "the risky part is the one nobody thought of".
+
+    ⚠️ STAGED AT `_open_upstream`, DELIBERATELY, AND THE FIRST VERSION OF THIS
+    TEST WAS WRONG. It patched `StreamReader.read` to raise, then aborted the
+    client — but the pipe is ALREADY BLOCKED IN `read()` by then, so the patch
+    never took effect and the trace recorded the ordinary reset instead. It
+    passed against UN-REDACTED source: the secret was never in the trace to be
+    redacted, so it asserted nothing. This seam is entered AFTER the patch, so
+    the injected message genuinely travels the real handler into the real
+    `_trace` and out to the real file.
+
+    That the exception is injected is the honest bound here: no bridge
+    exception is KNOWN to carry the credential today. This asserts the
+    guarantee that holds whether or not one ever does.
+    """
+    trace = tmp_path / "bridge.log"
+    monkeypatch.setattr(bridge_mod, "_TRACE_PATH", str(trace))
+    monkeypatch.setattr(bridge_mod, "_UPSTREAM_ATTEMPTS", 1)
+
+    secret_url = "socks5://alice:s3cr3t@gate.example.com:10000"
+
+    async def _leaky(self, host, port):
+        raise OSError(f"connection to {secret_url} failed")
+
+    monkeypatch.setattr(bridge_mod.ProxyBridge, "_open_upstream", _leaky)
+
+    upstream = FakeUpstream("ok")
+    upstream.start()
+    bridge = _claim(ProxyBridge(upstream.url))
+    bridge.start()
+    client = None
+    try:
+        client, reply = _socks5_request(bridge.port)
+        # The connect failed, so the browser is told so — behaviour unchanged.
+        assert reply[1] != 0x00
+
+        deadline = time.time() + 5
+        text = ""
+        while time.time() < deadline:
+            if trace.exists():
+                text = trace.read_text()
+                if "UPSTREAM-FAIL" in text:
+                    break
+            time.sleep(0.05)
+
+        assert "UPSTREAM-FAIL" in text, (
+            f"the failing trace line was never written, so this test proved "
+            f"nothing. Trace was: {text!r}"
+        )
+        # The injected message DID reach the trace (without this, the
+        # assertions below would pass on an empty-handed line)...
+        assert "connection to" in text and "failed" in text
+        # ...the failure still names itself...
+        assert "OSError" in text
+        # ...and the credential did not survive into the file.
+        assert "s3cr3t" not in text, f"credential reached the trace file: {text!r}"
+        assert "alice" not in text, f"credential reached the trace file: {text!r}"
+        assert "***:***@" in text
+    finally:
+        if client is not None:
+            client.close()
+        bridge.stop()
+        upstream.join(timeout=5)
+
+
+def test_redaction_is_applied_by_the_SINK_so_every_trace_site_inherits_it(
+    tmp_path, monkeypatch
+):
+    """The placement claim, asserted directly.
+
+    `_trace` is the seam the guarantee sits on. If someone later moves
+    redaction out to the individual call sites, this fails — which is the
+    point: a future fifth call site must be covered without its author having
+    to know that redaction exists.
+    """
+    trace = tmp_path / "bridge.log"
+    monkeypatch.setattr(bridge_mod, "_TRACE_PATH", str(trace))
+
+    bridge_mod._trace("conn=1 host=x SOMETHING socks5://bob:0th3r@relay.example:1080")
+
+    written = trace.read_text()
+    assert "SOMETHING" in written, "the line itself must still be recorded"
+    assert "0th3r" not in written
+    assert "bob" not in written
+    assert "***:***@" in written
