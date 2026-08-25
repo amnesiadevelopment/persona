@@ -244,6 +244,34 @@ def rollback_target() -> tuple[str, str]:
     return _entry(_read_builds(), "previous")
 
 
+def current_build_recorded() -> bool:
+    """True when the record names the build that is installed RIGHT NOW.
+
+    The mirror of rollback_target() next door: that one reads "previous" and
+    answers "can I go back?", this one reads "current" and answers "will the
+    NEXT swap have something to demote?". Both are one-call questions about the
+    record, kept here rather than reconstructed by callers poking at
+    BUILDS_FILE.
+
+    WHY A CALLER NEEDS THIS (PS-172). Two different machines both have an engine
+    installed and an empty rollback_target(), and the honest thing to tell their
+    operators is NOT the same sentence:
+      * recorded — a clean install. ensure_engine wrote "current", so the very
+        next swap demotes it and the operator can go back after ONE update.
+      * NOT recorded — a machine that upgraded into v3.0.0 with an engine
+        already present. ensure_engine short-circuited on is_installed() and
+        wrote nothing, so its next swap has no "current" to demote and records
+        only the incoming build; the swap AFTER that is the first reversible
+        one. TWO updates, not one.
+    Telling the second machine "after the next update" would be a promise it
+    watches fail — the same defect as the silence it replaces, only louder.
+
+    Note this is deliberately about the RECORD, not about version.txt: a machine
+    can have a perfectly good current_version() and nothing recorded, and that
+    gap is precisely the state being detected."""
+    return bool(_entry(_read_builds(), "current")[0])
+
+
 def _binary_root() -> str:
     """The path whose presence means "the engine is installed". For Linux/Windows
     that's the executable itself; for macOS it's the .app bundle directory the
