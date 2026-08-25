@@ -51,6 +51,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from ...core.redaction import redact  # noqa: F401  (re-exported: see below)
 from .socks_fetch import DEFAULT_TIMEOUT, FetchFailed, ProxyRefused, fetch_json
 
 # Where the operator's credential lives. Read at call time, never cached to
@@ -175,20 +176,15 @@ class Exit:
         }
 
 
-def redact(text: str) -> str:
-    """Strip anything credential-shaped out of a message before it is shown.
-
-    The credential must not reach a log, a commit, a ticket, a test fixture or
-    a captured artefact. Messages in this module are built from exception text
-    that can contain a proxy URL, so every one of them goes through here.
-
-    Applied to the WHOLE message rather than to the parts believed to be
-    risky: the risky part is the one nobody thought of.
-    """
-    import re
-
-    # scheme://user:pass@host -> scheme://***:***@host
-    return re.sub(r"(\w+://)[^/@\s]+:[^/@\s]+@", r"\1***:***@", text)
+# `redact` USED TO BE DEFINED HERE, and is now imported at the top of this
+# module and re-exported. It moved to `core.redaction` in PS-160 so
+# `proxy.bridge` — which also writes un-authored exception text to an
+# operator-visible place, and may not import this package — runs the SAME rule
+# rather than a second copy of the regex. A redaction bug fixed in one copy and
+# not the other is worse than no redaction, because the second copy still looks
+# guarded. The name stays importable from THIS module because that is where
+# every existing caller reaches for it, and because this module's redaction
+# discipline is the reason the rule exists at all.
 
 
 # The two SOCKS5 stages, told apart by the class name PySocks raised.
