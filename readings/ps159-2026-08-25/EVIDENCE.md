@@ -30,8 +30,8 @@ and not the road.
 
 | constraint | status |
 |---|---|
-| proxied exit (mandatory, no fallback) | **PASS** — `2a02:a311:c5e7:8180:…`, `P4 Sp. z o.o.`, Bydgoszcz / PL, `Europe/Warsaw` |
-| exit stable across arms | **PASS** — the *same* exit on all six arms; no rotation mid-campaign |
+| proxied exit (mandatory, no fallback) | **PASS** — every arm proxied, every exit in **PL / `Europe/Warsaw`**. Arms 1–6: `2a02:a311:c5e7:8180:…`, `P4 Sp. z o.o.`, Bydgoszcz. `−timezone` re-run: `5.173.194.43`, Warsaw. |
+| exit stable across arms | **PARTIAL — disclosed, not swept.** The first six arms shared one exit. The `−timezone` arm was later **re-run** (§7a) and the exit had rotated to a second Polish one. Sorted per PS-10 below. |
 | credential channel | `file` (`/workspace/_secrets/test-proxy.txt`) |
 | `--allow-unsandboxed-chromium` | **REQUIRED on every arm — the only waiver, disclosed** |
 | GPU present | **NO** — `/dev/dri` absent |
@@ -76,10 +76,17 @@ conclusion.
 | `automation_detected` | true | *null* | true | *null* | true | *null* |
 | `timezone_spoofed` | true | true | *null* | *null* | true | *null* |
 | `timezone_from_js` | `Africa/Abidjan` | `Africa/Abidjan` | `Europe/Warsaw` | `Europe/Warsaw` | `Africa/Abidjan` | `Europe/Warsaw` |
-| `geo_country_city` | — | — | `Poland / Bydgoszcz` | `Poland / Bydgoszcz` | — | `Poland / Bydgoszcz` |
+| `geo_country_city` | — | — | `Poland / Warsaw` ᵉ | `Poland / Bydgoszcz` | — | `Poland / Bydgoszcz` |
 | `webgl_renderer` | SwiftShader | SwiftShader | SwiftShader | SwiftShader | **`-`** | **`-`** |
 | `webgl_hash` | `b35a6e95…` | `b35a6e95…` | `b35a6e95…` | `b35a6e95…` | **null** | **null** |
 | `canvas_hash` | `5f4a84ed…` | `5f4a84ed…` | `5f4a84ed…` | `5f4a84ed…` | `8789d2cd…` | `8789d2cd…` |
+
+ᵉ **Exit-driven, not fingerprint-driven.** The `−timezone` arm was re-run (§7a) behind a second
+Polish exit, so this cell reads its city rather than the first exit's. Sorted per PS-10's
+three-sort rule: `geo_country_city` is an **exit-sorted** row and is *expected* to track the exit.
+Every **fingerprint-sorted** row in this column — `webgl_hash`, `canvas_hash`, `webgl_renderer` —
+came back **byte-identical across the two exits**, as did both target verdicts. The column is
+therefore comparable with the rest of the table on every row the argument uses.
 
 ### Axis 1 — automation: **removed, verdicts unmoved**
 
@@ -99,8 +106,14 @@ moved would have been a null instrument. The axis therefore rides the **`TZ` env
 variable**, which stock does honour.
 
 Proof it landed, three independent rows: `timezone_from_js` **`Africa/Abidjan` → `Europe/Warsaw`**,
-`timezone_spoofed` **true → absent**, and `geo_country_city` newly reading **`Poland / Bydgoszcz`**,
-matching the exit. The geography contradiction is gone. Both target verdicts unchanged.
+`timezone_spoofed` **true → absent**, and `geo_country_city` newly reading a **Polish city matching
+the exit** (`Poland / Warsaw` on the re-run behind `5.173.194.43`; `Poland / Bydgoszcz` on the
+first run behind the Bydgoszcz exit — the row tracks the exit, which is exactly what an
+exit-sorted row should do). The geography contradiction is gone. Both target verdicts unchanged.
+
+*Strengthened by the re-run:* this axis is now the one arm measured **twice, behind two different
+Polish exits** (§7a), and both target verdicts came back `true` on both. Its proof-of-landing rows
+reproduced identically; only the exit-sorted city moved.
 
 ### Axis 3 — renderer: **COULD NOT BE MOVED. This is the ticket's third outcome.**
 
@@ -187,6 +200,46 @@ is recorded as the open question rather than filed as a task with no path to com
 
 Arms are written incrementally and merged, so a run that dies part-way keeps the arms it
 completed. Each arm is a live ~60-second-settle page read; the full set takes roughly ten minutes.
+
+---
+
+## 7a. The `−timezone` arm was re-run — disclosed, with the reason
+
+**This record is a merge across two runs, and it says so rather than reading as one campaign.**
+
+The `−timezone` arm in the first campaign was produced *before* a fix to where the script captures
+`TZ`. The capture point sits inside `_patched_args` (`scripts/ps159_deconfound_stock.py:137-142`)
+precisely so it reads the value **at launch**, before the `finally` block restores the ambient one.
+The earlier version captured after restoration, so that arm recorded `tz_env: null` — a value the
+committed script **cannot** produce for an arm that removes this axis, since `TZ` is set before the
+session is constructed. The merge logic correctly preserved prior arms, and in doing so carried a
+row from a **different instrument version** forward.
+
+That is a defect on its own terms — `tz_env` is the field documenting the *presented surface* for
+axis 2 — and it made the committed record **not reproducible from the committed script**. So the
+arm was re-run with the committed script:
+
+```bash
+.venv/bin/python -m scripts.ps159_deconfound_stock --arms timezone \
+  -o readings/ps159-2026-08-25/
+```
+
+**What the re-run changed, in full:**
+
+| field | before | after | sort |
+|---|---|---|---|
+| `tz_env` | `null` *(impossible)* | **`Europe/Warsaw`** | instrument fix |
+| `geo_country_city` | `Poland / Bydgoszcz` | `Poland / Warsaw` | **exit-driven** (exit rotated) |
+| *everything else* | — | **byte-identical** | — |
+
+**Both target verdicts came back `true`, and every proof-of-landing row reproduced.** The other
+five arms were untouched by the merge and verified byte-identical afterwards. The exit had rotated
+to a second Polish exit between runs — recorded in the artifact's `prior_exits`, kept rather than
+overwritten — which is why the city moved and why §4's table carries the `ᵉ` footnote.
+
+**Nothing in §5's conclusion depends on this.** Axis 2's proof-of-landing rests on the checker's
+own page rows, not on `tz_env`, and all three reproduced. The re-run makes the record honest and
+reproducible; it did not move the answer.
 
 **Provenance note.** `arm-c-stock-vs-packaged.json` — the artifact this ticket rests on — was
 itself the file whose absence failed PS-150's first audit, having been written to a `.log` that

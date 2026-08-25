@@ -199,7 +199,12 @@ def main() -> int:
     ap.add_argument("-o", "--out", default="", help="directory to write the record into")
     ap.add_argument(
         "--arms",
-        default="baseline," + ",".join(AXES) + ",all_three",
+        # `removable_only` IS in the default deliberately: it is the strongest
+        # HONEST arm on this host (both movable axes removed, the immovable
+        # rasteriser left exactly as baseline had it), and `all_three` is not a
+        # substitute for it. A bare run that omitted it would produce a record
+        # missing the one arm the analysis leans on hardest.
+        default="baseline," + ",".join(AXES) + ",removable_only,all_three",
         help="comma-separated arms to run",
     )
     opts = ap.parse_args()
