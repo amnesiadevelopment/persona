@@ -42,9 +42,33 @@ from ..theme.colors import COLORS
 
 MONO = "monospace"
 
-#: Which placement this build renders. One value per viz branch, so the branch
-#: recorded on an alternative reproduces exactly the render that was captured.
-VARIANT = os.getenv("PS1_VIZ_VARIANT", "D")
+#: Where the capture harness writes which placement + state to render.
+#: A FILE rather than an env var, and read at CONSTRUCTION rather than at
+#: import, for one practical reason: flet calls ``App._main`` per browser
+#: SESSION, so a page reload rebuilds the console. Reading here means the
+#: three placements and their collapsed / paused states can all be captured
+#: from ONE running server by reloading, instead of a ~70s app restart per
+#: frame. Throwaway viz-branch scaffolding; nothing production reads it.
+CONTROL_FILE = os.getenv("PS1_VIZ_CONTROL", "/tmp/ps1-viz-control.json")
+
+
+def capture_control() -> tuple:
+    """(placement, start_state) for this render — defaults to ("D", "")."""
+    variant, state = os.getenv("PS1_VIZ_VARIANT", "D"), ""
+    try:
+        import json
+
+        with open(CONTROL_FILE) as fh:
+            data = json.load(fh)
+        variant = str(data.get("variant", variant)) or variant
+        state = str(data.get("state", "") or "")
+    except Exception:
+        pass
+    return variant, state
+
+
+#: Kept so an importer reading a module-level value still gets a sane answer.
+VARIANT = capture_control()[0]
 
 #: Open heights. Chosen per variant rather than shared, because these ARE the
 #: design difference the owner is comparing.
@@ -66,23 +90,25 @@ class LogDock:
     next event.
     """
 
-    def __init__(self, variant: str, on_fullscreen=None) -> None:
-        self.variant = variant
+    def __init__(self, variant: str = "", on_fullscreen=None) -> None:
+        _variant, _start = capture_control()
+        self.variant = variant or _variant
         self.state = StreamState()
         # CAPTURE AID (throwaway viz branch only). Start the console in a given
         # state so a still frame can show the collapsed strip or the
         # paused/jump-to-newest state without scripting a wheel gesture into a
-        # Flutter canvas. Nothing is faked in the render: this sets the REAL
-        # state object the real widgets paint from, and the same state is
-        # reached by hand via toggle()/scrolling.
-        _start = os.getenv("PS1_VIZ_STATE", "")
+        # Flutter canvas — which paints to a <canvas>, so there is no scrollable
+        # DOM element to drive. Nothing is faked in the render: this sets the
+        # REAL state object the real widgets paint from, and the same state is
+        # reached by hand via toggle() or by scrolling.
         if _start == "collapsed":
             self.state.collapsed = True
         elif _start == "paused":
             self.state.following = False
+            self.state.missed = 7
         self._on_fullscreen = on_fullscreen
-        self.profiles: frozenset[str] = frozenset()
-        self.height = OPEN_HEIGHT.get(variant, 236)
+        self.profiles: frozenset = frozenset()
+        self.height = OPEN_HEIGHT.get(self.variant, 236)
 
         self.row_layout = {
             "D": "profile_first",
@@ -95,7 +121,10 @@ class LogDock:
             spacing=0,
             padding=ft.Padding.symmetric(vertical=6),
             expand=True,
-            auto_scroll=True,
+            # Mirrors the follow decision from the very first frame. Hardcoding
+            # True here re-armed following on the initial auto-scroll to the
+            # bottom, which fired _on_scroll and undid a paused start.
+            auto_scroll=self.state.following,
             on_scroll=self._on_scroll,
         )
 
@@ -379,6 +408,11 @@ class LogDock:
             pixels = float(getattr(e, "pixels", 0.0) or 0.0)
             extent = float(getattr(e, "max_scroll_extent", 0.0) or 0.0)
         except (TypeError, ValueError):
+            return
+        # A list with nothing to scroll reports extent 0, and "0 >= 0 - slack"
+        # is trivially at-the-bottom — so an un-scrollable list would re-arm
+        # following on every layout pass. Nothing to scroll is not a decision.
+        if extent <= 0.0:
             return
         if self.state.on_scroll(pixels, extent):
             self.list.auto_scroll = self.state.following
