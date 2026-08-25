@@ -43,6 +43,74 @@ STATE_UNOBTAINABLE = "unobtainable"
 # Level 2 comparison keys on it.
 SORT_FINGERPRINT = "fingerprint"
 
+# ---------------------------------------------------------------------------
+# LINKAGE CLASSIFICATION — which rows CAN carry a Level 2 answer and which
+# cannot carry one at any value.
+#
+# A row ties two profiles together only if its value is drawn from a LARGE
+# SPACE. Two profiles sharing a canvas hash, a WebGL renderer string or a UA
+# are linkable. Two profiles that both score "webdriver check: passed" are
+# merely BOTH CLEAN — that is the success case of masking, not a leak.
+#
+# Conflating the two inverts the entire question this ticket exists to answer,
+# so the classification is explicit and every row lands in exactly one class:
+#
+#   entropy  — high-cardinality profile attribute. CAN tie two profiles.
+#   verdict  — detector output / low-cardinality token (True, "false", "33").
+#              CANNOT tie two profiles at ANY value, identical or not.
+#
+# The asymmetry is deliberate: a verdict row is never promoted to evidence,
+# and an arm holding no entropy row read on both sides is reported UNANSWERABLE
+# rather than clean. Identical verdict rows are still PRINTED — as a footnote
+# that names them as non-evidence — so nothing is hidden, only re-ranked.
+VERDICT_TOKENS = {
+    "true", "false", "yes", "no", "none", "", "ok", "pass", "fail",
+    "passed", "failed",
+}
+
+# A hash or a renderer string reaches this; "33", "20", "0" and "True" do not.
+ENTROPY_MIN_LEN = 8
+
+CLASS_ENTROPY = "entropy"
+CLASS_VERDICT = "verdict"
+
+
+def linkage_class(row: dict) -> str:
+    """Classify ONE row as `entropy` (can tie two profiles) or `verdict`.
+
+    Order matters. The record's own `vector` annotation wins outright: a row
+    the catalogue tagged `gpu_claimed` / `gpu_rendered` is a leak vector by the
+    record's own account, so it is entropy-bearing whatever its value looks
+    like. Only an untagged row is judged on the shape of its value.
+
+    The residual bound is stated rather than hidden: a SHORT untagged string
+    (say a 3-character adapter name) classifies as `verdict` and is therefore
+    excluded from linkage evidence. That direction is the safe one — it can
+    only ever make this tool report UNANSWERABLE where a human might have
+    found a weak tie; it can never manufacture a tie that is not there.
+    """
+    if (row.get("vector") or "").strip():
+        return CLASS_ENTROPY
+
+    value = row.get("value")
+    if value is None or isinstance(value, bool):
+        return CLASS_VERDICT
+
+    text = str(value).strip()
+    if text.lower() in VERDICT_TOKENS:
+        return CLASS_VERDICT
+
+    # A bare number is a rating or a score — a detector's output about the
+    # profile, not an attribute OF the profile. creepjs `headless_rating` 33
+    # reads 33 on chromium and on firefox alike.
+    try:
+        float(text)
+        return CLASS_VERDICT
+    except ValueError:
+        pass
+
+    return CLASS_ENTROPY if len(text) >= ENTROPY_MIN_LEN else CLASS_VERDICT
+
 
 def load(paths: "list[str]") -> "list[tuple[str, dict]]":
     files: "list[str]" = []
@@ -205,8 +273,13 @@ def level2(records: "list[tuple[str, dict]]") -> None:
             # `vector` silently shrinks the comparison to a third of the
             # evidence and would let an unlinkability claim rest on rows that
             # were never compared.
+            #
+            # The `sort` filter decides what is COMPARED; `linkage_class`
+            # decides what the comparison is allowed to CONCLUDE. Keeping the
+            # two separate is the point: a verdict row is still read, still
+            # printed, and still never counted as linkage evidence.
             return {
-                (r["checker"], r["item"]): r.get("value")
+                (r["checker"], r["item"]): (r.get("value"), linkage_class(r))
                 for r in rec["readings"]
                 if r.get("state") == STATE_READ
                 and r.get("sort") == SORT_FINGERPRINT
@@ -220,17 +293,56 @@ def level2(records: "list[tuple[str, dict]]") -> None:
             print("    UNANSWERABLE (coverage, not a clean result).")
             continue
 
-        same = [k for k in both if ra[k] == rb[k]]
-        diff = [k for k in both if ra[k] != rb[k]]
+        # Split the overlap by whether a row CAN carry a linkage answer at
+        # all. A verdict row is not weak evidence of unlinkability -- it is
+        # NO evidence, identical or not, so it never reaches the finding.
+        ent = [k for k in both if ra[k][1] == CLASS_ENTROPY]
+        ver = [k for k in both if ra[k][1] == CLASS_VERDICT]
+
         print(f"    {len(both)} fingerprint row(s) read on both sides: "
-              f"{len(diff)} DIFFER, {len(same)} IDENTICAL")
+              f"{len(ent)} entropy-bearing, {len(ver)} verdict/low-cardinality")
+
+        if not ent:
+            print("    UNANSWERABLE (coverage, not a clean result): NO "
+                  "entropy-bearing row was read")
+            print("    on both sides. The rows that overlap are detector "
+                  "verdicts and low-cardinality")
+            print("    tokens, which read the same for ANY well-masked "
+                  "profile — they cannot tie two")
+            print("    profiles together and they cannot establish that two "
+                  "are unlinked.")
+            if ver:
+                print("    (Non-evidence, listed so nothing is hidden — "
+                      "identical here means BOTH CLEAN,")
+                print("     NOT linked:)")
+                for k in ver:
+                    flag = "same" if ra[k][0] == rb[k][0] else "differ"
+                    print(f"        [{flag}] {k[0]} :: {k[1]} = "
+                          f"{str(ra[k][0])[:44]}")
+            continue
+
+        same = [k for k in ent if ra[k][0] == rb[k][0]]
+        diff = [k for k in ent if ra[k][0] != rb[k][0]]
+        print(f"    of the {len(ent)} entropy-bearing row(s): {len(diff)} "
+              f"DIFFER, {len(same)} IDENTICAL")
         if same:
             print("    ⚠ ROWS THAT TIE THE TWO PROFILES TOGETHER "
-                  "(identical across seeds):")
+                  "(identical high-entropy values):")
             for k in same:
-                print(f"        {k[0]} :: {k[1]} = {str(ra[k])[:55]}")
+                print(f"        {k[0]} :: {k[1]} = {str(ra[k][0])[:55]}")
+            print("    LEVEL 2 FAILS on this arm: a checker reading these "
+                  "rows can tie the two")
+            print("    profiles to each other.")
         else:
-            print("    No row is identical across the two seeds on this arm.")
+            print("    No entropy-bearing row is identical across the two "
+                  "seeds on this arm.")
+            print(f"    LEVEL 2 HOLDS on this arm, on the {len(ent)} "
+                  f"entropy-bearing row(s) actually read.")
+        if ver:
+            print(f"    ({len(ver)} verdict/low-cardinality row(s) excluded "
+                  f"from the verdict above —")
+            print("     identical there means both profiles are CLEAN, not "
+                  "that they are linked.)")
 
 
 def matrix_summary(records: "list[tuple[str, dict]]") -> None:
