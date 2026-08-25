@@ -46,6 +46,112 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  types:
+    name: types
+    # SEPARATE FROM THE MATRIX, DELIBERATELY. Type checking reads source text;
+    # it does not execute the product, so its answer is identical on all three
+    # platforms. Running it three times would triple the cost to learn the same
+    # fact, and — worse — would report one type error as three red cells, which
+    # reads like a platform divergence when it is nothing of the kind.
+    #
+    # This job carries BOTH type checks, and they are deliberately ASYMMETRIC.
+    # That asymmetry is the whole point (PS-165), so read it before changing
+    # either step:
+    #
+    #   * the repo-wide mypy run is ADVISORY — it prints and cannot fail the
+    #     build, because the tree still carries pre-existing errors;
+    #   * the protocol-conformance check is GATING — it is narrow, it is clean
+    #     today, and its red is a real red.
+    #
+    # Flipping the first to gating would make this job permanently red, and the
+    # reflex cure for that (a blanket `ignore_errors`) is precisely the defect
+    # this job was created to remove. Flipping the second to advisory would
+    # leave a job that reports everything and blocks nothing.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install the type checker
+        # ONLY the dev requirements, NOT the project. mypy.ini sets
+        # `no_site_packages`, so the run deliberately does not look at
+        # installed third-party packages at all — installing the project would
+        # cost minutes and change nothing about the result. See mypy.ini for
+        # why that setting is required rather than preferred.
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Protocol conformance (gating)
+        # THE NARROW GATE — the one that can actually fail this build.
+        #
+        # It fails when a Protocol stops describing its implementation. That is
+        # a real defect class here: at PS-165 IProfileManager had fallen ten
+        # parameters behind ProfileManager.add_profile and eight behind
+        # update_profile, and callers were passing arguments the protocol never
+        # declared — 38 of the repo's then-136 mypy errors from that one cause.
+        #
+        # DO NOT "simplify" this into a mypy check. That was tried and measured:
+        # with the duplicate `set_cookie_status` declaration removed and the
+        # parameter drift left fully intact, mypy reports ZERO errors for this
+        # drift, because a Protocol permits an implementation to accept extra
+        # OPTIONAL parameters, which is the exact direction this drift ran. The
+        # gate would have shipped vacuously green. (On the pristine tree the
+        # probe DOES error, but on the duplicate declaration rather than on the
+        # drift — re-run it the way the script's docstring specifies or you will
+        # misread that error as mypy catching this class.)
+        # The reasoning is written out at the top of the script.
+        #
+        # Runs BEFORE the advisory step so its verdict is not buried under the
+        # advisory run's many lines of pre-existing output.
+        shell: bash
+        run: python .github/scripts/check_protocol_conformance.py
+
+      - name: Type check, repo-wide (advisory)
+        # ADVISORY ON PURPOSE — a red here does NOT block a merge. The tree
+        # still carries pre-existing errors — read the count from this step's
+        # own output, or reproduce it with the config alone
+        # (`python -m mypy --config-file mypy.ini src`) rather than trusting a
+        # figure written here. A gate that is red before anyone touches it
+        # teaches people to ignore it.
+        #
+        # NOT `continue-on-error`. This step is made non-gating the same way the
+        # GPU reading below is: it CATCHES the exit status and reports it, so
+        # the step genuinely SUCCEEDS rather than failing-but-excused. That
+        # distinction is not style — tests/test_ci_verification_gates.py forbids
+        # `continue-on-error` anywhere in this workflow, because at JOB scale it
+        # is how an entire platform quietly stops being verified. Keeping that
+        # rule absolute is worth far more than the one line it costs here.
+        #
+        # It runs so the number is VISIBLE and so a change that makes it much
+        # worse is legible in the log. `if: always()` so the reading survives a
+        # red conformance gate above — that is exactly when it is most useful.
+        #
+        # EVERY FLAG THIS NEEDS LIVES IN mypy.ini, not on this line, so a
+        # developer running `python -m mypy --config-file mypy.ini src` locally
+        # gets the same answer this step does.
+        #
+        # To make this gating, fix the errors — do not add `ignore_errors`.
+        if: always()
+        shell: bash
+        run: |
+          # `set -e` is on by default in this shell, and mypy exits non-zero
+          # whenever it finds anything — so the call is guarded, or the step
+          # would die before reporting the count that is the point of running.
+          status=0
+          python -m mypy --config-file mypy.ini src || status=$?
+          echo "advisory: mypy exit status ${status} (this step cannot fail the build)"
+
   tests:
     name: tests (${{ matrix.os }})
     strategy:
