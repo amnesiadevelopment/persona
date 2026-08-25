@@ -54,7 +54,7 @@ CONTROL_FILE = os.getenv("PS1_VIZ_CONTROL", "/tmp/ps1-viz-control.json")
 
 def capture_control() -> tuple:
     """(placement, start_state) for this render — defaults to ("D", "")."""
-    variant, state = os.getenv("PS1_VIZ_VARIANT", "D"), ""
+    variant, state = os.getenv("PS1_VIZ_VARIANT", "F"), ""
     try:
         import json
 
