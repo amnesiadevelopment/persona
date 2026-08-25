@@ -985,6 +985,39 @@ _WARMUP_CHROME_PREFS = {
     "browser.theme.toolbar-theme": 0,
 }
 
+# The prefs that decide whether Firefox RESTORES the previous session. They have
+# ONE owner (spliced into _profile_prefs below) because they must be written in
+# TWO places for two different reasons, and a second copy would drift:
+#
+#   * _profile_prefs — the engine's extra_prefs, applied over the juggler
+#     protocol AFTER startup and persisted into prefs.js by Firefox.
+#   * _migrate_profile_for_engine_build — straight into prefs.js BEFORE Firefox
+#     starts, because a build change deletes prefs.js and the engine's copy
+#     arrives too late to be read (PS-175).
+#
+# THE TIMING IS THE WHOLE POINT: Firefox decides whether to restore AT STARTUP,
+# reading prefs.js. The engine does NOT write user.js on the Juggler path (its
+# launcher documents this: writePreferences lives in the BiDi path only), so
+# extra_prefs land after the decision has already been made. A profile whose
+# prefs.js was just reset therefore starts with restore OFF while every pref
+# READS correct afterwards — which is why this must never be checked by
+# inspecting prefs.js after a launch.
+_SESSION_RESTORE_PREFS = {
+    # NOT browser.startup.page=3: the startup-page choice must stay 0 so
+    # nsIBrowserHandler.defaultArgs stays "about:blank" — SessionStore only lets
+    # the restored session OWN the startup window (overwriteTabs) when the
+    # cmdline URL equals defaultArgs, and Playwright hardcodes an "about:blank"
+    # cmdline URL on every persistent launch. With page=3 defaultArgs became the
+    # homepage instead, so every relaunch KEPT an extra blank tab next to the
+    # restored ones (#148).
+    "browser.startup.page": 0,
+    "browser.sessionstore.resume_session_once": True,
+    "browser.sessionstore.resume_from_crash": True,
+    # Write the store often so a tab opened seconds before close is still in the
+    # restored session.
+    "browser.sessionstore.interval": 1500,
+}
+
 # Far enough offscreen that the warmup window is invisible on any real display.
 _OFFSCREEN_XY = -32000
 
@@ -1662,7 +1695,19 @@ def _migrate_profile_for_engine_build(profile_dir: str, engine_dir: str) -> list
         # back dark. (Firefox rebuilds its toolbar-theme startup cache lazily, so
         # the tab strip goes dark immediately and the toolbar follows on the next
         # launch — the same first-launch behaviour a brand-new profile has; #242.)
-        _upsert_prefs_js(profile_dir, _WARMUP_CHROME_PREFS)
+        #
+        # AND the session-restore prefs, or the first launch after a bump opens
+        # with the user's tabs GONE (PS-175, live-reproduced: a tab open before
+        # the bump came back as about:blank). Firefox decides whether to restore
+        # AT STARTUP from prefs.js; the engine's copy of these prefs travels over
+        # the juggler protocol and is applied AFTER startup, so on the one launch
+        # where prefs.js was just deleted the decision is made with restore
+        # unset. It then persists the late copy, which is why prefs.js READS
+        # correct afterwards while the session is already lost — do not verify
+        # this by inspecting prefs.js.
+        _upsert_prefs_js(
+            profile_dir, {**_WARMUP_CHROME_PREFS, **_SESSION_RESTORE_PREFS}
+        )
         _activate_dark_theme(profile_dir)
 
     # (3) GOING BACK ONLY. Firefox refuses to open a profile last used by a
@@ -2195,23 +2240,20 @@ def _profile_prefs(cfg: dict) -> dict:
             "browser.theme.toolbar-theme": 0,
             "layout.css.prefers-color-scheme.content-override": 0,
             # Restore the previous session's tabs/windows across launches. The
-            # persistent profile_dir holds sessionstore. Restore is enabled via
-            # resume_session_once (re-armed through user.js on every launch, so
-            # the "once" never expires) and NOT browser.startup.page=3: the
-            # startup-page choice must stay 0 so nsIBrowserHandler.defaultArgs
-            # stays "about:blank" — SessionStore only lets the restored session
-            # OWN the startup window (overwriteTabs) when the cmdline URL
-            # equals defaultArgs, and Playwright hardcodes an "about:blank"
-            # cmdline URL on every persistent launch (swallowed into a string
-            # arg by the trailing -new-window flag, see _child). With page=3
-            # defaultArgs became the homepage instead, so every relaunch KEPT
-            # an extra blank tab next to the restored ones (#148). Write the
-            # store often so a tab opened seconds before close is still in the
-            # restored session.
-            "browser.startup.page": 0,
-            "browser.sessionstore.resume_session_once": True,
-            "browser.sessionstore.resume_from_crash": True,
-            "browser.sessionstore.interval": 1500,
+            # persistent profile_dir holds sessionstore. The prefs themselves
+            # live in _SESSION_RESTORE_PREFS (one owner) because a build change
+            # must ALSO write them straight into prefs.js before Firefox starts
+            # — see that constant and _migrate_profile_for_engine_build (PS-175).
+            #
+            # The comment that used to sit here said restore was "re-armed
+            # through user.js on every launch, so the 'once' never expires".
+            # That is FALSE and it is what hid PS-175: the engine writes NO
+            # user.js on the Juggler path (invisible_playwright/launcher.py
+            # documents this — writePreferences is BiDi-only), so these arrive
+            # over the protocol AFTER startup and are persisted into prefs.js by
+            # Firefox. They survive a normal restart because prefs.js survives
+            # it; they do NOT survive a prefs.js reset.
+            **_SESSION_RESTORE_PREFS,
             # Always show the bookmarks toolbar so the shipped test bookmarks
             # are visible (default only shows it on the new-tab page). This pref
             # alone doesn't reveal it on a FRESH profile's first paint (the
