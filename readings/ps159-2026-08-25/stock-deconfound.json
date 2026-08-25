@@ -2,11 +2,11 @@
   "ticket": "PS-159",
   "subject": "STOCK chromium (/usr/bin/chromium) \u2014 NOT persona. Nothing in this record may be attributed to persona's product behaviour.",
   "exit": {
-    "ip": "2a02:a311:c5e7:8180:3d89:71ec:5991:e289",
+    "ip": "5.173.194.43",
     "country": "PL",
-    "region": "Kuyavian-Pomeranian Voivodeship",
-    "city": "Bydgoszcz",
-    "org": "P4 Sp. z o.o.",
+    "region": "Mazovia",
+    "city": "Warsaw",
+    "org": "AS39603 P4 Sp. z o.o.",
     "timezone": "Europe/Warsaw"
   },
   "credential_source": "file",
@@ -77,14 +77,14 @@
         "masking_detected": true,
         "automation_detected": true,
         "timezone_spoofed": null,
-        "geo_country_city": "Poland / Bydgoszcz",
+        "geo_country_city": "Poland / Warsaw",
         "timezone_from_js": "Europe/Warsaw",
         "webgl_vendor": "Google Inc. (Google)",
         "webgl_renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
         "webgl_hash": "b35a6e95ccbb64d2d42a637ad06d7297",
         "canvas_hash": "5f4a84ed7ee599a84a46ce732dc3edc3"
       },
-      "tz_env": null,
+      "tz_env": "Europe/Warsaw",
       "applied": {
         "automation_suppressed": false,
         "swiftshader_forced": true,
@@ -170,5 +170,14 @@
       }
     }
   },
-  "prior_exits": []
+  "prior_exits": [
+    {
+      "ip": "2a02:a311:c5e7:8180:3d89:71ec:5991:e289",
+      "country": "PL",
+      "region": "Kuyavian-Pomeranian Voivodeship",
+      "city": "Bydgoszcz",
+      "org": "P4 Sp. z o.o.",
+      "timezone": "Europe/Warsaw"
+    }
+  ]
 }
