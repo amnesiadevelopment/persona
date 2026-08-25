@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from ...core.config import DATA_DIR
 from ...core.logging import get_logger
 from ...services.profile.coherence import IncoherentProfile
+from ...services.profile.pool_assignment import POOL_NONE, POOL_UNCHANGED
 from ...services.profile.proxy_assignment import PROXY_NONE, PROXY_UNCHANGED
 from ...utils.validation import validate_profile_name, validate_proxy_format
 from ..dependencies import (
@@ -179,11 +180,22 @@ def update_profile(
     if isinstance(new_proxy, str):
         _validate_proxy_ref(new_proxy, ps)
 
-    # bookmark_pool is assigned unconditionally by update_profile, so pass the
-    # profile's current value when the PATCH omits it (else it would be wiped).
-    # Every other optional field is only applied when non-None, so an omitted
-    # field passes None and stays untouched.
-    #
+    # The same distinction only a route can draw, for the pool: an OMITTED
+    # `bookmark_pool` key vs a SUPPLIED empty one. The model now refuses to read
+    # absence as a clear (see services/profile/pool_assignment.py), so this lane
+    # says which it meant instead of reading the stored pool and passing it back
+    # in. That old read-back was correct but was the door protecting the model;
+    # the model now protects itself and a caller that omits the key is safe by
+    # default.
+    if "bookmark_pool" not in supplied:
+        new_bookmark_pool = POOL_UNCHANGED
+    elif supplied["bookmark_pool"]:
+        new_bookmark_pool = supplied["bookmark_pool"]
+    else:
+        # Explicitly supplied as null/"" — the caller is deliberately choosing
+        # no pool, which stays expressible.
+        new_bookmark_pool = POOL_NONE
+
     # Coherence is enforced by the model, which sees the PATCH's fields AND the
     # stored ones — so `PATCH {"os_type": "macos"}` on a profile already stored
     # as firefox is judged on the pair it would RESULT IN, not on the one field
@@ -195,7 +207,7 @@ def update_profile(
             new_proxy,
             new_os,
             new_search_engine=supplied.get("search_engine"),
-            new_bookmark_pool=supplied.get("bookmark_pool", profile.bookmark_pool),
+            new_bookmark_pool=new_bookmark_pool,
             new_bookmarks=supplied.get("bookmarks"),
             new_tags=supplied.get("tags"),
             new_ai_control=supplied.get("ai_control"),
