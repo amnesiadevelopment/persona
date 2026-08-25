@@ -153,6 +153,43 @@ GPU_PROBE_JS = """
       out.unmasked_vendor = 'throws:' + e;
       out.unmasked_renderer = 'throws:' + e;
     }
+    // The vectors gpu_ext ALSO authors, read at the same instant as the
+    // renderer string. Dropping our layer on an arm does not drop only the
+    // renderer: it reverts the masked VENDOR/RENDERER, the getParameter
+    // LIMITS and getSupportedExtensions to whatever the host produces. The
+    // module itself names the hazard that creates — a renderer<->extension
+    // mismatch is a hard cross-check impossibility (audit7 #3) — so an arm
+    // cannot be handed to the engine on the strength of its renderer string
+    // alone. These make that checkable rather than assumed.
+    try {
+      var lim = {};
+      var NAMES = {
+        3379: 'MAX_TEXTURE_SIZE', 34076: 'MAX_CUBE_MAP_TEXTURE_SIZE',
+        34024: 'MAX_RENDERBUFFER_SIZE', 34921: 'MAX_VERTEX_ATTRIBS',
+        36347: 'MAX_VERTEX_UNIFORM_VECTORS',
+        36349: 'MAX_FRAGMENT_UNIFORM_VECTORS',
+        36348: 'MAX_VARYING_VECTORS',
+        35660: 'MAX_VERTEX_TEXTURE_IMAGE_UNITS',
+        34930: 'MAX_TEXTURE_IMAGE_UNITS',
+        35661: 'MAX_COMBINED_TEXTURE_IMAGE_UNITS'
+      };
+      for (var k in NAMES) {
+        try { lim[NAMES[k]] = String(gl.getParameter(parseInt(k, 10))); }
+        catch (e) { lim[NAMES[k]] = 'throws'; }
+      }
+      // MAX_VIEWPORT_DIMS is the desktop-vs-GLES discriminator the module
+      // calls "the giveaway", and it returns a typed array — stringify it
+      // rather than letting JSON render it as an object.
+      try {
+        var vp = gl.getParameter(3386);
+        lim.MAX_VIEWPORT_DIMS = vp ? String(vp[0]) + 'x' + String(vp[1]) : 'null';
+      } catch (e) { lim.MAX_VIEWPORT_DIMS = 'throws'; }
+      out.limits = lim;
+    } catch (e) { out.limits = null; }
+    try {
+      var exts = gl.getSupportedExtensions();
+      out.extensions = exts ? Array.prototype.slice.call(exts).sort() : null;
+    } catch (e) { out.extensions = null; }
     try {
       var lc = gl.getExtension('WEBGL_lose_context');
       if (lc) lc.loseContext();

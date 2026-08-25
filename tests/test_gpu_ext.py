@@ -162,19 +162,31 @@ def test_linux_page_reads_a_mesa_gpu_and_never_direct3d(tmp_path):
 
 
 def test_linux_and_windows_no_longer_emit_the_same_renderer(tmp_path):
-    # AC 2 — premise inversion. BEFORE this arm these two were byte-identical
-    # (linux fell through os_norm's else to "windows"); if this ever passes
-    # trivially again, the arm has regressed.
+    # AC 2 — premise inversion. BEFORE the linux arm these two were
+    # byte-identical (linux fell through os_norm's else to "windows"); if this
+    # ever passes trivially again, the arm has regressed.
+    #
+    # PS-161 CHANGED THE CONTROL, NOT THE CLAIM. Windows is now an
+    # engine-authored-identity arm, so this extension deliberately does NOT
+    # write the identity pair there and the probe's stub getParameter answers
+    # its sentinel. Asserting "Direct3D11 in win" would now assert the bug this
+    # ticket fixes. The control it provided — "the probe observes a real
+    # difference rather than a no-op" — is preserved by pinning what windows
+    # must do INSTEAD (fall through), which is an equally strong statement and
+    # fails just as loudly if the arm silently reverts to spoofing.
     for seed in (1, 42, 0xABCDEF, 7):
         lin = _probe(tmp_path / f"l{seed}", seed, "linux")
         win = _probe(tmp_path / f"w{seed}", seed, "windows")
         assert lin["unmaskedRenderer"] != win["unmaskedRenderer"], (
             f"seed {seed}: linux still emits the windows renderer"
         )
-        assert "Direct3D11" in win["unmaskedRenderer"], (
-            "windows must keep its D3D11 string — this is the control that "
-            "proves the probe observes a real difference rather than a no-op"
+        assert win["unmaskedRenderer"] == "HOST_VALUE_NOT_SPOOFED", (
+            "windows must FALL THROUGH for the identity pair so the engine's "
+            f"own value reaches the page; got {win['unmaskedRenderer']!r}"
         )
+        # And the linux side must still be genuinely ours — the half of this
+        # comparison that proves the difference is not two fall-throughs.
+        assert "OpenGL 4.6" in lin["unmaskedRenderer"], lin["unmaskedRenderer"]
 
 
 def test_linux_emits_no_kernel_drm_or_mesa_build_version(tmp_path):
@@ -938,7 +950,11 @@ def test_non_ios_platforms_select_unchanged_values(tmp_path, os_type):
         assert "ANGLE (" in p["unmaskedRenderer"] and "OpenGL ES 3.2" in p["unmaskedRenderer"]
         assert p["maxViewportDims"] == [16384, 16384]
     else:
-        assert "Direct3D11" in p["unmaskedRenderer"]
+        # PS-161: windows is an engine-authored-IDENTITY arm, so the identity
+        # pair is deliberately NOT written here — asserting "Direct3D11" would
+        # now assert the two-spoofer bug. The LIMITS are still ours on every
+        # arm (the gate is identity-only), which is what this row now pins.
+        assert p["unmaskedRenderer"] == "HOST_VALUE_NOT_SPOOFED"
         assert p["maxViewportDims"] == [32767, 32767]
 
 
@@ -979,3 +995,148 @@ def test_emitted_script_is_syntactically_valid_for_every_os(tmp_path):
             capture_output=True, text=True, timeout=60,
         )
         assert out.returncode == 0, f"{os_type}: {out.stderr}"
+
+
+# ---------------------------------------------------------------------------
+# PS-161 — the per-arm identity-authorship split.
+#
+# The bug: TWO independent GPU spoofers, both live, disagreeing. Ours won on
+# pixelscan's read path while the engine's won on creepjs's, so ONE profile in
+# ONE run reported two different graphics cards. The fix is not "spoof harder"
+# — it is to make exactly ONE author exist per vector per arm, so the
+# contradiction is structurally impossible rather than merely fixed once.
+#
+# Every test below asserts on what a PAGE RECEIVES (via _probe, which runs the
+# emitted script against stub contexts and CALLS the patched methods), never on
+# the text of gpu.js. Every pool and both branches are literals in every emitted
+# file — the arm is selected at runtime — so a substring check against the
+# source would prove nothing here.
+# ---------------------------------------------------------------------------
+
+
+def test_engine_authored_arm_does_not_write_the_identity_pair(tmp_path):
+    # THE fix. On an engine-authored arm this extension must not answer the two
+    # debug-renderer-info constants at all, so the engine's own seed-derived
+    # value reaches the page unopposed. The probe's stub returns a sentinel for
+    # anything that falls through, so seeing the sentinel IS seeing the
+    # fall-through.
+    from src.services.browser.gpu_ext import ENGINE_AUTHORED_IDENTITY_ARMS
+
+    assert ENGINE_AUTHORED_IDENTITY_ARMS, (
+        "no arm is engine-authored, so this ticket's fix is not installed"
+    )
+    for arm in sorted(ENGINE_AUTHORED_IDENTITY_ARMS):
+        p = _probe(tmp_path / f"e{arm}", 42, arm)
+        assert p["unmaskedVendor"] == "HOST_VALUE_NOT_SPOOFED", (
+            f"{arm} is engine-authored but this extension still wrote the "
+            f"unmasked VENDOR: {p['unmaskedVendor']!r} — two authors again"
+        )
+        assert p["unmaskedRenderer"] == "HOST_VALUE_NOT_SPOOFED", (
+            f"{arm} is engine-authored but this extension still wrote the "
+            f"unmasked RENDERER: {p['unmaskedRenderer']!r} — two authors again"
+        )
+
+
+def test_persona_authored_arms_still_write_the_identity_pair(tmp_path):
+    # The other half, and the control that stops the test above from passing
+    # for an extension that simply stopped working everywhere. linux and macos
+    # keep OUR identity — linux because the engine hands every seed the same
+    # SwiftShader string, macos because across 30 seeds it produced only two
+    # values skewed 87/13 (a 76.9% collision, worse than our own pool's 50%).
+    for arm, marker in (("linux", "OpenGL 4.6"),
+                        ("macos", "ANGLE Metal Renderer"),
+                        ("android", "OpenGL ES 3.2")):
+        p = _probe(tmp_path / f"o{arm}", 42, arm)
+        assert p["unmaskedRenderer"] != "HOST_VALUE_NOT_SPOOFED", (
+            f"{arm} must keep persona's own identity, but the extension fell "
+            "through to the host"
+        )
+        assert marker in p["unmaskedRenderer"], p["unmaskedRenderer"]
+        assert p["unmaskedVendor"].startswith("Google Inc. ("), p["unmaskedVendor"]
+
+
+def test_ios_identity_is_untouched_by_the_split(tmp_path):
+    # iOS pins ONE constant pair for every device on earth by design, and the
+    # engine has no ios platform at all. It must not be swept into either arm.
+    p = _probe(tmp_path / "i", 42, "ios")
+    assert p["unmaskedVendor"] == "Apple Inc."
+    assert p["unmaskedRenderer"] == "Apple GPU"
+
+
+def test_the_split_is_identity_only_every_other_vector_stays_ours(tmp_path):
+    # THE SCOPE OF (b), and the measurement that set it. Layer OFF, the engine
+    # authors the identity and the limits, but NOT the extension set: that set
+    # was 36 entries and BYTE-IDENTICAL across all three declared arms, i.e. the
+    # HOST's own set rather than a spoof. It advertises the mobile GLES
+    # compression families (ASTC/ETC/ETC1) ALONGSIDE the Direct3D BC families —
+    # on a claimed D3D11 card that is the renderer<->extension impossibility
+    # this module already calls a hard cross-check failure (audit7 #3).
+    #
+    # So "defer to the engine" must never mean "do not install this extension":
+    # dropping it wholesale would hand the extension set to a GPU-less
+    # SwiftShader VM and leak the host. This pins the gate as identity-ONLY.
+    from src.services.browser.gpu_ext import ENGINE_AUTHORED_IDENTITY_ARMS
+
+    for arm in sorted(ENGINE_AUTHORED_IDENTITY_ARMS):
+        p = _probe(tmp_path / f"s{arm}", 42, arm)
+
+        # The extension set is still OURS — not the host's stub value.
+        assert p["exts_gl1"] != ["HOST_EXT"], (
+            f"{arm}: getSupportedExtensions fell through to the host — this is "
+            "the host leak the identity split must not cause"
+        )
+        assert "WEBGL_debug_renderer_info" in p["exts_gl1"]
+        # And it must NOT advertise the mobile GLES families on a desktop arm.
+        for mobile_only in ("WEBGL_compressed_texture_astc",
+                            "WEBGL_compressed_texture_etc",
+                            "WEBGL_compressed_texture_etc1"):
+            assert mobile_only not in p["exts_gl1"], (
+                f"{arm}: advertised {mobile_only} on a desktop arm — the "
+                "renderer<->extension impossibility (audit7 #3)"
+            )
+
+        # The limits are still ours.
+        assert p["maxViewportDims"] == [32767, 32767]
+        assert p["maxTextureSize"] == 16384
+        # The masked VENDOR/RENDERER are still ours.
+        assert p["vendor"] == "WebKit"
+        assert p["renderer"] == "WebKit WebGL"
+        # And the WebGL version strings.
+        assert p["version_gl1"] == "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+
+
+def test_an_unrecognised_arm_keeps_our_authorship(tmp_path):
+    # FAIL-SAFE DIRECTION. An arm nobody has measured must fall to persona's own
+    # spoof, never to whatever the host happens to report. os_norm folds unknown
+    # values into "windows", so this also pins that the fold cannot smuggle an
+    # unmeasured platform into the engine-authored set by accident... which it
+    # WOULD, since windows is engine-authored. Assert the real consequence
+    # rather than a comfortable one: the value must at minimum never be the
+    # host's, and the helper must refuse to claim an unknown arm is deferred.
+    from src.services.browser.gpu_ext import engine_authors_identity
+
+    assert engine_authors_identity("plan9") is False
+    assert engine_authors_identity("") is False
+
+
+def test_engine_authored_set_names_only_arms_the_engine_actually_has(tmp_path):
+    # The engine has no android or ios platform — process.py backs those with
+    # the nearest desktop platform it DOES spoof — so an engine-authored
+    # identity there would be a desktop card on a phone UA, the exact
+    # impossibility the ANDROID_GPUS arm exists to prevent.
+    from src.services.browser.gpu_ext import ENGINE_AUTHORED_IDENTITY_ARMS
+
+    assert "android" not in ENGINE_AUTHORED_IDENTITY_ARMS
+    assert "ios" not in ENGINE_AUTHORED_IDENTITY_ARMS
+    # linux is measured CONSTANT across seeds — deferring there would give every
+    # linux profile one shared card, which Level 2 forbids outright.
+    assert "linux" not in ENGINE_AUTHORED_IDENTITY_ARMS
+
+
+def test_no_unsubstituted_placeholder_survives_into_any_emitted_script(tmp_path):
+    # A placeholder that reaches the page is a JS syntax error, which means the
+    # whole GPU spoof silently never installs — on every profile of that arm.
+    for arm in ("windows", "macos", "android", "ios", "linux"):
+        js = _read(build_gpu_extension(7, arm, str(tmp_path / f"ph{arm}"), 0), "gpu.js")
+        assert "__ENGINE_AUTHORS_IDENTITY__" not in js
+        assert "var ENGINE_AUTHORS_IDENTITY = " in js
