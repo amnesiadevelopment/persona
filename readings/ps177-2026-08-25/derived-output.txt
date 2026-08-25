@@ -1,0 +1,71 @@
+
+==============================================================================
+reading.firefox.windows.seed5150.json
+==============================================================================
+  cell                     : firefox / windows / desktop / seed 5150
+  engine build             : invisible_playwright/firefox-20
+  declared_machine_honoured: False
+     ^ the engine was NOT asked-and-obeyed. This record states what was PRESENTED,
+       not what was requested (product issue #211).
+  exit                     : 83.6.111.143 Warsaw/PL AS5617 Orange Polska Spolka Akcyjna Europe/Warsaw
+  masking layer            : route=init_scripts installed=audio,locale,webgl complete=True
+  counts                   : 25 read, 4 absent, 32 unobtainable (61 rows)
+  evidence verdict         : sufficient — 7/28 fingerprint rows (25.0%), from 2 checker(s)
+
+  ADVERSE VERDICTS THAT ACTUALLY FIRED (read AND adverse): 0
+    (none)
+
+  adverse PATTERNS that did not fire (definitions, NOT findings): 10
+    unobtainable   bot-detector.rebrowser.net :: detected
+    absent         bot.sannysoft.com :: phantom_js
+    absent         bot.sannysoft.com :: webdriver_present
+    unobtainable   deviceandbrowserinfo.com :: bot_verdict_positive
+    absent         iphey.com :: not_trustworthy
+    unobtainable   pixelscan.net :: automation_detected
+    unobtainable   pixelscan.net :: fingerprint_inconsistent
+    unobtainable   pixelscan.net :: masking_detected
+    unobtainable   pixelscan.net :: proxy_detected
+    unobtainable   pixelscan.net :: timezone_spoofed
+
+  per-checker coverage:
+    amiunique.org                unobtainable=1   <- NOBODY LOOKED (not a pass)
+    bot-detector.rebrowser.net   unobtainable=2   <- NOBODY LOOKED (not a pass)
+    bot.sannysoft.com            absent=2, read=2
+    browserscan.net              unobtainable=1   <- NOBODY LOOKED (not a pass)
+    coveryourtracks.eff.org      unobtainable=1   <- NOBODY LOOKED (not a pass)
+    creepjs                      unobtainable=9   <- NOBODY LOOKED (not a pass)
+    deviceandbrowserinfo.com     unobtainable=2   <- NOBODY LOOKED (not a pass)
+    engine-exit                  read=5
+    fv.pro                       unobtainable=1   <- NOBODY LOOKED (not a pass)
+    iphey.com                    absent=1, read=3
+    ipleak.net                   read=6
+    pixelscan.net                unobtainable=12   <- NOBODY LOOKED (not a pass)
+    tls.browserleaks.com         read=4
+    tls.peet.ws                  absent=1, read=5
+    tools.scrapfly.io            unobtainable=2   <- NOBODY LOOKED (not a pass)
+    whoer.net                    unobtainable=1   <- NOBODY LOOKED (not a pass)
+
+
+##############################################################################
+# CELLS THIS SWEEP FILLS (for PS-16 Table 1)
+##############################################################################
+
+  firefox / windows / desktop / seed 5150
+    evidence      : sufficient (7/28 fingerprint rows)
+    verdicts fired: 0 (none)
+    asked & silent: bot.sannysoft.com, engine-exit, iphey.com, ipleak.net, tls.browserleaks.com, tls.peet.ws
+    NOT LOOKED AT : amiunique.org, bot-detector.rebrowser.net, browserscan.net, coveryourtracks.eff.org, creepjs, deviceandbrowserinfo.com, fv.pro, pixelscan.net, tools.scrapfly.io, whoer.net
+    source        : reading.firefox.windows.seed5150.json
+
+
+##############################################################################
+# LEVEL 2 — mutual unlinkability, per arm
+##############################################################################
+
+  arm invisible_playwright / windows / desktop — seeds [5150]
+    UNANSWERABLE from this sweep: only ONE seed was read on this arm.
+    A single profile cannot answer whether TWO profiles are linkable, at any
+    level of detail. NOT a pass — recorded as not covered.
+
+
+1 record(s) read.
