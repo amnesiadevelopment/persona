@@ -143,6 +143,17 @@ class IBrowserLauncher(Protocol):
 
     def stop_profile(self, profile_name: str, timeout: int = 2) -> bool: ...
 
+    # Declared because it is CALLED THROUGH THIS PROTOCOL: ui/app.py holds
+    # `self.bl: IBrowserLauncher` and calls `self.bl.shutdown_all()` on app
+    # exit. Absent here that call is an `attr-defined` error even though it
+    # succeeds at runtime — the same defect class as the IProfileManager drift
+    # this ticket closes, and the test of whether a method belongs on a
+    # protocol is exactly this: is it reached through a protocol-typed
+    # reference. (`set_launch_record_hook` is NOT, so it stays off: the
+    # container wires it on the concrete BrowserLauncher before handing back
+    # the protocol-typed value.)
+    def shutdown_all(self) -> None: ...
+
     def running_profile_names(self) -> set[str]: ...
 
     def running_count(self) -> int: ...

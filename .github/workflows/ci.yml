@@ -59,7 +59,7 @@ jobs:
     # either step:
     #
     #   * the repo-wide mypy run is ADVISORY — it prints and cannot fail the
-    #     build, because the tree carries 97 pre-existing errors;
+    #     build, because the tree carries 96 pre-existing errors;
     #   * the protocol-conformance check is GATING — it is narrow, it is clean
     #     today, and its red is a real red.
     #
@@ -102,19 +102,24 @@ jobs:
         # declared — 38 of the repo's then-136 mypy errors from that one cause.
         #
         # DO NOT "simplify" this into a mypy check. That was tried and measured:
-        # mypy reports ZERO errors for this drift, because a Protocol permits an
-        # implementation to accept extra OPTIONAL parameters, which is the exact
-        # direction this drift ran. The gate would have shipped vacuously green.
+        # with the duplicate `set_cookie_status` declaration removed and the
+        # parameter drift left fully intact, mypy reports ZERO errors for this
+        # drift, because a Protocol permits an implementation to accept extra
+        # OPTIONAL parameters, which is the exact direction this drift ran. The
+        # gate would have shipped vacuously green. (On the pristine tree the
+        # probe DOES error, but on the duplicate declaration rather than on the
+        # drift — re-run it the way the script's docstring specifies or you will
+        # misread that error as mypy catching this class.)
         # The reasoning is written out at the top of the script.
         #
-        # Runs BEFORE the advisory step so its verdict is not buried under ~97
+        # Runs BEFORE the advisory step so its verdict is not buried under ~96
         # lines of pre-existing output.
         shell: bash
         run: python .github/scripts/check_protocol_conformance.py
 
       - name: Type check, repo-wide (advisory)
         # ADVISORY ON PURPOSE — a red here does NOT block a merge. The tree
-        # carries 97 pre-existing errors (measured at PS-165, mypy 2.3.1:
+        # carries 96 pre-existing errors (measured at PS-165, mypy 2.3.1:
         # `python -m mypy --config-file mypy.ini src`), and a gate that is red
         # before anyone touches it teaches people to ignore it.
         #

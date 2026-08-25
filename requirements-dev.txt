@@ -12,9 +12,11 @@ pytest-timeout>=2.4
 # gate. The upper bound keeps the advisory run's error count reproducible;
 # raise it deliberately, by running the check and re-measuring, not reflexively.
 #
-# MEASURED AT 2.3.1 (Python 3.12): `python3 -m mypy --config-file mypy.ini src`
-# reports 136 errors in 33 files across 206 source files. That number is the
-# advisory baseline, and it is expected to move when this bound moves.
+# MEASURED AT 2.3.1 (Python 3.12): the advisory baseline is whatever
+# `python3 -m mypy --config-file mypy.ini src` reports on the current tree.
+# The number is deliberately NOT frozen here — it moves when the code moves and
+# when this bound moves, and a count pinned in a comment goes stale silently
+# and is then quoted as current. Read it from the run.
 #
 # The narrow CONFORMANCE gate does not depend on this pin at all — it compares
 # signatures with the stdlib `ast` module and would hold its verdict even if

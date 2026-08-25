@@ -10,8 +10,28 @@ The obvious way to gate protocol conformance is to let mypy do it:
 
 That check was written and RUN against the exact drift this script exists to
 catch (PS-165, at main b018988, where IProfileManager was 10 parameters behind
-ProfileManager.add_profile and 8 behind update_profile). It reported **zero
-errors**. It would have shipped green, on a tree everyone agreed was drifted.
+ProfileManager.add_profile and 8 behind update_profile).
+
+THE PRECISE CLAIM, because this is load-bearing and you are invited to re-run
+it: **with the duplicate `set_cookie_status` declaration removed and the
+parameter drift left fully intact, the probe reports zero errors.**
+
+Re-run it exactly that way or you will not see what this paragraph describes.
+On pristine b018988 the probe is NOT silent — it fails for an unrelated reason,
+the duplicate declaration two lines apart in IProfileManager:
+
+    _probe.py:5: error: Incompatible return value type
+        (got "ProfileManager", expected "IProfileManager")  [return-value]
+    _probe.py:5: note: "ProfileManager" is missing following
+        "IProfileManager" protocol member:
+    _probe.py:5: note:     set_cookie_status-redefinition
+
+That error is about the phantom `-redefinition` member, NOT about the drift.
+Remove only the duplicate line — leaving add_profile 10 parameters behind and
+update_profile 8 behind, verified by AST — and the probe goes silent. Which is
+the stronger statement, and the one that matters: it ISOLATES the parameter
+drift as the thing mypy is blind to. The check would have shipped green on a
+tree everyone agreed was drifted.
 
 The reason is structural, not a mypy bug. A Protocol is a MINIMUM: an
 implementation may accept extra parameters as long as they are optional, and it
@@ -185,8 +205,15 @@ def check_pair(
             # method is CALLED through a protocol-typed reference, which is a
             # property of the call sites rather than of these two files — and
             # mypy already reports exactly that, as `attr-defined`, in the
-            # repo-wide advisory run. (At PS-165 it reported nine such calls;
-            # all nine were real and the methods were added to the protocol.)
+            # repo-wide advisory run. (At PS-165 it reported TEN such call
+            # sites, measured at b018988: nine naming IProfileManager — eight
+            # distinct methods, `assign_tag` twice — and one naming
+            # IBrowserLauncher.shutdown_all. All ten were real and all ten
+            # methods were added to their protocol. Note the tenth was missed
+            # on the first sweep because that sweep filtered by protocol NAME
+            # rather than by defect class; grep the class of error, not the
+            # class you expect to find it on:
+            #     mypy ... | grep -E 'error: "I[A-Za-z]+" has no attribute')
             #
             # This gate therefore owns the half it can decide from signatures
             # alone: a method present on BOTH must not have drifted.
