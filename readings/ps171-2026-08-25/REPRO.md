@@ -108,9 +108,16 @@ reading you get depends on the arm** — see the warning immediately below.
 >
 > **Consequence: `n`, `threads_total` and `rss_mb_total` are NOT comparable
 > across the two groups of arms.** Arms **B and F are the same configuration**
-> (layer OFF, headless, `new_page`, `about:blank`) and report `n=2` vs `n=11–12`
-> at the stall — that gap is the instrument, not the browser. The **1.2 GB figure
-> in the headline is arm F's** and is a whole-tree number.
+> (layer OFF, headless, `new_page`, `about:blank`), yet at the stall arm B reports
+> `n=2` (`ctrl_nolayer.txt` @ `"t": 109.0`, the last sample before the drop) while
+> arm F reports `n=12` (`F_new_page.txt` @ `"t": 53.1`) — that gap is the
+> instrument, not the browser. The **1.2 GB figure in the headline is arm F's**
+> and is a whole-tree number.
+>
+> These two numbers are stated as **the size of the instrument gap**, which is the
+> one thing they can jointly support. They are **not** offered as a comparison of
+> the two arms' process counts: the matchers do not count the same set, so no such
+> comparison is available at any pair of values.
 >
 > **Arm B's ~750 MB is NOT a parent-only undercount of that quantity, and an
 > earlier draft of this record said it was. That is withdrawn.** At `t=109.0`,
@@ -121,8 +128,8 @@ reading you get depends on the arm** — see the warning immediately below.
 >
 > ### Arm B ran on a box that already had a firefox process on it
 >
-> **`ctrl_nolayer.txt:68` — the first watchdog sample, taken BEFORE `LAUNCH`
-> returned at `t=1.86s`:**
+> **`ctrl_nolayer.txt` @ `"t": 0.0` — the first watchdog sample, taken BEFORE
+> `LAUNCH` returned at `t=1.86s`:**
 >
 > ```
 > WD {"t": 0.0, "n": 1, "cpu_total": 6.4, "rss_mb_total": 489.6, "threads_total": 85, ...}
@@ -179,8 +186,8 @@ reading you get depends on the arm** — see the warning immediately below.
 >
 > | Arm | at the stall | at the end of the 40s recovery watch |
 > |---|---|---|
-> | **F** (`F_new_page.txt:7,9`) | `cpu 35.1`, `thr {"S": 275}` | **`cpu 1.4`, `thr {"S": 267}`** ← the idle-wait reading |
-> | **A2** (`A2.txt:8,10`) | `cpu 54.4`, `thr {"R": 2, "S": 277}` | `n=0` — engine gone, no live sample |
+> | **F** (`F_new_page.txt` @ `"t": 53.1` and @ `"t": 101.2`) | `cpu 35.1`, `thr {"S": 275}` | **`cpu 1.4`, `thr {"S": 267}`** ← the idle-wait reading |
+> | **A2** (`A2.txt` @ `"t": 72.9` and @ `"t": 120.9`) | `cpu 54.4`, `thr {"R": 2, "S": 277}` | `n=0` — engine gone, no live sample |
 >
 > **Arm A2 cannot supply a 1.4% figure at all**: by `t=120.9` it had no
 > processes left to sample. And at its *own* stall A2 shows **54.4%** with **two
@@ -189,8 +196,9 @@ reading you get depends on the arm** — see the warning immediately below.
 > **arm F**, exactly as the no-recovery characterisation does
 > ([below](#process-loss-in-arm-a2--and-why-arm-bs-apparent-death-is-not-comparable)).
 >
-> Read `ctrl_nolayer.txt:163`'s `"cpu_total": 24.2` with that in mind: it is an
-> averaging artifact, **not** a browser burning a quarter of a core while wedged.
+> Read `ctrl_nolayer.txt` @ `"t": 304.3`'s `"cpu_total": 24.2` with that in mind:
+> it is an averaging artifact, **not** a browser burning a quarter of a core
+> while wedged.
 
 No live checker page was loaded, so no exit was required. (Had one been loaded,
 the proxied exit would have been mandatory with no direct-connection fallback.)
@@ -340,26 +348,31 @@ verifiable: `prctl(PR_SET_NAME, "IsolatedWebContentProcess")` reads back from
 
 **What this invalidates.** Arms **B/D** report a **parent-only** count; arms
 **A2/E/F** report the **whole tree**. So across those two groups, `n`,
-`threads_total` and `rss_mb_total` are **not comparable at all**:
+`threads_total` and `rss_mb_total` are **not comparable at all**. No table in
+this record may set one group's counts against the other's.
 
-Arms **B** and **F** are the *same configuration* — layer OFF, headless,
-`new_page`, `about:blank` — so their process counts ought to agree. They do not:
+> **A previous draft of this record put arm B's and arm F's process counts side
+> by side in a table, under the heading that — being the same configuration —
+> "their process counts ought to agree. They do not". That table is DELETED, not
+> corrected.** Its two columns are produced by the two matchers this section has
+> just shown count different things, so the table set incommensurable quantities
+> against each other and invited exactly the cross-arm reading the paragraph
+> above forbids. **A comparison between two instruments that do not measure the
+> same thing does not become correct when its digits are right** — and a round
+> that merely fixed the digits left the defect in place.
+>
+> (The digits were wrong as well, and inverted, having been **transcribed from a
+> review comment rather than re-derived from the file** — the defect class this
+> record has spent several rounds closing. Recorded here because the correction
+> history is part of the evidence, but the table itself does not come back.)
 
-| | Arm B (`ps comm`) | Arm F (`/proc cmdline`) |
-|---|---|---|
-| `n` at tab 1 | **2** (`ctrl_nolayer.txt:76`, `t=5.3`) | **6** (`F_new_page.txt:3`, `t=4.0`) |
-| `n` at the stall | **2, then 1** from `t=111.1` (`:134`) | **12** (`F_new_page.txt:7`, `t=53.1`) |
-
-> **Both arm-B cells in this table were previously wrong, and inverted.** They
-> read `1` at tab 1 and `2` at the stall — the file says `2` at tab 1, and `2`
-> falling to `1` at the stall. The figures had been **transcribed from a review
-> comment rather than re-derived from the file**, which is the same defect class
-> this record has spent three rounds closing. Every figure above is now taken
-> from the named line: arm B's `n` is `1` at `t=0.0`, `2` from `t=2.0`, and `1`
-> from `t=111.1` to the end at `t=304.3` — those are the only two transitions in
-> the file. **The single early `n=1` sample is at `t=0.0`, which predates this
-> run's browser** (see the contamination note above); it is not a tab-1 reading
-> and must not be used as one.
+For completeness, and as a statement about **arm B alone** rather than a
+comparison across instruments: arm B's `n` has exactly **two** transitions in the
+whole file. It is `1` at `ctrl_nolayer.txt` @ `"t": 0.0`, `2` from @ `"t": 2.0`,
+and `1` again from @ `"t": 111.1` through to the final sample @ `"t": 304.3`.
+**The single early `n=1` sample is the one at `"t": 0.0`, which predates this
+run's browser** (see the contamination note above) — it is not a tab-1 reading
+and must not be used as one.
 
 That is the instrument, not the browser. **The stall observations themselves are
 unaffected** — they rest on `new_page` blocking and the tab-1 ping blocking, both
@@ -418,12 +431,12 @@ The RSS/thread arithmetic favours the second (the `t=304.3` survivor sits within
 resemblance between two coarse aggregates, not an identification.
 
 **It cannot be settled from this tree, and the reason is a one-line harness
-defect.** `abd_harness.py:65` parses `pid` for every matched process, and
-`sample_procs()` at `:69-76` **discards it** — only the aggregates `n`,
-`cpu_total`, `rss_mb_total`, `threads_total` and `stats` are emitted. **No PID
-appears in any arm-B sample**, so process identity across the drop is
-unrecoverable. This is recorded as an open question, not resolved in either
-direction.
+defect.** `abd_harness.py` @ `"pid": int(f[0])` parses a pid for every matched
+process, and the `return {` block of `sample_procs()` immediately below
+**discards it** — only the aggregates `n`, `cpu_total`, `rss_mb_total`,
+`threads_total` and `stats` are emitted. **No PID appears in any arm-B sample**,
+so process identity across the drop is unrecoverable. This is recorded as an
+open question, not resolved in either direction.
 
 **`D.txt` shows directly why `n` is not a death signal under this matcher.** It
 carries an undisclosed drop of exactly the same shape —
@@ -513,8 +526,9 @@ Also untested, deliberately: **Chromium** (out of scope) and **checker verdicts*
    catches this in under ten seconds.
 6. **Record PIDs, and assert a clean box before launching.** Two one-line fixes
    to `abd_harness.py`, both learned the hard way in arm B:
-   - **Keep the `pid` field it already parses.** `:65` reads a pid for every
-     matched process and `sample_procs()` at `:69-76` throws it away, which is
+   - **Keep the `pid` field it already parses.** The `"pid": int(f[0])` line
+     reads a pid for every matched process and the `return {` block of
+     `sample_procs()` immediately below throws it away, which is
      the sole reason arm B's `2 → 1` drop cannot be attributed to a process.
    - **Take one pre-flight sample and assert it matched nothing**, before
      constructing the engine. Arm B began with a 490 MB firefox process already

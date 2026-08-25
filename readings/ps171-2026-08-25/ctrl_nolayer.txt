@@ -86,8 +86,9 @@
 #   * The 2 -> 1 drop at t=111.1 CANNOT BE ATTRIBUTED. The vanished process
 #     (~275 MB / 74 thr) may be a bystander, or it may be THIS RUN'S OWN PARENT
 #     — which would make this drop a CLOSER relative of arm A2's engine loss,
-#     not a more distant one. abd_harness.py:65 parses a pid for every matched
-#     process and sample_procs() at :69-76 DISCARDS it, so no PID appears in any
+#     not a more distant one. In abd_harness.py the `"pid": int(f[0])` line
+#     parses a pid for every matched process, and the `return {` block of
+#     sample_procs() immediately below DISCARDS it, so no PID appears in any
 #     sample in this file and identity is unrecoverable. Open, not benign.
 #
 # For the next run: keep the pid field the harness already parses, and take one
