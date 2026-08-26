@@ -328,13 +328,26 @@ def _teardown(proc: Any, name: str) -> None:
     import sys
 
     from ..browser.invisible_launch import unregister_ff_eval
+    from ..browser.process_group import reap_process_group
 
+    # PS-192: tear down the process GROUP, not the single handle. On the fork
+    # path the child made itself a session leader, so this reaches the whole
+    # Firefox tree; on the in_process path pid is 0, the group is refused, and
+    # this degrades to exactly the terminate() this used to do (which there
+    # only sets a stop event — the case the warning below exists for).
+    #
+    # The terminate -> wait -> kill escalation lives inside the reaper, and it
+    # never raises: this runs from a `finally` and must not mask the real error
+    # that sent us here.
     try:
-        proc.terminate()
+        reap_process_group(proc, timeout=30)
     except Exception as exc:  # pragma: no cover - defensive
         print(f"warning: could not terminate the session: {exc}", file=sys.stderr)
     try:
-        if proc.wait(timeout=30) is None:
+        # Asked AFTER the reap, so it reports what actually survived rather
+        # than what was merely asked to stop. Still not silent: a session that
+        # outlives a group kill is a real leak and must stay diagnosable.
+        if proc.poll() is None:
             print(
                 f"warning: the browser session for {name!r} did not stop within "
                 "30s and may still be running; its eval hook is being dropped "
