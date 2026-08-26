@@ -1,6 +1,10 @@
 # PS-16 patch — the linux and macos GPU cells, after PS-189
 
-**Ticket:** PS-189 · **Date:** 2026-08-26 · **Basis:** `origin/main` @ `fa0a5e9`
+**Ticket:** PS-189 · **Date:** 2026-08-26 · **Basis:** `origin/main` @ `880fd14`
+(rebased from `fa0a5e9`; PS-186 landed in between and its records are now on
+`main`. Re-checked after the rebase: PS-16 is at v18, the
+"🔴 PS-186 — THAT VERIFICATION WAS WINDOWS-ONLY" section this patch appends to
+is present, and every figure below still holds.)
 **Evidence:** `readings/ps189-2026-08-26/EVIDENCE.md` (this directory)
 
 PS-16's maintenance rule requires the reading's own ticket to update the
