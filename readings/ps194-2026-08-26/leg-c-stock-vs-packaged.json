@@ -1,0 +1,145 @@
+{
+  "ticket": "PS-194",
+  "subject": "LEG C of the three-legged pixelscan reading: STOCK chromium vs the PACKAGED fingerprint-chromium, both with persona's masking layer OFF, so the only difference between them is THE BINARY. The stock leg is NOT a reading of persona and nothing in it may be attributed to persona's product behaviour.",
+  "exit": {
+    "ip": "213.134.174.138",
+    "country": "PL",
+    "region": "Mazovia",
+    "city": "Warsaw",
+    "org": "AS9141 P4 Sp. z o.o.",
+    "timezone": "Europe/Warsaw"
+  },
+  "credential_source": "file",
+  "waivers": {
+    "allow_unsandboxed_chromium": "REQUIRED on both legs \u2014 this host forbids the unprivileged user namespace. Not the product's default surface; disclosed rather than left to pass silently.",
+    "install_layer_false": "BOTH legs run with persona's masking layer OFF, deliberately. This arm attributes to the BINARY, not to the layer."
+  },
+  "host": {
+    "dev_dri_present": false,
+    "stock_chromium": "Chromium 151.0.7922.169 built on Debian GNU/Linux 13 (trixie)",
+    "packaged_path": "/home/yatfa/.persona/engine/fpchrome.AppImage",
+    "packaged_chromium": "Error: No suitable fusermount binary found on the $PATH\n\nCannot mount AppImage, please check your FUSE setup.\nYou might still be able to extract the contents of this AppImage \nif you run it with the --appimage-extract option. \nSee https://github.com/AppImage/AppImageKit/wiki/FUSE \nfor more information"
+  },
+  "legs": {
+    "stock": {
+      "binary": "/usr/bin/chromium",
+      "verdicts": {
+        "fingerprint_inconsistent": {
+          "state": "read",
+          "value": true
+        },
+        "fingerprint_consistent": {
+          "state": "absent",
+          "value": null
+        },
+        "proxy_detected": {
+          "state": "absent",
+          "value": null
+        },
+        "masking_detected": {
+          "state": "read",
+          "value": true
+        },
+        "automation_detected": {
+          "state": "read",
+          "value": true
+        },
+        "timezone_spoofed": {
+          "state": "read",
+          "value": true
+        },
+        "geo_country_city": {
+          "state": "absent",
+          "value": null
+        },
+        "timezone_from_js": {
+          "state": "read",
+          "value": "Africa/Abidjan"
+        },
+        "webgl_vendor": {
+          "state": "read",
+          "value": "Google Inc. (Google)"
+        },
+        "webgl_renderer": {
+          "state": "read",
+          "value": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+        },
+        "webgl_hash": {
+          "state": "read",
+          "value": "b35a6e95ccbb64d2d42a637ad06d7297"
+        },
+        "canvas_hash": {
+          "state": "read",
+          "value": "5f4a84ed7ee599a84a46ce732dc3edc3"
+        }
+      },
+      "verdict_block_rendered": true,
+      "applied": {
+        "no_sandbox": true,
+        "swiftshader_forced": true
+      },
+      "page_text_chars": 6024,
+      "page_text": "Products\nResources\nSpecial Offers\nCompany\nJoin Pixelscan Community\nBack\nFingerprint Check\n\nVerify your browser fingerprint\n\nCHECKERS\nIP Address Check\n\nSee your IP details\n\nIP Blacklist Check\n\nReviewing blacklist agent\n\nBot Verification\n\nVerify that a user is a human\n\nVPN Check\n\nTest and see the expected security\n\nTOOLS\nDNS Leak Test\n\nSecuring your DNS tunnel\n\nWebRTC Leak Test\n\nSecuring your WebRTC tunnel\n\nLocation Info\n\nProvide accurate location\n\nCookie Converter\n\nConvert Cookies into JSON\n\nAPPS\nProxy Checker\n\nVerify proxy quality\n\nAndroid Checker\n\nCheck your Android device\n\nBack\nRESOURCES\nPixelscan Blog\n\n400+ useful articles\n\nPixelscan Glossary\n\nThe detection dictionary\n\nGUIDES\nUltimate Antidetect Guide\nProxy Best Practices\nBEST PROXIES\nBest Proxy Providers\nBest Residential Proxies\nBest Mobile Proxies\nBest Telegram Proxies\nBest Chinese Proxies\nRECOMMENDED TOOLS\nBest Anti-Detect Browsers\nBest Cloud Phones Providers\nBest Tools To Avoid IP Ban\nBest Captcha Solvers\nPhone Farming\nBack\nPixelscan Partners\n\nGet exclusive discounts from top services\n\nBEST DEALS\n50% OFF Multilogin\n\nLeading multi-account platform\n\n-35% Off NodeMaven\n\nStable and undetectable proxies\n\nBack\nCOMPANY INFO\nAbout Pixelscan\nContact Us\nFingerprint Scan\nRestart\n\nYour Browser Fingerprint is inconsistent\n\nHow to Fix it?\n\nChrome 151.0.0.0 on Linux\n\nBrowser\n\nChrome-29-0,Opera-16-0,Edge-79-0,MIUI Browser-0-0,Yandex-0-0,Safari-7-0,Mobile Safari-7-0,Facebook-0-0,m-firefox-30-0,m-Edge-45-0,m-Opera Touch-0-0\nCheck Geo API\n\nTimezone spoofed\n\nLocation\n\nNo proxy detected\n\nProxy\n\nMasking detected\n\nFingerprint\n\nBest antidetect browsers\n\nAutomated behavior detected\n\nBot check\n\nScroll Down for More Info\nCheck Out Other Tools\nIP Address Check\n\nSee your IP details\n\nBot Verification\n\nVerify that user is a human\n\nProxy Checker\n\nVerify proxy quality\n\nNew\nVPN Check\n\nTest and see the expected security\n\nWhat Websites See About You\nLocation\nIP Address\n213.134.160.150\nWebRTC IP Address\n159.195.144.196\nCountry\nPoland\nCity\nLublin\nISP\nP4 Sp. z o.o.\nLatitude\n51.2506\nLongitude\n22.5701\nUser Type by IP\nisp\nDate & Time\nTimezone from JS\nAfrica/Abidjan\nDaylight Savings Time\nNo\nTime from JS\nWed Aug 26 2026 15:35:50 GMT+0000 (Coordinated Universal Time)\nTime from IP\nWed Aug 26 2026 17:36:47 GMT+0200\nScreen\nResolution\n1920x1080\nAvailable screen size\n1920x1080\nFonts\nFont hash\naecd897e2e539610bfba63cb202d6bd4\nFonts\nAbyssinica SIL\nDejaVu Sans\nDejaVu Serif\nDejaVu Sans Mono\nUser-Agent\nHTTP\nMozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36\nJavaScript\nMozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36\nPlatform\nLinux x86_64\nDoNotTrack\nnull\nHardwareConcurency\n8\nLanguage\nLanguages from Javascript\nen-US\nen\nInternationalization API\nen-US\nAccept-Language header\nen-US\nen;q=0.9\nHardware\nWebGL Vendor\nGoogle Inc. (Google)\nWebGL Version\nWebGL 1.0 (OpenGL ES 2.0 Chromium)\nWebGL Renderer\nANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\nWebGL Hash\nb35a6e95ccbb64d2d42a637ad06d7297\nCanvas Hash\n5f4a84ed7ee599a84a46ce732dc3edc3\nAudioContext Hash\nba6689f9a1550fb5eef25d1fc682c8c1\nFrequently Asked Questions\nWhat is a browser fingerprint test on Pixelscan?\n\nA browser fingerprint test collects technical details from your browser and device\u2014like screen resolution, OS, timezone, language, and WebGL\u2014to create a unique ID. Websites can use this ID to recognize or track you across sessions, even without cookies or logins.\n\nWhat is canvas fingerprinting on Pixelscan?\n\nCanvas fingerprinting is a tracking method where websites use your browser to draw a hidden image. Since every browser and device renders it slightly differently, the result becomes a unique signature that can identify you. Pixelscan detects these differences to show how identifiable your browser is.\n\nHow does Pixelscan check browser fingerprints?\n\nPixelscan gathers data from dozens of fingerprint signals, including canvas rendering, audio context, fonts, WebGL, and HTTP headers. It analyzes these to show how unique your setup is and whether any traits could leak your identity.\n\nHow can I tell if my fingerprint is consistent across sessions using Pixelscan?\n\nRun the same profile through Pixelscan multiple times without changing settings. If key values like canvas hash, WebGL, and timezone stay the same, your fingerprint is consistent. Even small changes can trigger red flags on websites, so use stable settings and avoid reconfiguring profiles.\n\nWhy do I see incosistent results when I run a browser fingerprint test on Pixelscan?\n\nSmall changes in IP, resolution, timezone, or extensions between sessions can lead to inconsistent fingerprints. These mismatches often trigger CAPTCHAs or bans. For better consistency, keep your browser settings and environment stable across uses. Check out article on how to fix it.\n\nHow can I check connection and network exposure with Pixelscan?\nPixelscan includes these tools to review your connection details:\nIP Check \u2013 Shows your public IP address and geolocation.\nProxy Check \u2013 Detects whether your proxy or VPN hides your real location.\nDNS Leak Test \u2013 Verifies if your DNS requests expose your ISP or true region.\nIP Blacklist Test \u2013 Checks if your IP is listed on spam or security blacklists.\nContact us for collaboration\npartners@pixelscan.net\nCheckers\nFingerprint\nIP Check\nIP Blacklist Check\nBot Checker\nVPN Check\nTools\nDNS Leak Test\nWebRTC Leak Test\nLocation\nCookie Converter\nPixelscan\nBlog\nPartners\nAbout Pixelscan\nTelegram Community\nBest proxies\nBest Proxy Providers\nBest Residential Proxies\nBest Mobile Proxies\nBest Telegram Proxies\nBest Chinese Proxies\nProxies by Location\nBest Asia Proxies\nBest India Proxies\nBest Brazil Proxies\nBest Chinese Proxies\nBest German Proxies\nBest Japan Proxies\nBest Czech Proxies\nBest Tools\nBest Antidetect Browsers\nBest Cloud Phones Providers\nBest Tools To Avoid IP Ban\nBest Captcha Solvers\nPhone Farming\n\u00a9 2026 Pixelscan.net. All rights reserved.\nPrivacy Policy"
+    },
+    "packaged": {
+      "binary": "/home/yatfa/.persona/engine/fpchrome.AppImage",
+      "verdicts": {
+        "fingerprint_inconsistent": {
+          "state": "read",
+          "value": true
+        },
+        "fingerprint_consistent": {
+          "state": "absent",
+          "value": null
+        },
+        "proxy_detected": {
+          "state": "absent",
+          "value": null
+        },
+        "masking_detected": {
+          "state": "read",
+          "value": true
+        },
+        "automation_detected": {
+          "state": "absent",
+          "value": null
+        },
+        "timezone_spoofed": {
+          "state": "absent",
+          "value": null
+        },
+        "geo_country_city": {
+          "state": "read",
+          "value": "Poland / Szczucin"
+        },
+        "timezone_from_js": {
+          "state": "read",
+          "value": "Europe/Warsaw"
+        },
+        "webgl_vendor": {
+          "state": "read",
+          "value": "Google Inc. (NVIDIA)"
+        },
+        "webgl_renderer": {
+          "state": "read",
+          "value": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Laptop GPU (0x00002560) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+        },
+        "webgl_hash": {
+          "state": "read",
+          "value": "b3d0fd1943b306fb77ec5691a3799a6a"
+        },
+        "canvas_hash": {
+          "state": "read",
+          "value": "526eabbd6738c26d8eb6aeb856289fa4"
+        }
+      },
+      "verdict_block_rendered": true,
+      "applied": {
+        "no_sandbox": true,
+        "swiftshader_forced": true
+      },
+      "page_text_chars": 5993,
+      "page_text": "Products\nResources\nSpecial Offers\nCompany\nJoin Pixelscan Community\nBack\nFingerprint Check\n\nVerify your browser fingerprint\n\nCHECKERS\nIP Address Check\n\nSee your IP details\n\nIP Blacklist Check\n\nReviewing blacklist agent\n\nBot Verification\n\nVerify that a user is a human\n\nVPN Check\n\nTest and see the expected security\n\nTOOLS\nDNS Leak Test\n\nSecuring your DNS tunnel\n\nWebRTC Leak Test\n\nSecuring your WebRTC tunnel\n\nLocation Info\n\nProvide accurate location\n\nCookie Converter\n\nConvert Cookies into JSON\n\nAPPS\nProxy Checker\n\nVerify proxy quality\n\nAndroid Checker\n\nCheck your Android device\n\nBack\nRESOURCES\nPixelscan Blog\n\n400+ useful articles\n\nPixelscan Glossary\n\nThe detection dictionary\n\nGUIDES\nUltimate Antidetect Guide\nProxy Best Practices\nBEST PROXIES\nBest Proxy Providers\nBest Residential Proxies\nBest Mobile Proxies\nBest Telegram Proxies\nBest Chinese Proxies\nRECOMMENDED TOOLS\nBest Anti-Detect Browsers\nBest Cloud Phones Providers\nBest Tools To Avoid IP Ban\nBest Captcha Solvers\nPhone Farming\nBack\nPixelscan Partners\n\nGet exclusive discounts from top services\n\nBEST DEALS\n50% OFF Multilogin\n\nLeading multi-account platform\n\n-35% Off NodeMaven\n\nStable and undetectable proxies\n\nBack\nCOMPANY INFO\nAbout Pixelscan\nContact Us\nFingerprint Scan\nRestart\n\nYour Browser Fingerprint is inconsistent\n\nHow to Fix it?\n\nChrome 148.0.0.0 on Windows\n\nBrowser\n\nChrome-29-0,Opera-16-0,Edge-79-0,MIUI Browser-0-0,Yandex-0-0,Safari-7-0,Mobile Safari-7-0,Facebook-0-0,m-firefox-30-0,m-Edge-45-0,m-Opera Touch-0-0\nCheck Geo API\n\nPoland / Szczucin\n\nLocation\n\nNo proxy detected\n\nProxy\n\nMasking detected\n\nFingerprint\n\nBest antidetect browsers\n\nNo automated behavior detected\n\nBot check\n\nScroll Down for More Info\nCheck Out Other Tools\nIP Address Check\n\nSee your IP details\n\nBot Verification\n\nVerify that user is a human\n\nProxy Checker\n\nVerify proxy quality\n\nNew\nVPN Check\n\nTest and see the expected security\n\nWhat Websites See About You\nLocation\nIP Address\n5.173.19.83\nCountry\nPoland\nCity\nSzczucin\nISP\nP4 Sp. z o.o.\nLatitude\n50.30957\nLongitude\n21.07444\nUser Type by IP\nisp\nDate & Time\nTimezone from JS\nEurope/Warsaw\nDaylight Savings Time\nYes\nTime from JS\nWed Aug 26 2026 17:37:25 GMT+0200 (Central European Summer Time)\nTime from IP\nWed Aug 26 2026 17:37:58 GMT+0200\nScreen\nResolution\n1920x1080\nAvailable screen size\n1920x1080\nFonts\nFont hash\n866c250f7a410b2065a36c89e1d69a27\nFonts\nArial\nMS Gothic\nMicrosoft JhengHei\nUser-Agent\nHTTP\nMozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36\nJavaScript\nMozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36\nPlatform\nWin32\nDoNotTrack\nnull\nHardwareConcurency\n12\nLanguage\nLanguages from Javascript\nen-US\nen\nInternationalization API\nen-US\nAccept-Language header\nen-US\nen;q=0.9\nHardware\nWebGL Vendor\nGoogle Inc. (NVIDIA)\nWebGL Version\nWebGL 1.0 (OpenGL ES 2.0 Chromium)\nWebGL Renderer\nANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Laptop GPU (0x00002560) Direct3D11 vs_5_0 ps_5_0, D3D11)\nWebGL Hash\nb3d0fd1943b306fb77ec5691a3799a6a\nCanvas Hash\n526eabbd6738c26d8eb6aeb856289fa4\nAudioContext Hash\nc88a670df38b910a0ea82b451281d453\nFrequently Asked Questions\nWhat is a browser fingerprint test on Pixelscan?\n\nA browser fingerprint test collects technical details from your browser and device\u2014like screen resolution, OS, timezone, language, and WebGL\u2014to create a unique ID. Websites can use this ID to recognize or track you across sessions, even without cookies or logins.\n\nWhat is canvas fingerprinting on Pixelscan?\n\nCanvas fingerprinting is a tracking method where websites use your browser to draw a hidden image. Since every browser and device renders it slightly differently, the result becomes a unique signature that can identify you. Pixelscan detects these differences to show how identifiable your browser is.\n\nHow does Pixelscan check browser fingerprints?\n\nPixelscan gathers data from dozens of fingerprint signals, including canvas rendering, audio context, fonts, WebGL, and HTTP headers. It analyzes these to show how unique your setup is and whether any traits could leak your identity.\n\nHow can I tell if my fingerprint is consistent across sessions using Pixelscan?\n\nRun the same profile through Pixelscan multiple times without changing settings. If key values like canvas hash, WebGL, and timezone stay the same, your fingerprint is consistent. Even small changes can trigger red flags on websites, so use stable settings and avoid reconfiguring profiles.\n\nWhy do I see incosistent results when I run a browser fingerprint test on Pixelscan?\n\nSmall changes in IP, resolution, timezone, or extensions between sessions can lead to inconsistent fingerprints. These mismatches often trigger CAPTCHAs or bans. For better consistency, keep your browser settings and environment stable across uses. Check out article on how to fix it.\n\nHow can I check connection and network exposure with Pixelscan?\nPixelscan includes these tools to review your connection details:\nIP Check \u2013 Shows your public IP address and geolocation.\nProxy Check \u2013 Detects whether your proxy or VPN hides your real location.\nDNS Leak Test \u2013 Verifies if your DNS requests expose your ISP or true region.\nIP Blacklist Test \u2013 Checks if your IP is listed on spam or security blacklists.\nContact us for collaboration\npartners@pixelscan.net\nCheckers\nFingerprint\nIP Check\nIP Blacklist Check\nBot Checker\nVPN Check\nTools\nDNS Leak Test\nWebRTC Leak Test\nLocation\nCookie Converter\nPixelscan\nBlog\nPartners\nAbout Pixelscan\nTelegram Community\nBest proxies\nBest Proxy Providers\nBest Residential Proxies\nBest Mobile Proxies\nBest Telegram Proxies\nBest Chinese Proxies\nProxies by Location\nBest Asia Proxies\nBest India Proxies\nBest Brazil Proxies\nBest Chinese Proxies\nBest German Proxies\nBest Japan Proxies\nBest Czech Proxies\nBest Tools\nBest Antidetect Browsers\nBest Cloud Phones Providers\nBest Tools To Avoid IP Ban\nBest Captcha Solvers\nPhone Farming\n\u00a9 2026 Pixelscan.net. All rights reserved.\nPrivacy Policy"
+    }
+  }
+}
