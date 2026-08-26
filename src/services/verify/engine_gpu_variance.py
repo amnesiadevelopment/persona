@@ -117,7 +117,6 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
-import re
 import sys
 import time
 
@@ -203,9 +202,9 @@ _POOL_VAR_FOR_ARM = {
 def has_known_pool(arm: str) -> bool:
     """Whether persona is KNOWN to ship a fallback pool for this arm.
 
-    Answered from the arm name alone, never from the scrape — so a scrape that
-    returns nothing on an arm that IS in this map reads as a broken scrape
-    rather than as an arm with no pool.
+    Answered from the arm name alone, never from the size lookup — so a lookup
+    that returns nothing on an arm that IS in this map reads as a failure to
+    read the pool rather than as an arm with no pool.
     """
     return arm in _POOL_VAR_FOR_ARM
 
@@ -333,12 +332,15 @@ def classify(readings: "dict[str, dict[int, str | None]]") -> dict:
             entry["verdict"] = "INCONCLUSIVE"
             entry["detail"] = (
                 f"persona ships a fallback pool for {arm!r}, but this module "
-                "could not read its size out of the emitted extension source "
-                "— most likely the pool literals were reformatted and "
-                "fallback_pool_size's regex no longer matches. Without the bar "
-                "there is nothing to compare against, so this is NOT a pass: "
-                f"the {p:.1%} collision rate measured here is unjudged. Fix "
-                "the scrape in fallback_pool_size and re-run."
+                "could not read its size. The arm is named in "
+                f"_POOL_VAR_FOR_ARM as {_POOL_VAR_FOR_ARM.get(arm)!r}, but "
+                "that name yielded no entries from gpu_ext.GPU_POOLS — either "
+                "the key is absent from the registry (the two have drifted "
+                "apart) or the pool registered under it is empty. Without the "
+                "bar there is nothing to compare against, so this is NOT a "
+                f"pass: the {p:.1%} collision rate measured here is unjudged. "
+                "Re-register the pool in gpu_ext.GPU_POOLS (or correct the arm "
+                "mapping in _POOL_VAR_FOR_ARM) and re-run."
             )
         elif bar is not None and p > bar * (1.0 + BAR_TOLERANCE):
             entry["verdict"] = "TOO_NARROW"
