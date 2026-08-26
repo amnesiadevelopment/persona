@@ -46,17 +46,56 @@ from ..theme.colors import COLORS
 
 MONO = "monospace"
 
+#: The console's chrome: the grip bar plus the header row, i.e. everything that
+#: is NOT a log row. Every height below is this plus a whole number of rows, so
+#: a height is always "N rows" rather than a pixel count that happens to fit.
+CHROME_HEIGHT = 9 + 33
+
+#: The vertical padding the ListView adds above and below the row stack
+#: (``Padding.symmetric(vertical=6)``).
+LIST_PADDING = 12
+
+
+def height_for_rows(rows: int) -> int:
+    """The console height that shows exactly ``rows`` whole log rows.
+
+    THE COMPLAINT THIS ANSWERS. The dock opened at a height derived from the
+    WINDOW ("236px, or whatever the rail can spare"), so on his machine it
+    opened with more height than it had content to fill — "пустого места".
+    A height chosen in pixels can only accidentally be a whole number of rows;
+    this makes the row the unit, so the console opens full of log and its
+    bottom edge lands where a row ends rather than through the middle of one.
+    """
+    return CHROME_HEIGHT + LIST_PADDING + rows * ROW_HEIGHT
+
+
+#: What the console opens at, in ROWS — his number, and the whole point of
+#: rows-not-pixels: "нужно что бы изначально он был на 6 строчек".
+DEFAULT_ROWS = 6
+
 #: Height of the open console. Sits between the clamps below, and is what the
 #: operator gets before he ever touches the grip.
-OPEN_HEIGHT = 236
+OPEN_HEIGHT = height_for_rows(DEFAULT_ROWS)
 
-#: The grip's clamps. Below MIN the console cannot show enough rows to be worth
-#: reading; above MAX it starts eating the page it is supposed to sit under.
-MIN_HEIGHT = 120
-MAX_HEIGHT = 520
+#: The grip's clamps, both expressed in rows.
+#:
+#: MIN is ONE ROW, not a floor of "enough to be worth reading". He asked to be
+#: able to take it down to a single line — "либо скрыть до 1 строчки" — and the
+#: old 120px floor is what made the smallest state a fixed strip he had to
+#: reach a different control for. The grip now reaches every state he named:
+#: bigger, smaller, and one line.
+MIN_ROWS = 1
+MAX_ROWS_VISIBLE = 20
+MIN_HEIGHT = height_for_rows(MIN_ROWS)
+MAX_HEIGHT = height_for_rows(MAX_ROWS_VISIBLE)
 
 #: The collapsed strip: tall enough for one line of live text and nothing else.
 COLLAPSED_HEIGHT = 34
+
+#: How tall the grip's HIT region is. The painted bar stays a 3px line — this
+#: is the region that accepts the drag, and it is the second half of why the
+#: grip shipped unusable. See :meth:`LogDock._grip`.
+GRIP_HIT_HEIGHT = 14
 
 #: How many rows the console keeps painted. Materially more than the 6 the old
 #: panel managed — at ROW_HEIGHT this is ~13000px of scrollback against a
@@ -93,7 +132,29 @@ def affordable_height(window_height: float | None) -> int:
     """
     if not window_height or window_height <= 0:
         return MAX_HEIGHT
-    return max(MIN_HEIGHT, min(MAX_HEIGHT, int(window_height) - RAIL_CONTENT_HEIGHT))
+    return quantize(int(window_height) - RAIL_CONTENT_HEIGHT)
+
+
+def rows_for_height(height: float) -> int:
+    """How many WHOLE log rows a console of this height shows.
+
+    The inverse of :func:`height_for_rows`, and the reason the grip can report
+    its own state in his units: a drag reads out as "8 rows", not "289px".
+    """
+    usable = int(height) - CHROME_HEIGHT - LIST_PADDING
+    return max(MIN_ROWS, min(MAX_ROWS_VISIBLE, usable // ROW_HEIGHT))
+
+
+def quantize(height: float) -> int:
+    """Snap a height to the nearest whole number of rows, within the clamps.
+
+    EVERY height the console can hold passes through here — the opening
+    default, a drag, and a window resize alike — so the console's bottom edge
+    always lands where a row ends. That is what removes the "пустое место" he
+    reported: a console sized in pixels shows five rows and a sliver of a
+    sixth, and the sliver reads as the panel being taller than its content.
+    """
+    return height_for_rows(rows_for_height(height))
 
 
 def default_height(window_height: float | None) -> int:
@@ -274,24 +335,58 @@ class LogDock:
         )
 
     def _grip(self) -> ft.Control:
-        """The draggable top edge.
+        """The draggable top edge — the control that shipped broken.
 
-        A real ``on_pan_update``: dragging up grows the console, dragging down
-        shrinks it, clamped so it can neither vanish nor eat the page. The
-        visible grip is a short bar because an invisible drag target is a
-        feature nobody finds.
+        WHAT WAS WRONG, AND IT WAS TWO THINGS.
+
+        The user's report was "я не могу ползунком менять высоту активити лога".
+        PS-179's own acceptance record had already marked this criterion NOT
+        COVERED: the grip is a ``GestureDetector``, which paints NO semantics
+        node, so nothing could address it — six coordinate offsets across the
+        band each with a real press/move/release moved ``height`` by nothing.
+        A criterion recorded as unverified is the one he hit within minutes.
+
+        1. **It was not addressable, so it could not be verified.** The fix is
+           the ``tooltip`` below. A tooltip makes Flutter emit a real semantics
+           node for the control, which means a pointer — an operator's or a
+           driver's — can find the grip and land on it. This is not decoration:
+           it is what turns "AC3 could not be driven" into a criterion that is
+           demonstrated by a real gesture in the capture.
+
+        2. **The hit area was 9px tall.** Even found, a 9px target is a
+           precision task with the window edge nearby. The grip is now
+           :data:`GRIP_HIT_HEIGHT` tall — the PAINTED bar stays a thin 3px line
+           so the design does not change, but the region that accepts the drag
+           is comfortable. A drag target you must aim at is a drag target that
+           reads as broken.
+
+        ``on_pan_update`` is kept (it is the gesture that works once the target
+        can be hit) and joined by ``on_vertical_drag_update``: Flutter's arena
+        can award a clean vertical drag to the vertical recognizer, in which
+        case a pan-only detector never fires. Registering both means the grip
+        responds to the gesture the user actually makes rather than to the one
+        the arena happened to pick.
         """
 
-        def on_drag(e: ft.DragUpdateEvent) -> None:
-            self.set_height(self.height - e.delta_y)
+        def on_drag(e) -> None:
+            delta = getattr(e, "delta_y", None)
+            if delta is None:
+                return
+            # Dragging UP (negative delta) grows the console.
+            self.set_height(self.height - delta)
 
         return ft.GestureDetector(
             mouse_cursor=ft.MouseCursor.RESIZE_UP_DOWN,
             on_pan_update=on_drag,
+            on_vertical_drag_update=on_drag,
             content=ft.Container(
-                height=9,
+                height=GRIP_HIT_HEIGHT,
                 bgcolor=COLORS["log_bg"],
                 alignment=ft.Alignment.CENTER,
+                # The tooltip is what makes the grip exist to a pointer at all
+                # — see the docstring. It also finally SAYS what the bar does,
+                # which no label ever did.
+                tooltip="Drag to resize the Activity Log",
                 content=ft.Container(
                     width=54, height=3, border_radius=2, bgcolor="#333333"
                 ),
