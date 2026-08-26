@@ -1,0 +1,5 @@
+=== linux/seed24601 exit=89.151.42.41 Gdynia AS29314 VECTRA S.A.
+    [heading: 'Google Inc. (Google)']  <== SOFTWARE RASTERISER
+      ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
+    [heading: 'Google Inc. (Google)']  <== SOFTWARE RASTERISER
+      ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
