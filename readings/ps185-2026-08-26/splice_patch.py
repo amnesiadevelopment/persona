@@ -49,6 +49,12 @@ COMPLETENESS_START = (
 )
 COMPLETENESS_END = "> Re-derive with `readings/ps185-2026-08-26/derive.py`"
 
+# Edit 3 quotes the whole GPU-unlinkability section at the generator's own line
+# breaks. It is bounded by its own h3 and by the next one in derive.py's output.
+EDIT3_HEADING = "> ### GPU unlinkability"
+DERIVED_START = "### GPU unlinkability"
+DERIVED_END = "### WebGL / canvas readback"
+
 
 def _load_derive():
     spec = importlib.util.spec_from_file_location("ps185_derive", HERE / "derive.py")
@@ -84,6 +90,51 @@ def as_blockquote(statement: str, width: int = WRAP) -> "list[str]":
     return out
 
 
+def derived_gpu_block() -> "list[str]":
+    """Edit 3's block: the GPU-unlinkability section, at the generator's breaks.
+
+    Quoted verbatim rather than re-wrapped, because Edit 3's label claims it IS
+    the ``derive.py`` output. Round 1 failed for carrying hand-added fragments
+    under that label, so the only legitimate way to bring it back into sync is
+    to re-splice it from the generator — never to hand-edit until the guard
+    goes green.
+    """
+    derive = _load_derive()
+    off, on = derive.load(derive.LAYER_OFF), derive.load(derive.LAYER_ON)
+    uoff, uon = derive.load(derive.UNIF_OFF), derive.load(derive.UNIF_ON)
+    lines = derive.gpu_section(off, on, uoff, uon).split("\n")
+    start = next(i for i, ln in enumerate(lines) if ln.startswith(DERIVED_START))
+    block = lines[start:]
+    while block and not block[-1].strip():
+        block.pop()
+    return [("> " + ln).rstrip() if ln.strip() else ">" for ln in block]
+
+
+def splice_edit3(text: str, block: "list[str]") -> str:
+    """Replace Edit 3's quoted GPU section with ``block``.
+
+    The existing block is delimited by its own heading and by the first line
+    after it that is not part of the blockquote, so a block that changes LENGTH
+    is replaced correctly rather than leaving a tail of stale quoted lines.
+    """
+    lines = text.split("\n")
+    start = next(
+        (i for i, ln in enumerate(lines) if ln.startswith(EDIT3_HEADING)), None
+    )
+    if start is None:
+        raise SystemExit("could not find Edit 3's GPU block in PS-16-PATCH.md")
+    end = start
+    while end < len(lines) and (
+        lines[end].startswith(">") or not lines[end].strip()
+    ):
+        end += 1
+    # Trailing blank lines belong to the surrounding document, not the quote.
+    while end > start and not lines[end - 1].strip():
+        end -= 1
+    lines[start:end] = block
+    return "\n".join(lines)
+
+
 def splice(text: str, block: "list[str]") -> str:
     """Replace Edit 8's completeness block with ``block``."""
     lines = text.split("\n")
@@ -109,16 +160,21 @@ def main(argv: "list[str] | None" = None) -> int:
     args = ap.parse_args(argv)
 
     current = PATCH.read_text(encoding="utf-8")
-    wanted = splice(current, as_blockquote(derived_completeness()))
+    # BOTH derived blocks, in one pass. Edit 3 was previously left to a human
+    # to keep in step, which is exactly the re-typing this script exists to
+    # remove: a change to derive.py's prose broke Edit 3's "verbatim" claim
+    # with no mechanical way to restore it.
+    wanted = splice_edit3(current, derived_gpu_block())
+    wanted = splice(wanted, as_blockquote(derived_completeness()))
 
     if current == wanted:
-        print("[splice] PS-16-PATCH.md completeness block is in sync")
+        print("[splice] PS-16-PATCH.md derived blocks (Edit 3 + Edit 8) are in sync")
         return 0
     if args.check:
         print("[splice] OUT OF SYNC — re-run without --check", file=sys.stderr)
         return 1
     PATCH.write_text(wanted, encoding="utf-8")
-    print("[splice] rewrote the completeness block in PS-16-PATCH.md")
+    print("[splice] rewrote the derived blocks (Edit 3 + Edit 8) in PS-16-PATCH.md")
     return 0
 
 

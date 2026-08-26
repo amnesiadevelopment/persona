@@ -27,6 +27,24 @@ import pathlib
 import sys
 
 HERE = pathlib.Path(__file__).resolve().parent
+REPO_ROOT = HERE.parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+# The product's OWN estimator and the readback differ's OWN verdict rule,
+# imported rather than reimplemented, for the same reason `sweep.py` imports
+# `engine_gpu_variance` and `readback_vectors.py` imports `local_probe`: a
+# second copy of the rule in this file could drift from the one that took the
+# readings, and then the article would be derived from a rule the product does
+# not use. Every figure below is recomputed with these two functions.
+from src.services.verify.engine_gpu_variance import (  # noqa: E402
+    collision_probability as _collision_probability,
+)
+
+# The readback differ's OWN verdict rule, from the instrument that took the
+# readback readings, imported for the same reason.
+sys.path.insert(0, str(HERE))
+from readback_vectors import verdict_for as _verdict_for  # noqa: E402
 
 LAYER_OFF = HERE / "engine-gpu-variance.layer-off.json"
 LAYER_ON = HERE / "engine-gpu-variance.layer-on.json"
@@ -58,8 +76,8 @@ def gpu_section(off: dict, on: dict, uoff: dict, uon: dict) -> str:
     add("**Lower is better; it is the chance that two random profiles draw the "
         "same card.** Every figure below is a MEASUREMENT taken on "
         f"{off['measured_at'][:10]} over "
-        f"{len(off['seeds_requested'])} seeds per arm, on loopback with no "
-        "proxy and no exit. Engine: "
+        f"{len(off['seeds_requested'])} seeds requested per arm, on loopback "
+        "with no proxy and no exit. Engine: "
         f"`{off['provenance']['engine']['build']}` "
         f"(sha256 verified against the install manifest).")
     add("")
@@ -76,8 +94,16 @@ def gpu_section(off: dict, on: dict, uoff: dict, uon: dict) -> str:
     add("| arm | authors the identity | **layer ON (what ships)** | layer OFF (the engine alone) | distinct ON/OFF | basis |")
     add("|---|---|---|---|---|---|")
     for arm in ARMS:
-        e_on = on["result"]["per_arm"][arm]
-        e_off = off["result"]["per_arm"][arm]
+        # RECOUNTED from the raw readings — percentages, distinct counts and
+        # seed count alike. `result.per_arm` is the sweep's account of ITSELF:
+        # it reports what the run believed it read, so a truncated sweep
+        # carries a full-looking summary and every figure rendered from it
+        # inherits that blindness. This row lands in PS-16's Table 2, where a
+        # reader has no records beside them; recounting the seed count while
+        # echoing the percentage it qualifies would ship a row that
+        # contradicts itself inside one line.
+        e_on = _arm_stats(on, arm)
+        e_off = _arm_stats(off, arm)
         engine_authored = arm in on["provenance"]["engine_authored_arms"]
         author = "**engine**" if engine_authored else "ours (`gpu_ext`)"
         # The basis names WHICH authorship arm the shipped figure came from.
@@ -86,15 +112,10 @@ def gpu_section(off: dict, on: dict, uoff: dict, uon: dict) -> str:
         # quantities in one column, which is the conflation this whole
         # section exists to keep apart.
         basis_mode = "layer OFF" if engine_authored else "layer ON"
-        # Recounted from the RAW readings, for the same reason the completeness
-        # statement is: `result.per_arm['seeds_readable']` is a summary the
-        # sweep wrote ABOUT ITSELF, so a truncated run can carry a full-looking
-        # count. This cell lands in PS-16's Table 2, where a reader has no
-        # records beside them — and if it disagreed with the completeness
-        # sentence below, the article would assert a full sample beside a
-        # warning saying it was half.
-        shipped_src = off if engine_authored else on
-        seeds_read = _readable_seeds(shipped_src["readings"][arm])
+        # The seed count must come from the SAME record the shipped figure
+        # does, or the count and the percentage could describe two runs.
+        shipped = e_off if engine_authored else e_on
+        seeds_read = shipped["seeds_readable"]
         add(
             f"| {arm} | {author} | **{pct(e_on['collision_probability'])}** | "
             f"{pct(e_off['collision_probability'])} | "
@@ -118,16 +139,32 @@ def gpu_section(off: dict, on: dict, uoff: dict, uon: dict) -> str:
     # Derived, not asserted: compare the two modes SEED BY SEED on the one
     # arm that defers, then contrast with the arms that do not.
     w_on, w_off = on["readings"]["windows"], off["readings"]["windows"]
-    w_identical = sum(1 for s, v in w_on.items() if v == w_off.get(s))
-    w_on_res = on["result"]["per_arm"]["windows"]
+    # `if v and ...` is load-bearing, not defensive. `None == None` is True in
+    # Python, so counting bare equality scores a seed that produced NOTHING in
+    # either mode as a seed that AGREED — a positive control that gets
+    # STRONGER the more the sweep fails, and that reads a total launch failure
+    # as a perfect 24 of 24. The claim being made is "both modes returned the
+    # SAME IDENTITY", so a seed with no identity cannot support it.
+    w_identical = sum(1 for s, v in w_on.items() if v and v == w_off.get(s))
+    # The denominator has to be readable seeds too, or a truncated run prints
+    # "12 of 24" and reads as a FAILED control rather than a short sample.
+    w_comparable = max(_readable_seeds(w_on), _readable_seeds(w_off))
+    w_on_res = _arm_stats(on, "windows")
+    # Recounted for the same reason as the table above: `distinct_identities`
+    # on `result.per_arm` is the sweep's account of itself, and this list
+    # decides whether the positive control paragraph is printed AT ALL.
+    _dist = {
+        arm: (_arm_stats(on, arm)["distinct_identities"],
+              _arm_stats(off, arm)["distinct_identities"])
+        for arm in ARMS
+    }
     diverging = [
         arm for arm in ARMS
         if arm not in on["provenance"]["engine_authored_arms"]
-        and on["result"]["per_arm"][arm]["distinct_identities"]
-        != off["result"]["per_arm"][arm]["distinct_identities"]
-        and off["result"]["per_arm"][arm]["distinct_identities"] == 1
+        and _dist[arm][0] != _dist[arm][1]
+        and _dist[arm][1] == 1
     ]
-    if w_identical == len(w_on) and diverging:
+    if w_identical == w_comparable and w_comparable and diverging:
         add(
             f"**windows layer-ON is byte-identical to layer-OFF** — all "
             f"{w_identical} of {len(w_on)} seeds returned the same identity in "
@@ -138,9 +175,9 @@ def gpu_section(off: dict, on: dict, uoff: dict, uon: dict) -> str:
             + " and ".join(diverging)
             + " the two columns diverge sharply ("
             + ", ".join(
-                f"{arm} {off['result']['per_arm'][arm]['distinct_identities']} "
+                f"{arm} {_dist[arm][1]} "
                 f"identity with the layer off against "
-                f"{on['result']['per_arm'][arm]['distinct_identities']} pool "
+                f"{_dist[arm][0]} pool "
                 f"entries with it on"
                 for arm in diverging
             )
@@ -167,8 +204,14 @@ def gpu_section(off: dict, on: dict, uoff: dict, uon: dict) -> str:
     add("")
     add("| arm | plug-in (what the gate uses) | unbiased | E[plug-in] if uniform | bar `1/k` | Monte-Carlo p | reading |")
     add("|---|---|---|---|---|---|---|")
+    # The uniformity records carry NO raw readings — only a per_arm summary —
+    # so N is recounted from the sweep each one NAMES in `source_record`.
+    unif_sources = {
+        "engine-gpu-variance.layer-off.json": off,
+        "engine-gpu-variance.layer-on.json": on,
+    }
     for arm in ARMS:
-        u = uon["per_arm"][arm]
+        u = _uniformity_stats(uon, arm, unif_sources)
         p = u["monte_carlo_p_value"]
         verdict = (
             "**genuine**" if u["genuine_narrowing_finding"]
@@ -183,7 +226,7 @@ def gpu_section(off: dict, on: dict, uoff: dict, uon: dict) -> str:
             f"{u['module_verdict']} → {verdict} |"
         )
     add("")
-    a = uon["per_arm"]["android"]
+    a = _uniformity_stats(uon, "android", unif_sources)
     add(
         f"**The single line that settles it:** android scored "
         f"{a['plugin_estimate']:.4f}, which is BELOW the "
@@ -213,13 +256,21 @@ def gpu_section(off: dict, on: dict, uoff: dict, uon: dict) -> str:
     add("#### The GENUINE finding: linux AND android are CONSTANT with the "
         "layer off")
     add("")
+    # RECOUNTED: `verdict == "CONSTANT"` is the sweep's own judgement of
+    # itself, and it decides which arms this GENUINE-finding section names at
+    # all. A truncated arm that collapsed to one surviving identity would keep
+    # a stored verdict from the full run, and an arm that stopped being
+    # constant would keep its old CONSTANT label. The property being claimed
+    # is "every readable profile got the SAME identity", so recount it.
+    off_stats = {arm: _arm_stats(off, arm) for arm in ARMS}
     constants = [
         arm for arm in ARMS
-        if off["result"]["per_arm"][arm]["verdict"] == "CONSTANT"
+        if off_stats[arm]["distinct_identities"] == 1
+        and off_stats[arm]["seeds_readable"]
     ]
     for arm in constants:
-        vals = [v for v in off["readings"][arm].values() if v]
-        u = uoff["per_arm"][arm]
+        vals = off_stats[arm]["values"]
+        u = _uniformity_stats(uoff, arm, unif_sources)
         add(
             f"* **{arm}** — every one of {len(vals)} profiles was handed the "
             f"SAME identity (`{collections.Counter(vals).most_common(1)[0][0]}`). "
@@ -234,7 +285,10 @@ def gpu_section(off: dict, on: dict, uoff: dict, uon: dict) -> str:
         "existing SwiftShader reading; **android is new** — it had never been "
         "measured on either arm.")
     add("")
-    m_off = off["result"]["per_arm"]["macos"]
+    # RECOUNTED, both the percentage and the seed count it is quoted over —
+    # this paragraph puts the two side by side in one sentence, so echoing
+    # either from the stored summary is the self-contradicting-row shape.
+    m_off = off_stats["macos"]
     add(
         f"**macos, engine side, has MOVED.** PS-161 recorded 76.9% over 30 "
         f"seeds (Apple M2 87% / M4 13%). This run reads "
@@ -275,10 +329,50 @@ def gpu_section(off: dict, on: dict, uoff: dict, uon: dict) -> str:
     return "\n".join(lines)
 
 
+def _readback_verdicts(rb: dict) -> dict:
+    """Recompute each engine/vector verdict FROM THE RAW READINGS.
+
+    ``rb["verdicts"]`` is the readback run's account of ITSELF — the same
+    class as ``result.per_arm`` on the GPU side, and it renders the two things
+    this ticket exists to deliver: the per-seed hash table, and the firefox
+    ``webgl_pixel_hash`` contrast that PS-182 depends on.
+
+    Found by mutating the records and diffing the rendered output rather than
+    by grep: emptying EVERY firefox vector left the table still printing three
+    distinct hashes and a confident ``DIFFERS``, and left the narrative still
+    printing both loopback values — a sweep that read nothing at all,
+    published as the answer to the ticket's headline question.
+
+    ``verdict_for`` is the differ's OWN rule, imported rather than
+    reimplemented, so this cannot drift from the rule that took the reading.
+    Verified against the committed record: all four verdicts, every per-seed
+    value and every detail string reproduce exactly.
+    """
+    out: dict = {}
+    seeds = [str(s) for s in rb["seeds"]]
+    for engine in rb["engines"]:
+        out[engine] = {}
+        for vec in ("webgl_pixel_hash", "canvas_pixel_hash"):
+            per_seed = {
+                s: (((rb["readings"].get(engine, {}).get(s) or {})
+                     .get("reading") or {}).get("vectors") or {}).get(vec)
+                for s in seeds
+            }
+            verdict, detail = _verdict_for([per_seed[s] for s in seeds])
+            out[engine][vec] = {
+                "seeds": per_seed,
+                "verdict": verdict,
+                "detail": detail,
+            }
+    return out
+
+
 def readback_section(rb: dict, rep: dict, repc: dict) -> str:
     lines: "list[str]" = []
     add = lines.append
     seeds = [str(s) for s in rb["seeds"]]
+    # RECOUNTED from the raw readings, not read out of rb["verdicts"].
+    verdicts = _readback_verdicts(rb)
 
     add("### WebGL / canvas readback — BOTH engines, on loopback")
     add("")
@@ -295,7 +389,7 @@ def readback_section(rb: dict, rep: dict, repc: dict) -> str:
     add("|---|---|" + "---|" * (len(seeds) + 1))
     for engine in rb["engines"]:
         for vec in ("webgl_pixel_hash", "canvas_pixel_hash"):
-            e = rb["verdicts"][engine][vec]
+            e = verdicts[engine][vec]
             cells = " | ".join(f"`{e['seeds'][s]}`" for s in seeds)
             add(f"| {engine} | `{vec}` | {cells} | **{e['verdict']}** |")
     add("")
@@ -321,29 +415,58 @@ def readback_section(rb: dict, rep: dict, repc: dict) -> str:
     add("#### ⭐ The firefox `webgl_pixel_hash` question — ANSWERED, and it is "
         "the harder answer")
     add("")
-    ff = rb["verdicts"]["firefox"]["webgl_pixel_hash"]["seeds"]
+    ff = verdicts["firefox"]["webgl_pixel_hash"]["seeds"]
+    # The ANSWER is derived, not asserted. This paragraph reports which of the
+    # two branches the ticket named actually happened, and the ticket is
+    # explicit that they must not be averaged — so the branch has to be chosen
+    # by the readings rather than written in. Compared on the SAME two seeds
+    # the checker collided on (1337/4242), not on all three.
+    _pair = _verdict_for([ff[seeds[0]], ff[seeds[1]]])[0]
+    _probe_collides = _pair == "COLLIDES"
+    _pair_readable = _pair != "INCONCLUSIVE"
     add(
         "PS-16 records the one outright FAILURE in this matrix: `creepjs :: "
         "webgl_pixel_hash` reads `51df3565` for BOTH firefox seeds 1337 and "
         "4242, across two exits and two days. This ticket asked whether the "
-        "LOOPBACK probe sees that same collision. **It does not.**"
+        "LOOPBACK probe sees that same collision. "
+        + ("**It does.**" if _probe_collides else
+           "**It does not.**" if _pair_readable else
+           "**The probe produced no usable reading on those seeds, so the "
+           "question is NOT answered here — that is a failure to look, not a "
+           "result.**")
     )
     add("")
     add(f"* checker (creepjs), firefox @1337 and @4242 → `51df3565` "
         f"and `51df3565` — **identical**")
     add(f"* loopback probe, firefox @1337 → `{ff[seeds[0]]}`, @4242 → "
-        f"`{ff[seeds[1]]}` — **different**")
+        f"`{ff[seeds[1]]}` — "
+        + ("**identical**" if _probe_collides else
+           "**different**" if _pair_readable else "**no usable reading**"))
     add("")
-    add(
-        "So the seed DOES move this vector inside the browser, and the "
-        "difference **does not survive the trip out to the checker**. That is "
-        "the second of the two branches the ticket named, and it is the "
-        "expensive one: it is PS-97's exact lesson, one vector over. "
-        "**Consequence for PS-182: it cannot be worked or verified on the "
-        "loopback probe alone** — a green local reading is exactly what we "
-        "already have while the checker still collides. Settling it needs a "
-        "checker read, so PS-182 stays blocked on the proxy."
-    )
+    if _probe_collides:
+        add(
+            "So the probe reproduces the collision the checker saw. That is "
+            "the FIRST of the two branches the ticket named: the defect is "
+            "**upstream of delivery**, and PS-182 can be worked and verified "
+            "entirely on loopback without the proxy."
+        )
+    elif _pair_readable:
+        add(
+            "So the seed DOES move this vector inside the browser, and the "
+            "difference **does not survive the trip out to the checker**. That is "
+            "the second of the two branches the ticket named, and it is the "
+            "expensive one: it is PS-97's exact lesson, one vector over. "
+            "**Consequence for PS-182: it cannot be worked or verified on the "
+            "loopback probe alone** — a green local reading is exactly what we "
+            "already have while the checker still collides. Settling it needs a "
+            "checker read, so PS-182 stays blocked on the proxy."
+        )
+    else:
+        add(
+            "⚠️ **Neither branch can be reported.** The probe returned no "
+            "usable value on these seeds, so this cell is `INCONCLUSIVE` — "
+            "which is NOT a pass and must not be written into PS-16 as one."
+        )
     add("")
     add("⚠️ **This is stated separately from the canvas result below, "
         "deliberately.** The ticket warns against averaging the two into one "
@@ -352,12 +475,37 @@ def readback_section(rb: dict, rep: dict, repc: dict) -> str:
 
     add("#### canvas readback — a SPLIT across the engines")
     add("")
-    cff = rb["verdicts"]["firefox"]["canvas_pixel_hash"]["seeds"]
-    add(
-        f"On firefox, seeds {seeds[0]} and {seeds[1]} produce the SAME canvas "
-        f"hash (`{cff[seeds[0]]}`), while seed {seeds[2]} differs "
-        f"(`{cff[seeds[2]]}`). On chromium all three differ."
-    )
+    cff = verdicts["firefox"]["canvas_pixel_hash"]["seeds"]
+    # Derived like the webgl paragraph above: WHICH seeds collide is a
+    # property of the readings, not a sentence. Under a lost firefox leg the
+    # literal version printed "seeds 1337 and 4242 produce the SAME canvas
+    # hash (None), while seed 9001 differs (None)" — a confident split
+    # asserted over three absent values.
+    _cpairs = [
+        (i, j) for i in range(len(seeds)) for j in range(i + 1, len(seeds))
+        if _verdict_for([cff[seeds[i]], cff[seeds[j]]])[0] == "COLLIDES"
+    ]
+    _cff_readable = [s for s in seeds if cff[s]]
+    if not _cff_readable:
+        add(
+            "⚠️ **The firefox canvas cells produced no usable reading**, so "
+            "no split can be reported here — `INCONCLUSIVE`, which is not a "
+            "pass and must not be recorded as one."
+        )
+    elif _cpairs:
+        i, j = _cpairs[0]
+        others = [s for k, s in enumerate(seeds) if k not in (i, j)]
+        add(
+            f"On firefox, seeds {seeds[i]} and {seeds[j]} produce the SAME canvas "
+            f"hash (`{cff[seeds[i]]}`), while seed {others[0]} differs "
+            f"(`{cff[others[0]]}`). On chromium all three differ."
+        )
+    else:
+        add(
+            f"On firefox, all {len(_cff_readable)} readable seeds produced "
+            "DISTINCT canvas hashes — the collision recorded previously is "
+            "not reproduced in this run. On chromium all three differ."
+        )
     add("")
     add(
         "The mechanism is recorded in `local_probe`'s own docstring and is "
@@ -392,6 +540,91 @@ def _readable_seeds(by_seed: dict) -> int:
     number that must not be trusted to answer it is the run's own account of it.
     """
     return sum(1 for v in by_seed.values() if v)
+
+
+def _arm_stats(rec: dict, arm: str) -> dict:
+    """Recount an arm's SHIPPED figures from its raw readings.
+
+    Companion to ``_readable_seeds`` and it exists for the identical reason,
+    one level up: ``result.per_arm`` carries ``collision_probability`` and
+    ``distinct_identities`` as well as ``seeds_readable``, and ALL THREE are
+    the sweep's account of itself. Recounting only the seed count while still
+    echoing the percentage it qualifies produces the worst artifact of the
+    three — a row that contradicts itself inside one line, ``27.4%`` computed
+    over 24 readings sitting beside a seed count of 12, with nothing to tell a
+    future reader which half is load-bearing.
+
+    ``collision_probability`` is the product's OWN estimator, imported rather
+    than reimplemented, so this cannot drift from the rule that took the
+    reading. Verified against every committed record: all eight arms reproduce
+    their stored figure exactly, which is why replacing the source moves no
+    published number.
+    """
+    readable = [v for v in rec["readings"][arm].values() if v]
+    return {
+        "seeds_readable": len(readable),
+        "distinct_identities": len(set(readable)),
+        # `classify` leaves this None when an arm is unreadable; match that
+        # rather than inventing a 0.0 that would render as "0.0%".
+        "collision_probability": (
+            _collision_probability(readable) if readable else None
+        ),
+        "values": readable,
+    }
+
+
+def _uniformity_stats(unif: dict, arm: str, sources: dict) -> dict:
+    """Recompute the estimator row from the record ``unif`` NAMES.
+
+    The uniformity records carry **no raw readings at all** — only a
+    ``per_arm`` summary — so unlike every other site there is nothing local to
+    recount. What they do carry is ``source_record``, naming the sweep they
+    were computed from, so the recount comes from THAT record's readings.
+
+    Every column here except the Monte-Carlo p-value is a closed-form function
+    of the readings and the pool size, so every one of them is recomputed:
+
+    * ``plugin_estimate``   — the product's own Simpson index, imported;
+    * ``unbiased_estimate`` — ``sum n_i(n_i-1) / N(N-1)``;
+    * ``expected_plugin_under_uniform`` — ``1/k + (1 - 1/k)/N``;
+    * ``bar_collision_probability``     — ``1/k``;
+    * ``seeds_readable`` — N, which is load-bearing rather than decorative:
+      the entire estimator argument is ``E[S_hat] = 1/k + (1 - 1/k)/N``, so an
+      N that cannot notice a truncated sweep silently changes what the
+      expectation column means, and with it the "android scored BELOW what
+      uniform predicts" line that settles the artefact question.
+
+    ``monte_carlo_p_value`` is the ONE figure that genuinely cannot be
+    recomputed here — it is a seeded simulation, not a function of the
+    readings — so it is read from the record and left labelled as stored.
+    Recomputing it would mean re-running the simulation, which is a
+    re-measurement this round is explicitly forbidden from doing.
+    """
+    src = sources.get(unif.get("source_record"))
+    stored = unif["per_arm"][arm]
+    if src is None:
+        # No named source to recount from. Return the stored row rather than
+        # inventing one — not reachable with the committed records, which all
+        # name a source that is loaded here.
+        return dict(stored, recounted=False)
+    readable = [v for v in src["readings"][arm].values() if v]
+    n = len(readable)
+    k = stored["pool_size"]
+    counts = collections.Counter(readable).values()
+    return dict(
+        stored,
+        recounted=True,
+        seeds_readable=n,
+        distinct_observed=len(set(readable)),
+        plugin_estimate=_collision_probability(readable) if readable else None,
+        unbiased_estimate=(
+            sum(c * (c - 1) for c in counts) / (n * (n - 1)) if n > 1 else None
+        ),
+        expected_plugin_under_uniform=(
+            1.0 / k + (1 - 1.0 / k) / n if n and k else None
+        ),
+        bar_collision_probability=1.0 / k if k else None,
+    )
 
 
 def gpu_completeness(off: dict, on: dict) -> dict:
