@@ -39,6 +39,7 @@ from src.services.proxy.errors import (
     GeographyDisprovenError,
     GeographyUnknownError,
     ProxyUnresolvedError,
+    TimezoneUnderivableError,
 )
 from src.ui.components.profile_card import build_profile_card
 
@@ -122,6 +123,40 @@ def test_a_failed_last_check_is_not_reported_as_never_checked():
         f"a FAILED check was labelled {r.label!r}, which sends the operator to "
         "re-check a proxy they already checked"
     )
+
+
+def test_an_underivable_timezone_is_not_reported_as_never_checked():
+    """The same swallowing hazard as the test above, on a SECOND subclass.
+
+    ``TimezoneUnderivableError`` also subclasses ``GeographyUnknownError``, so
+    the parent's branch would catch it and label it "proxy never checked" —
+    and here that is worse than merely imprecise. This proxy may have been
+    checked SUCCESSFULLY seconds ago; the geo response simply carried no
+    ``/``-form zone. Telling the operator to check it sends them to re-run a
+    check that already passed and will keep passing forever, because the
+    missing thing is a ``_COUNTRY_TZ`` row, not a check result.
+    """
+    r = classify_refusal(TimezoneUnderivableError("no zone for NG"), 100.0)
+    assert r is not None
+    assert r.kind == "timezone_underivable", (
+        f"got kind {r.kind!r} — the parent's branch swallowed the subclass, so "
+        "the operator is pointed at the wrong remedy"
+    )
+    assert "never" not in r.label.lower(), (
+        f"an underivable zone was labelled {r.label!r}, which sends the "
+        "operator to re-check a proxy whose check may already have passed"
+    )
+
+
+def test_the_two_geography_subclasses_do_not_shadow_each_other():
+    """The siblings must stay distinct from EACH OTHER, not just from the
+    parent. Neither is a subclass of the other, so a chain that confused them
+    would report a missing table row as a failed check, or vice versa — two
+    completely different remedies."""
+    assert not issubclass(TimezoneUnderivableError, GeographyDisprovenError)
+    assert not issubclass(GeographyDisprovenError, TimezoneUnderivableError)
+    assert classify_refusal(GeographyDisprovenError("x"), 1.0).kind == "geography_disproven"
+    assert classify_refusal(TimezoneUnderivableError("y"), 1.0).kind == "timezone_underivable"
 
 
 def test_the_three_refusals_are_distinguishable():

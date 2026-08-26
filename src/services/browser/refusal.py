@@ -42,6 +42,7 @@ from ..proxy.errors import (
     GeographyDisprovenError,
     GeographyUnknownError,
     ProxyUnresolvedError,
+    TimezoneUnderivableError,
 )
 
 # The short label the card shows while the operator is SCANNING a list. Each one
@@ -57,6 +58,14 @@ from ..proxy.errors import (
 _UNRESOLVED = "proxy unresolved"
 _DISPROVEN = "last check failed"
 _UNKNOWN = "proxy never checked"
+# NOT a re-check prompt, unlike the three above, and that is the whole point of
+# giving it its own label. The proxy here may have been checked successfully
+# seconds ago — the geo response just carried no usable zone — so "never
+# checked" would send the operator to re-run a check that already passed. This
+# names the missing thing instead. It stays inside the rule the block above
+# states: it describes the EVIDENCE ("no zone for this country") and stops
+# there, never hinting that launching without the proxy would be a way out.
+_UNDERIVABLE = "no timezone for exit country"
 
 
 @dataclass(frozen=True)
@@ -109,6 +118,16 @@ def classify_refusal(exc: BaseException, now: float) -> Refusal | None:
     # Subclass FIRST — see above.
     if isinstance(exc, GeographyDisprovenError):
         return Refusal("geography_disproven", _DISPROVEN, str(exc), now)
+    # ALSO before the parent, and for the identical reason: TimezoneUnderivableError
+    # subclasses GeographyUnknownError too, so the parent's branch would swallow
+    # it and label it "proxy never checked" — sending the operator to re-run a
+    # check that may already have PASSED and will keep passing, because the
+    # missing thing is a _COUNTRY_TZ row rather than a check result. It is a
+    # SIBLING of the branch above, not a narrowing of it: neither is a subclass
+    # of the other, so their relative order does not matter, but BOTH must
+    # precede the parent. There is a test pinning this ordering specifically.
+    if isinstance(exc, TimezoneUnderivableError):
+        return Refusal("timezone_underivable", _UNDERIVABLE, str(exc), now)
     if isinstance(exc, GeographyUnknownError):
         return Refusal("geography_unknown", _UNKNOWN, str(exc), now)
     if isinstance(exc, ProxyUnresolvedError):

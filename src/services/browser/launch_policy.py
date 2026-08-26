@@ -15,7 +15,11 @@ import os
 import time
 
 from ...core import platform as _platform
-from ..proxy.errors import GeographyDisprovenError, GeographyUnknownError
+from ..proxy.errors import (
+    GeographyDisprovenError,
+    GeographyUnknownError,
+    TimezoneUnderivableError,
+)
 from ..proxy.freshness import proxy_indicator_state
 
 # Map a proxy's country to a sensible browser locale, so Accept-Language
@@ -47,11 +51,72 @@ _COUNTRY_TZ = {
     "JP": "Asia/Tokyo", "KR": "Asia/Seoul", "CN": "Asia/Shanghai",
     "IN": "Asia/Kolkata", "SG": "Asia/Singapore", "AU": "Australia/Sydney",
     "BR": "America/Sao_Paulo", "MX": "America/Mexico_City",
+    # Added to restore correspondence with _COUNTRY_LOCALE, which has carried
+    # "TW": "zh-TW" since it was written. TW was the ONLY country present in one
+    # table and absent from the other, and that asymmetry is what produced a
+    # profile declaring a Taiwanese locale beside a UTC clock.
+    #
+    # Recorded knowingly rather than by omission: listing TW as a country row is
+    # politically sensitive. The product already took that position when the
+    # locale row shipped — this only makes the two tables agree about a decision
+    # already made, and it makes no new claim. Leaving it out was not neutrality,
+    # it was an incoherent profile.
+    "TW": "Asia/Taipei",
 }
 
 
 def _timezone_for(country_code: str) -> str:
-    return _COUNTRY_TZ.get((country_code or "").upper(), "UTC")
+    """The zone a country implies — or a REFUSAL when this table cannot say.
+
+    This used to be ``_COUNTRY_TZ.get(code, "UTC")``. That fallback is gone, and
+    what it did is the reason: an exit in a country with no row here produced a
+    profile reporting ``UTC``, silently, with no warning and no refusal.
+
+    ``UTC`` was never an approximation. **No key in ``_COUNTRY_TZ`` maps to it**
+    — assert that below if you doubt it — so it could only ever be a sentinel,
+    one that publicly announced "unknown" inside a field an engine consumes as
+    fact. That is the shape ``GeographyUnknownError`` already exists to make
+    UNREPRESENTABLE, and this was a hole straight through it.
+
+    The cost is stated eleven lines down in this file, about a different table:
+    *"A concrete zone is what makes Firefox report a local time that matches the
+    exit IP — otherwise a direct profile shows UTC and scanners flag a 'spoofed
+    location'."* The module already knew. The fallback contradicted it.
+
+    Worse than a missing value, it produced a CONTRADICTORY profile: TW is in
+    ``_COUNTRY_LOCALE`` (``zh-TW``) and was not in ``_COUNTRY_TZ``, so a Taiwan
+    exit declared a Taiwanese locale beside a UTC clock — two of our own tables
+    answering one question differently, neither wrong alone.
+
+    So: refuse. This is the fail-closed rule the charter states for a dropped
+    proxy (*a stop, not a quiet fallback*) applied to the case it was written
+    for — a profile that will not launch has disclosed nothing, while one that
+    launches self-contradicting has disclosed that it is spoofed.
+
+    ⚠️ USER-VISIBLE. A proxy whose exit is in an unlisted country, and whose geo
+    response carried no usable zone, no longer launches. It is a REFUSAL, not a
+    crash: it lands on the same fail-closed path as its two siblings, and it
+    names the country so the operator can act. See ``TimezoneUnderivableError``.
+
+    Raises:
+        TimezoneUnderivableError: no row for this country. A subclass of
+            ``GeographyUnknownError``, so every fail-closed handler already
+            written catches it unchanged.
+    """
+    code = (country_code or "").upper()
+    zone = _COUNTRY_TZ.get(code)
+    if zone:
+        return zone
+    raise TimezoneUnderivableError(
+        f"no timezone is known for country {code!r}: refusing to fall back to "
+        "UTC, which would declare a clock that contradicts the exit's own "
+        "country and is exactly what scanners flag as a spoofed location. "
+        f"Add a {code!r} row to _COUNTRY_TZ (launch_policy.py) to resolve it"
+        if code
+        else "no country code was supplied, so no timezone can be derived: "
+        "refusing to fall back to UTC rather than declare a clock nothing "
+        "supports"
+    )
 
 
 # Windows timezone keys (from the registry / GetDynamicTimeZoneInformation) map
