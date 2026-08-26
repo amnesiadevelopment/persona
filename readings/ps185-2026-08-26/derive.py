@@ -369,7 +369,184 @@ def readback_section(rb: dict, rep: dict, repc: dict) -> str:
     return "\n".join(lines)
 
 
-def coverage_section() -> str:
+def _readable_seeds(by_seed: dict) -> int:
+    """Count readable seeds the way ``engine_gpu_variance.classify`` does.
+
+    The module's rule is ``[v for v in by_seed.values() if v]`` — a null or
+    empty identity is a seed that produced no reading.
+
+    Recounted from the RAW ``readings`` rather than read out of
+    ``result.per_arm``, and that choice is the entire point of this function.
+    ``result.per_arm['seeds_readable']`` is a summary the sweep wrote **about
+    itself**; if a sweep is truncated, that block reports whatever it recorded
+    at the time and a stale or carried-over copy still reads as a full run. The
+    question this section answers is *"did the run get truncated"*, so the one
+    number that must not be trusted to answer it is the run's own account of it.
+    """
+    return sum(1 for v in by_seed.values() if v)
+
+
+def gpu_completeness(off: dict, on: dict) -> dict:
+    """Per-arm seeds obtained vs requested, recounted from the raw readings.
+
+    Also cross-checks the recount against the sweep's stored ``seeds_readable``.
+    Drift between the two means the summary and the readings disagree about what
+    was obtained — which is itself a finding, and is reported rather than
+    silently resolved in favour of either side.
+    """
+    modes = (("layer-OFF", off), ("layer-ON", on))
+    arms: "list[dict]" = []
+    for label, rec in modes:
+        for arm in sorted(rec["readings"]):
+            by_seed = rec["readings"][arm]
+            readable = _readable_seeds(by_seed)
+            stored = rec["result"]["per_arm"][arm].get("seeds_readable")
+            arms.append({
+                "mode": label,
+                "arm": arm,
+                "requested": len(by_seed),
+                "readable": readable,
+                "stored": stored,
+                "drift": stored is not None and stored != readable,
+                "verdict": rec["result"]["per_arm"][arm].get("verdict"),
+            })
+    return {
+        "arms": arms,
+        "short": [a for a in arms if a["readable"] < a["requested"]],
+        "drifted": [a for a in arms if a["drift"]],
+        "inconclusive": [a for a in arms if a["verdict"] == "INCONCLUSIVE"],
+        "arm_names": sorted({a["arm"] for a in arms}),
+        "modes": [label for label, _ in modes],
+    }
+
+
+def readback_completeness(records: "list[tuple[str, dict]]") -> dict:
+    """Readback legs attempted, legs that produced NOTHING, and unusable cells.
+
+    Two different failures, deliberately counted separately:
+
+    * an **unusable cell** is a vector that came back ``unavailable:`` or
+      ``error:`` — the page saying it could not read that vector;
+    * an **empty leg** is a launch that produced no vectors at all.
+
+    A scan for unusable *values* cannot see an empty leg, because an absent
+    reading has no value to inspect — it reports a clean sweep over whatever
+    survived. That is the same shape as a truncated GPU sweep reading as clean:
+    the evidence of the loss is the absence itself, so it has to be counted by
+    what was ATTEMPTED, not by what came back.
+    """
+    legs: "list[dict]" = []
+    cells = 0
+    unusable: "list[str]" = []
+    for name, rec in records:
+        engines = rec.get("engines") or sorted(rec.get("readings", {}))
+        seeds = [str(s) for s in rec.get("seeds", [])]
+        for engine in engines:
+            for seed in seeds:
+                leg = (rec.get("readings", {}).get(engine, {}) or {}).get(seed)
+                vectors = ((leg or {}).get("reading") or {}).get("vectors") or {}
+                err = ((leg or {}).get("error") or "").strip()
+                legs.append({
+                    "record": name, "engine": engine, "seed": seed,
+                    "vectors": len(vectors),
+                    "error": err.splitlines()[0] if err else "",
+                })
+                for vec, val in vectors.items():
+                    cells += 1
+                    if not val or str(val).startswith(("unavailable:", "error:")):
+                        unusable.append(f"{name} {engine}@{seed} {vec}={val!r}")
+    return {
+        "legs": legs,
+        "empty": [l for l in legs if not l["vectors"]],
+        "cells": cells,
+        "unusable": unusable,
+        "engines": sorted({l["engine"] for l in legs}),
+    }
+
+
+def completeness_statement(off: dict, on: dict,
+                           readbacks: "list[tuple[str, dict]]") -> str:
+    """The sample-completeness claim, derived — nothing here is a literal.
+
+    Factored out of ``coverage_section`` because this exact claim also lands in
+    PS-16 through Edit 8 of ``PS-16-PATCH.md``. A hand-typed paraphrase there
+    would reintroduce the same defect one file over: a durable assertion in a
+    knowledge article, about a sweep nobody can re-check, that cannot become
+    false. Both callers render THIS string.
+    """
+    gpu = gpu_completeness(off, on)
+    rbk = readback_completeness(readbacks)
+
+    # --- the GPU half, derived ------------------------------------------
+    n_arms = len(gpu["arm_names"])
+    if gpu["short"]:
+        worst = "; ".join(
+            f"{a['mode']} {a['arm']} {a['readable']}/{a['requested']}"
+            for a in gpu["short"]
+        )
+        gpu_sentence = (
+            f"⚠️ **The sample is INCOMPLETE and the figures above are computed "
+            f"over a partial draw:** {worst}. A collision probability taken "
+            "over a truncated sweep is a position-biased estimate, not a "
+            "measurement of the pool."
+        )
+    else:
+        counts = sorted({f"{a['readable']}/{a['requested']}" for a in gpu["arms"]})
+        gpu_sentence = (
+            f"No arm was recorded `INCONCLUSIVE`: all {n_arms} GPU arms "
+            f"returned {counts[0] if len(counts) == 1 else ', '.join(counts)} "
+            f"readable seeds in {' and '.join(gpu['modes'])}"
+        )
+    if gpu["drifted"]:
+        drift = "; ".join(
+            f"{a['mode']} {a['arm']} readings say {a['readable']}, "
+            f"summary says {a['stored']}"
+            for a in gpu["drifted"]
+        )
+        gpu_sentence += (
+            f"\n\n⚠️ **The stored summary disagrees with the raw readings** "
+            f"({drift}). The recount above is taken from the readings."
+        )
+
+    # --- the readback half, derived --------------------------------------
+    if rbk["unusable"]:
+        rb_sentence = (
+            f"{len(rbk['unusable'])} of {rbk['cells']} readback cells came "
+            f"back unusable: {'; '.join(rbk['unusable'])}."
+        )
+    else:
+        rb_sentence = (
+            f"all {rbk['cells']} readback cells that were read produced a "
+            f"usable value on both engines."
+        )
+
+    lines = [f"{gpu_sentence}, and {rb_sentence}"]
+
+    # An attempted launch that produced NOTHING is invisible to a scan for
+    # unusable values, so it is counted by attempt and reported explicitly.
+    if rbk["empty"]:
+        lines.append("")
+        detail = "; ".join(
+            f"`{l['record']}` {l['engine']}@{l['seed']}"
+            + (f" ({l['error']})" if l["error"] else "")
+            for l in rbk["empty"]
+        )
+        lines.append(
+            f"⚠️ **{len(rbk['empty'])} readback leg of "
+            f"{len(rbk['legs'])} attempted produced no reading at all** — "
+            f"{detail}. It is recorded here because a leg that returns NO "
+            "value is invisible to a check for unusable values: the scan finds "
+            "nothing wrong with the cells that survived. No published figure "
+            "rests on it — it belongs to a repeatability re-run, and the "
+            "chromium repeatability above is computed against "
+            "`readback-vectors.replicate-chromium.json`, which is complete."
+        )
+
+    return "\n".join(lines)
+
+
+def coverage_section(off: dict, on: dict,
+                     readbacks: "list[tuple[str, dict]]") -> str:
     return "\n".join([
         "### What was attempted and NOT obtained (recorded, not left blank)",
         "",
@@ -393,9 +570,7 @@ def coverage_section() -> str:
         "**device type**. Reaching a real mobile profile needs the product's "
         "`build_mobile_extension` path, which this harness does not build. |",
         "",
-        "No arm was recorded `INCONCLUSIVE`: all four GPU arms returned "
-        "24/24 readable seeds, and every readback cell produced a usable value "
-        "on both engines.",
+        completeness_statement(off, on, readbacks),
     ])
 
 
@@ -418,7 +593,11 @@ def main(argv: "list[str] | None" = None) -> int:
         "",
         readback_section(rb, rep, repc),
         "",
-        coverage_section(),
+        coverage_section(off, on, [
+            ("readback-vectors.three-seeds.json", rb),
+            ("readback-vectors.replicate.json", rep),
+            ("readback-vectors.replicate-chromium.json", repc),
+        ]),
         "",
     ]
     text = "\n".join(parts)

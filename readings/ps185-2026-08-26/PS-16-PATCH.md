@@ -256,9 +256,16 @@ Append to the end of *"The headline, before the tables"*:
 > | firefox on macos / linux / android | **does not exist** | `InvisiblePlaywright` takes no OS/platform parameter, so Firefox presents Windows regardless (`declared_machine_honoured: false`, issue #211). Not a coverage gap — the configuration is unreachable. |
 > | a mobile profile on the loopback path | **not reachable from this tier** | `browser_tier.DECLARED_MACHINES` is `("windows", "macos", "linux")` with no mobile member, and `masking_layer` hardcodes `device_type="desktop"` when it computes `engine_platform` (its own comment: *"a mobile declared machine is not a thing this tier can be asked for"*). The android GPU arm above is the android **GPU pool**, a different axis from a mobile **device type**. Reaching a real mobile profile needs the product's `build_mobile_extension` path, which this harness does not build. |
 >
-> **No arm was recorded `INCONCLUSIVE`** — all four GPU arms returned 24/24 readable seeds, and every
-> readback cell produced a usable value on both engines. Nothing inconclusive has been written into
-> this article as a pass.
+> No arm was recorded `INCONCLUSIVE`: all 4 GPU arms returned 24/24 readable seeds in layer-OFF and
+> layer-ON, and all 70 readback cells that were read produced a usable value on both engines.
+>
+> ⚠️ **1 readback leg of 15 attempted produced no reading at all** —
+> `readback-vectors.replicate.json` chromium@9001 (could not attach to persona's chromium over CDP
+> on port 37053: TimeoutError: BrowserType.connect_over_cdp: Timeout 180000ms exceeded.). It is
+> recorded here because a leg that returns NO value is invisible to a check for unusable values: the
+> scan finds nothing wrong with the cells that survived. No published figure rests on it — it
+> belongs to a repeatability re-run, and the chromium repeatability above is computed against
+> `readback-vectors.replicate-chromium.json`, which is complete.
 >
 > Re-derive with `readings/ps185-2026-08-26/derive.py`; the records are committed beside it.
 
