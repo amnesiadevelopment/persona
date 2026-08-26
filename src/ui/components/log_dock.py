@@ -304,6 +304,12 @@ class LogDock:
         self._total_label = ft.Text(
             "", size=10, color=COLORS["text_sub"], font_family=MONO
         )
+        #: The size readout, in HIS unit. "8 rows" is checkable against what he
+        #: can see; "289px" is not. It is also what makes the size controls
+        #: legible as a set rather than as two anonymous arrows.
+        self._size_label = ft.Text(
+            "", size=10, color=COLORS["text_sub"], font_family=MONO
+        )
 
         self.body = ft.Container(expand=True, content=self._stream_pane())
         self.collapsed_strip = ft.Container(
@@ -355,6 +361,7 @@ class LogDock:
             controls=[
                 self._jump,
                 self._follow_label,
+                self._size_controls(),
                 ft.IconButton(
                     icon=ft.Icons.OPEN_IN_FULL,
                     icon_size=13,
@@ -434,19 +441,98 @@ class LogDock:
             ),
         )
 
-    def set_height(self, height: float) -> None:
-        """Apply a new open height, clamped. The grip's whole effect.
+    def _size_controls(self) -> ft.Control:
+        """Smaller / bigger / one line — the size gestures, said out loud.
 
-        Kept separate from the drag handler so the clamp is one testable thing
-        rather than a expression buried in a gesture callback.
+        THE POINT OF THIS DIRECTION. The grip is fixed and it works (see
+        :meth:`_grip`), but a drag handle is a DISCOVERED control: nothing on
+        screen says it is there, nothing says what range it has, and the one
+        thing he asked for by name — "скрыть до 1 строчки" — is a gesture you
+        have to already know about. So the sizes he named become three visible,
+        one-click controls, and the drag stays as the continuous way to land
+        anywhere between them.
+
+        The readout beside them is in ROWS, which is the unit he used
+        ("на 6 строчек"). It is what tells him the console is at the size he
+        thinks it is without counting lines.
         """
-        self.height = max(MIN_HEIGHT, min(MAX_HEIGHT, int(height)))
+        def step(rows: int):
+            def go(_):
+                self.set_rows(self.rows + rows)
+
+            return go
+
+        def button(icon: str, tip: str, on_click) -> ft.Control:
+            return ft.Container(
+                on_click=on_click,
+                ink=True,
+                border_radius=3,
+                padding=ft.Padding.all(4),
+                tooltip=tip,
+                content=ft.Icon(icon, size=14, color=COLORS["text_sub"]),
+            )
+
+        return ft.Row(
+            spacing=2,
+            tight=True,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                button(ft.Icons.REMOVE, "Smaller (one row less)", step(-1)),
+                self._size_label,
+                button(ft.Icons.ADD, "Bigger (one row more)", step(+1)),
+                button(
+                    ft.Icons.MINIMIZE,
+                    "Shrink to a single line",
+                    lambda _: self.set_rows(MIN_ROWS),
+                ),
+            ],
+        )
+
+    @property
+    def rows(self) -> int:
+        """How many whole log rows the console is currently showing."""
+        return rows_for_height(self.height)
+
+    def set_rows(self, rows: int) -> int:
+        """Size the console to exactly ``rows`` rows. Returns what it applied.
+
+        The size controls' whole effect, and the reason they can be trusted:
+        they move the console in the same unit they report, so "smaller" always
+        means exactly one row less rather than an arbitrary pixel step that
+        may or may not change what is visible.
+        """
+        target = max(MIN_ROWS, min(MAX_ROWS_VISIBLE, int(rows)))
+        self.set_height(height_for_rows(target))
+        return self.rows
+
+    def set_height(self, height: float) -> None:
+        """Apply a new open height, SNAPPED to whole rows and clamped.
+
+        Every path that sizes the console comes through here — the grip, the
+        size controls and the opening default alike — so the snap is one
+        testable thing rather than an expression buried in a gesture callback.
+
+        THE SNAP IS THE DIRECTION'S ARGUMENT. A console sized in pixels lands
+        mid-row, showing five rows and a two-pixel sliver of a sixth; that
+        sliver is exactly the "пустое место" he reported, and it reappears on
+        every drag no matter how good the default is. Quantizing means the
+        bottom edge always falls where a row ends, so the console is full of
+        log at every size he can put it in — and a drag reads out as "8 rows"
+        rather than as 289 pixels.
+        """
+        self.height = quantize(height)
         # A height the operator chose HIMSELF is what he wants back when the
         # window has room again — so the grip moves the desire, not just the
         # applied value. apply_window_height moves only the applied one.
         self._desired_height = self.height
         self.body.height = self.height
+        self._paint_size()
         self._safe_update(self.body)
+        self._safe_update(self.root)
+
+    def _paint_size(self) -> None:
+        n = self.rows
+        self._size_label.value = f"{n} row" if n == 1 else f"{n} rows"
 
     def apply_window_height(self, window_height: float | None) -> int:
         """Re-apply the rail budget for a window that just changed size.
@@ -535,6 +621,9 @@ class LogDock:
 
     def _build_root(self) -> ft.Control:
         self.body.height = self.height
+        # The readout must be right on the FIRST frame, not only after the
+        # first resize — it is part of how the console explains its own size.
+        self._paint_size()
         return ft.Container(
             bgcolor=COLORS["log_bg"],
             border=ft.Border.only(top=ft.BorderSide(1, COLORS["border"])),
