@@ -596,7 +596,9 @@ def test_bulk_create_still_creates_a_canonical_batch(mgr):
     assert mgr.profiles["bulk-ok-1"].os_type == "windows"
 
 
-def test_no_write_lane_lets_the_refusal_escape_as_an_exception(mgr, tmp_path):
+def test_no_write_lane_lets_the_refusal_escape_as_an_exception(
+    mgr, tmp_path, monkeypatch
+):
     """THE PROPERTY: every lane answers with a value; none throws at its caller.
 
     Written over the lanes as a SET rather than as one test per lane, because
@@ -610,8 +612,33 @@ def test_no_write_lane_lets_the_refusal_escape_as_an_exception(mgr, tmp_path):
 
     The two lanes that already handled it (REST -> 400, dialog -> inline
     message) are exercised too, so a regression in either is caught here rather
-    than being assumed to hold because it held before.
+    than being assumed to hold because it held before. Both arms drive the REAL
+    handler: ``_via_rest`` posts through ``TestClient`` so the 400 asserted on
+    is the one ``routes/profiles.py`` produced, and ``_via_dialog`` captures the
+    ``on_save`` closure ``ui/actions/profile.py`` hands the dialog and calls it.
+
+    ⚠️ THIS PARAGRAPH USED TO BE FALSE, and how it was false is worth keeping.
+    ``_via_rest`` called ``mgr.add_profile`` directly, caught
+    ``IncoherentProfile`` IN THE TEST, and built its own ``HTTPException(400)``
+    — then asserted that object was not None. It passed whether or not the
+    route translated anything (verified: neutering the route's ``except`` left
+    all 57 tests green), so it asserted on a 400 the test itself constructed:
+    the PS-11 shape this ticket's own method constraints forbid. And the dialog
+    lane was named here while being absent from ``lanes`` entirely — a real
+    hole, uncovered repo-wide, on a handler whose comment says it exists to
+    survive a regression in the dialog's dropdown narrowing.
+
+    Each arm is now falsified by mutant rather than trusted: reverting either
+    handler to a bare ``raise`` turns this file red. Do not replace a lane with
+    a re-implementation of what it does — a lane that cannot be driven should be
+    said to be undriven, as the residual above is, not listed as exercised.
     """
+    from fastapi.testclient import TestClient
+
+    import src.api.mcp_token as tok
+    import src.ui.actions.profile as ui_profile
+    from src.api.app import create_app
+    from src.api.mcp_token import get_or_create_token
     from src.api.mcp_server import build_mcp
     from src.core.container import Container
     from src.services.profile.bulk import bulk_create
@@ -620,31 +647,72 @@ def test_no_write_lane_lets_the_refusal_escape_as_an_exception(mgr, tmp_path):
     c._instances["pm"] = mgr
     mcp = build_mcp(c)
 
-    def _via_mcp(bad):
-        return _mcp_create(mcp, "create_profile", {"name": f"p-mcp-{bad!r}", "os_type": bad})
+    # The REST app is bound to the SAME manager every other lane writes to, so
+    # the end-state sweep below sees what the route persisted (or did not).
+    monkeypatch.setattr(tok, "_path", lambda: str(tmp_path / "mcp_token"))
+    app_c = Container()
+    app_c._instances["pm"] = mgr
+    rest = TestClient(create_app(app_c), base_url="http://127.0.0.1")
+    rest_headers = {"authorization": f"Bearer {get_or_create_token()}"}
 
-    def _via_bulk(bad):
-        return bulk_create(mgr, [f"p-bulk-{bad!r}"], "", bad)
+    # Names are INDEX-based, never built from `bad`. A name carrying the bad
+    # value would let a 400 raised on the NAME satisfy an assertion meant for
+    # the os_type refusal (`"win" in detail` is true either way).
+    def _via_mcp(bad, i):
+        return _mcp_create(mcp, "create_profile", {"name": f"p-mcp-{i}", "os_type": bad})
 
-    def _via_rest(bad):
-        # The REST lane translates IncoherentProfile into a 400. Exercise the
-        # translation the route performs, not the route's plumbing.
-        from fastapi import HTTPException
+    def _via_bulk(bad, i):
+        return bulk_create(mgr, [f"p-bulk-{i}"], "", bad)
 
-        from src.services.profile.coherence import IncoherentProfile
+    def _via_rest(bad, i):
+        # Drive the ROUTE. The translation IS the route — there is no plumbing
+        # to avoid — so calling add_profile here and building our own
+        # HTTPException would assert on a 400 this test constructed.
+        r = rest.post(
+            "/api/v1/profiles",
+            json={"name": f"p-rest-{i}", "os_type": bad},
+            headers=rest_headers,
+        )
+        assert r.status_code == 400, (
+            f"the REST route must translate the refusal of os_type={bad!r} into "
+            f"a 400; got {r.status_code} {r.text}"
+        )
+        assert r.json()["detail"], (
+            f"the 400 for os_type={bad!r} carried no reason, so the caller "
+            f"cannot learn what to send instead"
+        )
+        return r
 
-        try:
-            mgr.add_profile(f"p-rest-{bad!r}", "", bad, tags=[])
-        except IncoherentProfile as e:
-            return HTTPException(status_code=400, detail=str(e))
-        return None
+    def _via_dialog(bad, i):
+        # The create dialog's own handler. `add_profile` builds `on_save` as a
+        # closure and hands it to `open_profile_dialog`, so the handler is only
+        # reachable by capturing it there — the module-level `on_create` is the
+        # BULK dialog's handler and a different lane.
+        captured = {}
 
-    lanes = {"mcp": _via_mcp, "bulk": _via_bulk, "rest": _via_rest}
+        def _capture(page, ps, on_save, **kw):
+            captured["fn"] = on_save
 
-    for bad in BAD_VALUES:
+        monkeypatch.setattr(ui_profile, "open_profile_dialog", _capture)
+        ui_profile.add_profile(
+            page=None, pm=mgr, ps=object(), log=lambda _m: None, refresh=lambda: None
+        )
+        assert "fn" in captured, "add_profile did not hand a handler to the dialog"
+        # `str | None` is this lane's channel: the message goes back to the
+        # dialog. Returning None here would mean it reported success.
+        return captured["fn"](f"p-dlg-{i}", "", bad, "duckduckgo", "", [], [])
+
+    lanes = {
+        "mcp": _via_mcp,
+        "bulk": _via_bulk,
+        "rest": _via_rest,
+        "dialog": _via_dialog,
+    }
+
+    for i, bad in enumerate(BAD_VALUES):
         for lane_name, lane in lanes.items():
             try:
-                answer = lane(bad)
+                answer = lane(bad, f"{lane_name}{i}")
             except Exception as e:  # noqa: BLE001 — that is the whole assertion
                 raise AssertionError(
                     f"lane {lane_name!r} let {type(e).__name__} escape to its "
