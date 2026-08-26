@@ -4,10 +4,14 @@ Aggregate parity is NOT proof — two profiles could swap cards and leave the
 collision figure identical. This compares the ACTUAL string, seed by seed,
 between the pristine HEAD worktree and the edited tree.
 """
-import json, pathlib, subprocess, shutil, sys, tempfile
+import json, os, pathlib, subprocess, shutil, sys, tempfile
 
 NODE = shutil.which("node")
-HARNESS = "/tmp/ps183/harness.js"
+# Resolve the harness RELATIVE TO THIS FILE, never from the authoring session's
+# /tmp. harness.js is committed beside this script; pointing at a scratch copy
+# made the reading unreproducible in a fresh checkout, which silently converts a
+# re-derivable figure into an archived assertion you can only believe.
+HARNESS = str(pathlib.Path(__file__).resolve().parent / "harness.js")
 
 def seen(tree, seed, generation, tmp):
     code = (
@@ -30,8 +34,31 @@ def seen(tree, seed, generation, tmp):
     assert "HOST_VALUE_NOT_SPOOFED" not in v.values(), "measured NOTHING"
     return v["unmaskedRenderer"]
 
-BASE = "/tmp/ps183/base"
-NEW  = "/workspace/persona"
+# BASE is a PRISTINE worktree of the merge-base; NEW is this checkout. Neither
+# may be a fixed authoring-session path — /tmp/ps183/base does not exist in a
+# fresh clone, so the script died before measuring anything.
+#
+# NEW is derived from this file's own location (readings/<slug>/ -> repo root).
+# BASE must be supplied, because only the caller knows which commit is the
+# merge-base; create one with, from the repo root:
+#
+#     git worktree add --detach /tmp/ps183-base <merge-base-sha>
+#     python3 readings/ps183-2026-08-26/continuity.py /tmp/ps183-base
+#
+# It is an ARGUMENT rather than a hard-coded sha so this stays runnable after
+# the branch merges and the merge-base moves.
+NEW = str(pathlib.Path(__file__).resolve().parents[2])
+if len(sys.argv) > 1:
+    BASE = sys.argv[1]
+else:
+    BASE = os.environ.get("PS183_BASE", "")
+if not BASE or not pathlib.Path(BASE).is_dir():
+    sys.exit(
+        "usage: continuity.py <path-to-pristine-merge-base-worktree>\n"
+        "  (or set PS183_BASE). Create one with:\n"
+        "    git worktree add --detach /tmp/ps183-base <merge-base-sha>\n"
+        f"  got: {BASE!r}"
+    )
 seeds = list(range(1, 41)) + [1337, 9001, 4242, 31337, 0xABCDEF, 24601, 5150]
 
 moved = []

@@ -12,7 +12,11 @@ from src.services.browser.engine_platform import engine_platform_for
 from src.services.verify.engine_gpu_variance import collision_probability
 
 NODE = shutil.which("node")
-HARNESS = "/tmp/ps183/harness.js"
+# Resolve the harness RELATIVE TO THIS FILE, never from the authoring session's
+# /tmp. harness.js is committed beside this script; pointing at a scratch copy
+# made the reading unreproducible in a fresh checkout, which silently converts a
+# re-derivable figure into an archived assertion you can only believe.
+HARNESS = str(pathlib.Path(__file__).resolve().parent / "harness.js")
 
 def seen(seed, generation, tmp):
     d = pathlib.Path(build_gpu_extension(
