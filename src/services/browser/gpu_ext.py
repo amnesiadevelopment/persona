@@ -68,14 +68,270 @@ CloakBrowser issue reports): Windows = ANGLE-over-D3D11 with the literal
 
 import json
 import pathlib
+from dataclasses import dataclass
 
-from ...models.hardware_generation import normalize_generation
+from ...models.hardware_generation import normalize_generation, visible_entries
 from ...models.os_type import OS_NORM_TABLE
 from ...models.os_type import RECOGNISED_OS_TYPES as _RECOGNISED_OS_TYPES
 from ...models.os_type import canonical_os_type
 from .engine_platform import ENGINE_HONOURED_PLATFORMS as _ENGINE_HONOURED_PLATFORMS
 from .engine_platform import engine_honours
 from .worker_wrap import realm_bootstrap_js, realm_guard_js
+
+
+@dataclass(frozen=True)
+class GpuEntry:
+    """One real GPU identity pair, tagged with the generation it was added in.
+
+    ``since`` is a promise to the profiles already pinned to this entry, not
+    bookkeeping: never renumber it on a shipped entry. New entries get the
+    bumped ``CURRENT_HARDWARE_GENERATION``. See ``hardware_generation.py``.
+    """
+
+    unmasked_vendor: str
+    unmasked_renderer: str
+    since: int = 0
+
+
+# ADDING ONE: give it `since=<CURRENT_HARDWARE_GENERATION after you bump it>`
+# and leave every entry below untouched. Order is free to stay readable — the
+# generation filter is by tag, not by position. An UNTAGGED append re-indexes a
+# large share of existing profiles onto a different card; the guards in
+# tests/test_hardware_generation.py fail loudly if you forget, for every pool
+# in GPU_POOLS. See models/hardware_generation.py for the whole procedure.
+WIN_GPUS: list[GpuEntry] = [
+    GpuEntry(
+        unmasked_vendor="Google Inc. (NVIDIA)",
+        unmasked_renderer=(
+            "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002487) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+        ),
+    ),
+    GpuEntry(
+        unmasked_vendor="Google Inc. (NVIDIA)",
+        unmasked_renderer=(
+            "ANGLE (NVIDIA, NVIDIA GeForce RTX 3070 (0x00002484) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+        ),
+    ),
+    GpuEntry(
+        unmasked_vendor="Google Inc. (Intel)",
+        unmasked_renderer=(
+            "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x0000A7A1) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+        ),
+    ),
+    GpuEntry(
+        unmasked_vendor="Google Inc. (Intel)",
+        unmasked_renderer=(
+            "ANGLE (Intel, Intel(R) UHD Graphics 630 (0x00003E9B) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+        ),
+    ),
+    GpuEntry(
+        unmasked_vendor="Google Inc. (AMD)",
+        unmasked_renderer=(
+            "ANGLE (AMD, AMD Radeon RX 6600 (0x000073FF) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+        ),
+    ),
+]
+
+
+MAC_GPUS: list[GpuEntry] = [
+    GpuEntry(
+        unmasked_vendor="Google Inc. (Apple)",
+        unmasked_renderer=(
+            "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)"
+        ),
+    ),
+    GpuEntry(
+        unmasked_vendor="Google Inc. (Apple)",
+        unmasked_renderer=(
+            "ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Pro, Unspecified Version)"
+        ),
+    ),
+]
+
+
+# Android mobile Chrome runs WebGL over ANGLE-on-OpenGL-ES with a real phone
+# GPU. A D3D11 desktop string on a phone UA is impossible; use the Adreno/Mali
+# pool + GLES version strings below.
+ANDROID_GPUS: list[GpuEntry] = [
+    GpuEntry(
+        unmasked_vendor="Google Inc. (Qualcomm)",
+        unmasked_renderer=(
+            "ANGLE (Qualcomm, Adreno (TM) 730, OpenGL ES 3.2)"
+        ),
+    ),
+    GpuEntry(
+        unmasked_vendor="Google Inc. (Qualcomm)",
+        unmasked_renderer=(
+            "ANGLE (Qualcomm, Adreno (TM) 660, OpenGL ES 3.2)"
+        ),
+    ),
+    GpuEntry(
+        unmasked_vendor="Google Inc. (ARM)",
+        unmasked_renderer=(
+            "ANGLE (ARM, Mali-G78 MP20, OpenGL ES 3.2)"
+        ),
+    ),
+    GpuEntry(
+        unmasked_vendor="Google Inc. (ARM)",
+        unmasked_renderer=(
+            "ANGLE (ARM, Mali-G710 MC10, OpenGL ES 3.2)"
+        ),
+    ),
+]
+
+
+# Linux Chrome runs WebGL through ANGLE-over-desktop-GL on top of Mesa. A
+# D3D11 string here is impossible for the same reason it is on a phone UA:
+# Direct3D is a Windows-only API. Before this arm existed, `linux` fell
+# through os_norm's else and was served WIN_GPUS — an impossible value, while
+# voice_ext in the same launch served eSpeak (Linux) voices.
+#
+# Values: harvested from upstream Mesa issue reports (each row names the
+# issue that pasted it) and then put through the two transforms ANGLE applies
+# before a page sees the string. Transcribed with per-value provenance into
+# tests/fixtures/linux-webgl-reference.md — read that file, not this comment,
+# and do not re-derive them from either.
+#
+# The two transforms are why these are NOT the strings glxinfo prints:
+#   1. SanitizeRendererString (ANGLE DisplayGL.cpp:36-52) truncates the
+#      renderer at the first ", DRM " and re-closes the paren. Gated on
+#      feature sanitizeAMDGPURendererString, condition IsLinux() && hasAMD
+#      (renderergl_utils.cpp:2552), on by default. Chromium added it because
+#      the kernel + DRM version were a privacy leak (crbug.com/1181193).
+#      So the DRM version and the uname() kernel release in Mesa's five-term
+#      radeonsi composition (si_get.c:106-110) never reach the page.
+#   2. Context::initRendererString (Context.cpp:3684-3701) composes
+#      "ANGLE (" + vendor + ", " + renderer + ", " + version + ")" and ERASES
+#      EVERY COMMA from each element first — which is why the surviving
+#      "(radeonsi navi21 ACO)" is space-separated here but comma-separated in
+#      the raw driver string. Non-obvious; do not "fix" it back.
+#
+# The vendor element is the driver's GL_VENDOR literal — "AMD" (si_get.c:13-16)
+# or "Intel" (iris_screen.c:80-84) — and UNMASKED_VENDOR is EGL's
+# "Google Inc. (<GL_VENDOR>)" (Display.cpp:2478-2486), the same convention
+# WIN_GPUS already uses.
+#
+# The version element is "OpenGL 4.6", NOT "OpenGL ES 3.2": ANGLE's Linux
+# backend is ANGLE-over-desktop-GL (kDefaultANGLEVulkan is
+# FEATURE_DISABLED_BY_DEFAULT, gl_switches.cc:299-301). Confirmed against a
+# real chrome://gpu capture in mesa#6144, which shows ANGLE composing
+# "..., OpenGL 4.6 (Core Profile) Mesa 22.1.0-develgit-". WebGL truncates that
+# tail: Context.cpp:3697 passes getBackendVersionString(!isWebGL()), so
+# includeFullVersion is false and SanitizeVersionString (DisplayGL.cpp:56-83)
+# keeps only the first token -> "OpenGL 4.6". No Mesa build version is ever
+# page-visible, so none is baked in below.
+#
+# Each tuple is kept EXACTLY as harvested. The ASIC codename and the compiler
+# term (ACO vs LLVM <ver>) are coherent with the marketing name — navi21
+# belongs to RX 6800 and to nothing else. Do not recombine terms across rows:
+# that is the one remaining way to build a well-formed string that never
+# shipped, which is a novel tell and worse than the bug this arm fixes.
+#
+# NVIDIA's proprietary driver is deliberately absent: real strings exist, but
+# its GL_VENDOR literal is "NVIDIA Corporation" rather than "NVIDIA" and that
+# was not confirmed from the closed-source driver. Two vendors is enough.
+LINUX_GPUS: list[GpuEntry] = [
+    GpuEntry(
+        unmasked_vendor="Google Inc. (AMD)",
+        unmasked_renderer=(
+            "ANGLE (AMD, AMD Radeon RX 6800 (radeonsi navi21 ACO), OpenGL 4.6)"
+        ),
+    ),
+    GpuEntry(
+        unmasked_vendor="Google Inc. (AMD)",
+        unmasked_renderer=(
+            "ANGLE (AMD, AMD Radeon RX 7900 XTX (radeonsi navi31 ACO), OpenGL 4.6)"
+        ),
+    ),
+    GpuEntry(
+        unmasked_vendor="Google Inc. (AMD)",
+        unmasked_renderer=(
+            "ANGLE (AMD, AMD Radeon RX 7600 (radeonsi navi33 ACO), OpenGL 4.6)"
+        ),
+    ),
+    GpuEntry(
+        unmasked_vendor="Google Inc. (AMD)",
+        unmasked_renderer=(
+            "ANGLE (AMD, AMD Radeon RX 6600 (radeonsi navi23 LLVM 18.1.6), OpenGL 4.6)"
+        ),
+    ),
+    GpuEntry(
+        unmasked_vendor="Google Inc. (Intel)",
+        unmasked_renderer=(
+            "ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)"
+        ),
+    ),
+    GpuEntry(
+        unmasked_vendor="Google Inc. (Intel)",
+        unmasked_renderer=(
+            "ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)"
+        ),
+    ),
+    GpuEntry(
+        unmasked_vendor="Google Inc. (Intel)",
+        unmasked_renderer=(
+            "ANGLE (Intel, Mesa Intel(R) HD Graphics 530 (SKL GT2), OpenGL 4.6)"
+        ),
+    ),
+    GpuEntry(
+        unmasked_vendor="Google Inc. (Intel)",
+        unmasked_renderer=(
+            "ANGLE (Intel, Mesa Intel(R) UHD Graphics 770 (ADL-S GT1), OpenGL 4.6)"
+        ),
+    ),
+]
+
+
+# THE POOL REGISTRY, AND WHY IT IS A REGISTRY RATHER THAN FOUR NAMES.
+#
+# The guards in tests/test_hardware_generation.py iterate THIS mapping, so they
+# cover the pool CLASS rather than the four pools someone happened to think of:
+# a fifth arm's pool added below is picked up by the existing tests with no edit
+# to them at all. That is the property PS-190 asks for, and it is why the pools
+# were lifted out of the JS template — a regex over the emitted script could
+# only ever find the pools whose formatting it already anticipated.
+#
+# ``IOS_GPU`` is deliberately NOT here. It is one compile-time pair rather than
+# a pool (real iOS reports one constant value for every device, so a seed-varied
+# one would itself be the tell), nothing indexes it by seed, and so it carries
+# no re-indexing hazard for a generation tag to protect against.
+GPU_POOLS: dict[str, list[GpuEntry]] = {
+    "WIN_GPUS": WIN_GPUS,
+    "MAC_GPUS": MAC_GPUS,
+    "ANDROID_GPUS": ANDROID_GPUS,
+    "LINUX_GPUS": LINUX_GPUS,
+}
+
+
+def gpu_pool_for_generation(
+    pool: list[GpuEntry], generation: int
+) -> list[GpuEntry]:
+    """The entries a profile of ``generation`` may be picked onto.
+
+    The emitted JS divides by the length of THIS, never of the whole list —
+    taking the whole list's length is the original defect.
+    """
+    return visible_entries(pool, generation)
+
+
+def _render_pool(pool: list[GpuEntry]) -> str:
+    """Render a pool as the JS array literal the template substitutes.
+
+    Rendered UNFILTERED, with each entry's ``since`` carried through, because
+    the JS ``visible()`` filter does the generation filtering at runtime — the
+    same shape the hand-maintained literals had.
+    """
+    return json.dumps(
+        [
+            {
+                "unmaskedVendor": e.unmasked_vendor,
+                "unmaskedRenderer": e.unmasked_renderer,
+                "since": e.since,
+            }
+            for e in pool
+        ]
+    )
+
 
 _CONTENT_SCRIPT = r"""
 (function () {
@@ -131,106 +387,11 @@ __REALM_GUARD__
     return replacement;
   }
 
-  var WIN_GPUS = [
-    { unmaskedVendor: "Google Inc. (NVIDIA)",
-      unmaskedRenderer: "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002487) Direct3D11 vs_5_0 ps_5_0, D3D11)" },
-    { unmaskedVendor: "Google Inc. (NVIDIA)",
-      unmaskedRenderer: "ANGLE (NVIDIA, NVIDIA GeForce RTX 3070 (0x00002484) Direct3D11 vs_5_0 ps_5_0, D3D11)" },
-    { unmaskedVendor: "Google Inc. (Intel)",
-      unmaskedRenderer: "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x0000A7A1) Direct3D11 vs_5_0 ps_5_0, D3D11)" },
-    { unmaskedVendor: "Google Inc. (Intel)",
-      unmaskedRenderer: "ANGLE (Intel, Intel(R) UHD Graphics 630 (0x00003E9B) Direct3D11 vs_5_0 ps_5_0, D3D11)" },
-    { unmaskedVendor: "Google Inc. (AMD)",
-      unmaskedRenderer: "ANGLE (AMD, AMD Radeon RX 6600 (0x000073FF) Direct3D11 vs_5_0 ps_5_0, D3D11)" }
-  ];
-  var MAC_GPUS = [
-    { unmaskedVendor: "Google Inc. (Apple)",
-      unmaskedRenderer: "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)" },
-    { unmaskedVendor: "Google Inc. (Apple)",
-      unmaskedRenderer: "ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Pro, Unspecified Version)" }
-  ];
-  // Android mobile Chrome runs WebGL over ANGLE-on-OpenGL-ES with a real phone
-  // GPU. A D3D11 desktop string on a phone UA is impossible; use the Adreno/Mali
-  // pool + GLES version strings below.
-  var ANDROID_GPUS = [
-    { unmaskedVendor: "Google Inc. (Qualcomm)",
-      unmaskedRenderer: "ANGLE (Qualcomm, Adreno (TM) 730, OpenGL ES 3.2)" },
-    { unmaskedVendor: "Google Inc. (Qualcomm)",
-      unmaskedRenderer: "ANGLE (Qualcomm, Adreno (TM) 660, OpenGL ES 3.2)" },
-    { unmaskedVendor: "Google Inc. (ARM)",
-      unmaskedRenderer: "ANGLE (ARM, Mali-G78 MP20, OpenGL ES 3.2)" },
-    { unmaskedVendor: "Google Inc. (ARM)",
-      unmaskedRenderer: "ANGLE (ARM, Mali-G710 MC10, OpenGL ES 3.2)" }
-  ];
+  var WIN_GPUS = __WIN_GPUS__;
+  var MAC_GPUS = __MAC_GPUS__;
+  var ANDROID_GPUS = __ANDROID_GPUS__;
 
-  // Linux Chrome runs WebGL through ANGLE-over-desktop-GL on top of Mesa. A
-  // D3D11 string here is impossible for the same reason it is on a phone UA:
-  // Direct3D is a Windows-only API. Before this arm existed, `linux` fell
-  // through os_norm's else and was served WIN_GPUS — an impossible value, while
-  // voice_ext in the same launch served eSpeak (Linux) voices.
-  //
-  // Values: harvested from upstream Mesa issue reports (each row names the
-  // issue that pasted it) and then put through the two transforms ANGLE applies
-  // before a page sees the string. Transcribed with per-value provenance into
-  // tests/fixtures/linux-webgl-reference.md — read that file, not this comment,
-  // and do not re-derive them from either.
-  //
-  // The two transforms are why these are NOT the strings glxinfo prints:
-  //   1. SanitizeRendererString (ANGLE DisplayGL.cpp:36-52) truncates the
-  //      renderer at the first ", DRM " and re-closes the paren. Gated on
-  //      feature sanitizeAMDGPURendererString, condition IsLinux() && hasAMD
-  //      (renderergl_utils.cpp:2552), on by default. Chromium added it because
-  //      the kernel + DRM version were a privacy leak (crbug.com/1181193).
-  //      So the DRM version and the uname() kernel release in Mesa's five-term
-  //      radeonsi composition (si_get.c:106-110) never reach the page.
-  //   2. Context::initRendererString (Context.cpp:3684-3701) composes
-  //      "ANGLE (" + vendor + ", " + renderer + ", " + version + ")" and ERASES
-  //      EVERY COMMA from each element first — which is why the surviving
-  //      "(radeonsi navi21 ACO)" is space-separated here but comma-separated in
-  //      the raw driver string. Non-obvious; do not "fix" it back.
-  //
-  // The vendor element is the driver's GL_VENDOR literal — "AMD" (si_get.c:13-16)
-  // or "Intel" (iris_screen.c:80-84) — and UNMASKED_VENDOR is EGL's
-  // "Google Inc. (<GL_VENDOR>)" (Display.cpp:2478-2486), the same convention
-  // WIN_GPUS already uses.
-  //
-  // The version element is "OpenGL 4.6", NOT "OpenGL ES 3.2": ANGLE's Linux
-  // backend is ANGLE-over-desktop-GL (kDefaultANGLEVulkan is
-  // FEATURE_DISABLED_BY_DEFAULT, gl_switches.cc:299-301). Confirmed against a
-  // real chrome://gpu capture in mesa#6144, which shows ANGLE composing
-  // "..., OpenGL 4.6 (Core Profile) Mesa 22.1.0-develgit-". WebGL truncates that
-  // tail: Context.cpp:3697 passes getBackendVersionString(!isWebGL()), so
-  // includeFullVersion is false and SanitizeVersionString (DisplayGL.cpp:56-83)
-  // keeps only the first token -> "OpenGL 4.6". No Mesa build version is ever
-  // page-visible, so none is baked in below.
-  //
-  // Each tuple is kept EXACTLY as harvested. The ASIC codename and the compiler
-  // term (ACO vs LLVM <ver>) are coherent with the marketing name — navi21
-  // belongs to RX 6800 and to nothing else. Do not recombine terms across rows:
-  // that is the one remaining way to build a well-formed string that never
-  // shipped, which is a novel tell and worse than the bug this arm fixes.
-  //
-  // NVIDIA's proprietary driver is deliberately absent: real strings exist, but
-  // its GL_VENDOR literal is "NVIDIA Corporation" rather than "NVIDIA" and that
-  // was not confirmed from the closed-source driver. Two vendors is enough.
-  var LINUX_GPUS = [
-    { unmaskedVendor: "Google Inc. (AMD)",
-      unmaskedRenderer: "ANGLE (AMD, AMD Radeon RX 6800 (radeonsi navi21 ACO), OpenGL 4.6)" },
-    { unmaskedVendor: "Google Inc. (AMD)",
-      unmaskedRenderer: "ANGLE (AMD, AMD Radeon RX 7900 XTX (radeonsi navi31 ACO), OpenGL 4.6)" },
-    { unmaskedVendor: "Google Inc. (AMD)",
-      unmaskedRenderer: "ANGLE (AMD, AMD Radeon RX 7600 (radeonsi navi33 ACO), OpenGL 4.6)" },
-    { unmaskedVendor: "Google Inc. (AMD)",
-      unmaskedRenderer: "ANGLE (AMD, AMD Radeon RX 6600 (radeonsi navi23 LLVM 18.1.6), OpenGL 4.6)" },
-    { unmaskedVendor: "Google Inc. (Intel)",
-      unmaskedRenderer: "ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)" },
-    { unmaskedVendor: "Google Inc. (Intel)",
-      unmaskedRenderer: "ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)" },
-    { unmaskedVendor: "Google Inc. (Intel)",
-      unmaskedRenderer: "ANGLE (Intel, Mesa Intel(R) HD Graphics 530 (SKL GT2), OpenGL 4.6)" },
-    { unmaskedVendor: "Google Inc. (Intel)",
-      unmaskedRenderer: "ANGLE (Intel, Mesa Intel(R) UHD Graphics 770 (ADL-S GT1), OpenGL 4.6)" }
-  ];
+  var LINUX_GPUS = __LINUX_GPUS__;
 
   // iOS Safari does NOT report a GPU. WebKit returns four compile-time string
   // literals from WebGLRenderingContextBase.cpp before any hardware is
@@ -1017,6 +1178,21 @@ def build_gpu_extension(
             "true" if engine_authors_identity_for_engine_platform(
                 engine_platform) else "false",
         )
+        # The four GPU pools are RENDERED from the tagged Python records above,
+        # so a maintainer edits a `GpuEntry` list rather than a JS literal and
+        # the generation guards can iterate them. Rendered unfiltered, `since`
+        # carried through: the JS `visible()` does the per-profile filtering.
+        #
+        # RENDERED THROUGH `GPU_POOLS`, NOT THROUGH THE FOUR NAMES DIRECTLY.
+        # That makes the registry load-bearing rather than decorative: a pool
+        # that is not registered is not emitted, so "registered" and "shipped"
+        # cannot drift apart, and the class-covering guards in
+        # tests/test_hardware_generation.py iterate the same mapping the
+        # product actually renders from.
+        .replace("__WIN_GPUS__", _render_pool(GPU_POOLS["WIN_GPUS"]))
+        .replace("__MAC_GPUS__", _render_pool(GPU_POOLS["MAC_GPUS"]))
+        .replace("__ANDROID_GPUS__", _render_pool(GPU_POOLS["ANDROID_GPUS"]))
+        .replace("__LINUX_GPUS__", _render_pool(GPU_POOLS["LINUX_GPUS"]))
         .replace("__REALM_BOOTSTRAP__", realm_bootstrap_js("applyGpuPatch"))
         .replace("__REALM_GUARD__", realm_guard_js("gpu"))
     )
