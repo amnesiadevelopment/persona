@@ -85,13 +85,21 @@ def gpu_section(off: dict, on: dict, uoff: dict, uon: dict) -> str:
         # layer-ON numbers under one identical label — two different
         # quantities in one column, which is the conflation this whole
         # section exists to keep apart.
-        shipped = e_off if engine_authored else e_on
         basis_mode = "layer OFF" if engine_authored else "layer ON"
+        # Recounted from the RAW readings, for the same reason the completeness
+        # statement is: `result.per_arm['seeds_readable']` is a summary the
+        # sweep wrote ABOUT ITSELF, so a truncated run can carry a full-looking
+        # count. This cell lands in PS-16's Table 2, where a reader has no
+        # records beside them — and if it disagreed with the completeness
+        # sentence below, the article would assert a full sample beside a
+        # warning saying it was half.
+        shipped_src = off if engine_authored else on
+        seeds_read = _readable_seeds(shipped_src["readings"][arm])
         add(
             f"| {arm} | {author} | **{pct(e_on['collision_probability'])}** | "
             f"{pct(e_off['collision_probability'])} | "
             f"{e_on['distinct_identities']} / {e_off['distinct_identities']} | "
-            f"**measured ({basis_mode})**, {shipped['seeds_readable']} seeds |"
+            f"**measured ({basis_mode})**, {seeds_read} seeds |"
         )
     add("")
     add("Every cell above is `measured`. No arm is `theoretical` any more, and "

@@ -476,3 +476,44 @@ def test_edit8_completeness_block_is_the_derivation_not_a_paraphrase():
         "Edit 8's completeness block is not derive.py's statement — re-splice "
         "with: python3 readings/ps185-2026-08-26/splice_patch.py"
     )
+
+
+def test_basis_column_seed_count_reports_a_truncated_arm():
+    """The per-arm basis column must recount, not echo the run's self-summary.
+
+    Round 3 fixed the completeness SENTENCE but left the TABLE ROW reading
+    ``result.per_arm['seeds_readable']`` — a summary the sweep wrote about
+    itself. Under a truncation the two then disagreed, and the disagreement
+    shipped into PS-16's Table 2: a row asserting a full sample beside a warning
+    saying it was half, with no records left for a reader to arbitrate.
+
+    Both authorship arms are exercised, because the shipped figure comes from a
+    different record on each: windows defers to the engine (layer OFF) while the
+    other three ship persona's own draw (layer ON). A fix that recounted only
+    one side would pass a single-arm test.
+    """
+    d, off, on, _ = _records()
+
+    def basis_row(off_rec, on_rec, arm):
+        section = d.gpu_section(off_rec, on_rec, d.load(d.UNIF_OFF), d.load(d.UNIF_ON))
+        return next(
+            ln for ln in section.split("\n") if ln.startswith(f"| {arm} |")
+        )
+
+    for arm, mutated_side in (("android", "on"), ("windows", "off")):
+        assert "24 seeds" in basis_row(off, on, arm), f"{arm} fixture is not full"
+
+        mutated = d.load(d.LAYER_ON if mutated_side == "on" else d.LAYER_OFF)
+        for seed in sorted(mutated["readings"][arm])[:12]:
+            mutated["readings"][arm][seed] = None
+        # The stored summary is deliberately left claiming a full sample.
+        assert mutated["result"]["per_arm"][arm]["seeds_readable"] == 24
+
+        row = (
+            basis_row(off, mutated, arm) if mutated_side == "on"
+            else basis_row(mutated, on, arm)
+        )
+        assert "12 seeds" in row, (
+            f"the {arm} basis column still reports a full sample over a "
+            f"truncated run — it is echoing the summary, not counting: {row}"
+        )
