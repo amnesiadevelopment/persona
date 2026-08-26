@@ -225,6 +225,21 @@ class LogDock:
         # Sized against the window rather than a constant, so a short window
         # does not cost the sidebar its bottom cluster — see default_height.
         self.height = default_height(window_height)
+        #: The UNSNAPPED height the drag is accumulating into.
+        #:
+        #: THE BUG THIS EXISTS TO FIX, measured on the running app: a drag
+        #: arrives as ~10px frames, and snapping EACH FRAME to whole rows makes
+        #: the gesture asymmetric. Quantizing floors, so growing by 10px from a
+        #: 6-row console lands back inside row 6 (186 -> 186) and the console
+        #: never grows however far he drags; shrinking by 10px crosses a
+        #: boundary immediately (186 -> 164) and it does. Up was dead, down
+        #: worked — which reads as the grip being broken again.
+        #:
+        #: So the raw height accumulates the deltas and the SNAP is applied
+        #: only to what is displayed. The console still lands on whole rows;
+        #: the gesture is just no longer forced to reach a full row within a
+        #: single frame.
+        self._raw_height = float(self.height)
         #: The height the OPERATOR wants, which is not always the height he can
         #: have. The applied height is min(this, whatever the window can
         #: afford), so a window that shrinks takes height away and a window
@@ -420,8 +435,11 @@ class LogDock:
             delta = _drag_delta_y(e)
             if delta is None:
                 return
-            # Dragging UP (negative delta) grows the console.
-            self.set_height(self.height - delta)
+            # Dragging UP (negative delta) grows the console. Through
+            # drag_by, NOT set_height: a single frame is smaller than a row,
+            # so the delta has to accumulate before it is snapped — see
+            # drag_by and _raw_height.
+            self.drag_by(delta)
 
         return ft.GestureDetector(
             mouse_cursor=ft.MouseCursor.RESIZE_UP_DOWN,
@@ -505,12 +523,32 @@ class LogDock:
         self.set_height(height_for_rows(target))
         return self.rows
 
+    def drag_by(self, delta: float) -> int:
+        """Grow (or shrink) the console by one drag frame's worth of movement.
+
+        THE ACCUMULATOR IS THE WHOLE POINT — see :attr:`_raw_height`. A drag
+        arrives as ~10px frames, and a row is 22px, so no single frame is a
+        whole row. Feeding each frame through the snap independently made
+        growing impossible (10px up floors straight back to the row it started
+        in) while shrinking worked, which is precisely the "the grip does
+        nothing" report. Accumulating first and snapping the RESULT means every
+        frame counts, and the console still only ever rests on whole rows.
+
+        Returns the row count now displayed, so a caller can assert on it.
+        """
+        self._raw_height = max(
+            float(MIN_HEIGHT),
+            min(float(MAX_HEIGHT), self._raw_height - float(delta)),
+        )
+        self._apply_height(quantize(self._raw_height))
+        return self.rows
+
     def set_height(self, height: float) -> None:
         """Apply a new open height, SNAPPED to whole rows and clamped.
 
-        Every path that sizes the console comes through here — the grip, the
-        size controls and the opening default alike — so the snap is one
-        testable thing rather than an expression buried in a gesture callback.
+        The size controls' and the default's path. A DRAG does not come through
+        here — it goes through :meth:`drag_by`, which accumulates — because
+        snapping a per-frame delta is what broke the gesture.
 
         THE SNAP IS THE DIRECTION'S ARGUMENT. A console sized in pixels lands
         mid-row, showing five rows and a two-pixel sliver of a sixth; that
@@ -520,7 +558,16 @@ class LogDock:
         log at every size he can put it in — and a drag reads out as "8 rows"
         rather than as 289 pixels.
         """
-        self.height = quantize(height)
+        snapped = quantize(height)
+        # Keep the accumulator in step, so a click on "smaller" followed by a
+        # drag continues from where the button left the console rather than
+        # from wherever the last drag happened to end.
+        self._raw_height = float(snapped)
+        self._apply_height(snapped)
+
+    def _apply_height(self, height: int) -> None:
+        """Put an already-snapped height on screen."""
+        self.height = height
         # A height the operator chose HIMSELF is what he wants back when the
         # window has room again — so the grip moves the desire, not just the
         # applied value. apply_window_height moves only the applied one.
