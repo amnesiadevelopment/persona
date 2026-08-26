@@ -41,6 +41,29 @@ need not look:
   record that already existed, so it introduces nothing; guarding it would
   strand a trashed profile behind a conflict it did not create.
 
+⚠️ RULE 4 IS NOT DISPOSED OF BY THAT LIST, and the difference matters. Rules 1-3
+judge a PAIR of fields, so they can only be applied where both values are in
+hand — which is why the list above is per-door. Rule 4
+(``unstorable_os_type_error``) judges ONE FIELD'S VOCABULARY, so it is enforced
+in two layers instead:
+
+* ``models.profile.Profile.__setattr__`` REPAIRS every non-canonical spelling,
+  on construction AND on assignment. That covers all six write doors — including
+  ``import_profile``, ``restore_profile`` and the legacy disk load — without
+  naming any of them, and covers the door nobody has written yet. It is
+  deliberately a REPAIR and never a refusal: a door that refuses turns a
+  recoverable backup into an unimportable one, and ``restore_profile``'s
+  exemption above is documented in exactly those terms.
+* ``assert_storable_os_type`` adds a LOUD REFUSAL at ``add_profile`` and
+  ``update_profile`` only — the two doors where a caller is AUTHORING something
+  new and can therefore be told, rather than having their input silently
+  rewritten. ``update_profile`` fires it only when the edit SUPPLIES an
+  ``os_type``, matching the "introduces it" policy the pair rules use.
+
+So the storage guarantee does not rest on this list being complete. That is the
+point: PS-187 exists because the previous fix enumerated the doors it could
+think of, and the recovery doors were not among them.
+
 The rules
 ---------
 
@@ -117,6 +140,11 @@ stranded. Two deliberate choices:
 from __future__ import annotations
 
 from ..browser.device_presets import is_mobile_os
+from ...models.os_type import (
+    CANONICAL_OS_TYPES,
+    RECOGNISED_OS_TYPES,
+    canonical_os_type,
+)
 
 #: The engine every coherent non-Windows / mobile profile runs on.
 DEFAULT_ENGINE = "chromium"
@@ -277,6 +305,73 @@ def assert_coherent(
 ) -> None:
     """Raise IncoherentProfile (with the reason) if this profile cannot exist."""
     reason = coherence_error(os_type, engine, device_type)
+    if reason is not None:
+        raise IncoherentProfile(reason)
+
+
+def unstorable_os_type_error(os_type: str) -> str | None:
+    """Why this ``os_type`` spelling may not be AUTHORED, or None if it may.
+
+    Rule 4, and it is about ONE FIELD's vocabulary rather than about a pair —
+    which is why it has its own entry point instead of joining
+    ``coherence_error``. A caller judging a pair it did not touch must not have
+    this fired at it (the "introduces it" policy the update path documents at
+    length), and conversely a spelling refusal must not be skipped just because
+    the pair happened not to move.
+
+    THE DEFECT (PS-187). ``win`` is a spelling OUR fold recognises and the
+    ENGINE does not: it answers ``--fingerprint-platform=win`` with SwiftShader
+    and the host's GL strings reach the page. Five more behave identically
+    (``mac``, ``darwin``, ``iphone``, ``ipad``, ``ipados``). The read side was
+    fixed on PS-161; this is the write side.
+
+    ⚠️ THIS IS THE REFUSING HALF OF A TWO-LAYER RULE, AND IT IS THE NARROWER
+    ONE. ``Profile.__setattr__`` REPAIRS every spelling on every door, so the
+    stored value is canonical no matter which door it entered through — that is
+    what makes the property hold for doors nobody has written yet. This layer
+    adds a LOUD REFUSAL on the two doors where the caller is authoring
+    something new (``add_profile``, ``update_profile``) and can therefore be
+    TOLD, rather than having their input silently rewritten.
+
+    It is deliberately NOT applied to import / restore / legacy load. A door
+    that refuses turns a recoverable backup into an unimportable one, and
+    ``restore_profile`` is documented as exempt from these rules for exactly
+    that reason. Those doors repair instead, and the record self-heals.
+
+    Refuses the ALIAS as well as the unknown value, even though both repair
+    cleanly. Accepting ``win`` silently at create would leave the operator
+    believing the product has a ``win`` platform, and would keep alive the very
+    conflation — "recognised" read as "servable" — that produced the leak.
+    """
+    if not isinstance(os_type, str) or os_type not in CANONICAL_OS_TYPES:
+        canonical = canonical_os_type(os_type)
+        supported = ", ".join(repr(v) for v in sorted(CANONICAL_OS_TYPES))
+        if isinstance(os_type, str) and os_type.lower().strip() in RECOGNISED_OS_TYPES:
+            return (
+                f"os_type {os_type!r} is an alias this codebase recognises but "
+                f"the browser engine does NOT honour: it is passed through to "
+                f"--fingerprint-platform unchanged and the engine answers it "
+                f"with its own software renderer, so the host's real GPU "
+                f"strings would reach the page. Use {canonical!r}. "
+                f"Supported values: {supported}"
+            )
+        return (
+            f"os_type {os_type!r} is not a value this product can serve. "
+            f"Supported values: {supported}"
+        )
+    return None
+
+
+def assert_storable_os_type(os_type: str) -> None:
+    """Raise IncoherentProfile unless this spelling may be authored.
+
+    Raised as ``IncoherentProfile`` on purpose: every door that writes a profile
+    already catches it and translates it (400 at the REST lane, an inline
+    message in the profile dialog), so the refusal reaches the operator with
+    its reason through machinery that already exists rather than through a new
+    exception type each caller would have to learn.
+    """
+    reason = unstorable_os_type_error(os_type)
     if reason is not None:
         raise IncoherentProfile(reason)
 
