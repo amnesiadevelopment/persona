@@ -82,7 +82,7 @@ paragraph) with the block below. It is the `derive.py` output verbatim.
 
 > ### GPU unlinkability — MEASURED on all four arms, both authorship arms
 >
-> **Lower is better; it is the chance that two random profiles draw the same card.** Every figure below is a MEASUREMENT taken on 2026-08-26 over 24 seeds per arm, on loopback with no proxy and no exit. Engine: `148.0.7778.215` (sha256 verified against the install manifest).
+> **Lower is better; it is the chance that two random profiles draw the same card.** Every figure below is a MEASUREMENT taken on 2026-08-26 over 24 seeds requested per arm, on loopback with no proxy and no exit. Engine: `148.0.7778.215` (sha256 verified against the install manifest).
 >
 > ⚠️ **There are TWO numbers per arm and they are not interchangeable.** `engine_gpu_variance` measures with persona's layer OFF, because it polices the arms where the ENGINE authors the identity. But `ENGINE_AUTHORED_IDENTITY_ARMS = frozenset({"windows"})` — only windows ships that way. On macos/linux/android persona's own pool authors the pair via `gpu_ext`'s `pick(POOL, 0x67900)`, so the LAYER-ON column is the one that describes what a profile actually ships, and it is the column that replaces the old "theoretical" figures.
 >

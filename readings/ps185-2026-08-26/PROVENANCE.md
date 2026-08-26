@@ -226,3 +226,123 @@ rediscovered:
    works around it with per-chunk process groups (and a name-based sweep gated
    behind `--jobs 1`, because a global `pkill` would shoot a sibling job's
    browser and manufacture false "unreadable" cells). **Workaround, not a fix.**
+
+## 6. How the "renders a stored summary" class was ENUMERATED (round 5)
+
+Rounds 2, 3 and 4 each fixed the one instance they were handed, and each time a
+new member of the same class was found in the next review. The class is:
+
+> **any figure rendered from a summary the sweep wrote about ITSELF, rather
+> than recounted from the raw readings.**
+
+`result.per_arm.seeds_readable` is such a summary — it records what the run
+*believed* it read, so a truncated sweep carries a full-looking count and every
+consumer of that field inherits the blindness. So does
+`result.per_arm.collision_probability`, `distinct_identities` and `verdict`, and
+so does `readback-vectors.*.json`'s `verdicts` block one file over.
+
+### The search was by BEHAVIOUR, not by grep
+
+A grep is shaped by the instances you already know about, and it returns those
+instances again. The enumeration was done by **mutating the records and diffing
+the rendered output**:
+
+1. Load the committed records.
+2. **Destroy the raw readings** — null an arm's seeds, or empty a readback
+   leg's vectors — while leaving **every stored summary block untouched**.
+3. Re-render each section and diff it line by line against the unmutated
+   render.
+4. **Any number that does not move is not being computed from those readings.**
+
+That search finds sites a grep cannot. Two of the four it added were invisible
+to any search for a field name:
+
+* the positive control counted `None == None` as agreement — it reads **no
+  summary field at all**, and got *stronger* the more the sweep failed (a total
+  launch failure in both modes scored a perfect 24 of 24);
+* the firefox narrative asserted its **conclusion** as a literal, so with the
+  leg lost it printed `@1337 → None, @4242 → None — **different**`.
+
+**The search is committed, not just described.** Narrating a method leaves the
+next person to rebuild it, so it ships as
+`readings/ps185-2026-08-26/enumerate_summary_sites.py`. Run it after any change
+to `derive.py`:
+
+```
+python3 readings/ps185-2026-08-26/enumerate_summary_sites.py
+```
+
+Every scenario should report changed lines. A scenario that reports **no
+change** in a section whose readings it destroyed is a live defect of this
+class, and the script exits non-zero saying so. It only reads the committed
+records; every mutation is applied to an in-memory copy.
+
+### What it found, beyond the four sites the review named
+
+| site | what it rendered from a self-summary |
+|---|---|
+| the per-arm table's **percentage and distinct counts** | `result.per_arm` — the headline figure that replaces "theoretical" in PS-16 |
+| the **positive control** | `None == None` counted as agreement |
+| the **estimator table** | `seeds_readable` from the uniformity record |
+| the **macos "has MOVED"** paragraph | `collision_probability` + `seeds_readable` |
+| the **readback verdict table** | `rb["verdicts"]` — the readback run's account of itself |
+| the **`CONSTANT` arm list** | the stored `verdict`, which decides which arms the section names at all |
+| the **firefox webgl narrative** | `**It does not.**` / `— **different**` written in as prose |
+| the **canvas split** | which seeds collide, asserted rather than derived |
+
+The last four are **not** on the review's list; they were found by the
+enumeration above. The final two matter beyond the count, because the ticket
+explicitly forbids averaging the firefox and canvas results into one verdict —
+and a hardcoded branch can only ever report one of them. Both now derive which
+branch the readings actually support, and both report `INCONCLUSIVE` as **not a
+pass** when the probe read nothing.
+
+### The estimator recount came out broader than specified
+
+The review asked for `N` to be recounted. Every other column on that row turned
+out to be a closed-form function of the readings and the pool size, so all of
+them are recomputed: `plugin_estimate`, `unbiased_estimate`,
+`expected_plugin_under_uniform` and `bar_collision_probability`.
+**`monte_carlo_p_value` is the one figure that genuinely cannot be** — it is a
+seeded simulation, not a function of the readings — so it is read from the
+record and left labelled as stored rather than silently re-derived.
+
+The uniformity records carry **no raw readings at all**, only a `per_arm`
+summary, so the recount comes from the sweep each one names in `source_record`.
+
+### Both recounts use the PRODUCT'S OWN rules, imported
+
+`derive.py` imports `engine_gpu_variance.collision_probability` and
+`readback_vectors.verdict_for` rather than reimplementing either, for the same
+reason `sweep.py` imports the module it drives: a second copy of the rule could
+drift from the one that took the readings, and the article would then be derived
+from a rule the product does not use. Verified against the committed records —
+**all eight GPU figures and all four readback verdicts (with their per-seed
+values and detail strings) reproduce exactly**, which is why replacing the
+source moved no published number.
+
+### Why no measured number moved
+
+Every recount returns the stored value on the committed records, so
+`derived-output.txt` is **byte-identical except for one intended word** in the
+`:61` sentence (`24 seeds` → `24 seeds requested`, which distinguishes seeds
+*requested* from seeds *obtained*). Lines 6–89 are unchanged. That is the
+property that says a stale source was replaced rather than a result changed.
+
+### The guard tests are revert-proven
+
+Ten guard tests were added, one per site. Each was verified by **reverting its
+fix in place and confirming the test FAILS**, then restoring the file
+byte-identically. A guard test that still passes when you revert what it guards
+is decoration, and this project's PS-11 article exists because that has happened
+here before. Every mutation is driven through **in-memory records**; no
+committed evidence file is ever written to.
+
+### 6a. A gap in the splicer, found by re-splicing
+
+`splice_patch.py` synchronised **Edit 8 only**. Edit 3 — the block labelled
+*"the `derive.py` output verbatim"* — had **no mechanical re-splice path at
+all**, so a change to the generator's prose broke its verbatim claim and the
+only way to restore it was for a human to re-type the block. That is precisely
+the re-typing the script exists to remove, and it is how a "verbatim" label
+rots. The splicer now splices **both** blocks, and `--check` reports on both.

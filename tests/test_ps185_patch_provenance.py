@@ -517,3 +517,305 @@ def test_basis_column_seed_count_reports_a_truncated_arm():
             f"the {arm} basis column still reports a full sample over a "
             f"truncated run — it is echoing the summary, not counting: {row}"
         )
+
+
+# ---------------------------------------------------------------------------
+# ROUND 5 — the CLASS, enumerated by behaviour rather than by grep.
+#
+# Rounds 2, 3 and 4 each fixed the one instance they were handed, and a new
+# member of the same class was found each time. The class is: *any figure
+# rendered from a summary the sweep wrote about ITSELF, rather than recounted
+# from the raw readings.*
+#
+# These were found by MUTATING the records and diffing the rendered output —
+# destroy the raw readings, leave every stored summary block intact, and see
+# which numbers fail to move. A number that does not move when the readings
+# underneath it are destroyed is being echoed, not computed. That search is by
+# behaviour, which is why it returns sites a grep for `seeds_readable` cannot:
+# the None==None control below reads no summary field at all, and the readback
+# sites read `verdicts` instead of `per_arm`.
+#
+# Every mutation is driven through IN-MEMORY records, exactly as above. No
+# committed evidence file is ever written to.
+# ---------------------------------------------------------------------------
+
+
+def _truncate(rec, arm, keep=12):
+    """Null all but `keep` of an arm's readings, leaving the summary intact."""
+    for seed in sorted(rec["readings"][arm])[keep:]:
+        rec["readings"][arm][seed] = None
+    return rec
+
+
+def _gpu(d, off, on):
+    return d.gpu_section(off, on, d.load(d.UNIF_OFF), d.load(d.UNIF_ON))
+
+
+def test_collision_percentage_is_recounted_not_echoed():
+    """THE headline figure — the number that replaces "theoretical" in PS-16.
+
+    Round 4 made the seed count honest and left the percentage it qualifies on
+    ``result.per_arm``, so under a truncation the row contradicted itself
+    inside a single line: ``27.4%`` computed over 24 readings printed beside a
+    seed count of 12. That is a worse artifact than either half alone, because
+    a future reader with no records beside them cannot tell which number is
+    load-bearing.
+    """
+    d, off, on, _ = _records()
+    row = next(ln for ln in _gpu(d, off, on).split("\n")
+               if ln.startswith("| android |"))
+    assert "27.4%" in row and "4 / 1" in row and "24 seeds" in row
+
+    mutated = _truncate(d.load(d.LAYER_ON), "android")
+    # The stored summary is deliberately left claiming the full sample.
+    assert mutated["result"]["per_arm"]["android"]["collision_probability"] == \
+        pytest.approx(0.2743055555555556)
+    assert mutated["result"]["per_arm"]["android"]["distinct_identities"] == 4
+
+    after = next(ln for ln in _gpu(d, off, mutated).split("\n")
+                 if ln.startswith("| android |"))
+    assert "27.4%" not in after, (
+        "the collision percentage still reports the figure computed over the "
+        f"full sample on a truncated run — it is echoing the summary: {after}"
+    )
+    assert "12 seeds" in after, "the seed count should also have moved"
+    assert "4 / 1" not in after, (
+        f"distinct_identities is still echoing the stored summary: {after}"
+    )
+
+
+def test_positive_control_does_not_count_two_absences_as_agreement():
+    """``None == None`` is True — so the control got STRONGER as the sweep failed.
+
+    The windows paragraph claims both modes returned the SAME IDENTITY for
+    every seed. Counting bare equality scores a seed that produced NOTHING in
+    either mode as a seed that agreed, so a total launch failure in both modes
+    scored a perfect 24 of 24. It is the sharpest member of the class because
+    it reads no summary field at all: no grep would return it.
+    """
+    d, off, on, _ = _records()
+    assert "all 24 of 24 seeds returned the same identity" in _gpu(d, off, on)
+
+    m_on = _truncate(d.load(d.LAYER_ON), "windows")
+    m_off = _truncate(d.load(d.LAYER_OFF), "windows")
+    after = _gpu(d, m_off, m_on)
+
+    assert "all 24 of 24 seeds returned the same identity" not in after, (
+        "the positive control counted 12 seeds that returned NOTHING in both "
+        "modes as 12 seeds that agreed — an assertion that gets stronger the "
+        "more the sweep fails"
+    )
+
+
+def test_estimator_table_recounts_N_from_the_record_it_names():
+    """N is load-bearing: ``E[S_hat] = 1/k + (1 - 1/k)/N``.
+
+    The uniformity records carry NO raw readings — only a per_arm summary — so
+    the recount has to come from the sweep each one names in ``source_record``.
+    An N that cannot notice a truncated sweep silently changes what the
+    expectation column means, and with it the "android scored BELOW what
+    uniform predicts" line that settles the artefact question.
+    """
+    d, off, on, _ = _records()
+    assert "at N=24" in _gpu(d, off, on)
+
+    mutated = _truncate(d.load(d.LAYER_ON), "android")
+    assert mutated["result"]["per_arm"]["android"]["seeds_readable"] == 24
+    after = _gpu(d, off, mutated)
+
+    assert "at N=24" not in after, (
+        "the estimator argument still reports N=24 over a 12-readable run"
+    )
+    assert "at N=12" in after
+
+
+def test_macos_moved_paragraph_recounts_both_its_figures():
+    """A percentage and the seed count it is quoted over, in one sentence.
+
+    Echoing either from the stored summary produces the self-contradicting
+    shape: "58.7% over 24 seeds" printed over a 12-readable layer-OFF run.
+    """
+    d, off, on, _ = _records()
+    assert "58.7% over 24 seeds" in _gpu(d, off, on)
+
+    mutated = _truncate(d.load(d.LAYER_OFF), "macos")
+    after = _gpu(d, mutated, on)
+
+    assert "58.7% over 24 seeds" not in after, (
+        "the macos paragraph still reports the full-sample figure and count"
+    )
+    assert "over 12 seeds" in after
+
+
+def test_readback_verdicts_are_recounted_from_the_raw_readings():
+    """Found by MY enumeration, not on the review's list — and it is DoD #2.
+
+    ``rb["verdicts"]`` is the readback run's account of ITSELF, the same class
+    as ``result.per_arm`` one file over. It renders the per-seed hash table AND
+    the firefox contrast that PS-182 depends on, so a lost sweep publishes a
+    confident answer to this ticket's headline question.
+    """
+    d, _, _, _ = _records()
+    rb = d.load(d.READBACK)
+    rep, repc = d.load(d.REPLICATE), d.load(d.REPLICATE_CHROME)
+    assert "**DIFFERS**" in d.readback_section(rb, rep, repc)
+
+    # Every firefox vector destroyed; the stored verdicts left untouched.
+    for leg in rb["readings"]["firefox"].values():
+        leg["reading"] = {"vectors": {}}
+    assert rb["verdicts"]["firefox"]["webgl_pixel_hash"]["verdict"] == "DIFFERS"
+
+    after = d.readback_section(rb, rep, repc)
+    ff_row = next(ln for ln in after.split("\n")
+                  if ln.startswith("| firefox | `webgl_pixel_hash`"))
+    assert "dabeff0d" not in ff_row, (
+        "the readback table still prints hashes from a sweep that read "
+        f"nothing — it is echoing the stored verdicts: {ff_row}"
+    )
+    assert "INCONCLUSIVE" in ff_row, (
+        "a sweep that produced no usable value must read INCONCLUSIVE, which "
+        "is NOT a pass"
+    )
+
+
+def test_firefox_branch_is_derived_not_asserted():
+    """The ticket names TWO branches and forbids averaging them.
+
+    The narrative hardcoded ``**It does not.**`` and ``— **different**``, so it
+    could only ever report one of them. With the leg lost it printed
+    "loopback probe, firefox @1337 -> `None`, @4242 -> `None` - **different**":
+    a confident verdict over two absent values.
+    """
+    d, _, _, _ = _records()
+    rb = d.load(d.READBACK)
+    rep, repc = d.load(d.REPLICATE), d.load(d.REPLICATE_CHROME)
+    assert "**It does not.**" in d.readback_section(rb, rep, repc)
+
+    for leg in rb["readings"]["firefox"].values():
+        leg["reading"] = {"vectors": {}}
+    after = d.readback_section(rb, rep, repc)
+
+    assert "— **different**" not in after, (
+        "the narrative still calls two absent values 'different'"
+    )
+    assert "**It does not.**" not in after, (
+        "the answer to the ticket's headline question is still asserted "
+        "regardless of what the probe read"
+    )
+    assert "not answered here" in after or "no usable reading" in after
+
+
+def test_firefox_branch_reports_a_COLLISION_when_the_probe_collides():
+    """Discrimination: the OTHER branch must be reachable.
+
+    Without this, "derived" could mean a sentence that merely fails safe. The
+    ticket's first branch — probe reproduces the checker's collision, so the
+    defect is upstream of delivery and PS-182 is workable without the proxy —
+    is a different conclusion and must be produced by the data.
+    """
+    d, _, _, _ = _records()
+    rb = d.load(d.READBACK)
+    rep, repc = d.load(d.REPLICATE), d.load(d.REPLICATE_CHROME)
+
+    seeds = [str(s) for s in rb["seeds"]]
+    shared = "51df3565"
+    for s in seeds[:2]:
+        rb["readings"]["firefox"][s]["reading"]["vectors"]["webgl_pixel_hash"] = shared
+
+    after = d.readback_section(rb, rep, repc)
+    assert "**It does.**" in after, (
+        "a probe that DOES reproduce the checker's collision must report the "
+        "first branch, not the second"
+    )
+    assert "upstream of delivery" in after
+
+
+def test_canvas_split_names_the_seeds_that_actually_collide():
+    """The canvas paragraph asserted WHICH seeds collide as prose."""
+    d, _, _, _ = _records()
+    rb = d.load(d.READBACK)
+    rep, repc = d.load(d.REPLICATE), d.load(d.REPLICATE_CHROME)
+    assert "seeds 1337 and 4242 produce the SAME canvas" in \
+        d.readback_section(rb, rep, repc)
+
+    # Make every firefox canvas seed distinct: there is no longer a collision.
+    for i, s in enumerate([str(x) for x in rb["seeds"]]):
+        rb["readings"]["firefox"][s]["reading"]["vectors"]["canvas_pixel_hash"] = \
+            f"distinct{i}:bytes8192:mid6144"
+    after = d.readback_section(rb, rep, repc)
+
+    assert "produce the SAME canvas" not in after, (
+        "the canvas split still asserts a collision that the readings no "
+        "longer contain"
+    )
+    assert "DISTINCT canvas hashes" in after
+
+
+def test_constant_arms_are_recounted_not_read_from_the_stored_verdict():
+    """``verdict == "CONSTANT"`` decides which arms this section names AT ALL.
+
+    An arm that stopped being constant keeps its old label, and a truncated arm
+    that collapsed to one surviving identity keeps a verdict from the full run.
+    """
+    d, off, on, _ = _records()
+    assert "* **linux**" in _gpu(d, off, on)
+
+    mutated = d.load(d.LAYER_OFF)
+    # linux is CONSTANT on record; give it a second identity so it is not.
+    seeds = sorted(mutated["readings"]["linux"])
+    for seed in seeds[:12]:
+        mutated["readings"]["linux"][seed] = "Some Other | ANGLE (Other Vendor)"
+    assert mutated["result"]["per_arm"]["linux"]["verdict"] == "CONSTANT"
+
+    after = _gpu(d, mutated, on)
+    assert "* **linux**" not in after, (
+        "linux is still named as a CONSTANT arm on a run where it drew two "
+        "identities — the section is reading the stored verdict"
+    )
+
+
+def test_the_enumerator_is_committed_and_reports_every_site_moving():
+    """The SEARCH ships, not just a description of it.
+
+    Narrating a method leaves the next person to rebuild it. This runs the
+    committed enumerator and requires a clean exit: it destroys the raw
+    readings scenario by scenario and fails if any rendered section does not
+    move, which is the whole defect class in one command.
+    """
+    enumerator = READINGS / "enumerate_summary_sites.py"
+    assert enumerator.is_file(), "the enumeration harness is not committed"
+
+    proc = subprocess.run(
+        [sys.executable, str(enumerator), "--quiet"],
+        capture_output=True, text=True, encoding="utf-8", timeout=300,
+    )
+    assert proc.returncode == 0, (
+        "a rendered figure did not move when the readings underneath it were "
+        f"destroyed:\n{proc.stdout[-3000:]}"
+    )
+
+
+def test_splicer_keeps_edit3_in_sync_not_only_edit8():
+    """Edit 3 claims to be verbatim, so it needs a MECHANICAL way back in sync.
+
+    The splicer previously synchronised Edit 8 alone, so a change to derive.py's
+    prose broke Edit 3's "verbatim" label with no way to restore it but a human
+    re-typing the block — which is precisely the re-typing the script exists to
+    remove, and how such a label rots.
+    """
+    splicer = READINGS / "splice_patch.py"
+    proc = subprocess.run(
+        [sys.executable, str(splicer), "--check"],
+        capture_output=True, text=True, encoding="utf-8", timeout=120,
+    )
+    assert proc.returncode == 0, (
+        f"the committed patch is out of sync with derive.py: {proc.stdout}"
+        f"{proc.stderr}"
+    )
+    # The splicer must actually KNOW about Edit 3, not merely pass because
+    # Edit 8 happens to match.
+    source = splicer.read_text(encoding="utf-8")
+    assert "splice_edit3" in source and "EDIT3_HEADING" in source, (
+        "the splicer does not handle Edit 3, so its verbatim claim has no "
+        "mechanical path back into sync"
+    )
