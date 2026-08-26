@@ -303,3 +303,176 @@ def test_verbatim_check_rejects_a_shortened_identity_string():
     assert divergence is not None, (
         "a truncated identity string was accepted as verbatim"
     )
+
+
+# --------------------------------------------------------------------------
+# The completeness claim — round 3's defect
+# --------------------------------------------------------------------------
+#
+# ``coverage_section()`` used to take NO records and hardcode "all four GPU arms
+# returned 24/24 readable seeds" — the one sentence carrying the
+# sample-completeness claim, on a question ("did the run get truncated?") whose
+# whole point is that it must be answered from the data.
+#
+# The tests below drive mutations through IN-MEMORY records rather than editing
+# the committed JSON. That is deliberate: a mutation test that rewrites a
+# committed file depends on its own restore step running, and a failure between
+# the write and the restore leaves the evidence directory corrupted. Nothing
+# here touches the files on disk.
+
+
+def _load_derive_module():
+    """Import derive.py as a module so its functions can be called directly."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("ps185_derive_undertest", DERIVE)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def _records():
+    """The committed records, loaded fresh (callers may mutate their copy)."""
+    d = _load_derive_module()
+    off, on = d.load(d.LAYER_OFF), d.load(d.LAYER_ON)
+    readbacks = [
+        ("readback-vectors.three-seeds.json", d.load(d.READBACK)),
+        ("readback-vectors.replicate.json", d.load(d.REPLICATE)),
+        ("readback-vectors.replicate-chromium.json", d.load(d.REPLICATE_CHROME)),
+    ]
+    return d, off, on, readbacks
+
+
+def test_completeness_sentence_reports_a_truncated_sweep():
+    """THE round-3 mutation: null half an arm's readings, require the text to move.
+
+    This is the exhaustion-truncation PS-192 describes — the later launches die,
+    ``classify`` correctly drops the unreadable seeds, and the collision figure
+    is then computed over a position-biased subset. The failure mode being
+    guarded is that the record still announces a full sample.
+    """
+    d, off, on, readbacks = _records()
+    before = d.completeness_statement(off, on, readbacks)
+    assert "24/24" in before, "fixture is not a full sweep"
+
+    for arm in ("android", "linux"):
+        mutated = d.load(d.LAYER_ON)
+        for seed in sorted(mutated["readings"][arm])[:12]:
+            mutated["readings"][arm][seed] = None
+
+        after = d.completeness_statement(off, mutated, readbacks)
+        assert after != before, (
+            f"nulling 12 of 24 {arm} readings did not change the completeness "
+            "statement — the claim cannot become false, which is the defect"
+        )
+        assert "INCOMPLETE" in after and f"{arm} 12/24" in after, (
+            f"the truncation is not reported for {arm}: {after!r}"
+        )
+
+
+def test_completeness_recounts_rather_than_trusting_the_stored_summary():
+    """The recount must come from the RAW readings, not ``result.per_arm``.
+
+    ``seeds_readable`` is a summary the sweep wrote ABOUT ITSELF. A truncated or
+    stale run can carry a full-looking summary over reduced readings, so reading
+    that field to answer "was this truncated?" asks the run to grade its own
+    homework. Here the raw readings are cut while the summary is left claiming
+    24 — the same shape as a stale summary — and the statement must follow the
+    readings and say the two disagree.
+    """
+    d, off, on, readbacks = _records()
+    mutated = d.load(d.LAYER_ON)
+    for seed in sorted(mutated["readings"]["android"])[:12]:
+        mutated["readings"]["android"][seed] = None
+    assert mutated["result"]["per_arm"]["android"]["seeds_readable"] == 24, (
+        "fixture invalid: the stored summary should still claim a full sample"
+    )
+
+    after = d.completeness_statement(off, mutated, readbacks)
+    assert "android 12/24" in after, (
+        "the statement followed the stored summary instead of the readings"
+    )
+    assert "stored summary disagrees" in after, (
+        "a summary/readings disagreement is itself a finding and must be stated"
+    )
+
+
+def test_completeness_reports_a_leg_that_produced_no_reading_at_all():
+    """An EMPTY leg is invisible to a scan for unusable values.
+
+    A vector reading ``unavailable:`` or ``error:`` is the page reporting that it
+    could not read that vector. A launch that never attached produces no vectors
+    to inspect, so a scan over values finds nothing wrong with whatever survived
+    and reports a clean sweep. The committed records contain exactly one such
+    leg (a CDP timeout on chromium@9001 in the replicate run), and DoD #5
+    requires anything attempted and not obtained to be recorded with its reason.
+    """
+    d, off, on, readbacks = _records()
+    statement = d.completeness_statement(off, on, readbacks)
+
+    counted = d.readback_completeness(readbacks)
+    assert counted["empty"], "fixture invalid: expected one empty leg on record"
+    assert not counted["unusable"], (
+        "fixture invalid: this record set has no unusable VALUES — which is "
+        "precisely why an empty leg must be counted by attempt instead"
+    )
+
+    for leg in counted["empty"]:
+        assert leg["engine"] in statement and leg["seed"] in statement, (
+            f"the empty leg {leg['engine']}@{leg['seed']} is not disclosed"
+        )
+    assert "produced no reading at all" in statement
+
+
+def test_completeness_check_notices_a_newly_lost_leg():
+    """Discrimination: drop a leg's vectors and require the disclosure to grow.
+
+    Without this, the empty-leg wording above could be a sentence that happens to
+    match today's single known failure rather than a count of what was lost.
+    """
+    d, off, on, readbacks = _records()
+    before = d.readback_completeness(readbacks)
+
+    mutated = d.load(d.READBACK)
+    mutated["readings"]["firefox"]["1337"]["reading"]["vectors"] = {}
+    after_records = [
+        ("readback-vectors.three-seeds.json", mutated),
+        readbacks[1],
+        readbacks[2],
+    ]
+    after = d.readback_completeness(after_records)
+
+    assert len(after["empty"]) == len(before["empty"]) + 1, (
+        "a leg that lost all its vectors was not counted as empty"
+    )
+    statement = d.completeness_statement(off, on, after_records)
+    assert "firefox@1337" in statement, (
+        "the newly lost leg is not named in the completeness statement"
+    )
+
+
+def test_edit8_completeness_block_is_the_derivation_not_a_paraphrase():
+    """PS-16 inherits this claim through Edit 8; it must be spliced, not typed.
+
+    The completeness claim becomes a durable assertion in a knowledge article
+    that will no longer have the records beside it. A hand-typed paraphrase there
+    reintroduces the round-3 defect one file over, so the patch block is compared
+    against the generator's own output.
+    """
+    d, off, on, readbacks = _records()
+    statement = d.completeness_statement(off, on, readbacks)
+
+    patch_text = PATCH.read_text(encoding="utf-8")
+    # Compare on flowed text: the patch wraps the statement to its own width.
+    flowed = " ".join(statement.split())
+    quoted = " ".join(
+        ln[2:] if ln.startswith("> ") else ln[1:]
+        for ln in patch_text.split("\n")
+        if ln.startswith(">")
+    )
+    quoted = " ".join(quoted.split())
+    assert flowed in quoted, (
+        "Edit 8's completeness block is not derive.py's statement — re-splice "
+        "with: python3 readings/ps185-2026-08-26/splice_patch.py"
+    )
