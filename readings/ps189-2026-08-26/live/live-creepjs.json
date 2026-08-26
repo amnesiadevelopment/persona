@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "ticket": "PS-189",
+  "observed_at": "2026-08-26T13:19:49Z",
+  "credential_source": {
+    "source": "file",
+    "detail": "SOURCES DISAGREE: the file (/workspace/_secrets/test-proxy.txt) and environment (PERSONA_TEST_PROXY) each hold a credential and they are NOT the same one. Used the file (/workspace/_secrets/test-proxy.txt), which takes precedence because the file is mounted from the host and rotates live while the variable is frozen at container creation. If that is the wrong one, the other channel is the stale one.",
+    "diverged": true
+  },
+  "records": [
+    {
+      "arm": "linux",
+      "seed": 24601,
+      "url": "https://abrahamjuliot.github.io/creepjs",
+      "layer_installed": [
+        "audio",
+        "canvas_ctx",
+        "device",
+        "gpu",
+        "locale",
+        "measuretext",
+        "native",
+        "stealth",
+        "voice",
+        "webgl"
+      ],
+      "page_text_chars": 4106,
+      "angle_occurrences": [
+        {
+          "offset": 925,
+          "value_line": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+          "nearest_heading": "Google Inc. (Google)",
+          "software_rasteriser": true,
+          "context": ":100:91:91\n\n0.90ms\nResistancec5e1a9bf\nprivacy: unknown\nsecurity: unknown\nmode: unknown\nextension: 41c71bad\n1741.10ms\nServiceWorkerGlobalScope\nWorker2871944a\nlang/timezone:\nen-US (1 US dollar)\nEurope/Warsaw (-120)\nconfidence: moderate\ngpu:\nGoogle Inc. (Google)\nANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\nuserAgent:\nua reduction\nMozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36\ndevice:\nLinux (Linux x86_64)\nLinux x86_64"
+        },
+        {
+          "offset": 1419,
+          "value_line": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+          "nearest_heading": "Google Inc. (Google)",
+          "software_rasteriser": true,
+          "context": "Linux x86_64)\nLinux x86_64\ncores: 18, ram: 16\nuserAgentData:\nGoogle Chrome 148 (148.0.7778.179)\nLinux 6.14.0 x86_64\n525.40ms\nWebGLe7974409\nimages:b8c1c172\npixels:6ba330fa\nparams (78): 499341de\nexts (66): 1de0171c\ngpu:\nconfidence: moderate\nGoogle Inc. (Google)\nANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\n0.40ms\nScreenc4f9f8ea\n...screen: 1920 x 1200\n....avail: 1920 x 1160\ntouch: false\ndepth: 24|24\nviewport:\n945\n945\n930\n1060\n939\n939\nbrowser\nlandscape\nlandscape-primary\n1\n"
+        }
+      ],
+      "argv": [
+        "/home/yatfa/.persona/engine/fpchrome.AppImage",
+        "--appimage-extract-and-run",
+        "--no-sandbox",
+        "--timezone=Europe/Warsaw",
+        "--user-data-dir=/tmp/persona-verify-chromium-z30_gc0f",
+        "--fingerprint=24601",
+        "--fingerprint-platform=linux",
+        "--fingerprint-brand=Chrome",
+        "--lang=en-US",
+        "--accept-lang=en-US,en",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-search-engine-choice-screen",
+        "--remote-debugging-port=0",
+        "--remote-allow-origins=*",
+        "--proxy-server=socks5://127.0.0.1:39839",
+        "--dns-over-https-mode=off",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+        "--dns-prefetch-disable",
+        "--disable-quic",
+        "--disable-features=DnsOverHttps,EnableQuic",
+        "--use-gl=angle",
+        "--use-angle=swiftshader",
+        "--enable-unsafe-swiftshader",
+        "--password-store=basic",
+        "--use-mock-keychain",
+        "--disable-extensions-except=/tmp/persona-verify-chromium-z30_gc0f/.persona-native-ext,/tmp/persona-verify-chromium-z30_gc0f/.persona-locale-ext,/tmp/persona-verify-chromium-z30_gc0f/.persona-voice-ext,/tmp/persona-verify-chromium-z30_gc0f/.persona-stealth-ext,/tmp/persona-verify-chromium-z30_gc0f/.persona-measuretext-ext,/tmp/persona-verify-chromium-z30_gc0f/.persona-audio-ext,/tmp/persona-verify-chromium-z30_gc0f/.persona-device-ext,/tmp/persona-verify-chromium-z30_gc0f/.persona-webgl-ext,/tmp/persona-verify-chromium-z30_gc0f/.persona-gpu-ext,/tmp/persona-verify-chromium-z30_gc0f/.persona-canvas-ctx-ext",
+        "--load-extension=/tmp/persona-verify-chromium-z30_gc0f/.persona-native-ext,/tmp/persona-verify-chromium-z30_gc0f/.persona-locale-ext,/tmp/persona-verify-chromium-z30_gc0f/.persona-voice-ext,/tmp/persona-verify-chromium-z30_gc0f/.persona-stealth-ext,/tmp/persona-verify-chromium-z30_gc0f/.persona-measuretext-ext,/tmp/persona-verify-chromium-z30_gc0f/.persona-audio-ext,/tmp/persona-verify-chromium-z30_gc0f/.persona-device-ext,/tmp/persona-verify-chromium-z30_gc0f/.persona-webgl-ext,/tmp/persona-verify-chromium-z30_gc0f/.persona-gpu-ext,/tmp/persona-verify-chromium-z30_gc0f/.persona-canvas-ctx-ext",
+        "about:blank"
+      ],
+      "exit": {
+        "ip": "31.186.220.36",
+        "country": "PL",
+        "region": "Mazovia",
+        "city": "Mokotów",
+        "org": "AS9141 P4 Sp. z o.o.",
+        "timezone": "Europe/Warsaw"
+      },
+      "page_text_excerpt_around_scope_label": "pe, Warsaw\n-27028689840000\n-120\n6.90ms\nIntlc27d8092\nen-US\nJuly at Central European Summer Time\nAmerican English\n21 million\nnext year\n0 or 1\none\n10.30ms\nHeadless8d594a89\nchromium: true\n44% like headless: 2814fbe4\n33% headless: a427e0b8\n20% stealth: 71bd68ae\nplatform hints:\nArial\n0:73:100:91:91\n\n0.90ms\nResistancec5e1a9bf\nprivacy: unknown\nsecurity: unknown\nmode: unknown\nextension: 41c71bad\n1741.10ms\nServiceWorkerGlobalScope\nWorker2871944a\nlang/timezone:\nen-US (1 US dollar)\nEurope/Warsaw (-120)\nconfidence: moderate\ngpu:\nGoogle Inc. (Google)\nANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\nuserAgent:\nua reduction\nMozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36\ndevice:\nLinux (Linux x86_64)\nLinux x86_64\ncores: 18, ram: 16\nuserAgentData:\nGoogle Chrome 148 (148.0.7778.179)\nLinux 6.14.0 x86_64\n525.40ms\nWebGLe7974409\nimages:b8c1c172\npixels:6ba330fa\nparams (78): 499341de\nexts (66): 1de0171c\ngpu:\nconfi"
+    }
+  ]
+}

@@ -1,0 +1,564 @@
+{
+  "schema_version": 1,
+  "ticket": "PS-189",
+  "observed_at": "2026-08-26T13:30:20Z",
+  "venue": "loopback (127.0.0.1) \u2014 no third party contacted, no exit in the picture",
+  "records": [
+    {
+      "arm": "linux",
+      "seed": 24601,
+      "masking_layer": "off",
+      "sandbox_waived": true,
+      "layer_installed": [],
+      "reading": {
+        "realms": {
+          "page": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Google)",
+            "unmasked_renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+          },
+          "iframe_about_blank": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Google)",
+            "unmasked_renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+          },
+          "fix_register_patchable": {
+            "patchable": true,
+            "writable": true,
+            "configurable": true
+          },
+          "page_webgl2": {
+            "available": true,
+            "unmasked_vendor": "Google Inc. (Google)",
+            "unmasked_renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+          },
+          "fix_blob_registration": {
+            "accepted": false,
+            "refusal": "TypeError: Failed to register a ServiceWorker: The URL protocol of the script ('blob:http://127.0.0.1:36651/c1608045-bbae-436c-9bed-f44216b37f90') is not supported."
+          },
+          "fix_cross_origin_registration": {
+            "accepted": false,
+            "refusal": "SecurityError: Failed to register a ServiceWorker: The origin of the provided scriptURL ('https://example.invalid') does not match the current origin ('http://127.0.0.1:36651')."
+          },
+          "webgpu_adapter": {
+            "available": false,
+            "note": "no adapter"
+          },
+          "iframe_srcdoc": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Google)",
+            "unmasked_renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+          },
+          "iframe_same_origin": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Google)",
+            "unmasked_renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+          },
+          "worker_module": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Google)",
+            "unmasked_renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+          },
+          "shared_worker": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Google)",
+            "unmasked_renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+          },
+          "worker_http": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Google)",
+            "unmasked_renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+          },
+          "service_worker": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Google)",
+            "unmasked_renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+          },
+          "worker_in_iframe": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Google)",
+            "unmasked_renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+          },
+          "worker": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Google)",
+            "unmasked_renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+          },
+          "worker_nested": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Google)",
+            "unmasked_renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+          }
+        },
+        "still_pending": []
+      },
+      "argv": [
+        "/home/yatfa/.persona/engine/fpchrome.AppImage",
+        "--appimage-extract-and-run",
+        "--no-sandbox",
+        "--user-data-dir=/tmp/persona-verify-chromium-4077znwl",
+        "--fingerprint=24601",
+        "--fingerprint-platform=linux",
+        "--fingerprint-brand=Chrome",
+        "--lang=en-US",
+        "--accept-lang=en-US,en",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-search-engine-choice-screen",
+        "--remote-debugging-port=0",
+        "--remote-allow-origins=*",
+        "--no-proxy-server",
+        "--dns-over-https-mode=off",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+        "--dns-prefetch-disable",
+        "--disable-quic",
+        "--disable-features=DnsOverHttps,EnableQuic",
+        "--use-gl=angle",
+        "--use-angle=swiftshader",
+        "--enable-unsafe-swiftshader",
+        "--password-store=basic",
+        "--use-mock-keychain",
+        "about:blank"
+      ]
+    },
+    {
+      "arm": "linux",
+      "seed": 5150,
+      "masking_layer": "off",
+      "sandbox_waived": true,
+      "layer_installed": [],
+      "reading": {
+        "realms": {
+          "page": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Google)",
+            "unmasked_renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+          },
+          "iframe_about_blank": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Google)",
+            "unmasked_renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+          },
+          "fix_register_patchable": {
+            "patchable": true,
+            "writable": true,
+            "configurable": true
+          },
+          "page_webgl2": {
+            "available": true,
+            "unmasked_vendor": "Google Inc. (Google)",
+            "unmasked_renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+          },
+          "fix_blob_registration": {
+            "accepted": false,
+            "refusal": "TypeError: Failed to register a ServiceWorker: The URL protocol of the script ('blob:http://127.0.0.1:36651/ec568f99-f1b9-4402-9121-b67e3a475ea6') is not supported."
+          },
+          "fix_cross_origin_registration": {
+            "accepted": false,
+            "refusal": "SecurityError: Failed to register a ServiceWorker: The origin of the provided scriptURL ('https://example.invalid') does not match the current origin ('http://127.0.0.1:36651')."
+          },
+          "webgpu_adapter": {
+            "available": false,
+            "note": "no adapter"
+          },
+          "iframe_srcdoc": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Google)",
+            "unmasked_renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+          },
+          "iframe_same_origin": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Google)",
+            "unmasked_renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+          },
+          "shared_worker": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Google)",
+            "unmasked_renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+          },
+          "worker_http": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Google)",
+            "unmasked_renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+          },
+          "worker_module": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Google)",
+            "unmasked_renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+          },
+          "service_worker": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Google)",
+            "unmasked_renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+          },
+          "worker_in_iframe": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Google)",
+            "unmasked_renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+          },
+          "worker": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Google)",
+            "unmasked_renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+          },
+          "worker_nested": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Google)",
+            "unmasked_renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+          }
+        },
+        "still_pending": []
+      },
+      "argv": [
+        "/home/yatfa/.persona/engine/fpchrome.AppImage",
+        "--appimage-extract-and-run",
+        "--no-sandbox",
+        "--user-data-dir=/tmp/persona-verify-chromium-hp7snhev",
+        "--fingerprint=5150",
+        "--fingerprint-platform=linux",
+        "--fingerprint-brand=Chrome",
+        "--lang=en-US",
+        "--accept-lang=en-US,en",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-search-engine-choice-screen",
+        "--remote-debugging-port=0",
+        "--remote-allow-origins=*",
+        "--no-proxy-server",
+        "--dns-over-https-mode=off",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+        "--dns-prefetch-disable",
+        "--disable-quic",
+        "--disable-features=DnsOverHttps,EnableQuic",
+        "--use-gl=angle",
+        "--use-angle=swiftshader",
+        "--enable-unsafe-swiftshader",
+        "--password-store=basic",
+        "--use-mock-keychain",
+        "about:blank"
+      ]
+    },
+    {
+      "arm": "macos",
+      "seed": 24601,
+      "masking_layer": "off",
+      "sandbox_waived": true,
+      "layer_installed": [],
+      "reading": {
+        "realms": {
+          "page": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Apple)",
+            "unmasked_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)"
+          },
+          "iframe_about_blank": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Apple)",
+            "unmasked_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)"
+          },
+          "fix_register_patchable": {
+            "patchable": true,
+            "writable": true,
+            "configurable": true
+          },
+          "page_webgl2": {
+            "available": true,
+            "unmasked_vendor": "Google Inc. (Apple)",
+            "unmasked_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)"
+          },
+          "fix_blob_registration": {
+            "accepted": false,
+            "refusal": "TypeError: Failed to register a ServiceWorker: The URL protocol of the script ('blob:http://127.0.0.1:36651/0e443f3b-4054-4745-a6d2-6fa3c335126d') is not supported."
+          },
+          "fix_cross_origin_registration": {
+            "accepted": false,
+            "refusal": "SecurityError: Failed to register a ServiceWorker: The origin of the provided scriptURL ('https://example.invalid') does not match the current origin ('http://127.0.0.1:36651')."
+          },
+          "webgpu_adapter": {
+            "available": false,
+            "note": "no adapter"
+          },
+          "iframe_srcdoc": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Apple)",
+            "unmasked_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)"
+          },
+          "iframe_same_origin": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Apple)",
+            "unmasked_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)"
+          },
+          "worker_module": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Apple)",
+            "unmasked_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)"
+          },
+          "shared_worker": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Apple)",
+            "unmasked_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)"
+          },
+          "worker_http": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Apple)",
+            "unmasked_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)"
+          },
+          "worker_in_iframe": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Apple)",
+            "unmasked_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)"
+          },
+          "service_worker": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Apple)",
+            "unmasked_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)"
+          },
+          "worker": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Apple)",
+            "unmasked_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)"
+          },
+          "worker_nested": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Apple)",
+            "unmasked_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)"
+          }
+        },
+        "still_pending": []
+      },
+      "argv": [
+        "/home/yatfa/.persona/engine/fpchrome.AppImage",
+        "--appimage-extract-and-run",
+        "--no-sandbox",
+        "--user-data-dir=/tmp/persona-verify-chromium-i7kvupt0",
+        "--fingerprint=24601",
+        "--fingerprint-platform=macos",
+        "--fingerprint-brand=Chrome",
+        "--lang=en-US",
+        "--accept-lang=en-US,en",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-search-engine-choice-screen",
+        "--remote-debugging-port=0",
+        "--remote-allow-origins=*",
+        "--no-proxy-server",
+        "--dns-over-https-mode=off",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+        "--dns-prefetch-disable",
+        "--disable-quic",
+        "--disable-features=DnsOverHttps,EnableQuic",
+        "--use-gl=angle",
+        "--use-angle=swiftshader",
+        "--enable-unsafe-swiftshader",
+        "--password-store=basic",
+        "--use-mock-keychain",
+        "about:blank"
+      ]
+    },
+    {
+      "arm": "macos",
+      "seed": 5150,
+      "masking_layer": "off",
+      "sandbox_waived": true,
+      "layer_installed": [],
+      "reading": {
+        "realms": {
+          "page": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Apple)",
+            "unmasked_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M4, Unspecified Version)"
+          },
+          "iframe_about_blank": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Apple)",
+            "unmasked_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M4, Unspecified Version)"
+          },
+          "fix_register_patchable": {
+            "patchable": true,
+            "writable": true,
+            "configurable": true
+          },
+          "page_webgl2": {
+            "available": true,
+            "unmasked_vendor": "Google Inc. (Apple)",
+            "unmasked_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M4, Unspecified Version)"
+          },
+          "fix_blob_registration": {
+            "accepted": false,
+            "refusal": "TypeError: Failed to register a ServiceWorker: The URL protocol of the script ('blob:http://127.0.0.1:36651/d4e18e9b-acb0-4c99-906b-0c83e7f7d16d') is not supported."
+          },
+          "fix_cross_origin_registration": {
+            "accepted": false,
+            "refusal": "SecurityError: Failed to register a ServiceWorker: The origin of the provided scriptURL ('https://example.invalid') does not match the current origin ('http://127.0.0.1:36651')."
+          },
+          "webgpu_adapter": {
+            "available": false,
+            "note": "no adapter"
+          },
+          "iframe_srcdoc": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Apple)",
+            "unmasked_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M4, Unspecified Version)"
+          },
+          "iframe_same_origin": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Apple)",
+            "unmasked_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M4, Unspecified Version)"
+          },
+          "worker_module": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Apple)",
+            "unmasked_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M4, Unspecified Version)"
+          },
+          "shared_worker": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Apple)",
+            "unmasked_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M4, Unspecified Version)"
+          },
+          "worker_http": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Apple)",
+            "unmasked_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M4, Unspecified Version)"
+          },
+          "service_worker": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Apple)",
+            "unmasked_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M4, Unspecified Version)"
+          },
+          "worker_in_iframe": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Apple)",
+            "unmasked_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M4, Unspecified Version)"
+          },
+          "worker": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Apple)",
+            "unmasked_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M4, Unspecified Version)"
+          },
+          "worker_nested": {
+            "available": true,
+            "masked_vendor": "WebKit",
+            "masked_renderer": "WebKit WebGL",
+            "unmasked_vendor": "Google Inc. (Apple)",
+            "unmasked_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M4, Unspecified Version)"
+          }
+        },
+        "still_pending": []
+      },
+      "argv": [
+        "/home/yatfa/.persona/engine/fpchrome.AppImage",
+        "--appimage-extract-and-run",
+        "--no-sandbox",
+        "--user-data-dir=/tmp/persona-verify-chromium-v0t1p_u7",
+        "--fingerprint=5150",
+        "--fingerprint-platform=macos",
+        "--fingerprint-brand=Chrome",
+        "--lang=en-US",
+        "--accept-lang=en-US,en",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-search-engine-choice-screen",
+        "--remote-debugging-port=0",
+        "--remote-allow-origins=*",
+        "--no-proxy-server",
+        "--dns-over-https-mode=off",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+        "--dns-prefetch-disable",
+        "--disable-quic",
+        "--disable-features=DnsOverHttps,EnableQuic",
+        "--use-gl=angle",
+        "--use-angle=swiftshader",
+        "--enable-unsafe-swiftshader",
+        "--password-store=basic",
+        "--use-mock-keychain",
+        "about:blank"
+      ]
+    }
+  ]
+}
