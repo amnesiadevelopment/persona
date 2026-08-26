@@ -119,10 +119,17 @@ def verbatim_divergence(patch_text: "str | None" = None) -> "str | None":
 
 
 def _run_derive() -> str:
-    """Execute derive.py exactly as the patch instructs a maintainer to."""
+    """Execute derive.py exactly as the patch instructs a maintainer to.
+
+    ``encoding`` is pinned explicitly: ``text=True`` alone decodes the child's
+    stdout with the PARENT's locale encoding, which on a Windows runner is
+    cp1252 and raises UnicodeDecodeError on the ⚠️ and — this output carries.
+    That is a second, distinct defect from the child-side one derive.py fixes:
+    the child WRITING utf-8 does not help if the parent READS cp1252.
+    """
     proc = subprocess.run(
         [sys.executable, str(DERIVE)],
-        capture_output=True, text=True, timeout=120,
+        capture_output=True, text=True, encoding="utf-8", timeout=120,
     )
     assert proc.returncode == 0, f"derive.py failed: {proc.stderr[-2000:]}"
     return proc.stdout
@@ -229,7 +236,7 @@ def test_derive_runs_on_a_non_utf8_console():
     env = dict(os.environ, PYTHONIOENCODING="cp1252")
     proc = subprocess.run(
         [sys.executable, str(DERIVE)],
-        capture_output=True, text=True, timeout=120, env=env,
+        capture_output=True, text=True, encoding="utf-8", timeout=120, env=env,
     )
     assert proc.returncode == 0, (
         "derive.py died on a cp1252 console — the re-run instruction in "
