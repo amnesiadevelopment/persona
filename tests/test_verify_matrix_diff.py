@@ -1333,10 +1333,10 @@ def test_compare_needs_no_exit_and_no_network(record, tmp_path, monkeypatch):
 # fixture, and not over hand-built dicts. That is the point of this lane: the
 # claim under test is "never answered in any record we hold", which is a
 # statement about the corpus, so a synthetic corpus would prove nothing about
-# it. `test_silence_pass_names_exactly_the_three_readable_tier_checkers` is the
+# it. `test_silence_pass_names_exactly_the_silent_readable_tier_checkers` is the
 # falsification target — delete the silence pass and it goes RED.
 #
-# The expected value is the three named hosts, NEVER a record count. The count
+# The expected value is the named hosts, NEVER a record count. The count
 # is a count of on-disk artifacts, in the exact tree this feature exists to
 # consume: it stood at 9 when this ticket was written and at 20 when it was
 # implemented, because three legitimate recording campaigns landed in between.
@@ -1366,22 +1366,40 @@ from src.services.verify.matrix_silence import (  # noqa: E402
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Measured live over the committed corpus. These three are `tier=browser` or
-# `tier=json` — the catalogue declares them READABLE — and not one record has
-# ever obtained a reading from any of them, while the matrix presents as 16
-# wide. Each already carries a per-run `note_unreachable`; this is those notes
-# added up, which no command could do before this one.
+# Measured live over the committed corpus. `tier=browser` or `tier=json` — the
+# catalogue declares them READABLE — and not one record has ever obtained a
+# reading, while the matrix presents as 16 wide. Each already carries a per-run
+# `note_unreachable`; this is those notes added up, which no command could do
+# before this one.
+#
+# WAS THREE UNTIL PS-186 (2026-08-26). `bot-detector.rebrowser.net` and
+# `deviceandbrowserinfo.com` BOTH ANSWERED on the new residential credential —
+# 14 and 5 rows in state `read` respectively — so neither is "never answered"
+# any more and both correctly leave this set. Every one of those 19 rows comes
+# from `readings/ps186-2026-08-26/`; the pre-existing corpus still holds zero,
+# which is why they were genuinely silent when this constant was written and
+# are not now. This is a CORPUS FACT that moved, not a redefinition: the two
+# were reachable all along and the old credential could not reach them.
+#
+# `tools.scrapfly.io` stays: still 0 rows read across all 33 records.
+#
+# Do not re-add the two on the argument that they are "usually" unreachable —
+# intermittent is NOT silent, and AC3 (`test_a_checker_read_in_some_records_is_
+# not_silent`) is the test that pins that distinction.
 SILENT_READABLE = {
-    "bot-detector.rebrowser.net",
-    "deviceandbrowserinfo.com",
     "tools.scrapfly.io",
 }
 
 # Silent too, and deliberately NOT findings: the catalogue declares each of
 # these `tier=unreadable` with a written `unreadable_reason` (click-gated,
-# paywalled, Cloudflare challenge). A report that alarmed on all eight would be
-# 5/8 false alarm, and on an alarm-shaped deliverable every by-design member
-# discounts every genuine one.
+# paywalled, Cloudflare challenge). A report that alarmed on the whole silent
+# population would be mostly false alarm, and on an alarm-shaped deliverable
+# every by-design member discounts every genuine one.
+#
+# UNCHANGED by PS-186 — measured, not assumed. All five are still silent across
+# all 33 records, so the silent population moved 8 -> 6 entirely through the
+# readable tier (3 -> 1). The split is what carries the meaning, so the ratio
+# it prints moved from 3/8 findings to 1/6.
 SILENT_CARRIED = {
     "amiunique.org",
     "browserscan.net",
@@ -1407,16 +1425,22 @@ def committed_records() -> "list[dict]":
     return [load_record(path) for path in paths]
 
 
-def test_silence_pass_names_exactly_the_three_readable_tier_checkers(
+def test_silence_pass_names_exactly_the_silent_readable_tier_checkers(
     committed_records,
 ):
     """AC1 — THE FALSIFICATION TARGET.
 
-    Over the committed record set the report names exactly
-    `bot-detector.rebrowser.net`, `deviceandbrowserinfo.com` and
-    `tools.scrapfly.io` — no more, no fewer. Before this slice no command in
-    the subsystem could produce this answer at all, because `compare_records`
-    takes exactly two records and "never" is a quantifier over a set.
+    Over the committed record set the report names exactly the readable-tier
+    checkers that have never once answered — no more, no fewer. Before this
+    slice no command in the subsystem could produce this answer at all, because
+    `compare_records` takes exactly two records and "never" is a quantifier
+    over a set.
+
+    That expected set is `SILENT_READABLE`, which PS-186 moved from three
+    members to one when two of them answered on the new credential. The
+    assertion is unchanged: it was never keyed on the COUNT, only on the
+    measured set, which is exactly why a corpus fact moving did not require
+    rewriting the falsification target.
 
     Asserted on the return value of a real call over real record files. Not
     that a helper ran, not on source text.
@@ -1431,9 +1455,14 @@ def test_silence_pass_reports_unreadable_tier_as_carried_not_as_findings(
 ):
     """AC2 — the partition IS the finding; the raw count is the wrong number.
 
-    Eight checkers are silent across the corpus. Five of them are silent
-    BY DESIGN and say so in the catalogue. Reporting 8 undifferentiated is the
-    false-alarm failure that trains a reader to ignore the gate.
+    Several checkers are silent across the corpus and most of them are silent
+    BY DESIGN and say so in the catalogue. Reporting the undifferentiated total
+    is the false-alarm failure that trains a reader to ignore the gate.
+
+    The counts below are derived from the two measured constants rather than
+    written as literals. They stood at 3 findings / 8 silent when this lane was
+    built and at 1 / 6 after PS-186; a literal would have gone RED on a corpus
+    fact moving, which is the false-RED this file's own header warns against.
     """
     entries = silence_pass(committed_records)
 
@@ -1443,8 +1472,11 @@ def test_silence_pass_reports_unreadable_tier_as_carried_not_as_findings(
     # The whole silent population is the union of the two — and the split is
     # load-bearing, so assert the count is NOT what a naive report would print.
     assert {e["checker"] for e in entries} == SILENT_READABLE | SILENT_CARRIED
-    assert len(entries) == 8
-    assert len(alarms(entries)) == 3
+    assert len(entries) == len(SILENT_READABLE | SILENT_CARRIED)
+    assert len(alarms(entries)) == len(SILENT_READABLE)
+    # The split must stay a real split: a report that alarmed on everything
+    # silent is the exact failure this partition exists to prevent.
+    assert 0 < len(alarms(entries)) < len(entries)
 
 
 def test_a_checker_read_in_some_records_is_not_silent(committed_records):
@@ -1576,7 +1608,7 @@ def test_format_silence_keeps_the_two_populations_apart(committed_records):
     """The rendering carries the split, not just the data structure.
 
     A caller reading the printed page must not be able to come away with the
-    undifferentiated 8.
+    undifferentiated total (8 when this lane was built, 6 after PS-186).
     """
     entries = silence_pass(committed_records)
     text = format_silence(entries, records=len(committed_records))

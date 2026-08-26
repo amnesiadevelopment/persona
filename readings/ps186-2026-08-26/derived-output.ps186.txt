@@ -1,0 +1,309 @@
+PS-186 derivation — 8 new record(s), 24 prior corpus record(s)
+
+
+##############################################################################
+# 1. creepjs :: webgl_pixel_hash — THE BOUND PS-16 RECORDS AS n=2
+##############################################################################
+
+PS-16: the firefox readback FAILS — `51df3565` on both firefox seeds — at a
+bound of n=2, and 'a third firefox seed settles it'. That bound is raised only
+by comparing THIS sweep's seeds against the OLD corpus's, so both are read here.
+A row is counted only when its state is `read`; an absent or unobtainable row
+contributes nothing in either direction.
+
+
+  === CHROMIUM ===
+    old seed 1337   hash f801a1b3   exit 95.49.113.111    Orange Polska Spolka Akcyjna       2026-08-23
+    old seed 1337   hash f801a1b3   exit 79.191.76.230    AS5617 Orange Polska Spolka Akcyjn 2026-08-23
+    old seed 1337   hash f801a1b3   exit 79.191.76.230    AS5617 Orange Polska Spolka Akcyjn 2026-08-23
+    old seed 1337   hash f801a1b3   exit 83.175.185.209   AS9141 P4 Sp. z o.o.               2026-08-24
+    old seed 2024   hash a96eedf0   exit 83.175.185.209   AS9141 P4 Sp. z o.o.               2026-08-24
+    NEW seed 5150   hash c893e6c9   exit 212.105.131.187  AS14593 Space Exploration Technolo 2026-08-26
+    NEW seed 5150   hash c893e6c9   exit 79.184.248.94    AS5617 Orange Polska Spolka Akcyjn 2026-08-26
+    NEW seed 5150   hash c893e6c9   exit 46.205.193.144   AS12912 T-Mobile Polska S.A.       2026-08-26
+    old seed 9001   hash b8dba17f   exit 83.175.185.209   AS9141 P4 Sp. z o.o.               2026-08-24
+    old seed 9001   hash b8dba17f   exit 46.205.201.136   AS12912 T-Mobile Polska S.A.       2026-08-24
+    old seed 9001   hash b8dba17f   exit 46.205.201.136   AS12912 T-Mobile Polska S.A.       2026-08-24
+    old seed 9001   hash b8dba17f   exit 5.173.155.60     AS39603 P4 Sp. z o.o.              2026-08-24
+    old seed 9001   hash b8dba17f   exit 5.173.155.60     AS39603 P4 Sp. z o.o.              2026-08-24
+    old seed 9001   hash b8dba17f   exit 83.5.154.59      AS5617 Orange Polska Spolka Akcyjn 2026-08-25
+    old seed 9001   hash b8dba17f   exit 79.184.244.189   AS5617 Orange Polska Spolka Akcyjn 2026-08-25
+    NEW seed 24601  hash 6ba330fa   exit 83.175.181.190   AS9141 P4 Sp. z o.o.               2026-08-26
+    NEW seed 24601  hash 6ba330fa   exit 46.205.193.85    AS12912 T-Mobile Polska S.A.       2026-08-26
+    NEW seed 24601  hash 6ba330fa   exit 46.205.204.82    AS12912 T-Mobile Polska S.A.       2026-08-26
+    -> 18 reading(s), 5 distinct seed(s) [1337, 2024, 5150, 9001, 24601], 5 distinct hash value(s), 13 exit(s), 4 day(s)
+    SEED-DERIVED: every seed reads a distinct value — this row does not link profiles.
+
+  === FIREFOX ===
+    old seed 1337   hash 51df3565   exit 95.49.113.111    Orange Polska Spolka Akcyjna       2026-08-23
+    old seed 1337   hash 51df3565   exit 83.175.185.209   AS9141 P4 Sp. z o.o.               2026-08-24
+    old seed 4242   hash 51df3565   exit 95.49.113.111    Orange Polska Spolka Akcyjna       2026-08-23
+    old seed 4242   hash 51df3565   exit 83.175.185.209   AS9141 P4 Sp. z o.o.               2026-08-24
+    NEW seed 5150   hash 51df3565   exit 109.243.64.38    AS39603 P4 Sp. z o.o.              2026-08-26
+    NEW seed 24601  hash 51df3565   exit 109.243.69.197   AS39603 P4 Sp. z o.o.              2026-08-26
+    -> 6 reading(s), 4 distinct seed(s) [1337, 4242, 5150, 24601], 1 distinct hash value(s), 4 exit(s), 3 day(s)
+    ⚠ SEED-INVARIANT: every seed reads 51df3565. Two profiles on this engine
+      carry an IDENTICAL high-entropy row -> they are LINKABLE. BOUND: n = 4.
+
+
+##############################################################################
+# 2. THE EXIT POOL — old corpus vs this sweep
+##############################################################################
+
+The ticket states the new credential is `AS12912 T-Mobile Polska`, 'the same ASN
+already in the corpus'. Counted from the records rather than assumed, because a
+record that hard-codes one ASN is false for every run that drew another.
+
+
+  OLD CORPUS (pre-PS-186) — 24 record(s) carrying an exit:
+     10  AS5617 Orange Polska Spolka Akcyjna
+      6  AS9141 P4 Sp. z o.o.
+      4  Orange Polska Spolka Akcyjna
+      2  AS12912 T-Mobile Polska S.A.
+      2  AS39603 P4 Sp. z o.o.
+
+  THIS SWEEP (PS-186) — 8 record(s) carrying an exit:
+      3  AS12912 T-Mobile Polska S.A.
+      2  AS39603 P4 Sp. z o.o.
+      1  AS9141 P4 Sp. z o.o.
+      1  AS14593 Space Exploration Technologies Corporation
+      1  AS5617 Orange Polska Spolka Akcyjna
+
+  ASNs in this sweep that appear NOWHERE in the old corpus:
+    AS14593 Space Exploration Technologies Corporation
+
+  per-record exits (never a constant — the pool rotates per call):
+    chromium /linux   /seed 24601  83.175.181.190   Warsaw       AS9141 P4 Sp. z o.o.
+    chromium /linux   /seed 5150   212.105.131.187  Warsaw       AS14593 Space Exploration Technologies Corporation
+    chromium /macos   /seed 24601  46.205.193.85    Kalisz       AS12912 T-Mobile Polska S.A.
+    chromium /macos   /seed 5150   79.184.248.94    Warsaw       AS5617 Orange Polska Spolka Akcyjna
+    chromium /windows /seed 24601  46.205.204.82    Bielawa      AS12912 T-Mobile Polska S.A.
+    chromium /windows /seed 5150   46.205.193.144   Warsaw       AS12912 T-Mobile Polska S.A.
+    firefox  /windows /seed 24601  109.243.69.197   Wschowa      AS39603 P4 Sp. z o.o.
+    firefox  /windows /seed 5150   109.243.64.38    Kotlin       AS39603 P4 Sp. z o.o.
+
+
+##############################################################################
+# 3. pixelscan VERDICTS — all five rows, printed even when ABSENT
+##############################################################################
+
+`state` is the whole point of this block:
+  read + adverse -> the checker OBJECTED (a finding)
+  read           -> asked, did not object (evidence)
+  absent         -> the page was read, the adverse pattern did NOT match
+  unobtainable   -> NOBODY LOOKED (never a pass)
+
+
+  chromium/linux/seed 24601
+    proxy_detected             state=absent        value=None   
+    fingerprint_inconsistent   state=absent        value=None   
+    masking_detected           state=absent        value=None   
+    automation_detected        state=absent        value=None   
+    timezone_spoofed           state=absent        value=None   
+
+  chromium/linux/seed 5150
+    proxy_detected             state=absent        value=None   
+    fingerprint_inconsistent   state=absent        value=None   
+    masking_detected           state=absent        value=None   
+    automation_detected        state=absent        value=None   
+    timezone_spoofed           state=absent        value=None   
+
+  chromium/macos/seed 24601
+    proxy_detected             state=absent        value=None   
+    fingerprint_inconsistent   state=read          value=True   <- FIRED
+    masking_detected           state=read          value=True   <- FIRED
+    automation_detected        state=absent        value=None   
+    timezone_spoofed           state=absent        value=None   
+
+  chromium/macos/seed 5150
+    proxy_detected             state=absent        value=None   
+    fingerprint_inconsistent   state=absent        value=None   
+    masking_detected           state=absent        value=None   
+    automation_detected        state=absent        value=None   
+    timezone_spoofed           state=absent        value=None   
+
+  chromium/windows/seed 24601
+    proxy_detected             state=absent        value=None   
+    fingerprint_inconsistent   state=read          value=True   <- FIRED
+    masking_detected           state=read          value=True   <- FIRED
+    automation_detected        state=absent        value=None   
+    timezone_spoofed           state=absent        value=None   
+
+  chromium/windows/seed 5150
+    proxy_detected             state=absent        value=None   
+    fingerprint_inconsistent   state=read          value=True   <- FIRED
+    masking_detected           state=read          value=True   <- FIRED
+    automation_detected        state=absent        value=None   
+    timezone_spoofed           state=absent        value=None   
+
+  firefox/windows/seed 24601
+    proxy_detected             state=absent        value=None   
+    fingerprint_inconsistent   state=absent        value=None   
+    masking_detected           state=absent        value=None   
+    automation_detected        state=absent        value=None   
+    timezone_spoofed           state=absent        value=None   
+
+  firefox/windows/seed 5150
+    proxy_detected             state=absent        value=None   
+    fingerprint_inconsistent   state=absent        value=None   
+    masking_detected           state=absent        value=None   
+    automation_detected        state=absent        value=None   
+    timezone_spoofed           state=absent        value=None   
+
+
+##############################################################################
+# 3b. DID pixelscan's VERDICT BLOCK RENDER? (absent-because-clean vs absent-because-nothing-rendered)
+##############################################################################
+
+    read `fingerprint_consistent`   -> block rendered, verdict = CONSISTENT
+    read `fingerprint_inconsistent` -> block rendered, verdict = INCONSISTENT
+    NEITHER read                    -> NO VERDICT RENDERED. Coverage hole.
+                                       NOT a pass, and NOT evidence that the
+                                       arm is clean.
+
+  chromium /linux   /seed 24601  ⚠ NO VERDICT RENDERED — coverage hole, NOT a pass
+  chromium /linux   /seed 5150   ⚠ NO VERDICT RENDERED — coverage hole, NOT a pass
+  chromium /macos   /seed 24601  RENDERED -> INCONSISTENT (adverse fired)
+  chromium /macos   /seed 5150   ⚠ NO VERDICT RENDERED — coverage hole, NOT a pass
+  chromium /windows /seed 24601  RENDERED -> INCONSISTENT (adverse fired)
+  chromium /windows /seed 5150   RENDERED -> INCONSISTENT (adverse fired)
+  firefox  /windows /seed 24601  RENDERED -> CONSISTENT  (pixelscan affirms the fingerprint is consistent)
+  firefox  /windows /seed 5150   RENDERED -> CONSISTENT  (pixelscan affirms the fingerprint is consistent)
+
+
+##############################################################################
+# 6. GPU IDENTITY AGREEMENT — creepjs vs pixelscan, same run (the PS-170 defect class)
+##############################################################################
+
+PS-170 fixed 'one profile, two different graphics cards to two checkers' and
+PS-16 records it verified — on chromium/windows ONLY, the one arm that had
+checker coverage. These are the first readings that can check the other arms.
+
+pixelscan suffixes its renderer string with ", or similar"; creepjs does not.
+That suffix is stripped before comparing (raw values printed below), because
+comparing them raw manufactures a disagreement that is not there.
+
+
+  chromium /linux   /seed 24601  ⚠ DISAGREE — TWO CARDS ON ONE PROFILE
+      creepjs   gpu_renderer   = ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
+      pixelscan webgl_renderer = ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)
+      ^ the two checkers were handed DIFFERENT graphics cards on the SAME run.
+
+  chromium /linux   /seed 5150   ⚠ DISAGREE — TWO CARDS ON ONE PROFILE
+      creepjs   gpu_renderer   = ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
+      pixelscan webgl_renderer = ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)
+      ^ the two checkers were handed DIFFERENT graphics cards on the SAME run.
+
+  chromium /macos   /seed 24601  ⚠ DISAGREE — TWO CARDS ON ONE PROFILE
+      creepjs   gpu_renderer   = ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)
+      pixelscan webgl_renderer = ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)
+      ^ the two checkers were handed DIFFERENT graphics cards on the SAME run.
+
+  chromium /macos   /seed 5150   ⚠ DISAGREE — TWO CARDS ON ONE PROFILE
+      creepjs   gpu_renderer   = ANGLE (Apple, ANGLE Metal Renderer: Apple M4, Unspecified Version)
+      pixelscan webgl_renderer = ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Pro, Unspecified Version)
+      ^ the two checkers were handed DIFFERENT graphics cards on the SAME run.
+
+  chromium /windows /seed 24601  AGREE
+      creepjs   gpu_renderer   = ANGLE (AMD, AMD Radeon(TM) Graphics (0x00001638) Direct3D11 vs_5_0 ps_5_0, D3D11)
+      pixelscan webgl_renderer = ANGLE (AMD, AMD Radeon(TM) Graphics (0x00001638) Direct3D11 vs_5_0 ps_5_0, D3D11)
+
+  chromium /windows /seed 5150   AGREE
+      creepjs   gpu_renderer   = ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Laptop GPU (0x00002560) Direct3D11 vs_5_0 ps_5_0, D3D11)
+      pixelscan webgl_renderer = ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Laptop GPU (0x00002560) Direct3D11 vs_5_0 ps_5_0, D3D11)
+
+  firefox  /windows /seed 24601  AGREE
+      creepjs   gpu_renderer   = ANGLE (NVIDIA, NVIDIA GeForce GTX 980 Direct3D11 vs_5_0 ps_5_0)
+      pixelscan webgl_renderer = ANGLE (NVIDIA, NVIDIA GeForce GTX 980 Direct3D11 vs_5_0 ps_5_0), or similar
+
+  firefox  /windows /seed 5150   AGREE
+      creepjs   gpu_renderer   = ANGLE (NVIDIA, NVIDIA GeForce GTX 980 Direct3D11 vs_5_0 ps_5_0)
+      pixelscan webgl_renderer = ANGLE (NVIDIA, NVIDIA GeForce GTX 980 Direct3D11 vs_5_0 ps_5_0), or similar
+
+
+##############################################################################
+# 4. PS-16's 8 'STRUCTURALLY UNOBTAINABLE' CHECKERS — re-counted
+##############################################################################
+
+PS-16 lists 8 checkers it says no automated run can obtain, several because they
+'refuse our SOCKS exit'. That claim was written against the OLD pool, so it is
+re-counted here rather than inherited — a checker that refused one exit has not
+necessarily refused this one.
+
+    browserscan.net              {'unobtainable': 8}
+    amiunique.org                {'unobtainable': 8}
+    coveryourtracks.eff.org      {'unobtainable': 8}
+    whoer.net                    {'unobtainable': 8}
+    fv.pro                       {'unobtainable': 8}
+    bot-detector.rebrowser.net   {'read': 14, 'absent': 2}  <- CONTRADICTS PS-16: rows were READ
+    deviceandbrowserinfo.com     {'absent': 11, 'read': 5}  <- CONTRADICTS PS-16: rows were READ
+    tools.scrapfly.io            {'unobtainable': 16}
+
+
+##############################################################################
+# 5. ADVERSE VERDICTS THAT ACTUALLY FIRED (read AND adverse)
+##############################################################################
+
+  chromium /linux   /seed 24601  fired=2
+    FIRED  bot-detector.rebrowser.net :: detected = navigatorWebdriver
+    FIRED  deviceandbrowserinfo.com :: bot_verdict_positive = True
+
+  chromium /linux   /seed 5150   fired=2
+    FIRED  bot-detector.rebrowser.net :: detected = navigatorWebdriver
+    FIRED  deviceandbrowserinfo.com :: bot_verdict_positive = True
+
+  chromium /macos   /seed 24601  fired=4
+    FIRED  bot-detector.rebrowser.net :: detected = navigatorWebdriver
+    FIRED  deviceandbrowserinfo.com :: bot_verdict_positive = True
+    FIRED  pixelscan.net :: fingerprint_inconsistent = True
+    FIRED  pixelscan.net :: masking_detected = True
+
+  chromium /macos   /seed 5150   fired=1
+    FIRED  bot-detector.rebrowser.net :: detected = navigatorWebdriver
+
+  chromium /windows /seed 24601  fired=4
+    FIRED  bot-detector.rebrowser.net :: detected = navigatorWebdriver
+    FIRED  deviceandbrowserinfo.com :: bot_verdict_positive = True
+    FIRED  pixelscan.net :: fingerprint_inconsistent = True
+    FIRED  pixelscan.net :: masking_detected = True
+
+  chromium /windows /seed 5150   fired=4
+    FIRED  bot-detector.rebrowser.net :: detected = navigatorWebdriver
+    FIRED  deviceandbrowserinfo.com :: bot_verdict_positive = True
+    FIRED  pixelscan.net :: fingerprint_inconsistent = True
+    FIRED  pixelscan.net :: masking_detected = True
+
+  firefox  /windows /seed 24601  fired=0
+
+  firefox  /windows /seed 5150   fired=0
+
+
+##############################################################################
+# 5b. CAVEAT ON THE INHERITED LINKAGE CLASSIFIER — read before quoting it
+##############################################################################
+
+`derive.py` classifies `bot-detector.rebrowser.net :: detected =
+'navigatorWebdriver'` as ENTROPY-BEARING, so it appears in its "rows that tie the
+two profiles together" list on all three chromium arms. That classification is
+WRONG, and it is wrong in the direction the inherited script's own docstring
+warns about.
+
+The value is a DETECTOR'S REASON TOKEN — the name of the signal that tripped —
+not an attribute of the profile. It reaches the entropy class only because it is
+a non-numeric string of >= 8 characters and carries no `vector` tag. Two profiles
+both reading `navigatorWebdriver` are BOTH DETECTED FOR THE SAME REASON; they are
+not thereby tied to each other, any more than two profiles both reading
+"webdriver check: passed" are.
+
+This does NOT weaken any Level 2 verdict below, because every arm it appears on
+FAILS on other, genuinely entropy-bearing rows (GPU renderer/vendor strings and,
+on firefox, the pixel hash). It is recorded because a later reader quoting
+derive.py's row list unamended would be overstating the linkage surface by one
+row per chromium arm.
+
+The row is a REAL FIRED VERDICT and is reported as such in §5 — the caveat is
+about what it can LINK, not about whether it fired.
+
+
+
+done.
