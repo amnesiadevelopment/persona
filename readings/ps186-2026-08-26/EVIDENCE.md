@@ -217,6 +217,37 @@ authors another, and different checkers see different ones.** That is the exact
 defect class PS-170 closed on windows — where `ENGINE_AUTHORED_IDENTITY_ARMS =
 frozenset({"windows"})` makes both authors the same one.
 
+### ⚠️ Independently detected by a second instrument, which this sweep turned red
+
+This finding is not resting on my reading of the records alone. The committed
+consistency rule (`src/services/verify/matrix_consistency.py`) ranges over the
+whole corpus and **fired on all four of these records by itself** — two tests in
+`tests/test_verify_matrix_consistency.py` went red when the sweep's records
+landed, having passed 62/62 at merge-base `6dffce6`:
+
+```
+chromium/linux  seed5150, seed24601  -> HOST-LEAK
+  "1 row(s) rendered in SOFTWARE, naming no real adapter (creepjs/gpu_renderer),
+   while intel (pixelscan.net/…) claimed real hardware — BOTH a
+   self-contradiction and a leak of the machine underneath"
+
+chromium/macos  seed5150, seed24601  -> CONTRADICTION (adapter branch)
+  seed 5150 : pixelscan "Apple M2 Pro" (ours) vs creepjs "Apple M4"  (engine)
+  seed 24601: pixelscan "Apple M1"     (ours) vs creepjs "Apple M2"  (engine)
+```
+
+The rule reached the same conclusion from the same records without being told
+what to look for, and it separates the two halves exactly as §3 does — the linux
+pair as a *host leak* (ranked worse) and the macos pair as a *two-author split*.
+Note the macos pair is caught by the ADAPTER branch, not the identity branch:
+the brand-level term (`apple`) agrees and only the CARD differs, which is
+precisely the case a vendor-level check would pass.
+
+**The rule was not tuned to accommodate this.** Its census tests are updated to
+name these four records as findings, per the standing instruction that a rule
+firing on real records is "a FINDING to report, not a threshold to quietly tune
+until the noise stops". No threshold moved and no marker was removed.
+
 **Linux is the more serious half**: creepjs is reading `SwiftShader`, the
 container's *real* software rasteriser. That is not a plausible consumer GPU and
 it is the host's true renderer leaking past the mask on the arm where PS-16
