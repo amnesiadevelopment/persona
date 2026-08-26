@@ -483,12 +483,42 @@ Three findings, each from source rather than from a failed run:
    computation over a `Uint8Array` inside the page realm; there is no seam in
    this tier that can run one on creepjs.net.
 
-2. **The record schema has nowhere to put it.** A reading row is exactly
-   `{adverse, checker, item, reason, sort, state}` (verified across all 8
-   records). `webgl_pixel_hash` arrives as `value: "51df3565"` — the *hash*,
-   which is the thing that collides, and never the buffer behind it. No field
-   carries a byte count, and `grep` for the census statistic across
-   `checker_cli.py` / `matrix.py` returns nothing.
+2. **The record schema has nowhere to put it.** Censused over all 488 reading
+   rows in the 8 records. They take **5 distinct shapes** across **6
+   state×shape combinations**, and the union of every key any row carries is
+   **ten** —
+   `{adverse, checker, item, matched_text, pattern, reason, sort, state, value, vector}`:
+
+   ```
+   state=read          155  {adverse,checker,item,matched_text,pattern,sort,state,value}
+   state=read          120  {adverse,checker,item,sort,state,value}
+   state=absent         77  {adverse,checker,item,pattern,reason,sort,state}
+   state=read           72  {adverse,checker,item,matched_text,pattern,sort,state,value,vector}
+   state=unobtainable   56  {adverse,checker,item,reason,sort,state}
+   state=absent          8  {adverse,checker,item,reason,sort,state}
+                       ---
+                       488
+   ```
+
+   Note the last two lines: the six-key shape is not a single state's shape —
+   it occurs as 56 `unobtainable` rows **and** 8 `absent` rows, 64 in total
+   (13.1%). Shapes and states are not in one-to-one correspondence, which is
+   why this is stated as a census over rows rather than a schema per state.
+
+   **Not one of those ten keys carries a byte count**, on any shape — which is
+   the claim that matters, and it ranges over the whole corpus rather than over
+   one shape. `webgl_pixel_hash` is a `read` row of the widest shape, and it
+   arrives as `value: "51df3565"` / `matched_text: "pixels:51df3565"` — the
+   *hash*, which is the thing that collides, and never the buffer behind it.
+   `grep` for the census statistic across `checker_cli.py` / `matrix.py` returns
+   nothing.
+
+   *(An earlier version of this point asserted the row shape was exactly the
+   six-key `{adverse, checker, item, reason, sort, state}` "verified across all
+   8 records". That is false and the stamp was unearned: that shape is 64 of
+   488 rows, and it omits the very `value` key the next sentence relies on.
+   Corrected here rather than deleted, because §7 hands the next ticket a
+   schema to design against.)*
 
 3. **The only code in the repo that computes this statistic is loopback-only and
    is the wrong geometry.** `probes.py:490` — `if(v>1&&v<254)mid++` — is exactly
