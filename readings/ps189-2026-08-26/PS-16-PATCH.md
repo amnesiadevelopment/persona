@@ -23,7 +23,7 @@ below was produced by the committed instruments in this directory.
 ## 1. Update the re-derivation date
 
 ```
-**Last re-derived: 2026-08-26, against `origin/main` @ `fa0a5e9`.**
+**Last re-derived: 2026-08-26, against `origin/main` @ `880fd14`.**
 ```
 
 ---
