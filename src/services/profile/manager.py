@@ -20,6 +20,7 @@ from .coherence import (
     DEFAULT_DEVICE_TYPE,
     assert_coherent,
     assert_device_type_coherent,
+    assert_storable_os_type,
     coherence_error,
     coherent_engine,
     normalize_engine,
@@ -403,6 +404,16 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
         # the class of caller this module exists for. A create composes a new
         # machine from whole cloth, so it is judged on all three fields.
         assert_coherent(os_type, engine, device_type)
+        # Rule 4 (PS-187): the os_type SPELLING, not a pair. `win` is a value
+        # our fold recognises and the ENGINE does not — it reaches
+        # --fingerprint-platform unchanged and the engine answers with its own
+        # software renderer, so the host's real GPU strings reach the page.
+        #
+        # A create AUTHORS a machine, so the caller is TOLD rather than having
+        # their input silently rewritten. The model repairs the value regardless
+        # (Profile.__setattr__), so this refusal is the loud half of a rule that
+        # holds either way — not the thing standing between `win` and the disk.
+        assert_storable_os_type(os_type)
         # Hold the lock across the check-then-insert so two concurrent adds of
         # the same name can't both pass the `name in self.profiles` check and one
         # silently overwrite the other (RLock: save_profiles below re-enters it).
@@ -578,6 +589,19 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                 assert_device_type_coherent(
                     _resulting_os, _resulting_device_type
                 )
+            # Rule 4 (PS-187) — the os_type SPELLING. Fired only when the edit
+            # SUPPLIES an os_type, which is the same "introduces it" policy the
+            # block above documents at length, applied to the one field this
+            # rule reads. A PATCH touching only a note must not be refused
+            # because of a spelling it did not author, or the edit that would
+            # FIX the record becomes the edit the rule forbids.
+            #
+            # A legacy record cannot reach this check carrying a bad spelling
+            # anyway: it was repaired by Profile.__setattr__ as it loaded. So
+            # this refuses the operator who is authoring a NEW bad value, and
+            # strands nobody who inherited one.
+            if new_os is not None:
+                assert_storable_os_type(new_os)
 
             # Rename the data dir BEFORE touching any in-memory field, so a
             # locked/failed dir-rename (routine on Windows when the browser is

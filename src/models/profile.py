@@ -5,6 +5,7 @@ from collections.abc import Container
 from dataclasses import asdict, dataclass, field
 
 from .hardware_generation import normalize_generation
+from .os_type import canonical_os_type
 
 
 def _derive(label: str) -> int:
@@ -263,6 +264,54 @@ class Profile:
         also lands on 0 rather than on an empty pool.
         """
         return normalize_generation(self.hardware_generation_value)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        """Repair ``os_type`` onto the canonical vocabulary as it is STORED.
+
+        THE CHOKE POINT (PS-187). The defect this closes is that a spelling the
+        engine cannot honour (``win``, ``mac``, ``darwin``, ``iphone``,
+        ``ipad``, ``ipados``) was STORABLE, and a stored non-canonical value
+        reaches the launch path — where the masking layer stands down expecting
+        the engine to author the identity, the engine does not, and the host's
+        software rasteriser reaches the page. See ``models/os_type.py``.
+
+        WHY ``__setattr__`` AND NOT ``__post_init__``. Both would cover
+        construction, and construction is how five of the six doors write
+        (``add_profile``, the disk/legacy load, ``restore_profile``,
+        ``import_profile`` via ``transfer.py``, ``baseline_profile``). But
+        ``update_profile`` does not construct — it assigns onto a live instance
+        (``manager.py``: ``profile.os_type = new_os``), and a ``__post_init__``
+        would never see it. Overriding assignment covers construction AND
+        mutation with one rule, so the guarantee is a property of the field
+        rather than a list of the doors that happened to be enumerated.
+
+        THAT DISTINCTION IS THE WHOLE POINT. "Enumerating the doors you happened
+        to think of is what left this open the first time" — a guard placed at
+        each known door protects those doors; a rule the FIELD enforces also
+        covers the door nobody has written yet. Both halves of PS-161's
+        follow-up list (``import_profile``, ``restore_profile``, legacy records)
+        are covered here without being named, because they cannot write this
+        field without passing through this method.
+
+        REPAIR, NOT REFUSAL, AT THIS LAYER — deliberately. Refusing here would
+        make an archive or a trashed profile carrying ``win`` permanently
+        unimportable / unrestorable: a door that refuses turns a recoverable
+        backup into an unrecoverable one, and ``restore_profile`` documents its
+        exemption from the coherence rules in exactly those terms ("guarding it
+        would strand a trashed profile behind a conflict it did not create").
+        So the record SELF-HEALS: it lands canonical and stays editable. The
+        loud refusal an operator can act on belongs at create/update, where
+        something new is being authored and the caller can be told — that lives
+        in ``coherence.py`` and is layered ON TOP of this, not instead of it.
+
+        Nothing is lost by repairing: the folded value is the same one every
+        consumer already derived from this field. What changes is that the
+        folded value is now what gets STORED, so the launch path can no longer
+        be handed a spelling the engine will not honour.
+        """
+        if name == "os_type":
+            value = canonical_os_type(value)
+        object.__setattr__(self, name, value)
 
     def to_dict(self) -> dict:
         return asdict(self)
