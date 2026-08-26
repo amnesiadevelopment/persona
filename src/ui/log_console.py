@@ -184,6 +184,40 @@ def parse_event(line: str, profiles: frozenset[str] | set[str]) -> tuple:
     return stamp, profile, rest, severity(rest)
 
 
+#: The three densities a row can be rendered at. WHICH ONE IS IN USE IS A
+#: FUNCTION OF THE CONSOLE'S HEIGHT, which is what makes this direction
+#: different from simply making the panel taller.
+#:
+#: The reasoning: a six-line tail and a twenty-line console are not the same
+#: reading task. At one line he is GLANCING — he wants the newest thing that
+#: happened and nothing competing with it. At six he is WATCHING — the profile
+#: column earns its width because several machines are interleaved. At fifteen
+#: he is READING — now the stream is long enough that "where does this run of
+#: events start" is a real question, so the separators that answer it earn
+#: their space too.
+#:
+#: A fixed row layout has to pick one of those and be wrong for the other two.
+TIER_TICKER = "ticker"
+TIER_STANDARD = "standard"
+TIER_READING = "reading"
+
+#: Row counts at which the layout changes up a tier. Chosen against the
+#: default: 6 rows (his number) sits in STANDARD with room either side, so the
+#: console he opens is the one he described and the other two tiers are things
+#: he moves INTO deliberately.
+TICKER_MAX_ROWS = 2
+STANDARD_MAX_ROWS = 9
+
+
+def tier_for_rows(rows: int) -> str:
+    """Which row layout a console showing ``rows`` rows should use."""
+    if rows <= TICKER_MAX_ROWS:
+        return TIER_TICKER
+    if rows <= STANDARD_MAX_ROWS:
+        return TIER_STANDARD
+    return TIER_READING
+
+
 def _dot(sev: str) -> ft.Container:
     """The severity mark: 7px, vertically centred in a fixed-height row.
 
@@ -221,24 +255,56 @@ def _cell(text: str, **kw) -> ft.Text:
     )
 
 
-def event_row(line: str, profiles: frozenset[str] | set[str]) -> ft.Control:
-    """One event, as aligned columns of fixed height.
+def event_row(
+    line: str,
+    profiles: frozenset[str] | set[str],
+    tier: str = TIER_STANDARD,
+) -> ft.Control:
+    """One event, at the density this console height calls for.
 
-    ``severity | PROFILE | message | time`` — the profile column is a fixed
-    left ruler, so names stack vertically and "everything about shop-de-03" is
-    one glance down a column rather than eight sentences to re-read. The
-    timestamp is right-aligned in its own column at the far edge, where it is
-    available without competing with the message for the eye.
+    ``severity | PROFILE | message | time`` is the STANDARD row — the profile
+    column is a fixed left ruler, so names stack vertically and "everything
+    about shop-de-03" is one glance down a column rather than eight sentences
+    to re-read. The timestamp is right-aligned in its own column at the far
+    edge, where it is available without competing with the message for the eye.
+
+    THE TIER IS THE DIRECTION'S WHOLE ARGUMENT. The same six columns are wrong
+    at one line and wrong again at twenty, for opposite reasons, so the row is
+    not one layout stretched — it is three:
+
+    * :data:`TIER_TICKER` (1-2 rows) — he is GLANCING. The profile column and
+      the timestamp are dropped: at one line the newest event is the only
+      thing on screen, and a 132px ruler with one name in it is 132px of
+      nothing. Severity and message, full width.
+    * :data:`TIER_STANDARD` (3-9 rows) — he is WATCHING several machines at
+      once, so the profile ruler earns its width and the timestamp returns.
+      This is the tier the default 6-row console opens in.
+    * :data:`TIER_READING` (10+ rows) — he is READING a run of history. The
+      timestamp gains its seconds-level prominence back (it is no longer the
+      dimmest thing in the row) because at this length "when did this start"
+      is a question he is actually asking.
+
+    Every tier keeps ONE row height and ONE text size, so switching tiers
+    cannot re-introduce the baseline stagger this module fixes — see
+    :data:`TEXT_SIZE`. What changes is WHICH columns are present, never how
+    tall they are.
     """
     stamp, profile, message, sev = parse_event(line, profiles)
 
-    # Every cell is TEXT_SIZE (enforced in _cell), so the three text boxes are
-    # the same height and their glyphs share a baseline on any font. Hierarchy
-    # is carried by colour and weight, which cost no vertical metric.
+    # Every cell is TEXT_SIZE (enforced in _cell), so the text boxes are the
+    # same height and their glyphs share a baseline on any font. Hierarchy is
+    # carried by colour and weight, which cost no vertical metric.
     time_col = ft.Container(
         width=TIME_COL_WIDTH,
         alignment=ft.Alignment.CENTER_RIGHT,
-        content=_cell(stamp, color=COLORS["text_sub"]),
+        content=_cell(
+            stamp,
+            # In READING the timestamp stops being the dimmest thing in the
+            # row: at this length he is locating a run in time, not glancing.
+            color=(
+                COLORS["text_main"] if tier == TIER_READING else COLORS["text_sub"]
+            ),
+        ),
     )
     profile_col = ft.Container(
         width=PROFILE_COL_WIDTH,
@@ -274,6 +340,31 @@ def event_row(line: str, profiles: frozenset[str] | set[str]) -> ft.Control:
         content=_dot(sev),
     )
 
+    # WHICH COLUMNS EXIST is the tier's whole effect. At TICKER the profile
+    # ruler and the timestamp are dropped rather than shrunk — a 132px column
+    # holding one name, on the only line on screen, is 132px that the message
+    # should have. In TICKER the profile is folded into the message instead, so
+    # nothing is actually lost from the line.
+    if tier == TIER_TICKER:
+        if profile:
+            message = f"{profile}  {message}"
+            message_col = ft.Container(
+                expand=True,
+                content=_cell(
+                    message,
+                    color=(
+                        COLORS["error"]
+                        if sev == SEV_FAIL
+                        else COLORS["text_main"]
+                        if sev == SEV_OK
+                        else COLORS["text_dim"]
+                    ),
+                ),
+            )
+        columns = [dot_col, message_col]
+    else:
+        columns = [dot_col, profile_col, message_col, time_col]
+
     return ft.Container(
         height=ROW_HEIGHT,
         padding=ft.Padding.symmetric(horizontal=14, vertical=0),
@@ -284,7 +375,41 @@ def event_row(line: str, profiles: frozenset[str] | set[str]) -> ft.Control:
             # from its own font metrics. That is what keeps the columns on one
             # line across fonts — see TEXT_SIZE.
             vertical_alignment=ft.CrossAxisAlignment.STRETCH,
-            controls=[dot_col, profile_col, message_col, time_col],
+            controls=columns,
+        ),
+    )
+
+
+def group_separator(profile: str, stamp: str) -> ft.Control:
+    """The rule that opens a run of events belonging to one profile.
+
+    Only ever rendered in :data:`TIER_READING`, and that restriction is the
+    point: a separator every few rows is noise in a six-line tail and structure
+    in a twenty-line one. At reading length the console stops being a ticker
+    and becomes a document, and a document needs to say where its sections
+    start.
+
+    Deliberately NOT a box. The owner's objection to the fullscreen view was
+    "без этих дебильных рамок", and the same judgement applies here — the
+    separator is a name, a time and the space around them, with no border
+    anywhere.
+    """
+    return ft.Container(
+        height=ROW_HEIGHT,
+        padding=ft.Padding.only(left=14, right=14, top=4),
+        content=ft.Row(
+            spacing=10,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                ft.Container(width=7),
+                _cell(
+                    profile or NO_PROFILE,
+                    color=COLORS["accent"],
+                    weight=ft.FontWeight.BOLD,
+                ),
+                ft.Container(expand=True, height=1, bgcolor=COLORS["border"]),
+                _cell(stamp, color=COLORS["text_sub"]),
+            ],
         ),
     )
 
