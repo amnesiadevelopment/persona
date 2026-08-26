@@ -156,10 +156,7 @@ def test_build_sidebar_wires_logo_click():
     app = App.__new__(App)
     app._active_page = "profiles"
     app._navigate = lambda k: None
-    app.refs = SimpleNamespace(
-        log_toggle_btn=ft.TextButton(content=ft.Text("log")),
-        log_column=ft.Column(),
-    )
+    app.refs = SimpleNamespace()
     app.h = SimpleNamespace(open_log_fullscreen=lambda: None)
     app._build_engines_panel = lambda: ft.Text("engines")
     app._build_version_panel = lambda: ft.Text("version")

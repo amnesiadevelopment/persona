@@ -38,7 +38,6 @@ from .dialogs.bookmark import open_bookmark_dialog
 from .dialogs.pool import open_pool_dialog
 from .dialogs.confirm import open_confirm_dialog
 from .handlers import AppHandlers
-from .log_format import log_line_control
 from .refs import UIRefs
 from .state import ITEMS_PER_PAGE, AppState
 from .theme import ACCENT_STYLE, COLORS, configure_page
@@ -720,7 +719,6 @@ class App:
         """
         from .components.log_dock import LogDock
 
-        r.log_toggle_btn.on_click = lambda _: self.h.toggle_log()
         self._sidebar_host = ft.Container(content=self._build_sidebar())
         self._page_host = ft.Container(expand=True)
         window_height = None
@@ -734,6 +732,15 @@ class App:
         )
         with contextlib.suppress(Exception):
             self._dock.set_profiles(p.name for p in self.pm.list_profiles())
+
+        # The budget above is computed from the height the window has RIGHT
+        # NOW, and the window can be resized afterwards. The app opens at
+        # 1280x820 with a 1024x680 minimum, so dragging down to the minimum is
+        # an ordinary gesture — and without this the dock kept its launch-time
+        # height and starved the rail by 116px, which is the same fault the
+        # budget was written to fix, only reached through the resize path.
+        with contextlib.suppress(Exception):
+            self.page.on_resize = self._on_window_resize
 
         upper = ft.Row(
             expand=True,
@@ -752,6 +759,40 @@ class App:
             spacing=0,
             controls=[upper, self._dock.root],
         )
+
+    def _on_window_resize(self, e=None) -> None:
+        """Re-apply the console's rail budget after the window changes size.
+
+        AC8 is a property of the window SIZE — "at 1024x680 the trash entry
+        keeps visible separation" — not of how the window arrived there. The
+        launch path honoured that and the resize path did not, so an operator
+        who dragged a 1280x820 window down to the minimum got a dock still
+        sized for the taller window and a rail 116px short of showing its own
+        bottom cluster.
+
+        The event carries the new height, but it is not trusted blindly: flet
+        reports page height, and a headless/served session can report nothing
+        at all, so a missing or unusable value falls back to the page and then
+        to the window. A resize that cannot be measured must leave the console
+        alone rather than collapse it to the minimum.
+        """
+        dock = getattr(self, "_dock", None)
+        if dock is None:
+            return
+        height = None
+        for candidate in (
+            getattr(e, "height", None),
+            getattr(self.page, "height", None),
+            getattr(getattr(self.page, "window", None), "height", None),
+        ):
+            with contextlib.suppress(TypeError, ValueError):
+                if candidate and float(candidate) > 0:
+                    height = float(candidate)
+                    break
+        if height is None:
+            return
+        dock.apply_window_height(height)
+        self._safe_update()
 
     def _on_logo_click(self) -> None:
         """Logo click = "scan": a single red beam sweeps down-and-back-up over
@@ -3669,8 +3710,15 @@ class App:
         ~0.15s while profiles launch, which is what made the region impossible
         to read while it was busy.
 
-        The old sidebar refs are still painted because the fullscreen dialog and
-        the panic-wipe path read them.
+        THE CONSOLE IS THE ONLY LOG SURFACE THIS PAINTS. The sidebar panel that
+        used to be repainted here is gone with the log's move out of the rail,
+        and the two paths once cited as its readers do not read it: the
+        fullscreen dialog takes state.get_all_log_lines() (handlers.py) and the
+        panic wipe calls state.clear_log() — both go to STATE, not to controls.
+        So the legacy paint built 14 flet Text controls on every flush, up to
+        every ~0.15s while profiles launch, into a container that was then
+        hidden unconditionally: pure dead work on the one hot path this ticket
+        exists to make cheaper.
         """
         text = self.state.flush_log()
         if text is not None and self.refs:
@@ -3680,10 +3728,6 @@ class App:
                 with contextlib.suppress(Exception):
                     dock.set_profiles(p.name for p in self.pm.list_profiles())
                 dock.render(lines, seq=self.state.log_seq())
-            self.refs.log_list.controls = [
-                log_line_control(ln, wrap=False) for ln in lines[-14:]
-            ]
-            self.refs.log_column.visible = False
 
     def _ui(self, fn) -> None:
         """Run fn on the flet session (UI) thread. Flet's control tree and

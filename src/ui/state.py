@@ -52,7 +52,6 @@ def _load_recent_log_lines(limit: int = 200) -> list[str]:
 class AppState:
     def __init__(self) -> None:
         self.current_page: int = 1
-        self.log_collapsed: bool = False
 
         self._log_lines: "deque[str]" = deque(
             _load_recent_log_lines(), maxlen=_MAX_LOG_LINES

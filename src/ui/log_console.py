@@ -264,13 +264,6 @@ class StreamState:
         self.collapsed: bool = False
         self.last_line: str = ""
 
-    def on_events(self, count: int, last_line: str = "") -> None:
-        self.total += count
-        if last_line:
-            self.last_line = last_line
-        if not self.following or self.collapsed:
-            self.missed += count
-
     def on_scroll(self, pixels: float, max_extent: float) -> bool:
         """Fold a scroll position into the follow decision.
 

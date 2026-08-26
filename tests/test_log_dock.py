@@ -1,10 +1,18 @@
 """PS-179 headless behaviour checks for the Activity Log console.
 
 These cover the logic that does not need a browser: the parse, the row geometry,
-the append contract and the follow/pause state machine. AC1/AC2/AC6/AC7 are ALSO
-driven against the running app (see live.py) — a handler called directly cannot
+the append contract and the follow/pause state machine.
+
+AC1/AC2/AC6/AC7/AC8 are ALSO driven against the RUNNING app, by
+``tests/ui_driver/live_log_dock.py`` (run it with
+``python3 -m tests.ui_driver.live_log_dock``) — a handler called directly cannot
 distinguish the fixed scrolling from the broken one, because the broken one has
-a scroll region too.
+a scroll region too. That driver is committed rather than scratch, so the check
+that found the self-pausing-follow defect can be re-run by anyone.
+
+AC3 (the resize grip) is NOT covered live: the grip is a GestureDetector with no
+label and paints no semantics node, so it is not addressable by the driver. Its
+clamp and its collapse/expand round trip are covered headless below.
 """
 
 import os
@@ -22,7 +30,15 @@ from src.ui.components.log_dock import (  # noqa: E402
     LogDock,
     default_height,
 )
-from src.ui.log_console import NO_PROFILE, ROW_HEIGHT, event_row, parse_event  # noqa: E402
+from src.ui.log_console import (  # noqa: E402
+    NO_PROFILE,
+    ROW_HEIGHT,
+    SEV_COLOR,
+    SEV_FAIL,
+    SEV_IDLE,
+    event_row,
+    parse_event,
+)
 
 
 class Ev:
@@ -308,3 +324,95 @@ def test_the_window_budget_reaches_the_console_it_sizes():
     d = LogDock(window_height=680)
     assert d.height == default_height(680)
     assert d.body.height == d.height
+
+
+def test_ac2_the_collapsed_pulse_agrees_with_the_row_it_stands_for():
+    """The pulse must classify the SAME TEXT the row does.
+
+    It used to classify the RAW stored line, and severity() has anchored rules
+    — `startswith("session ended")` — that a leading timestamp silently
+    defeats. So "10:00:04  > Session ended: mail-us-011" painted a red FAIL row
+    in the open console and a grey IDLE pulse on the collapsed strip, for the
+    same event. Collapsed is the one state where the pulse is the ONLY signal
+    the operator gets, which is what made the disagreement worth blocking on.
+
+    Asserted as an EQUALITY against the row's own colour rather than against a
+    hardcoded hex, so any future anchored rule is covered by the same test.
+    """
+    roster = {"mail-us-011", "shop-de-03"}
+    cases = [
+        "10:00:04  > Session ended: mail-us-011",  # the anchored rule: was grey
+        "10:00:05  > shop-de-03: LAUNCH_FAILED: engine firefox-142 missing",
+        "10:00:06  > Launching shop-de-03",
+        "10:00:07  > Browser started for shop-de-03",
+        "10:00:08  > Engine update available",  # no resolvable profile
+    ]
+    for line in cases:
+        d = _dock(roster)
+        d.render([line], seq=1)
+        row_sev = parse_event(line, frozenset(roster))[3]
+        assert d._pulse.bgcolor == SEV_COLOR[row_sev], (
+            f"pulse disagrees with its own row for {line!r}: "
+            f"row={row_sev}/{SEV_COLOR[row_sev]} pulse={d._pulse.bgcolor}"
+        )
+
+
+def test_ac2_the_session_ended_pulse_is_specifically_not_idle():
+    """Guards the exact regression, so the equality above cannot pass vacuously
+    by both sides degrading to the same neutral value."""
+    roster = {"mail-us-011"}
+    d = _dock(roster)
+    d.render(["10:00:04  > Session ended: mail-us-011"], seq=1)
+    assert d._pulse.bgcolor == SEV_COLOR[SEV_FAIL]
+    assert d._pulse.bgcolor != SEV_COLOR[SEV_IDLE]
+
+
+def test_ac8_the_rail_budget_survives_a_RESIZE_not_only_a_launch():
+    """AC8 is a property of the window SIZE, not of how the window got there.
+
+    The budget was computed exactly once, at build time, from the startup
+    height. The app opens at 1280x820 with a 1024x680 minimum, so dragging DOWN
+    to the minimum is an ordinary supported gesture — and it left a 236px dock
+    in a 680px window, i.e. 444px for a rail needing 560px: short by 116px, the
+    same starvation the budget was written to fix, reached through the resize
+    path instead of the launch path.
+    """
+    d = LogDock(window_height=820)
+    assert 820 - d.height >= RAIL_CONTENT_HEIGHT, "premise: launching tall is fine"
+
+    d.apply_window_height(680)
+    assert 680 - d.height >= RAIL_CONTENT_HEIGHT, (
+        f"resizing into the minimum starved the rail by "
+        f"{RAIL_CONTENT_HEIGHT - (680 - d.height)}px"
+    )
+    # and the applied height reaches the control that actually paints it
+    assert d.body.height == d.height
+
+
+def test_ac8_a_resize_yields_height_but_does_not_overwrite_a_deliberate_drag():
+    """A shrink borrows height; a regrow HANDS IT BACK.
+
+    The operator's own 400px drag must not be permanently rewritten to the
+    opening default just because he nudged the window smaller and back.
+    """
+    d = LogDock(window_height=1200)
+    d.set_height(400)
+    assert d.height == 400
+
+    d.apply_window_height(680)
+    assert 680 - d.height >= RAIL_CONTENT_HEIGHT, "the rail was starved on shrink"
+    assert d.height < 400, "the console did not yield any height"
+
+    d.apply_window_height(1200)
+    assert d.height == 400, "his deliberate height was not handed back"
+
+
+def test_ac8_an_unmeasurable_resize_leaves_the_console_alone():
+    """A resize that cannot be measured must not collapse the console to the
+    floor — a missing height is unknown, not zero."""
+    d = LogDock(window_height=1200)
+    d.set_height(300)
+    d.apply_window_height(None)
+    assert d.height == 300
+    d.apply_window_height(0)
+    assert d.height == 300
