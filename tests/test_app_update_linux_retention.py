@@ -529,6 +529,111 @@ def test_a_failed_retaining_replace_still_restores_the_original(tmp_path):
     assert dst.read_bytes() == b"old-app", "the working artifact must be back"
 
 
+# --- The retained binary is never a PARTIAL one -----------------------------
+#
+# Taking the backup with a bare shutil.copy2 is NOT atomic: a copy that dies
+# partway (ENOSPC on a ~200MB AppImage — and disk pressure is exactly the
+# condition an update creates) leaves a TRUNCATED file at `backup`. Until this
+# change that was harmless, because rollback_target() answered "" on every
+# non-macOS host and no code path ever offered an atomic_replace .bak to
+# anyone. Retaining makes this path's output operator-facing for the first
+# time, so a partial artifact here is a way back that BRICKS the install.
+#
+# The suite already covers a failing os.replace
+# (test_a_failed_retaining_replace_still_restores_the_original); these cover
+# the failing COPY, which is where the truncation lives.
+
+
+def _drive_failing_linux_update(monkeypatch, staged):
+    """Drive an update that ABORTS, and prove it aborted.
+
+    Deliberately NOT _drive_linux_update: that one requires SystemExit, which
+    only the SUCCESS path raises (it is the execv). An update that correctly
+    refuses to swap never reaches the execv, so asserting SystemExit here would
+    fail for the wrong reason and hide what is being measured. The execv is
+    still stubbed — if a bug ever let a failed update relaunch anyway, this
+    records it rather than killing the test process.
+    """
+    execs = []
+
+    def fake_execv(path, args):
+        execs.append(path)
+        raise SystemExit(0)
+
+    monkeypatch.setattr(au.os, "execv", fake_execv)
+    au.apply_and_restart(str(staged), log=lambda m: None)
+    assert execs == [], "a failed update must not relaunch into anything"
+
+
+def _copy2_dies_partway(monkeypatch, *, wrote=b"partial"):
+    """Make the backup copy write a few bytes and THEN raise, which is what an
+    interrupted copy actually leaves behind — not a missing file."""
+    from src.utils import httpdl
+
+    def half_a_copy(src, dst, *a, **k):
+        with open(dst, "wb") as f:
+            f.write(wrote)
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(httpdl.shutil, "copy2", half_a_copy)
+
+
+def test_an_interrupted_backup_is_not_offered_as_a_way_back(
+    monkeypatch, tmp_path
+):
+    # Probe 1. The update correctly ABORTS and the live binary is untouched —
+    # that part already worked. What must also hold is that the truncated
+    # remains of the backup are not left where rollback_target() will find
+    # them: isfile() is true of an 7-byte file, so a stale partial would be
+    # offered to the operator as "the previous version".
+    target = _linux_fixture(monkeypatch, tmp_path, installed=b"v1-good-build")
+    staged = _stage(monkeypatch, tmp_path, b"v2-new-build")
+    _copy2_dies_partway(monkeypatch)
+
+    _drive_failing_linux_update(monkeypatch, staged)
+
+    assert target.read_bytes() == b"v1-good-build", (
+        "the aborted update must leave the live binary alone"
+    )
+    assert au.rollback_target() == "", (
+        "a partially-written backup must never be offered as a way back"
+    )
+    assert _retained_siblings(target) == ["persona.AppImage"], (
+        "the interrupted copy must not leave a truncated artifact behind"
+    )
+
+
+def test_an_interrupted_backup_does_not_destroy_a_GOOD_retained_binary(
+    monkeypatch, tmp_path
+):
+    # Probe 2, and the serious one: a retention that was WORKING is silently
+    # converted into a brick by a LATER, unrelated, correctly-aborted update.
+    # Deleting the partial in the failure arm does not fix this — by then the
+    # good binary has already been overwritten in place. The backup must never
+    # be written non-atomically at all.
+    target = _linux_fixture(monkeypatch, tmp_path, installed=b"v1-good-build")
+
+    # Update 1 succeeds, so a real way back exists.
+    staged1 = _stage(monkeypatch, tmp_path, b"v2-build")
+    _drive_linux_update(monkeypatch, staged1)
+    retained = str(target) + ".bak"
+    assert open(retained, "rb").read() == b"v1-good-build"
+
+    # Update 2's backup copy dies partway.
+    staged2 = _stage(monkeypatch, tmp_path, b"v3-build" * 4)
+    _copy2_dies_partway(monkeypatch, wrote=b"trunc")
+    _drive_failing_linux_update(monkeypatch, staged2)
+
+    assert target.read_bytes() == b"v2-build", (
+        "the aborted update must leave the live binary alone"
+    )
+    assert open(retained, "rb").read() == b"v1-good-build", (
+        "an unrelated failed update must not overwrite a GOOD retained binary"
+    )
+    # ...and the way back it still offers is the good one, not a stump.
+    assert au.rollback_target() == retained
+
+
 # --- AC6: FALSIFICATION (non-waivable) -------------------------------------
 #
 # The standing directive: a check that could not have failed is not coverage.
