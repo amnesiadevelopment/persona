@@ -375,11 +375,23 @@ because no such arm can be produced today.
 ## §9 Reproducing
 
 > **⚠️ USE `.venv/bin/python` FOR THE LIVE COMMANDS — `python3` WILL NOT WORK.**
-> `.venv` is the repository's own virtualenv at `/workspace/persona/.venv`
-> (Python 3.12; `.venv/bin/python` → `python3` → `/usr/local/bin/python3`). It is
-> the **only** interpreter here carrying **PySocks**, and `exit_guard` needs it
-> to reach the proxy. Under the container's bare `python3` the live read does not
-> merely warn, it **aborts**:
+> `.venv` is the repository's own virtualenv, per README lines 124-126. It is
+> **gitignored and NOT provisioned by `install.sh`** — it is created by the
+> reader, so whether it exists is a fact about your container and not about this
+> repository. Round 2 asserted it "does exist"; that was true of the seat that
+> wrote it and false in the reviewer's container and in the round-3 container,
+> where `ls .venv/bin/python` returns *No such file or directory*. Both readings
+> were half right, so **create it rather than assume it**:
+>
+> ```bash
+> python3 -m venv .venv
+> .venv/bin/pip install --prefer-binary -r requirements.txt
+> ```
+>
+> What is NOT container-dependent is why the live commands need it: **PySocks**
+> (`requirements.txt:26`) is what `exit_guard` uses to reach the proxy, and the
+> bare `python3` on these containers does not carry it. Under it the live read
+> does not merely warn, it **aborts**:
 >
 > ```
 > ExitNotProven: could not observe the exit through the proxy — 2 provider(s)
@@ -401,9 +413,11 @@ because no such arm can be produced today.
     --arms linux,macos --seeds 24601,5150 --layer off
 
 # The derived checker-matrix records, and the gate's verdict on them.
-# (These two are offline — plain `python3` works for them.)
-.venv/bin/python readings/ps189-2026-08-26/derive.py
-.venv/bin/python -m src.services.verify.checker_cli consistency \
+# OFFLINE — no proxy, no PySocks, so plain `python3` is what is written here.
+# Both were re-run under bare `python3` in round 3; `derive.py` is idempotent
+# (it rewrites the six derived records byte-identically, so re-running is safe).
+python3 readings/ps189-2026-08-26/derive.py
+python3 -m src.services.verify.checker_cli consistency \
     readings/ps189-2026-08-26/derived-matrix/realm-matrix.chromium.linux.seed24601.json
 
 # The live read (requires the exit; aborts rather than falling back).
