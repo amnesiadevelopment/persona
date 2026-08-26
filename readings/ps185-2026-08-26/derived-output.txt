@@ -8,12 +8,16 @@
 
 | arm | authors the identity | **layer ON (what ships)** | layer OFF (the engine alone) | distinct ON/OFF | basis |
 |---|---|---|---|---|---|
-| windows | **engine** | **13.9%** | 13.9% | 9 / 9 | **measured**, 24 seeds |
-| macos | ours (`gpu_ext`) | **53.1%** | 58.7% | 2 / 2 | **measured**, 24 seeds |
-| linux | ours (`gpu_ext`) | **18.1%** | 100.0% | 7 / 1 | **measured**, 24 seeds |
-| android | ours (`gpu_ext`) | **27.4%** | 100.0% | 4 / 1 | **measured**, 24 seeds |
+| windows | **engine** | **13.9%** | 13.9% | 9 / 9 | **measured (layer OFF)**, 24 seeds |
+| macos | ours (`gpu_ext`) | **53.1%** | 58.7% | 2 / 2 | **measured (layer ON)**, 24 seeds |
+| linux | ours (`gpu_ext`) | **18.1%** | 100.0% | 7 / 1 | **measured (layer ON)**, 24 seeds |
+| android | ours (`gpu_ext`) | **27.4%** | 100.0% | 4 / 1 | **measured (layer ON)**, 24 seeds |
 
 Every cell above is `measured`. No arm is `theoretical` any more, and no arm was left `—`.
+
+**Read the basis column, not just the number.** `measured (layer OFF)` on windows is the ENGINE's figure, because windows is the one arm that defers to it; `measured (layer ON)` on the other three is persona's own pool drawing through `pick()`. Those are different quantities and the column is what tells them apart.
+
+**windows layer-ON is byte-identical to layer-OFF** — all 24 of 24 seeds returned the same identity in both modes, the same 9 distinct identities, the same 13.9%. That is what deferring is supposed to look like, and it is a positive control: on linux and android the two columns diverge sharply (linux 1 identity with the layer off against 7 pool entries with it on, android 1 identity with the layer off against 4 pool entries with it on), which is the layer proving it reached the page rather than an assertion that it was installed.
 
 #### ⚠️ The gate's own verdicts on three of those arms are an ESTIMATOR ARTEFACT, not a product finding
 
@@ -30,7 +34,7 @@ Every cell above is `measured`. No arm is `theoretical` any more, and no arm was
 
 **The single line that settles it:** android scored 0.2743, which is BELOW the 0.2812 a uniform draw is expected to score at N=24 — and the gate still called it `TOO_NARROW`. An arm cannot be *worse than uniform* while scoring *better than uniform predicts*. The comparison failed, not the pool.
 
-**So the old "theoretical" figures are CONFIRMED rather than overturned:** the uniform-selection assumption behind them holds on the real draw (p = macos 0.31, linux 0.16, android 0.58, none anywhere near significance). What has changed is that they are now measurements instead of assumptions. **Whether `engine_gpu_variance` should adopt the unbiased estimator is a decision for that module's owner — PS-185 measured and reported it, and deliberately did not change the gate.**
+**So the old "theoretical" figures are CONFIRMED rather than overturned:** the uniform-selection assumption behind them holds on the real draw (p = macos 0.31, linux 0.16, android 0.58, none anywhere near significance). What has changed is that they are now measurements instead of assumptions — which is the result PS-185 was written to get, and it is a result even though the numbers barely moved: it retires an assumption. **Whether `engine_gpu_variance` should adopt the unbiased estimator is a decision for that module's owner — PS-185 measured and reported it, and deliberately did not change the gate.**
 
 #### The GENUINE finding: linux AND android are CONSTANT with the layer off
 
@@ -40,6 +44,8 @@ Every cell above is `measured`. No arm is `theoretical` any more, and no arm was
 Neither arm is engine-authored, so **this is not a live breach** — persona's own pool is what ships there, and the layer-ON column shows it working. It is the measurement that says those arms must NOT be moved into `ENGINE_AUTHORED_IDENTITY_ARMS`. linux confirms PS-161's existing SwiftShader reading; **android is new** — it had never been measured on either arm.
 
 **macos, engine side, has MOVED.** PS-161 recorded 76.9% over 30 seeds (Apple M2 87% / M4 13%). This run reads 58.7% over 24 seeds on the same two-value pool — same conclusion (the engine is worse than our own 50.0% pool, so macos stays ours), different number. Two different engine builds, so this is a re-measurement rather than a contradiction.
+
+Note also that the layer-ON macos pool draws **Apple M1 / Apple M2 Pro** while the engine draws **Apple M2 / Apple M4**. The two authors do not agree on which cards exist, which is worth knowing for PS-183 (`MAC_GPUS` widening) but is not this ticket's to fix.
 
 ### WebGL / canvas readback — BOTH engines, on loopback
 

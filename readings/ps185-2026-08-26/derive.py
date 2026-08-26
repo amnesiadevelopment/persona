@@ -77,17 +77,68 @@ def gpu_section(off: dict, on: dict, uoff: dict, uon: dict) -> str:
     for arm in ARMS:
         e_on = on["result"]["per_arm"][arm]
         e_off = off["result"]["per_arm"][arm]
-        author = "**engine**" if arm in on["provenance"]["engine_authored_arms"] else "ours (`gpu_ext`)"
+        engine_authored = arm in on["provenance"]["engine_authored_arms"]
+        author = "**engine**" if engine_authored else "ours (`gpu_ext`)"
+        # The basis names WHICH authorship arm the shipped figure came from.
+        # A bare "measured" would put the layer-OFF windows number and three
+        # layer-ON numbers under one identical label — two different
+        # quantities in one column, which is the conflation this whole
+        # section exists to keep apart.
+        shipped = e_off if engine_authored else e_on
+        basis_mode = "layer OFF" if engine_authored else "layer ON"
         add(
             f"| {arm} | {author} | **{pct(e_on['collision_probability'])}** | "
             f"{pct(e_off['collision_probability'])} | "
             f"{e_on['distinct_identities']} / {e_off['distinct_identities']} | "
-            f"**measured**, {e_on['seeds_readable']} seeds |"
+            f"**measured ({basis_mode})**, {shipped['seeds_readable']} seeds |"
         )
     add("")
     add("Every cell above is `measured`. No arm is `theoretical` any more, and "
         "no arm was left `—`.")
     add("")
+    # The basis column carries the ON/OFF split per cell, so state what it
+    # means where it is read rather than one table away.
+    add("**Read the basis column, not just the number.** `measured (layer OFF)` "
+        "on windows is the ENGINE's figure, because windows is the one arm "
+        "that defers to it; `measured (layer ON)` on the other three is "
+        "persona's own pool drawing through `pick()`. Those are different "
+        "quantities and the column is what tells them apart.")
+    add("")
+
+    # ---- the positive control ---------------------------------------
+    # Derived, not asserted: compare the two modes SEED BY SEED on the one
+    # arm that defers, then contrast with the arms that do not.
+    w_on, w_off = on["readings"]["windows"], off["readings"]["windows"]
+    w_identical = sum(1 for s, v in w_on.items() if v == w_off.get(s))
+    w_on_res = on["result"]["per_arm"]["windows"]
+    diverging = [
+        arm for arm in ARMS
+        if arm not in on["provenance"]["engine_authored_arms"]
+        and on["result"]["per_arm"][arm]["distinct_identities"]
+        != off["result"]["per_arm"][arm]["distinct_identities"]
+        and off["result"]["per_arm"][arm]["distinct_identities"] == 1
+    ]
+    if w_identical == len(w_on) and diverging:
+        add(
+            f"**windows layer-ON is byte-identical to layer-OFF** — all "
+            f"{w_identical} of {len(w_on)} seeds returned the same identity in "
+            f"both modes, the same {w_on_res['distinct_identities']} distinct "
+            f"identities, the same {pct(w_on_res['collision_probability'])}. "
+            "That is what deferring is supposed to look like, and it is a "
+            "positive control: on "
+            + " and ".join(diverging)
+            + " the two columns diverge sharply ("
+            + ", ".join(
+                f"{arm} {off['result']['per_arm'][arm]['distinct_identities']} "
+                f"identity with the layer off against "
+                f"{on['result']['per_arm'][arm]['distinct_identities']} pool "
+                f"entries with it on"
+                for arm in diverging
+            )
+            + "), which is the layer proving it reached the page rather than "
+            "an assertion that it was installed."
+        )
+        add("")
 
     # ---- the instrument finding -------------------------------------
     add("#### ⚠️ The gate's own verdicts on three of those arms are an "
@@ -141,7 +192,9 @@ def gpu_section(off: dict, on: dict, uoff: dict, uon: dict) -> str:
             for arm in ("macos", "linux", "android")
         )
         + ", none anywhere near significance). What has changed is that they "
-        "are now measurements instead of assumptions. **Whether "
+        "are now measurements instead of assumptions — which is the result "
+        "PS-185 was written to get, and it is a result even though the numbers "
+        "barely moved: it retires an assumption. **Whether "
         "`engine_gpu_variance` should adopt the unbiased estimator is a "
         "decision for that module's owner — PS-185 measured and reported it, "
         "and deliberately did not change the gate.**")
@@ -182,6 +235,34 @@ def gpu_section(off: dict, on: dict, uoff: dict, uon: dict) -> str:
         "stays ours), different number. Two different engine builds, so this "
         "is a re-measurement rather than a contradiction."
     )
+
+    # ---- the two macos pools do not agree ---------------------------
+    # Derived: read the distinct card names each authorship arm actually
+    # drew, rather than restating a remembered pool.
+    def _cards(record: dict, arm: str) -> "list[str]":
+        """The distinct renderer names drawn on this arm, model part only."""
+        names = set()
+        for value in record["readings"][arm].values():
+            if not value:
+                continue
+            # "<vendor> | ANGLE (Apple, ANGLE Metal Renderer: Apple M1, ...)"
+            marker = "Metal Renderer: "
+            if marker in value:
+                names.add(value.split(marker, 1)[1].split(",", 1)[0].strip())
+        return sorted(names)
+
+    mac_on, mac_off = _cards(on, "macos"), _cards(off, "macos")
+    if mac_on and mac_off and mac_on != mac_off:
+        add("")
+        add(
+            "Note also that the layer-ON macos pool draws **"
+            + " / ".join(mac_on)
+            + "** while the engine draws **"
+            + " / ".join(mac_off)
+            + "**. The two authors do not agree on which cards exist, which is "
+            "worth knowing for PS-183 (`MAC_GPUS` widening) but is not this "
+            "ticket's to fix."
+        )
     return "\n".join(lines)
 
 
