@@ -2236,20 +2236,35 @@ class App:
                 ft.Container(width=7, height=7, border_radius=4, bgcolor=COLORS["accent"])
             )
         return ft.Row(
-            spacing=8,
+            spacing=10,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
             controls=[
                 badge,
-                ft.Text(
-                    name, size=11, color=COLORS["text_sub"],
-                    font_family="monospace", no_wrap=True, max_lines=1,
-                    overflow=ft.TextOverflow.ELLIPSIS,
+                # NAME ABOVE, VERSION BELOW — measured, not preferred. Putting
+                # the two on ONE line looked like the tighter answer and is
+                # not: the rail is 200px, and once its padding, the 18px icon,
+                # "fp-chromium" and the state dot have taken their share the
+                # version cell is left about 26px, which ellipsised even
+                # "checking..." down to "ch…". A cell too narrow to hold the
+                # value is not a shorter row, it is a row that says nothing.
+                #
+                # So the stacked block stays and the WRAP is what goes. Both
+                # texts are single-line with an ellipsis (see where they are
+                # constructed), which is the actual defect behind "текст
+                # съевший": an unbounded version string broke across three
+                # lines and changed the panel's height when the section opened.
+                ft.Column(
+                    spacing=1,
+                    expand=True,
+                    controls=[
+                        ft.Text(
+                            name, size=11, color=COLORS["text_sub"],
+                            font_family="monospace", no_wrap=True, max_lines=1,
+                            overflow=ft.TextOverflow.ELLIPSIS,
+                        ),
+                        status,
+                    ],
                 ),
-                # The version takes the slack and gives it back: it is the one
-                # cell allowed to ellipsise, so a long build string can never
-                # push the state indicator off the rail.
-                ft.Container(expand=True, alignment=ft.Alignment.CENTER_RIGHT,
-                             content=status),
                 *trailing,
             ],
         )
