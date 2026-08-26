@@ -16,6 +16,7 @@ from ..proxy.errors import (
     GeographyDisprovenError,
     GeographyUnknownError,
     ProxyUnresolvedError,
+    TimezoneUnderivableError,
 )
 from ..proxy.store import ProxyStore
 from .bookmarks_seed import seed_bookmarks
@@ -212,6 +213,27 @@ def _profile_timezone(profile: Profile, proxy) -> str:
             "product's own latest check contradicts would be incoherent, and the "
             "stored zone is no longer known to describe the exit. "
             "Re-check the proxy to resolve it."
+        ) from e
+    except TimezoneUnderivableError as e:
+        # BEFORE the parent, like the branch above and for the same reason: this
+        # is a THIRD cause, not a variant of "never checked". The proxy may have
+        # been checked successfully moments ago — the geo response simply
+        # carried no usable zone — so telling this operator to "check the proxy"
+        # sends them to re-run a check that already passed and will keep
+        # passing. The remedy here is a code change (a _COUNTRY_TZ row), which
+        # is a different action by a different person, so it has to be said.
+        #
+        # Names the COUNTRY. A refusal an operator cannot diagnose is a worse
+        # product than a wrong timezone, and "which country" is the whole
+        # diagnosis: it turns an unlaunchable profile into a one-line fix.
+        raise TimezoneUnderivableError(
+            f"Profile {profile.name!r} has proxy {profile.proxy!r} assigned and its "
+            f"exit country is known ({(getattr(proxy, 'country_code', '') or '?').upper()}), "
+            "but no timezone is known for that country and its last check recorded "
+            "none. Refusing to launch: falling back to UTC would declare a clock "
+            "that contradicts the exit's own country — the 'spoofed location' tell "
+            "this product exists to avoid. Re-checking will NOT help; add a row for "
+            "that country to _COUNTRY_TZ (launch_policy.py) to resolve it."
         ) from e
     except GeographyUnknownError as e:
         raise GeographyUnknownError(
