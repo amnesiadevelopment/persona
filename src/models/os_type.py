@@ -102,6 +102,16 @@ def canonical_os_type(os_type: object) -> str:
     ``coherence.py`` compares ``os_type`` to ``"windows"`` by STRING EQUALITY —
     so ``"WINDOWS"`` used to fail that compare and silently downgrade a Firefox
     profile to chromium. Repairing the spelling fixes that arm too.
+
+    ⚠️ ``.strip()`` IS A DELIBERATE WIDENING, not a tidy-up inherited from the
+    old fold. The predecessor (``gpu_ext._os_norm``) lowercased only, so
+    ``" windows"`` fell through to the unrecognised branch. Since the GPU pool
+    re-exports this same function rather than restating the table (pinned by
+    ``test_gpu_ext_re_exports_the_table_rather_than_restating_it``, so storage
+    and pooling cannot diverge), widening it here also changes which GPU pool a
+    whitespace-padded value draws from — a side effect of a STORAGE fix. That
+    is the intended trade: the two must agree, and agreeing on the wider fold
+    repairs a value that would otherwise have been stored unrecognised.
     """
     ot = str(os_type).lower().strip()
     for spellings, arm in OS_NORM_TABLE:
