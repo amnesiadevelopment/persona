@@ -1,5 +1,6 @@
 """Event handlers extracted from App for Single Responsibility compliance."""
 
+import contextlib
 from collections.abc import Callable
 
 import flet as ft
