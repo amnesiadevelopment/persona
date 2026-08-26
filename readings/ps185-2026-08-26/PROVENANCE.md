@@ -346,3 +346,135 @@ all**, so a change to the generator's prose broke its verbatim claim and the
 only way to restore it was for a human to re-type the block. That is precisely
 the re-typing the script exists to remove, and it is how a "verbatim" label
 rots. The splicer now splices **both** blocks, and `--check` reports on both.
+
+## 7. Round 6 — the class had a SECOND AXIS, and a false exemption hiding in it
+
+Round 5 enumerated the "renders a stored summary" class **by behaviour** and
+closed every member it found. It still returned a clean sweep over four live
+members, because the harness mutated only one of the two things a stored
+summary can be.
+
+A stored summary block can fail in **two** ways:
+
+| axis | mutation | catches |
+|---|---|---|
+| 1 | destroy the readings, keep the summary | a figure that claims to be recounted but is echoed |
+| 2 | **poison the summary, keep the readings** | a figure that never consulted the readings **at all** |
+
+Destroying readings **cannot** detect a figure that never read them, so axis 1
+is structurally blind to axis 2's members and reported exit 0 over them. The
+enumerator now runs both, and `--axis` selects one.
+
+### 7a. The exemption that justified the last member was FALSE
+
+`_uniformity_stats` documented `monte_carlo_p_value` as *"the ONE figure that
+genuinely cannot be recomputed — it is a seeded simulation, not a function of
+the readings"*, and said recomputing it would require a re-measurement this
+round was forbidden from doing.
+
+**That sentence was untrue**, and it is corrected here rather than quietly
+deleted, because a confident false provenance claim inside a provenance
+artifact is the same defect as round 1's untrue *"verbatim"* label. Both
+uniformity records store the `monte_carlo_seed` (`20260826`) and
+`monte_carlo_trials` (`200000`) they were run with, which makes the simulation a
+**deterministic function of the readings plus two recorded parameters**.
+Feeding them back through the instrument's own `analyse()` reproduces every
+stored p-value exactly, on all four arms in both modes — no browser, no sweep,
+no re-measurement:
+
+```
+windows 1.000000   macos 0.308370   linux 0.163825   android 0.579675
+```
+
+It is the column that decides **artefact vs genuine**, so echoing it was not
+cosmetic: under an android truncation it moves `0.579675 → 0.977530`, and left
+frozen it rendered three recounted columns beside a stale p-value **inside one
+table row** — the self-contradicting row this whole class exists to prevent,
+one table below where round 4 blocked on exactly that shape.
+
+⚠️ **Iterate the arms in the instrument's own `sorted()` order — call
+`analyse()`, do not reimplement its loop.** All four arms are drawn from ONE
+shared `random.Random(seed)`, so each arm's p-value depends on how much of the
+stream the previous arms consumed. Drawing them in this file's `ARMS` order
+lands macos at `0.308535` instead of `0.308370`.
+
+### 7b. `pool_size` — a site on nobody's list
+
+The axis-2 walk is **generic**: it poisons every scalar field of every stored
+summary block rather than a list of known field names, because a list can only
+re-find what someone already named. That returned a site no review had cited
+and no grep for `monte_carlo` could reach.
+
+Round 5 recomputed the estimator **formulae** but fed them a `k` read out of the
+stored block, leaving `E[plug-in | uniform]` and the `1/k` bar half-derived.
+Poisoning the stored `pool_size` moved **the single sentence the artefact
+finding rests on** — *"android scored 0.2743, BELOW the 0.2812 a uniform draw is
+expected to score"* — while every other column sat still. `k` now comes from
+`engine_gpu_variance.fallback_pool_size`, the pool itself.
+
+### 7c. `module_verdict` — recounted, and why that is not a contradiction
+
+The review left this to the worker's judgement, noting the column exists to
+report *what the gate said* so the estimator can be contrasted against it.
+
+**Chosen: recount it via `engine_gpu_variance.classify`.** That keeps the
+column's meaning exactly — asking the gate afresh still reports the gate's
+verdict — while removing a transcription of a transcription (the uniformity
+record's copy of the sweep's copy). Verified to reproduce all eight stored
+verdicts exactly.
+
+One subtlety worth recording: `analyse()` carries a `module_verdict` of its own,
+but reads it from `record["result"]["per_arm"][arm]["verdict"]` — the sweep's
+stored summary. Taking it from there would have left the column echoed *by a
+different route* while looking recounted, so the gate is asked directly and the
+override is applied **after** the `analyse()` result is merged.
+
+### 7d. The exemption that remains is ASSERTED, not waived
+
+Axis 2's rule is **not** a blanket *"no rendered line may depend on a stored
+field"*, because one site depends on one **on purpose**: `gpu_completeness`
+cross-checks its own recount against the sweep's stored `seeds_readable` and
+**discloses** any disagreement, so a record whose summary and readings tell
+different stories says so out loud. A blanket rule would have deleted that
+disclosure.
+
+So that field is exempt — and the exemption is **tested**. For it the harness
+asserts the disclosure actually **fires**, and that what moves is prose only:
+**no `|` table row may move**, since a moving row is a published figure taken
+from a summary. An exemption nobody checks is how a defect hides behind the word
+"intentional".
+
+The exemption is scoped by **(record, field)**, not by bare field name. The
+first cut keyed on the name `seeds_readable` alone and over-matched the
+uniformity records' own field of that name — a different quantity that nothing
+cross-checks and that is now fully recounted — which would have waived any
+future defect in it for no better reason than a shared spelling.
+
+### 7e. Verification
+
+* `derive.py --output` reproduces `derived-output.txt` **byte-identical** — no
+  published figure moved, the same property every round before this one held.
+* Both axes exit 0: axis 1's six scenarios all move the render; axis 2 walks
+  **215 stored fields** and none moves it, bar the asserted disclosure.
+* **31 targeted tests pass.** Six new guards, each **revert-proven**: the fix was
+  reverted in place, the guard confirmed to FAIL, then the file restored
+  byte-identically. Every mutation is driven through in-memory records; no
+  committed evidence file is ever written to.
+
+⚠️ **Reverting an INPUT field needs a faithful revert.** `pool_size` is not
+rendered directly — it *feeds* two columns — so overwriting the output field
+alone left the render unchanged and made a genuine guard look like decoration.
+Restoring `k` as the **input** to the expectation column and the bar, which is
+what the pre-round-6 code actually did, fails the guard correctly. A naive
+revert can slander a real guard.
+
+### 7f. The recount is not free
+
+Recomputing rather than echoing costs a 200k-trial simulation per record, taking
+a `derive.py` run from under a second to ~17 s. `_analysed` memoises it **on the
+readings themselves**, not on the record's identity, so a caller that truncates
+an arm and re-renders correctly MISSES the cache and gets the recomputed value —
+a memo keyed on identity would have reintroduced exactly the staleness the
+recount removes. The test module memoises the subprocess run and the module
+import for the same reason, which is what keeps the suite at ~3 minutes instead
+of ~7.

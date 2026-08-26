@@ -38,6 +38,7 @@ if str(REPO_ROOT) not in sys.path:
 # readings, and then the article would be derived from a rule the product does
 # not use. Every figure below is recomputed with these two functions.
 from src.services.verify.engine_gpu_variance import (  # noqa: E402
+    classify as _classify,
     collision_probability as _collision_probability,
 )
 
@@ -45,6 +46,16 @@ from src.services.verify.engine_gpu_variance import (  # noqa: E402
 # readback readings, imported for the same reason.
 sys.path.insert(0, str(HERE))
 from readback_vectors import verdict_for as _verdict_for  # noqa: E402
+
+# The uniformity instrument's OWN analysis, from the script that wrote the
+# uniformity records, imported for the same reason again. Round 5 exempted the
+# Monte-Carlo p-value from recounting on the grounds that a seeded simulation
+# "is not a function of the readings". That was FALSE: both records store the
+# `monte_carlo_seed` and `monte_carlo_trials` they were run with, which makes
+# `analyse()` a deterministic function of the readings plus two recorded
+# parameters, and it reproduces every stored p-value exactly on all four arms
+# in both modes. See `_analysed`.
+from uniformity_check import analyse as _analyse  # noqa: E402
 
 LAYER_OFF = HERE / "engine-gpu-variance.layer-off.json"
 LAYER_ON = HERE / "engine-gpu-variance.layer-on.json"
@@ -240,7 +251,8 @@ def gpu_section(off: dict, on: dict, uoff: dict, uon: dict) -> str:
         "overturned:** the uniform-selection assumption behind them holds on "
         "the real draw (p = "
         + ", ".join(
-            f"{arm} {uon['per_arm'][arm]['monte_carlo_p_value']:.2f}"
+            f"{arm} "
+            f"{_uniformity_stats(uon, arm, unif_sources)['monte_carlo_p_value']:.2f}"
             for arm in ("macos", "linux", "android")
         )
         + ", none anywhere near significance). What has changed is that they "
@@ -573,6 +585,32 @@ def _arm_stats(rec: dict, arm: str) -> dict:
     }
 
 
+_ANALYSIS_CACHE: "dict[tuple, dict]" = {}
+
+
+def _analysed(src: dict, trials: int, seed: int) -> dict:
+    """``uniformity_check.analyse`` over ``src``, memoised on its READINGS.
+
+    Cached because the simulation is genuinely expensive (200k trials x 4 arms,
+    ~10s per record) and a single render asks for it repeatedly. The key is the
+    readings themselves, NOT the record's identity: a caller that truncates an
+    arm and re-renders must MISS this cache and get the recomputed p-value, or
+    the memo would reintroduce exactly the staleness this function removes.
+
+    ⚠️ THE WHOLE RECORD IS ANALYSED AT ONCE, NEVER ONE ARM AT A TIME. ``analyse``
+    draws every arm from ONE shared ``random.Random(seed)``, in its own
+    ``sorted()`` order, so each arm's p-value depends on how much of the stream
+    the previous arms consumed. Analysing a single arm, or iterating in this
+    file's ``ARMS`` order, silently lands a different answer — macos comes back
+    0.308535 instead of the stored 0.308370. Call the instrument; do not
+    reimplement its loop.
+    """
+    key = (json.dumps(src["readings"], sort_keys=True), trials, seed)
+    if key not in _ANALYSIS_CACHE:
+        _ANALYSIS_CACHE[key] = _analyse(src, trials=trials, seed=seed)
+    return _ANALYSIS_CACHE[key]
+
+
 def _uniformity_stats(unif: dict, arm: str, sources: dict) -> dict:
     """Recompute the estimator row from the record ``unif`` NAMES.
 
@@ -581,24 +619,45 @@ def _uniformity_stats(unif: dict, arm: str, sources: dict) -> dict:
     recount. What they do carry is ``source_record``, naming the sweep they
     were computed from, so the recount comes from THAT record's readings.
 
-    Every column here except the Monte-Carlo p-value is a closed-form function
-    of the readings and the pool size, so every one of them is recomputed:
+    EVERY column is recomputed, including the Monte-Carlo p-value. Round 5
+    exempted that one on the stated grounds that it "genuinely cannot be
+    recomputed — a seeded simulation, not a function of the readings". **That
+    was false**, and the exemption was the last live member of the
+    stored-summary class: both uniformity records store the
+    ``monte_carlo_seed`` and ``monte_carlo_trials`` they were run with, which
+    makes the simulation a DETERMINISTIC function of the readings plus two
+    recorded parameters. Feeding them back through the instrument's own
+    ``analyse()`` reproduces every stored p-value exactly — 1.000000 /
+    0.308370 / 0.163825 / 0.579675 — on all four arms in both modes, with no
+    browser, no sweep and no re-measurement.
 
-    * ``plugin_estimate``   — the product's own Simpson index, imported;
-    * ``unbiased_estimate`` — ``sum n_i(n_i-1) / N(N-1)``;
-    * ``expected_plugin_under_uniform`` — ``1/k + (1 - 1/k)/N``;
-    * ``bar_collision_probability``     — ``1/k``;
-    * ``seeds_readable`` — N, which is load-bearing rather than decorative:
-      the entire estimator argument is ``E[S_hat] = 1/k + (1 - 1/k)/N``, so an
-      N that cannot notice a truncated sweep silently changes what the
-      expectation column means, and with it the "android scored BELOW what
-      uniform predicts" line that settles the artefact question.
+    It mattered because it is the column that decides **artefact vs genuine**.
+    Left echoed, a truncated android arm rendered three recounted columns
+    beside a frozen p-value inside ONE table row — the self-contradicting row
+    this whole class exists to prevent. Recounted, it moves 0.579675 ->
+    0.977530 and the row stays honest.
 
-    ``monte_carlo_p_value`` is the ONE figure that genuinely cannot be
-    recomputed here — it is a seeded simulation, not a function of the
-    readings — so it is read from the record and left labelled as stored.
-    Recomputing it would mean re-running the simulation, which is a
-    re-measurement this round is explicitly forbidden from doing.
+    So the recount now comes from the instruments themselves rather than from
+    formulae copied into this file:
+
+    * ``plugin_estimate``, ``unbiased_estimate``,
+      ``expected_plugin_under_uniform``, ``bar_collision_probability``,
+      ``pool_size``, ``seeds_readable``, ``monte_carlo_p_value``,
+      ``consistent_with_uniform`` and ``genuine_narrowing_finding`` — all from
+      ``uniformity_check.analyse``, the script that wrote these records;
+    * ``module_verdict`` — from ``engine_gpu_variance.classify``, the gate
+      itself. That column exists to report WHAT THE GATE SAID so the estimator
+      can be contrasted against it, and asking the gate afresh still reports
+      the gate's verdict — it just removes a transcription-of-a-transcription
+      (the uniformity record's copy of the sweep's copy). Verified to reproduce
+      all eight stored verdicts exactly.
+
+    ``pool_size`` is recounted for a reason worth naming: round 5 recomputed
+    the estimator FORMULAE but fed them a ``k`` read from the stored block, so
+    ``expected_plugin_under_uniform`` and the ``1/k`` bar were only half
+    recounted. Poisoning the stored ``pool_size`` moved the "android scored
+    BELOW what uniform predicts" line — the sentence the ticket leans on to
+    settle the artefact question — while every other column sat still.
     """
     src = sources.get(unif.get("source_record"))
     stored = unif["per_arm"][arm]
@@ -607,24 +666,19 @@ def _uniformity_stats(unif: dict, arm: str, sources: dict) -> dict:
         # inventing one — not reachable with the committed records, which all
         # name a source that is loaded here.
         return dict(stored, recounted=False)
-    readable = [v for v in src["readings"][arm].values() if v]
-    n = len(readable)
-    k = stored["pool_size"]
-    counts = collections.Counter(readable).values()
-    return dict(
-        stored,
-        recounted=True,
-        seeds_readable=n,
-        distinct_observed=len(set(readable)),
-        plugin_estimate=_collision_probability(readable) if readable else None,
-        unbiased_estimate=(
-            sum(c * (c - 1) for c in counts) / (n * (n - 1)) if n > 1 else None
-        ),
-        expected_plugin_under_uniform=(
-            1.0 / k + (1 - 1.0 / k) / n if n and k else None
-        ),
-        bar_collision_probability=1.0 / k if k else None,
-    )
+    fresh = _analysed(
+        src,
+        trials=unif["monte_carlo_trials"],
+        seed=unif["monte_carlo_seed"],
+    )[arm]
+    out = dict(stored, recounted=True, **fresh)
+    # LAST, deliberately overriding `fresh`. `analyse` carries a
+    # `module_verdict` of its own, but it reads it out of
+    # `record["result"]["per_arm"][arm]["verdict"]` — the sweep's stored
+    # summary — so taking it from `fresh` would leave this column echoed by a
+    # different route while looking recounted. Ask the gate itself instead.
+    out["module_verdict"] = _classify(src["readings"])["per_arm"][arm]["verdict"]
+    return out
 
 
 def gpu_completeness(off: dict, on: dict) -> dict:

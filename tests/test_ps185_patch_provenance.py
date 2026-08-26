@@ -48,6 +48,7 @@ requires the comparison to reject it.
 
 from __future__ import annotations
 
+import functools
 import pathlib
 import runpy
 import subprocess
@@ -118,6 +119,7 @@ def verbatim_divergence(patch_text: "str | None" = None) -> "str | None":
     return None
 
 
+@functools.lru_cache(maxsize=1)
 def _run_derive() -> str:
     """Execute derive.py exactly as the patch instructs a maintainer to.
 
@@ -126,6 +128,13 @@ def _run_derive() -> str:
     cp1252 and raises UnicodeDecodeError on the ⚠️ and — this output carries.
     That is a second, distinct defect from the child-side one derive.py fixes:
     the child WRITING utf-8 does not help if the parent READS cp1252.
+
+    MEMOISED because the round-6 recount made a run genuinely expensive: the
+    Monte-Carlo p-value is now recomputed rather than echoed, which is 200k
+    trials per record. The output is a pure function of the committed records,
+    which no test mutates on disk, so one run serves every caller — and
+    ``derive.py`` is still executed as a real subprocess exactly once, which is
+    what the cp1252 and verbatim checks are actually testing.
     """
     proc = subprocess.run(
         [sys.executable, str(DERIVE)],
@@ -321,8 +330,17 @@ def test_verbatim_check_rejects_a_shortened_identity_string():
 # here touches the files on disk.
 
 
+@functools.lru_cache(maxsize=1)
 def _load_derive_module():
-    """Import derive.py as a module so its functions can be called directly."""
+    """Import derive.py as a module so its functions can be called directly.
+
+    MEMOISED for the same reason as ``_run_derive``: the round-6 recount runs a
+    200k-trial simulation per record, and ``derive.py`` memoises it per MODULE
+    INSTANCE — so a fresh import per test threw that cache away and paid the
+    simulation again. Sharing one instance is safe because no test mutates the
+    module; every test loads its own records with ``d.load()`` and mutates
+    those, which is what keeps the cases independent.
+    """
     import importlib.util
 
     spec = importlib.util.spec_from_file_location("ps185_derive_undertest", DERIVE)
@@ -818,4 +836,215 @@ def test_splicer_keeps_edit3_in_sync_not_only_edit8():
     assert "splice_edit3" in source and "EDIT3_HEADING" in source, (
         "the splicer does not handle Edit 3, so its verbatim claim has no "
         "mechanical path back into sync"
+    )
+
+
+# ---------------------------------------------------------------------------
+# ROUND 6 — the class has TWO AXES, and round 5's harness ran only one.
+#
+# A stored summary block can fail in two ways, and each axis is blind to the
+# other's members:
+#
+#   AXIS 1  destroy the readings, keep the summary  -> catches a figure that
+#           claims to be recounted but is echoed;
+#   AXIS 2  poison the summary, keep the readings   -> catches a figure that
+#           never consulted the readings AT ALL. Destroying readings cannot
+#           detect that, so axis 1 returns a clean sweep over live members.
+#
+# The last member hid behind a FALSE EXEMPTION. `_uniformity_stats` documented
+# `monte_carlo_p_value` as "the ONE figure that genuinely cannot be recomputed
+# — a seeded simulation, not a function of the readings". Both uniformity
+# records store the `monte_carlo_seed` and `monte_carlo_trials` they were run
+# with, which makes it a DETERMINISTIC function of the readings plus two
+# recorded parameters. It is the column that decides artefact-vs-genuine, and
+# it lands in PS-16.
+#
+# Every mutation below is driven through IN-MEMORY records. No committed
+# evidence file is ever written to.
+# ---------------------------------------------------------------------------
+
+
+def _unif_row(d, arm, off=None, on=None):
+    """The estimator-table row for `arm`, rendered from the given records."""
+    off = off if off is not None else d.load(d.LAYER_OFF)
+    on = on if on is not None else d.load(d.LAYER_ON)
+    section = d.gpu_section(off, on, d.load(d.UNIF_OFF), d.load(d.UNIF_ON))
+    return next(
+        ln for ln in section.split("\n")
+        if ln.startswith(f"| {arm} |") and ln.count("|") == 8
+    )
+
+
+def test_monte_carlo_p_value_is_recomputed_not_echoed():
+    """The column that decides artefact-vs-genuine must track the readings.
+
+    This is the site the false exemption protected. Truncating android's
+    layer-ON arm moves the three recounted columns beside it; if the p-value
+    sits frozen while they move, the row contradicts itself INSIDE ONE LINE —
+    the same shape round 4 blocked on, one table further down, and it ships
+    into PS-16 where no records sit beside it for a reader to arbitrate.
+    """
+    d = _load_derive_module()
+    base = _unif_row(d, "android")
+    assert "| 0.580 |" in base, f"android p-value fixture moved: {base}"
+
+    truncated = _truncate(d.load(d.LAYER_ON), "android")
+    # The stored summary is deliberately left claiming the full run.
+    assert d.load(d.UNIF_ON)["per_arm"]["android"]["monte_carlo_p_value"] == 0.579675
+
+    row = _unif_row(d, "android", on=truncated)
+    assert "| 0.580 |" not in row, (
+        "the Monte-Carlo p-value did not move when half the readings under it "
+        f"were destroyed — it is echoing the stored summary: {row}"
+    )
+
+
+def test_genuine_narrowing_verdict_is_recomputed_not_echoed():
+    """The artefact/genuine verdict is a CONCLUSION, so it must be re-derived.
+
+    Echoed, it would keep asserting "artefact" over a sample that no longer
+    supports the claim — reporting an estimator artefact as settled when the
+    evidence for settling it had been destroyed.
+    """
+    d = _load_derive_module()
+    unif = d.load(d.UNIF_ON)
+    off, on = d.load(d.LAYER_OFF), d.load(d.LAYER_ON)
+
+    # Poison the STORED verdict only; every reading stays intact.
+    unif["per_arm"]["android"]["genuine_narrowing_finding"] = True
+    section = d.gpu_section(off, on, d.load(d.UNIF_OFF), unif)
+    row = next(
+        ln for ln in section.split("\n")
+        if ln.startswith("| android |") and ln.count("|") == 8
+    )
+    assert "**genuine**" not in row, (
+        "flipping the stored genuine_narrowing_finding changed the rendered "
+        f"verdict, so the verdict is the record's word rather than a "
+        f"re-derivation: {row}"
+    )
+
+
+def test_pool_size_is_recounted_from_the_product_not_the_record():
+    """`k` is an INPUT to two rendered columns, so echoing it half-derives them.
+
+    Round 5 recomputed the estimator FORMULAE but fed them a `k` read out of
+    the stored block, leaving `E[plug-in | uniform]` and the `1/k` bar resting
+    on the record's word. This site was on nobody's list — no grep for
+    "monte_carlo" returns it — and it moves the single sentence the whole
+    artefact finding rests on ("android scored BELOW what uniform predicts").
+    """
+    d = _load_derive_module()
+    unif = d.load(d.UNIF_ON)
+    off, on = d.load(d.LAYER_OFF), d.load(d.LAYER_ON)
+
+    unif["per_arm"]["android"]["pool_size"] = 999
+    section = d.gpu_section(off, on, d.load(d.UNIF_OFF), unif)
+    row = next(
+        ln for ln in section.split("\n")
+        if ln.startswith("| android |") and ln.count("|") == 8
+    )
+    assert "| 0.2812 | 0.2500 |" in row, (
+        "poisoning the stored pool_size moved the expectation column or the "
+        f"bar, so `k` is taken from the record rather than from the pool: {row}"
+    )
+    settles = next(
+        ln for ln in section.split("\n") if "single line that settles it" in ln
+    )
+    assert "0.2812" in settles, (
+        f"the sentence the artefact finding rests on moved with a poisoned "
+        f"stored pool size: {settles}"
+    )
+
+
+def test_module_verdict_is_asked_of_the_gate_not_transcribed():
+    """The gate's verdict is quoted deliberately — so quote the GATE.
+
+    This column exists to report what `engine_gpu_variance` said, so the
+    estimator can be contrasted against it. That is a good reason to render it
+    and NOT a reason to trust a transcription: the uniformity record's copy is
+    a copy of the sweep's copy. Asking `classify` afresh still reports the
+    gate's verdict, with one fewer link that can rot.
+    """
+    d = _load_derive_module()
+    unif = d.load(d.UNIF_ON)
+    off, on = d.load(d.LAYER_OFF), d.load(d.LAYER_ON)
+
+    unif["per_arm"]["android"]["module_verdict"] = "POISONED"
+    section = d.gpu_section(off, on, d.load(d.UNIF_OFF), unif)
+    row = next(
+        ln for ln in section.split("\n")
+        if ln.startswith("| android |") and ln.count("|") == 8
+    )
+    assert "POISONED" not in row and "TOO_NARROW" in row, (
+        "the module verdict came from the uniformity record's transcription "
+        f"rather than from the gate itself: {row}"
+    )
+
+
+def test_recomputed_uniformity_matches_the_stored_record_exactly():
+    """The recount must REPRODUCE the evidence, not merely differ from it.
+
+    A recount that silently disagreed with the committed record would mean the
+    article no longer describes the run it cites — the opposite failure to an
+    echo, and just as bad. All four arms in both modes must land exactly.
+    """
+    d = _load_derive_module()
+    sources = {
+        "engine-gpu-variance.layer-off.json": d.load(d.LAYER_OFF),
+        "engine-gpu-variance.layer-on.json": d.load(d.LAYER_ON),
+    }
+    for unif_path in (d.UNIF_ON, d.UNIF_OFF):
+        unif = d.load(unif_path)
+        for arm in ("windows", "macos", "linux", "android"):
+            got = d._uniformity_stats(unif, arm, sources)
+            stored = unif["per_arm"][arm]
+            for field in (
+                "monte_carlo_p_value", "genuine_narrowing_finding",
+                "pool_size", "module_verdict", "plugin_estimate",
+                "unbiased_estimate", "expected_plugin_under_uniform",
+                "bar_collision_probability", "seeds_readable",
+            ):
+                assert got[field] == stored[field], (
+                    f"{unif_path.name} {arm}: recomputed {field}={got[field]!r} "
+                    f"but the committed record stores {stored[field]!r}"
+                )
+
+
+def test_enumerator_runs_the_second_mutation_axis():
+    """The harness must poison summaries, not only destroy readings.
+
+    Round 5's enumerator returned exit 0 over four live members of the class
+    because every scenario it ran mutated readings. An enumeration is only
+    evidence for the axes it actually runs.
+    """
+    proc = subprocess.run(
+        [sys.executable, str(READINGS / "enumerate_summary_sites.py"),
+         "--axis", "2", "--quiet"],
+        capture_output=True, text=True, encoding="utf-8", timeout=900,
+    )
+    assert proc.returncode == 0, (
+        "a rendered figure depends on a stored summary field:\n"
+        f"{proc.stdout[-3000:]}"
+    )
+    assert "stored fields walked" in proc.stdout, (
+        "axis 2 did not report walking any stored fields"
+    )
+
+
+def test_axis2_exemption_is_scoped_to_the_record_that_cross_checks_it():
+    """An exemption is only as good as its scope.
+
+    `seeds_readable` on the GPU sweeps is exempt because `gpu_completeness`
+    deliberately cross-checks it and DISCLOSES a disagreement. The uniformity
+    records carry a field of the same name which nothing cross-checks. Keying
+    the exemption on the bare NAME waived both, which would hide any future
+    defect in the second for no better reason than a shared spelling.
+    """
+    source = (READINGS / "enumerate_summary_sites.py").read_text(encoding="utf-8")
+    assert "DISCLOSED_FIELDS = {(" in source, (
+        "the axis-2 exemption is not scoped by record — a bare field name "
+        "exempts every record that happens to reuse the name"
+    )
+    assert '("gpu[on]", "seeds_readable")' in source, (
+        "the exemption does not name the GPU sweep record it applies to"
     )
