@@ -135,6 +135,47 @@ def affordable_height(window_height: float | None) -> int:
     return quantize(int(window_height) - RAIL_CONTENT_HEIGHT)
 
 
+def _drag_delta_y(e) -> float | None:
+    """The vertical distance one drag frame moved, from wherever flet put it.
+
+    THE DEFECT THIS FUNCTION IS. The dock's grip handler read ``e.delta_y``,
+    and on the flet version this app ships (0.85) that attribute DOES NOT
+    EXIST — the event carries ``local_delta``/``global_delta`` (``Offset``
+    objects) instead. ``e.delta_y`` therefore evaluated to ``None`` on every
+    frame and ``self.height - None`` raised a TypeError inside the gesture
+    callback, where flet swallows it. The grip received the gesture perfectly
+    and then threw it away, which is exactly the reported symptom: "я не могу
+    ползунком менять высоту активити лога".
+
+    MEASURED, not guessed. A GestureDetector driven with a real pointer in a
+    served flet app reports, per frame:
+
+        delta_y=None  local_delta=Offset(x=0, y=-9.0)  global_delta.y=-81.0
+
+    So ``local_delta.y`` is the per-frame delta and ``global_delta.y`` is the
+    cumulative one — the local value is what a per-frame ``height - delta``
+    must use.
+
+    Every candidate is tried in order rather than pinning the one that works
+    today: this is precisely the kind of attribute rename that shipped the bug,
+    and a grip that silently stops working on a flet upgrade is the failure
+    being fixed. ``delta_y`` is kept FIRST so a flet that restores it is
+    honoured natively.
+    """
+    direct = getattr(e, "delta_y", None)
+    if isinstance(direct, (int, float)):
+        return float(direct)
+    for name in ("local_delta", "delta", "global_delta"):
+        offset = getattr(e, name, None)
+        y = getattr(offset, "y", None)
+        if isinstance(y, (int, float)):
+            return float(y)
+    primary = getattr(e, "primary_delta", None)
+    if isinstance(primary, (int, float)):
+        return float(primary)
+    return None
+
+
 def rows_for_height(height: float) -> int:
     """How many WHOLE log rows a console of this height shows.
 
@@ -369,7 +410,7 @@ class LogDock:
         """
 
         def on_drag(e) -> None:
-            delta = getattr(e, "delta_y", None)
+            delta = _drag_delta_y(e)
             if delta is None:
                 return
             # Dragging UP (negative delta) grows the console.
