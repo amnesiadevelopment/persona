@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-26
 **Ticket:** PS-189 (Theme 1, masking invisibility; roadmap `undetectable-masking`)
-**Branch basis:** `origin/main` @ `fa0a5e9`
+**Branch basis:** `origin/main` @ `880fd14`
 **Instruments (committed beside these records):**
 `scripts/ps189_realm_gpu.py` (loopback realm sweep),
 `scripts/ps189_live_creepjs.py` (live checker read through the proxied exit,
