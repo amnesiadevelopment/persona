@@ -770,3 +770,164 @@ def test_replay_partitions_EVERY_key_so_a_new_field_cannot_be_added_unclassified
     # The replay's own stamp is present and cannot be mistaken for the
     # measurement's moment.
     assert written["replayed_at"] not in (None, "", src_doc["measured_at"])
+
+
+# --------------------------------------------------------------------------
+# PS-192: a TRUNCATED run must not be able to report like a complete one
+# --------------------------------------------------------------------------
+#
+# The composition this closes has three parts, and none of them is wrong alone:
+#
+#   1. a process leak exhausts the machine mid-sweep;
+#   2. an exhausted launch degrades SILENTLY into a contentless
+#      TargetClosedError, so the later seeds come back None;
+#   3. `classify` CORRECTLY excludes unreadable cells from the statistics.
+#
+# Together: the later seeds are dropped and the verdict is computed from a
+# position-biased subset that comes back looking clean. Nothing in the output
+# said the sample had been truncated.
+#
+# The tests below are MUTATION tests, deliberately: each takes a complete
+# fixture, nulls part of it, and asserts the OUTPUT CHANGES. That is the shape
+# `readings/ps177-2026-08-25/derive.py:372 coverage_section()` failed — it
+# hardcoded "all four GPU arms returned 24/24 readable seeds", took no records
+# at all, and still printed 24/24 after a reviewer nulled 12 of 24 android
+# readings. A completeness claim that cannot go false is worse than none.
+
+def _complete_24():
+    """24 seeds, 6 evenly-used identities: a genuinely clean, complete arm.
+
+    SIX, not five, and the number is load-bearing. Five evenly-used identities
+    over 24 seeds collide 20.14% of the time — a hair ABOVE windows' 20.0% bar
+    — so that fixture is a TOO_NARROW finding, not the clean run these tests
+    need as their baseline. Six collides 16.7% and is a real pass. Measured
+    with `collision_probability`, not eyeballed: the truncation gate must be
+    demonstrated on a run that would otherwise be GREEN, or the test cannot
+    tell "lost the pass to truncation" from "never had a pass to lose".
+    """
+    seeds = tuple(range(9000, 9024))
+    return {"windows": {s: f"card{i % 6}" for i, s in enumerate(seeds)}}
+
+
+def test_a_complete_run_says_so_and_the_numbers_come_from_the_records():
+    result = v.classify(_complete_24())
+    cov = result["completeness"]
+
+    assert cov["complete"] is True
+    assert cov["seeds_requested"] == 24
+    assert cov["seeds_readable"] == 24
+    assert cov["seeds_unreadable"] == 0
+    assert cov["arms_truncated"] == []
+    # The stated sample size must be the REAL one, not a constant: this is the
+    # exact assertion derive.py's hardcoded sentence would have passed while
+    # lying, so it is pinned against the records it claims to describe.
+    assert cov["seeds_requested"] == sum(
+        e["seeds_requested"] for e in result["per_arm"].values()
+    )
+    assert v.exit_code_for(result) == v.EXIT_PASS
+
+
+def test_truncating_a_fixture_changes_the_output_and_removes_the_pass():
+    # THE MUTATION. Same arm, same identities, same everything — except the
+    # last 13 of 24 seeds could not be read, which is exactly what an
+    # exhausted machine produces. 11 readable still clears MIN_SEEDS (8), so
+    # WITHOUT this gate the arm judges and reports like a normal run.
+    complete = _complete_24()
+    clean = v.classify(complete)
+
+    truncated = {"windows": dict(complete["windows"])}
+    for i, seed in enumerate(sorted(truncated["windows"])):
+        if i >= 11:  # the seeds that ran LAST are the ones that die
+            truncated["windows"][seed] = None
+    result = v.classify(truncated)
+    cov = result["completeness"]
+
+    assert cov["complete"] is False, (
+        "a run that read 11 of 24 seeds reported as complete"
+    )
+    assert (cov["seeds_readable"], cov["seeds_requested"]) == (11, 24)
+    assert cov["arms_truncated"] == ["windows"]
+
+    # THE TICKET'S BAR, stated exactly: a run that read 11 of 24 seeds must not
+    # report like one that read 24.
+    assert v.format_result(result) != v.format_result(clean)
+    assert v.exit_code_for(result) != v.EXIT_PASS
+    assert v.exit_code_for(result) == v.EXIT_CANNOT_RUN
+
+
+def test_the_printed_output_names_the_truncation_rather_than_burying_it():
+    # A machine-readable flag nobody prints is not visibility. The operator
+    # reading stdout must be told, in words, that the sample was partial.
+    truncated = {"windows": {s: ("A" if i < 11 else None)
+                             for i, s in enumerate(range(9000, 9024))}}
+    text = v.format_result(v.classify(truncated))
+
+    assert "TRUNCATED" in text
+    assert "11" in text and "24" in text
+    # And the clean case must state its own completeness rather than staying
+    # silent — an absence a reader learns to skim past is not a signal.
+    assert "COMPLETE" in v.format_result(v.classify(_complete_24()))
+
+
+def test_completeness_is_computed_per_arm_not_from_a_healthy_total():
+    # One healthy arm must NOT be able to mask a truncated one. Summing first
+    # and judging the total is how a 24/24 windows arm hides a 12/24 android
+    # arm — the precise shape of the defect the reviewer found in derive.py.
+    mixed = {
+        "windows": {s: f"card{i % 5}" for i, s in enumerate(range(9000, 9024))},
+        "android": {s: (f"card{i % 5}" if i < 12 else None)
+                    for i, s in enumerate(range(8000, 8024))},
+    }
+    result = v.classify(mixed)
+    cov = result["completeness"]
+
+    assert cov["complete"] is False
+    assert cov["arms_truncated"] == ["android"], (
+        "the truncated arm was not named; a caller cannot re-run what it "
+        "cannot identify"
+    )
+    assert v.exit_code_for(result) != v.EXIT_PASS
+
+
+def test_truncation_does_not_erase_a_finding_it_only_removes_the_pass():
+    # Ordering matters and is asserted rather than assumed. Truncation can HIDE
+    # a defect; it can never INVENT one — so a partial run that still caught a
+    # CONSTANT arm must keep reporting that finding, not downgrade it to "we
+    # could not say".
+    truncated = {"windows": {s: ("one-card" if i < 11 else None)
+                             for i, s in enumerate(range(9000, 9024))}}
+    result = v.classify(truncated)
+
+    assert result["per_arm"]["windows"]["verdict"] == "CONSTANT"
+    assert result["findings"] == ["windows"]
+    assert result["completeness"]["complete"] is False
+    assert v.exit_code_for(result) == v.EXIT_FINDING
+
+
+def test_classify_still_excludes_unreadable_cells_from_the_statistics():
+    # DoD #4 GUARD. The remedy for the truncation blindness must NOT be to
+    # start counting None as a value — that exclusion is CORRECT and the ticket
+    # says so explicitly. This pins that the fix added a DISCLOSURE beside the
+    # statistics rather than changing them.
+    values = dict(zip(SEEDS, [str(i) for i in range(9)] + [None]))
+    entry = v.classify({"windows": values})["per_arm"]["windows"]
+
+    assert entry["seeds_requested"] == 10
+    assert entry["seeds_readable"] == 9
+    assert None not in entry["identities"]
+    assert entry["distinct_identities"] == 9
+    # The statistics are computed over the NINE readable cells, unchanged.
+    assert entry["collision_probability"] == pytest.approx(1 / 9)
+
+
+def test_an_all_unreadable_run_is_reported_as_truncated_too():
+    # The degenerate end of the same axis: nothing was read at all. It was
+    # already INCONCLUSIVE via MIN_SEEDS, but it must ALSO be visibly truncated
+    # — otherwise "we read none of it" is indistinguishable from "we read all
+    # of it and every cell was fine" in the completeness line.
+    result = v.classify({"windows": {s: None for s in SEEDS}})
+    cov = result["completeness"]
+
+    assert cov["complete"] is False
+    assert (cov["seeds_readable"], cov["seeds_requested"]) == (0, 10)
+    assert v.exit_code_for(result) == v.EXIT_CANNOT_RUN

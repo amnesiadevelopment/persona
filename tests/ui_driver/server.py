@@ -35,6 +35,14 @@ from dataclasses import dataclass
 
 from .watchdog import child_pids, reap_process_tree
 
+# The group-session kwargs come from the PRODUCT's own owner rather than being
+# restated here, so the tooling path and the product paths cannot drift: a fix
+# to one is a fix to both. `tests/` imports `src.*` throughout this suite.
+from src.services.browser.process_group import (  # noqa: E402
+    new_session_kwargs,
+    resolve_group,
+)
+
 #: How long to wait for the served app to answer on its port. The real app
 #: loads the container, purges trash, and paints a splash before serving, so
 #: this is generous — a slow CI box must not read as "web mode is broken".
@@ -108,7 +116,20 @@ class ServedApp:
 
         The descendants are therefore collected BEFORE anything is signalled:
         once the parent dies they are no longer reachable from the pid we hold.
+
+        PS-192 adds a GROUP backstop after the walk. The walk is still the
+        primary reaper and is still correct, but it can only see what is
+        reachable from the pid we hold AT THE MOMENT IT LOOKS — so a
+        grandchild that is spawned, or reparented, in the window between the
+        snapshot and the signal is invisible to it. The child now leads its own
+        session, so one `killpg` covers exactly that residue. Belt and braces
+        deliberately: this is the path that ran 12.5h on a user's workstation.
         """
+        # Resolved BEFORE anything is signalled, for the same reason the
+        # descendants are: once the leader is reaped and waited on, its pid can
+        # be recycled and must not be re-resolved into somebody else's group.
+        pgid = resolve_group(self.process.pid)
+
         if self.process.poll() is None:
             family = self.descendants()
             self.process.terminate()
@@ -125,6 +146,29 @@ class ServedApp:
             # Even an exited parent can leave a serving grandchild behind.
             for pid in self.descendants():
                 reap_process_tree(pid, grace=2.0)
+
+        self._reap_group(pgid)
+
+    def _reap_group(self, pgid: "int | None") -> bool:
+        """SIGKILL whatever is left in the served app's process group.
+
+        Runs AFTER the descendant walk, so by design it is normally a no-op
+        that finds an empty group — it exists for the residue the walk cannot
+        see. Never raises: a teardown that throws would mask the test failure
+        that sent us here.
+        """
+        if pgid is None:
+            return False
+        import signal
+
+        try:
+            os.killpg(pgid, getattr(signal, "SIGKILL", 9))
+            return True
+        except ProcessLookupError:
+            # An empty group is the SUCCESS case: the walk got everything.
+            return True
+        except Exception:
+            return False
 
 
 @contextlib.contextmanager
@@ -153,6 +197,15 @@ def serve_app(repo_root: str, home: str | None = None, patch: str = ""):
         stderr=subprocess.STDOUT,
         env=env,
         cwd=repo_root,
+        # PS-192: its own process group. This child starts flet, which starts
+        # its own children — and the driven tests additionally launch a
+        # playwright node driver with a chromium behind it. The descendant
+        # WALK below is the primary reaper and stays; the group is the
+        # BACKSTOP for what the walk structurally cannot see, because a
+        # descendant enumerated from the pid we hold is only visible while its
+        # parent is still alive. This is the TOOLING path — the class of
+        # process observed at 361% CPU for 12.5h on a user's workstation.
+        **new_session_kwargs(),
     )
     app = ServedApp(
         url=f"http://127.0.0.1:{port}/",

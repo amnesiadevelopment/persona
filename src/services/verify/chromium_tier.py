@@ -76,6 +76,11 @@ import tempfile
 import time
 from urllib.parse import urlparse
 
+from ..browser.process_group import (
+    popen_in_new_session,
+    reap_process_group,
+)
+
 # How long to wait for the engine to publish its DevToolsActivePort. The
 # AppImage extracts itself on first run, which is slow and happens exactly
 # once; a short timeout here would read as "chromium is broken" on a cold
@@ -148,10 +153,16 @@ def _ensure_display() -> "tuple[str, subprocess.Popen | None]":
         if os.path.exists(f"/tmp/.X{offset}-lock"):
             continue
         display = f":{offset}"
-        proc = subprocess.Popen(
+        proc = popen_in_new_session(
             ["Xvfb", display, "-screen", "0", "1920x1080x24"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            # Its own process group, so the teardown can signal the GROUP.
+            # Xvfb is not a leaf either — it is the X server every browser
+            # child here connects to, and a surviving one holds its lock file
+            # and keeps the display allocated (PS-192). The helper records the
+            # pgid at launch, while the leader is verifiably alive — see
+            # process_group.remember_group for why re-resolving later fails.
         )
         # Give it a moment to bind, then confirm it did not die immediately.
         deadline = time.monotonic() + 10.0
@@ -733,11 +744,19 @@ class ChromiumSession:
         self.dev_shm_waived = "--disable-dev-shm-usage" in args
         env = dict(os.environ, DISPLAY=display)
         try:
-            self._proc = subprocess.Popen(
+            self._proc = popen_in_new_session(
                 args,
                 env=env,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
+                # PS-192: chromium is a process TREE (zygote, gpu-process, one
+                # renderer per tab). Its own session makes that tree a group
+                # the teardown can address; without it `terminate()` reaps the
+                # parent and orphans ~35 processes per launch, which then
+                # exhaust the machine and degrade later launches into a
+                # contentless TargetClosedError. The helper also RECORDS the
+                # pgid while the leader is verifiably alive, which is what
+                # keeps the teardown working after the parent has exited.
             )
         except OSError as exc:
             raise ChromiumUnavailable(
@@ -884,12 +903,12 @@ class ChromiumSession:
     def _stop_browser(self) -> None:
         if self._proc is None:
             return
-        if self._proc.poll() is None:
-            self._proc.terminate()
-            try:
-                self._proc.wait(timeout=15)
-            except Exception:
-                self._proc.kill()
+        # PS-192: signal the GROUP, and do it even when poll() says the parent
+        # is already gone. The parent's exit status is not evidence about its
+        # children — a chromium whose parent died still has a zygote, a
+        # gpu-process and every renderer alive and reparented to init. The
+        # terminate -> wait -> kill escalation is preserved inside the reaper.
+        reap_process_group(self._proc, timeout=15)
         try:
             if self._proc.stderr is not None:
                 self._proc.stderr.close()
@@ -906,7 +925,10 @@ class ChromiumSession:
         # Only ever the one this run started; an inherited DISPLAY is None here
         # and is deliberately left alone.
         if self._xvfb is not None:
-            self._xvfb.terminate()
+            # PS-192: group teardown. A surviving Xvfb holds /tmp/.X<n>-lock,
+            # so a leaked one burns a display number on every run until the
+            # 20-slot search in _ensure_display runs out.
+            reap_process_group(self._xvfb, timeout=10)
             self._xvfb = None
 
     def _remove_profile_dir(self) -> None:

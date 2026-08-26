@@ -535,8 +535,12 @@ def _launch_outcome(profile) -> str:
         invisible_launch.spawn = original
     # A launch that got past the sentinel is not the path this check believes
     # it is driving; never leave a real engine running behind a check.
+    # PS-192: the GROUP, not the handle — spawn_browser returns a wrapper pid
+    # whose engine tree is what actually survives a bare terminate().
     with contextlib.suppress(Exception):
-        proc.terminate()
+        from ..browser.process_group import reap_process_group
+
+        reap_process_group(proc, timeout=10)
     raise BehaviourCheckError(
         "spawn_browser returned a live handle without reaching the engine "
         "spawn sentinel, so this check no longer drives the path it claims to."
