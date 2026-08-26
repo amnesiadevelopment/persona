@@ -372,7 +372,8 @@ def verify_file(path: str, digest: str | None, allow_missing: bool = False) -> b
 
 
 def atomic_replace(
-    src: str, dst: str, mode: int | None = 0o755, log=None
+    src: str, dst: str, mode: int | None = 0o755, log=None,
+    retain_backup: bool = False,
 ) -> bool:
     """Move `src` onto `dst` atomically, keeping a backup of `dst` so a failed
     swap restores the working artifact rather than losing it.
@@ -386,6 +387,30 @@ def atomic_replace(
     artifact. A `dst` that does not exist yet (a first install) is not an error:
     there is simply nothing to move aside. Returns True only when `dst` is the
     new artifact.
+
+    `retain_backup` — OPT-IN, and the default False is what keeps this change
+    invisible to everyone who does not ask for it. Without it the backup is
+    dropped the instant the replace succeeds, which means the FAILURE path
+    leaves a way back and the SUCCESS path leaves nothing: an artifact that is
+    authentically what CI published, passes its sha256, installs perfectly and
+    then does not work is unrecoverable. Pass True and `dst + ".bak"` SURVIVES
+    a successful replace, so the caller can offer a revert to it.
+
+    Deliberately a parameter rather than a behaviour change here, because this
+    helper has two callers and only one of them is in scope:
+
+        src/services/app_update/updater.py   the app AppImage   <- passes True
+        src/services/engine/updater.py       the ENGINE binary  <- does not
+
+    The engine caller is unchanged and still drops its backup exactly as
+    before; flipping the shared default would have silently altered engine
+    installs too.
+
+    Bounded to ONE retained artifact BY CONSTRUCTION, with no second cleanup
+    path and no timer: the backup is always taken at the same `dst + ".bak"`
+    path, so each retention OVERWRITES the last rather than accumulating. That
+    is the depth-not-duration policy the Firefox engine states in place at
+    browser/engine_install.py:628-631.
     """
 
     def say(msg: str) -> None:
@@ -401,8 +426,27 @@ def atomic_replace(
         try:
             if os.path.isdir(backup):
                 shutil.rmtree(backup, ignore_errors=True)
-            shutil.copy2(dst, backup)
+            # Stage the copy, then RENAME it into place. copy2 is NOT atomic:
+            # one that dies partway (ENOSPC on a ~200MB AppImage, and disk
+            # pressure is exactly the condition an update creates) leaves a
+            # TRUNCATED file at `backup`. That is only harmless while nobody
+            # reads it — and a retaining caller OFFERS this path to the
+            # operator as the way back, so a stump here is a revert that
+            # bricks the install. Worse, copying straight onto `backup` would
+            # destroy an ALREADY-GOOD retained build from an earlier update
+            # before failing, so deleting the partial afterwards cannot fix
+            # it: the good bytes are already gone. Renaming is atomic and
+            # same-filesystem by construction (both paths sit beside `dst`),
+            # so `backup` is only ever a COMPLETE artifact or the previous
+            # complete one.
+            tmp_backup = backup + ".tmp"
+            shutil.copy2(dst, tmp_backup)
+            os.replace(tmp_backup, backup)
         except Exception as e:
+            try:
+                os.remove(backup + ".tmp")
+            except OSError:
+                pass
             say(f"Update: couldn't back up the current version ({e}); aborting.")
             return False
     try:
@@ -427,7 +471,7 @@ def atomic_replace(
             except Exception:
                 pass
         return False
-    if had_previous:
+    if had_previous and not retain_backup:
         try:
             os.remove(backup)  # the new artifact is in place; drop the backup
         except OSError:
