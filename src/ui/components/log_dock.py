@@ -38,9 +38,12 @@ import flet as ft
 from ..log_console import (
     ROW_HEIGHT,
     SEV_COLOR,
+    TIER_READING,
     StreamState,
     event_row,
+    group_separator,
     parse_event,
+    tier_for_rows,
 )
 from ..theme.colors import COLORS
 
@@ -243,6 +246,18 @@ class LogDock:
         #: _on_scroll.
         self._user_scrolling = False
 
+        #: The lines the painted rows were built FROM. The dock otherwise keeps
+        #: only flet controls, which cannot be re-rendered at a different
+        #: density — and re-rendering at a different density is this
+        #: direction's entire behaviour. Retained so a tier change can rebuild
+        #: the same events at the new layout. Bounded by the same MAX_ROWS cap
+        #: the control list is.
+        self._painted_lines: list[str] = []
+        #: The profile the last painted row belonged to, so an APPEND can tell
+        #: whether it is continuing a run or starting one. Without it every
+        #: appended row would look like a new run and emit its own separator.
+        self._last_profile: str | None = None
+
         self.list = ft.ListView(
             controls=[],
             spacing=0,
@@ -434,19 +449,79 @@ class LogDock:
             ),
         )
 
+    @property
+    def rows(self) -> int:
+        """How many whole log rows the console is currently showing."""
+        return rows_for_height(self.height)
+
+    @property
+    def tier(self) -> str:
+        """Which row layout this console height calls for.
+
+        The direction in one line: the console does not just get TALLER, it
+        gets DIFFERENT — see :func:`..log_console.tier_for_rows`.
+        """
+        return tier_for_rows(self.rows)
+
+    def _rows_for(self, lines: list[str], tier: str, tail: bool = False) -> list:
+        """Render ``lines`` at ``tier``, with group separators where they help.
+
+        The separators are READING-only, and they are inserted when the profile
+        CHANGES rather than on a fixed interval — a run of eight events about
+        one machine gets one heading, not eight. ``tail`` continues the run
+        from the last profile already painted, so appending to the list cannot
+        emit a separator for a profile that is already at the bottom of it.
+        """
+        out: list = []
+        previous = self._last_profile if tail else None
+        for line in lines:
+            stamp, profile, _msg, _sev = parse_event(line, self.profiles)
+            if tier == TIER_READING and profile and profile != previous:
+                out.append(group_separator(profile, stamp))
+            if profile:
+                previous = profile
+            out.append(event_row(line, self.profiles, tier))
+        self._last_profile = previous
+        return out
+
     def set_height(self, height: float) -> None:
         """Apply a new open height, clamped. The grip's whole effect.
 
         Kept separate from the drag handler so the clamp is one testable thing
         rather than a expression buried in a gesture callback.
+
+        A height change can also change the TIER, which is this direction's
+        whole point — so when it does, the painted rows are re-rendered at the
+        new density. That rebuild is deliberately gated on the tier actually
+        changing: rebuilding on every drag frame would throw away the scroll
+        position ~10 times a second, which is the original "не адекватно
+        скролится" fault.
         """
+        before = self.tier
         self.height = max(MIN_HEIGHT, min(MAX_HEIGHT, int(height)))
         # A height the operator chose HIMSELF is what he wants back when the
         # window has room again — so the grip moves the desire, not just the
         # applied value. apply_window_height moves only the applied one.
         self._desired_height = self.height
         self.body.height = self.height
+        if self.tier != before:
+            self._repaint_tier()
+        # ONE update per frame, and it is the BODY: the rows live inside it, so
+        # a re-tier and a height change are carried by the same patch. Updating
+        # the root as well replaces the grip mid-gesture and Flutter's arena
+        # drops the drag — measured as 0px of travel.
         self._safe_update(self.body)
+
+    def _repaint_tier(self) -> None:
+        """Re-render every painted row at the current tier.
+
+        Rebuilds from the LINES the rows were made from, which the dock does
+        not otherwise retain — so they are kept for exactly this purpose.
+        """
+        if not self._painted_lines:
+            return
+        self._last_profile = None
+        self.list.controls = self._rows_for(self._painted_lines, self.tier)
 
     def apply_window_height(self, window_height: float | None) -> int:
         """Re-apply the rail budget for a window that just changed size.
@@ -705,8 +780,10 @@ class LogDock:
         rebuild = seq < self._seq or not self.list.controls
         arrived = 0
 
+        tier = self.tier
+
         if rebuild:
-            self.list.controls = [event_row(ln, self.profiles) for ln in lines]
+            self.list.controls = self._rows_for(lines, tier)
             arrived = len(lines)
         else:
             new = seq - self._seq
@@ -715,10 +792,17 @@ class LogDock:
                 # old lines, so a burst larger than the retained tail means the
                 # dropped ones are simply not available to paint.
                 fresh = lines[-new:] if new < len(lines) else list(lines)
-                self.list.controls.extend(
-                    event_row(ln, self.profiles) for ln in fresh
-                )
+                # Appending is what preserves scroll position (see the
+                # docstring), so a tier CHANGE cannot be handled here — it is
+                # handled by set_height, which rebuilds once when the tier
+                # actually changes rather than on every flush.
+                self.list.controls.extend(self._rows_for(fresh, tier, tail=True))
                 arrived = len(fresh)
+
+        # Retained so a TIER change can re-render these same events at the new
+        # density — see _repaint_tier. Capped exactly like the control list, so
+        # this cannot grow without bound behind a paused reader.
+        self._painted_lines = list(lines)[-MAX_ROWS:]
 
         self._seq = seq
         self.state.total = seq
