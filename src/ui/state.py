@@ -57,6 +57,13 @@ class AppState:
         self._log_lines: "deque[str]" = deque(
             _load_recent_log_lines(), maxlen=_MAX_LOG_LINES
         )
+        # How many lines this ring has EVER accepted, seed included. The
+        # Activity Log console appends the difference between this and what it
+        # last painted instead of re-rendering the tail, which is what lets a
+        # scroll position survive an arrival. A COUNTER rather than a text
+        # diff because two profiles can fail with byte-identical lines, and a
+        # diff would collapse them into one.
+        self._log_seq: int = len(self._log_lines)
         self._loading_profiles: set[str] = set()
         self._loading_lock = threading.Lock()
         self._log_lock = threading.Lock()
@@ -99,11 +106,19 @@ class AppState:
         stamp = time.strftime("%H:%M:%S")
         with self._log_lock:
             self._log_lines.append(f"{stamp}  > {message}")
+            self._log_seq += 1
             if force or now - self._last_log_ui_update >= 0.15:
                 self._last_log_ui_update = now
                 self._pending_log_flush = True
                 return True
         return False
+
+    #: How deep a tail the Activity Log console is fed. The old panel took 50
+    #: and painted 6 of them into a 150px box, which is why there was nothing
+    #: to scroll. The console retains its own bounded list (LogDock.MAX_ROWS),
+    #: so this only has to be deep enough to REBUILD a useful scrollback on a
+    #: cold start or after a wipe; steady-state growth is append-only.
+    FLUSH_TAIL = 600
 
     def flush_log(self) -> str | None:
         with self._log_lock:
@@ -111,7 +126,17 @@ class AppState:
                 return None
             self._pending_log_flush = False
             # deque doesn't support slicing; snapshot then take the tail.
-            return "\n".join(list(self._log_lines)[-50:])
+            return "\n".join(list(self._log_lines)[-self.FLUSH_TAIL :])
+
+    def log_seq(self) -> int:
+        """How many lines the ring has ever accepted.
+
+        The console diffs against this to know how many rows are NEW, so it can
+        append them and leave every existing row — and every scroll position —
+        where it is.
+        """
+        with self._log_lock:
+            return self._log_seq
 
     def get_all_log_lines(self) -> list[str]:
         with self._log_lock:
@@ -131,6 +156,10 @@ class AppState:
         until some later log line happens to arrive."""
         with self._log_lock:
             self._log_lines.clear()
+            # Backwards is the signal the console rebuilds on: the ring it was
+            # appending to is gone, so its painted rows are wiped names and
+            # must not survive the wipe.
+            self._log_seq = 0
             self._pending_log_flush = True
 
     def toggle_selection(self, name: str) -> None:

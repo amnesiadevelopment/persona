@@ -705,20 +705,20 @@ class App:
         )
 
     def _build_root_layout(self, r: UIRefs) -> ft.Control:
-        """PS-1 ROUND 2: the Activity Log as a console whose PLACEMENT is the
-        variable under comparison (see components/log_dock.py).
+        """The Activity Log as a full-width console docked along the bottom.
 
-        The console itself — collapsible with a live collapsed strip, aligned
-        scannable rows, and follow/pause scrolling with a way back to the tail
-        — is identical in all three; only where it sits and how big it is
-        changes, which is what the owner asked to choose between.
+        The log spans the WHOLE window under both the 200px rail and the page,
+        rather than living inside the rail. That is what frees the sidebar (its
+        bottom cluster no longer competes with a log panel for a fixed 200px of
+        width) and what gives the stream a reading line wide enough for the row
+        to have real columns — see components/log_dock.py.
         """
-        from .components.log_dock import VARIANT, LogDock
+        from .components.log_dock import LogDock
 
         r.log_toggle_btn.on_click = lambda _: self.h.toggle_log()
         self._sidebar_host = ft.Container(content=self._build_sidebar())
         self._page_host = ft.Container(expand=True)
-        self._dock = LogDock(VARIANT, on_fullscreen=self.h.open_log_fullscreen)
+        self._dock = LogDock(on_fullscreen=self.h.open_log_fullscreen)
         with contextlib.suppress(Exception):
             self._dock.set_profiles(p.name for p in self.pm.list_profiles())
 
@@ -732,25 +732,8 @@ class App:
             ],
         )
 
-        if VARIANT == "F":
-            # OVERLAY: the sheet floats ABOVE the page in a Stack, so opening
-            # it costs the page no height at all — the trade is that it covers
-            # content instead of displacing it.
-            return ft.Stack(
-                expand=True,
-                controls=[
-                    ft.Container(expand=True, content=upper),
-                    ft.Container(
-                        right=18,
-                        bottom=18,
-                        width=880,
-                        content=self._dock.root,
-                    ),
-                ],
-            )
-
-        # D and E: a band along the bottom, spanning sidebar AND page, so the
-        # log's width is no longer hostage to the 200px rail.
+        # The console is the LAST child of a full-height Column, so it spans
+        # sidebar AND page: the log's width is no longer hostage to the rail.
         return ft.Column(
             expand=True,
             spacing=0,
@@ -3663,13 +3646,18 @@ class App:
             self.state.schedule_refresh()
 
     def _flush_log(self) -> None:
-        """PS-1 ROUND 2: feed the console, and let IT decide about scrolling.
+        """Feed the Activity Log console, and let IT decide about scrolling.
 
-        The tail is handed over whole; LogDock.render() appends it into a
-        ListView it owns across flushes and honours the follow/pause decision,
-        so an operator who has scrolled up to read is not dragged back to the
-        bottom by the next arrival. The old sidebar refs are still painted
-        because the fullscreen dialog and the panic-wipe path read them.
+        The tail is handed over with the ring's sequence number, which is what
+        turns a flush into an APPEND: the console paints only the rows that are
+        genuinely new and leaves every existing row — and therefore every
+        scroll position the operator has established — exactly where it is. The
+        old panel replaced its whole child list here on every flush, up to every
+        ~0.15s while profiles launch, which is what made the region impossible
+        to read while it was busy.
+
+        The old sidebar refs are still painted because the fullscreen dialog and
+        the panic-wipe path read them.
         """
         text = self.state.flush_log()
         if text is not None and self.refs:
@@ -3678,7 +3666,7 @@ class App:
             if dock is not None:
                 with contextlib.suppress(Exception):
                     dock.set_profiles(p.name for p in self.pm.list_profiles())
-                dock.render(lines[-60:])
+                dock.render(lines, seq=self.state.log_seq())
             self.refs.log_list.controls = [
                 log_line_control(ln, wrap=False) for ln in lines[-14:]
             ]

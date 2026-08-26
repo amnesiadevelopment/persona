@@ -59,8 +59,15 @@ def build_sidebar(
     version_panel: ft.Control | None = None,
     on_logo_click: Callable[[], None] | None = None,
 ) -> ft.Container:
+    # SCROLLS rather than crushes. The rail is a hard 200px and nothing in it
+    # used to scroll, so when the window ran short the bottom cluster was pushed
+    # into the nav items and `trash` — the last entry — ended up flush against
+    # the engines dropdown. Giving the nav the flexible space AND its own
+    # scrollbar means a short window costs the nav a scroll gesture instead of
+    # costing the operator the gap between two unrelated controls.
     nav = ft.Column(
         spacing=6,
+        scroll=ft.ScrollMode.AUTO,
         controls=[
             _nav_button(key, icon, label, active_page == key, on_navigate)
             for key, icon, label in _NAV_ITEMS
@@ -116,11 +123,15 @@ def build_sidebar(
                 ),
                 ft.Divider(height=24, color=COLORS["border"]),
                 nav,
-                # Push the bottom cluster down, but keep a guaranteed gap + a
-                # hairline above it so the engines panel never sits flush against
-                # the 'connect' nav item when the window is short and the expand
-                # spacer collapses to nothing.
-                ft.Container(expand=True, height=16),
+                # The flexible spacer, and a gap that CANNOT collapse. `expand`
+                # yields all of its height when the window is short, so this
+                # container alone guaranteed nothing: measured at the app's own
+                # minimum size (1024x680), `trash` ended up 3px from the engines
+                # dropdown — two unrelated controls reading as one cluster. The
+                # spacer is now paired with a fixed 14px block that no layout
+                # pass can shrink, so the separation survives the crush.
+                ft.Container(expand=True),
+                ft.Container(height=14),
                 *(
                     [ft.Divider(height=1, color=COLORS["border"]), engine_panel]
                     if engine_panel is not None

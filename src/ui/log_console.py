@@ -1,32 +1,30 @@
-"""PS-1 round 2 — the Activity Log console: row layout and stream state.
+"""The Activity Log console: row layout, the profile parse, and stream state.
 
-Shared by all three round-2 directions, so the three differ in PLACEMENT and
-SIZING (what the owner asked to compare) rather than in row design, which he
-asked to be fixed the same way everywhere.
+Three things live here, one per property the owner asked the row to have.
 
-Three things live here, one per "must have" in the round-1 feedback:
-
-**The row (must-have 2).** A log line is stored as ``HH:MM:SS  > message`` — a
-single run of text, which is why a wide row read as "mostly empty space with
-the text lost in it": nothing in it was aligned to anything, so the eye had no
-column to run down. :func:`event_row` splits it into real columns — severity,
-profile, message, time — so a stack of rows forms vertical rulers and scanning
-becomes a straight line down one column instead of a re-read of every row.
+**The row.** A log line is stored as ``HH:MM:SS  > message`` — a single run of
+text, which is why a wide row read as "mostly empty space with the text lost in
+it": nothing in it was aligned to anything, so the eye had no column to run
+down. :func:`event_row` splits it into real columns — severity, profile,
+message, time — so a stack of rows forms vertical rulers and scanning becomes a
+straight line down one column instead of a re-read of every row.
 
 **The parse.** The profile name is not a field; it is buried in prose, in four
 different shapes ("Launching X", "X: ...", "... for X", "Session ended: X").
 :func:`parse_event` recovers it against the profiles that actually exist, so
 the profile column is real data rather than a guess at a prefix.
 
-**The stream (must-have 3).** :class:`StreamState` holds the follow/pause
-decision and the count of what arrived while paused. The behaviour it exists
-to support: follow the tail while the operator is at the bottom, stop dead the
-moment he scrolls up to read, and offer an explicit way back.
+**The stream.** :class:`StreamState` holds the follow/pause decision and the
+count of what arrived while paused. The behaviour it exists to support: follow
+the tail while the operator is at the bottom, stop dead the moment he scrolls
+up to read, and offer an explicit way back.
 
-GROWTH: no row here clamps, ellipsises or fixes a height. The message column
-wraps and the row grows taller. At dock width a real event (30-60 chars) sits
-well inside one line, so rows are uniform in practice without being uniform by
-force — the rare long line reflows instead of being silently swallowed.
+UNIFORM HEIGHT IS A FEATURE, NOT AN OVERSIGHT. Every row is exactly
+:data:`ROW_HEIGHT` tall and no column wraps. The console is watched while
+profiles launch, and a wrapping row changes the region's extent on every
+repaint — that jitter is a real part of what the owner called uncomfortable to
+read. A long message is therefore ellipsised rather than reflowed; the full
+line is always one click away in the fullscreen Activity Log.
 """
 
 from __future__ import annotations
@@ -54,14 +52,32 @@ SEV_COLOR = {
 
 MONO = "monospace"
 
+#: One row, always. See the module docstring — this is what stops the region
+#: from changing extent under a reader while events land.
+ROW_HEIGHT = 22
+
+#: The profile ruler. Wide enough for the names this product generates
+#: (``shop-de-03``, ``mail-us-011``) and fixed, because a column that resizes
+#: to its content is not a ruler.
+PROFILE_COL_WIDTH = 132
+
+#: Timestamps are fixed-width CONTENT (always 8 chars), so pinning this column
+#: cannot truncate anything — the one place a fixed width is safe.
+TIME_COL_WIDTH = 62
+
+#: The neutral stand-in for an event whose profile cannot be resolved. A
+#: placeholder, deliberately not a guess: a wrong name in a scanning column is
+#: worse than an admitted blank.
+NO_PROFILE = "—"
+
 
 def severity(message: str) -> str:
     """Classify one event message.
 
     Kept alongside (not merged into) ``log_format.log_message_color``: that one
     answers "what colour is this text", this one answers "what KIND of event is
-    this", which the dot, the collapsed strip and the digest column all need as
-    a value rather than as a hex string.
+    this", which the dot and the collapsed strip's pulse both need as a value
+    rather than as a hex string.
     """
     low = message.lower()
     if (
@@ -96,12 +112,15 @@ def severity(message: str) -> str:
 
 
 def parse_event(line: str, profiles: frozenset[str] | set[str]) -> tuple:
-    """Split a stored log line into (time, profile, message, severity).
+    """Split a stored log line into ``(time, profile, message, severity)``.
 
     ``profiles`` is the set of names that really exist, which is what makes
     this a parse rather than a guess: "Loaded 6 bookmarks, 0 pools for
     shop-us-01" has no delimiter that marks the name, and a prefix heuristic
     would read "Session ended" as a profile on the line right below it.
+
+    An event whose profile cannot be resolved against the roster returns an
+    empty profile, which the row renders as :data:`NO_PROFILE`.
     """
     stamp, sep, rest = line.partition("  > ")
     if not sep:
@@ -142,114 +161,83 @@ def parse_event(line: str, profiles: frozenset[str] | set[str]) -> tuple:
 
 
 def _dot(sev: str) -> ft.Container:
-    """The severity mark. 7px and top-margined so it sits on the first text
-    line even when the message wraps to a second."""
+    """The severity mark: 7px, vertically centred in a fixed-height row.
+
+    First thing in the row and ahead of all text, so a failure is findable in a
+    peripheral glance without reading a word.
+    """
     return ft.Container(
         width=7,
         height=7,
         border_radius=4,
         bgcolor=SEV_COLOR[sev],
-        margin=ft.Margin.only(top=5),
     )
 
 
-def event_row(
-    line: str,
-    profiles: frozenset[str] | set[str],
-    layout: str = "profile_first",
-) -> ft.Control:
-    """One event, as aligned columns.
+def _cell(text: str, **kw) -> ft.Text:
+    """One column's text: single line, ellipsised, never wrapped.
 
-    ``layout`` is the one knob the three directions turn, because the right
-    answer depends on how much width the direction has and on what its owner
-    is scanning FOR:
+    Every caller passes through here so no column can accidentally reflow and
+    make its row taller than its neighbours.
+    """
+    return ft.Text(
+        text,
+        font_family=MONO,
+        no_wrap=True,
+        max_lines=1,
+        overflow=ft.TextOverflow.ELLIPSIS,
+        **kw,
+    )
 
-    ``profile_first``
-        severity | PROFILE | message | time. The profile column is a fixed
-        left ruler, so the names stack vertically and "everything about
-        shop-de-03" is one glance down a column. For watching many profiles.
 
-    ``status_first``
-        severity | message | profile | time, with the message carrying the
-        weight. For a narrower column that shares its row, where WHAT happened
-        matters more than which profile it happened to.
+def event_row(line: str, profiles: frozenset[str] | set[str]) -> ft.Control:
+    """One event, as aligned columns of fixed height.
 
-    ``message_first``
-        severity | message ... | profile · time as a dim trailing tail. For a
-        reading surface, where the metadata should recede.
+    ``severity | PROFILE | message | time`` — the profile column is a fixed
+    left ruler, so names stack vertically and "everything about shop-de-03" is
+    one glance down a column rather than eight sentences to re-read. The
+    timestamp is right-aligned in its own column at the far edge, where it is
+    available without competing with the message for the eye.
     """
     stamp, profile, message, sev = parse_event(line, profiles)
 
-    time_text = ft.Text(
-        stamp,
-        size=10,
-        color=COLORS["text_sub"],
-        font_family=MONO,
-        no_wrap=True,
+    time_col = ft.Container(
+        width=TIME_COL_WIDTH,
+        alignment=ft.Alignment.CENTER_RIGHT,
+        content=_cell(stamp, size=10, color=COLORS["text_sub"]),
     )
-    # Timestamps are fixed-width CONTENT (always 8 chars), so pinning this
-    # column cannot truncate anything — the one place a fixed width is safe.
-    time_col = ft.Container(width=58, content=time_text)
-
-    profile_text = ft.Text(
-        profile or "—",
-        size=11,
-        color=COLORS["accent"] if profile else COLORS["text_sub"],
-        font_family=MONO,
-        selectable=True,
-    )
-    message_text = ft.Text(
-        message,
-        size=11.5,
-        color=(
-            COLORS["error"]
-            if sev == SEV_FAIL
-            else COLORS["text_main"]
-            if sev == SEV_OK
-            else COLORS["text_dim"]
+    profile_col = ft.Container(
+        width=PROFILE_COL_WIDTH,
+        content=_cell(
+            profile or NO_PROFILE,
+            size=11,
+            color=COLORS["accent"] if profile else COLORS["text_sub"],
         ),
-        font_family=MONO,
-        selectable=True,
     )
-
-    if layout == "profile_first":
-        controls = [
-            _dot(sev),
-            # Fixed so names form a ruler; the text WRAPS inside it, so a
-            # longer name makes the row taller instead of being cut.
-            ft.Container(width=132, content=profile_text),
-            ft.Container(expand=True, content=message_text),
-            time_col,
-        ]
-    elif layout == "status_first":
-        controls = [
-            _dot(sev),
-            ft.Container(expand=True, content=message_text),
-            ft.Container(width=118, content=profile_text),
-            time_col,
-        ]
-    else:  # message_first
-        controls = [
-            _dot(sev),
-            ft.Container(expand=True, content=message_text),
-            ft.Container(
-                content=ft.Text(
-                    f"{profile or '—'}  ·  {stamp}",
-                    size=10,
-                    color=COLORS["text_sub"],
-                    font_family=MONO,
-                ),
+    message_col = ft.Container(
+        expand=True,
+        content=_cell(
+            message,
+            size=11.5,
+            color=(
+                COLORS["error"]
+                if sev == SEV_FAIL
+                else COLORS["text_main"]
+                if sev == SEV_OK
+                else COLORS["text_dim"]
             ),
-        ]
+        ),
+    )
 
     return ft.Container(
-        padding=ft.Padding.symmetric(horizontal=14, vertical=3),
+        height=ROW_HEIGHT,
+        padding=ft.Padding.symmetric(horizontal=14, vertical=0),
         content=ft.Row(
             spacing=12,
-            # TOP, not CENTER: a wrapped message must push the row down with
-            # its columns still aligned to the first line.
-            vertical_alignment=ft.CrossAxisAlignment.START,
-            controls=controls,
+            # CENTER, and every cell is single-line: the row's height is the
+            # constant above and nothing in it can push that around.
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[_dot(sev), profile_col, message_col, time_col],
         ),
     )
 
