@@ -1,0 +1,87 @@
+{
+  "mode": "live",
+  "taken_at": "2026-08-26T22:54:07Z",
+  "display": ":98",
+  "credential_channel": "file:/workspace/_secrets/test-proxy.txt",
+  "proxy_endpoint": "socks5://127.0.0.1:34003",
+  "upstream_host": "gw.dataimpulse.com",
+  "relay": "src/services/proxy/bridge.ProxyBridge",
+  "engine_build": "151.0",
+  "exit": {
+    "ip": "188.146.164.8",
+    "hostname": "188.146.164.8.mobile.internet.t-mobile.pl",
+    "city": "Warsaw",
+    "region": "Mazovia",
+    "country": "PL",
+    "loc": "52.2298,21.0118",
+    "org": "AS12912 T-Mobile Polska S.A.",
+    "postal": "00-002",
+    "timezone": "Europe/Warsaw",
+    "readme": "https://ipinfo.io/missingauth"
+  },
+  "user_agent": "Mozilla/5.0 (X11; Linux x86_64; rv:151.0) Gecko/20100101 Firefox/151.0",
+  "callsite_patch": {
+    "seen": 1,
+    "applied": true
+  },
+  "records": [
+    {
+      "api": "creepjs-inline",
+      "realm": "creepjs-own-callsite",
+      "x": 0,
+      "y": 0,
+      "w": 17.066666666666666,
+      "h": 42.666666666666664,
+      "w_is_int": false,
+      "h_is_int": false,
+      "dbw": 256,
+      "dbh": 256,
+      "context_type": "webgl",
+      "canvas_class": "OffscreenCanvas",
+      "total_bytes": 2912,
+      "guard_eligible": 32,
+      "zeros": 2868,
+      "bytes_255": 12,
+      "bytes_1": 0,
+      "rgb_bytes": 2184,
+      "rgb_guard_eligible": 27,
+      "frame_url": "https://abrahamjuliot.github.io/creepjs/"
+    },
+    {
+      "api": "creepjs-inline",
+      "realm": "creepjs-own-callsite",
+      "x": 0,
+      "y": 0,
+      "w": 17.066666666666666,
+      "h": 42.666666666666664,
+      "w_is_int": false,
+      "h_is_int": false,
+      "dbw": 256,
+      "dbh": 256,
+      "context_type": "webgl2",
+      "canvas_class": "OffscreenCanvas",
+      "total_bytes": 2912,
+      "guard_eligible": 32,
+      "zeros": 2868,
+      "bytes_255": 12,
+      "bytes_1": 0,
+      "rgb_bytes": 2184,
+      "rgb_guard_eligible": 27,
+      "frame_url": "https://abrahamjuliot.github.io/creepjs/"
+    }
+  ],
+  "installed_realms": [
+    {
+      "realm": "top",
+      "wrapped": 2,
+      "frame_url": "https://abrahamjuliot.github.io/creepjs/"
+    }
+  ],
+  "frame_count": 1,
+  "gl": {
+    "version": "WebGL 1.0",
+    "vendor": "Mozilla",
+    "renderer": "llvmpipe, or similar"
+  },
+  "creep_webgl_row": "a8ee71dc"
+}
