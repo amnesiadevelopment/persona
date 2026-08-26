@@ -33,6 +33,7 @@ import time
 
 import pytest
 
+from src.core import platform as _platform
 from src.services.browser.process_group import (
     group_of,
     popen_in_new_session,
@@ -589,7 +590,16 @@ def _fork_child_that_spawns_and_exits(cfg, wf, stop_event=None):
 
 @pytest.mark.skipif(not hasattr(os, "killpg"), reason="POSIX process groups")
 @pytest.mark.skipif(
-    not hasattr(os, "fork"), reason="the fork launch path is POSIX-only"
+    not _platform.needs_fork_launch(),
+    reason=(
+        "the fork launch path is taken only where needs_fork_launch() is true "
+        "(Linux). Guarding on hasattr(os,'fork') is NOT equivalent and was "
+        "measured wrong: macOS HAS os.fork but needs_fork_launch() is False, so "
+        "InvisibleProcess takes the THREAD path, the stand-in _child runs in the "
+        "test runner's own thread, and its os._exit(0) kills pytest outright "
+        "(macOS CI aborted at 1m52s). start_own_session() would likewise move "
+        "persona's OWN session -- the exact hazard its docstring names."
+    ),
 )
 def test_the_firefox_fork_path_records_its_group_at_launch(monkeypatch):
     # The precondition assertion is what makes this test honest: it establishes
@@ -620,7 +630,16 @@ def test_the_firefox_fork_path_records_its_group_at_launch(monkeypatch):
 
 @pytest.mark.skipif(not hasattr(os, "killpg"), reason="POSIX process groups")
 @pytest.mark.skipif(
-    not hasattr(os, "fork"), reason="the fork launch path is POSIX-only"
+    not _platform.needs_fork_launch(),
+    reason=(
+        "the fork launch path is taken only where needs_fork_launch() is true "
+        "(Linux). Guarding on hasattr(os,'fork') is NOT equivalent and was "
+        "measured wrong: macOS HAS os.fork but needs_fork_launch() is False, so "
+        "InvisibleProcess takes the THREAD path, the stand-in _child runs in the "
+        "test runner's own thread, and its os._exit(0) kills pytest outright "
+        "(macOS CI aborted at 1m52s). start_own_session() would likewise move "
+        "persona's OWN session -- the exact hazard its docstring names."
+    ),
 )
 def test_the_firefox_fork_path_leaves_no_survivor_once_its_leader_is_reaped(
     monkeypatch,
