@@ -34,6 +34,17 @@ arms is wider than any layer-on/layer-off difference within it. **Do not read
 these four arms as a timing comparison** — they are four independent runs, not a
 matched pair, and N=4 cannot separate a layer cost from that spread.
 
+**It is also not plain Firefox's defect, and not the engine patches' alone.**
+[Arm C](#arm-c--the-stock-firefox-control) — the stock control the ticket asked
+for first — ran **upstream Firefox 151.0 with nothing of persona's in the
+process**, in this same headless GPU-less container, and it opened **five tabs
+without stalling** (tab 3 in 0.03s). Persona's *patched* engine, run bare over
+the same channel, did the same. So the container is not producing this on its
+own, and neither the masking layer nor the engine patches is required. **The
+suspect list is the launcher and the juggler channel** — and arm C changed the
+channel and the binary together, so it **narrows to those two without picking
+between them.**
+
 **One thing this record does NOT settle**, and it is stated up front rather than
 buried: every arm that reproduced the stall opened tabs through the **juggler
 automation channel** (`ctx.new_page()`), which is *not* the gesture the owner
@@ -57,9 +68,21 @@ and does not require persona's masking layer; whether the *browser* or the
 
 **The gap is material and cuts both ways.** A headless, GPU-less container can
 fail to show a defect a real Windows desktop does. It can *also* produce a stall
-of its own that a real desktop would not. This record therefore leans on the
-**control arm** — the same environment with and without persona — rather than on
-the bare fact that something stalled.
+of its own that a real desktop would not. This record therefore leans on
+**control arms** rather than on the bare fact that something stalled.
+
+**Be precise about what those controls hold constant, because an earlier draft of
+this record was not.** Arms A2/B/D/E/F compare the same environment **with and
+without persona's *masking layer*** — `PS171_LAYER=0` disables
+`install_firefox_layer` and nothing else. **Persona's patched engine and its
+launcher are CONSTANT across all five**, which are therefore *not* controlled by
+that axis: a stall originating in the engine patches or in the launcher would
+reproduce in every one of them and be attributed away. Saying "with and without
+persona" of those arms **overstated them**, and that wording is withdrawn.
+
+**The control that does move that axis is [arm C](#arm-c--the-stock-firefox-control),
+and it has now been run** — plain upstream Firefox with nothing of persona's in
+the process at all.
 
 ---
 
@@ -215,6 +238,8 @@ the proxied exit would have been mandatory with no direct-connection fallback.)
 | D | **OFF** | **headful** (Xvfb) | `new_page` | lifetime avg, **parent only** | tab1 1.8s, tab2 0.9s, **tab3 stalled** |
 | F | **OFF** | headless | `new_page` | **instantaneous**, whole tree | **the characterisation — below** |
 | E | OFF | headless | `window.open` | instantaneous, whole tree | **null instrument — see Limitations** |
+| **C1** | **n/a — stock Firefox** | headless | **`WebDriver:NewWindow`** (marionette) | instantaneous, whole tree | **ALL 5 TABS OPENED — no stall** |
+| **C2** | **n/a — bare patched binary** | headless | **`WebDriver:NewWindow`** (marionette) | instantaneous, whole tree | **ALL 5 TABS OPENED — no stall** |
 | **H** | OFF | headless | `new_page` (2 tabs only) | **both, side by side** | **instrument comparison — not a stall arm** |
 
 **Arm A's original reading was lost and its numbers are struck from this record.**
@@ -313,6 +338,52 @@ which rests on the **stall still occurring** with the layer absent — observed 
 arm D and arm F through `new_page` blocking and the tab-1 ping blocking on the
 automation channel, neither of which is a process count. The load-bearing finding
 is unaffected.
+
+### Arm C — the stock-Firefox control
+
+**This is the control the ticket asked for first, and earlier rounds of this
+record did not run it.** Every other arm launches through persona's
+`InvisiblePlaywright` launcher; `PS171_LAYER=0` removes the masking layer and
+nothing else, so **persona's patched engine and its launcher were constant across
+all of them**. A stall living in the engine patches or in the launcher would have
+reproduced in every arm and been attributed away. Arm C moves that axis.
+
+**Two runs, one file** (`c_stock.py` → `C_stock.txt`), both driven over
+**marionette** so the channel, gesture, instrument and profile flags are held
+constant and only the *binary* changes:
+
+| Run | Binary | Persona involvement | Result |
+|---|---|---|---|
+| **C1** | upstream Firefox 151.0 from `ftp.mozilla.org` | **none at all** | **`ALL_5_TABS_OPENED`** |
+| **C2** | persona's `firefox-20_151.0_20260817150018`, run **bare** | patched engine only — no launcher, no layer, no juggler | **`ALL_5_TABS_OPENED`** |
+
+**Both binaries report `Mozilla Firefox 151.0`**, so C1-vs-C2 is not a version
+comparison — it isolates persona's **engine patches**.
+
+**Neither stalled.** Tab 3 — the tab the owner reports, and the tab every juggler
+arm blocks on — opened in **0.03s** (C1) and **0.04s** (C2). Tab 1 kept answering
+`1+1` after every tab in both runs, and a 40s recovery watch on each caught no
+late-arriving stall.
+
+**What this licenses.** Plain upstream Firefox **does not stall on the third tab
+in this container** — the same headless, GPU-less, compositor-less container that
+produces the stall through persona's launcher. So the stall is **not a bare-Firefox
+defect persona merely inherits**, and it is **not the environment on its own**.
+And since C2 is persona's *patched* binary opening five tabs just as cleanly, **the
+engine patches alone do not produce it either.** Had C1 stalled, this record's
+conclusion would have changed outright; it did not.
+
+> **⚠️ WHAT THIS DOES *NOT* LICENSE — arm C narrows the stall, it does not
+> attribute it.** C2 differs from the juggler arms in **more than one variable at
+> once**: the launcher, the automation channel (marionette vs juggler) **and** the
+> profile prefs (`MOZ_DISABLE_CONTENT_SANDBOX=1` and the `user.js` listed in the
+> caption) all differ. A quiet C2 therefore narrows the stall to
+> **launcher-or-juggler and cannot pick between them.**
+>
+> In particular this is **not** "stock is fine, so persona's build is at fault."
+> Neither C arm uses juggler, so a quiet arm C is **equally consistent** with the
+> stall needing the juggler channel to be expressed at all — in which case arm C
+> simply cannot reach it. That reading is not excluded by anything here.
 
 ### Arm H — the two instruments do not count the same processes
 
@@ -495,6 +566,15 @@ wedged. "The browser stops responding" is therefore precise as *"the browser
 stops answering over the automation channel, and does not recover"* — the
 stronger claim about the browser's own main thread needs the next reading.
 
+**[Arm C](#arm-c--the-stock-firefox-control) does not close this gap either, and
+must not be read as if it did.** It was run over **marionette**, not juggler, so
+it changes the channel at the same time as it changes the binary. Its quiet
+result narrows the stall to **launcher-or-juggler without picking between them**,
+and it leaves the reading above — that the stall may need the juggler channel to
+be expressed at all — **fully open**. What arm C *does* settle is narrower and
+worth stating plainly: the stall is **not** plain Firefox's, and **not** the
+engine patches' alone.
+
 An arm to read `/proc/<tid>/wchan` at the stall (a futex pile-up would name a
 lock; a pipe/socket wait would name an unanswered IPC peer) was written and could
 not be run — the harness process was repeatedly reaped by the environment before
@@ -509,22 +589,30 @@ Also untested, deliberately: **Chromium** (out of scope) and **checker verdicts*
 ## What follows from this
 
 1. **Do not fix persona's per-tab spoof path on the strength of this ticket.**
-   The control arm says the stall does not need it.
-2. **The next reading is cheap and specific:** run `g_wchan.py` to a stall and
+   The layer-off arms say the stall does not need it.
+2. **Do not fix the engine patches on the strength of this ticket either.**
+   [Arm C](#arm-c--the-stock-firefox-control) ran persona's patched binary bare,
+   over marionette, and it opened five tabs without stalling.
+3. **The suspect list is now the launcher and the juggler channel — and the next
+   reading has to separate them, because arm C could not.** Run the juggler
+   gesture against a **stock** engine, or the marionette gesture *through*
+   persona's launcher: either one moves exactly one variable and turns arm C's
+   "launcher-or-juggler" into an attribution.
+4. **The next reading is cheap and specific:** run `g_wchan.py` to a stall and
    read the wait channels; and drive the tab-opening from the **UI** (or via
    `--new-tab` to a running instance with a session bus present) to settle
    browser-vs-channel. Both are one run each.
-3. **A reading on the owner's Windows machine remains worth taking** — this
+5. **A reading on the owner's Windows machine remains worth taking** — this
    container has no GPU and no compositor, and his report is from hardware that
    has both.
-4. **Sample `/dev/shm` and the crash-reporter directory in the next run.**
+6. **Sample `/dev/shm` and the crash-reporter directory in the next run.**
    Neither was recorded during these arms, so arm A2's engine loss has no
    attributable cause in this tree. Both are one line in the watchdog.
-5. **Re-run any arm you intend to compare on the SAME matcher.** Arms B/D
+7. **Re-run any arm you intend to compare on the SAME matcher.** Arms B/D
    (parent-only) and A2/E/F (whole tree) cannot be compared on `n`,
    `threads_total` or `rss_mb_total`. `h_matchers.py` shows the check that
    catches this in under ten seconds.
-6. **Record PIDs, and assert a clean box before launching.** Two one-line fixes
+8. **Record PIDs, and assert a clean box before launching.** Two one-line fixes
    to `abd_harness.py`, both learned the hard way in arm B:
    - **Keep the `pid` field it already parses.** The `"pid": int(f[0])` line
      reads a pid for every matched process and the `return {` block of
@@ -548,10 +636,12 @@ Also untested, deliberately: **Chromium** (out of scope) and **checker verdicts*
 | `F_new_page.txt` | Arm F — **the characterisation**: bounded deadline, tab-1 ping, recovery watch. Corrected instrument. |
 | `E1.txt` | Arm E — the **null instrument**, kept as the record of a failed measurement. |
 | `H_matchers.txt` | **Arm H — the instrument comparison.** Both matchers applied to one live engine at the same instant. Settles that `ps comm` counts the **parent only**. |
+| `C_stock.txt` | **Arm C — the stock-Firefox control.** Two runs in one file: **C1** upstream Firefox 151.0 (nothing of persona's) and **C2** persona's patched engine run bare. **Neither stalled.** Captioned with what the arm licenses and — importantly — what its marionette channel means it **cannot** attribute. |
 | `abd_harness.py` | Harness for arms **A (lost), B and D**. `ps pcpu` (**uncorrected** CPU) **and** `ps comm` (**parent-only** process matcher). |
 | `a2.py` | Harness for arm **A2**. Corrected `/proc`-delta instrument, whole-tree matcher, layer ON. |
 | `e2.py` | Harness for arms E/F. Corrected `/proc`-delta instrument, whole-tree matcher. |
 | `h_matchers.py` | Harness for arm **H**. Runs *both* matchers side by side and prints what each matched. |
+| `c_stock.py` | Harness for arm **C**. Drives a bare Firefox binary over **marionette** (no persona launcher), corrected `/proc`-delta instrument, whole-tree matcher keyed on the binary's own directory so each run counts only its own tree. |
 | `g_wchan.py` | Arm G — wait-channel dump at the stall. **Written, never successfully run.** |
 
 Every arm in this record now has both its **reading** and the **harness that
