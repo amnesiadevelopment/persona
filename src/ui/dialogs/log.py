@@ -146,20 +146,46 @@ def open_log_dialog(page: ft.Page, log_lines: list[str], profiles=None) -> None:
         on_change=lambda e: (state.update(query=e.control.value or ""), repaint()),
     )
 
-    profile_options = [ft.DropdownOption("", "all profiles")] + [
-        ft.DropdownOption(p, p) for p in sorted(profiles)
-    ]
-    profile_pick = ft.Dropdown(
-        options=profile_options,
-        value="",
-        width=190,
-        text_size=12,
-        border_color="transparent",
-        bgcolor=COLORS["input_bg"],
-        border_radius=4,
-        text_style=ft.TextStyle(font_family=MONO, color=COLORS["text_main"]),
-        on_change=lambda e: (state.update(profile=e.control.value or ""), repaint()),
-    )
+    # --- profile filter: the same borderless text pattern as the severities.
+    # Deliberately NOT a Dropdown. A dropdown is a bordered box that opens a
+    # second bordered box, which is the "рамки" complaint again; and the
+    # profiles are the log's own vocabulary, so showing them flat means he can
+    # SEE which machines are in this session instead of discovering them by
+    # opening a menu. It also keeps the whole header one control class: text
+    # that changes weight when it is on.
+    profile_texts: dict[str, ft.Text] = {}
+
+    def paint_profiles() -> None:
+        for key, t in profile_texts.items():
+            on = state["profile"] == key
+            t.color = COLORS["accent"] if on else COLORS["text_sub"]
+            t.weight = ft.FontWeight.BOLD if on else ft.FontWeight.NORMAL
+        with __import__("contextlib").suppress(Exception):
+            for t in profile_texts.values():
+                t.update()
+
+    def pick_profile(key: str):
+        def go(_):
+            state["profile"] = key
+            paint_profiles()
+            repaint()
+
+        return go
+
+    profile_row: list[ft.Control] = []
+    for key, label in [("", "all")] + [(p, p) for p in sorted(profiles)]:
+        profile_texts[key] = ft.Text(
+            label, size=11.5, font_family=MONO, no_wrap=True, max_lines=1
+        )
+        profile_row.append(
+            ft.Container(
+                on_click=pick_profile(key),
+                ink=True,
+                border_radius=3,
+                padding=ft.Padding.symmetric(horizontal=9, vertical=6),
+                content=profile_texts[key],
+            )
+        )
 
     header = ft.Row(
         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -186,7 +212,7 @@ def open_log_dialog(page: ft.Page, log_lines: list[str], profiles=None) -> None:
                 controls=[
                     *filter_row,
                     ft.Container(width=8),
-                    profile_pick,
+                    *profile_row,
                     ft.Container(width=220, content=search),
                     ft.IconButton(
                         icon=ft.Icons.CLOSE_FULLSCREEN,
