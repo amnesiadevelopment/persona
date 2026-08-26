@@ -171,20 +171,6 @@ class AppHandlers:
 
     # --- Log handlers ---
 
-    def toggle_log(self) -> None:
-        page = self._get_page()
-        refs = self._get_refs()
-        assert refs is not None and page is not None
-        self._state.log_collapsed = not self._state.log_collapsed
-        has_content = bool(refs.log_list.controls)
-        refs.log_column.visible = has_content and not self._state.log_collapsed
-        refs.log_toggle_btn.icon = (
-            ft.Icons.KEYBOARD_ARROW_RIGHT
-            if self._state.log_collapsed
-            else ft.Icons.KEYBOARD_ARROW_DOWN
-        )
-        page.update()
-
     def open_log_fullscreen(self) -> None:
         page = self._get_page()
         assert page is not None

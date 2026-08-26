@@ -13,19 +13,6 @@ def build_ui_refs(
     on_change_page: Callable[[int], None],
     file_picker: ft.FilePicker,
 ) -> UIRefs:
-    # No auto_scroll: the sidebar shows the last handful of lines and must not
-    # jitter to the bottom on every refresh. Roomier row spacing so wrapped lines
-    # stay legible instead of crowding together. The fullscreen dialog scrolls.
-    log_list = ft.ListView(
-        controls=[],
-        spacing=7,
-        padding=0,
-    )
-    log_toggle_btn = ft.TextButton(
-        "Activity Log",
-        icon=ft.Icons.KEYBOARD_ARROW_DOWN,
-        style=ft.ButtonStyle(color=COLORS["text_sub"]),
-    )
     return UIRefs(
         stats_text=ft.Text(
             get_string("total_profiles", count=len(pm.profiles)),
@@ -33,16 +20,6 @@ def build_ui_refs(
             color=COLORS["text_sub"],
         ),
         running_text=ft.Text("", size=12, color=COLORS["text_dim"]),
-        log_list=log_list,
-        log_column=ft.Container(
-            content=log_list,
-            visible=False,
-            padding=ft.Padding.symmetric(horizontal=12, vertical=10),
-            margin=ft.Margin.symmetric(horizontal=0, vertical=4),
-            border_radius=10,
-            bgcolor=COLORS["log_bg"],
-        ),
-        log_toggle_btn=log_toggle_btn,
         content_subtitle=ft.Text("", size=13, color=COLORS["text_sub"]),
         profile_list_area=ft.Column(
             spacing=10,
