@@ -969,8 +969,8 @@ def _apply_macos(staged: str, say) -> bool:
 
 
 def rollback_target() -> str:
-    """The retained previous .app bundle an operator can go BACK to, or "" when
-    there is nothing to go back to.
+    """The retained previous build an operator can go BACK to, or "" when there
+    is nothing to go back to.
 
     This is the whole "can I undo this app update?" question as one call —
     exactly as engine_install.rollback_target is for the Firefox engine, whose
@@ -980,9 +980,32 @@ def rollback_target() -> str:
     offered, because a revert with no retained bundle is a button that cannot
     work.
 
-    macOS only, and deliberately quiet: every failure to resolve an install
-    location answers "" rather than raising, because this is called to decide
-    whether to RENDER a control."""
+    macOS (.app bundle) and Linux (AppImage). The Linux arm is what makes the
+    row render there at all: _app_rollback_row is NOT platform-gated — it asks
+    this function and renders nothing when the answer is "" — so while this
+    early-returned on every non-macOS host, the control silently did not exist
+    for any Linux operator, on the platform that installs updates unattended
+    by default. Windows is still "" here on purpose: its fast path keeps a
+    `.prev` under its own scheme (fast_update.py) and its full-installer path
+    upgrades in place under Inno's AppId semantics, neither of which this
+    resolves.
+
+    Note the two retained artifacts are different KINDS — a .app is a
+    directory, an AppImage is a single executable file — so each arm tests for
+    what it actually keeps rather than sharing one existence check.
+
+    Deliberately quiet: every failure to resolve an install location answers ""
+    rather than raising, because this is called to decide whether to RENDER a
+    control."""
+    if _platform.IS_LINUX:
+        try:
+            target = installed_appimage_path()
+            if not target:
+                return ""
+            backup = target + ".bak"
+            return backup if os.path.isfile(backup) else ""
+        except Exception:
+            return ""
     if not _platform.IS_MACOS:
         return ""
     try:
@@ -999,6 +1022,27 @@ def rollback_target() -> str:
         return backup if os.path.isdir(backup) else ""
     except Exception:
         return ""
+
+
+def _remove_any(path: str) -> None:
+    """Delete `path` whatever KIND it is, quietly.
+
+    The revert machinery below is shared by two platforms that retain two
+    different kinds of artifact: a macOS .app is a DIRECTORY (rmtree), a Linux
+    AppImage is a single executable FILE (remove). Calling the wrong one raises
+    — rmtree on a file, remove on a directory — so every cleanup in this module
+    routes through here rather than assuming a kind. A symlink is unlinked
+    rather than followed, so a symlinked install location never causes a
+    recursive delete of whatever it points at."""
+    try:
+        if os.path.isdir(path) and not os.path.islink(path):
+            import shutil
+
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            os.remove(path)
+    except OSError:
+        pass
 
 
 def _restore_install_location(app: str, *candidates: str) -> str:
@@ -1024,9 +1068,12 @@ def _restore_install_location(app: str, *candidates: str) -> str:
     A destination that is unwritable rather than occupied (the volume going
     read-only mid-flight) is NOT recoverable by any rename, and this returns
     "" rather than pretending otherwise."""
-    import shutil
-
-    live = [c for c in candidates if c and os.path.isdir(c)]
+    # os.path.EXISTS, not isdir: this helper is shared with the Linux AppImage
+    # revert, whose retained artifact is a single executable FILE rather than a
+    # .app directory. An isdir filter would silently discard every candidate
+    # there and return "" without attempting a single rename — the "nothing
+    # could be put back" arm, reached without trying.
+    live = [c for c in candidates if c and os.path.exists(c)]
 
     def _try(cand: str) -> bool:
         try:
@@ -1039,13 +1086,7 @@ def _restore_install_location(app: str, *candidates: str) -> str:
         if _try(cand):
             return cand
     if live and os.path.exists(app):
-        try:
-            if os.path.isdir(app) and not os.path.islink(app):
-                shutil.rmtree(app, ignore_errors=True)
-            else:
-                os.remove(app)
-        except OSError:
-            pass
+        _remove_any(app)
         for cand in live:
             if _try(cand):
                 return cand
@@ -1053,8 +1094,23 @@ def _restore_install_location(app: str, *candidates: str) -> str:
 
 
 def revert_to_previous_build(log=None) -> str:
-    """Go BACK to the retained previous .app bundle. Returns the bundle path now
-    installed, or "" when the revert was refused or could not be completed.
+    """Go BACK to the retained previous build. Returns the path now installed,
+    or "" when the revert was refused or could not be completed.
+
+    Serves both platforms that retain something — the macOS .app bundle and the
+    Linux AppImage — off whatever rollback_target() resolves, so the mechanics
+    below are written in terms of the artifact rather than the bundle. The two
+    are different KINDS (a .app is a directory, an AppImage is a single
+    executable file), which is why every cleanup here routes through
+    _remove_any rather than calling rmtree directly: rmtree raises on a file,
+    and that raise would abort the very revert it was meant to tidy up for.
+
+    The RELAUNCH is the operator's, not ours, and deliberately so on both
+    platforms: this returns after the swap and says "restart persona to run
+    it". Reverting is a rename, so the process still running is the build being
+    reverted FROM — exec'ing into the restored one from here would kill the
+    running app mid-gesture, and on Linux _apply_linux's own relaunch comment
+    records what that costs when the cwd disappears underneath it.
 
     RENAME, NEVER COPY — and that is a correctness constraint, not a
     performance one. `ditto` is used for the forward swap precisely because it
@@ -1097,9 +1153,7 @@ def revert_to_previous_build(log=None) -> str:
     # the retained slot's new occupant, so the revert is itself reversible
     parked = app + ".reverting"
     try:
-        import shutil
-
-        shutil.rmtree(parked, ignore_errors=True)
+        _remove_any(parked)
         current_exists = os.path.exists(app)
         if current_exists:
             os.rename(app, parked)
@@ -1151,7 +1205,7 @@ def revert_to_previous_build(log=None) -> str:
             try:
                 os.rename(parked, target)
             except OSError:
-                shutil.rmtree(parked, ignore_errors=True)
+                _remove_any(parked)
     except OSError as e:
         _say(f"Update: couldn't go back to the previous version ({e}).")
         return ""
@@ -1340,8 +1394,26 @@ def _exit_for_relaunch(say) -> None:
 def _apply_linux(staged: str, extra_args, say) -> bool:
     """Replace the running AppImage with the staged download and re-exec into it
     — but ONLY after proving the new binary actually launches, and with the old
-    binary kept as a backup that is restored if the swap fails. This can never
-    leave a non-launchable AppImage in place (the v2.1.3 brick)."""
+    binary RETAINED: restored if the swap fails, and kept beside the new one if
+    it succeeds. This can never leave a non-launchable AppImage in place (the
+    v2.1.3 brick), and it always leaves a way back.
+
+    That second half is what this docstring used to promise and not deliver.
+    "kept as a backup that is restored if the swap fails" was true only of the
+    FAILURE path: the success path handed the swap to atomic_replace, which
+    dropped its backup the instant the replace returned. So the arm where
+    everything went wrong recovered cleanly and the arm where everything went
+    RIGHT kept nothing — and Linux is the one platform that installs unattended
+    by default (see the auto-update branch in ui/app.py), so it was also the
+    platform most likely to need a way back and the only one without one.
+    verify_appimage_runs catches a corrupt runtime BEFORE the swap, but its own
+    docstring bounds it precisely — it never runs the payload — so it cannot
+    catch a build that is authentically what CI published, passes its sha256,
+    extracts cleanly and then does not work. Pre-verification and reversibility
+    are complementary; this is the second one.
+
+    See rollback_target / revert_to_previous_build for the way back the
+    retention makes expressible."""
     target = installed_appimage_path()
     if target is None:
         say("Update: not running as an AppImage, can't self-replace.")
@@ -1369,9 +1441,29 @@ def _apply_linux(staged: str, extra_args, say) -> bool:
         return False
 
     # 2) Back up the working binary, then swap in the verified new one. If the
-    #    swap fails, the backup is restored so we never lose a launchable app.
-    if not atomic_replace(staged, target, mode=0o755, log=say):
+    #    swap fails, the backup is restored so we never lose a launchable app;
+    #    if it SUCCEEDS the backup now stays, which is the whole point of this
+    #    slice. retain_backup is opt-in precisely so the OTHER caller of this
+    #    shared helper — the engine binary install at
+    #    services/engine/updater.py — keeps dropping its backup exactly as
+    #    before rather than silently changing behaviour with us.
+    #
+    #    Pre-clean the revert's parked binary first, for the same reason
+    #    _apply_macos rmtree's `app + ".reverting"` beside its stale `.bak`: a
+    #    revert that is refused after moving the current binary aside can leave
+    #    one behind, and without this the only thing that would ever remove it
+    #    is the NEXT revert's own pre-clean — so an operator who reverted once
+    #    and never again would keep a whole extra AppImage forever. Bounding it
+    #    HERE, beside the retention it belongs to, is what keeps the policy a
+    #    DEPTH and not a duration: exactly one retained binary, replaced by each
+    #    update, with no second cleanup path and no timer.
+    _remove_any(target + ".reverting")
+    if not atomic_replace(
+        staged, target, mode=0o755, log=say, retain_backup=True
+    ):
         return False
+    say("Update: keeping the previous version — you can go back to it if the "
+        "new one doesn't work.")
 
     # 3) Re-exec exactly as launched. (Never force APPIMAGE_EXTRACT_AND_RUN — on
     #    a FUSE host it makes the runtime extract into a dir it can't and the
