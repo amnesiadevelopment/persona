@@ -778,20 +778,35 @@ __REALM_BOOTSTRAP__
 # The engine autobumps daily and could narrow its pool at any time, which would
 # silently cost us unlinkability on any arm listed here.
 #
-# `verify.engine_gpu_variance` is the check written for exactly that, and its
-# status must be read as it actually is, because this set is only as safe as
-# the thing watching it:
+# `verify.engine_gpu_variance` is the check written for exactly that, and since
+# PS-176 it IS WIRED TO A PATH THAT CAN GO RED. Its status, stated as it
+# actually is, because this set is only as safe as the thing watching it:
 #   * Its JUDGEMENT (`classify`) is pure and IS exercised in CI on every run,
 #     including the cases where it must go red.
-#   * Its READING (`measure`) needs the product's own engine, and CI provisions
-#     `browser_firefox` only. So it runs where the engine exists — an operator
-#     machine — via `python -m src.services.verify.engine_gpu_variance check`.
-#   * NOTHING RUNS IT ON THE BUMP PATH TODAY. `engine-autoupdate.yml` calls
-#     `engine_gate record`/`compare` and nothing else, so a bump that narrowed
-#     an engine-authored arm would NOT be failed by it. Wiring it there is the
-#     remaining step and is named here rather than quietly assumed.
-# Read that before treating an arm in this set as watched: the check exists and
-# can fail, but the daily bump is not currently gated on it.
+#   * Its READING (`measure`) needs the product's own engine, which CI does not
+#     provision for the normal test jobs (`browser_firefox` only, see ci.yml).
+#     It still runs on an operator machine via
+#     `python -m src.services.verify.engine_gpu_variance check`.
+#   * THE READING IS NOW GATED DAILY, by `.github/workflows/engine-gpu-variance.yml`
+#     (06:40 UTC). That job provisions the engine itself and measures the build
+#     UPSTREAM IS SERVING RIGHT NOW — deliberately UNPINNED, because the risk is
+#     `/releases/latest` and a pin is exactly what would hide it. A narrowed arm
+#     fails that job; an under-sampled run fails it too, so "we failed to look"
+#     cannot wear the colour of "we looked and it was fine".
+#     (NOT `engine-autoupdate.yml`: that job bumps FIREFOX and never touches
+#     fingerprint-chromium, so a chromium check there could never fire on the
+#     event it exists to catch.)
+#
+# ⚠️ WHAT IS STILL NOT COVERED, so this set is not read as safer than it is:
+# DETECTION IS DAILY, INSTALLATION IS HOURLY. `app.py:_check_engines_periodic`
+# polls every hour, unattended, and installs whatever upstream published, with
+# `policy.KNOWN_BAD_VERSIONS` empty and no ceiling. So a bad build can reach
+# machines up to ~24h before the gate reads it. That window is not closable by
+# measuring at install time — you cannot seed-vary a build before installing it,
+# and a 15-launch measurement inside an unattended install would wedge the app.
+# The remedy for a red run is to name the tag in `policy.KNOWN_BAD_VERSIONS`,
+# which every chromium install passes through and which refuses a build by name
+# without waiting for a persona release.
 ENGINE_AUTHORED_IDENTITY_ARMS = frozenset({"windows"})
 
 
