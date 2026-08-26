@@ -68,17 +68,21 @@ def test_a_known_pool_arm_whose_bar_cannot_be_read_is_inconclusive_not_ok(
 ):
     # THE BAR DISAPPEARING MUST NOT READ AS THE BAR BEING MET.
     #
-    # fallback_pool_size SCRAPES the pool literals out of gpu_ext's emitted
-    # source, so any reformatting there — a changed indent, a trailing comment,
-    # a reflow — can make its regex miss and return 0. Before this was fixed,
-    # bar_for then returned None, classify's TOO_NARROW branch was skipped for
-    # want of a bar, and the arm fell through to `else: OK`.
+    # fallback_pool_size reads the pool's size out of gpu_ext.GPU_POOLS — the
+    # tagged Python records the emitted JS is rendered from — so it returns 0
+    # when the arm's name in _POOL_VAR_FOR_ARM is absent from that registry, or
+    # names a pool that is empty. (Until PS-190 it SCRAPED the emitted JS with a
+    # regex and a reflow of the literals could make it miss; that failure mode
+    # is gone, but the contract below is deliberately KEPT — a name missing from
+    # the registry still has to read as "we failed to look".) Before this was
+    # fixed, bar_for then returned None, classify's TOO_NARROW branch was
+    # skipped for want of a bar, and the arm fell through to `else: OK`.
     #
     # That silently downgrades this gate from "did it vary at LEAST as well as
     # the pool we gave up?" to "did it vary AT ALL?" — and the weaker question
     # is demonstrably insufficient: macos varies (2 distinct values) while two
     # profiles collide 76.9% of the time, so it passes "varied" and fails the
-    # bar. Simulate the drift by making the scrape miss.
+    # bar. Simulate the drift by making the size unreadable.
     monkeypatch.setattr(v, "fallback_pool_size", lambda arm: 0)
 
     # Readings that are otherwise perfectly healthy: 10 seeds, 5 evenly-used
@@ -93,9 +97,19 @@ def test_a_known_pool_arm_whose_bar_cannot_be_read_is_inconclusive_not_ok(
     )
     assert result["inconclusive"] == ["windows"]
     assert v.exit_code_for(result) == v.EXIT_CANNOT_RUN
-    # The detail must name the actual cause so the next reader fixes the scrape
-    # rather than hunting the engine.
-    assert "fallback_pool_size" in entry["detail"]
+    # The detail must name the actual cause so the next reader repairs the
+    # registry drift rather than hunting the engine. Pin the two symbols an
+    # operator would have to look at — the registry the size is read from, and
+    # the map that claims this arm has a pool — because the REMEDY is what this
+    # message exists to deliver. Naming a symbol that no longer exists sends
+    # them to fix code that is not there (PS-190 code review).
+    detail = entry["detail"]
+    assert "gpu_ext.GPU_POOLS" in detail, detail
+    assert "_POOL_VAR_FOR_ARM" in detail, detail
+    # And it must NOT resurrect the pre-PS-190 remedy: there is no regex and no
+    # scrape in fallback_pool_size any more.
+    assert "regex" not in detail, detail
+    assert "scrape" not in detail, detail
 
 
 def test_a_missing_bar_does_not_downgrade_a_constant_arm_to_inconclusive(
@@ -126,15 +140,15 @@ def test_an_arm_with_no_pool_by_design_is_not_forced_inconclusive(monkeypatch):
     assert v.exit_code_for(result) == v.EXIT_PASS
 
 
-def test_has_known_pool_agrees_with_the_arms_the_scrape_can_actually_read():
+def test_has_known_pool_agrees_with_the_arms_whose_size_can_actually_be_read():
     # has_known_pool is what promotes a 0 into a finding, so it must not claim
-    # an arm the scrape cannot in fact read — that would make every run of a
+    # an arm whose size cannot in fact be read — that would make every run of a
     # healthy gate INCONCLUSIVE. Assert the two agree on the shipped source.
     for arm in ("windows", "macos", "linux", "android"):
         assert v.has_known_pool(arm) is True
         assert v.fallback_pool_size(arm) > 0, (
-            f"{arm} is declared a known-pool arm but its size scrapes as 0 — "
-            "the regex and the map have drifted apart"
+            f"{arm} is declared a known-pool arm but its size reads as 0 — "
+            "_POOL_VAR_FOR_ARM and gpu_ext.GPU_POOLS have drifted apart"
         )
 
 
