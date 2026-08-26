@@ -20,7 +20,28 @@ committed records. Nothing is hand-typed. Re-derive with:
 - `derived-output.ps186.txt` — output of this ticket's instrument
 - `take-sweep.sh` — the instrument that produced `matrix/` (copied verbatim from
   PS-177 so the sweep is reproducible from this directory alone)
-- `sweep.log` — the run's own transcript
+
+### ⚠️ `sweep.log` was listed here and does not exist — withdrawn
+
+An earlier version of this list named `sweep.log`, "the run's own transcript".
+**It was never committed** — not on this branch and not on any other
+(`git log --all --diff-filter=A -- '*sweep.log'` finds only PS-177's copy). The
+claim is withdrawn rather than satisfied: the sweep is over, so a file produced
+now would be a *reconstruction* of a transcript presented as the transcript,
+which on an evidence ticket is worse than the missing file.
+
+**Three claims in this document quoted that log and are therefore NOT
+independently verifiable.** They are flagged in place below rather than deleted,
+because they are true to the best of my recollection of the run and deleting them
+would hide that a reader once had them:
+
+1. the printed firefox machine-axis collapse (§"Not covered");
+2. the two `proxy bridge: REFUSED a local connection from peer port …` lines;
+3. the credential-file-vs-`PERSONA_TEST_PROXY` disagreement.
+
+Each is marked **[UNVERIFIABLE — rested on `sweep.log`]** at its site. Everything
+else in this file re-derives from the committed records with the two instruments
+above, and that is unaffected.
 
 ---
 
@@ -233,6 +254,57 @@ economical explanation is the pool change — they refused the *old* exits, not 
 harness — which is itself a small measured consequence of the mobile→residential
 move. **The structurally-unobtainable list is 6, not 8.**
 
+### The stale 8 was encoded in the suite, and these records turned it red
+
+This is not only a documentation correction. The old figure was pinned as a
+committed assertion in `tests/test_verify_matrix_diff.py:1374`:
+
+```python
+SILENT_READABLE = {
+    "bot-detector.rebrowser.net",
+    "deviceandbrowserinfo.com",
+    "tools.scrapfly.io",
+}
+```
+
+— the readable-tier checkers that had *never once answered in any committed
+record*. Adding this sweep's records falsified that for two of the three, and
+**four tests went red** as a direct result:
+
+```
+test_silence_pass_names_exactly_the_three_readable_tier_checkers
+test_silence_pass_reports_unreadable_tier_as_carried_not_as_findings
+test_cli_silence_exits_3_over_the_committed_corpus
+test_format_silence_keeps_the_two_populations_apart
+```
+
+That is the **sharpest available confirmation of this section**: the silence lane
+ranges over the whole corpus, so it re-measured the claim independently and
+disagreed with the constant. Re-measured through the module itself
+(`silence_pass` over all 33 records):
+
+| | before | after |
+|---|---|---|
+| silent population | 8 | **6** |
+| findings (readable tier, never answered) | 3 | **1** |
+| carried (unreadable tier, by design) | 5 | 5 |
+
+All **19** newly-`read` rows (14 rebrowser, 5 deviceandbrowserinfo) come from
+`readings/ps186-2026-08-26/`; the pre-existing corpus still holds **zero**. So the
+two were genuinely silent when that constant was written and are not now — a
+corpus fact that moved, not a redefinition. `tools.scrapfly.io` remains at 0 rows
+across all 33 records and correctly stays a finding.
+
+The constant has been updated to the measured set, and the two count literals
+(`== 8`, `== 3`) replaced with expressions over the constants — the file's own
+header already warns that an AC keyed on a moving count "would already be a false
+RED pointing at nothing", which is exactly what happened here.
+
+**Not** resolved by removing the assertion: intermittent is not silent, and AC3
+(`test_a_checker_read_in_some_records_is_not_silent`) is the test that keeps that
+distinction, so re-adding the two on the argument that they are "usually"
+unreachable is specifically ruled out in a comment at the site.
+
 This matters beyond bookkeeping: both newly-readable checkers **fire adverse
 verdicts**, so PS-16's "only two adverse markers fire anywhere in the whole
 matrix" is no longer true.
@@ -341,15 +413,138 @@ here rather than patched into it, so PS-177's output remains reproducible.
 
 ---
 
+## 7. ⛔ PRIORITY 1 — the byte census: NOT CAPTURED, and the blocker is not the credential
+
+The planner (08:21:59Z) and the researcher (09:00:38Z) superseded this ticket's
+priority 1. The withdrawn item was "a third firefox seed"; the replacement was:
+
+> a byte census of the readback region CreepJS samples, on Firefox — how many
+> bytes are in that region, and how many satisfy `v > 1 && v < 254`.
+
+**It is not captured.** The researcher's instruction allowed exactly two
+outcomes — take it, or "say so with what you tried and stop". This is the
+second, with what was tried.
+
+### The credential was NOT the obstacle — it is live
+
+Stated first because it is the thing a reader will assume. Probed before any of
+this work, per the ticket's own gate, `socks5h` rewritten in the caller,
+per-call, no direct fallback:
+
+```
+curl -x "socks5h://…" https://api.ipify.org   ->  83.175.188.131
+```
+
+Authenticates cleanly. No `User was rejected by the SOCKS5 server (1 3)`. **So
+this non-capture would not have been fixed by a working proxy, and re-running the
+sweep will not produce the census.** The obstacle is in the harness.
+
+### What the existing harness can and cannot do
+
+Three findings, each from source rather than from a failed run:
+
+1. **The checker tier cannot execute JS on a checker page at all.**
+   `browser_tier.py:32-40` records it as a measured constraint:
+   *"`page.evaluate` is not available, so the page is read as TEXT … Measured:
+   `Page.evaluate: call to eval() blocked by CSP` on a real checker page under
+   the engine's context, and `bypass_csp` in the context kwargs does not lift
+   it."* Every prose checker is read through `inner_text`. A census is a
+   computation over a `Uint8Array` inside the page realm; there is no seam in
+   this tier that can run one on creepjs.net.
+
+2. **The record schema has nowhere to put it.** A reading row is exactly
+   `{adverse, checker, item, reason, sort, state}` (verified across all 8
+   records). `webgl_pixel_hash` arrives as `value: "51df3565"` — the *hash*,
+   which is the thing that collides, and never the buffer behind it. No field
+   carries a byte count, and `grep` for the census statistic across
+   `checker_cli.py` / `matrix.py` returns nothing.
+
+3. **The only code in the repo that computes this statistic is loopback-only and
+   is the wrong geometry.** `probes.py:490` — `if(v>1&&v<254)mid++` — is exactly
+   the census predicate, and `webgl.readback` already returns
+   `{digest, bytes, mid}`. But it runs on the loopback probe page
+   (`local_probe.py:400`, bound to `127.0.0.1`) over that probe's **own 32×32
+   draw: 3072 of 4096 bytes eligible**. CreepJS's region is a different shape
+   entirely. Pointing it at creepjs.net is not a configuration change — the
+   probe page is *served by us*, which is why it can run JS at all.
+
+So capturing the census needs either a JS seam on a CSP-locked third-party page,
+or a census field threaded through the record schema and a probe rebuilt at
+CreepJS's geometry. **Both are "build a second instrument", which the researcher
+explicitly forbade inside this ticket.** I stopped rather than build one, and
+rather than substitute a loopback reading — also explicitly forbidden, and note
+that finding 3 is precisely the substitution on offer, which is why it is named
+here instead of quietly reported as the answer.
+
+### What IS known, so the next ticket does not start from zero
+
+The census has two halves and they are in very different states.
+
+**Half 1 — the region size — is settled arithmetic and needs no measurement.**
+From CreepJS's own source (`src/webgl/index.ts:355`), it reads
+`readPixels(0, 0, drawingBufferWidth/15, drawingBufferHeight/6)`; off its 256×256
+OffscreenCanvas that truncates to 17×42:
+
+```
+17 x 42 x 4 = 2856 bytes      row = 17 x 4 = 68 bytes ( = 4 x the old _STRIDE of 17)
+```
+
+**Half 2 — the eligible count — has a number in the source, and its provenance
+does not support the claim the census was asked to settle.**
+`webgl_ext.py:45` and `native_mask_probe.py:576` both state *"only 16 of its 2856
+bytes pass the guard"*, attributed to *"Measured on a real engine"* (PS-97,
+landed `a321941`, 2026-08-23). Two reasons that is not the requested reading:
+
+- **The engine is unstated, and the chronology makes Firefox unlikely.** PS-78
+  wired the Firefox perturbation on 2026-08-22/23 (`firefox_webgl_init_script`
+  first appears in `3cf3ce0`/`01b10cd`); PS-97 landed 2026-08-23. The commit body
+  says "on a real engine" and "Shared body, so both engines" — a statement about
+  the *perturbation* being shared, not evidence that the *census* was taken on
+  Firefox. The researcher asked for Firefox specifically.
+- **It is a property of the CONTENT, not a constant.** 16/2856 describes one
+  drawn frame. The whole point of the question is whether that region is starved
+  *on this engine, in this container*, which is what separates the two live
+  candidates.
+
+**So the honest state is: half 1 known and re-derivable, half 2 exists only as a
+same-geometry figure of unestablished engine provenance.** That is materially
+better than "unknown", and materially short of the measurement requested.
+
+### Which candidate this leaves open
+
+The census was to separate two explanations of the Firefox collision, and it does
+not. Both remain live:
+
+- **the perturbation is invisible there** — too few eligible bytes in the sampled
+  region for the delta to land in (leading hypothesis; the `16 eligible` figure,
+  if it holds on Firefox, is exactly this);
+- **the delta never reaches the page realm on Firefox at all** — worse, different
+  fix.
+
+§1's n=4 result does not discriminate between them and is not offered as if it
+did — see the DoD note on that. **The instrument that would settle it is a
+Firefox-arm probe at CreepJS's 17×42 geometry reporting `mid`**, which is a small
+ticket precisely because `probes.py` already computes `mid` and
+`native_mask_probe.py` already reproduces that geometry as a fixture. It is a
+loopback instrument, so it needs no credential — which is the one piece of good
+news here.
+
+---
+
 ## Not covered, and why
 
 Nothing was lost to the exit. These are unreadable **by construction**:
 
 - **firefox / macos and firefox / linux — the configuration does not exist.**
   `InvisiblePlaywright` has no OS parameter (product issue #211); firefox presents
-  Windows whatever is requested. The sweep printed the collapse and wrote
-  `declared_machine_honoured: false`. *The engine cannot do this* — not an exit
-  failure.
+  Windows whatever is requested. *The engine cannot do this* — not an exit failure.
+
+  The **outcome** is verifiable from the committed records and does not rest on
+  the withdrawn log: both firefox records carry `declared_machine_honoured: false`
+  while all six chromium records carry `true`, and the directory holds 2 firefox
+  records rather than 6 — which is the collapse itself, in the artifacts.
+  Only the claim that the sweep **printed** the collapse to its transcript is
+  **[UNVERIFIABLE — rested on `sweep.log`]**.
 - **Any mobile arm.** This tier exposes no `device_type` selector, so every record
   it can produce is desktop. `windows`+`mobile` — the arm PS-161 round 4 repaired
   — remains unreadable here. Explicitly out of scope in the ticket.
@@ -387,7 +582,11 @@ Nothing was lost to the exit. These are unreadable **by construction**:
 - The harness reported, on every record: **the credential file and
   `PERSONA_TEST_PROXY` hold different credentials.** It used the file and said so.
   Consistent with the standing rule never to read the env var.
+  **[UNVERIFIABLE — rested on `sweep.log`]** — the records carry the exit that
+  resulted, not the harness's own stderr, so nothing committed re-derives this.
 - `proxy bridge: REFUSED a local connection from peer port … it does not belong to
   browser process …` appears on 2 records. That is the bridge's peer-ownership
   guard refusing a connection it cannot attribute to the browser — **not** a
   credential failure; both records wrote normally at 45 read immediately after.
+  **[UNVERIFIABLE — rested on `sweep.log`]** — the "wrote normally at 45 read"
+  half IS in the records; the REFUSED lines themselves are not.

@@ -216,8 +216,29 @@ collided by chance" explanation is dead.
 **The chromium control, from the same script over the same corpus, moves the opposite way:** 18
 readings across 5 distinct seeds produce **5 distinct hash values** — `f801a1b3` @1337, `a96eedf0`
 @2024, `b8dba17f` @9001, `c893e6c9` @5150, `6ba330fa` @24601. Every chromium seed reads its own
-value; every firefox seed reads the same one. So this is a masking gap on the firefox leg, not a
+value; every firefox seed reads the same one. So this is a property of the firefox leg, not a
 constant of the checker — measured on both engines, per the two-engine rule.
+
+**State this as a DELIVERED, WIRED PERTURBATION THAT A CHECKER CANNOT OBSERVE — not as a missing
+feature.** The distinction is the whole finding, and "masking gap" (the phrasing this patch carried
+in review) reads as *absent*, which is measurably wrong:
+
+- the firefox readback perturbation EXISTS — `firefox_webgl_init_script`, `webgl_ext.py:268`;
+- it SHIPS UNCONDITIONALLY — installed at `invisible_launch.py:3345`, on the ordinary launch path,
+  behind no flag;
+- it landed in **PS-78, merged 2026-08-23T01:47Z**, and **all four collision readings post-date that
+  merge** — 1337/4242 on 08-23 (ps128, 21:42Z/21:46Z, after the merge) and 5150/24601 on 08-26.
+
+So the correct sentence is *"we shipped it, it is wired, and the checker cannot see it"* — which is
+both sharper and more actionable than *"we never delivered it"*: it moves the open question from
+"why was this not built" to "where does the delta go", and those have different fixes. PS-182
+established the first two points; PS-186 supplies the fourth firefox seed and the chromium control.
+
+**What the sweep could NOT settle** (see `EVIDENCE.md` §7): the byte census of the region CreepJS
+samples was the reading that would separate *the perturbation is invisible in that region* from *the
+delta never reaches the page realm on firefox at all*. It was **not captured** — the checker tier
+cannot execute JS on a CSP-locked third-party page, and the record schema has no field for a byte
+count. Do NOT record this cell as though the mechanism were known.
 
 **Owned by PS-182.** No longer blocked on the proxy and no longer bounded at n=2: the measurement
 PS-182 was waiting for exists. Re-derive with `readings/ps186-2026-08-26/derive_ps186.py` §1.
@@ -303,6 +324,17 @@ listed as refusing our SOCKS exit, and that was measured against the OLD pool �
 exits, not our harness. The mobile→residential credential change is the most economical explanation.
 The other six still hold (browserscan 401, amiunique/coveryourtracks click-gated, whoer Cloudflare —
 out of scope by charter, fv.pro paywalled, scrapfly ruleset).
+
+**The stale 8 was not only written here — it was pinned in the test suite**, as `SILENT_READABLE` at
+`tests/test_verify_matrix_diff.py:1374`, the set of readable-tier checkers that had never once
+answered in any committed record. Adding PS-186's records falsified it for two of the three and
+turned **four tests red**, which is the sharpest confirmation of this correction available: the
+silence lane ranges over the whole corpus and re-measured the claim independently. Re-measured
+through `silence_pass` over all 33 records, the silent population is **8 → 6** and the findings
+**3 → 1** (the carried five are unchanged, so the whole move is in the readable tier). All 19
+newly-`read` rows come from `readings/ps186-2026-08-26/` and the pre-existing corpus holds zero —
+a corpus fact that moved, not a redefinition. The constant has been updated and the count literals
+replaced with expressions over it; `tools.scrapfly.io` stays, at 0 rows across all 33 records.
 ```
 
 Then, in *"Basis for the one measured row"*, replace:
