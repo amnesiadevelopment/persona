@@ -136,6 +136,123 @@ def test_has_known_pool_agrees_with_the_arms_the_scrape_can_actually_read():
         )
 
 
+def test_the_pool_size_is_reported_per_generation_not_as_one_number():
+    # THE DEFECT THIS PINS. `fallback_pool_size` scraped `unmaskedVendor`
+    # occurrences and never looked at `since:`, so it counted entries that NO
+    # EXISTING PROFILE CAN BE PICKED ONTO. After PS-183 widened MAC_GPUS from 2
+    # to 11 with nine `since=1` entries, that made bar_for("macos") report 9.1%
+    # while every macOS profile that already existed sat in a 2-entry pool
+    # colliding at 50.0% — the helper advertised unlinkability those profiles
+    # do not have.
+    #
+    # Asserted as a RELATIONSHIP to gpu_ext's own filter rather than against
+    # the literals 2 and 11: hardcoding those would make this test restate the
+    # pool instead of checking the mechanism, and it would go red on the next
+    # legitimate widening for no reason.
+    from types import SimpleNamespace
+
+    from src.models.hardware_generation import (
+        CURRENT_HARDWARE_GENERATION,
+        visible_entries,
+    )
+
+    for arm in ("windows", "macos", "linux", "android"):
+        sizes = v.pool_sizes_by_generation(arm)
+        assert sizes, f"{arm}: the per-generation scrape returned nothing"
+
+        # Every reported size must equal what gpu_ext's OWN filter yields.
+        sinces = v._pool_entry_generations(arm)
+        entries = [SimpleNamespace(since=s) for s in sinces]
+        for gen, n in sizes.items():
+            assert n == len(visible_entries(entries, gen)), (
+                f"{arm} gen {gen}: reported {n} entries, but the shipped "
+                f"filter yields {len(visible_entries(entries, gen))}"
+            )
+
+        # The default must be the CURRENT generation's pool, not the raw list.
+        assert v.fallback_pool_size(arm) == len(
+            visible_entries(entries, CURRENT_HARDWARE_GENERATION)
+        )
+
+    # And the split must actually be VISIBLE on a widened arm — a helper that
+    # merely accepts a generation argument while reporting one number would
+    # pass every assertion above.
+    macos = v.pool_sizes_by_generation("macos")
+    assert len(macos) > 1, (
+        "macos was widened across a generation boundary by PS-183, so its "
+        "pool has more than one size; a single entry here means the `since:` "
+        "scrape stopped seeing the tags"
+    )
+    assert macos[0] < macos[max(macos)], (
+        "the older generation must see FEWER entries than the newer one"
+    )
+
+
+def test_an_existing_profiles_smaller_pool_is_not_hidden_behind_the_new_bar():
+    # The number the gate compares against is the NEWEST generation's, which is
+    # the right question for "should we defer this arm?" but is NOT a claim
+    # about the installed base. That distinction has to survive in the OUTPUT,
+    # or the only record of it is a docstring nobody reads at 3am.
+    result = v.classify(_arm(["c0", "c1", "c2", "c3", "c4"] * 2, arm="macos"))
+    entry = result["per_arm"]["macos"]
+
+    # The split rides the reading, so an ARCHIVED record carries it too.
+    assert entry["pool_sizes_by_generation"] == v.pool_sizes_by_generation("macos")
+
+    # And it is printed, with the older generation's worse figure spelled out
+    # rather than left for the reader to divide.
+    text = v.format_result(
+        {"arms_checked": ["macos"], "per_arm": {"macos": entry}}
+    )
+    assert "gen 0: 2 entries, 50.0%" in text, text
+    assert "NOT one size" in text, text
+
+
+def test_a_single_generation_arm_does_not_print_a_meaningless_split():
+    # Printing "gen 0: 5 entries" on every unwidened arm would train the reader
+    # to skip the line — and this line only earns its space by being rare.
+    entry = v.classify(_arm(["c0", "c1", "c2", "c3", "c4"] * 2))["per_arm"][
+        "windows"
+    ]
+    assert len(entry["pool_sizes_by_generation"]) == 1
+    text = v.format_result(
+        {"arms_checked": ["windows"], "per_arm": {"windows": entry}}
+    )
+    assert "NOT one size" not in text, text
+
+
+def test_a_disagreeing_entry_scrape_reads_as_failed_to_look_not_as_empty(
+    monkeypatch,
+):
+    # The two regexes (per-entry, and the cruder unmaskedVendor count) can
+    # drift apart under reformatting. Believing whichever ran last would report
+    # a pool size no pool has — so a disagreement must fail SAFE, into this
+    # module's standing "we failed to look" answer, never into a small pool
+    # (which would LOWER the bar) or a large one (which would raise it).
+    real = gpu_ext._CONTENT_SCRIPT
+    # Add an unmaskedVendor occurrence INSIDE the pool block that the entry
+    # regex cannot match as a `{ ... }` record, so the two counts disagree.
+    # It must land inside the block: the scrape only ever looks between
+    # `var ANDROID_GPUS = [` and its closing `];`, so a stray outside that
+    # span is correctly ignored and would not exercise this path at all.
+    broken = real.replace(
+        "  var ANDROID_GPUS = [\n",
+        "  var ANDROID_GPUS = [\n    // stray unmaskedVendor in a comment\n",
+    )
+    assert broken != real, "fixture no longer matches the source"
+    monkeypatch.setattr(gpu_ext, "_CONTENT_SCRIPT", broken)
+
+    assert v._pool_entry_generations("android") is None
+    assert v.pool_sizes_by_generation("android") == {}
+    assert v.fallback_pool_size("android") == 0
+    assert v.bar_for("android") is None
+
+    # ...and that 0 must reach the verdict as INCONCLUSIVE, not as a pass.
+    result = v.classify(_arm(["c0", "c1", "c2", "c3", "c4"] * 2, arm="android"))
+    assert result["per_arm"]["android"]["verdict"] == "INCONCLUSIVE"
+    assert v.exit_code_for(result) == v.EXIT_CANNOT_RUN
+
+
 # --------------------------------------------------------------------------
 # Collision probability — the metric, and WHY it is not a distinct count
 # --------------------------------------------------------------------------
