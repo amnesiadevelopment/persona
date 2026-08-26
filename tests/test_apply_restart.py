@@ -65,13 +65,20 @@ def test_restores_backup_when_replace_fails(monkeypatch, tmp_path):
     target, staged = _stub_target(monkeypatch, tmp_path)
     monkeypatch.setattr(au, "verify_appimage_runs", lambda p, **k: True)
     real_replace = au.os.replace
-    calls = {"n": 0}
 
+    # Fail the STAGED->TARGET swap specifically, keyed on the source path
+    # rather than on a call ORDINAL. The backup is now staged at
+    # `target + ".bak.tmp"` and renamed into place (a partially-copied backup
+    # must never be left where rollback_target() would offer it as a way
+    # back), so os.replace is called twice and the swap is no longer the
+    # first one. Counting calls made this abort during the BACKUP instead,
+    # which returns False and restores nothing — the test would still have
+    # gone green on `target == b"old"` while measuring the wrong path
+    # entirely.
     def replace(src, dst):
-        calls["n"] += 1
-        if calls["n"] == 1:
+        if str(src) == str(staged):
             raise OSError("Text file busy")  # the staged->target swap fails
-        return real_replace(src, dst)  # the backup->target restore succeeds
+        return real_replace(src, dst)  # backup staging + restore both succeed
 
     monkeypatch.setattr(au.os, "replace", replace)
     msgs = []
