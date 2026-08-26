@@ -1,0 +1,16 @@
+START arm H | both matchers, same instant, one real engine (layer OFF, headless)
+ENGINE_DIR=/home/yatfa/.cache/invisible-playwright
+PURPOSE: settle whether `n` is comparable across arms B/D and arms A2/E/F.
+LAUNCH 2.56s | the engine returned a Browser (no add_init_script, no pages), so ONE explicit context was opened to carry the layer
+--- tab 1 open | t=4.4
+    ps comm      n=1   pids=[3791]
+    /proc cmdline n=6   pids=[3791, 3835, 3893, 3899, 3907, 3941]
+    SEEN ONLY BY /proc cmdline (n=5): [[3835, "Socket Process"], [3893, "forkserver"], [3899, "WebExtensions"], [3907, "RDD Process"], [3941, "Web Content"]]
+    seen only by ps comm (n=0): []
+--- tab 2 open | t=5.6
+    ps comm      n=1   pids=[3791]
+    /proc cmdline n=11  pids=[3791, 3835, 3893, 3899, 3907, 3941, 3990, 4023, 4028, 4042, 4044]
+    SEEN ONLY BY /proc cmdline (n=10): [[3835, "Socket Process"], [3893, "forkserver"], [3899, "WebExtensions"], [3907, "RDD Process"], [3941, "Web Content"], [3990, "Web Content"], [4023, "Utility Process"], [4028, "Web Content"], [4042, "Web Content"], [4044, "Web Content"]]
+    seen only by ps comm (n=0): []
+
+RESULT {"arm": "H", "ps_comm_n": {"tab1": 1, "tab2": 1}, "proc_cmdline_n": {"tab1": 6, "tab2": 11}, "matchers_agree": false}

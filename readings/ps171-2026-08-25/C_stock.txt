@@ -1,0 +1,150 @@
+# ============================================================================
+# ARM C — THE STOCK-FIREFOX CONTROL. Harness: `c_stock.py`. Channel: MARIONETTE.
+#
+# TWO RUNS IN ONE FILE, IN THIS ORDER:
+#     C1_stock    upstream Firefox 151.0 from ftp.mozilla.org — NOTHING of
+#                 persona's involved: not the launcher, not the masking layer,
+#                 not the patched engine.
+#     C2_patched  persona's engine build (`firefox-20_151.0_20260817150018`)
+#                 executed DIRECTLY as a bare binary — no persona launcher, no
+#                 masking layer, no juggler.
+#
+# BOTH BINARIES REPORT `Mozilla Firefox 151.0`, so C1-vs-C2 is NOT a version
+# comparison. It isolates persona's ENGINE PATCHES with the channel, the
+# gesture, the instrument and the profile flags held constant.
+#
+# OUTCOME OF BOTH: `ALL_5_TABS_OPENED`. No stall in either. Tab 3 — the tab the
+# owner reports and the tab every juggler arm blocks on — opened in 0.03s (C1)
+# and 0.04s (C2), and tab 1 kept answering `1+1` after every single tab.
+#
+# ---------------------------------------------------------------------------
+# WHAT THIS ARM LICENSES, AND WHAT IT DOES NOT. READ BEFORE USING THE RESULT.
+#
+# IT LICENSES (this is the falsification the ticket asked for):
+#   * Plain upstream Firefox 151.0 does NOT stall on the third tab in this
+#     container. So the stall is not a bare-Firefox defect that persona merely
+#     inherits, and it is not the container's headlessness or its missing GPU
+#     on its own — this arm has both and does not stall.
+#   * The ENGINE PATCHES alone do not produce it: C2 is persona's patched
+#     binary and it opened five tabs as cleanly as stock did.
+#
+# IT DOES *NOT* LICENSE:
+#   * Any clean attribution of the stall to the launcher. C2 differs from the
+#     juggler arms in MORE THAN ONE VARIABLE AT ONCE — the launcher, the
+#     automation channel (marionette vs juggler) and the profile prefs below
+#     ALL differ. A quiet C2 therefore narrows the stall to
+#     "launcher-or-juggler" and CANNOT pick between them.
+#   * "Stock is fine, therefore persona's build is at fault." Neither C arm
+#     uses juggler, so a quiet arm C is equally consistent with the stall
+#     needing the juggler channel to be EXPRESSED AT ALL — in which case this
+#     arm simply cannot reach it.
+#
+# ---------------------------------------------------------------------------
+# INSTRUMENT: the CORRECTED whole-process-tree sampler (instantaneous
+# utime+stime deltas from /proc/<pid>/stat), the same one arms A2/E/F use — NOT
+# the `ps pcpu` lifetime average of arms B/D. The matcher keys on the directory
+# the binary lives in, so each run counts ITS OWN tree and never the other's.
+#
+#     this file (instantaneous) : cpu / rss_mb / thr / n
+#
+# `n` here IS comparable with A2/E/F and is NOT comparable with B/D.
+#
+# ---------------------------------------------------------------------------
+# CONDITIONS THAT DIFFER FROM THE JUGGLER ARMS — these are part of the confound
+# named above, recorded so nobody has to reconstruct them from the harness:
+#     MOZ_DISABLE_CONTENT_SANDBOX=1   (both C arms)
+#     MOZ_HEADLESS=1, MOZ_CRASHREPORTER_DISABLE=1
+#     user.js: checkDefaultBrowser=false, dataSubmissionEnabled=false,
+#              resume_from_crash=false, telemetry.enabled=false,
+#              marionette.port=<per-arm>
+#
+# A NOTE ON `marionette.port`, because it cost a run: Firefox does NOT read
+# `MOZ_MARIONETTE_PORT`. An earlier C1 attempt set that variable, Firefox
+# listened on the default 2828 anyway, the harness dialled 2830, and the run
+# reported "marionette never listened" against a browser that was perfectly
+# healthy. The port is set as a PREF here. That failure is not in this file —
+# it produced no data — but the trap is worth the four lines.
+#
+# ---------------------------------------------------------------------------
+# GESTURE: `WebDriver:NewWindow {type: tab}` — marionette's tab open. This is
+# NOT the owner's gesture (he clicks), and it is NOT `ctx.new_page()` (what the
+# juggler arms use). Each open runs under a hard 40s SIGALRM deadline, so a
+# stall would have been OBSERVED and interrogated rather than waited on. After
+# every tab the harness switches to tab 1 and evaluates `1+1` — the same
+# "does the rest of the browser still answer" discriminator the juggler arms
+# use — then switches back.
+#
+# RECOVERY WATCH: 40s of sampling after the last tab, on both arms, so a
+# late-arriving stall would still have been caught. None arrived.
+# ============================================================================
+# ==== RUN C1_stock — upstream Firefox 151.0 (nothing of persona's) ====
+LAUNCH 0.57s | {'applicationType': 'gecko', 'marionetteProtocol': 3}
+  WD {"t": 2.4, "n": 12, "cpu": 0.0, "rss_mb": 977.7, "thr": {"S": 230, "R": 3, "D": 1}, "phase": "session"}
+--- tab 1 at t=2.4s
+    new_tab True in 0.0s
+  WD {"t": 2.5, "n": 12, "cpu": 215.1, "rss_mb": 995.8, "thr": {"S": 235}, "phase": "tab1"}
+TAB {"tab": 1, "t_new_tab_s": 0.0, "new_tab_ok": true, "goto_ok": true, "t_goto_s": 0.04, "ping_tab0_ok": true, "t_ping_tab0_s": 0.01, "procs": {"t": 2.5, "n": 12, "cpu": 215.1, "rss_mb": 995.8, "thr": {"S": 235}, "phase": "tab1"}}
+--- tab 2 at t=2.5s
+    new_tab True in 0.03s
+  WD {"t": 2.6, "n": 12, "cpu": 225.3, "rss_mb": 1014.8, "thr": {"S": 237, "R": 2, "D": 1}, "phase": "tab2"}
+TAB {"tab": 2, "new_tab_ok": true, "t_new_tab_s": 0.03, "goto_ok": true, "t_goto_s": 0.01, "ping_tab0_ok": true, "t_ping_tab0_s": 0.02, "procs": {"t": 2.6, "n": 12, "cpu": 225.3, "rss_mb": 1014.8, "thr": {"S": 237, "R": 2, "D": 1}, "phase": "tab2"}}
+--- tab 3 at t=2.6s
+    new_tab True in 0.03s
+  WD {"t": 2.7, "n": 12, "cpu": 170.0, "rss_mb": 1028.5, "thr": {"S": 233, "R": 2}, "phase": "tab3"}
+TAB {"tab": 3, "new_tab_ok": true, "t_new_tab_s": 0.03, "goto_ok": true, "t_goto_s": 0.01, "ping_tab0_ok": true, "t_ping_tab0_s": 0.02, "procs": {"t": 2.7, "n": 12, "cpu": 170.0, "rss_mb": 1028.5, "thr": {"S": 233, "R": 2}, "phase": "tab3"}}
+--- tab 4 at t=2.7s
+    new_tab True in 0.08s
+  WD {"t": 2.8, "n": 13, "cpu": 145.7, "rss_mb": 1120.6, "thr": {"S": 255, "R": 3}, "phase": "tab4"}
+TAB {"tab": 4, "new_tab_ok": true, "t_new_tab_s": 0.08, "goto_ok": true, "t_goto_s": 0.03, "ping_tab0_ok": true, "t_ping_tab0_s": 0.01, "procs": {"t": 2.8, "n": 13, "cpu": 145.7, "rss_mb": 1120.6, "thr": {"S": 255, "R": 3}, "phase": "tab4"}}
+--- tab 5 at t=2.8s
+    new_tab True in 0.2s
+  WD {"t": 3.1, "n": 14, "cpu": 163.5, "rss_mb": 1240.6, "thr": {"S": 276, "R": 6}, "phase": "tab5"}
+TAB {"tab": 5, "new_tab_ok": true, "t_new_tab_s": 0.2, "goto_ok": true, "t_goto_s": 0.02, "ping_tab0_ok": true, "t_ping_tab0_s": 0.02, "procs": {"t": 3.1, "n": 14, "cpu": 163.5, "rss_mb": 1240.6, "thr": {"S": 276, "R": 6}, "phase": "tab5"}}
+--- recovery watch 40s
+  WD {"t": 7.1, "n": 17, "cpu": 16.9, "rss_mb": 1415.0, "thr": {"S": 349}, "phase": "recovery"}
+  WD {"t": 11.1, "n": 17, "cpu": 5.8, "rss_mb": 1340.5, "thr": {"S": 347}, "phase": "recovery"}
+  WD {"t": 15.2, "n": 17, "cpu": 4.2, "rss_mb": 1336.2, "thr": {"S": 348}, "phase": "recovery"}
+  WD {"t": 19.2, "n": 17, "cpu": 2.5, "rss_mb": 1334.8, "thr": {"S": 344}, "phase": "recovery"}
+  WD {"t": 23.2, "n": 17, "cpu": 4.1, "rss_mb": 1335.7, "thr": {"S": 344}, "phase": "recovery"}
+  WD {"t": 27.2, "n": 17, "cpu": 2.8, "rss_mb": 1335.4, "thr": {"S": 344}, "phase": "recovery"}
+  WD {"t": 31.2, "n": 17, "cpu": 4.7, "rss_mb": 1340.4, "thr": {"S": 341, "R": 1}, "phase": "recovery"}
+  WD {"t": 35.2, "n": 17, "cpu": 77.3, "rss_mb": 1541.1, "thr": {"S": 338}, "phase": "recovery"}
+  WD {"t": 39.3, "n": 17, "cpu": 5.7, "rss_mb": 1409.9, "thr": {"S": 337}, "phase": "recovery"}
+  WD {"t": 43.3, "n": 17, "cpu": 3.9, "rss_mb": 1387.4, "thr": {"S": 337}, "phase": "recovery"}
+RESULT {"tag": "C1_stock", "bin": "/tmp/ff151/firefox/firefox", "match": "/tmp/ff151/firefox", "ntabs": 5, "deadline_s": 40, "channel": "marionette", "tabs": [{"tab": 1, "t_new_tab_s": 0.0, "new_tab_ok": true, "goto_ok": true, "t_goto_s": 0.04, "ping_tab0_ok": true, "t_ping_tab0_s": 0.01, "procs": {"t": 2.5, "n": 12, "cpu": 215.1, "rss_mb": 995.8, "thr": {"S": 235}, "phase": "tab1"}}, {"tab": 2, "new_tab_ok": true, "t_new_tab_s": 0.03, "goto_ok": true, "t_goto_s": 0.01, "ping_tab0_ok": true, "t_ping_tab0_s": 0.02, "procs": {"t": 2.6, "n": 12, "cpu": 225.3, "rss_mb": 1014.8, "thr": {"S": 237, "R": 2, "D": 1}, "phase": "tab2"}}, {"tab": 3, "new_tab_ok": true, "t_new_tab_s": 0.03, "goto_ok": true, "t_goto_s": 0.01, "ping_tab0_ok": true, "t_ping_tab0_s": 0.02, "procs": {"t": 2.7, "n": 12, "cpu": 170.0, "rss_mb": 1028.5, "thr": {"S": 233, "R": 2}, "phase": "tab3"}}, {"tab": 4, "new_tab_ok": true, "t_new_tab_s": 0.08, "goto_ok": true, "t_goto_s": 0.03, "ping_tab0_ok": true, "t_ping_tab0_s": 0.01, "procs": {"t": 2.8, "n": 13, "cpu": 145.7, "rss_mb": 1120.6, "thr": {"S": 255, "R": 3}, "phase": "tab4"}}, {"tab": 5, "new_tab_ok": true, "t_new_tab_s": 0.2, "goto_ok": true, "t_goto_s": 0.02, "ping_tab0_ok": true, "t_ping_tab0_s": 0.02, "procs": {"t": 3.1, "n": 14, "cpu": 163.5, "rss_mb": 1240.6, "thr": {"S": 276, "R": 6}, "phase": "tab5"}}], "handshake": {"applicationType": "gecko", "marionetteProtocol": 3}, "t_launch_s": 0.57, "outcome": "ALL_5_TABS_OPENED", "t_total_s": 43.3}
+
+# ==== RUN C2_patched — persona's engine binary, bare, no launcher/layer/juggler ====
+LAUNCH 0.53s | {'applicationType': 'gecko', 'marionetteProtocol': 3}
+  WD {"t": 3.1, "n": 11, "cpu": 0.0, "rss_mb": 944.4, "thr": {"S": 220, "R": 1}, "phase": "session"}
+--- tab 1 at t=3.1s
+    new_tab True in 0.0s
+  WD {"t": 3.2, "n": 11, "cpu": 214.6, "rss_mb": 963.4, "thr": {"S": 220, "R": 2}, "phase": "tab1"}
+TAB {"tab": 1, "t_new_tab_s": 0.0, "new_tab_ok": true, "goto_ok": true, "t_goto_s": 0.06, "ping_tab0_ok": true, "t_ping_tab0_s": 0.02, "procs": {"t": 3.2, "n": 11, "cpu": 214.6, "rss_mb": 963.4, "thr": {"S": 220, "R": 2}, "phase": "tab1"}}
+--- tab 2 at t=3.2s
+    new_tab True in 0.04s
+  WD {"t": 3.3, "n": 11, "cpu": 194.6, "rss_mb": 981.0, "thr": {"S": 223, "R": 4}, "phase": "tab2"}
+TAB {"tab": 2, "new_tab_ok": true, "t_new_tab_s": 0.04, "goto_ok": true, "t_goto_s": 0.01, "ping_tab0_ok": true, "t_ping_tab0_s": 0.02, "procs": {"t": 3.3, "n": 11, "cpu": 194.6, "rss_mb": 981.0, "thr": {"S": 223, "R": 4}, "phase": "tab2"}}
+--- tab 3 at t=3.3s
+    new_tab True in 0.04s
+  WD {"t": 3.4, "n": 11, "cpu": 200.0, "rss_mb": 999.3, "thr": {"S": 226, "R": 2}, "phase": "tab3"}
+TAB {"tab": 3, "new_tab_ok": true, "t_new_tab_s": 0.04, "goto_ok": true, "t_goto_s": 0.02, "ping_tab0_ok": true, "t_ping_tab0_s": 0.03, "procs": {"t": 3.4, "n": 11, "cpu": 200.0, "rss_mb": 999.3, "thr": {"S": 226, "R": 2}, "phase": "tab3"}}
+--- tab 4 at t=3.4s
+    new_tab True in 0.1s
+  WD {"t": 3.5, "n": 12, "cpu": 142.9, "rss_mb": 1083.5, "thr": {"S": 251, "R": 1}, "phase": "tab4"}
+TAB {"tab": 4, "new_tab_ok": true, "t_new_tab_s": 0.1, "goto_ok": true, "t_goto_s": 0.01, "ping_tab0_ok": true, "t_ping_tab0_s": 0.01, "procs": {"t": 3.5, "n": 12, "cpu": 142.9, "rss_mb": 1083.5, "thr": {"S": 251, "R": 1}, "phase": "tab4"}}
+--- tab 5 at t=3.5s
+    new_tab True in 0.08s
+  WD {"t": 3.7, "n": 13, "cpu": 91.1, "rss_mb": 1166.1, "thr": {"S": 275, "R": 1}, "phase": "tab5"}
+TAB {"tab": 5, "new_tab_ok": true, "t_new_tab_s": 0.08, "goto_ok": true, "t_goto_s": 0.01, "ping_tab0_ok": true, "t_ping_tab0_s": 0.01, "procs": {"t": 3.7, "n": 13, "cpu": 91.1, "rss_mb": 1166.1, "thr": {"S": 275, "R": 1}, "phase": "tab5"}}
+--- recovery watch 40s
+  WD {"t": 7.7, "n": 16, "cpu": 10.1, "rss_mb": 1240.2, "thr": {"S": 341}, "phase": "recovery"}
+  WD {"t": 11.7, "n": 16, "cpu": 4.3, "rss_mb": 1228.3, "thr": {"S": 339, "R": 1}, "phase": "recovery"}
+  WD {"t": 15.7, "n": 16, "cpu": 6.7, "rss_mb": 1225.0, "thr": {"S": 338}, "phase": "recovery"}
+  WD {"t": 19.7, "n": 16, "cpu": 2.4, "rss_mb": 1225.4, "thr": {"S": 338}, "phase": "recovery"}
+  WD {"t": 23.7, "n": 16, "cpu": 5.9, "rss_mb": 1224.9, "thr": {"S": 337}, "phase": "recovery"}
+  WD {"t": 27.7, "n": 16, "cpu": 2.4, "rss_mb": 1224.0, "thr": {"S": 337}, "phase": "recovery"}
+  WD {"t": 31.8, "n": 16, "cpu": 40.8, "rss_mb": 1334.1, "thr": {"S": 335, "R": 1}, "phase": "recovery"}
+  WD {"t": 35.8, "n": 16, "cpu": 43.5, "rss_mb": 1341.9, "thr": {"S": 334}, "phase": "recovery"}
+  WD {"t": 39.8, "n": 16, "cpu": 4.1, "rss_mb": 1303.7, "thr": {"S": 334}, "phase": "recovery"}
+  WD {"t": 43.8, "n": 16, "cpu": 3.7, "rss_mb": 1281.6, "thr": {"S": 334}, "phase": "recovery"}
+RESULT {"tag": "C2_patched", "bin": "/home/yatfa/.cache/invisible-playwright/firefox-20_151.0_20260817150018/firefox", "match": "/home/yatfa/.cache/invisible-playwright/firefox-20_151.0_20260817150018", "ntabs": 5, "deadline_s": 40, "channel": "marionette", "tabs": [{"tab": 1, "t_new_tab_s": 0.0, "new_tab_ok": true, "goto_ok": true, "t_goto_s": 0.06, "ping_tab0_ok": true, "t_ping_tab0_s": 0.02, "procs": {"t": 3.2, "n": 11, "cpu": 214.6, "rss_mb": 963.4, "thr": {"S": 220, "R": 2}, "phase": "tab1"}}, {"tab": 2, "new_tab_ok": true, "t_new_tab_s": 0.04, "goto_ok": true, "t_goto_s": 0.01, "ping_tab0_ok": true, "t_ping_tab0_s": 0.02, "procs": {"t": 3.3, "n": 11, "cpu": 194.6, "rss_mb": 981.0, "thr": {"S": 223, "R": 4}, "phase": "tab2"}}, {"tab": 3, "new_tab_ok": true, "t_new_tab_s": 0.04, "goto_ok": true, "t_goto_s": 0.02, "ping_tab0_ok": true, "t_ping_tab0_s": 0.03, "procs": {"t": 3.4, "n": 11, "cpu": 200.0, "rss_mb": 999.3, "thr": {"S": 226, "R": 2}, "phase": "tab3"}}, {"tab": 4, "new_tab_ok": true, "t_new_tab_s": 0.1, "goto_ok": true, "t_goto_s": 0.01, "ping_tab0_ok": true, "t_ping_tab0_s": 0.01, "procs": {"t": 3.5, "n": 12, "cpu": 142.9, "rss_mb": 1083.5, "thr": {"S": 251, "R": 1}, "phase": "tab4"}}, {"tab": 5, "new_tab_ok": true, "t_new_tab_s": 0.08, "goto_ok": true, "t_goto_s": 0.01, "ping_tab0_ok": true, "t_ping_tab0_s": 0.01, "procs": {"t": 3.7, "n": 13, "cpu": 91.1, "rss_mb": 1166.1, "thr": {"S": 275, "R": 1}, "phase": "tab5"}}], "handshake": {"applicationType": "gecko", "marionetteProtocol": 3}, "t_launch_s": 0.53, "outcome": "ALL_5_TABS_OPENED", "t_total_s": 43.8}

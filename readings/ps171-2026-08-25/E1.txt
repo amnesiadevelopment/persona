@@ -1,0 +1,10 @@
+START method=window_open ntabs=4 deadline=6s (layer OFF, headless)
+LAUNCH 2.47s | the engine returned a Browser (no add_init_script, no pages), so ONE explicit context was opened to carry the layer
+tab1 open | {"t": 4.4, "n": 6, "cpu": 0.0, "rss_mb": 674.1, "thr": {"R": 4, "S": 140}}
+--- tab2 open ok=True 0.14s 
+    ping-tab1 ok=True 0.02s  pages=1 | {"t": 4.5, "n": 6, "cpu": 107.6, "rss_mb": 683.3, "thr": {"R": 4, "S": 139, "D": 1}}
+--- tab3 open ok=True 0.03s 
+    ping-tab1 ok=True 0.04s  pages=1 | {"t": 4.6, "n": 6, "cpu": 157.1, "rss_mb": 693.0, "thr": {"R": 4, "S": 139}}
+--- tab4 open ok=True 0.08s 
+    ping-tab1 ok=True 0.05s  pages=1 | {"t": 4.8, "n": 6, "cpu": 169.1, "rss_mb": 707.8, "thr": {"R": 4, "S": 139}}
+RESULT {"arm": "E", "method": "window_open", "layer": false, "url": "about:blank", "tabs": [{"tab": 2, "open_ok": true, "t_open_s": 0.14, "detail": "", "ping_ok": true, "t_ping_s": 0.02, "pages": 1}, {"tab": 3, "open_ok": true, "t_open_s": 0.03, "detail": "", "ping_ok": true, "t_ping_s": 0.04, "pages": 1}, {"tab": 4, "open_ok": true, "t_open_s": 0.08, "detail": "", "ping_ok": true, "t_ping_s": 0.05, "pages": 1}], "outcome": "completed"}
