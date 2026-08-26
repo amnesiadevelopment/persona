@@ -1,0 +1,5 @@
+=== linux/seed24601 exit=46.205.197.221 Warsaw AS12912 T-Mobile Polska S.A.
+    [heading: 'Google Inc. (Google)']  <== SOFTWARE RASTERISER
+      ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
+    [heading: 'Google Inc. (Google)']  <== SOFTWARE RASTERISER
+      ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)

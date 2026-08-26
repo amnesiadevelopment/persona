@@ -71,6 +71,13 @@ import time
 
 CREEPJS_URL = "https://abrahamjuliot.github.io/creepjs"
 
+# THE PROBE IS IMPORTED, NOT RE-TYPED. The loopback sweep's identity read is
+# reused verbatim so the live control and the loopback matrix cannot silently
+# read different things. A control that re-implemented the probe could show a
+# divergence caused by the PROBE rather than by the VENUE — which is exactly
+# the class of artefact this control exists to rule out.
+from scripts.ps189_realm_gpu import _READ_IDENTITY_FN  # noqa: E402
+
 # The same settle the checker catalogue uses for creepjs. Its worker and
 # trust-score blocks populate late, and a short read would report a page that
 # had not finished rendering as a page that said nothing.
@@ -144,6 +151,135 @@ def _sections(text: str) -> "list[dict]":
     return out
 
 
+def _evaluate(session, page, expression: str):
+    """Run JS in the LIVE page's main world, or record why it could not.
+
+    Reaches the underlying playwright page through the ``_SyncPage`` facade,
+    which deliberately exposes only ``goto``/``inner_text`` so that the shared
+    checker loop cannot acquire a reading path the Firefox tier lacks. This is a
+    SCRIPT-local widening for a CONTROL, not a new production capability — the
+    matrix run still reads through ``inner_text`` only.
+
+    A failure here is RECORDED rather than raised: CSP on a real checker origin
+    can refuse an injected evaluation, and "the control could not be taken" is a
+    different fact from "the control disagreed". Collapsing them would let a
+    blocked probe read as a clean one.
+    """
+    try:
+        return {"ok": True, "value": session._run(page._page.evaluate(expression))}
+    except Exception as exc:  # noqa: BLE001 - a refused control is a recorded control
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+# The page-realm control, on the LIVE origin, in the same run as the scrape.
+#
+# THIS IS THE ROUND-2 ADDITION AND IT IS THE WHOLE POINT OF IT. Round 1 captured
+# only creepjs's rendered text, so when that text showed SwiftShader in a
+# MAIN-THREAD section the record could not say whether our card had reached the
+# main thread at all. The question "did our card reach the page?" was answerable
+# only by inference from a loopback run on a different origin. It is now
+# measured directly, on the origin where the defect was found.
+_PAGE_CONTROL_JS = (
+    "(function () {"
+    + _READ_IDENTITY_FN
+    + """
+  return __readIdentity(function () {
+    var c = document.createElement('canvas'); c.width = 64; c.height = 64; return c;
+  });
+})()"""
+)
+
+# The worker-realm control, also on the LIVE origin. creepjs reads its own
+# worker, so if the page realm and the worker realm DISAGREE here the divergence
+# is located rather than merely asserted.
+_WORKER_CONTROL_JS = (
+    """(function () {
+  var SRC = """
+    + json.dumps(
+        _READ_IDENTITY_FN
+        + """
+self.onmessage = function () {
+  self.postMessage(__readIdentity(function () { return new OffscreenCanvas(64, 64); }));
+};
+"""
+    )
+    + """;
+  return new Promise(function (resolve) {
+    try {
+      var url = URL.createObjectURL(new Blob([SRC], {type: 'text/javascript'}));
+      var w = new Worker(url);
+      var settled = false;
+      w.onmessage = function (m) { if (!settled) { settled = true; resolve(m.data); } };
+      w.onerror = function (e) {
+        if (!settled) { settled = true; resolve({error: 'worker error: ' + (e && e.message)}); }
+      };
+      w.postMessage({});
+      setTimeout(function () {
+        if (!settled) { settled = true; resolve({error: 'worker timeout'}); }
+      }, 8000);
+    } catch (e) { resolve({error: 'worker spawn failed: ' + e}); }
+  });
+})()"""
+)
+
+
+# The REMAINING page-side realms, on the LIVE origin. Round 2's page control
+# proved our card reaches the live main thread through the plain WebGL1 path;
+# these foreclose the obvious alternatives for how creepjs could still be
+# reading SwiftShader on a page-side surface:
+#
+#   * ``page_webgl2``  — a SEPARATE prototype from WebGLRenderingContext, so a
+#                        patch reaching only one would look clean to a WebGL1
+#                        probe while creepjs read the other.
+#   * ``iframe_*``     — a child realm is the classic route around a main-world
+#                        patch. If that were how the host value reached the
+#                        page, a frame realm would carry it.
+#
+# Measured on the LIVE origin rather than inherited from the loopback sweep,
+# because "it held on 127.0.0.1" is exactly the inference PS-97/PS-182 forbid.
+_EXTRA_REALMS_JS = (
+    """(function () {"""
+    + _READ_IDENTITY_FN
+    + """
+  var out = {};
+  try {
+    var c = document.createElement('canvas'); c.width = 64; c.height = 64;
+    var gl = c.getContext('webgl2');
+    if (!gl) { out.page_webgl2 = {available: false, note: 'no webgl2 context'}; }
+    else {
+      var d = gl.getExtension('WEBGL_debug_renderer_info');
+      out.page_webgl2 = d
+        ? {available: true,
+           unmasked_vendor: String(gl.getParameter(d.UNMASKED_VENDOR_WEBGL)),
+           unmasked_renderer: String(gl.getParameter(d.UNMASKED_RENDERER_WEBGL))}
+        : {available: true, unmasked_renderer: 'no-debug-renderer-info'};
+    }
+  } catch (e) { out.page_webgl2 = {error: String(e)}; }
+
+  function frameRead(name, setup) {
+    try {
+      var f = document.createElement('iframe');
+      f.style.display = 'none';
+      setup(f);
+      document.body.appendChild(f);
+      var w = f.contentWindow;
+      // The canvas is created by the CHILD realm's own document, so the WebGL
+      // context belongs to that realm rather than to ours. Creating it here
+      // and appending it there would read THIS realm's patch and prove nothing.
+      var fn = w.eval('(' + __readIdentity.toString() + ')');
+      out[name] = fn(function () {
+        var c = w.document.createElement('canvas');
+        c.width = 64; c.height = 64; return c;
+      });
+    } catch (e) { out[name] = {error: String(e)}; }
+  }
+  frameRead('iframe_about_blank', function (f) { f.src = 'about:blank'; });
+  frameRead('iframe_srcdoc', function (f) { f.srcdoc = '<!doctype html><title>s</title>'; });
+  return out;
+})()"""
+)
+
+
 def read_cell(*, arm: str, seed: int, proxy_url: str, timezone: str) -> dict:
     """One live creepjs read on one arm, with the page text kept."""
     from src.services.verify import chromium_tier
@@ -178,6 +314,12 @@ def read_cell(*, arm: str, seed: int, proxy_url: str, timezone: str) -> dict:
             # inner_text, the SAME path the real matrix run reads through, so
             # nothing here can succeed via a route the live run does not have.
             text = page.inner_text("body")
+            # THE CONTROLS, taken in the SAME run, on the SAME origin, against
+            # the SAME page that produced the scrape above. Taken AFTER the
+            # scrape so they cannot perturb what creepjs measured.
+            record["page_realm_control"] = _evaluate(session, page, _PAGE_CONTROL_JS)
+            record["worker_realm_control"] = _evaluate(session, page, _WORKER_CONTROL_JS)
+            record["extra_realm_controls"] = _evaluate(session, page, _EXTRA_REALMS_JS)
             layer = getattr(session, "layer_report", None)
             if layer is not None:
                 installed = getattr(layer, "installed", None)

@@ -71,6 +71,33 @@ SWEEP_LAYER_OFF = os.path.join(
     READINGS, "ps189-2026-08-26", "realm-gpu-layer-off.json"
 )
 
+# ---------------------------------------------------------------------------
+# THE LIVE RECORDS. Round 1 shipped with NOTHING in tests/ asserting on the
+# live read at all — which is precisely how it reached review carrying a
+# measurement that contradicted its own conclusion. These paths close that.
+# ---------------------------------------------------------------------------
+
+# Round 1: scrape only, no control, hand-trimmed after the run. SUPERSEDED, and
+# kept as a fixture only so its provenance defect stays pinned rather than
+# quietly forgotten (see the provenance test below).
+LIVE_ROUND1 = os.path.join(
+    READINGS, "ps189-2026-08-26", "live", "live-creepjs.json"
+)
+# Round 2: the same scrape PLUS the realm controls, through two different exits.
+LIVE_ROUND2 = [
+    os.path.join(
+        READINGS, "ps189-2026-08-26", "live-round2-a-controls", "live-creepjs.json"
+    ),
+    os.path.join(
+        READINGS, "ps189-2026-08-26", "live-round2-b-realms", "live-creepjs.json"
+    ),
+]
+
+# The card THIS profile (linux / seed 24601) is supposed to present. Written out
+# in full rather than matched on a fragment: "contains Intel" would pass on a
+# value that got the model wrong, and the whole point here is the exact string.
+OUR_CARD = "ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)"
+
 LINUX = [
     os.path.join(DERIVED, "realm-matrix.chromium.linux.seed24601.json"),
     os.path.join(DERIVED, "realm-matrix.chromium.linux.seed5150.json"),
@@ -369,3 +396,184 @@ def test_the_blind_spot_is_documented_where_a_reader_would_look():
         assert "ServiceWorker" in doc or "service worker" in doc, (
             f"{module.__name__} must name the uncovered realm"
         )
+
+
+# ---------------------------------------------------------------------------
+# THE LIVE RECORDS — the reconciliation, pinned.
+#
+# Round 1 shipped no assertion on the live read at all, and that is exactly how
+# it reached review with a live measurement that contradicted its own headline.
+# The review's demand was specific: have the live record answer "did our card
+# reach the main thread?" WITHOUT inference. These tests hold it to that.
+# ---------------------------------------------------------------------------
+
+
+def live_records(path: str) -> "list[dict]":
+    return load(path)["records"]
+
+
+@pytest.mark.parametrize("path", LIVE_ROUND2, ids=["run_a_controls", "run_b_realms"])
+def test_the_live_page_realm_returns_our_card_not_the_host(path):
+    """THE CONTROL ROUND 1 LACKED, and the reason the finding survives review.
+
+    Taken on the LIVE creepjs origin, in the same run as the scrape, moments
+    after it. If our layer did not reach the live main thread — the review's
+    hypothesis (a), a second uncovered surface — this is the assertion that
+    would fail. It does not: the main thread returns the profile's card.
+
+    That is what makes the SwiftShader string creepjs renders in its
+    main-thread WebGL section a DERIVED row rather than a live read, and it is
+    measured on the origin where the defect was found rather than on loopback
+    (PS-97, PS-182: an internal buffer differing is not evidence about a page).
+    """
+    for rec in live_records(path):
+        control = rec.get("page_realm_control")
+        assert control and control.get("ok"), (
+            "the live record must carry a page-realm control that was actually "
+            f"taken; got {control!r}. Without it the record cannot answer "
+            "'did our card reach the main thread?' except by inference."
+        )
+        assert control["value"]["unmasked_renderer"] == OUR_CARD
+
+
+@pytest.mark.parametrize("path", LIVE_ROUND2, ids=["run_a_controls", "run_b_realms"])
+def test_every_probed_live_realm_agrees_with_the_page(path):
+    """No page-side realm on the live origin carries the host value.
+
+    ``page_webgl2`` and the iframe realms are here because they are the two
+    classic routes around a MAIN-world patch: a patch reaching only
+    ``WebGLRenderingContext`` would look clean to a WebGL1 probe while creepjs
+    read the other prototype, and a child realm is the standard escape hatch.
+    Both are checked rather than assumed, LIVE rather than on loopback.
+    """
+    for rec in live_records(path):
+        probed = {"page": rec["page_realm_control"]["value"]["unmasked_renderer"]}
+        worker = rec.get("worker_realm_control")
+        if worker and worker.get("ok") and worker["value"].get("unmasked_renderer"):
+            probed["worker"] = worker["value"]["unmasked_renderer"]
+        extra = rec.get("extra_realm_controls")
+        if extra and extra.get("ok"):
+            for name, reading in (extra["value"] or {}).items():
+                if isinstance(reading, dict) and reading.get("unmasked_renderer"):
+                    probed[name] = reading["unmasked_renderer"]
+
+        assert len(probed) >= 2, (
+            "a run that probed only one realm cannot support 'every realm "
+            f"agrees'; probed {sorted(probed)}"
+        )
+        disagreeing = {n: v for n, v in probed.items() if v != OUR_CARD}
+        assert not disagreeing, (
+            "every page-side realm probed live must carry the profile's card; "
+            f"these did not: {disagreeing}"
+        )
+
+
+@pytest.mark.parametrize("path", LIVE_ROUND2, ids=["run_a_controls", "run_b_realms"])
+def test_the_live_page_still_renders_the_host_card_despite_the_controls(path):
+    """The DEFECT half, asserted beside the control half.
+
+    This is the pair that makes the finding honest. The test above proves our
+    card reaches every page-side realm; this one proves creepjs nonetheless
+    renders the host's SwiftShader — and that our card appears NOWHERE in the
+    page text. Assert only one of the two and the record tells a comfortable
+    half-truth in whichever direction that one points.
+
+    THIS TEST IS EXPECTED TO GO RED WHEN THE ESCALATED FIX LANDS. That is its
+    purpose: when a remedy authors the service-worker realm, the host string
+    should leave this page. If you are reading this because it failed, check
+    whether our card now appears in ``page_text`` — and if so, delete this test
+    and update EVIDENCE.md §4, which states the leak was still live.
+    """
+    for rec in live_records(path):
+        text = rec.get("page_text")
+        assert text, (
+            "the live record must retain the FULL page text — round 1 dropped "
+            "it for a 24% excerpt, which is why its claims were not "
+            "re-checkable at review (EVIDENCE.md §4.3)"
+        )
+        assert len(text) == rec["page_text_chars"], (
+            "page_text must be the whole text the run measured, not a trim: "
+            f"retained {len(text)} of a declared {rec['page_text_chars']}"
+        )
+
+        occurrences = rec.get("angle_occurrences") or []
+        assert occurrences, "the scrape must have found the rendered gpu rows"
+        assert all(o["software_rasteriser"] for o in occurrences), (
+            "every ANGLE row creepjs rendered should still be the host's "
+            f"software rasteriser; got {[o['value_line'] for o in occurrences]}"
+        )
+        assert OUR_CARD not in text, (
+            "our card is not expected anywhere in the live page text — if it "
+            "now is, the leak may be fixed; see this test's docstring"
+        )
+
+
+@pytest.mark.parametrize("path", LIVE_ROUND2, ids=["run_a_controls", "run_b_realms"])
+def test_every_live_record_proves_its_own_exit(path):
+    """PS-10: an exit is observed per record and never written as a constant.
+
+    The two round-2 runs reached the SAME verdict through two DIFFERENT ASNs,
+    which is what makes §4.1 a reproduction rather than a single observation —
+    so the ASNs are asserted to be real and present, not asserted to be any
+    particular value.
+    """
+    for rec in live_records(path):
+        exit_obs = rec.get("exit") or {}
+        for field in ("ip", "city", "org"):
+            assert exit_obs.get(field), (
+                f"every live record must carry its own observed {field} "
+                f"(PS-186 measured 5 distinct ASNs across 8 records); got {exit_obs!r}"
+            )
+        assert exit_obs["org"].startswith("AS"), (
+            f"the ASN must be the observed one, got {exit_obs['org']!r}"
+        )
+
+
+def test_the_round_one_live_record_carries_a_disclosed_provenance_defect():
+    """The hand-edit, pinned so it cannot be quietly forgotten.
+
+    ``page_text_excerpt_around_scope_label`` is emitted by NO instrument in this
+    repository — the script writes ``page_text``. So the round-1 record was
+    edited after the run, keeping ~24% of the page text it measured. Round 2
+    supersedes it; it stays committed because deleting it would erase the
+    evidence of the defect rather than fix it.
+
+    This test asserts the record is STILL the defective artefact it is described
+    as in EVIDENCE.md §4.3. If someone regenerates it properly, this goes red —
+    delete it and drop §4.3's "kept as evidence" note.
+    """
+    rec = live_records(LIVE_ROUND1)[0]
+    assert "page_text_excerpt_around_scope_label" in rec, (
+        "round 1's record is described in EVIDENCE.md §4.3 as carrying a "
+        "hand-made key; it no longer does — update or delete that section"
+    )
+    assert "page_text" not in rec, (
+        "round 1's record is described as having had its full page_text "
+        "dropped; it now has one — update or delete EVIDENCE.md §4.3"
+    )
+    excerpt = rec["page_text_excerpt_around_scope_label"]
+    assert len(excerpt) < rec["page_text_chars"], (
+        "the excerpt is supposed to be a TRIM of the measured page text"
+    )
+
+
+def test_the_round_two_records_are_instrument_produced():
+    """The counterpart: round 2's records carry only keys the script emits.
+
+    The round-1 defect was invisible because nothing checked that a record's
+    shape came from the instrument that claims to have produced it. This is
+    that check, and it is why the hand-made key cannot recur unnoticed.
+    """
+    emitted = {
+        "arm", "seed", "url", "layer_installed", "page_text_chars",
+        "angle_occurrences", "page_text", "page_realm_control",
+        "worker_realm_control", "extra_realm_controls", "argv", "exit", "error",
+    }
+    for path in LIVE_ROUND2:
+        for rec in live_records(path):
+            unexpected = set(rec) - emitted
+            assert not unexpected, (
+                f"{os.path.relpath(path, READINGS)} carries key(s) no "
+                f"instrument emits: {sorted(unexpected)} — a record whose shape "
+                "did not come from the script is a hand-edited record"
+            )
