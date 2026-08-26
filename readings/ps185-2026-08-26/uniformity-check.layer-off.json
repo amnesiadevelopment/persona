@@ -1,0 +1,72 @@
+{
+  "ticket": "PS-185",
+  "analysed_at": "2026-08-26T09:04:27.656694+00:00",
+  "source_record": "engine-gpu-variance.layer-off.json",
+  "source_mode": "layer-off",
+  "null_hypothesis": "pick() selects uniformly from the arm's own pool",
+  "alpha": 0.05,
+  "monte_carlo_trials": 200000,
+  "monte_carlo_seed": 20260826,
+  "per_arm": {
+    "android": {
+      "seeds_readable": 24,
+      "distinct_observed": 1,
+      "pool_size": 4,
+      "bar_collision_probability": 0.25,
+      "module_verdict": "CONSTANT",
+      "plugin_estimate": 1.0,
+      "unbiased_estimate": 1.0,
+      "expected_plugin_under_uniform": 0.28125,
+      "monte_carlo_p_value": 0.0,
+      "monte_carlo_trials": 200000,
+      "consistent_with_uniform": false,
+      "genuine_narrowing_finding": true,
+      "reading": "FINDING STANDS: the draw is both unlikely under a uniform null and above the bar on the unbiased estimator."
+    },
+    "linux": {
+      "seeds_readable": 24,
+      "distinct_observed": 1,
+      "pool_size": 8,
+      "bar_collision_probability": 0.125,
+      "module_verdict": "CONSTANT",
+      "plugin_estimate": 1.0,
+      "unbiased_estimate": 1.0,
+      "expected_plugin_under_uniform": 0.16145833333333334,
+      "monte_carlo_p_value": 0.0,
+      "monte_carlo_trials": 200000,
+      "consistent_with_uniform": false,
+      "genuine_narrowing_finding": true,
+      "reading": "FINDING STANDS: the draw is both unlikely under a uniform null and above the bar on the unbiased estimator."
+    },
+    "macos": {
+      "seeds_readable": 24,
+      "distinct_observed": 2,
+      "pool_size": 2,
+      "bar_collision_probability": 0.5,
+      "module_verdict": "TOO_NARROW",
+      "plugin_estimate": 0.5868055555555556,
+      "unbiased_estimate": 0.5688405797101449,
+      "expected_plugin_under_uniform": 0.5208333333333334,
+      "monte_carlo_p_value": 0.063935,
+      "monte_carlo_trials": 200000,
+      "consistent_with_uniform": true,
+      "genuine_narrowing_finding": false,
+      "reading": "ARTEFACT OF THE ESTIMATOR, not a product finding. A uniform draw from this 2-entry pool at N=24 is EXPECTED to score 0.5208 on the plug-in statistic the gate uses, versus the 0.5000 bar it is compared against; the observed 0.5868 has p=0.064 under that uniform null. Nothing here shows pick() is skewed."
+    },
+    "windows": {
+      "seeds_readable": 24,
+      "distinct_observed": 9,
+      "pool_size": 5,
+      "bar_collision_probability": 0.2,
+      "module_verdict": "OK",
+      "plugin_estimate": 0.1388888888888889,
+      "unbiased_estimate": 0.10144927536231885,
+      "expected_plugin_under_uniform": 0.23333333333333334,
+      "monte_carlo_p_value": 1.0,
+      "monte_carlo_trials": 200000,
+      "consistent_with_uniform": true,
+      "genuine_narrowing_finding": false,
+      "reading": "Consistent with uniform selection; module verdict is not a narrowing finding."
+    }
+  }
+}
