@@ -232,6 +232,14 @@ def open_log_dialog(page: ft.Page, log_lines: list[str], profiles=None) -> None:
     # No shape, no border side, no scrim colour, no actions row: the dialog is
     # a surface, not a frame. `content_padding=0` removes the last inset that
     # would otherwise draw an implicit edge around the log.
+    # The dialog is sized to the PAGE, explicitly. `expand=True` alone is not
+    # enough: an AlertDialog sizes itself to its content, so the log rendered
+    # as a tall column with the app still visible down both edges — a framed
+    # box again, by accident rather than by decoration. Reading the page's own
+    # dimensions is what makes "fullscreen" mean the window.
+    win_w = getattr(page, "width", None) or 1280
+    win_h = getattr(page, "height", None) or 800
+
     dlg = ft.AlertDialog(
         modal=True,
         bgcolor=COLORS["log_bg"],
@@ -239,7 +247,8 @@ def open_log_dialog(page: ft.Page, log_lines: list[str], profiles=None) -> None:
         inset_padding=ft.Padding.all(0),
         content_padding=ft.Padding.all(0),
         content=ft.Container(
-            expand=True,
+            width=win_w,
+            height=win_h,
             bgcolor=COLORS["log_bg"],
             padding=ft.Padding.only(left=18, right=14, top=12, bottom=8),
             content=ft.Column(
