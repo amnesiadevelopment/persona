@@ -38,7 +38,7 @@ Measured here 2026-08-26: a plain ``check --arms windows,macos,linux,android
 --seeds <24>`` left ~15 chromium processes alive PER LAUNCH. After 7 launches
 107 were resident and free memory had fallen from 10.8 GB to ~0.4 GB. That
 matters beyond tidiness: an out-of-memory chromium dies mid-page with exactly
-the contentless ``TargetClosedError`` that PS-128 once recorded as a property of
+the contentless ``TargetClosedError`` that PS-133 once recorded as a property of
 fingerprint seed 4242. A sweep that exhausts the box does not fail loudly, it
 produces a plausible, WRONG reading — the shape this project keeps hitting.
 
@@ -143,7 +143,7 @@ def engine_provenance() -> dict:
 
 
 def dev_shm_provenance() -> dict:
-    """The 256 MiB ceiling PS-128 was misdiagnosed under."""
+    """The 256 MiB ceiling PS-133 was misdiagnosed under."""
     try:
         st = os.statvfs("/dev/shm")
         total = st.f_blocks * st.f_frsize
@@ -157,6 +157,85 @@ def dev_shm_provenance() -> dict:
         "free_mib": round(free / (1 << 20), 1),
         "above_256mib_floor": total >= 256 * (1 << 20),
         "disable_dev_shm_usage_used": False,
+    }
+
+
+# ---------------------------------------------------------------------------
+# The X server — including the one MODIFIED INSTRUMENT in this ticket.
+#
+# The tier refuses ``--headless`` deliberately (it presents a different surface
+# to a fingerprinting checker), so these readings need a real display. In the
+# container they were taken in there was no Xvfb and no root, so one was
+# unpacked into $HOME with ``apt-get download`` + ``dpkg-deb -x``.
+#
+# Xvfb resolves ``xkbcomp`` through a path prefix COMPILED INTO THE BINARY —
+# it is not read from the environment and no flag overrides it, so an unpacked
+# copy cannot find the compiler and refuses to start. A PRIVATE COPY had that
+# 8-byte prefix rewritten in place, ``/usr/bin`` -> ``/tmp/xkb``. Both are
+# exactly 8 bytes, which is the entire reason the patch works without
+# relinking: the string is overwritten, never moved.
+#
+# WHY IT CANNOT AFFECT ANY READING HERE, stated so a reader meeting a patched
+# binary in the provenance has the argument beside it rather than having to
+# reconstruct it: the patched bytes are on the KEYBOARD-INITIALISATION path
+# only. The vectors these records carry — UNMASKED_RENDERER_WEBGL, the WebGL
+# readback hash and the canvas readback hash — are produced by the GPU/canvas
+# stack and never consult XKB. A failure of that path is also LOUD, not silent:
+# Xvfb refuses to start, so there is no display, no browser and no record at
+# all. There is no route by which it returns a WRONG pixel.
+#
+# It is disclosed rather than hidden because a modified instrument is exactly
+# what PS-14 says to declare before attributing anything to the product.
+# ---------------------------------------------------------------------------
+
+XKB_PREFIX_DISTRO = b"/usr/bin"
+XKB_PREFIX_PATCHED = b"/tmp/xkb"
+
+
+def _xkbcomp_prefixes(binary: str) -> "list[str]":
+    """Which xkbcomp path prefixes are present in this Xvfb image.
+
+    Reads the fact out of the binary rather than trusting a note about it, so
+    a future run states what it ACTUALLY ran under.
+    """
+    try:
+        with open(binary, "rb") as fh:
+            blob = fh.read()
+    except OSError:
+        return []
+    return [
+        prefix.decode()
+        for prefix in (XKB_PREFIX_PATCHED, XKB_PREFIX_DISTRO)
+        if prefix + b"\x00" in blob
+    ]
+
+
+def xserver_provenance() -> dict:
+    """The display, and whether the Xvfb behind it was patched."""
+    binary = shutil.which("Xvfb")
+    prefixes = _xkbcomp_prefixes(binary) if binary else []
+    patched = XKB_PREFIX_PATCHED.decode() in prefixes
+    return {
+        "display": os.environ.get("DISPLAY", ""),
+        "headless": False,
+        # Headless is REFUSED by the tier, not merely unused — a headless
+        # engine presents a different surface, so a record taken under one
+        # would not be the shipped configuration.
+        "headless_refused_by_tier": True,
+        "binary": binary,
+        "sha256": _sha256(binary) if binary else None,
+        "xkbcomp_prefixes_present": prefixes,
+        "xkbcomp_path_patched": patched,
+        "patch_rationale": (
+            "keyboard-init path only: XKB is never consulted by the WebGL or "
+            "canvas readback vectors these records carry, and a failure of it "
+            "is loud (Xvfb refuses to start, yielding no record) rather than a "
+            "wrong pixel"
+        ),
+        # See PROVENANCE.md: the 2026-08-26 records were taken under a
+        # patched PRIVATE copy that no longer exists on this container, so a
+        # live probe today reports today's server, NOT theirs.
+        "reading_set_note": "see PROVENANCE.md for the server the committed records were taken under",
     }
 
 
@@ -175,6 +254,7 @@ def run_provenance(mode: str) -> dict:
         "headless": False,
         "engine": engine_provenance(),
         "dev_shm": dev_shm_provenance(),
+        "xserver": xserver_provenance(),
     }
 
 
@@ -266,7 +346,7 @@ def _reap_orphaned_engines() -> int:
     survive per chunk, and left alone they take free memory from 10.8 GB to
     ~0.4 GB within seven chunks. An out-of-memory chromium does not fail
     loudly — it dies mid-page with a contentless ``TargetClosedError``, which
-    is precisely the error PS-128 once recorded as a property of fingerprint
+    is precisely the error PS-133 once recorded as a property of fingerprint
     seed 4242. So reaping is measurement integrity, not housekeeping.
     """
     killed = 0
