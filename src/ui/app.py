@@ -48,6 +48,48 @@ logger = get_logger("app")
 from ..services.profile.filter import all_tags, filter_by_tag, filter_profiles
 
 
+#: How much of an engine version string the 200px rail can carry on one line.
+#: Monospace at size 12 runs ~6.2px per character, and the version cell gets
+#: roughly 110px of the rail once the icon, the name and the state dot have
+#: taken theirs — so ~17 characters, with the ellipsis inside that budget.
+_VERSION_MAX_CHARS = 17
+
+
+def _short_engine_version(version: str) -> str:
+    """An engine version the rail can actually show on one line.
+
+    THE COMPLAINT: "под хромиумом длина текста больше чем «Война и мир»". The
+    Chromium row carried a full upstream build string — ``148.0.7778.215``, and
+    with the old "update → " prefix 23 characters — into a cell with room for
+    about 17. It wrapped, and a wrapping line in a fixed-height panel is what
+    made the text visibly shift when the section opened.
+
+    An operator glancing at the rail needs to know WHICH engine and WHETHER it
+    is current. A Chromium build's identity is its MAJOR: 148 vs 147 is the
+    answer to "what am I running", while ".0.7778.215" distinguishes builds
+    nobody chooses between by hand. So a 4-part Chromium version is cut to
+    ``148.0.7778`` — the part that still reads as a version — and anything
+    else is ellipsised at the budget rather than being silently clipped.
+
+    THE FULL STRING IS NOT DESTROYED, it is relocated: the row's tooltip
+    carries it verbatim, which is where the brief says the detail belongs
+    ("anything else belongs behind a click, not in the rail").
+
+    Shortening happens HERE, at the source of the value, rather than by
+    clamping the Text control — a clamp would hide the overflow instead of
+    removing it, and the panel would still be sized for text nobody can read.
+    """
+    text = (version or "").strip()
+    if len(text) <= _VERSION_MAX_CHARS:
+        return text
+    parts = text.split(".")
+    if len(parts) >= 4 and all(p.isdigit() for p in parts[:3]):
+        trimmed = ".".join(parts[:3])
+        if len(trimmed) <= _VERSION_MAX_CHARS:
+            return trimmed
+    return text[: _VERSION_MAX_CHARS - 1] + "…"
+
+
 def _show_window(page: ft.Page) -> None:
     """Reveal the window (it starts hidden via hide_window_on_start). Idempotent
     and best-effort: called once the centred splash is the current frame, and
@@ -2140,9 +2182,35 @@ class App:
         self, badge: ft.Control, name: str, status: ft.Control, checking: bool,
         dot: bool = False,
     ) -> ft.Control:
-        # `status` is the LIVE Text control the progress callback writes to,
-        # embedded as-is: a string snapshot here is what froze the row's
-        # percent while the byte counter beneath it kept moving.
+        """One engine, on ONE line: what it is, and what state it is in.
+
+        THE COMPLAINT THIS ANSWERS. "под хромиумом длина текста больше чем
+        «Война и мир»" — the Chromium entry read as a paragraph in a 200px
+        rail. Two mechanisms produced that, and both are fixed here rather than
+        padded around:
+
+        1. **The row was a two-line block.** Name above, version below, in a
+           ``Column``. Two engines therefore cost four lines plus their
+           spacing, in the rail that is already short at the app's minimum
+           window size — which is the same budget that was clipping `trash`.
+           Name and version now share one line, halving the panel.
+
+        2. **The version line wrapped, so it became THREE lines.** It carried
+           "update → 148.0.7778.215" — 23 characters of monospace in ~120px of
+           usable rail — and nothing stopped it wrapping, so the text visibly
+           shifted the moment the section opened. That is the "съехавший" half
+           of the report. The version is now shortened at the source (see
+           :func:`_short_engine_version`) and pinned to a single line.
+
+        The "update →" prose is gone because it was saying what the accent DOT
+        already says. Name, version, state — nothing else. The full version
+        stays reachable through the row's tooltip, which is where detail
+        belongs.
+
+        `status` is the LIVE Text control the progress callback writes to,
+        embedded as-is: a string snapshot here is what froze the row's percent
+        while the byte counter beneath it kept moving.
+        """
         trailing: list[ft.Control] = []
         if checking:
             trailing.append(
@@ -2154,26 +2222,21 @@ class App:
             trailing.append(
                 ft.Container(width=7, height=7, border_radius=4, bgcolor=COLORS["accent"])
             )
-        # Icon sits to the LEFT of the whole name+version block and is centred
-        # against it (not just the name line) so a two-line row reads as one
-        # tidy unit. `status` stays the same live control the progress writer
-        # updates.
         return ft.Row(
-            spacing=10,
+            spacing=8,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
             controls=[
                 badge,
-                ft.Column(
-                    spacing=1,
-                    expand=True,
-                    controls=[
-                        ft.Text(
-                            name, size=11, color=COLORS["text_sub"],
-                            font_family="monospace",
-                        ),
-                        status,
-                    ],
+                ft.Text(
+                    name, size=11, color=COLORS["text_sub"],
+                    font_family="monospace", no_wrap=True, max_lines=1,
+                    overflow=ft.TextOverflow.ELLIPSIS,
                 ),
+                # The version takes the slack and gives it back: it is the one
+                # cell allowed to ellipsise, so a long build string can never
+                # push the state indicator off the rail.
+                ft.Container(expand=True, alignment=ft.Alignment.CENTER_RIGHT,
+                             content=status),
                 *trailing,
             ],
         )
@@ -2578,11 +2641,14 @@ class App:
 
     def _refresh_engine_text(self, status: str = "") -> None:
         def apply() -> None:
-            cur = engine.current_version() or "unknown"
+            cur = _short_engine_version(engine.current_version() or "unknown")
             if status:
                 self.engine_text.value = status
             elif self._engine_update_available():
-                self.engine_text.value = f"update → {self._engine_latest}"
+                # No "update →" prose: the accent dot beside the row already
+                # says an update is available, and the words were most of what
+                # made this line wrap in a 200px rail.
+                self.engine_text.value = _short_engine_version(self._engine_latest)
             elif self._engine_status:
                 # A build persona refused. Without this the row would fall
                 # through to the installed version and read as "up to date",
