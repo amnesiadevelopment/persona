@@ -426,8 +426,27 @@ def atomic_replace(
         try:
             if os.path.isdir(backup):
                 shutil.rmtree(backup, ignore_errors=True)
-            shutil.copy2(dst, backup)
+            # Stage the copy, then RENAME it into place. copy2 is NOT atomic:
+            # one that dies partway (ENOSPC on a ~200MB AppImage, and disk
+            # pressure is exactly the condition an update creates) leaves a
+            # TRUNCATED file at `backup`. That is only harmless while nobody
+            # reads it — and a retaining caller OFFERS this path to the
+            # operator as the way back, so a stump here is a revert that
+            # bricks the install. Worse, copying straight onto `backup` would
+            # destroy an ALREADY-GOOD retained build from an earlier update
+            # before failing, so deleting the partial afterwards cannot fix
+            # it: the good bytes are already gone. Renaming is atomic and
+            # same-filesystem by construction (both paths sit beside `dst`),
+            # so `backup` is only ever a COMPLETE artifact or the previous
+            # complete one.
+            tmp_backup = backup + ".tmp"
+            shutil.copy2(dst, tmp_backup)
+            os.replace(tmp_backup, backup)
         except Exception as e:
+            try:
+                os.remove(backup + ".tmp")
+            except OSError:
+                pass
             say(f"Update: couldn't back up the current version ({e}); aborting.")
             return False
     try:
