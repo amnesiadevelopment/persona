@@ -528,7 +528,14 @@ class LogDock:
         self.body.height = self.height
         self._paint_size()
         self._safe_update(self.body)
-        self._safe_update(self.root)
+        # DELIBERATELY NOT self.root. Updating the root re-materialises the
+        # whole console INCLUDING the grip, and replacing a GestureDetector
+        # mid-gesture makes Flutter's arena drop the drag it was tracking — so
+        # the console moved on the first frame and then froze, which reads as
+        # exactly the "grip does nothing" fault this direction exists to fix.
+        # Measured: with the root update in place a real pointer drag moved the
+        # band by 0px; without it, 1:1.
+        self._safe_update(self._size_label)
 
     def _paint_size(self) -> None:
         n = self.rows
