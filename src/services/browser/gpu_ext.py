@@ -30,6 +30,28 @@ WHO AUTHORS THE IDENTITY, PER ARM — see ENGINE_AUTHORED_IDENTITY_ARMS below.
 Exactly one author per vector per arm, which is the property that makes the
 contradiction structurally impossible rather than merely fixed once.
 
+⚠️ "PER ARM" IS NOT "PER REALM", AND ONE REALM HAS NO AUTHOR AT ALL (PS-189).
+The one-author-per-arm property above holds only in the realms this extension
+REACHES. It does not reach a ``ServiceWorkerGlobalScope``, and neither does the
+worker chaining in ``worker_wrap`` — a service worker is REGISTERED with the
+browser rather than constructed by the page, so there is no constructor call to
+intercept. On the two arms where our layer authors the pair, that realm falls
+through to whoever is left, and MEASUREMENT (``scripts/ps189_realm_gpu.py``,
+layer ON, one launch, both seeds) shows it is not us:
+
+    linux    11 realms report our Mesa card; the service worker reports the
+             HOST's ``... SwiftShader ...``            <- Invariant #0
+    macos    11 realms report our ``Apple M1``; the service worker reports the
+             ENGINE's ``Apple M2``                     <- two-author contradiction
+
+So this module's identity pair is authored consistently EVERYWHERE THE PAGE CAN
+BUILD A REALM, and inconsistently in the one realm the browser builds on its
+own. Windows is clean only because it stands this layer down entirely
+(``ENGINE_AUTHORED_IDENTITY_ARMS``), leaving the engine as the single author of
+every realm — which is why a green windows reading says nothing about realm
+coverage on the other arms. The blind spot is stated in full, with the refused
+fix techniques, in ``worker_wrap``'s header; do not re-derive it from here.
+
 This extension picks one real desktop GPU deterministically from the seed and
 overrides gl.getParameter() (plus getExtension for the WEBGL_debug_renderer_info
 constants) on both WebGLRenderingContext and WebGL2RenderingContext so the

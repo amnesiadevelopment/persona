@@ -1,0 +1,204 @@
+{
+  "schema_version": 4,
+  "source": "PS-189 realm sweep (scripts/ps189_realm_gpu.py)",
+  "arm": "macos",
+  "seed": 24601,
+  "masking_layer_state": "on",
+  "declared_machine": "macos",
+  "observed_at": "2026-08-26T13:29:14Z",
+  "venue": "loopback (127.0.0.1) \u2014 no third party contacted, no exit in the picture",
+  "readings": [
+    {
+      "checker": "realm:iframe_about_blank",
+      "item": "gpu_renderer",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)"
+    },
+    {
+      "checker": "realm:iframe_about_blank",
+      "item": "gpu_vendor",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "Google Inc. (Apple)"
+    },
+    {
+      "checker": "realm:iframe_same_origin",
+      "item": "gpu_renderer",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)"
+    },
+    {
+      "checker": "realm:iframe_same_origin",
+      "item": "gpu_vendor",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "Google Inc. (Apple)"
+    },
+    {
+      "checker": "realm:iframe_srcdoc",
+      "item": "gpu_renderer",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)"
+    },
+    {
+      "checker": "realm:iframe_srcdoc",
+      "item": "gpu_vendor",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "Google Inc. (Apple)"
+    },
+    {
+      "checker": "realm:page",
+      "item": "gpu_renderer",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)"
+    },
+    {
+      "checker": "realm:page",
+      "item": "gpu_vendor",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "Google Inc. (Apple)"
+    },
+    {
+      "checker": "realm:page_webgl2",
+      "item": "gpu_renderer",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)"
+    },
+    {
+      "checker": "realm:page_webgl2",
+      "item": "gpu_vendor",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "Google Inc. (Apple)"
+    },
+    {
+      "checker": "realm:service_worker",
+      "item": "gpu_renderer",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)"
+    },
+    {
+      "checker": "realm:service_worker",
+      "item": "gpu_vendor",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "Google Inc. (Apple)"
+    },
+    {
+      "checker": "realm:shared_worker",
+      "item": "gpu_renderer",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)"
+    },
+    {
+      "checker": "realm:shared_worker",
+      "item": "gpu_vendor",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "Google Inc. (Apple)"
+    },
+    {
+      "checker": "realm:worker",
+      "item": "gpu_renderer",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)"
+    },
+    {
+      "checker": "realm:worker",
+      "item": "gpu_vendor",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "Google Inc. (Apple)"
+    },
+    {
+      "checker": "realm:worker_http",
+      "item": "gpu_renderer",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)"
+    },
+    {
+      "checker": "realm:worker_http",
+      "item": "gpu_vendor",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "Google Inc. (Apple)"
+    },
+    {
+      "checker": "realm:worker_in_iframe",
+      "item": "gpu_renderer",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)"
+    },
+    {
+      "checker": "realm:worker_in_iframe",
+      "item": "gpu_vendor",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "Google Inc. (Apple)"
+    },
+    {
+      "checker": "realm:worker_module",
+      "item": "gpu_renderer",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)"
+    },
+    {
+      "checker": "realm:worker_module",
+      "item": "gpu_vendor",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "Google Inc. (Apple)"
+    },
+    {
+      "checker": "realm:worker_nested",
+      "item": "gpu_renderer",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)"
+    },
+    {
+      "checker": "realm:worker_nested",
+      "item": "gpu_vendor",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "Google Inc. (Apple)"
+    }
+  ]
+}
