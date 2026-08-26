@@ -19,6 +19,7 @@ from ..proxy.errors import (
 )
 from ..proxy.store import ProxyStore
 from .bookmarks_seed import seed_bookmarks
+from .process_group import popen_in_new_session, reap_process_group
 from .audio_ext import build_audio_extension
 from .device_ext import build_device_extension
 from .env_policy import (
@@ -821,7 +822,7 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
             with _suppress():
                 os.remove(os.path.join(profile_dir, "DevToolsActivePort"))
 
-        proc = subprocess.Popen(
+        proc = popen_in_new_session(
             args,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -840,6 +841,22 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            # PS-192: the browser's own process group. persona's chromium is a
+            # WRAPPER launch (fpchrome.AppImage) around a multi-process
+            # browser, so the pid held here is two layers above the renderers.
+            # Without a session of its own, `terminate(proc)` reaps the wrapper
+            # and orphans the entire tree to init, where no handle can reach
+            # it. Accepted on every platform: POSIX honours it, Windows's
+            # _execute_child takes it as `unused_start_new_session`.
+            #
+            # ⚠️ VIA THE HELPER, NOT BY HAND. `popen_in_new_session` also
+            # RECORDS the group on the handle, and both halves are required.
+            # This site passed `start_new_session=True` by itself and got only
+            # the first half: `wait_for_exit` (launcher.py:400) waits the
+            # leader on EVERY launch, after which `getpgid` answers ESRCH, the
+            # teardown re-resolves to None and degrades to a single-process
+            # kill — the original leak, on the product path. Measured at 3/3
+            # orphans surviving the real `terminate()`; 0/3 through the helper.
             **_platform.no_window_kwargs(),
         )
         # Claim both loopback listeners for THIS browser, now that it exists.
@@ -882,19 +899,29 @@ def _stop_bridge(proc: subprocess.Popen) -> None:
 
 
 def terminate(proc: subprocess.Popen, name: str, timeout: int = 5) -> None:
-    """Gracefully terminate a browser process, force-kill on timeout."""
-    if proc.poll() is not None:
-        _stop_bridge(proc)
-        return
+    """Gracefully terminate a browser process TREE, force-kill on timeout.
+
+    PS-192: the audience is the process GROUP, not the single pid held here.
+    persona's engine is a wrapper (``fpchrome.AppImage``) around a
+    multi-process browser, so signalling the handle alone reaps the wrapper and
+    leaves the zygote, the GPU process and every renderer alive, reparented to
+    init and unreachable from any handle we ever had. Measured at ~35 surviving
+    processes per launch (PS-185); observed at 361% CPU for 12.5h on a user's
+    workstation.
+
+    ⚠️ AN ALREADY-EXITED PARENT STILL GETS THE GROUP SIGNAL. The early return
+    that used to sit here — ``if proc.poll() is not None: return`` — is exactly
+    the leak's favourite path: a wrapper that has already handed off and exited
+    reads as "nothing to do" while its children are the whole problem. The
+    parent's exit status is not evidence about its descendants.
+    """
     try:
-        proc.terminate()
-        try:
-            proc.wait(timeout=timeout)
-            logger.info("Browser %s terminated gracefully", name)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=1)
-            logger.warning("Browser %s force killed after timeout", name)
+        # terminate -> wait -> kill escalation is preserved inside the reaper,
+        # which falls back to single-process signalling when the child never
+        # got its own session (and refuses to signal OUR group — see
+        # process_group's self-kill guard).
+        reap_process_group(proc, timeout=timeout)
+        logger.info("Browser %s process group torn down", name)
     except Exception as e:
         logger.exception("Error terminating browser %s: %s", name, e)
     finally:
