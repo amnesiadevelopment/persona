@@ -24,6 +24,7 @@ import collections
 import json
 import os
 import pathlib
+import sys
 
 HERE = pathlib.Path(__file__).resolve().parent
 
@@ -421,6 +422,18 @@ def main(argv: "list[str] | None" = None) -> int:
         "",
     ]
     text = "\n".join(parts)
+    # This output carries ⚠️, — and non-ASCII identity strings. A Windows
+    # console defaults to cp1252, where print() raises UnicodeEncodeError and
+    # the script dies WITHOUT writing anything — on a document whose whole
+    # instruction to the next maintainer is "re-run derive.py instead of
+    # re-typing a number". Pin the stream to UTF-8 so that instruction is
+    # followable on every platform rather than on the two it was written on.
+    stream = getattr(sys, "stdout", None)
+    if stream is not None and hasattr(stream, "reconfigure"):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, OSError, ValueError):
+            pass
     print(text)
     if args.output:
         with open(args.output, "w", encoding="utf-8") as fh:

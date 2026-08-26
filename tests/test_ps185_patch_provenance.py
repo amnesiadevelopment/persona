@@ -210,6 +210,37 @@ def test_no_cell_is_labelled_theoretical_or_left_blank():
         assert "theoretical" not in row.lower(), f"stale theoretical cell: {row}"
 
 
+def test_derive_runs_on_a_non_utf8_console():
+    """Windows CI runs a cp1252 console; derive.py must survive it.
+
+    Found by this file's own suite: `print(text)` raised UnicodeEncodeError on
+    the ⚠️ and — characters and the script died WITHOUT writing anything. That
+    is a real portability defect rather than a test artefact, because
+    PS-16-PATCH.md's standing instruction to the next maintainer is *"if you
+    re-type a derived number, re-run derive.py instead"* — an instruction that
+    was only followable on the two platforms it was written on.
+
+    Asserts the output is byte-identical to a UTF-8 run, not merely that the
+    process survived: an encoding fix that silently dropped or replaced a
+    character would still exit 0 while corrupting the record.
+    """
+    import os
+
+    env = dict(os.environ, PYTHONIOENCODING="cp1252")
+    proc = subprocess.run(
+        [sys.executable, str(DERIVE)],
+        capture_output=True, text=True, timeout=120, env=env,
+    )
+    assert proc.returncode == 0, (
+        "derive.py died on a cp1252 console — the re-run instruction in "
+        f"PS-16-PATCH.md is not followable on Windows:\n{proc.stderr[-2000:]}"
+    )
+    assert proc.stdout == _run_derive(), (
+        "cp1252 output differs from UTF-8 output — characters were dropped or "
+        "replaced, which would corrupt the record rather than fail loudly"
+    )
+
+
 # --------------------------------------------------------------------------
 # Discrimination — these checks must be able to FAIL
 # --------------------------------------------------------------------------
