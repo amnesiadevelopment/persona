@@ -1,4 +1,4 @@
-"""Atomic JSON writes.
+"""Atomic file writes.
 
 A truncate-and-write in place loses the whole file if the process dies mid-write
 (crash, kill, power loss). Serializing to a sibling temp file and renaming it
@@ -19,21 +19,35 @@ import os
 import tempfile
 
 
-def atomic_write_json(path: str, data, *, private: bool = False) -> None:
+def atomic_write_bytes(path: str, data: bytes, *, private: bool = False) -> None:
+    """Write `data` to `path` atomically, optionally 0600.
+
+    THE MECHANISM, and why each step is here rather than an obvious
+    simplification:
+
+    * A UNIQUE temp per call (not a fixed "<path>.new"): two threads writing the
+      same target concurrently would otherwise share one temp and interleave into
+      a corrupt file before the rename. `install_secret._create` uses a
+      pid-suffixed temp for the same reason.
+    * The temp is a SIBLING, in the target's own directory, because `os.replace`
+      is only atomic within one filesystem.
+    * fsync before replace so the bytes are on disk if power is lost right after
+      the (atomic) rename.
+    * The chmod happens BEFORE the rename, so the bytes are never briefly
+      readable at the FINAL path under a wider mode. A write-then-chmod at the
+      final path leaves exactly that window open, which is the defect this
+      function exists to make unrepeatable.
+
+    Callers that hold TEXT should encode and call this; `atomic_write_json`
+    below is the JSON-shaped caller.
+    """
     parent = os.path.dirname(path) or "."
     os.makedirs(parent, exist_ok=True)
-    # Serialize FIRST: if the data can't be encoded, raise before touching the
-    # real file so a bad write can't destroy the existing good copy.
-    text = json.dumps(data, indent=2)
-    # A UNIQUE temp per call (not a fixed "<path>.new"): two threads writing the
-    # same target concurrently would otherwise share one temp and interleave into
-    # a corrupt file before the rename. fsync before replace so the bytes are on
-    # disk if power is lost right after the (atomic) rename.
     fd, tmp = tempfile.mkstemp(
         dir=parent, prefix=os.path.basename(path) + ".", suffix=".new"
     )
     try:
-        os.write(fd, text.encode("utf-8"))
+        os.write(fd, data)
         os.fsync(fd)
         os.close(fd)
         fd = -1
@@ -52,6 +66,15 @@ def atomic_write_json(path: str, data, *, private: bool = False) -> None:
         except OSError:
             pass
         raise
+
+
+def atomic_write_json(path: str, data, *, private: bool = False) -> None:
+    # Serialize FIRST: if the data can't be encoded, raise before touching the
+    # real file so a bad write can't destroy the existing good copy. This is why
+    # the encode stays HERE and is not pushed down into atomic_write_bytes —
+    # by the time that function runs, a temp file has already been created.
+    text = json.dumps(data, indent=2)
+    atomic_write_bytes(path, text.encode("utf-8"), private=private)
 
 
 def _umask() -> int:
