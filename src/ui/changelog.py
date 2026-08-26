@@ -5,6 +5,32 @@ not a git log. When cutting a release, add the new version's highlights here.
 """
 
 CHANGELOG: dict[str, list[str]] = {
+    "3.0.1": [
+        "The Activity Log is now a full-width console along the bottom of the "
+        "window instead of a cramped column in the sidebar. Drag its top edge "
+        "to resize it, or collapse it to a single strip that still reports what "
+        "is happening. It follows new lines as they arrive, pauses the moment "
+        "you scroll up to read something, and offers a 'new messages' button to "
+        "jump back to the live end.",
+        "Firefox profiles keep their open tabs across a restart again. A "
+        "scheduled engine build update was clearing the session-restore "
+        "settings, so a profile came back empty.",
+        "Chromium's engine row now explains why it has no rollback available "
+        "yet, instead of showing an empty space that looked like the feature "
+        "was missing.",
+        "Linux updates now keep the previous AppImage, so an update can be "
+        "rolled back the same way the other platforms already allowed.",
+        "Updates no longer re-download the whole application when nothing about "
+        "the runtime changed — the release now refreshes its own baseline, so a "
+        "routine update takes the small, seconds-fast path instead of pulling "
+        "the full installer every time.",
+        "Fixed a case where the install secret was written to a folder the app "
+        "had already failed to create, so it was silently regenerated on every "
+        "launch instead of persisting.",
+        "The local automation API's access token is now written atomically and "
+        "privately, and a truncated token file is rejected instead of being "
+        "accepted as a valid credential.",
+    ],
     "3.0.0": [
         "Fixed a real-location disclosure: a profile launched through a proxy "
         "could advertise your own computer's timezone instead of the proxy's, "
