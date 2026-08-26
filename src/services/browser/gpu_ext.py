@@ -140,11 +140,86 @@ __REALM_GUARD__
     { unmaskedVendor: "Google Inc. (AMD)",
       unmaskedRenderer: "ANGLE (AMD, AMD Radeon RX 6600 (0x000073FF) Direct3D11 vs_5_0 ps_5_0, D3D11)" }
   ];
+  // macOS Chrome runs WebGL over ANGLE's METAL backend. The page-visible
+  // renderer is composed by ANGLE from three elements, each confirmed in source:
+  //   1. renderer: "ANGLE Metal Renderer" + ": " + MTLDevice.name
+  //      (DisplayMtl.mm:188-202). The variable half is MTLDevice.name, a string
+  //      Apple's Metal driver reports — NOT something ANGLE composes.
+  //   2. vendor:   the literal "Apple" (driver_utils.cpp:225-234,
+  //      VENDOR_ID_APPLE), wrapped by EGL's "Google Inc. (<vendor>)" convention.
+  //   3. version:  the literal "Unspecified Version" (DisplayMtl.mm:209-216),
+  //      returned for every WebGL context — so NO macOS version reaches the page
+  //      and none is baked in below.
+  //
+  // ⚠️ MTLDevice.name CANNOT BE DERIVED FROM SOURCE, ONLY OBSERVED. Every chip
+  // name below was harvested VERBATIM from a public issue report written by a
+  // real user on real hardware; the per-entry comment names the report. An
+  // invented or extrapolated name is a POSITIVE tell on a single profile, which
+  // is strictly worse than the collision this pool widening exists to reduce.
+  // Full provenance — every URL, the source excerpts, and what is NOT
+  // established — is transcribed in tests/fixtures/macos-webgl-reference.md.
+  // Read that file, not this comment, and do not re-derive from either.
+  //
+  // Apple also ships M1/M2/M3 Ultra and M4 Max. They are REAL products and are
+  // deliberately ABSENT: no verbatim capture of them turned up, and a
+  // plausible-but-unobserved name is the exact failure this pool guards against.
+  // Do not recombine terms across rows (no "M3" + "Ultra") — MTLDevice.name is
+  // one opaque driver string, the same rule LINUX_GPUS carries.
+  //
+  // WHY NINE ENTRIES CARRY `since: 1` (PS-183). This pool shipped with TWO
+  // entries, so two macOS profiles collided 50.0% of the time — the worst cell
+  // in PS-16's Table 2 and a Level 2 (mutual unlinkability) breach. Widening is
+  // the only lever: deferring to the engine was MEASURED and REJECTED (30 seeds,
+  // two values, 76.9% collision — WORSE; see ENGINE_AUTHORED_IDENTITY_ARMS).
+  // The new entries are TAGGED because pick() divides by the length of the
+  // profile's OWN generation's visible pool: an UNTAGGED append changes that
+  // divisor and re-indexes existing profiles onto a different card (measured
+  // 66-75% moved), which is the linkage event hardware_generation.py prevents.
+  // Consequence, stated rather than glossed — generation 0 (every profile that
+  // already exists) still sees 2 entries and keeps its 50.0% collision; only
+  // generation 1 gets the 11-entry pool at 9.1%. Closing that gap means
+  // re-rolling or tombstoning issued identities, which is the owner-level trade
+  // PS-54 scoped out.
   var MAC_GPUS = [
+    // [upstream] bevy#18257, ruffle#23851, ruffle#23990 (4 reports). Shipped
+    // pre-PS-183; re-confirmed by the PS-183 harvest rather than inherited.
     { unmaskedVendor: "Google Inc. (Apple)",
       unmaskedRenderer: "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)" },
+    // [upstream] million#1127, ruffle#15648, ruffle#17749 (4 reports). Shipped
+    // pre-PS-183; re-confirmed by the PS-183 harvest rather than inherited.
     { unmaskedVendor: "Google Inc. (Apple)",
-      unmaskedRenderer: "ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Pro, Unspecified Version)" }
+      unmaskedRenderer: "ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Pro, Unspecified Version)" },
+    // [upstream] ruffle#13043, ruffle#14168, Construct-bugs#8682 (5 reports).
+    { unmaskedVendor: "Google Inc. (Apple)",
+      unmaskedRenderer: "ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Pro, Unspecified Version)", since: 1 },
+    // [upstream] gpu.js#859, ruffle#19742, million#1080 (4 reports).
+    { unmaskedVendor: "Google Inc. (Apple)",
+      unmaskedRenderer: "ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Max, Unspecified Version)", since: 1 },
+    // [upstream] CloakBrowser#236, Horizon#852, ruffle#20028 (6 reports).
+    { unmaskedVendor: "Google Inc. (Apple)",
+      unmaskedRenderer: "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)", since: 1 },
+    // [upstream] ruffle#20682 (1 report). ⚠️ WEAKEST ROW: a single capture,
+    // where every other row has at least two. Verbatim and well-formed, and the
+    // chip certainly shipped — but flagged so it is not mistaken for the same
+    // strength of evidence as the rest. Dropping it costs little (10 entries,
+    // 10.0%, still in band). See the caveat in macos-webgl-reference.md.
+    { unmaskedVendor: "Google Inc. (Apple)",
+      unmaskedRenderer: "ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Max, Unspecified Version)", since: 1 },
+    // [upstream] ruffle#21431, ruffle#21475, Angels-Bandits#30 (3 reports).
+    { unmaskedVendor: "Google Inc. (Apple)",
+      unmaskedRenderer: "ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)", since: 1 },
+    // [upstream] chroma-key-video#1, table-saw-project#19 (2 reports).
+    { unmaskedVendor: "Google Inc. (Apple)",
+      unmaskedRenderer: "ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Pro, Unspecified Version)", since: 1 },
+    // [upstream] donutbrowser#531, react-os-shell#94 (2 reports).
+    { unmaskedVendor: "Google Inc. (Apple)",
+      unmaskedRenderer: "ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Max, Unspecified Version)", since: 1 },
+    // [upstream] ruffle#22068, ruffle#24364 (2 reports).
+    { unmaskedVendor: "Google Inc. (Apple)",
+      unmaskedRenderer: "ANGLE (Apple, ANGLE Metal Renderer: Apple M4, Unspecified Version)", since: 1 },
+    // [upstream] Construct-bugs#9202, crucible#1137 (2 reports).
+    { unmaskedVendor: "Google Inc. (Apple)",
+      unmaskedRenderer: "ANGLE (Apple, ANGLE Metal Renderer: Apple M4 Pro, Unspecified Version)", since: 1 }
   ];
   // Android mobile Chrome runs WebGL over ANGLE-on-OpenGL-ES with a real phone
   // GPU. A D3D11 desktop string on a phone UA is impossible; use the Adreno/Mali

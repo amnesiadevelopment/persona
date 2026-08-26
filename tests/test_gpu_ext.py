@@ -1451,3 +1451,185 @@ def test_no_unsubstituted_placeholder_survives_into_any_emitted_script(tmp_path)
         js = _read(build_gpu_extension(7, arm, str(tmp_path / f"ph{arm}"), 0, engine_platform=engine_platform_for(arm, "desktop")), "gpu.js")
         assert "__ENGINE_AUTHORS_IDENTITY__" not in js
         assert "var ENGINE_AUTHORS_IDENTITY = " in js
+
+
+# --- macos pool width (PS-183) -----------------------------------------------
+#
+# Reference values and their per-value provenance live in
+# tests/fixtures/macos-webgl-reference.md. Read that file before changing any
+# string here; do NOT re-derive them from this test or from gpu_ext.py.
+#
+# WHAT THESE TESTS PIN, AND WHY IT IS NOT THE ENTRY COUNT. The property PS-183
+# buys is a COLLISION PROBABILITY under the real selection path — the chance two
+# macOS profiles are handed the same card. An `assert len(MAC_GPUS) == 11` would
+# be a test of what was written rather than of what happens (PS-11): it passes on
+# a pool of eleven that `pick()` never reaches past the second entry, and it says
+# nothing about skew. So the figure below is MEASURED by executing the emitted
+# gpu.js and CALLING the patched getParameter, and scored with the verifier's own
+# Simpson index rather than a second implementation of the arithmetic.
+#
+# The eleven page-visible renderer strings, kept as whole tuples. `MTLDevice.name`
+# is one opaque driver string, so these are compared as complete strings and must
+# never be recombined term-by-term across rows (no "M3" + "Ultra").
+_MACOS_RENDERERS_GEN0 = {
+    "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)",
+    "ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Pro, Unspecified Version)",
+}
+_MACOS_RENDERERS_ADDED = {
+    "ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Pro, Unspecified Version)",
+    "ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Max, Unspecified Version)",
+    "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
+    "ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Max, Unspecified Version)",
+    "ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)",
+    "ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Pro, Unspecified Version)",
+    "ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Max, Unspecified Version)",
+    "ANGLE (Apple, ANGLE Metal Renderer: Apple M4, Unspecified Version)",
+    "ANGLE (Apple, ANGLE Metal Renderer: Apple M4 Pro, Unspecified Version)",
+}
+
+# Enough seeds that a Simpson estimate over an 11-entry pool is not luck. The
+# verifier refuses to say anything below MIN_SEEDS = 8 for exactly this reason;
+# this is well above that floor. Each seed spawns one node process.
+_MACOS_SEEDS = list(range(1, 49))
+
+
+def _macos_cards(tmp_path, generation, seeds=_MACOS_SEEDS):
+    """What a macOS page in each profile ACTUALLY reads, by execution.
+
+    ``generation`` is a real parameter — the whole PS-183 property is per
+    generation, because ``pick()`` divides by the length of the profile's OWN
+    generation's visible pool. A probe fixed at one generation could not observe
+    the split this pool deliberately has.
+    """
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    seen = []
+    for seed in seeds:
+        d = pathlib.Path(build_gpu_extension(
+            seed, "macos", str(tmp_path / f"m{generation}s{seed}"), generation,
+            engine_platform=engine_platform_for("macos", "desktop")))
+        harness = d / "harness.js"
+        harness.write_text(_GPU_PROBE, encoding="utf-8")
+        out = subprocess.run(
+            [node, str(harness), str(d / "gpu.js")],
+            capture_output=True, text=True, timeout=60,
+        )
+        assert out.returncode == 0, out.stderr
+        got = json.loads(out.stdout)
+        assert got["unmaskedRenderer"] != "HOST_VALUE_NOT_SPOOFED", (
+            "the extension did not patch getParameter, so this measured nothing"
+        )
+        seen.append(got["unmaskedRenderer"])
+    return seen
+
+
+def test_new_macos_profiles_collide_well_below_the_two_entry_pool(tmp_path):
+    # THE PROPERTY PS-183 BUYS. Two macOS profiles sharing a graphics card is a
+    # shared cross-profile identifier — Level 2 (mutual unlinkability). The
+    # two-entry pool collided 50% of the time, the worst cell in PS-16 Table 2.
+    #
+    # Scored with the VERIFIER'S OWN collision_probability (the Simpson index),
+    # imported rather than reimplemented, so this test and the gate cannot drift
+    # apart on the arithmetic. Simpson is used instead of a distinct count
+    # because a distinct count is blind to SKEW: it scores an 87/13 two-value
+    # split identically to a healthy 50/50 one and would pass a pool that
+    # collides 77% of the time.
+    from src.services.verify.engine_gpu_variance import collision_probability
+
+    cards = _macos_cards(tmp_path, 1)
+    p = collision_probability(cards)
+
+    # The ticket's target band (~15%), which is where the other arms sit:
+    # linux 12.5%, windows 15.6%. The theoretical figure for an 11-entry
+    # uniform pool is 9.1%; the bar is loose enough to absorb sampling noise
+    # and tight enough that dropping back toward a narrow pool fails.
+    assert p <= 0.15, (
+        f"macOS profiles collide {p:.1%} of the time, outside the ~15% band "
+        f"the other arms sit in. Cards seen: {sorted(set(cards))}"
+    )
+    # And it must be a real improvement, not a rounding win over the 50% it
+    # replaced — this is the comparison the ticket actually asked for.
+    assert p < 0.5 / 2
+
+
+def test_widening_the_pool_moved_no_existing_macos_profile(tmp_path):
+    # THE CONTINUITY HAZARD, and the reason the nine new entries carry
+    # `since: 1`. `pick()` divides by the visible pool's LENGTH, so an UNTAGGED
+    # append changes the divisor and re-indexes existing profiles onto a
+    # DIFFERENT graphics card — a site holding a live session cookie watches the
+    # machine change under it (the linkage event hardware_generation.py exists
+    # to prevent, measured on this pool at 66-75% moved).
+    #
+    # Asserted as what a generation-0 page READS, by execution: every existing
+    # profile must still be handed one of exactly the two cards that shipped,
+    # and none of the nine added ones. That is the observable form of "nobody
+    # moved" — an assertion on the `since` tags would only restate the source.
+    cards = _macos_cards(tmp_path, 0)
+    seen = set(cards)
+
+    assert seen <= _MACOS_RENDERERS_GEN0, (
+        "a generation-0 (EXISTING) macOS profile was handed a card that was "
+        f"added by the widening: {sorted(seen - _MACOS_RENDERERS_GEN0)}. Its "
+        "visible pool changed length, so its seed now indexes somewhere else "
+        "— this is the re-indexing the `since` tags exist to prevent."
+    )
+    assert not (seen & _MACOS_RENDERERS_ADDED)
+    # Both original cards still reachable: the old pool is intact, not collapsed
+    # onto one entry (which would be a Level 2 breach of its own).
+    assert seen == _MACOS_RENDERERS_GEN0
+
+
+def test_every_macos_card_is_a_provenanced_reference_string(tmp_path):
+    # An INVENTED renderer string is worse than a collision: a card that does
+    # not exist, or one with the wrong shape, is a POSITIVE tell on a SINGLE
+    # profile, whereas a collision only links two. So every value a page can
+    # read is pinned to the reference set transcribed WITH ITS PROVENANCE in
+    # tests/fixtures/macos-webgl-reference.md — nothing may reach a page that
+    # did not come from a real machine.
+    reference = _MACOS_RENDERERS_GEN0 | _MACOS_RENDERERS_ADDED
+    seen = set(_macos_cards(tmp_path, 1))
+
+    unknown = seen - reference
+    assert not unknown, (
+        f"a macOS profile was handed a renderer string with no provenance: "
+        f"{sorted(unknown)}. Every entry must be a verbatim capture from real "
+        "hardware — see tests/fixtures/macos-webgl-reference.md."
+    )
+    # The whole widened pool must be REACHABLE, not merely present in the file:
+    # an entry no seed ever lands on buys no unlinkability at all.
+    assert seen == reference, (
+        f"these entries are in the pool but no seed reached them: "
+        f"{sorted(reference - seen)}"
+    )
+
+
+def test_macos_vendor_agrees_with_every_renderer_it_is_paired_with(tmp_path):
+    # Apple is the only Metal vendor, so the UNMASKED_VENDOR half is the same
+    # literal on every row (ANGLE's driver_utils.cpp maps VENDOR_ID_APPLE to
+    # "Apple", wrapped by EGL's "Google Inc. (<vendor>)" convention). A mismatch
+    # here is an impossible pair and a single-profile tell.
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    for seed in (1, 2, 3, 7, 42, 1337, 24601):
+        d = pathlib.Path(build_gpu_extension(
+            seed, "macos", str(tmp_path / f"v{seed}"), 1,
+            engine_platform=engine_platform_for("macos", "desktop")))
+        harness = d / "harness.js"
+        harness.write_text(_GPU_PROBE, encoding="utf-8")
+        out = subprocess.run([node, str(harness), str(d / "gpu.js")],
+                             capture_output=True, text=True, timeout=60)
+        assert out.returncode == 0, out.stderr
+        got = json.loads(out.stdout)
+        assert got["unmaskedVendor"] == "Google Inc. (Apple)"
+        assert "ANGLE Metal Renderer: Apple M" in got["unmaskedRenderer"]
+        # No macOS version may reach the page: ANGLE returns the literal
+        # "Unspecified Version" for WebGL contexts (DisplayMtl.mm:209-216).
+        assert got["unmaskedRenderer"].endswith(", Unspecified Version)")
