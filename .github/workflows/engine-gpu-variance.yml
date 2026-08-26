@@ -1,0 +1,235 @@
+name: engine-gpu-variance
+
+# Does the chromium engine still give different profiles different GPUs?
+#
+# WHY THIS JOB EXISTS (PS-176, closing the condition PS-161's (b) was granted
+# under). On an arm in `gpu_ext.ENGINE_AUTHORED_IDENTITY_ARMS` — today
+# `windows` — persona deliberately STOPS spoofing the WebGL identity pair and
+# lets fingerprint-chromium's own seed-derived value reach the page. One author
+# per vector. That trade makes Level 2 (mutual unlinkability) depend on a THIRD
+# PARTY'S BUILD, on the only arm that defers, with no redundancy.
+#
+# If a future engine build stops varying its GPU by seed, every persona profile
+# on that arm silently shares one graphics card. Nothing else in the subsystem
+# would notice: the value stays perfectly plausible so no per-row "is this a
+# tell?" judgement fires, and `matrix_consistency` structurally cannot see it —
+# it asks whether ONE record contradicts ITSELF, and a shared card is not a
+# self-contradiction. Every record is individually consistent and the whole
+# population is linked. The defect is a property of a SET of profiles.
+#
+# ---------------------------------------------------------------------------
+# WHY THIS IS A SCHEDULED JOB AND NOT A STEP IN ONE OF THE OTHER TWO WORKFLOWS
+# ---------------------------------------------------------------------------
+# Verified by re-running the greps at the commit this was written on, because
+# the two errors this ticket already survived were both of the form "the thing
+# is missing" (true) plus "here is where it would go" (wrong, unchecked):
+#
+#   * NOT `engine-autoupdate.yml`. That job bumps the FIREFOX engine and only
+#     Firefox — `engine-baseline.txt` is `firefox-20`, both provisioning steps
+#     import `src.services.engine.firefox`, and its gate is `engine_gate
+#     record`/`compare`, firefox-only for its own recorded reason (one host,
+#     one job, so host variance is not read as engine drift). fingerprint-
+#     chromium is touched by NO workflow. Wiring a chromium variance check into
+#     a Firefox bump would build a gate that can never fire on the event it
+#     exists to catch.
+#
+#   * NOT `ci.yml`. A variance loss is not caused by our pull requests, it is
+#     caused by UPSTREAM PUBLISHING. A PR trigger is the wrong event, and would
+#     spend a 188 MB engine download per PR to re-measure an unchanged build.
+#
+# ⚠️ AND DELIBERATELY NOT PINNED. The tempting shape is to pin a known engine
+# build so the job is reproducible. That would defeat the entire purpose: the
+# RISK IS UPSTREAM'S `/releases/latest`, which is exactly what a pin hides. A
+# gate on a pinned build stays green forever while the build users actually
+# receive goes bad. So this job downloads whatever `/releases/latest` returns —
+# the same bytes `updater.fetch_latest()` hands the operator's app — and
+# measures those. The cost is accepted knowingly: this job can go red because
+# upstream changed something, which IS THE SIGNAL, not noise.
+#
+# WHAT THE OPERATOR'S APP ACTUALLY DOES, which is what makes this urgent:
+# `app.py` `_check_engines_periodic()` polls hourly, unattended, no spinner,
+# and ends at `_auto_update_engine()` -> `updater.py` ->
+# adryfish/fingerprint-chromium `/releases/latest`. `policy.py` ships
+# `KNOWN_BAD_VERSIONS = frozenset()` and NO ceiling. So persona installs
+# whatever upstream published most recently, on the user's machine, with no
+# human in the loop.
+#
+# ---------------------------------------------------------------------------
+# WHAT THIS COVERS AND WHAT IT DOES NOT — STATED, NOT IMPLIED
+# ---------------------------------------------------------------------------
+# COVERED: detection, daily, on the unpinned build users receive.
+#
+# NOT COVERED: prevention. The operator's app polls HOURLY and this job runs
+# DAILY, so a bad build can reach machines up to ~24h before this reads it.
+# Closing that would mean blocking an unattended install on a ~5-minute,
+# 15-browser-launch measurement of a build that is not installed yet — the
+# measurement is circular at that point (you cannot seed-vary a build you have
+# not installed) and would wedge the app. The remedy for a RED run is therefore
+# to name the bad tag in `policy.KNOWN_BAD_VERSIONS`, which every chromium
+# install already passes through (`policy.check()` / `is_installable()`), and
+# which refuses a build BY NAME without waiting for a persona release. That is
+# the intended response to this job going red, and it is why the failure output
+# below names it.
+
+on:
+  schedule:
+    # Daily, after the 06:00 UTC engine-autoupdate slot so the two jobs do not
+    # contend for a runner. Nothing about this job depends on that one.
+    - cron: "40 6 * * *"
+  workflow_dispatch: {}   # allow a manual reading
+
+permissions:
+  contents: read          # reads the tree and the public upstream release only
+
+concurrency:
+  group: engine-gpu-variance
+  cancel-in-progress: false
+
+jobs:
+  variance:
+    runs-on: ubuntu-24.04
+    # The measured local run (15 seeds, one browser launch each, 2s settle) took
+    # roughly 9 minutes plus a 188 MB download. 45 leaves headroom for a slow
+    # runner or a slow upstream without letting a genuinely wedged launch hang
+    # for hours.
+    timeout-minutes: 45
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.13"
+
+      # PROVE THE GATE CAN FAIL, BEFORE TRUSTING A GREEN FROM IT.
+      #
+      # This runs FIRST and needs no engine at all. The live check below can
+      # only ever demonstrate the outcome the engine happens to produce today —
+      # which is a pass — and a check only ever observed passing is not
+      # coverage. This drives synthesised low-variance readings (all-one-card,
+      # a hard-skewed two-value pool, and an under-sampled run) through the SAME
+      # classify -> exit_code_for path the live check gates on, and asserts each
+      # lands on the exit code it must.
+      #
+      # Placed before provisioning on purpose: if the judgement is broken, a
+      # 188 MB download to produce a meaningless green is wasted, and the red
+      # this job would report would be the wrong red.
+      - name: Prove the gate still goes red
+        run: python -m src.services.verify.engine_gpu_variance selftest
+
+      - name: Provision a display and the engine driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          python -m pip install --upgrade pip
+          pip install --prefer-binary -r requirements.txt
+          # The driver + the core it must ship with, at the pins THIS TREE
+          # carries. Read out of pyproject because that is the only file that
+          # declares invisible_core at all — requirements.txt does not, so
+          # nothing else installs it. Same approach engine-autoupdate.yml uses.
+          pin="$(python -c "import re,pathlib; print(re.search(r'invisible_playwright @ git\+[^\"]+', pathlib.Path('pyproject.toml').read_text()).group(0))")"
+          core="$(python -c "import re,pathlib; print(re.search(r'invisible_core==[0-9][0-9.]*', pathlib.Path('pyproject.toml').read_text()).group(0))")"
+          echo "driver: $pin"
+          echo "core  : $core"
+          pip install "$pin"
+          pip install "$core"
+
+      # THE UNPINNED DOWNLOAD. This is the point of the job: the tag is
+      # whatever upstream published, resolved the same way the operator's app
+      # resolves it, and it is ECHOED so a red run names the build that was bad.
+      - name: Download whatever /releases/latest is serving right now
+        id: engine
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import sys
+          from src.services.engine import updater
+
+          # fetch_latest_checked applies policy.check, so a build already on the
+          # known-bad list is refused here rather than measured — the refusal is
+          # the correct outcome and this job should not re-litigate it.
+          tag, url, digest, verdict, message = updater.fetch_latest_checked(timeout=30)
+          print(f"upstream latest: {tag} (policy verdict: {verdict})", file=sys.stderr)
+          if verdict != "ok":
+              print(f"persona already refuses this build: {message}", file=sys.stderr)
+              sys.exit(f"refusing to measure a build persona will not install: {tag}")
+          if not updater.download_engine(url, digest=digest, tag=tag):
+              sys.exit(f"could not download engine build {tag}")
+          # download_engine does NOT write version.txt — the UI does that after a
+          # successful install (app.py). Without this the record's engine_build
+          # reads "unknown", and a finding you cannot attribute to a TAG cannot
+          # be acted on: the whole remedy is to name the tag in
+          # policy.KNOWN_BAD_VERSIONS. So write it explicitly.
+          updater.write_version(tag)
+          print(f"installed: {updater.current_version()!r}", file=sys.stderr)
+          print(f"tag={tag}")
+          PY
+
+      # THE READING. Every engine-authored arm, the module's fixed default
+      # seeds, masking layer OFF (which is what an engine-authored arm actually
+      # ships to a page).
+      #
+      # NOT `continue-on-error`, and NOT `|| true`. A non-zero exit fails this
+      # job, which is the entire point of the ticket this closes:
+      #   exit 0 = every arm beat the bar
+      #   exit 1 = FINDING (CONSTANT or TOO_NARROW) — an arm must come back
+      #            under gpu_ext's own authorship
+      #   exit 2 = CANNOT_RUN (INCONCLUSIVE, or the reading refused)
+      #
+      # ⚠️ EXIT 2 FAILS THIS JOB TOO, and that is deliberate. "We failed to
+      # look" must never wear the colour of "we looked and it was fine". An
+      # under-sampled run is not a pass (the module refuses to call it one) and
+      # the wiring here must not launder it into one by only checking for 1.
+      # Letting a bare `run:` propagate the exit code is what keeps that true —
+      # any branching on the code here would be the place that laundering
+      # sneaks back in.
+      - name: Measure the engine's GPU identity variance
+        run: |
+          xvfb-run -a python -m src.services.verify.engine_gpu_variance check \
+            --output /tmp/engine-gpu-variance.json
+
+      # On a red run this file is the whole evidence base for deciding what to
+      # blocklist, and it lives on a runner about to be destroyed. It carries
+      # the engine_build, the per-seed readings and the verdict.
+      - name: Keep the reading when the gate goes red
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: engine-gpu-variance-reading
+          path: /tmp/engine-gpu-variance.json
+          if-no-files-found: warn
+
+      - name: Say what a red run means and what to do about it
+        if: failure()
+        env:
+          TAG: ${{ steps.engine.outputs.tag }}
+        run: |
+          echo "::error::Chromium engine ${TAG:-<unresolved>} did not clear the GPU seed-variance bar."
+          cat <<EOF
+          The engine build users are being served may no longer give different
+          profiles different GPUs. Read the uploaded artifact for the per-seed
+          readings and the verdict before acting.
+
+          WHAT THE VERDICTS MEAN
+            CONSTANT     every profile got the SAME card. A flat Level 2 breach.
+            TOO_NARROW   it varies, but collides MORE often than persona's own
+                         fallback pool would have — deferring is now COSTING
+                         unlinkability rather than removing a second author.
+            INCONCLUSIVE nothing was established. NOT a pass. Usually the engine
+                         or the display failed to come up: check the step log
+                         before reading anything into it.
+
+          WHAT TO DO
+            1. A finding is remediated BY NAME, without waiting for a release:
+               add "${TAG:-<the tag>}" to KNOWN_BAD_VERSIONS in
+               src/services/engine/policy.py, with a comment saying WHAT it
+               broke. Every chromium install passes through policy.check(), so
+               that refusal reaches operators' machines.
+            2. If the narrowing is permanent rather than a bad build, the arm
+               belongs back under persona's own authorship: remove it from
+               ENGINE_AUTHORED_IDENTITY_ARMS in src/services/browser/gpu_ext.py
+               so the fallback pool authors the identity again.
+            3. Do NOT "fix" this by pinning the engine or by relaxing the bar.
+               The bar is read out of gpu_ext's own fallback pool so the two
+               cannot drift; lowering it would only hide the finding.
+          EOF

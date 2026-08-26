@@ -54,27 +54,62 @@ quietly satisfied by a cheap two-seed run.
 
 WHERE IT RUNS — STATED PLAINLY, INCLUDING WHERE IT DOES NOT
 -------------------------------------------------------------
-The live half needs the product's own engine (fingerprint-chromium). Measured
-at this commit: CI provisions ``browser_firefox`` only and names
-``browser_chromium`` as a real capability nothing declares (``ci.yml``), and
-``engine-autoupdate.yml``'s gate is firefox-only for its own recorded reason.
-So this lane CANNOT run on the current CI jobs, and pretending otherwise would
-be the false green this package is most careful about.
+Since PS-176 this reading is WIRED TO A PATH THAT CAN GO RED:
+``.github/workflows/engine-gpu-variance.yml``, daily at 06:40 UTC. That job
+provisions the engine itself (xvfb + the tree's own driver pins + a
+``download_engine`` of whatever upstream is serving) and fails on a narrowed
+arm. Before PS-176 the judgement was gated and the reading was wired to
+nothing; the header below used to say so, and no longer needs to.
 
-What that leaves is a two-part shape, and both parts are real:
+⚠️ THE JOB IS DELIBERATELY UNPINNED, and that is the whole design. The
+tempting shape is to pin a known engine build so the job is reproducible — but
+THE RISK IS UPSTREAM'S ``/releases/latest``, which is exactly what a pin hides.
+A gate on a pinned build stays green forever while the build users actually
+receive goes bad. So the job measures the same bytes ``updater.fetch_latest()``
+hands the operator's app. The cost is accepted knowingly: this job can go red
+because upstream changed something, which IS the signal.
+
+It is NOT wired into ``engine-autoupdate.yml``, and that is not an oversight.
+Verified by re-running the greps: that job bumps the FIREFOX engine and only
+Firefox (``engine-baseline.txt`` is ``firefox-20``, both provisioning steps
+import ``services.engine.firefox``), and fingerprint-chromium is touched by no
+workflow at all. A chromium variance check hosted there would be a gate that
+can never fire on the event it exists to catch.
+
+The two halves, and both are real:
 
 * :func:`classify` is a PURE function over readings. It carries the whole
   verdict — the bar, the skew sensitivity, the sample-size floor — and it is
   exercised in CI on every run, including the cases where it must go RED. A
   regression in the judgement is caught by the normal test suite.
-* :func:`measure` is the live half. It runs wherever the engine is installed
-  (an operator machine, or the runner that eventually provisions the engine)
+* :func:`measure` is the live half. It needs the product's own engine, which
+  the normal CI jobs do not provision (``browser_firefox`` only, see
+  ``ci.yml``). It runs in the scheduled job above, and on any operator machine
   via ``python -m src.services.verify.engine_gpu_variance check``.
 
-The honest summary: the JUDGEMENT is automatically gated today; the READING is
-automated but runs only where the engine exists. Wiring it into the chromium
-engine's own bump is the remaining step, and it is named here rather than
-quietly assumed.
+Because a live ``check`` can only ever demonstrate the outcome the engine
+happens to produce today — a pass — the scheduled job runs
+``... engine_gpu_variance selftest`` FIRST. That drives synthesised
+low-variance readings through the same ``classify`` → ``exit_code_for`` path
+and asserts each lands on the exit code it must, so the gate's ability to FAIL
+is demonstrated on every run rather than assumed. A check only ever observed
+passing is not coverage.
+
+⚠️ WHAT IS STILL NOT COVERED, named rather than left to be discovered:
+DETECTION IS DAILY, INSTALLATION IS HOURLY. ``app.py:_check_engines_periodic``
+polls every hour, unattended, and installs whatever upstream published, with
+``policy.KNOWN_BAD_VERSIONS`` empty and no ceiling — so a bad build can reach
+machines up to ~24h before this gate reads it. That window is NOT closable by
+measuring at install time: you cannot seed-vary a build before installing it,
+and a 15-launch, minutes-long measurement inside an unattended install would
+wedge the app. The remedy for a red run is therefore to name the tag in
+``policy.KNOWN_BAD_VERSIONS`` — every chromium install passes through
+``policy.check()``, so that refusal reaches operators by name without waiting
+for a persona release. The record this module writes carries ``engine_build``
+for exactly that reason: a finding you cannot attribute to a tag cannot be
+acted on. ``replay`` therefore PRESERVES that field rather than re-deriving
+it — the machine re-reading an artifact is not the machine that measured, and
+a re-stamped tag would point the blocklist at the wrong build.
 """
 
 from __future__ import annotations
@@ -479,6 +514,109 @@ def measure(
     return readings
 
 
+def engine_build() -> str:
+    """The chromium build this reading was taken under, or ``"unknown"``.
+
+    A variance reading whose build is unknown cannot be acted on: the whole
+    remedy for a finding is to name the bad tag (``policy.KNOWN_BAD_VERSIONS``),
+    and you cannot blocklist a build you cannot name. So the record carries it.
+
+    ⚠️ Resolved from ``version.txt``, which ``download_engine`` does NOT write —
+    the UI writes it after a successful install (``app.py``). A provisioning
+    step that only downloads therefore leaves this ``"unknown"``, which is why
+    the workflow writes it explicitly. Mirrors ``snapshot.engine_build``'s
+    contract: never raises, and an unresolved value reads as ``"unknown"``
+    rather than as an empty string that looks like a value.
+    """
+    try:
+        from ..engine.updater import current_version
+
+        resolved = current_version()
+        return str(resolved) if resolved else "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _record(
+    readings: dict, result: dict, *, source: "dict | None" = None
+) -> dict:
+    """The artifact written by both ``check`` and ``replay``.
+
+    ``source`` is the record being RE-VERDICTED, and is passed by ``replay``
+    only. Its provenance — ``measured_at``, ``engine_build`` and
+    ``engine_authored_arms`` — is PRESERVED, never re-derived.
+
+    Those THREE fields are the whole provenance set: they answer *when*, *which
+    build*, and *which arms were deferring* at the moment of measurement. Any
+    field added here that describes the MEASURING machine belongs in that list
+    too — the defect this guards against has now been fixed once per field,
+    because each fix searched for the previous field's symptom rather than for
+    the class ("what does this helper derive from the replaying machine?").
+
+    ⚠️ That rule is ENFORCED, not merely stated here. ``tests/
+    test_verify_engine_gpu_variance.py::
+    test_replay_partitions_EVERY_key_so_a_new_field_cannot_be_added_unclassified``
+    asserts set-EQUALITY over the keys this function writes, partitioned into
+    source-preserved / recomputed / parameter / replay-stamped. **Adding a key
+    below without classifying it there turns that test RED**, which is the
+    whole point: three rounds of this ticket were each lost to a new field
+    that every existing test was structurally unable to see, because a test
+    that names three fields leaves the fourth free. If you are reading this
+    because that test just failed, the fix is to decide which half of the
+    partition your new field belongs in — if it describes the machine that
+    MEASURED, preserve it from ``source`` as the three above are.
+
+    ⚠️ What is deliberately NOT preserved is ``result``: it is RECOMPUTED, and
+    that is the point of a re-verdict. See :func:`_cmd_replay` for the one
+    consequence of that which an operator must know about.
+
+    ⚠️ This is load-bearing, not tidiness. ``replay`` runs on a machine that
+    is NOT the machine that measured: the documented case is a laptop with no
+    engine, no display and no runner, reading an artifact long after the
+    runner that produced it was destroyed. Re-deriving there does not blank
+    the field — it substitutes a real-looking version string (or ``"unknown"``
+    where no engine is installed) for the tag that was actually measured.
+
+    The whole documented remedy for a red run is to name the bad tag in
+    ``policy.KNOWN_BAD_VERSIONS``. An operator who blocklists the REPLAYING
+    machine's build refuses a good build and leaves the bad one installing
+    hourly — the same shape of failure this module exists to catch: a value
+    that stays perfectly plausible, so no per-row tell fires.
+
+    ``replayed_at`` records when the re-verdict happened, so the moment of
+    measurement and the moment of re-reading are both present and cannot be
+    mistaken for one another.
+    """
+    src = source or {}
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    record = {
+        # A falsy source value is treated as absent, so a record written
+        # before this field existed still resolves to something rather than
+        # to an empty string that reads like a value.
+        "measured_at": src.get("measured_at") or now,
+        "engine_build": src.get("engine_build") or engine_build(),
+        # Membership, NOT the `or` used above: an empty list is a LEGITIMATE
+        # value here ("no arm was deferring") and it is falsy, so `or` would
+        # silently substitute this machine's set for a real measured empty —
+        # the same defect, reintroduced for the one case that most needs it.
+        # The remedy for a red run is to REMOVE the arm from
+        # ENGINE_AUTHORED_IDENTITY_ARMS, so the local set is EXPECTED to
+        # differ from the archived one by the time anyone replays it.
+        "engine_authored_arms": (
+            src["engine_authored_arms"]
+            if "engine_authored_arms" in src
+            else sorted(ENGINE_AUTHORED_IDENTITY_ARMS)
+        ),
+        "readings": {
+            a: {str(s): v for s, v in by.items()} for a, by in readings.items()
+        },
+        "result": result,
+    }
+    if source is not None:
+        record["replayed_at"] = now
+    return record
+
+
 def _cmd_check(args: argparse.Namespace) -> int:
     arms = tuple(
         a.strip() for a in (args.arms or "").split(",") if a.strip()
@@ -507,20 +645,185 @@ def _cmd_check(args: argparse.Namespace) -> int:
     print(format_result(result))
     if args.output:
         with open(args.output, "w", encoding="utf-8") as fh:
-            json.dump(
-                {
-                    "measured_at": datetime.datetime.now(
-                        datetime.timezone.utc).isoformat(),
-                    "engine_authored_arms": sorted(ENGINE_AUTHORED_IDENTITY_ARMS),
-                    "readings": {
-                        a: {str(s): v for s, v in by.items()}
-                        for a, by in readings.items()
-                    },
-                    "result": result,
-                },
-                fh, indent=2,
-            )
+            json.dump(_record(readings, result), fh, indent=2)
     return exit_code_for(result)
+
+
+def _cmd_replay(args: argparse.Namespace) -> int:
+    """Re-verdict readings from a record file, taking no new measurement.
+
+    This is the FORENSIC half. When the scheduled job goes red it uploads its
+    record as an artifact (``engine-gpu-variance.yml`` step "Keep the reading
+    when the gate goes red"), and this re-reads that file to reproduce the
+    verdict — on a machine with no engine, no display and no runner, long after
+    the runner that measured it was destroyed.
+
+    ⚠️ It is NOT what proves the gate can go red. That is ``selftest``, which
+    the workflow runs FIRST (before the engine is even downloaded) and which
+    needs no engine. ``replay`` is OPERATOR-INVOKED: no workflow calls it, and
+    none should be assumed to — verified by grep, not by reading.
+
+    It deliberately cannot be mistaken for a measurement: it takes no reading
+    and is a separate subcommand from ``check``. With ``--output`` it inherits
+    the source record's ``measured_at``, ``engine_build`` and
+    ``engine_authored_arms`` rather than stamping its own (see
+    :func:`_record`), and records its own moment as ``replayed_at`` — so the
+    re-verdict can never be read as a fresh reading, and the tag an operator
+    blocklists is the one that was actually measured.
+
+    ⚠️ NOT COVERED — the verdict is re-judged against TODAY'S BAR, not the bar
+    the reading was measured against. ``classify`` re-derives
+    ``bar_collision_probability`` and ``fallback_pool_size`` from THIS
+    machine's ``gpu_ext`` pools, because the readings are replayed but the bar
+    is not carried. If persona's own pool for an arm is edited between the
+    measurement and the replay, an identical archived reading can be re-judged
+    differently. Measured, not reasoned — 10 seeds at 38% collision:
+
+        pool 5 (bar 20%)  -> TOO_NARROW, exit 1     <- as measured
+        pool 2 (bar 50%)  -> OK,         exit 0     <- same readings, replayed
+
+    The blast radius is bounded, and was measured rather than assumed:
+
+    * ``CONSTANT`` is IMMUNE — ``len(distinct) == 1`` is decided before the bar
+      is consulted, so the Level 2 breach this module exists to catch cannot be
+      re-judged away at any pool size (verified at pools 2, 5 and 50).
+    * ``INCONCLUSIVE`` is IMMUNE — the ``MIN_SEEDS`` floor precedes the bar.
+    * An unreadable pool fails SAFE (``INCONCLUSIVE``/exit 2, never a pass).
+    * Only ``TOO_NARROW`` <-> ``OK`` can move, and only if a pool is edited.
+
+    It does NOT affect the gate: ``check`` measures and judges on the same
+    machine in the same run, so the scheduled job is unaffected. This is a
+    property of the FORENSIC path only. Whether ``replay`` should re-judge
+    against the current bar (a deliberate "would this still fail today?") or
+    reproduce the archived verdict is a DESIGN DECISION, not a defect to be
+    quietly patched — it is recorded here and raised on PS-176 rather than
+    decided by the worker that found it.
+    """
+    try:
+        with open(args.record, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError) as exc:
+        print(f"REFUSED: cannot read {args.record}: {exc}", file=sys.stderr)
+        return EXIT_CANNOT_RUN
+
+    raw = doc.get("readings")
+    if not isinstance(raw, dict) or not raw:
+        print(
+            f"REFUSED: {args.record} carries no readings to re-verdict.",
+            file=sys.stderr,
+        )
+        return EXIT_CANNOT_RUN
+
+    # Seeds round-trip through JSON as strings; classify only counts values, but
+    # the ints are restored so a replayed record is shaped like a measured one.
+    readings: "dict[str, dict[int, str | None]]" = {}
+    for arm, by_seed in raw.items():
+        if not isinstance(by_seed, dict):
+            print(f"REFUSED: {arm!r} readings are malformed.", file=sys.stderr)
+            return EXIT_CANNOT_RUN
+        restored: "dict[int, str | None]" = {}
+        for seed, value in by_seed.items():
+            try:
+                key = int(seed)
+            except (TypeError, ValueError):
+                print(f"REFUSED: {arm!r} has non-integer seed {seed!r}.",
+                      file=sys.stderr)
+                return EXIT_CANNOT_RUN
+            restored[key] = value if isinstance(value, str) and value else None
+        readings[arm] = restored
+
+    result = classify(readings)
+    print(format_result(result))
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as fh:
+            # source=doc: this machine did not take the reading, so the
+            # record's own provenance survives the re-verdict.
+            json.dump(_record(readings, result, source=doc), fh, indent=2)
+    return exit_code_for(result)
+
+
+# The synthesised readings the self-test drives the gate with. Each is a
+# (name, builder, expected exit code) triple. Built from a size the arm's own
+# pool makes meaningful rather than from literals, so these keep testing the
+# real bar if a pool is ever edited.
+def _selftest_cases(arm: str) -> "list[tuple[str, dict, int]]":
+    seeds = list(DEFAULT_SEEDS)
+    n = len(seeds)
+    one = "Vendor | RENDERER-A"
+    two = "Vendor | RENDERER-B"
+    return [
+        # Every profile handed the same card: a flat Level 2 breach.
+        ("CONSTANT", {arm: {s: one for s in seeds}}, EXIT_FINDING),
+        # Varies (2 distinct, so "did it vary?" would PASS it) but skewed hard,
+        # which is the macOS-shaped failure the collision metric exists to catch.
+        ("TOO_NARROW",
+         {arm: {s: (two if i >= n - 2 else one) for i, s in enumerate(seeds)}},
+         EXIT_FINDING),
+        # Too few readable seeds. Must be CANNOT_RUN, never PASS.
+        ("INCONCLUSIVE",
+         {arm: {s: (one if i < 3 else None) for i, s in enumerate(seeds)}},
+         EXIT_CANNOT_RUN),
+    ]
+
+
+def _cmd_selftest(args: argparse.Namespace) -> int:
+    """Prove this gate can still FAIL, before trusting a green from it.
+
+    A gate is only worth wiring if it can go red, and the live ``check`` cannot
+    demonstrate that: the engine currently varies, so a scheduled job would
+    only ever be observed passing. That is precisely the "check that could not
+    have failed" this project does not count as coverage.
+
+    So the job runs this FIRST. It drives synthesised low-variance readings
+    through the same ``classify`` → ``exit_code_for`` path the live check
+    gates on and asserts each lands on the exit code it must. If the judgement
+    is ever broken such that a shared graphics card reads as a pass, THIS goes
+    red — on the gate's own path, on every run — instead of the job quietly
+    reporting a green it is no longer able to withhold.
+    """
+    arm = (args.arm or "").strip() or next(
+        iter(sorted(ENGINE_AUTHORED_IDENTITY_ARMS)), ""
+    )
+    if not arm:
+        print(
+            "No arm is engine-authored, so there is nothing to police.",
+            file=sys.stderr,
+        )
+        return EXIT_PASS
+
+    failures = []
+    for name, readings, expected in _selftest_cases(arm):
+        actual = exit_code_for(classify(readings))
+        ok = actual == expected
+        print(
+            f"[selftest] {name:<13} expected exit {expected}, got {actual} "
+            f"— {'ok' if ok else 'WRONG'}"
+        )
+        if not ok:
+            failures.append((name, expected, actual))
+
+    if failures:
+        print(
+            "\nSELF-TEST FAILED: this gate can no longer be trusted to fail.",
+            file=sys.stderr,
+        )
+        for name, expected, actual in failures:
+            print(
+                f"  {name}: should exit {expected}, exited {actual}",
+                file=sys.stderr,
+            )
+        print(
+            "A green from the live check below would be meaningless while this "
+            "is broken, so the job stops here rather than reporting one.",
+            file=sys.stderr,
+        )
+        return EXIT_FINDING
+
+    print(
+        f"[selftest] the gate still goes red on {arm!r} for a narrowed pool, "
+        "and refuses to pass an under-sampled run."
+    )
+    return EXIT_PASS
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -535,6 +838,21 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--seeds", default="", help="override the seeds to use")
     c.add_argument("--output", default="", help="write the record here")
     c.set_defaults(func=_cmd_check)
+
+    r = sub.add_parser(
+        "replay",
+        help="re-verdict a red run's uploaded record, without measuring",
+    )
+    r.add_argument("record", help="a record file written by `check --output`")
+    r.add_argument("--output", default="", help="write the re-verdict here")
+    r.set_defaults(func=_cmd_replay)
+
+    s = sub.add_parser(
+        "selftest",
+        help="prove the gate can still go red, without needing the engine",
+    )
+    s.add_argument("--arm", default="", help="arm to synthesise readings for")
+    s.set_defaults(func=_cmd_selftest)
     return ap
 
 

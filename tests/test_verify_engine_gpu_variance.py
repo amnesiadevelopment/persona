@@ -11,6 +11,9 @@ negative cases: a gate only ever verified against good data is a check that
 could not have failed, which this project does not count as coverage.
 """
 
+import argparse
+import json
+
 import pytest
 
 from src.services.browser import gpu_ext
@@ -321,3 +324,449 @@ def test_format_says_so_when_there_is_nothing_to_police():
     # that reads like a clean bill of health.
     text = v.format_result(v.classify({}))
     assert "nothing to police" in text.lower()
+
+
+# --------------------------------------------------------------------------
+# PS-176: the WIRING. Everything above tests the judgement; these test the
+# things a scheduled job depends on to be able to go red.
+# --------------------------------------------------------------------------
+
+def test_selftest_passes_and_actually_exercises_all_three_red_paths():
+    # The self-test is what the workflow runs BEFORE trusting a green from the
+    # live check. Assert both halves of its contract: that it passes today, and
+    # that what it exercises really is the three failure modes at the exit
+    # codes they must produce. Asserting only "it exits 0" would let it degrade
+    # into a check of nothing while still reporting success.
+    assert v._cmd_selftest(argparse.Namespace(arm="windows")) == v.EXIT_PASS
+
+    cases = v._selftest_cases("windows")
+    assert [name for name, _, _ in cases] == [
+        "CONSTANT", "TOO_NARROW", "INCONCLUSIVE"
+    ]
+    for name, readings, expected in cases:
+        verdict = v.classify(readings)["per_arm"]["windows"]["verdict"]
+        assert verdict == name, f"{name} case no longer produces a {name} verdict"
+        assert v.exit_code_for(v.classify(readings)) == expected
+
+
+def test_selftest_goes_red_when_the_judgement_stops_being_able_to_fail():
+    # The point of the self-test is to catch a classify() that has lost its
+    # teeth. Simulate exactly that — a judgement that calls everything OK — and
+    # assert the self-test REFUSES to pass. Without this, the self-test itself
+    # is a check that has never been shown to fail.
+    original = v.classify
+    try:
+        v.classify = lambda readings: {           # type: ignore[assignment]
+            "per_arm": {a: {"verdict": "OK"} for a in readings},
+            "findings": [], "inconclusive": [], "arms_checked": sorted(readings),
+        }
+        assert v._cmd_selftest(argparse.Namespace(arm="windows")) == v.EXIT_FINDING
+    finally:
+        v.classify = original                     # type: ignore[assignment]
+
+
+def test_selftest_defaults_to_the_arms_the_product_actually_defers_on():
+    # Called with no --arm (which is how the workflow calls it), it must police
+    # a real engine-authored arm rather than silently checking nothing.
+    assert v._cmd_selftest(argparse.Namespace(arm="")) == v.EXIT_PASS
+
+
+def test_replay_reproduces_the_verdict_without_taking_a_reading(tmp_path):
+    # Replay is how a red run's evidence is re-read after the fact — the
+    # forensic half, operator-invoked, called by no workflow. (What proves the
+    # gate can go red is `selftest`, which the scheduled job runs first.)
+    # It must NOT be able to take a measurement: if it ever reached the live
+    # half, a replay would silently become a fresh reading of a different build.
+    record = tmp_path / "reading.json"
+    record.write_text(json.dumps({
+        "readings": {"windows": {str(s): "Vendor | SAME" for s in SEEDS}}
+    }), encoding="utf-8")
+
+    def _explode(*a, **k):                        # pragma: no cover - must not run
+        raise AssertionError("replay must never take a live reading")
+
+    original = v.measure
+    try:
+        v.measure = _explode                      # type: ignore[assignment]
+        out = tmp_path / "verdict.json"
+        code = v._cmd_replay(
+            argparse.Namespace(record=str(record), output=str(out))
+        )
+    finally:
+        v.measure = original                      # type: ignore[assignment]
+
+    assert code == v.EXIT_FINDING
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert written["result"]["per_arm"]["windows"]["verdict"] == "CONSTANT"
+
+
+def test_replay_restores_integer_seeds_so_a_record_round_trips(tmp_path):
+    # JSON keys are strings. A record written by `check --output` and read back
+    # by `replay` must produce the same verdict as the in-memory readings did,
+    # or the evidence file disagrees with the run that produced it.
+    live = {"windows": {s: f"Vendor | GPU-{i}" for i, s in enumerate(SEEDS)}}
+    record = tmp_path / "reading.json"
+    record.write_text(json.dumps(v._record(live, v.classify(live))), encoding="utf-8")
+
+    out = tmp_path / "verdict.json"
+    assert v._cmd_replay(
+        argparse.Namespace(record=str(record), output=str(out))
+    ) == v.EXIT_PASS
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert list(written["readings"]["windows"]) == [str(s) for s in SEEDS]
+    assert written["result"]["per_arm"]["windows"]["seeds_readable"] == len(SEEDS)
+
+
+def test_replay_refuses_a_record_it_cannot_read_rather_than_passing(tmp_path):
+    # A missing/corrupt/empty record established NOTHING. It must exit
+    # CANNOT_RUN, never PASS — the same "we failed to look" discipline the
+    # module applies to MIN_SEEDS, applied to the file.
+    missing = tmp_path / "nope.json"
+    assert v._cmd_replay(
+        argparse.Namespace(record=str(missing), output="")
+    ) == v.EXIT_CANNOT_RUN
+
+    corrupt = tmp_path / "corrupt.json"
+    corrupt.write_text("{not json", encoding="utf-8")
+    assert v._cmd_replay(
+        argparse.Namespace(record=str(corrupt), output="")
+    ) == v.EXIT_CANNOT_RUN
+
+    empty = tmp_path / "empty.json"
+    empty.write_text(json.dumps({"readings": {}}), encoding="utf-8")
+    assert v._cmd_replay(
+        argparse.Namespace(record=str(empty), output="")
+    ) == v.EXIT_CANNOT_RUN
+
+
+def test_an_undersampled_replay_is_cannot_run_so_the_job_cannot_launder_it():
+    # The wired path must not be able to turn INCONCLUSIVE into a pass. The
+    # workflow relies on the exit code alone, so this is the property that
+    # keeps a half-failed reading from reading as "the engine varies".
+    readings = {"windows": {s: (f"Vendor | GPU-{i}" if i < 3 else None)
+                            for i, s in enumerate(SEEDS)}}
+    result = v.classify(readings)
+    assert result["per_arm"]["windows"]["verdict"] == "INCONCLUSIVE"
+    assert v.exit_code_for(result) == v.EXIT_CANNOT_RUN
+    assert v.exit_code_for(result) != v.EXIT_PASS
+
+
+def test_the_record_carries_the_engine_build_so_a_finding_can_be_blocklisted():
+    # The remedy for a finding is to name the bad tag in
+    # policy.KNOWN_BAD_VERSIONS. A record that does not say WHICH BUILD it
+    # measured cannot be acted on, so the build is part of the artifact.
+    live = {"windows": {s: "Vendor | SAME" for s in SEEDS}}
+    doc = v._record(live, v.classify(live))
+    assert "engine_build" in doc
+    assert doc["engine_build"]
+    assert doc["engine_authored_arms"] == sorted(v.ENGINE_AUTHORED_IDENTITY_ARMS)
+    assert doc["measured_at"]
+
+
+def test_engine_build_reads_unknown_rather_than_empty_when_unresolvable(
+    monkeypatch,
+):
+    # An empty string in the record would read like a value. Mirrors
+    # snapshot.engine_build's contract: never raise, and say "unknown".
+    import src.services.engine.updater as updater
+    monkeypatch.setattr(updater, "current_version", lambda: "")
+    assert v.engine_build() == "unknown"
+
+    def _raise():
+        raise RuntimeError("engine package not importable")
+
+    monkeypatch.setattr(updater, "current_version", _raise)
+    assert v.engine_build() == "unknown"
+
+
+# The tag is HARDCODED, and deliberately cannot be this machine's. A fixture
+# built with `v._record(...)` on the machine that then replays it makes source
+# and local provenance identical BY CONSTRUCTION, so the substitution this
+# guards against is invisible — the probe computes its expected value from the
+# thing under test and agrees with itself. That confound is what let the defect
+# ship: the neighbouring round-trip test uses it and stayed green throughout.
+FOREIGN_BUILD = "999.0.NOT-THIS-MACHINES-BUILD"
+FOREIGN_MEASURED_AT = "2026-08-20T06:40:00+00:00"
+# Deliberately a SUPERSET of the single arm the product defers on today, so it
+# cannot equal the local set on any machine that ships the current constant.
+# The previous value here was ["windows"] — identical to the local set, which
+# is the SAME confound the comment above warns about, applied to the one field
+# the fixture did not guard. That is why `engine_authored_arms` kept being
+# regenerated while every test around it stayed green.
+FOREIGN_ARMS = ["linux", "macos", "windows"]
+
+
+def _foreign_record(values, *, arms=None) -> dict:
+    """A record as some OTHER machine's `check --output` would have written it."""
+    return {
+        "measured_at": FOREIGN_MEASURED_AT,
+        "engine_build": FOREIGN_BUILD,
+        "engine_authored_arms": FOREIGN_ARMS if arms is None else arms,
+        "readings": {"windows": {str(s): v_ for s, v_ in zip(SEEDS, values)}},
+        "result": {"verdict": "FINDING"},
+    }
+
+
+def test_replay_preserves_the_measuring_machines_build_rather_than_restamping_it(
+    tmp_path,
+):
+    # The documented remedy for a red run is to name the bad tag in
+    # policy.KNOWN_BAD_VERSIONS. `replay` is the forensic tool for reading that
+    # artifact after the runner that measured it was destroyed — on a machine
+    # with no engine at all. If it re-derives the build, it does not blank the
+    # field, it substitutes a PLAUSIBLE WRONG tag: the operator blocklists the
+    # replaying machine's build, refuses a good build, and leaves the bad one
+    # installing hourly. Same failure shape as the breach this module catches.
+    assert v.engine_build() != FOREIGN_BUILD, (
+        "fixture must not collide with the local build, or this test cannot fail"
+    )
+
+    record = tmp_path / "from-the-runner.json"
+    record.write_text(
+        json.dumps(_foreign_record(["Vendor | SAME"] * len(SEEDS))),
+        encoding="utf-8",
+    )
+
+    out = tmp_path / "re-verdict.json"
+    assert v._cmd_replay(
+        argparse.Namespace(record=str(record), output=str(out))
+    ) == v.EXIT_FINDING
+
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert written["engine_build"] == FOREIGN_BUILD
+    assert written["measured_at"] == FOREIGN_MEASURED_AT
+    # The re-verdict's own moment is recorded SEPARATELY, so the moment of
+    # measurement and the moment of re-reading cannot be confused.
+    assert written["replayed_at"]
+    assert written["replayed_at"] != FOREIGN_MEASURED_AT
+
+
+def test_replay_preserves_the_build_even_where_no_engine_is_installed(
+    tmp_path, monkeypatch
+):
+    # The environment `replay`'s own docstring describes: "a machine with no
+    # engine, no display and no runner". There engine_build() resolves
+    # "unknown" — so a re-derived record would report `engine_build: "unknown"`
+    # for a run that knew its tag perfectly well. This is the case that makes
+    # the whole artifact unactionable, so it is asserted directly.
+    monkeypatch.setattr(v, "engine_build", lambda: "unknown")
+
+    record = tmp_path / "from-the-runner.json"
+    record.write_text(
+        json.dumps(_foreign_record(["Vendor | SAME"] * len(SEEDS))),
+        encoding="utf-8",
+    )
+
+    out = tmp_path / "re-verdict.json"
+    v._cmd_replay(argparse.Namespace(record=str(record), output=str(out)))
+
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert written["engine_build"] == FOREIGN_BUILD
+    assert written["engine_build"] != "unknown"
+
+
+def test_check_still_stamps_THIS_machine_because_it_is_the_one_measuring(
+    monkeypatch,
+):
+    # The mirror image, so the fix cannot over-apply. `check` IS the measuring
+    # machine, so local values are the truth there and must still be recorded;
+    # only `replay` inherits. A record with no source carries no `replayed_at`.
+    monkeypatch.setattr(v, "engine_build", lambda: "148.0.LOCAL")
+    live = {"windows": {s: f"Vendor | GPU-{i}" for i, s in enumerate(SEEDS)}}
+
+    doc = v._record(live, v.classify(live))
+    assert doc["engine_build"] == "148.0.LOCAL"
+    assert "replayed_at" not in doc
+
+
+def test_a_record_predating_the_provenance_fields_still_resolves_them(tmp_path):
+    # A source record missing/blank provenance must not propagate an empty
+    # string that reads like a value. Falsy source values fall back to locally
+    # derived ones — the only case where re-derivation is correct.
+    record = tmp_path / "old.json"
+    record.write_text(
+        json.dumps({
+            "engine_build": "",
+            "readings": {"windows": {str(s): "Vendor | SAME" for s in SEEDS}},
+        }),
+        encoding="utf-8",
+    )
+
+    out = tmp_path / "re-verdict.json"
+    v._cmd_replay(argparse.Namespace(record=str(record), output=str(out)))
+
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert written["engine_build"] == v.engine_build()
+    assert written["engine_build"]
+    assert written["measured_at"]
+
+
+def test_replay_preserves_the_measured_arm_set_rather_than_this_machines(
+    tmp_path,
+):
+    # The third provenance field, and the one that survived two rounds of
+    # fixing the other two. It records WHICH ARMS WERE DEFERRING WHEN THE
+    # BREACH WAS MEASURED — exactly the context needed to act on a red run.
+    #
+    # It is load-bearing precisely BECAUSE of the documented remedy: a red run
+    # tells the operator to "remove it from ENGINE_AUTHORED_IDENTITY_ARMS". So
+    # the local set is EXPECTED to differ from the archived one by the time
+    # anyone replays the artifact. Re-deriving it there produces a re-verdict
+    # asserting that NO arm was engine-authored while still carrying a Level 2
+    # breach reading for `windows` — an internally self-contradictory evidence
+    # base, produced by the tool whose job is to preserve the record, and made
+    # worse precisely because the operator did the right thing.
+    assert sorted(v.ENGINE_AUTHORED_IDENTITY_ARMS) != FOREIGN_ARMS, (
+        "fixture must not collide with the local arm set, or this cannot fail"
+    )
+
+    record = tmp_path / "from-the-runner.json"
+    record.write_text(
+        json.dumps(_foreign_record(["Vendor | SAME"] * len(SEEDS))),
+        encoding="utf-8",
+    )
+
+    out = tmp_path / "re-verdict.json"
+    assert v._cmd_replay(
+        argparse.Namespace(record=str(record), output=str(out))
+    ) == v.EXIT_FINDING
+
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert written["engine_authored_arms"] == FOREIGN_ARMS
+    assert written["engine_authored_arms"] != sorted(
+        v.ENGINE_AUTHORED_IDENTITY_ARMS
+    )
+
+
+def test_replay_preserves_an_arm_set_the_operator_has_since_emptied(
+    tmp_path, monkeypatch
+):
+    # The end state of the documented remedy, and the reason this field must
+    # NOT use the `or` pattern the other two provenance fields use: an EMPTY
+    # list is a LEGITIMATE measured value here ("no arm was deferring"), and it
+    # is falsy. `or` would silently substitute this machine's set for it,
+    # reintroducing the identical defect for the one case where the archive and
+    # the live constant differ the most.
+    monkeypatch.setattr(v, "ENGINE_AUTHORED_IDENTITY_ARMS", frozenset({"windows"}))
+
+    record = tmp_path / "from-the-runner.json"
+    record.write_text(
+        json.dumps(_foreign_record(["Vendor | SAME"] * len(SEEDS), arms=[])),
+        encoding="utf-8",
+    )
+
+    out = tmp_path / "re-verdict.json"
+    v._cmd_replay(argparse.Namespace(record=str(record), output=str(out)))
+
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert written["engine_authored_arms"] == []
+
+
+def test_a_record_predating_the_arm_set_field_falls_back_to_local(tmp_path):
+    # The mirror image, so the membership test cannot over-apply: a genuinely
+    # ABSENT key (a record written before the field existed) must still resolve
+    # to something rather than to null. Absence and a measured empty list are
+    # different claims, and only the second one is preserved.
+    record = tmp_path / "old.json"
+    record.write_text(
+        json.dumps({
+            "readings": {"windows": {str(s): "Vendor | SAME" for s in SEEDS}},
+        }),
+        encoding="utf-8",
+    )
+
+    out = tmp_path / "re-verdict.json"
+    v._cmd_replay(argparse.Namespace(record=str(record), output=str(out)))
+
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert written["engine_authored_arms"] == sorted(
+        v.ENGINE_AUTHORED_IDENTITY_ARMS
+    )
+
+
+# ---------------------------------------------------------------------------
+# The CLASS, not the instances.
+#
+# Rounds 3, 4 and 5 of PS-176 each cost a full review round to the SAME defect
+# wearing a different field name: `_record` re-derived a provenance value from
+# the REPLAYING machine, and every test in this file stayed green because each
+# one names the fields that already exist. A test that names three fields
+# leaves the fourth free.
+#
+# The guard against the next one was, until this test, a sentence in the
+# `_record` docstring. This ticket exists because the standard ruled for this
+# module was "not a note in a docstring, not a manual step — a check that runs
+# and can go red", so the provenance contract was being held to a weaker
+# standard than the thing the module was written to enforce.
+#
+# Proven by injection rather than asserted: adding a 4th locally-derived field
+# (`"measured_on_platform": sys.platform`) to `_record` leaves all 37 of the
+# tests above GREEN, while `replay` of a foreign record stamps it "linux".
+# The test below goes RED on that same injection, naming the fix in its message.
+# ---------------------------------------------------------------------------
+
+
+def test_replay_partitions_EVERY_key_so_a_new_field_cannot_be_added_unclassified(
+    tmp_path,
+):
+    """Pins the CLASS, not the three fields the class has produced so far.
+
+    The load-bearing line is the ``set(written) ==`` equality: it fails on a
+    key ADDED, not merely on the three that exist today. That is what forces a
+    maintainer to classify a new field AT THE MOMENT THEY ADD IT, rather than
+    discovering a round later that `replay` has been quietly overwriting it.
+    """
+    src_doc = {
+        # Every field hardcoded FOREIGN — never derived from this machine.
+        # Deriving the expected value from the local resolver is the confound
+        # that hid this defect for two rounds: the fixture's arms were
+        # ["windows"], identical to the local set by construction, so a
+        # regenerated value was indistinguishable from a preserved one.
+        "measured_at": "2026-08-20T06:40:00+00:00",
+        "engine_build": "999.0.NOT-THIS-MACHINES-BUILD",
+        "engine_authored_arms": ["linux", "macos", "windows"],
+        "readings": {"windows": {str(s): "Vendor | SAME" for s in SEEDS}},
+        "result": {"verdict": "STALE-FROM-THE-ARCHIVE"},
+    }
+    record = tmp_path / "foreign.json"
+    record.write_text(json.dumps(src_doc), encoding="utf-8")
+    out = tmp_path / "re.json"
+
+    v._cmd_replay(argparse.Namespace(record=str(record), output=str(out)))
+    written = json.loads(out.read_text(encoding="utf-8"))
+
+    # Describes the MEASURING machine -> must survive the replay untouched.
+    SOURCE_PRESERVED = {"measured_at", "engine_build", "engine_authored_arms"}
+    # Re-judged on purpose: reproducing the verdict IS the point of a replay.
+    RECOMPUTED = {"result"}
+    # Carried through from the source document, not derived.
+    PARAMETER = {"readings"}
+    # The replay's OWN moment, deliberately distinct from `measured_at`.
+    REPLAY_STAMPED = {"replayed_at"}
+
+    assert set(written) == (
+        SOURCE_PRESERVED | RECOMPUTED | PARAMETER | REPLAY_STAMPED
+    ), (
+        "`_record` writes a key this test does not classify. Every field that "
+        "describes the MEASURING machine must be source-preserved; classify it "
+        "here and in _record, or replay will silently stamp it with the "
+        "REPLAYING machine's value -- the defect class of PS-176 rounds 3, 4 "
+        "and 5, each of which reached main green."
+    )
+
+    for key in SOURCE_PRESERVED:
+        assert written[key] == src_doc[key], (
+            f"{key} was re-derived from the REPLAYING machine. The remedy for "
+            f"a red run is to name the measured build in "
+            f"policy.KNOWN_BAD_VERSIONS; a substituted value is plausible and "
+            f"wrong, so the operator blocklists the wrong build."
+        )
+
+    # The other half of the partition: `result` must NOT be inherited, or
+    # `replay` would echo the archived verdict instead of re-judging it.
+    assert written["result"] != src_doc["result"]
+    assert written["result"]["per_arm"]["windows"]["verdict"] == "CONSTANT"
+
+    # The replay's own stamp is present and cannot be mistaken for the
+    # measurement's moment.
+    assert written["replayed_at"] not in (None, "", src_doc["measured_at"])
