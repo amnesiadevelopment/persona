@@ -42,24 +42,31 @@ _EXPORT_EXCLUDE_DIRS = {".persona-mtls", ".persona-tmp"}
 # The asymmetry that prompts the question is real and worth stating plainly:
 # import_from_zip below validates the archive name, rejects zip-slip members,
 # caps the uncompressed size and stages into a temp dir — while export_to_zip
-# does exactly one thing with the caller's path (os.path.join, :120). Content was
-# reasoned about on the way out too (_EXPORT_EXCLUDE_DIRS withholds the mTLS
-# key). Destination was not, and deliberately remains unguarded.
+# does exactly one thing with the caller's path: the lone os.path.join(
+# export_path, ...) in its body. Content was reasoned about on the way out too
+# (_EXPORT_EXCLUDE_DIRS above withholds the mTLS key). Destination was not, and
+# deliberately remains unguarded.
+#
+# (Cited by SYMBOL rather than by line throughout — names survive the next
+# insertion, line numbers do not, and a record whose pointers have rotted gets
+# read as stale and re-litigated. That is the failure this note exists to avoid.)
 #
 # Why the export half is NOT confined, on either lane:
 #
 # * The REST lane's caller is the operator. The API binds 127.0.0.1
-#   (config.API_HOST, :206), ships OFF by default (settings.is_server_enabled
-#   defaults False, :164), and every /api/v1 route sits behind a bearer token
-#   plus a DNS-rebinding Host guard (app.py:87-118). Reaching this function over
-#   HTTP means already holding the operator's own token on the operator's own
-#   machine. There is no remote-attacker story to confine away.
-# * Nothing in-tree calls the REST export route. `export_dir` appears only at
-#   routes/profiles.py:316-319 and schemas/profiles.py:76, and the UI never
-#   speaks HTTP (0 request call sites under src/ui/) — it reaches
-#   pm.export_profile directly from the file picker (ui/actions/transfer.py:48).
-#   So a confinement here would shut out no caller we ship; it would only narrow
-#   where a person holding their own credentials may write their own backup.
+#   (core/config.API_HOST), ships OFF by default (core/settings.is_server_enabled
+#   — the stored key defaults to False), and every /api/v1 route sits behind a
+#   bearer token plus a DNS-rebinding Host guard (the _auth middleware in
+#   api/app.create_app). Reaching this function over HTTP means already holding
+#   the operator's own token on the operator's own machine. There is no
+#   remote-attacker story to confine away.
+# * Nothing in-tree calls the REST export route. The only readers of
+#   `export_dir` are api/routes/profiles.export_profile and the ExportRequest
+#   schema that feeds it, and the UI never speaks HTTP (no request call sites
+#   under src/ui/) — it reaches manager.export_profile directly from the file
+#   picker (ui/actions/transfer.export_profile). So a confinement here would
+#   shut out no caller we ship; it would only narrow where a person holding
+#   their own credentials may write their own backup.
 # * Export exists to move a profile OFF this machine — a USB stick, an external
 #   drive, another host. A destination outside PERSONA_HOME is the feature
 #   working, not the feature leaking. The charter forbids reaching lane parity
@@ -67,13 +74,12 @@ _EXPORT_EXCLUDE_DIRS = {".persona-mtls", ".persona-tmp"}
 #   crippling the legitimate one either.
 #
 # This is the difference from the sftp lane next door, and the difference is
-# argued rather than accidental. _confine_sftp_path (mcp_server.py:34-51)
-# confines because its caller is off-machine (the LLM) and browsed content can
-# carry prompt injection — a path chosen by someone who is not the operator.
-# Here the path is chosen BY the operator, so the same rule would buy nothing.
-# Compare check_proxy_sync / check_proxy_detailed_sync (proxy_checker.py:
-# 1227-1245): same capability, two lanes, guard keyed to who is supplying the
-# input.
+# argued rather than accidental. api/mcp_server._confine_sftp_path confines
+# because its caller is off-machine (the LLM) and browsed content can carry
+# prompt injection — a path chosen by someone who is not the operator. Here the
+# path is chosen BY the operator, so the same rule would buy nothing. Compare
+# utils/proxy_checker.check_proxy_sync vs check_proxy_detailed_sync: same
+# capability, two lanes, guard keyed to who is supplying the input.
 #
 # What would reopen this: an export caller that is NOT the operator — a route
 # reachable without the operator's token, or an in-tree client that forwards a
