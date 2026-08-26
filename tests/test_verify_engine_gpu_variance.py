@@ -39,16 +39,18 @@ def test_bar_is_read_from_the_shipped_pool_not_a_hardcoded_number():
     # this gate policing a number nobody updated. Assert the RELATIONSHIP to the
     # source of truth rather than the literals: hardcoding 5/2/8 here would
     # reintroduce exactly the duplication this is built to avoid.
-    import re
-
+    #
+    # THE SOURCE OF TRUTH IS NOW PYTHON DATA (PS-190). This used to re-derive
+    # the count by running the same regex over the JS template that the
+    # implementation ran — which made the test agree with the implementation by
+    # construction, including when the regex was wrong for both. The pools are
+    # now `gpu_ext.GpuEntry` records the JS is rendered from, so this reads the
+    # list itself.
     for arm, name in (
         ("windows", "WIN_GPUS"), ("macos", "MAC_GPUS"),
         ("linux", "LINUX_GPUS"), ("android", "ANDROID_GPUS"),
     ):
-        m = re.search(
-            r"var " + name + r" = \[(.*?)\n  \];", gpu_ext._CONTENT_SCRIPT, re.S
-        )
-        expected = m.group(1).count("unmaskedVendor")
+        expected = len(gpu_ext.GPU_POOLS[name])
         assert expected > 0, f"could not read {name} from the extension source"
         assert v.fallback_pool_size(arm) == expected
         assert v.bar_for(arm) == pytest.approx(1.0 / expected)
