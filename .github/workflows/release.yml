@@ -1083,3 +1083,134 @@ jobs:
         with:
           files: out/*
           generate_release_notes: true
+
+      # ---------------------------------------------------------------------
+      # Refresh the committed runtime-fingerprint baseline (PS-173).
+      #
+      # requires_full_install is decided at :855 by comparing the build's
+      # runtime fingerprint against the one COMMITTED in runtime-fingerprint.txt.
+      # That comparison is correct; its INPUT was hand-maintained ("Bump
+      # runtime-fingerprint.txt only when the runtime actually changes"), and
+      # nothing enforced the bump. So one dependency change did not cost ONE
+      # full install — it cost EVERY release a full install until a human
+      # remembered a file. Measured on the published manifests: the baseline was
+      # last bumped 2026-08-07 (4c52a0c) and matches v2.9.13's fingerprint
+      # exactly; every release after it shipped requires_full_install: true,
+      # including v2.9.16, whose fingerprint is byte-identical to v2.9.15's and
+      # whose requirements.txt/pyproject.toml diff is empty. A release with a
+      # provably unchanged runtime still shipped the 64.84 MiB installer instead
+      # of the 5.02 MiB app.zip — a 12.9x payload for nothing.
+      #
+      # This is the workflow's THIRD stale-fingerprint incident (:811 hashed
+      # build bytes and pinned the flag true forever; :839/#238 read prevFp from
+      # the releases API and raced the publish). Both earlier fixes corrected how
+      # the fingerprint is COMPUTED or FETCHED. Neither closed the case where the
+      # mechanism is right and the baseline is simply never refreshed.
+      #
+      # The value written is the one the Windows job already computed and
+      # published in update-manifest.json — NOT a recomputation (the inputs
+      # include `pip show flet` / `python --version` / `flutter --version` as
+      # resolved ON THE WINDOWS RUNNER, which this ubuntu job cannot reproduce)
+      # and NOT a releases-API read (that is exactly the #238 race; the file
+      # here is the artifact this job just published, already on disk).
+      #
+      # Deliberately NOT weakening what counts as a dependency change: the
+      # fingerprint inputs at :816-826 are untouched. A release that genuinely
+      # moves a dependency still flips the flag to true and still gets the full
+      # installer. This only stops a runtime that did NOT change from being
+      # reported as changed.
+      #
+      # release.yml triggers on `v*` TAGS only (:8-10), so pushing to main here
+      # cannot re-trigger a release. ci.yml does run on main — that is intended.
+      - name: Refresh the committed runtime fingerprint baseline
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          MANIFEST: out/update-manifest.json
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Fail CLOSED here, unlike the git failures below. This is
+          # unreachable in practice: the "Flatten artifacts" step already
+          # fails closed on a missing update-manifest.json BEFORE the release
+          # is published, so reaching this means the asset vanished between
+          # two steps of the same job. That is a broken release, not a broken
+          # network, and it should be loud.
+          if [ ! -f "$MANIFEST" ]; then
+            echo "::error::update-manifest.json missing — cannot refresh baseline"; exit 1
+          fi
+          fp="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("runtime_fingerprint",""))' "$MANIFEST")"
+          # Fail CLOSED on a missing/malformed fingerprint rather than writing an
+          # empty baseline: prevFp == "" forces requires_full_install true for
+          # every future release (:855), which is the very failure being fixed.
+          case "$fp" in
+            [0-9a-f]*) [ "${#fp}" -eq 64 ] || { echo "::error::bad fingerprint '$fp'"; exit 1; } ;;
+            *) echo "::error::missing/invalid runtime_fingerprint in manifest"; exit 1 ;;
+          esac
+          echo "published runtime fingerprint: $fp"
+          mkdir -p /tmp/baseline && cd /tmp/baseline
+          # Fresh, minimal checkout of the DEFAULT branch. The build jobs ran
+          # third-party code with no write token (:891-895); this job runs none,
+          # which is why the credential lives only here.
+          #
+          # --depth 50 rather than 1: the retry below rebases when a concurrent
+          # commit lands on main, and a rebase needs enough history to find a
+          # merge base. At depth 1 that fails on any real divergence and the
+          # refresh degrades to the ::warning:: path for a reason that has
+          # nothing to do with the baseline. 50 covers the realistic window
+          # between this job starting and a push landing, and is still minimal.
+          # Every git command from here on degrades to ::warning:: instead of
+          # aborting. `set -e` would otherwise exit non-zero and red a release
+          # whose assets are ALREADY LIVE (the publish step ran two steps
+          # above), for a transient clone/DNS/token blip that says nothing
+          # about the release. Only `git push` used to fall through to the
+          # warning net at the bottom; a failure in any command above it hit
+          # `set -e` first and never reached it. The fail-closed `exit 1`s
+          # above are deliberately NOT softened: a bad FINGERPRINT is a real
+          # defect, a bad NETWORK is not.
+          if ! git clone --depth 50 --branch main \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo; then
+            echo "::warning::could not clone main to refresh the baseline — next release will retry"
+            exit 0
+          fi
+          cd repo || { echo "::warning::clone produced no repo dir — next release will retry"; exit 0; }
+          prev="$(tr -d '[:space:]' < runtime-fingerprint.txt 2>/dev/null || true)"
+          if [ "$prev" = "$fp" ]; then
+            echo "baseline already current ($fp) — nothing to commit"
+            exit 0
+          fi
+          echo "baseline moving: '$prev' -> '$fp'"
+          printf '%s\n' "$fp" > runtime-fingerprint.txt
+          git config user.name  "persona-release-bot" \
+            || { echo "::warning::git config failed — next release will retry"; exit 0; }
+          git config user.email "noreply@persona.dev" \
+            || { echo "::warning::git config failed — next release will retry"; exit 0; }
+          git add runtime-fingerprint.txt \
+            || { echo "::warning::git add failed — next release will retry"; exit 0; }
+          {
+            echo "release: refresh runtime-fingerprint baseline for ${GITHUB_REF_NAME}"
+            echo
+            echo "The runtime this release actually shipped, so the NEXT release"
+            echo "compares against it instead of a stale baseline and takes the"
+            echo "seconds-fast app.zip path when the runtime did not change."
+            echo "Automated (PS-173); previously a hand-bumped file that went"
+            echo "stale and pinned requires_full_install true for every release"
+            echo "after 2026-08-07."
+          } > /tmp/fp_msg.txt
+          git commit -F /tmp/fp_msg.txt \
+            || { echo "::warning::git commit failed — next release will retry"; exit 0; }
+          # A concurrent release/bump may have landed; rebase rather than force.
+          # Fetch (deepening if needed) BEFORE rebasing: on a shallow clone the
+          # merge base may not be present yet, and `pull --rebase` would fail
+          # for want of history rather than for a real conflict.
+          for attempt in 1 2 3; do
+            if git push origin main; then
+              echo "baseline pushed"; exit 0
+            fi
+            echo "push rejected (attempt $attempt) — rebasing on main"
+            git fetch --deepen=50 origin main || git fetch origin main || break
+            git rebase FETCH_HEAD || { git rebase --abort || true; break; }
+          done
+          # A failed refresh must not fail a release that already published
+          # successfully: the assets are live and correct. The cost of missing
+          # it is one more full-install release, and the next run retries.
+          echo "::warning::could not push the refreshed baseline — next release will retry"
