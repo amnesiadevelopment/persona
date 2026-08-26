@@ -2652,6 +2652,21 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     """
     in_thread = stop_event is not None
 
+    # PS-192: the FORKED child becomes its own session leader, so the Firefox
+    # process tree it is about to spawn is a GROUP the parent can tear down in
+    # one signal. `start_new_session=True` is a Popen kwarg and this path is a
+    # multiprocessing fork, so the child reaches the same state itself.
+    #
+    # ⚠️ FORK PATH ONLY, and the guard is load-bearing — the same shape as the
+    # os.chdir guard below, for the same reason. A session is PROCESS-global
+    # state: on Windows/macOS this body runs as a THREAD of the manager
+    # process, where setsid would move persona's OWN session rather than a
+    # child's. The platform gap is a recorded absence, not a silent failure.
+    if not in_thread:
+        from .process_group import start_own_session
+
+        start_own_session()
+
     # The browser child's working directory comes from env_policy, the same one
     # authority the chromium seam uses. Before that existed this seam set
     # NOTHING — no cwd=, no chdir — so the child simply inherited whatever
@@ -4584,6 +4599,19 @@ class InvisibleProcess:
 
     def terminate(self):
         if self._fork:
+            # PS-192: signal the GROUP. _child made itself a session leader, so
+            # the Firefox tree it spawned (the engine, its content processes,
+            # the playwright driver) is reachable in one signal. Terminating
+            # only self._proc reaps the python child and orphans that tree to
+            # init, where no handle we hold can ever reach it again.
+            #
+            # SIGTERM first, deliberately: _child installs a SIGTERM handler
+            # that tears the session down gracefully (flushing the profile and
+            # releasing its lock), so the polite signal still does the right
+            # thing — it now just reaches every member rather than one.
+            import signal as _sig
+
+            self._signal_group(getattr(_sig, "SIGTERM", 15))
             if self._proc.is_alive():
                 self._proc.terminate()
         else:
@@ -4591,10 +4619,36 @@ class InvisibleProcess:
 
     def kill(self):
         if self._fork:
+            import signal as _sig
+
+            self._signal_group(getattr(_sig, "SIGKILL", 9))
             if self._proc.is_alive():
                 self._proc.kill()
         else:
             self._stop_event.set()
+
+    def _signal_group(self, sig: int) -> bool:
+        """Signal the forked child's whole process group, never raising.
+
+        Guarded by the same leader check every other teardown here uses: a pid
+        that is not its own group leader belongs to somebody else's group (see
+        process_group.resolve_group), so this refuses rather than signals.
+        """
+        if not self._fork:
+            return False
+        from .process_group import resolve_group
+
+        pgid = resolve_group(getattr(self._proc, "pid", None))
+        if pgid is None:
+            return False
+        killpg = getattr(os, "killpg", None)
+        if killpg is None:  # pragma: no cover - Windows
+            return False
+        try:
+            killpg(pgid, sig)
+            return True
+        except Exception:
+            return False
 
 
 def spawn(cfg: dict, *, in_process: bool = False) -> InvisibleProcess:
