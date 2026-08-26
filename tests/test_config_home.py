@@ -422,7 +422,7 @@ CALL_TIME_SITES = {
     # callables live in _call_time_resolvers() below (lazily imported).
     "core/settings.py:68": "PERSONA_SETTINGS_FILE",
     "core/single_instance.py:47": "PERSONA_LOCK_FILE",
-    "api/mcp_token.py:16": "PERSONA_MCP_TOKEN_FILE",
+    "api/mcp_token.py:43": "PERSONA_MCP_TOKEN_FILE",
 }
 
 
@@ -435,8 +435,31 @@ def _call_time_resolvers():
     return {
         "core/settings.py:68": settings._path,
         "core/single_instance.py:47": single_instance._lock_path,
-        "api/mcp_token.py:16": mcp_token._path,
+        "api/mcp_token.py:43": mcp_token._path,
     }
+
+
+def test_call_time_site_labels_point_at_a_real_call_site():
+    """The labels above are only worth anything if a reader can jump to them.
+
+    They are hand-written `file:line` strings used as dict keys, so nothing
+    fails when an unrelated edit shifts the line — the sweep just quietly grows
+    a wrong row and keeps passing. That is not hypothetical: the mcp_token row
+    went stale twice while this very file was being edited. Assert the line
+    each label names actually holds the `_under_home` call it claims.
+    """
+    root = os.path.join(os.path.dirname(__file__), os.pardir, "src")
+    for label in CALL_TIME_SITES:
+        rel, _, lineno = label.rpartition(":")
+        path = os.path.join(root, rel)
+        with open(path, encoding="utf-8") as f:
+            lines = f.readlines()
+        n = int(lineno)
+        assert 1 <= n <= len(lines), f"{label}: {rel} has only {len(lines)} lines"
+        assert "_under_home" in lines[n - 1], (
+            f"{label} is stale — line {n} of {rel} is "
+            f"{lines[n - 1].strip()!r}, not a _under_home call site"
+        )
 
 
 def test_call_time_sites_are_absolute_on_every_call(monkeypatch, tmp_path):

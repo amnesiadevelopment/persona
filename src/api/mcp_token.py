@@ -21,11 +21,16 @@ _TOKEN_BYTES = 24
 
 #: Shortest string `read_token` will accept as a real token. DERIVED FROM THE
 #: MINT, not chosen: `token_urlsafe(n)` is unpadded base64url, so it is exactly
-#: ceil(n/3)*4 characters — 32 for the 24 bytes above. Anything shorter did not
-#: come from a complete mint, so it is a truncated write and must be treated as
-#: ABSENT rather than used: accepting it would pin the entire management API to
-#: a few bytes of entropy, and the caller's next step is simply to mint a real
-#: one. (Raising `_TOKEN_BYTES` therefore re-mints once on the next read, which
+#: ceil(4n/3) characters — 32 for the 24 bytes above. (NOT ceil(n/3)*4: that is
+#: the PADDED length, and the two coincide only when n % 3 == 0. At n=32 a real
+#: token is 43 chars while the padded rule says 44, so a maintainer who raised
+#: _TOKEN_BYTES and reconciled this constant against the padded rule would make
+#: every freshly minted token fail its own guard — read_token would return ""
+#: forever and the API credential would never stabilise.) Anything shorter did
+#: not come from a complete mint, so it is a truncated write and must be treated
+#: as ABSENT rather than used: accepting it would pin the entire management API
+#: to a few bytes of entropy, and the caller's next step is simply to mint a
+#: real one. (Raising `_TOKEN_BYTES` therefore re-mints once on the next read, which
 #: is the correct behaviour for a credential whose strength just changed — the
 #: operator re-pastes it, exactly as they would after any rotation.)
 _MIN_TOKEN_CHARS = (_TOKEN_BYTES * 4 + 2) // 3
