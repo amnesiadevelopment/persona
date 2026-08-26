@@ -4543,6 +4543,24 @@ class InvisibleProcess:
             r, w = os.pipe()
             self._proc = ctx.Process(target=_child, args=(cfg, w), daemon=False)
             self._proc.start()
+            # PS-192: RECORD THE GROUP AT LAUNCH, BY CONSTRUCTION — never by
+            # asking the kernel. `_child`'s first act is `start_own_session()`,
+            # so `pgid == pid` here for exactly the reason
+            # `start_new_session=True` gives the Popen sites that guarantee.
+            #
+            # ⚠️ THE TEARDOWN CANNOT JUST ASK AGAIN, and this is the whole
+            # defect: `os.getpgid` raises ESRCH once the leader has been WAITED
+            # ON, while the GROUP is still alive and still killable. The leader
+            # IS waited on on every launch — `launcher.py:401` runs a
+            # `wait_for_exit` thread, and `spawn_browser` returns this handle
+            # through the same seam (`process.py:368`). So a re-resolving
+            # teardown goes blind at precisely the moment the orphaned Firefox
+            # tree is the entire problem. Measured on this class: leader alive
+            # -> 0 survivors; leader waited on first -> resolve_group() returns
+            # None and 3 of 3 orphans survive terminate() + kill().
+            from .process_group import record_group_by_construction
+
+            record_group_by_construction(self._proc)
             os.close(w)
             self.stdout = os.fdopen(r)
             self.pid = self._proc.pid
@@ -4630,15 +4648,30 @@ class InvisibleProcess:
     def _signal_group(self, sig: int) -> bool:
         """Signal the forked child's whole process group, never raising.
 
-        Guarded by the same leader check every other teardown here uses: a pid
-        that is not its own group leader belongs to somebody else's group (see
-        process_group.resolve_group), so this refuses rather than signals.
+        PREFERS THE GROUP RECORDED AT LAUNCH. This used to resolve the group
+        LIVE (``resolve_group(self._proc.pid)``), which is the one thing a
+        teardown must not do: ``getpgid`` stops answering the moment the leader
+        is waited on, so the lookup returned ``None`` — and this method
+        refused to signal — at exactly the moment the orphaned Firefox tree was
+        the whole problem. The leader IS waited on on every launch
+        (``launcher.py:401``'s ``wait_for_exit`` thread, reached for firefox via
+        ``process.py:368``), so that was not a corner case. Measured: leader
+        alive -> 0 survivors; leader waited on first -> 3 of 3 orphans survive.
+
+        The recorded value is written by construction in ``__init__`` because
+        ``_child``'s first act is ``start_own_session()``, so ``pgid == pid``.
+
+        Still guarded on USE by :func:`signallable_group`, which refuses to
+        signal persona's OWN group (the self-kill hazard) and refuses where
+        ``os.killpg`` does not exist. The recorded value is the CHILD's pid, so
+        it can never name a group we belong to — but the check is kept rather
+        than argued away, because the cost of being wrong is the app going down.
         """
         if not self._fork:
             return False
-        from .process_group import resolve_group
+        from .process_group import recorded_group, signallable_group
 
-        pgid = resolve_group(getattr(self._proc, "pid", None))
+        pgid = signallable_group(recorded_group(self._proc))
         if pgid is None:
             return False
         killpg = getattr(os, "killpg", None)
@@ -4646,6 +4679,11 @@ class InvisibleProcess:
             return False
         try:
             killpg(pgid, sig)
+            return True
+        except ProcessLookupError:
+            # An empty group is a COMPLETED teardown, not a failure. Also the
+            # benign end of the setsid race: a signal sent before the child
+            # reached setsid() addresses a group that does not exist yet.
             return True
         except Exception:
             return False

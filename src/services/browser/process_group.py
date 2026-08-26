@@ -75,9 +75,11 @@ __all__ = [
     "new_session_kwargs",
     "process_group_survivors",
     "reap_process_group",
+    "record_group_by_construction",
     "recorded_group",
     "remember_group",
     "resolve_group",
+    "signallable_group",
     "start_own_session",
     "terminate_process_group",
 ]
@@ -233,6 +235,67 @@ def remember_group(proc) -> "int | None":
         # A handle that refuses attributes (a mock, a __slots__ object) simply
         # falls back to live resolution; nothing breaks.
         pass
+    return pgid
+
+
+def record_group_by_construction(proc, pid: "int | None" = None) -> "int | None":
+    """Record a FORKED child's group WITHOUT asking the kernel.
+
+    The fork path (``invisible_launch``'s Linux launch) cannot use
+    :func:`popen_in_new_session` — there is no ``Popen`` and no
+    ``start_new_session`` kwarg — but it needs the identical guarantee, and for
+    the identical reason. Its child calls :func:`start_own_session` as its first
+    act, so ``pgid == pid`` holds there exactly as the Popen kwarg makes it hold
+    elsewhere. This records that value.
+
+    ⚠️ WHY NOT ``remember_group`` HERE. That one ASKS the kernel
+    (``getpgid``), and the answer is unavailable at precisely the moment it
+    matters: once the leader has been waited on, ``getpgid`` raises ESRCH and
+    the record comes back empty *while the orphaned tree is still alive*. That
+    is PS-192's DoD #3 failure path, measured on this very class: leader alive
+    → 0 survivors, leader waited on first → ``resolve_group`` returns ``None``
+    and 3 of 3 orphans survive ``terminate()`` + ``kill()``.
+
+    ⚠️ THE RACE THIS DELIBERATELY TOLERATES. ``setsid()`` runs in the child a
+    moment AFTER ``start()`` returns, so a signal sent in that window addresses
+    a group that does not exist yet. That is a harmless ESRCH — **but it must
+    never degrade into signalling persona's OWN group**, which is the self-kill
+    hazard in the module docstring. It cannot: the value recorded is the
+    CHILD's pid, never a group we belong to, and :func:`signallable_group`
+    re-checks that on every use.
+    """
+    if pid is None:
+        pid = getattr(proc, "pid", None)
+    if not isinstance(pid, int) or pid <= 0:
+        return None
+    try:
+        setattr(proc, _GROUP_ATTR, pid)
+    except Exception:
+        # A handle that refuses attributes falls back to live resolution.
+        return None
+    return pid
+
+
+def signallable_group(pgid: "int | None") -> "int | None":
+    """The recorded ``pgid``, or ``None`` if signalling it is unsafe/impossible.
+
+    :func:`recorded_group` returns what was stashed at launch WITHOUT consulting
+    the platform or the caller's own group — that is what makes it survive the
+    leader being reaped. This is the guard for the moment of USE, and it is the
+    leader check the recorded path would otherwise skip:
+
+    1. **No ``killpg``** (Windows) — the caller must fall back to a
+       single-process kill rather than signal nothing at all.
+    2. **Our own group** — the self-kill hazard. A group signal aimed at a
+       group we belong to takes down persona, the test runner, or the agent.
+    """
+    if not isinstance(pgid, int) or pgid <= 0:
+        return None
+    if getattr(os, "killpg", None) is None:  # pragma: no cover - Windows
+        return None
+    mine = _own_group()
+    if mine is not None and pgid == mine:  # pragma: no cover - defensive
+        return None
     return pgid
 
 

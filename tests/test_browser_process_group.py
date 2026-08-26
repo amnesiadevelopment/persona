@@ -488,8 +488,18 @@ def test_the_survivor_count_cannot_report_success_when_it_cannot_look(monkeypatc
 
     monkeypatch.setattr(builtins, "__import__", _no_psutil)
 
+    # A PLAIN INT, not `os.getpgrp()`. The guarantee under test — "could not
+    # look" must never render as "nothing survived" — is platform-INDEPENDENT:
+    # the psutil import is the first thing the function does, so it raises
+    # before any POSIX call is reached. Reaching for `os.getpgrp()` merely to
+    # obtain an argument imported a POSIX-only dependency the assertion never
+    # needed, and turned Windows CI red with `module 'os' has no attribute
+    # 'getpgrp'`. Skipping the test there would have been the wrong repair: it
+    # would silently retire the check that the instrument cannot report a false
+    # clean, on the one platform whose absence of `killpg` makes the fallbacks
+    # matter most.
     with pytest.raises(RuntimeError, match="cannot measure"):
-        process_group_survivors(os.getpgrp())
+        process_group_survivors(4242)
 
 
 # --------------------------------------------------------------------------
@@ -527,6 +537,111 @@ def test_the_served_app_backstop_still_resolves_after_its_parent_exits(tmp_path)
         assert _settle(pgid, 0) == 0, (
             "processes survived the tooling teardown — this is the class "
             "observed at 361% CPU for 12.5h on a user's workstation"
+        )
+    finally:
+        _kill_leftovers(pgid)
+
+
+# --------------------------------------------------------------------------
+# THE FIREFOX FORK PATH (invisible_launch.InvisibleProcess) — PS-192 round 3
+#
+# The third launch site in the ticket's table, and the one that could not use
+# `popen_in_new_session`: there is no Popen and no `start_new_session` kwarg on
+# a multiprocessing fork. It therefore never recorded anything, and
+# `_signal_group` asked the kernel LIVE (`resolve_group(self._proc.pid)`).
+#
+# `getpgid` stops answering the moment the leader is waited on — and the leader
+# IS waited on, on every launch (`launcher.py:401`'s wait_for_exit thread,
+# reached for firefox through `process.py:368`). So the lookup returned None,
+# `_signal_group` refused, and the whole Firefox tree was orphaned at exactly
+# the moment it was the entire problem. Measured before the fix: leader alive
+# -> 0 survivors; leader waited on FIRST -> 3 of 3 survive terminate()+kill().
+#
+# That is DoD #3's abnormal-exit path and DoD #2's "a single missed site keeps
+# the leak", so it gets the same measured bar as the other two paths: real
+# class, real `start_own_session()`, real survivors counted on the group.
+# --------------------------------------------------------------------------
+
+def _fork_child_that_spawns_and_exits(cfg, wf, stop_event=None):
+    """Stand-in for `_child` with its FIRST ACT preserved: its own session.
+
+    A real Firefox tree needs a DISPLAY this container does not have, so the
+    engine is `sys.executable` sleepers — the MECHANISM is the defect, and the
+    mechanism is entirely the session/record/signal triple. The wrapper exits
+    at once, which is the shape that orphans (a leader that stays alive would
+    keep `getpgid` answering and hide the bug).
+    """
+    from src.services.browser.process_group import start_own_session
+
+    start_own_session()  # the REAL function, exactly as `_child` calls it
+    for _ in range(3):
+        subprocess.Popen(
+            [sys.executable, "-c", _SLEEP],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    try:
+        os.write(wf, b"BROWSER_STARTED\n")
+    except Exception:
+        pass
+    os._exit(0)
+
+
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="POSIX process groups")
+@pytest.mark.skipif(
+    not hasattr(os, "fork"), reason="the fork launch path is POSIX-only"
+)
+def test_the_firefox_fork_path_records_its_group_at_launch(monkeypatch):
+    # The precondition assertion is what makes this test honest: it establishes
+    # that the LIVE lookup has genuinely gone blind, so a passing
+    # `recorded_group` cannot be a lucky re-resolution.
+    from src.services.browser import invisible_launch as il
+    from src.services.browser.process_group import recorded_group
+
+    monkeypatch.setattr(il, "_child", _fork_child_that_spawns_and_exits)
+    proc = il.InvisibleProcess({}, in_process=False)
+    pgid = proc.pid
+    try:
+        assert proc._fork, "this test must exercise the fork path, not the thread"
+        proc.wait(timeout=15)  # what launcher.py:401's wait_for_exit does
+
+        assert group_of(proc.pid) is None, (
+            "precondition: a waited-on leader must be unresolvable, or this "
+            "test cannot tell a recorded group from a live lookup"
+        )
+        assert recorded_group(proc._proc) == pgid, (
+            "InvisibleProcess did not record its process group at launch — "
+            "_signal_group will re-resolve, get None, and orphan the whole "
+            "Firefox tree (measured 3/3 surviving)"
+        )
+    finally:
+        _kill_leftovers(pgid)
+
+
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="POSIX process groups")
+@pytest.mark.skipif(
+    not hasattr(os, "fork"), reason="the fork launch path is POSIX-only"
+)
+def test_the_firefox_fork_path_leaves_no_survivor_once_its_leader_is_reaped(
+    monkeypatch,
+):
+    # DoD #4's bar (a completed run leaves NONE) on DoD #3's failure path (the
+    # leader already exited), driven through the real terminate()/kill().
+    from src.services.browser import invisible_launch as il
+
+    monkeypatch.setattr(il, "_child", _fork_child_that_spawns_and_exits)
+    proc = il.InvisibleProcess({}, in_process=False)
+    pgid = proc.pid
+    try:
+        assert _settle(pgid, 3) == 3, "the firefox stand-in tree did not come up"
+        proc.wait(timeout=15)  # leader reaped BEFORE teardown — the leak path
+
+        proc.terminate()
+        proc.kill()
+
+        assert _settle(pgid, 0) == 0, (
+            "the firefox fork path orphaned its tree: every descendant is now "
+            "reparented to init and unreachable from any handle we hold"
         )
     finally:
         _kill_leftovers(pgid)
