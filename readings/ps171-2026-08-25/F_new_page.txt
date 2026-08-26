@@ -1,0 +1,9 @@
+START method=new_page ntabs=4 deadline=40s (layer OFF, headless)
+LAUNCH 2.1s | the engine returned a Browser (no add_init_script, no pages), so ONE explicit context was opened to carry the layer
+tab1 open | {"t": 4.0, "n": 6, "cpu": 0.0, "rss_mb": 672.4, "thr": {"R": 2, "S": 139, "D": 1}}
+--- tab2 open ok=True 1.04s 
+    ping-tab1 ok=True 0.05s  pages=2 | {"t": 5.1, "n": 11, "cpu": 120.9, "rss_mb": 1079.9, "thr": {"R": 4, "S": 247, "D": 1}}
+--- tab3 open ok=False 40.0s BLOCKED>40s
+    ping-tab1 ok=False 8.0s BLOCKED>8s pages=2 | {"t": 53.1, "n": 12, "cpu": 35.1, "rss_mb": 1261.3, "thr": {"S": 275}}
+*** STALL at tab3: watching 40s for recovery
+RECOVERY after 40s: ping ok=False 8.0s BLOCKED>8s | {"t": 101.2, "n": 12, "cpu": 1.4, "rss_mb": 1221.8, "thr": {"S": 267}}
