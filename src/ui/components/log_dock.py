@@ -1,120 +1,98 @@
-"""PS-1 round 2 — the Activity Log console, in three PLACEMENTS.
+"""The Activity Log as a full-width console dock along the bottom of the window.
 
-The owner kept direction A's bottom placement and asked for three genuinely
-different answers to *where the log lives and how big it is*, with the same
-three behaviours in all of them. So the behaviour lives here once and the
-three variants differ only in geometry:
+The log used to live in the 200px sidebar rail, which is where both of the
+owner's complaints came from: it made the rail crush at small window sizes, and
+it gave the stream a reading line so narrow that a wide row read as "mostly
+empty space with the text lost in it". So the log LEAVES the rail entirely and
+takes the whole bottom edge, under both the rail and the page.
 
-``D`` — **Full-width dock.** The log spans the whole window under the sidebar
-and the page, and its top edge is draggable. Widest reading line of the three;
-costs page height while open.
+Four behaviours, and the last one is the original complaint:
 
-``E`` — **Split dock.** The same bottom strip, shared with a live run digest
-on the right. The stream gives up ~300px of width to a standing answer to
-"what is happening overall", so the operator does not have to reconstruct it
-by reading the stream.
+1. **Collapsible, but never switched off.** The chevron drops the console to a
+   34px strip that still carries the newest line, a severity-coloured pulse and
+   a count of what arrived while it was shut. Collapsing costs height, not
+   awareness.
+2. **A resizable top edge.** A real ``on_pan_update`` grip, clamped 120-520px,
+   with the chosen height surviving a collapse/expand round trip.
+3. **A scannable row.** Delegated to :func:`..log_console.event_row`: severity
+   dot, profile ruler, message, right-aligned timestamp, all at a fixed height.
+4. **Scroll that behaves.** Follow the tail while the operator is at the
+   bottom; stop the instant he scrolls up to read, and say so; offer "N new" as
+   the one click back.
 
-``F`` — **Overlay sheet.** The log floats OVER the page instead of displacing
-it, anchored bottom-right. The page never loses a pixel of height; the sheet
-covers content while open, and collapses to a slim bar on the same edge.
-
-Three behaviours, identical in all three (the round-1 must-haves):
-
-1. **Collapsible.** Every variant has a chevron, and every collapsed state is
-   a LIVE strip — newest event, an arrival counter and a pulse — so collapsing
-   is not the same as switching the log off.
-2. **A scannable row.** Delegated to ``log_console.event_row``; the variants
-   pass the column order that suits their width.
-3. **Scroll that behaves.** Follow while at the bottom, stop on scroll-up,
-   and an explicit "N new ↓" control back to the tail. ``auto_scroll`` is
-   turned OFF the moment the operator scrolls up, which is what stops new
-   events from yanking the page out from under a line he is reading.
+THE DEFECT THIS CLASS EXISTS TO FIX. The old panel rebuilt its child list from
+scratch on every flush — up to every ~0.15s while profiles are launching — and
+only ever put the last 6 lines into a fixed 150px box. So there was almost
+nothing to scroll, and any scroll position the operator established pointed at
+children that no longer existed by the next event. That is the mechanism behind
+"не адекватно скролится". Here the ListView is built ONCE and events are
+APPENDED to it: a scroll position established before an event still points at
+the same entry after it, and the retained tail is deep enough to be worth
+scrolling.
 """
 
 from __future__ import annotations
 
-import os
-
 import flet as ft
 
-from ..log_console import SEV_COLOR, SEV_FAIL, StreamState, event_row, severity
+from ..log_console import (
+    ROW_HEIGHT,
+    SEV_COLOR,
+    StreamState,
+    event_row,
+    severity,
+)
 from ..theme.colors import COLORS
 
 MONO = "monospace"
 
-#: Where the capture harness writes which placement + state to render.
-#: A FILE rather than an env var, and read at CONSTRUCTION rather than at
-#: import, for one practical reason: flet calls ``App._main`` per browser
-#: SESSION, so a page reload rebuilds the console. Reading here means the
-#: three placements and their collapsed / paused states can all be captured
-#: from ONE running server by reloading, instead of a ~70s app restart per
-#: frame. Throwaway viz-branch scaffolding; nothing production reads it.
-CONTROL_FILE = os.getenv("PS1_VIZ_CONTROL", "/tmp/ps1-viz-control.json")
+#: Height of the open console. Sits between the clamps below, and is what the
+#: operator gets before he ever touches the grip.
+OPEN_HEIGHT = 236
 
+#: The grip's clamps. Below MIN the console cannot show enough rows to be worth
+#: reading; above MAX it starts eating the page it is supposed to sit under.
+MIN_HEIGHT = 120
+MAX_HEIGHT = 520
 
-def capture_control() -> tuple:
-    """(placement, start_state) for this render — defaults to ("D", "")."""
-    variant, state = os.getenv("PS1_VIZ_VARIANT", "D"), ""
-    try:
-        import json
-
-        with open(CONTROL_FILE) as fh:
-            data = json.load(fh)
-        variant = str(data.get("variant", variant)) or variant
-        state = str(data.get("state", "") or "")
-    except Exception:
-        pass
-    return variant, state
-
-
-#: Kept so an importer reading a module-level value still gets a sane answer.
-VARIANT = capture_control()[0]
-
-#: Open heights. Chosen per variant rather than shared, because these ARE the
-#: design difference the owner is comparing.
-OPEN_HEIGHT = {"D": 236, "E": 236, "F": 320}
-
-#: The collapsed strip. Deliberately the same in all three: the cost of a
-#: collapsed log must not be one of the variables under comparison.
+#: The collapsed strip: tall enough for one line of live text and nothing else.
 COLLAPSED_HEIGHT = 34
+
+#: How many rows the console keeps painted. Materially more than the 6 the old
+#: panel managed — at ROW_HEIGHT this is ~13000px of scrollback against a
+#: console that is at most 520px tall, so there is genuinely something to
+#: scroll. Bounded because every row is a live flet control.
+MAX_ROWS = 600
 
 
 class LogDock:
     """One Activity Log console: its controls, its stream state, its geometry.
 
-    Holds the flet controls rather than rebuilding them per flush — which is
-    also the fix for the original complaint. The old panel replaced its whole
-    child list on every flush, so any scroll position the operator had
-    established pointed at children that no longer existed. Here the ListView
-    is built once and events are APPENDED, so a scroll position survives the
-    next event.
+    Owns its flet controls across flushes rather than rebuilding them, which is
+    the fix for the original complaint as much as it is a performance
+    property — see the module docstring.
     """
 
-    def __init__(self, variant: str = "", on_fullscreen=None) -> None:
-        _variant, _start = capture_control()
-        self.variant = variant or _variant
+    def __init__(self, on_fullscreen=None) -> None:
         self.state = StreamState()
-        # CAPTURE AID (throwaway viz branch only). Start the console in a given
-        # state so a still frame can show the collapsed strip or the
-        # paused/jump-to-newest state without scripting a wheel gesture into a
-        # Flutter canvas — which paints to a <canvas>, so there is no scrollable
-        # DOM element to drive. Nothing is faked in the render: this sets the
-        # REAL state object the real widgets paint from, and the same state is
-        # reached by hand via toggle() or by scrolling.
-        if _start == "collapsed":
-            self.state.collapsed = True
-        elif _start == "paused":
-            self.state.following = False
-            self.state.missed = 7
         self._on_fullscreen = on_fullscreen
         self.profiles: frozenset = frozenset()
-        self.height = OPEN_HEIGHT.get(self.variant, 236)
+        self.height = OPEN_HEIGHT
 
-        self.row_layout = {
-            "D": "profile_first",
-            "E": "status_first",
-            "F": "profile_first",
-        }.get(variant, "profile_first")
+        #: How many lines the app has EVER produced, as of the last paint. The
+        #: dock appends the difference rather than diffing text, so repeated
+        #: identical lines cannot confuse it into re-rendering the tail.
+        self._seq = 0
+        #: Trimming the front of the list moves every row below it. That is
+        #: exactly what must not happen under someone who is reading, so an
+        #: overflowing list is left overflowing until the follow resumes.
+        self._trim_deferred = False
+        #: True only between a USER scroll notification and the END that closes
+        #: it. Auto-scroll's own animation emits UPDATE frames whose position
+        #: lags the extent it is animating toward, and reading those as a
+        #: gesture made the console pause itself with nobody touching it — see
+        #: _on_scroll.
+        self._user_scrolling = False
 
         self.list = ft.ListView(
             controls=[],
@@ -122,8 +100,8 @@ class LogDock:
             padding=ft.Padding.symmetric(vertical=6),
             expand=True,
             # Mirrors the follow decision from the very first frame. Hardcoding
-            # True here re-armed following on the initial auto-scroll to the
-            # bottom, which fired _on_scroll and undid a paused start.
+            # True re-armed following on the initial auto-scroll to the bottom,
+            # which fired _on_scroll and undid a paused start.
             auto_scroll=self.state.following,
             on_scroll=self._on_scroll,
         )
@@ -138,6 +116,7 @@ class LogDock:
             color=COLORS["text_dim"],
             font_family=MONO,
             no_wrap=True,
+            max_lines=1,
             overflow=ft.TextOverflow.FADE,
         )
         self._counter = ft.Text(
@@ -155,12 +134,13 @@ class LogDock:
             padding=ft.Padding.symmetric(horizontal=12, vertical=6),
             on_click=lambda _: self.resume(),
             ink=True,
+            tooltip="Back to the newest entry",
             content=ft.Row(
                 spacing=6,
                 tight=True,
                 controls=[
-                    ft.Icon(ft.Icons.ARROW_DOWNWARD, size=12, color="#000000"),
                     self._jump_label,
+                    ft.Icon(ft.Icons.ARROW_DOWNWARD, size=12, color="#000000"),
                 ],
             ),
         )
@@ -176,10 +156,7 @@ class LogDock:
             "", size=10, color=COLORS["text_sub"], font_family=MONO
         )
 
-        # --- digest (variant E only) ---------------------------------------
-        self.digest = ft.Column(spacing=6, controls=[])
-
-        self.body = ft.Container(expand=True, content=self._build_body())
+        self.body = ft.Container(expand=True, content=self._stream_pane())
         self.collapsed_strip = ft.Container(
             visible=False, content=self._build_collapsed_strip()
         )
@@ -190,10 +167,10 @@ class LogDock:
     def _header(self) -> ft.Control:
         """The one row the operator uses to control the console.
 
-        Left is IDENTITY and the collapse gesture, right is STATE — whether
-        the stream is following, and the way back when it is not. Splitting it
-        that way means the control he reaches for and the status he reads are
-        never in the same place competing for the same glance.
+        Left is IDENTITY and the collapse gesture, right is STATE — whether the
+        stream is following, and the way back when it is not. Splitting it that
+        way means the control he reaches for and the status he reads are never
+        in the same place competing for the same glance.
         """
         title = ft.Row(
             spacing=9,
@@ -219,6 +196,7 @@ class LogDock:
             ink=True,
             border_radius=4,
             padding=ft.Padding.symmetric(horizontal=8, vertical=6),
+            tooltip="Collapse the Activity Log",
             content=title,
         )
         right = ft.Row(
@@ -249,7 +227,7 @@ class LogDock:
         )
 
     def _grip(self) -> ft.Control:
-        """The draggable top edge (must-have 1's "if it fits" half).
+        """The draggable top edge.
 
         A real ``on_pan_update``: dragging up grows the console, dragging down
         shrinks it, clamped so it can neither vanish nor eat the page. The
@@ -258,9 +236,7 @@ class LogDock:
         """
 
         def on_drag(e: ft.DragUpdateEvent) -> None:
-            self.height = max(120, min(520, self.height - e.delta_y))
-            self.body.height = self.height
-            self._safe_update(self.body)
+            self.set_height(self.height - e.delta_y)
 
         return ft.GestureDetector(
             mouse_cursor=ft.MouseCursor.RESIZE_UP_DOWN,
@@ -275,12 +251,23 @@ class LogDock:
             ),
         )
 
+    def set_height(self, height: float) -> None:
+        """Apply a new open height, clamped. The grip's whole effect.
+
+        Kept separate from the drag handler so the clamp is one testable thing
+        rather than a expression buried in a gesture callback.
+        """
+        self.height = max(MIN_HEIGHT, min(MAX_HEIGHT, int(height)))
+        self.body.height = self.height
+        self._safe_update(self.body)
+
     def _build_collapsed_strip(self) -> ft.Control:
         """Collapsed, but NOT off.
 
-        Carries the newest line, a pulse and a count of what arrived while it
-        was shut — so the strip answers "is anything still happening?" without
-        being reopened, which is the whole point of collapsing it.
+        Carries the newest line, a pulse coloured by that event's severity, and
+        a count of what arrived while it was shut — so the strip answers "is
+        anything still happening?" without being reopened, which is the whole
+        point of being able to collapse it.
         """
         return ft.Container(
             height=COLLAPSED_HEIGHT,
@@ -295,6 +282,7 @@ class LogDock:
                         ink=True,
                         border_radius=4,
                         padding=ft.Padding.symmetric(horizontal=6, vertical=5),
+                        tooltip="Expand the Activity Log",
                         content=ft.Row(
                             spacing=8,
                             tight=True,
@@ -320,71 +308,22 @@ class LogDock:
         return ft.Container(
             expand=True,
             content=ft.Column(
-                spacing=0, controls=[self._header(), ft.Container(expand=True, content=self.list)]
-            ),
-        )
-
-    def _digest_pane(self) -> ft.Control:
-        """Variant E's right-hand column: the standing answer.
-
-        The stream tells you what JUST happened; this tells you where things
-        STAND. It is the reason E is a different design and not a narrower D —
-        the operator trades reading width for not having to reconstruct
-        overall state from the scrollback.
-        """
-        return ft.Container(
-            width=286,
-            bgcolor="#050505",
-            border=ft.Border.only(left=ft.BorderSide(1, COLORS["border"])),
-            padding=ft.Padding.symmetric(horizontal=14, vertical=10),
-            content=ft.Column(
-                spacing=8,
+                spacing=0,
                 controls=[
-                    ft.Text(
-                        "THIS SESSION",
-                        size=10,
-                        weight=ft.FontWeight.BOLD,
-                        color=COLORS["text_sub"],
-                        font_family=MONO,
-                    ),
-                    self.digest,
+                    self._header(),
+                    ft.Container(expand=True, content=self.list),
                 ],
             ),
         )
 
-    def _build_body(self) -> ft.Control:
-        if self.variant == "E":
-            inner = ft.Row(
-                spacing=0,
-                expand=True,
-                controls=[self._stream_pane(), self._digest_pane()],
-            )
-        else:
-            inner = self._stream_pane()
-        return inner
-
     def _build_root(self) -> ft.Control:
         self.body.height = self.height
-        if self.variant == "F":
-            # An overlay: rounded, bordered and inset, so it reads as floating
-            # ABOVE the page rather than as another band of chrome welded to
-            # the window edge. Placement into the Stack is the caller's job.
-            return ft.Container(
-                bgcolor="#0A0A0A",
-                border=ft.Border.all(1, "#2A2A2A"),
-                border_radius=10,
-                padding=0,
-                clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
-                content=ft.Column(
-                    spacing=0,
-                    controls=[self._grip(), self.body, self.collapsed_strip],
-                ),
-            )
         return ft.Container(
             bgcolor=COLORS["log_bg"],
             border=ft.Border.only(top=ft.BorderSide(1, COLORS["border"])),
             content=ft.Column(
-                spacing=0, controls=[self._grip(), self.body, self.collapsed_strip]
+                spacing=0,
+                controls=[self._grip(), self.body, self.collapsed_strip],
             ),
         )
 
@@ -397,13 +336,48 @@ class LogDock:
             pass
 
     def _on_scroll(self, e) -> None:
-        """The whole of must-have 3, in one handler.
+        """The follow/pause decision, in one handler.
 
         A scroll AWAY from the bottom is read as "I am reading" and stops the
         follow; a scroll back to the bottom resumes it. ``auto_scroll`` is
-        flipped in step, because that is the flet property that actually
-        yanks the viewport when an event lands.
+        flipped in step, because that is the flet property that actually yanks
+        the viewport when an event lands.
+
+        ONLY A USER GESTURE MAY CHANGE THE DECISION, and that qualifier is the
+        whole correctness of this handler rather than a detail of it. Measured
+        against the running app: appending a row grows ``max_scroll_extent``
+        IMMEDIATELY while ``auto_scroll`` ANIMATES ``pixels`` toward the new
+        bottom, so every frame of that animation reports a position well short
+        of the end — e.g. ``pixels=1048`` against ``max=1334``. A position test
+        alone reads that as "he scrolled up" and pauses the stream, so with
+        events arriving every ~0.35s the console paused ITSELF within seconds
+        of the first paint, showing "paused — reading" and a rising "N new" to
+        an operator who had touched nothing. 372 such notifications arrived in
+        14 idle seconds.
+
+        Flet distinguishes the two: a real wheel or drag emits a ``USER``
+        notification (carrying a direction) before the ``UPDATE`` that applies
+        it, and the whole sequence closes with ``END``. Programmatic
+        auto-scrolling emits ``START``/``UPDATE``/``END`` with no ``USER`` at
+        all. So a ``USER`` event ARMS the decision, the ``UPDATE`` that follows
+        makes it against a real position, and ``END`` disarms it again — which
+        leaves the animation unable to speak for the operator.
         """
+        etype = getattr(e, "event_type", None)
+        kind = str(getattr(etype, "value", etype) or "").lower()
+
+        if kind == "user":
+            # A real gesture is starting. Its own `pixels` is the position
+            # BEFORE the gesture applies, so nothing is decided here — this
+            # only arms the UPDATE that carries the new one.
+            self._user_scrolling = True
+            return
+        if kind == "end":
+            self._user_scrolling = False
+            return
+        if kind != "update" or not self._user_scrolling:
+            return
+
         try:
             pixels = float(getattr(e, "pixels", 0.0) or 0.0)
             extent = float(getattr(e, "max_scroll_extent", 0.0) or 0.0)
@@ -416,12 +390,16 @@ class LogDock:
             return
         if self.state.on_scroll(pixels, extent):
             self.list.auto_scroll = self.state.following
+            if self.state.following:
+                self._apply_trim()
             self._paint_stream_state()
+            self._safe_update(self.root)
 
     def resume(self) -> None:
         """Back to the newest entry — the explicit way home."""
         self.state.resume()
         self.list.auto_scroll = True
+        self._apply_trim()
         self._paint_stream_state()
         self._safe_update(self.root)
 
@@ -432,6 +410,10 @@ class LogDock:
             self.state.missed = 0
             self.state.following = True
             self.list.auto_scroll = True
+            # The height the operator chose with the grip is deliberately NOT
+            # reset here — a collapse/expand round trip returns his console,
+            # not the default one.
+            self.body.height = self.height
         self._apply_collapse()
         self._paint_stream_state()
         self._safe_update(self.root)
@@ -450,9 +432,7 @@ class LogDock:
         n = self.state.missed
         self._jump_label.value = f"{n} new" if n else "jump to newest"
         self._follow_label.value = "paused — reading" if paused else "following"
-        self._follow_label.color = (
-            COLORS["warning"] if paused else COLORS["success"]
-        )
+        self._follow_label.color = COLORS["warning"] if paused else COLORS["success"]
         self._total_label.value = f"· {self.state.total} events"
         self._counter.value = f"+{n}" if n else ""
         sev = severity(self.state.last_line)
@@ -463,107 +443,86 @@ class LogDock:
     def set_profiles(self, names) -> None:
         self.profiles = frozenset(names or ())
 
-    def render(self, lines: list[str], digest_rows=None) -> None:
-        """Paint the console from the current tail.
+    def _apply_trim(self) -> None:
+        """Drop rows above :data:`MAX_ROWS`, but never under a reader.
 
-        Rebuilds the row list (the app's own flush contract), but the LISTVIEW
-        is the same object across flushes and its ``auto_scroll`` reflects the
-        follow decision — so an operator who has scrolled up is not dragged
-        back to the bottom by the next arrival.
+        Removing rows from the front shifts everything below them, which is
+        precisely the "my scroll position moved" complaint. So while the stream
+        is paused the list is allowed to overrun its cap, and the trim happens
+        when the operator returns to the tail — where a shift is invisible
+        because he is pinned to the bottom anyway.
         """
-        prev = self.state.total
-        self.state.total = len(lines)
-        arrived = max(0, self.state.total - prev)
+        if not self.state.following:
+            self._trim_deferred = len(self.list.controls) > MAX_ROWS
+            return
+        excess = len(self.list.controls) - MAX_ROWS
+        if excess > 0:
+            del self.list.controls[:excess]
+        self._trim_deferred = False
+
+    def render(self, lines: list[str], seq: int | None = None) -> None:
+        """Paint the console from the current tail — by APPENDING.
+
+        ``lines`` is the retained tail and ``seq`` is how many lines the app has
+        ever produced. The difference between ``seq`` and the last one painted
+        is exactly how many rows are new, so this appends that many and leaves
+        every existing row — and therefore every scroll position — untouched.
+        Diffing by seq rather than by text is what makes a repeated identical
+        line (two profiles failing the same way) append once rather than
+        re-render the tail.
+
+        A ``seq`` that went BACKWARDS means the ring was cleared underneath us
+        (the panic wipe does this), which is the one case that legitimately
+        rebuilds the whole list.
+        """
+        if seq is None:
+            seq = self._seq + max(0, len(lines) - len(self.list.controls))
+
+        rebuild = seq < self._seq or not self.list.controls
+        arrived = 0
+
+        if rebuild:
+            self.list.controls = [event_row(ln, self.profiles) for ln in lines]
+            arrived = len(lines)
+        else:
+            new = seq - self._seq
+            if new > 0:
+                # Never take more than the tail actually holds: the ring drops
+                # old lines, so a burst larger than the retained tail means the
+                # dropped ones are simply not available to paint.
+                fresh = lines[-new:] if new < len(lines) else list(lines)
+                self.list.controls.extend(
+                    event_row(ln, self.profiles) for ln in fresh
+                )
+                arrived = len(fresh)
+
+        self._seq = seq
+        self.state.total = seq
+
         if arrived:
-            self.state.on_events(0, lines[-1] if lines else "")
+            self.state.last_line = lines[-1] if lines else self.state.last_line
             if not self.state.following or self.state.collapsed:
                 self.state.missed += arrived
         elif lines:
             self.state.last_line = lines[-1]
 
-        self.list.controls = [
-            event_row(ln, self.profiles, self.row_layout) for ln in lines
-        ]
-        if lines:
-            stamp = lines[-1].partition("  > ")[0].strip()
-            msg = lines[-1].partition("  > ")[2].strip()
-            self._peek.value = f"{stamp}   {msg}" if stamp else msg
+        self._apply_trim()
 
-        if self.variant == "E":
-            # The digest is keyed on the profiles this console KNOWS (set from
-            # the real profile manager via set_profiles), not on a per-call
-            # argument — the app's flush has no reason to carry a second copy
-            # of the roster, and passing none left the digest permanently
-            # empty ("no profile activity yet" beside a stream full of named
-            # events).
-            self.digest.controls = self._digest_controls(
-                list(digest_rows or self.profiles), lines
-            )
+        if lines:
+            stamp, _, msg = lines[-1].partition("  > ")
+            stamp, msg = stamp.strip(), msg.strip()
+            self._peek.value = f"{stamp}   {msg}" if stamp else (msg or lines[-1])
+
         self._apply_collapse()
         self._paint_stream_state()
 
-    def _digest_controls(self, profiles: list[str], lines: list[str]) -> list:
-        """Variant E's digest: per-profile standing state, newest first.
+    # Kept so a caller can ask what the console is actually holding — the
+    # scrollback depth is an acceptance criterion, so it needs to be readable
+    # rather than inferred from the widget tree.
+    @property
+    def row_count(self) -> int:
+        return len(self.list.controls)
 
-        Derived from the stream itself rather than from a new data source —
-        this is a layout draft, so the digest has to be honest about being a
-        projection of the same events, not a promise of new telemetry.
-        """
-        latest: dict[str, str] = {}
-        for ln in lines:
-            msg = ln.partition("  > ")[2].strip()
-            for name in profiles:
-                if name and name in msg:
-                    latest[name] = msg
-        rows = []
-        for name, msg in list(latest.items())[-6:]:
-            sev = severity(msg)
-            rows.append(
-                ft.Row(
-                    spacing=9,
-                    vertical_alignment=ft.CrossAxisAlignment.START,
-                    controls=[
-                        ft.Container(
-                            width=7,
-                            height=7,
-                            border_radius=4,
-                            bgcolor=SEV_COLOR[sev],
-                            margin=ft.Margin.only(top=4),
-                        ),
-                        ft.Container(
-                            expand=True,
-                            content=ft.Column(
-                                spacing=1,
-                                controls=[
-                                    ft.Text(
-                                        name,
-                                        size=11,
-                                        color=COLORS["accent"],
-                                        font_family=MONO,
-                                    ),
-                                    # Wraps rather than clamps: a longer
-                                    # status makes this card taller.
-                                    ft.Text(
-                                        msg,
-                                        size=10,
-                                        color=(
-                                            COLORS["error"]
-                                            if sev == SEV_FAIL
-                                            else COLORS["text_dim"]
-                                        ),
-                                        font_family=MONO,
-                                    ),
-                                ],
-                            ),
-                        ),
-                    ],
-                )
-            )
-        return rows or [
-            ft.Text(
-                "no profile activity yet",
-                size=10,
-                color=COLORS["text_sub"],
-                font_family=MONO,
-            )
-        ]
+    @property
+    def scrollback_px(self) -> int:
+        return self.row_count * ROW_HEIGHT
