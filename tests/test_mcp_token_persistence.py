@@ -220,26 +220,49 @@ def interrupt_publish():
         os.replace = real_replace
 
 
-def test_interrupted_mint_leaves_the_previous_token_intact(
+def test_interrupted_mint_leaves_the_pre_existing_file_intact(
     tmp_token, interrupt_publish
 ):
-    """AC4, with an existing token: a reader sees the OLD one, never a fragment."""
+    """AC4, with a file already AT the final path: the bytes that were there
+    before the mint are still there afterwards, unmodified.
+
+    The pre-existing file is a SHORT one, and that is the only way to reach
+    this case rather than a convenience. `get_or_create_token()` returns early
+    on a valid token, so an interrupted re-mint over a *whole* token is
+    unreachable by construction — the re-mint is precisely what the AC3 length
+    guard triggers. So this drives the one reachable overwrite path: a
+    truncated file reads as absent, the mint runs, the publish fails, and the
+    question AC4 asks is whether the original bytes survived.
+
+    Deliberately NOT `unlink()`-ing first: that would delete the very thing
+    whose survival is under test, leaving the empty-directory case that
+    `test_interrupted_mint_publishes_nothing_readable` below already covers.
+    """
     start, stop = interrupt_publish
-    original = mcp_token.get_or_create_token()
+    stale = "abc"
+    tmp_token.write_text(stale, encoding="utf-8")
 
     start()
-    tmp_token.unlink()  # make the code path re-mint
     with pytest.raises(OSError):
         mcp_token.get_or_create_token()
     stop()
 
-    # Nothing partial was published, and no temp debris was left behind.
-    assert not tmp_token.exists()
-    assert list(tmp_token.parent.iterdir()) == []
+    # The pre-existing bytes survived the interrupted mint untouched — no
+    # fragment of the new token was published over them...
+    assert tmp_token.exists()
+    assert tmp_token.read_text(encoding="utf-8") == stale
+    # ...and no temp debris was left beside them.
+    assert [p.name for p in tmp_token.parent.iterdir()] == ["mcp_token"]
 
-    # Restore the original and confirm it still reads whole.
-    tmp_token.write_text(original, encoding="utf-8")
-    assert mcp_token.read_token() == original
+    # A reader still sees exactly what was there before: this file is short, so
+    # the guard keeps reporting it absent rather than serving half a mint.
+    assert mcp_token.read_token() == ""
+
+    # And the interruption cost nothing permanent — the next mint succeeds and
+    # publishes a whole token over the stale bytes.
+    recovered = mcp_token.get_or_create_token()
+    assert len(recovered) == mcp_token._MIN_TOKEN_CHARS
+    assert mcp_token.read_token() == recovered
 
 
 def test_interrupted_mint_publishes_nothing_readable(tmp_token, interrupt_publish):
