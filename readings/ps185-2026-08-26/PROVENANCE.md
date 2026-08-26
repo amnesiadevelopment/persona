@@ -186,6 +186,29 @@ the chromium repeatability figure is computed against
 comparison uses the firefox legs of the same file, all of which read. The
 primary `readback-vectors.three-seeds.json` sweep is complete on both engines.
 
+### 4c. `readback-vectors.two-seeds.json` is a SUPERSEDED pilot and is deliberately not counted
+
+The directory holds **four** readback records but the attempted-legs denominator
+in the derived output is **15**, not 19. The missing four are
+`readback-vectors.two-seeds.json`, which `derive.py` names as `READBACK2` but
+never loads. That is stated here because a future reader counting legs in the
+directory gets a different number than the published one, and an undocumented
+gap between those two is indistinguishable from a leg being quietly dropped.
+
+It is a **pilot run at two seeds (1337, 4242), superseded 69 seconds later** by
+the three-seed sweep that is actually published (`09:08:49` vs `09:09:58`).
+Nothing is hidden by the omission, and that is checked rather than assumed: all
+**4 of its legs are complete** — both engines at both seeds, every one carrying
+real vectors with an empty `error` — so there is no unobtained reading inside it
+for the DoD #5 disclosure to owe an account of. Its vectors agree with the
+published sweep on the two seeds they share, including the firefox
+`canvas_pixel_hash` collision reported in the derived output.
+
+The constant is left defined rather than deleted so the file on disk stays
+traceable to the script that produced it; **it must not be added to the
+denominator**, which would double-count two engine/seed legs that the published
+three-seed sweep already reports.
+
 ## 5. Two defects found by this instrument, reported and NOT fixed
 
 Fixing found defects is out of PS-185's scope; both are recorded so they are not
