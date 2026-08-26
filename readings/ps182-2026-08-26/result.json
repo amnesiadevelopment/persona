@@ -1,0 +1,163 @@
+{
+  "seeds": [
+    111,
+    1337,
+    4242,
+    9001
+  ],
+  "results": [
+    {
+      "label": "A: the loopback probe draw (probes.py `webgl.readback`), 32x32 mid-range bands",
+      "note": "The gate PS-90 added. Content-rich: 3072 of 4096 bytes pass the guard.",
+      "bytes": 4096,
+      "guard_eligible": 3072,
+      "unperturbed": 2952899525,
+      "per_seed": {
+        "111": {
+          "gl1": {
+            "digest": 2372980207,
+            "moved": 384
+          }
+        },
+        "1337": {
+          "gl1": {
+            "digest": 1471895271,
+            "moved": 384
+          }
+        },
+        "4242": {
+          "gl1": {
+            "digest": 1444116715,
+            "moved": 384
+          }
+        },
+        "9001": {
+          "gl1": {
+            "digest": 1470507087,
+            "moved": 384
+          }
+        }
+      },
+      "distinct": {
+        "gl1": 4
+      }
+    },
+    {
+      "label": "B: CreepJS corner 17x42 — 16 eligible of 2856 (the census webgl_ext.py:30-45 measured)",
+      "note": "Starved but NOT empty. This is the shape PS-97 fixed the Chromium side for.",
+      "bytes": 2856,
+      "guard_eligible": 16,
+      "unperturbed": 1186790101,
+      "per_seed": {
+        "111": {
+          "gl1": {
+            "digest": 56357901,
+            "moved": 16
+          }
+        },
+        "1337": {
+          "gl1": {
+            "digest": 2297208713,
+            "moved": 16
+          }
+        },
+        "4242": {
+          "gl1": {
+            "digest": 3140129233,
+            "moved": 16
+          }
+        },
+        "9001": {
+          "gl1": {
+            "digest": 2033420559,
+            "moved": 16
+          }
+        }
+      },
+      "distinct": {
+        "gl1": 4
+      }
+    },
+    {
+      "label": "C: CreepJS corner 17x42 — ZERO guard-eligible bytes",
+      "note": "The counterfactual: a fully cleared render, nothing for the guard to admit.",
+      "bytes": 2856,
+      "guard_eligible": 0,
+      "unperturbed": 759700181,
+      "per_seed": {
+        "111": {
+          "gl1": {
+            "digest": 759700181,
+            "moved": 0
+          }
+        },
+        "1337": {
+          "gl1": {
+            "digest": 759700181,
+            "moved": 0
+          }
+        },
+        "4242": {
+          "gl1": {
+            "digest": 759700181,
+            "moved": 0
+          }
+        },
+        "9001": {
+          "gl1": {
+            "digest": 759700181,
+            "moved": 0
+          }
+        }
+      },
+      "distinct": {
+        "gl1": 1
+      }
+    },
+    {
+      "label": "D: WebGL2-ONLY realm (the Firefox worker shape probes.py measured)",
+      "note": "probes.py declares webgl.readback WINDOW_ONLY because in a FF worker only 'webgl2' yields a context. If the patch missed WebGL2 that would be an in-scope Firefox delivery gap.",
+      "bytes": 4096,
+      "guard_eligible": 3072,
+      "unperturbed": 2952899525,
+      "per_seed": {
+        "111": {
+          "gl2": {
+            "digest": 2372980207,
+            "moved": 384
+          }
+        },
+        "1337": {
+          "gl2": {
+            "digest": 1471895271,
+            "moved": 384
+          }
+        },
+        "4242": {
+          "gl2": {
+            "digest": 1444116715,
+            "moved": 384
+          }
+        },
+        "9001": {
+          "gl2": {
+            "digest": 1470507087,
+            "moved": 384
+          }
+        }
+      },
+      "distinct": {
+        "gl2": 4
+      }
+    }
+  ],
+  "corpus_validation": {
+    "source": "readings/ps135-2026-08-24",
+    "expected": {
+      "111": 2372980207,
+      "1337": 1471895271,
+      "4242": 1444116715
+    },
+    "all_match": true
+  }
+}
