@@ -17,7 +17,10 @@ from src.ui.components.log_dock import (  # noqa: E402
     MAX_HEIGHT,
     MAX_ROWS,
     MIN_HEIGHT,
+    OPEN_HEIGHT,
+    RAIL_CONTENT_HEIGHT,
     LogDock,
+    default_height,
 )
 from src.ui.log_console import NO_PROFILE, ROW_HEIGHT, event_row, parse_event  # noqa: E402
 
@@ -279,3 +282,29 @@ def test_a_cleared_ring_rebuilds_rather_than_appending_wiped_names():
 
     d.render([], seq=0)
     assert d.row_count == 0
+
+
+def test_ac8_a_short_window_costs_the_dock_height_not_the_rail_its_controls():
+    """Measured on the running app at the app's own minimum size (1024x680).
+
+    A constant 236px dock left the rail 444px against the ~545px its own
+    content needs, so the nav scrolled, `trash` fell below the fold and the
+    engines dropdown was clipped. The dock is what yields, because it is the
+    one the operator can drag back.
+    """
+    from src.ui.components.log_dock import RAIL_CONTENT_HEIGHT, default_height
+
+    # At the minimum window size the rail keeps everything it needs.
+    assert 680 - default_height(680) >= RAIL_CONTENT_HEIGHT
+    # A roomy window still opens at the preferred height.
+    assert default_height(950) == OPEN_HEIGHT
+    assert default_height(1200) == OPEN_HEIGHT
+    # Never below the grip's own floor, and safe when the height is unknown.
+    assert default_height(300) == MIN_HEIGHT
+    assert default_height(None) == OPEN_HEIGHT
+
+
+def test_the_window_budget_reaches_the_console_it_sizes():
+    d = LogDock(window_height=680)
+    assert d.height == default_height(680)
+    assert d.body.height == d.height
