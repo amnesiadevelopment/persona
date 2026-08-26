@@ -65,6 +65,33 @@ COLLAPSED_HEIGHT = 34
 MAX_ROWS = 600
 
 
+#: What the sidebar rail needs to show ALL of itself: the header block, seven
+#: nav entries, and the engines + version cluster. Measured on the running app
+#: at the minimum window size (1024x680), where the rail's own content runs to
+#: ~560px (re-measured on the running app after the first estimate of 545 still
+#: left the nav ~11px short and clipped `trash`). The console reserves this before choosing its default height —
+#: otherwise a fixed 236px dock in a 680px window leaves the rail 444px, the
+#: nav is forced to scroll, and `trash` drops below the fold beside an engines
+#: dropdown that is itself clipped. The dock is the element that should yield
+#: there, because it is the one the operator can drag back.
+RAIL_CONTENT_HEIGHT = 560
+
+
+def default_height(window_height: float | None) -> int:
+    """The console's opening height for a window of this height.
+
+    A CONSTANT default is what broke the rail at the app's own minimum size, so
+    this is a budget rather than a number: take the preferred height when the
+    window can afford it, and give the difference back to the rail when it
+    cannot. Still clamped to the same bounds the grip uses, so the console can
+    never open smaller than it is usable.
+    """
+    if not window_height or window_height <= 0:
+        return OPEN_HEIGHT
+    affordable = int(window_height) - RAIL_CONTENT_HEIGHT
+    return max(MIN_HEIGHT, min(MAX_HEIGHT, min(OPEN_HEIGHT, affordable)))
+
+
 class LogDock:
     """One Activity Log console: its controls, its stream state, its geometry.
 
@@ -73,11 +100,13 @@ class LogDock:
     property — see the module docstring.
     """
 
-    def __init__(self, on_fullscreen=None) -> None:
+    def __init__(self, on_fullscreen=None, window_height: float | None = None) -> None:
         self.state = StreamState()
         self._on_fullscreen = on_fullscreen
         self.profiles: frozenset = frozenset()
-        self.height = OPEN_HEIGHT
+        # Sized against the window rather than a constant, so a short window
+        # does not cost the sidebar its bottom cluster — see default_height.
+        self.height = default_height(window_height)
 
         #: How many lines the app has EVER produced, as of the last paint. The
         #: dock appends the difference rather than diffing text, so repeated

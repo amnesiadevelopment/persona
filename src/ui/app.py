@@ -712,13 +712,26 @@ class App:
         bottom cluster no longer competes with a log panel for a fixed 200px of
         width) and what gives the stream a reading line wide enough for the row
         to have real columns — see components/log_dock.py.
+
+        The console's opening height is a BUDGET against the window, not a
+        constant: at the app's own minimum size a fixed dock left the rail too
+        short to show its own bottom cluster, so the dock yields there instead
+        (it is the element the operator can drag back).
         """
         from .components.log_dock import LogDock
 
         r.log_toggle_btn.on_click = lambda _: self.h.toggle_log()
         self._sidebar_host = ft.Container(content=self._build_sidebar())
         self._page_host = ft.Container(expand=True)
-        self._dock = LogDock(on_fullscreen=self.h.open_log_fullscreen)
+        window_height = None
+        with contextlib.suppress(Exception):
+            page = self.page
+            window_height = getattr(page, "height", None) or getattr(
+                page.window, "height", None
+            )
+        self._dock = LogDock(
+            on_fullscreen=self.h.open_log_fullscreen, window_height=window_height
+        )
         with contextlib.suppress(Exception):
             self._dock.set_profiles(p.name for p in self.pm.list_profiles())
 
