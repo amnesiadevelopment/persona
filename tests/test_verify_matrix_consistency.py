@@ -781,16 +781,42 @@ def test_real_hardware_is_never_read_as_a_software_rasteriser():
         assert identity(value) != SOFTWARE_RASTERISER
 
 
-def test_no_committed_record_is_read_as_a_leaked_host():
-    """The false-alarm measurement, pinned.
+# The records that leak the host renderer. WAS EMPTY until PS-186 (2026-08-26).
+#
+# THIS FIRED FOR REAL, AND IT IS NOT TUNED AWAY. The docstring below used to
+# read "zero values in the whole committed corpus carry a software-rasteriser
+# marker", with the standing instruction that a marker firing on a real record
+# is "a FINDING to report, not a threshold to quietly tune until the noise
+# stops". PS-186's sweep produced the first records that fire it, so the
+# finding is REPORTED (EVIDENCE.md §3) and the census is pinned here.
+#
+# Both are chromium/linux: creepjs reads the container's real SwiftShader while
+# pixelscan reads an Intel identity in the SAME record. That is simultaneously a
+# self-contradiction and a leak of the machine underneath, which is why the rule
+# ranks it above a plain contradiction and why these two are listed separately
+# from the four in LEAK_FREE_CONTRADICTIONS below.
+#
+# Do NOT empty this list to make the suite green. It is empty only for a corpus
+# that has never read a leaking record, and ours now has.
+HOST_LEAK_RECORDS = {
+    os.path.join(
+        "ps186-2026-08-26", "matrix", "reading.chromium.linux.seed5150.json"
+    ),
+    os.path.join(
+        "ps186-2026-08-26", "matrix", "reading.chromium.linux.seed24601.json"
+    ),
+}
 
-    Zero values in the whole committed corpus carry a software-rasteriser
-    marker, so adding this class changed no existing verdict — the census
-    below is byte-identical either side of the fix. If a future marker starts
-    firing on a real record, that is a FINDING to report (per the ticket's
-    standing instruction), and this test is what surfaces it rather than
-    letting it be absorbed.
+
+def test_the_host_leak_census_is_exactly_the_two_linux_records():
+    """The false-alarm measurement, pinned — and it is no longer zero.
+
+    Kept as an EXACT census rather than a "no new leaks" inequality: an
+    inequality silently absorbs the next leaking record, which is the failure
+    mode the ticket's standing instruction exists to prevent. A new leak fails
+    here loudly and has to be explained.
     """
+    leaking = []
     for path in discover():
         try:
             record = load(path)
@@ -800,7 +826,10 @@ def test_no_committed_record_is_read_as_a_leaked_host():
             entries = consistency_pass(record)
         except NotARecord:
             continue
-        assert host_leaks(entries) == [], f"unexpected leak verdict on {path}"
+        if host_leaks(entries):
+            leaking.append(os.path.relpath(path, READINGS))
+
+    assert sorted(leaking) == sorted(HOST_LEAK_RECORDS)
 
 
 # --- the corpus census, asserted -------------------------------------------
@@ -815,7 +844,34 @@ def discover() -> "list[str]":
     return sorted(found)
 
 
-def test_the_check_fires_on_exactly_three_records_in_the_whole_corpus():
+# The records that contradict themselves WITHOUT leaking the host renderer.
+#
+# The first three are the original AMD-vs-NVIDIA split this rule was written
+# against. The last two are new in PS-186 and are a DIFFERENT shape: one vendor
+# (apple), two different adapters in the same record, because our `MAC_GPUS`
+# pool and the packaged engine author the identity independently and pixelscan
+# and creepjs each read a different author —
+#
+#   seed 5150 : pixelscan "Apple M2 Pro" (ours) vs creepjs "Apple M4" (engine)
+#   seed 24601: pixelscan "Apple M1"     (ours) vs creepjs "Apple M2" (engine)
+#
+# Caught by the ADAPTER branch, not the identity branch: the brand-level term
+# agrees and only the card differs, which is exactly the case that branch exists
+# for. Reported in EVIDENCE.md §3.
+LEAK_FREE_CONTRADICTIONS = {
+    os.path.join("ps143-2026-08-24", "arm-a-layer-on.json"),
+    os.path.join("ps150-2026-08-24", "arm-a-baseline-layer-on.json"),
+    os.path.join("ps150-2026-08-24", "arm-b-geo-gap-closed.json"),
+    os.path.join(
+        "ps186-2026-08-26", "matrix", "reading.chromium.macos.seed5150.json"
+    ),
+    os.path.join(
+        "ps186-2026-08-26", "matrix", "reading.chromium.macos.seed24601.json"
+    ),
+}
+
+
+def test_the_check_fires_on_exactly_the_censused_records():
     """The rule's corpus behaviour, asserted rather than described.
 
     The ticket requires the PR to say which rows the rule fires on, and that
@@ -824,8 +880,12 @@ def test_the_check_fires_on_exactly_three_records_in_the_whole_corpus():
     the census here means a future change to the rule that starts flagging
     clean records fails loudly instead of being absorbed.
 
-    Three positives, all the same AMD-vs-NVIDIA split: ps143 arm-a, ps150
-    arm-a, ps150 arm-b.
+    WAS THREE, IS SEVEN (PS-186). The four added records all fire for REAL
+    product reasons that are reported rather than tuned away — two chromium/
+    linux host leaks and two chromium/macos two-author adapter splits. The
+    census is expressed as the union of the two named sets so that a reader can
+    see WHICH KIND each record is; `findings()` is deliberately the sum of both
+    populations, so this asserts against that same sum.
     """
     flagged = []
     for path in discover():
@@ -840,11 +900,12 @@ def test_the_check_fires_on_exactly_three_records_in_the_whole_corpus():
         if findings(entries):
             flagged.append(os.path.relpath(path, READINGS))
 
-    assert sorted(flagged) == [
-        os.path.join("ps143-2026-08-24", "arm-a-layer-on.json"),
-        os.path.join("ps150-2026-08-24", "arm-a-baseline-layer-on.json"),
-        os.path.join("ps150-2026-08-24", "arm-b-geo-gap-closed.json"),
-    ]
+    assert sorted(flagged) == sorted(
+        HOST_LEAK_RECORDS | LEAK_FREE_CONTRADICTIONS
+    )
+    # The two populations must stay DISJOINT: a leaking record is reported by
+    # `host_leaks` and deliberately not double-counted as a contradiction.
+    assert not (HOST_LEAK_RECORDS & LEAK_FREE_CONTRADICTIONS)
 
 
 def test_no_committed_record_crashes_the_check():
