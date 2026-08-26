@@ -59,6 +59,11 @@ import os
 import threading
 import time
 
+# The group resolver comes from the PRODUCT's own owner rather than being
+# restated here, so the tooling path and the product paths cannot drift: a fix
+# to one is a fix to both. `tests/` imports `src.*` throughout this suite.
+from src.services.browser.process_group import resolve_group
+
 #: How long any ONE driver operation may block before its children are reaped.
 #: Comparable to the suite's configured per-test bound rather than derived from
 #: it: the ini value belongs to a plugin that may be absent, and reading it
@@ -124,16 +129,39 @@ def reap_process_tree(pid: int, grace: float = REAP_GRACE) -> list[int]:
     longer reachable from the pid you hold — which is precisely how a "cleanup"
     leaves a chromium running. flet spawns its own children and playwright's
     node driver owns a browser tree, so both cases are real here.
+
+    PS-192 adds a GROUP backstop. The descendant walk above is still the
+    primary reaper and is still correct — but it can only see what is reachable
+    from ``pid`` AT THE MOMENT IT LOOKS, so anything spawned or reparented in
+    the window between the snapshot and the signal is invisible to it. Where
+    ``pid`` leads its own session (every launch site now starts one), a single
+    ``killpg`` covers exactly that residue.
+
+    ⚠️ The group is resolved through :func:`resolve_group`, which refuses any
+    pid that is NOT its own group leader. That refusal is load-bearing here:
+    this function is also called on GRANDCHILD pids, which sit in their
+    parent's group — signalling that group would reach processes this call was
+    never given authority over, and if the caller happens to share it, the
+    caller itself. The same self-inflicted class as a ``pkill -f`` matching its
+    own command line, which cost PS-185's worker two cycles.
     """
+    # Resolved FIRST: after the reap the pid may be waited on and recycled, and
+    # a recycled pid must never be re-resolved into an unrelated group.
+    pgid = resolve_group(pid)
+
     ps = _psutil()
     if ps is None:  # pragma: no cover - psutil is a declared dependency
         with contextlib.suppress(Exception):
             os.kill(pid, 9)
+        _kill_group(pgid)
         return []
 
     try:
         parent = ps.Process(pid)
     except Exception:
+        # The pid is already gone, but its GROUP can outlive it — that is the
+        # orphan case this ticket exists for, so the backstop still fires.
+        _kill_group(pgid)
         return []
 
     try:
@@ -150,7 +178,30 @@ def reap_process_tree(pid: int, grace: float = REAP_GRACE) -> list[int]:
             proc.kill()
     ps.wait_procs(alive, timeout=grace)
 
+    _kill_group(pgid)
+
     return [p.pid for p in family if not _is_running(ps, p.pid)]
+
+
+def _kill_group(pgid: "int | None") -> bool:
+    """SIGKILL a resolved process group, never raising.
+
+    Runs after the descendant walk, so it normally finds an empty group — it
+    exists for the residue the walk cannot see. ``None`` (not a leader, or
+    already gone) means there is no group we hold authority over: do nothing.
+    """
+    if pgid is None:
+        return False
+    import signal
+
+    try:
+        os.killpg(pgid, getattr(signal, "SIGKILL", 9))
+        return True
+    except ProcessLookupError:
+        # An empty group is the SUCCESS case: the walk got everything.
+        return True
+    except Exception:
+        return False
 
 
 def _is_running(ps, pid: int) -> bool:

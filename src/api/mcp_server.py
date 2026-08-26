@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from mcp.server.fastmcp import FastMCP
 
 from ..core.config import PERSONA_HOME
+from ..services.profile.coherence import IncoherentProfile
 from .cdp_endpoint import _resolve_port
 from .refusal_report import refusal_for_attempt
 
@@ -100,9 +101,34 @@ def build_mcp(container: Container) -> FastMCP:
         os_type: str = "windows",
         tags: list[str] | None = None,
     ) -> dict:
-        """Create a new profile. proxy is a proxy name (or empty for direct)."""
+        """Create a new profile. proxy is a proxy name (or empty for direct).
+
+        Answers ``{"created": False, "error": "refused", "detail": ...}`` when a
+        coherence rule refused the fields — the same structured-refusal shape
+        ``launch_profile`` below already uses, rather than letting the exception
+        escape our layer to an off-machine caller.
+
+        WHY THIS HANDLER EXISTS (PS-187). ``os_type`` is now refused at create
+        when it carries a spelling the engine will not honour (``win``,
+        ``mac``, ``darwin``, ...). Before that rule this lane could not raise at
+        all: it passes ``(name, proxy, os_type, tags)`` and no ``engine`` or
+        ``device_type``, so the pair rules were structurally unreachable through
+        it. The storage rule is the FIRST refusal that reaches an MCP caller,
+        and the refusal message — which names the canonical spelling to use — is
+        the most useful thing the rule produces. Discarding it as an uncaught
+        exception would hand the automation client a stack trace where the REST
+        lane gives a 400 with the reason and the dialog gives an inline message.
+        """
         pm = container.profile_manager
-        ok = pm.add_profile(name, proxy, os_type, tags=tags or [])
+        try:
+            ok = pm.add_profile(name, proxy, os_type, tags=tags or [])
+        except IncoherentProfile as e:
+            return {
+                "created": False,
+                "name": name,
+                "error": "refused",
+                "detail": str(e),
+            }
         return {"created": ok, "name": name}
 
     @mcp.tool()

@@ -345,6 +345,73 @@ def bar_for(arm: str, generation: "int | None" = None) -> "float | None":
     return 1.0 / n
 
 
+def completeness(per_arm: "dict[str, dict]") -> dict:
+    """How much of the requested sample was actually READ. DERIVED, never told.
+
+    ``classify`` correctly EXCLUDES unreadable cells from its statistics — an
+    unreadable cell and a colliding cell are different findings. That exclusion
+    is right and is not weakened here. The defect PS-192 closes is on the other
+    side of it: **the caller cannot tell "nothing to exclude" from "half the
+    run was excluded"**, because both produce the same clean-looking verdict.
+
+    That gap is not theoretical. A process leak exhausts the machine, later
+    launches degrade into a contentless ``TargetClosedError``, those cells come
+    back ``None``, ``classify`` drops them — and the verdict is computed from a
+    POSITION-BIASED subset (the seeds that ran early) while reporting exactly
+    like a full run. Nothing in the output says the sample was truncated.
+
+    ⚠️ EVERY FIELD HERE IS COMPUTED FROM ``per_arm``. That is the whole design
+    constraint, and it is a lesson paid for: ``readings/ps177-2026-08-25/
+    derive.py:372 coverage_section()`` HARDCODED the sentence "all four GPU
+    arms returned 24/24 readable seeds" and took no records at all. A reviewer
+    mutation-proved it by nulling 12 of 24 android readings — it still printed
+    24/24, beside a per-arm table correctly reporting 12. The claim was true
+    and STRUCTURALLY UNABLE TO BECOME FALSE, which is precisely the property
+    that must not exist in a completeness check. Never write a summary sentence
+    here that does not read the numbers.
+    """
+    requested = sum(e["seeds_requested"] for e in per_arm.values())
+    readable = sum(e["seeds_readable"] for e in per_arm.values())
+    truncated = sorted(
+        a for a, e in per_arm.items() if e["seeds_readable"] < e["seeds_requested"]
+    )
+    complete = bool(per_arm) and not truncated
+
+    if not per_arm:
+        detail = "no arm was measured, so there is no sample to be complete."
+    elif complete:
+        detail = (
+            f"every requested seed was read: {readable}/{requested} across "
+            f"{len(per_arm)} arm(s). Nothing was excluded, so the verdict "
+            "above was computed over the FULL sample."
+        )
+    else:
+        per = ", ".join(
+            f"{a} {per_arm[a]['seeds_readable']}/{per_arm[a]['seeds_requested']}"
+            for a in truncated
+        )
+        detail = (
+            f"TRUNCATED: only {readable} of {requested} requested seeds were "
+            f"readable ({per}). The unreadable cells were EXCLUDED from the "
+            "statistics — correctly, but that means the verdict above was "
+            "computed over a SUBSET, and the seeds that fail are the ones that "
+            "ran LAST, so the surviving sample is position-biased rather than "
+            "random. A resource leak exhausting the machine produces exactly "
+            "this shape (PS-192): launches degrade into a contentless "
+            "TargetClosedError instead of failing loudly. Treat this as a run "
+            "to REPEAT, not as a reading to act on."
+        )
+
+    return {
+        "seeds_requested": requested,
+        "seeds_readable": readable,
+        "seeds_unreadable": requested - readable,
+        "complete": complete,
+        "arms_truncated": truncated,
+        "detail": detail,
+    }
+
+
 def classify(readings: "dict[str, dict[int, str | None]]") -> dict:
     """Turn per-arm, per-seed identity readings into a verdict. PURE.
 
@@ -471,6 +538,8 @@ def classify(readings: "dict[str, dict[int, str | None]]") -> dict:
         "findings": findings,
         "inconclusive": inconclusive,
         "arms_checked": sorted(per_arm),
+        # PS-192: derived from per_arm, never asserted. See `completeness`.
+        "completeness": completeness(per_arm),
     }
 
 
@@ -479,10 +548,27 @@ def exit_code_for(result: dict) -> int:
 
     An INCONCLUSIVE arm is EXIT_CANNOT_RUN, never EXIT_PASS: "we failed to
     look" must not wear the code that means "we looked and it was fine".
+
+    ⚠️ PS-192: A TRUNCATED SAMPLE CANNOT EXIT_PASS. The same discipline, one
+    level up. An arm can clear MIN_SEEDS and still have lost a third of its
+    requested seeds to a machine that ran out of resources mid-sweep — and
+    because ``classify`` (correctly) excludes unreadable cells, that arm's
+    verdict is computed from the seeds that ran EARLY and reports exactly like
+    a full run. "We read part of it and that part was fine" is a different
+    claim from "we looked and it was fine", so it does not get the code that
+    means the latter. It is EXIT_CANNOT_RUN: a run to repeat, not a green.
+
+    This is deliberately gated on the FINDINGS check, not ahead of it — a
+    truncated run that still caught a CONSTANT or TOO_NARROW arm keeps its
+    finding. Truncation can hide a defect; it cannot invent one.
     """
     if result["findings"]:
         return EXIT_FINDING
     if result["inconclusive"] or not result["arms_checked"]:
+        return EXIT_CANNOT_RUN
+    # `.get` so a record classified before this key existed still resolves,
+    # rather than raising on a replay of an archived document.
+    if not result.get("completeness", {}).get("complete", True):
         return EXIT_CANNOT_RUN
     return EXIT_PASS
 
@@ -522,6 +608,31 @@ def format_result(result: dict) -> str:
                 "is the NEWEST generation's; profiles created before the pool "
                 "was widened still sit in the smaller one."
             )
+
+    # PS-192: the SAMPLE's own line, printed on every run — complete or not.
+    # Printed unconditionally on purpose: a completeness note that appears only
+    # when something is wrong trains a reader to skim past its absence, and
+    # "the sample was whole" is exactly the claim that must be stated rather
+    # than assumed. Every number here is read from the records (see
+    # `completeness`), so this sentence CAN go false — which is the property
+    # derive.py's hardcoded "24/24" lacked.
+    cov = result.get("completeness")
+    if cov:
+        lines.append("")
+        lines.append(
+            "  SAMPLE: "
+            + ("COMPLETE" if cov["complete"] else "TRUNCATED — NOT A CLEAN RUN")
+        )
+        lines.append(
+            f"    {cov['seeds_readable']}/{cov['seeds_requested']} requested "
+            f"seeds readable"
+            + (
+                ""
+                if cov["complete"]
+                else f"; truncated arms: {', '.join(cov['arms_truncated'])}"
+            )
+        )
+        lines.append(f"    {cov['detail']}")
     return "\n".join(lines)
 
 
