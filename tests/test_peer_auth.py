@@ -700,3 +700,203 @@ def test_degraded_gate_serves_its_own_browser_without_delay(clean_probe, monkeyp
         f"the claimed degraded path blocked for {elapsed:.1f}s — the real "
         "browser should never wait on the bind grace period"
     )
+
+
+# --------------------------------------------------------------------------
+# Scan coalescing (PS-199)
+#
+# The gate's cost is O(processes x system connection table), not O(sockets the
+# tree owns): every Process.net_connections() re-reads the whole table and
+# filters it to one pid. Measured on a 12-process / 240-socket tree, one scan
+# costs ~95-127ms, and 64 concurrent connections through the real bridge each
+# paid their own — median 1.9s, p95 3.2s. Every one was ADMITTED, so the defect
+# is a stall, not a refusal.
+#
+# The remedy shares one scan between callers that can honestly use it. These
+# tests pin the freshness rule that keeps that from being a weakening, because
+# the cheap version of this fix (a TTL cache) is a real security regression: a
+# local port is closed and REUSED within seconds, so answering from a remembered
+# endpoint set eventually admits a caller that is not the browser.
+# --------------------------------------------------------------------------
+
+def test_a_scan_that_started_before_the_caller_arrived_is_never_reused():
+    """THE security property of coalescing, stated as a test.
+
+    A waiter may only be handed a scan that STARTED at or after its own arrival
+    — exactly the freshness an inline _tree_endpoints() call had. A completed
+    scan that began earlier must NOT answer a caller that arrived later, because
+    the peer's port may have been closed and reassigned to another process in
+    between. If this ever passes with one scan, the coalescer has become a cache
+    and the gate now admits on stale evidence.
+    """
+    coalescer = peerauth._ScanCoalescer()
+    calls: list[float] = []
+
+    def scanner(root_pid):
+        calls.append(time.monotonic())
+        return {(1234, 9999)}
+
+    first_arrival = time.monotonic()
+    coalescer.scan(4242, first_arrival, scanner=scanner)
+    assert len(calls) == 1
+
+    # A caller that arrives strictly AFTER the first scan completed.
+    time.sleep(0.01)
+    later_arrival = time.monotonic()
+    coalescer.scan(4242, later_arrival, scanner=scanner)
+
+    assert len(calls) == 2, (
+        "a caller was answered from a scan that finished before it arrived — "
+        "the coalescer has degraded into a TTL cache, and a reused local port "
+        "now admits a process that is not the browser"
+    )
+
+
+def test_concurrent_callers_share_one_scan_instead_of_one_each():
+    """The actual fix, asserted as the consequence it exists for.
+
+    This is what turns a page issuing many parallel requests from "each request
+    pays a full process-table walk" into "they share one". Asserting merely that
+    the gate still admits would not distinguish the fixed state from the broken
+    one, so this counts SCANS.
+    """
+    coalescer = peerauth._ScanCoalescer()
+    calls: list[float] = []
+    lock = threading.Lock()
+
+    def scanner(root_pid):
+        with lock:
+            calls.append(time.monotonic())
+        time.sleep(0.2)          # a scan is expensive; that is the premise
+        return {(1234, 9999)}
+
+    n = 16
+    barrier = threading.Barrier(n)
+    results: list[object] = [None] * n
+
+    def caller(i: int) -> None:
+        barrier.wait()           # all arrive together, as a page's requests do
+        results[i] = coalescer.scan(4242, time.monotonic(), scanner=scanner)
+
+    threads = [threading.Thread(target=caller, args=(i,)) for i in range(n)]
+    started = time.monotonic()
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    elapsed = time.monotonic() - started
+
+    assert all(r == {(1234, 9999)} for r in results), (
+        "a coalesced caller got the wrong endpoint set"
+    )
+    assert len(calls) < n, (
+        f"{len(calls)} scans ran for {n} simultaneous callers — they are not "
+        "being coalesced, which is the whole defect PS-199 measured"
+    )
+    # n serialized 0.2s scans would be ~3.2s.
+    assert elapsed < n * 0.2, (
+        f"{n} callers took {elapsed:.2f}s — no better than one scan each"
+    )
+
+
+def test_a_process_spawned_after_the_gate_was_bound_is_still_admitted():
+    """Pins the hypothesis PS-199 led with, which measurement REFUTED.
+
+    The ticket proposed that the guard computes its notion of "the browser and
+    its children" once, so a tab opened later is refused. It does not: the tree
+    is re-resolved per connection. This is pinned because coalescing is exactly
+    the kind of change that COULD introduce the staleness the ticket feared, and
+    a regression here would present to a user as a new tab that cannot connect.
+    """
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(5)
+    listen_port = srv.getsockname()[1]
+
+    gate = PeerGate("test")
+    gate.set_listen_port(listen_port)
+    gate.bind_to_process(os.getpid())      # bound BEFORE the child exists
+
+    # Warm the coalescer, so any cached answer predates the child entirely.
+    gate.allows(("127.0.0.1", 65000))
+
+    child = subprocess.Popen(
+        [sys.executable, "-c",
+         f"import socket,time;c=socket.create_connection(('127.0.0.1',{listen_port}));time.sleep(6)"]
+    )
+    try:
+        conn, peer = srv.accept()
+        try:
+            assert gate.allows(peer) is True, (
+                "a process spawned after the gate was bound was refused — this "
+                "is the new-tab failure PS-199 describes, now real"
+            )
+        finally:
+            conn.close()
+    finally:
+        _reap(child)
+        srv.close()
+
+
+def test_coalesced_gate_still_refuses_a_peer_outside_the_tree_and_names_why():
+    """Coalescing must not soften the refusal, and the log must stay diagnostic.
+
+    Two assertions, and the second is not decoration: the two refusal paths mean
+    different things on a user's machine. "does not belong to ... or any of its
+    children" says the tree was read and the peer genuinely was not in it, while
+    "could not resolve the sockets of" says enumeration itself failed — the
+    Windows-specific failure mode. Telling them apart in a log is how the next
+    person diagnoses a report from a platform they cannot run.
+    """
+    import logging
+
+    gate = PeerGate("test")
+    other = _sleeper()
+    records: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    handler = _Capture()
+    peerauth.logger.addHandler(handler)
+    try:
+        gate.bind_to_process(other.pid)
+        assert gate.allows(("127.0.0.1", 65000)) is False
+    finally:
+        peerauth.logger.removeHandler(handler)
+        _reap(other)
+
+    joined = "\n".join(records)
+    assert "does not belong to" in joined, (
+        f"the refusal did not name WHICH check failed; logged: {joined!r}"
+    )
+    assert "could not resolve the sockets" not in joined, (
+        "the tree was readable, so the enumeration-failure refusal must not be "
+        "the one that fired — these two are not interchangeable"
+    )
+
+
+def test_a_scanner_that_raises_does_not_wedge_later_callers():
+    """A failed scan must clear its in-flight marker.
+
+    If it did not, the tree would stay marked "a scan is running" forever and
+    every subsequent connection would block waiting for a result that will never
+    arrive — converting a transient enumeration error into a permanently dead
+    listener.
+    """
+    coalescer = peerauth._ScanCoalescer()
+
+    def boom(root_pid):
+        raise OSError("enumeration failed")
+
+    assert coalescer.scan(4242, time.monotonic(), scanner=boom) is None
+
+    def works(root_pid):
+        return {(7, 8)}
+
+    started = time.monotonic()
+    assert coalescer.scan(4242, time.monotonic(), scanner=works) == {(7, 8)}
+    assert time.monotonic() - started < 5, (
+        "a caller after a failed scan blocked — the in-flight marker leaked"
+    )

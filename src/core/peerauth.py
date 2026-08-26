@@ -271,6 +271,107 @@ def _tree_endpoints(root_pid: int) -> set[tuple[int, int]] | None:
     return endpoints
 
 
+class _ScanCoalescer:
+    """Runs ONE tree scan on behalf of every connection that can honestly share
+    it, instead of one scan per connection.
+
+    Why this exists
+    ---------------
+    ``_tree_endpoints`` costs O(processes x system connection table), not
+    O(sockets the tree owns): every ``Process.net_connections()`` re-reads the
+    whole table and filters it to that pid (Linux parses ``/proc/net/tcp`` per
+    process; Windows calls ``GetExtendedTcpTable`` per process). Measured on a
+    12-process / 240-socket tree, one scan costs ~95-127 ms — and adding 32
+    children that own NO sockets at all still slowed the scan down, which is
+    what proves the cost is per-process rather than per-socket.
+
+    ``allows()`` ran that scan for every connection independently, so a page
+    opening many connections at once paid it many times over. Measured through
+    the real bridge with 64 concurrent clients: every one was admitted, but the
+    median wait was 1.9 s and the p95 3.2 s. That is a page that never finishes
+    loading.
+
+    Why this does NOT weaken the guard
+    ----------------------------------
+    This is a COALESCER, not a cache. It never answers from an observation made
+    before the caller arrived: a waiter is only handed a scan that STARTED at or
+    after its own ``not_before`` moment, which is exactly the freshness
+    ``allows()`` had when it called ``_tree_endpoints`` inline. A scan already
+    in flight that began too early is not reused — the caller waits for the next
+    one.
+
+    A TTL cache was rejected deliberately: a local port is closed and REUSED by
+    another process within seconds, so admitting on a remembered endpoint set
+    would eventually admit a caller that is genuinely not the browser. The
+    property being protected is "the peer is in the tree NOW", and only a scan
+    that started after the connection arrived can establish it.
+    """
+
+    #: A waiter re-checks under the condition rather than sleeping forever, so a
+    #: lost notify (or a scanner thread killed outright) cannot wedge a caller.
+    _WAIT_SLICE_SECONDS = 1.0
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition(threading.Lock())
+        # root_pid -> (started_at, result) for the most recent COMPLETED scan.
+        self._done: dict[int, tuple[float, set[tuple[int, int]] | None]] = {}
+        # root_pid -> started_at of a scan currently running.
+        self._running: dict[int, float] = {}
+
+    def scan(
+        self,
+        root_pid: int,
+        not_before: float,
+        scanner=None,
+    ) -> set[tuple[int, int]] | None:
+        """The tree's endpoints, from a scan that STARTED at or after
+        ``not_before`` (a ``time.monotonic()`` reading).
+
+        Either runs the scan on this thread, or waits for an in-flight one that
+        is already fresh enough for this caller.
+        """
+        scan_fn = scanner or _tree_endpoints
+        with self._cond:
+            while True:
+                done = self._done.get(root_pid)
+                if done is not None and done[0] >= not_before:
+                    # A completed scan that began after we arrived answers us.
+                    return done[1]
+                running = self._running.get(root_pid)
+                if running is not None:
+                    # Someone is scanning. If their scan began after we arrived
+                    # it will answer us; if it began before, we still wait for
+                    # it to finish (only one scan per tree at a time) and then
+                    # re-evaluate — the loop will start a fresh one for us.
+                    self._cond.wait(timeout=self._WAIT_SLICE_SECONDS)
+                    continue
+                started = time.monotonic()
+                self._running[root_pid] = started
+                break
+
+        try:
+            result = scan_fn(root_pid)
+        except Exception:
+            # _tree_endpoints already swallows its own errors, but a scanner
+            # that raises must not leave the tree permanently marked "running"
+            # and every other caller waiting on a scan that will never land.
+            result = None
+        finally:
+            with self._cond:
+                self._running.pop(root_pid, None)
+                self._done[root_pid] = (started, result)
+                self._cond.notify_all()
+        return result
+
+
+#: Module-level: the cost being amortized is per TREE, and both listeners (the
+#: SOCKS bridge and the mTLS terminator) are bound to the same browser pid, so
+#: they can honestly share a scan. The endpoint set is a property of the tree,
+#: not of the listener — each gate still applies its own listen-port filter to
+#: the shared result.
+_scan_coalescer = _ScanCoalescer()
+
+
 class PeerGate:
     """Decides whether an accepted loopback connection may be served.
 
@@ -389,7 +490,14 @@ class PeerGate:
 
         root_pid = self._root_pid
         for attempt in range(_SCAN_ATTEMPTS):
-            endpoints = _tree_endpoints(root_pid)
+            # The scan must have STARTED no earlier than this attempt, so a
+            # retry still observes state newer than the one that just failed —
+            # the whole point of retrying. Taking the reading before the call
+            # means a scan already in flight can answer us only if it began
+            # after we got here, which is exactly the freshness an inline
+            # _tree_endpoints() call had.
+            attempt_started = time.monotonic()
+            endpoints = _scan_coalescer.scan(root_pid, attempt_started)
             if endpoints is None:
                 # Undetermined, NOT "determined empty". A process in the tree
                 # exiting mid-scan (or a momentarily unreadable /proc entry under
