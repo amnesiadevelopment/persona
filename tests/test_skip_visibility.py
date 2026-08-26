@@ -298,6 +298,76 @@ def test_a_marker_is_policed_on_every_capability_it_names(sandbox: Path):
     assert "1 skipped" in quiet.stdout
 
 
+def test_a_marker_adds_to_reason_matching_instead_of_replacing_it(sandbox: Path):
+    """A skip is classified by BOTH what the test declared and what was missing.
+
+    The regression, from PS-174: a two-armed test needs chromium AND firefox,
+    but only chromium GATES it — the firefox arm is unreachable unless chromium
+    ran first — so its marker names `browser_chromium` alone. Under the old
+    rule a marker SUPPRESSED reason matching entirely, which made that honest,
+    precise marker strictly WEAKER than a vaguer one: a genuine
+    "firefox not runnable here" skip classified as `browser_chromium` only,
+    which no environment declares, so the firefox guard went silent on exactly
+    the machine provisioned to catch it.
+
+    The marker states what a test NEEDS; the reason states what was actually
+    MISSING. They are different facts and a skip belongs to both. The union can
+    only ever police MORE, never less, so no guard can go quiet because of it.
+    """
+    (sandbox / "test_two_armed.py").write_text(
+        "import pytest\n"
+        "@pytest.mark.requires_capability('browser_chromium')\n"
+        "def test_two_armed_probe():\n"
+        "    pytest.skip('firefox not runnable here: no binary')\n"
+    )
+
+    # CI's actual declaration. The marker does not name firefox; the REASON
+    # does, and that must still be caught.
+    result = _run_pytest(
+        sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser"}
+    )
+
+    assert result.returncode != 0, (
+        "a firefox-absent skip went unpoliced on a machine declaring browser, "
+        "because the test's marker happened to name a different engine: "
+        + result.stdout
+    )
+    assert "test_two_armed_probe" in result.stdout
+    # ...and it names FIREFOX — the thing that was missing — not the engine the
+    # marker happened to mention.
+    assert "browser_firefox" in result.stdout, result.stdout
+    assert "playwright install firefox" in result.stdout, result.stdout
+
+    # The other half of the same rule: a skip whose reason names the engine
+    # NOTHING provisions stays an honest inconclusive skip under that same
+    # declaration. This is the arm that was reporting a self-contradictory
+    # failure — "declares browser_firefox, so this test must RUN" printed above
+    # a skip reason naming chromium.
+    (sandbox / "test_two_armed.py").write_text(
+        "import pytest\n"
+        "@pytest.mark.requires_capability('browser_chromium')\n"
+        "def test_two_armed_probe():\n"
+        "    pytest.skip('chromium engine not runnable here: no build')\n"
+    )
+    gated = _run_pytest(
+        sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser"}
+    )
+    assert gated.returncode == 0, (
+        "a chromium-absent skip was reported as a failure naming firefox, "
+        "which was never the missing thing: " + gated.stdout
+    )
+    assert "1 skipped" in gated.stdout
+
+    # ...but whoever DOES provision the engine gets a real gate on it.
+    declared = _run_pytest(
+        sandbox,
+        "-q",
+        env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser_chromium"},
+    )
+    assert declared.returncode != 0, declared.stdout
+    assert "browser_chromium" in declared.stdout
+
+
 def test_a_marker_naming_an_unknown_capability_is_a_hard_error(sandbox: Path):
     """The typo that disables the guard, on the marker path this time.
 
