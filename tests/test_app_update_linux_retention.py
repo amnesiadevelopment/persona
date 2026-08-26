@@ -514,19 +514,34 @@ def test_a_failed_retaining_replace_still_restores_the_original(tmp_path):
     src = tmp_path / "staged.AppImage"
     src.write_bytes(b"new-app")
 
+    # Fail the STAGED->DST swap specifically, keyed on the source path. A bare
+    # "every os.replace raises" would now abort during the BACKUP staging
+    # instead — the backup is copied to `dst + ".bak.tmp"` and RENAMED into
+    # place, so this helper calls os.replace twice and the swap is not the
+    # first one. That still returns False and still leaves b"old-app" at dst,
+    # so the assertions below would go green while measuring the abort path
+    # rather than the restore this test is named for.
     def boom(a, b):
-        raise OSError("no space left on device")
+        if str(a) == str(src):
+            raise OSError("no space left on device")
+        return orig_replace(a, b)
 
     orig_replace = httpdl.os.replace
     httpdl.os.replace = boom
+    msgs = []
     try:
         assert httpdl.atomic_replace(
-            str(src), str(dst), mode=None, retain_backup=True
+            str(src), str(dst), mode=None, retain_backup=True, log=msgs.append
         ) is False
     finally:
         httpdl.os.replace = orig_replace
 
     assert dst.read_bytes() == b"old-app", "the working artifact must be back"
+    # ...and prove it came back via the RESTORE arm rather than by the update
+    # having aborted before it ever touched dst.
+    assert any("restoring backup" in m.lower() for m in msgs), (
+        f"expected the restore path, got: {msgs}"
+    )
 
 
 # --- The retained binary is never a PARTIAL one -----------------------------
