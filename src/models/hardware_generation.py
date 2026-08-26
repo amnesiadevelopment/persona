@@ -85,11 +85,18 @@ from typing import Protocol, TypeVar
 # that adds entries, and tag those entries with the bumped value. See the module
 # docstring for the full procedure — this constant is half of it.
 #
-# 0 means: nothing has been added since generations existed. Every entry in
-# every list is `since=0`, so every profile — including every profile that
-# predates the field — sees every entry, which is precisely the behaviour that
-# shipped before this module and why introducing it moved nobody.
-CURRENT_HARDWARE_GENERATION = 0
+# Generation 1 (PS-183): nine entries were added to ``gpu_ext``'s MAC_GPUS,
+# widening it from 2 to 11. That pool's two-entry form collided 50.0% of the
+# time — a shared cross-profile identifier and a Level 2 (mutual unlinkability)
+# breach — and widening was the only lever, deferring to the engine having been
+# measured and rejected (76.9%, worse). The nine are tagged ``since=1`` and this
+# constant was bumped in the same commit, per the procedure above, so no
+# EXISTING profile's visible pool changes length and none is re-indexed onto a
+# different card. Generation 0 keeps the 2-entry pool it has always presented
+# (and its 50.0% collision); generation 1 draws from all 11 at 9.1%.
+#
+# Was 0 before this, meaning: nothing had been added since generations existed.
+CURRENT_HARDWARE_GENERATION = 1
 
 
 class _HasSince(Protocol):
