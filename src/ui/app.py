@@ -269,14 +269,27 @@ class App:
         self._engine2_detail = ft.Text(
             "", size=10, color=COLORS["text_sub"], font_family="monospace",
         )
+        # SINGLE LINE, BOTH OF THEM. These are the two controls the owner was
+        # looking at when he said the Chromium text was longer than War and
+        # Peace: given a narrow cell and no wrap rule, flet breaks a version
+        # across as many lines as it needs ("148.0" / ".7778" / ".215"), which
+        # is both the length complaint AND the "съехавший" shift — the panel's
+        # height changes with the text. Ellipsis instead of wrap makes the row
+        # a fixed one-line object; the full string lives in the row tooltip.
         self._engine2_text = ft.Text(
             "", size=12, color=COLORS["text_main"], font_family="monospace",
+            no_wrap=True, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
+            text_align=ft.TextAlign.RIGHT,
         )
         self.engine_text = ft.Text(
             "...",
             size=12,
             color=COLORS["text_main"],
             font_family="monospace",
+            no_wrap=True,
+            max_lines=1,
+            overflow=ft.TextOverflow.ELLIPSIS,
+            text_align=ft.TextAlign.RIGHT,
         )
         self._engine_start_t = 0.0
         self._engine_bar = ft.ProgressBar(
