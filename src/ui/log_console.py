@@ -56,6 +56,30 @@ MONO = "monospace"
 #: from changing extent under a reader while events land.
 ROW_HEIGHT = 22
 
+#: ONE type size for every column in the row, and the fix for the misalignment
+#: Mars reported on 3.0.1.
+#:
+#: THE DEFECT. The row shipped with THREE different sizes — profile 11,
+#: message 11.5, timestamp 10 — each laid out by ``CrossAxisAlignment.CENTER``.
+#: Centring is per-CELL: every cell gets its own text box, and a box's height
+#: comes from the font's ascent+descent at ITS size. Three sizes therefore
+#: produce three different box heights, each centred independently, so the
+#: glyphs inside them land on three different baselines. The rendered text sits
+#: a pixel or two out of line across the row, which is exactly "текст
+#: съехавший".
+#:
+#: It is invisible on the Linux capture box and visible on his Windows machine
+#: because the effect is a FONT-METRIC one: "monospace" resolves to DejaVu Sans
+#: Mono here and Consolas there, whose ascent/descent ratios differ, so the
+#: per-size rounding that cancels out on one lands off-by-one on the other.
+#: That is why this is fixed by construction rather than nudged with padding —
+#: a padding tuned on this box would re-break on his.
+#:
+#: ONE size across the row makes all three boxes identical, so the baselines
+#: coincide on ANY font. Hierarchy is carried by COLOUR and WEIGHT instead,
+#: which cost no vertical metric.
+TEXT_SIZE = 11.5
+
 #: The profile ruler. Wide enough for the names this product generates
 #: (``shop-de-03``, ``mail-us-011``) and fixed, because a column that resizes
 #: to its content is not a ruler.
@@ -179,9 +203,16 @@ def _cell(text: str, **kw) -> ft.Text:
 
     Every caller passes through here so no column can accidentally reflow and
     make its row taller than its neighbours.
+
+    SIZE IS NOT A PARAMETER. Every cell in the row is :data:`TEXT_SIZE`, which
+    is what puts the columns on a common baseline on every font — see the
+    constant. Callers vary colour and weight instead, neither of which changes
+    a text box's height.
     """
+    kw.pop("size", None)
     return ft.Text(
         text,
+        size=TEXT_SIZE,
         font_family=MONO,
         no_wrap=True,
         max_lines=1,
@@ -201,16 +232,18 @@ def event_row(line: str, profiles: frozenset[str] | set[str]) -> ft.Control:
     """
     stamp, profile, message, sev = parse_event(line, profiles)
 
+    # Every cell is TEXT_SIZE (enforced in _cell), so the three text boxes are
+    # the same height and their glyphs share a baseline on any font. Hierarchy
+    # is carried by colour and weight, which cost no vertical metric.
     time_col = ft.Container(
         width=TIME_COL_WIDTH,
         alignment=ft.Alignment.CENTER_RIGHT,
-        content=_cell(stamp, size=10, color=COLORS["text_sub"]),
+        content=_cell(stamp, color=COLORS["text_sub"]),
     )
     profile_col = ft.Container(
         width=PROFILE_COL_WIDTH,
         content=_cell(
             profile or NO_PROFILE,
-            size=11,
             color=COLORS["accent"] if profile else COLORS["text_sub"],
         ),
     )
@@ -218,7 +251,6 @@ def event_row(line: str, profiles: frozenset[str] | set[str]) -> ft.Control:
         expand=True,
         content=_cell(
             message,
-            size=11.5,
             color=(
                 COLORS["error"]
                 if sev == SEV_FAIL
@@ -229,15 +261,30 @@ def event_row(line: str, profiles: frozenset[str] | set[str]) -> ft.Control:
         ),
     )
 
+    # The dot is centred inside a box of the ROW's own height rather than being
+    # centred by the Row. A 7px child and a ~15px text box under
+    # CrossAxisAlignment.CENTER round their offsets independently, which is the
+    # same per-cell rounding that staggered the text; giving the dot a
+    # full-height box makes its centring a property of the row, not of the
+    # font.
+    dot_col = ft.Container(
+        width=7,
+        height=ROW_HEIGHT,
+        alignment=ft.Alignment.CENTER,
+        content=_dot(sev),
+    )
+
     return ft.Container(
         height=ROW_HEIGHT,
         padding=ft.Padding.symmetric(horizontal=14, vertical=0),
         content=ft.Row(
             spacing=12,
-            # CENTER, and every cell is single-line: the row's height is the
-            # constant above and nothing in it can push that around.
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            controls=[_dot(sev), profile_col, message_col, time_col],
+            # STRETCH, not CENTER: every child is a full-height box that
+            # centres its own content, so no cell computes a vertical offset
+            # from its own font metrics. That is what keeps the columns on one
+            # line across fonts — see TEXT_SIZE.
+            vertical_alignment=ft.CrossAxisAlignment.STRETCH,
+            controls=[dot_col, profile_col, message_col, time_col],
         ),
     )
 
