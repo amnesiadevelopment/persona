@@ -19,7 +19,7 @@ from ..proxy.errors import (
 )
 from ..proxy.store import ProxyStore
 from .bookmarks_seed import seed_bookmarks
-from .process_group import new_session_kwargs, reap_process_group
+from .process_group import popen_in_new_session, reap_process_group
 from .audio_ext import build_audio_extension
 from .device_ext import build_device_extension
 from .env_policy import (
@@ -822,7 +822,7 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
             with _suppress():
                 os.remove(os.path.join(profile_dir, "DevToolsActivePort"))
 
-        proc = subprocess.Popen(
+        proc = popen_in_new_session(
             args,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -848,7 +848,15 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
             # and orphans the entire tree to init, where no handle can reach
             # it. Accepted on every platform: POSIX honours it, Windows's
             # _execute_child takes it as `unused_start_new_session`.
-            **new_session_kwargs(),
+            #
+            # ⚠️ VIA THE HELPER, NOT BY HAND. `popen_in_new_session` also
+            # RECORDS the group on the handle, and both halves are required.
+            # This site passed `start_new_session=True` by itself and got only
+            # the first half: `wait_for_exit` (launcher.py:400) waits the
+            # leader on EVERY launch, after which `getpgid` answers ESRCH, the
+            # teardown re-resolves to None and degrades to a single-process
+            # kill — the original leak, on the product path. Measured at 3/3
+            # orphans surviving the real `terminate()`; 0/3 through the helper.
             **_platform.no_window_kwargs(),
         )
         # Claim both loopback listeners for THIS browser, now that it exists.

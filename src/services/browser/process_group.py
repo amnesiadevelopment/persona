@@ -327,12 +327,25 @@ def terminate_process_group(proc, *, timeout: float = 10.0) -> bool:
     # problem, which is the DoD #3 failure path. See `remember_group`.
     pgid = recorded_group(proc)
 
-    if pgid is not None:
-        _signal_group(pgid, sigterm)
-    else:
-        # No group we are willing to address (not a leader, a fabricated pid,
-        # already gone, or no killpg). The single process this handle names is
-        # the most we can safely reach.
+    # ⚠️ BRANCH ON DELIVERY, NOT ON THE EXISTENCE OF A pgid. A recorded group
+    # is not the same as a group that can be SIGNALLED: `recorded_group`
+    # returns the value stashed at launch without consulting `os.killpg`, which
+    # does not exist on Windows. Keying the fallback on `pgid is not None`
+    # therefore skipped the single-process branch on exactly the handles that
+    # most needed it, `_signal_group` swallowed the AttributeError as False,
+    # and the process was signalled NEITHER way — strictly worse than the code
+    # this module replaced, and contrary to the PORTABILITY note above.
+    # Measured by deleting `os.killpg`: terminate=False kill=False.
+    #
+    # `_signal_group` already reports delivery truthfully (ProcessLookupError
+    # is a SUCCESS — an empty group is a completed teardown, not a failure to
+    # retry), so its return value is the right thing to escalate on.
+    group_hit = pgid is not None and _signal_group(pgid, sigterm)
+
+    if not group_hit:
+        # No group we could actually address (not a leader, a fabricated pid,
+        # already gone, or no killpg on this platform). The single process this
+        # handle names is the most we can safely reach.
         with contextlib.suppress(Exception):
             proc.terminate()
 
@@ -345,15 +358,23 @@ def terminate_process_group(proc, *, timeout: float = 10.0) -> bool:
     # nothing about its children — that gap is the entire defect this module
     # exists to close — so the group gets a SIGKILL either way. Members that
     # already left make this a no-op.
-    if pgid is not None:
-        _signal_group(pgid, sigkill)
-    else:
+    #
+    # Delivery-keyed for the same reason as the SIGTERM above: a recorded pgid
+    # that cannot be signalled must still reach `proc.kill()`, or the handle
+    # goes un-signalled by BOTH paths.
+    kill_hit = pgid is not None and _signal_group(pgid, sigkill)
+
+    if not kill_hit:
         with contextlib.suppress(Exception):
             proc.kill()
 
     with contextlib.suppress(Exception):
         proc.wait(timeout=5)
-    return pgid is not None
+    # TRUE means "a group signal was actually DELIVERED", not merely "a pgid
+    # was known". A caller measuring the fix needs to tell a group teardown
+    # from a single-process fallback, and the old `pgid is not None` reported
+    # success on the Windows path where nothing was signalled at all.
+    return group_hit or kill_hit
 
 
 def reap_process_group(proc, *, timeout: float = 10.0) -> bool:
@@ -381,11 +402,26 @@ def process_group_survivors(pgid: int) -> "list[int]":
 
     A zombie is a corpse awaiting a ``wait()``, not a survivor — counting one
     would make a correct reap look like a failed one.
+
+    ⚠️ RAISES WHEN IT CANNOT LOOK, RATHER THAN REPORTING AN EMPTY LIST. This
+    is the MEASUREMENT'S OWN EVIDENCE FUNCTION, so "nothing survived" and "I
+    was unable to check" must never render as the same value. Returning ``[]``
+    on a missing ``psutil`` produced exactly that: PS-192's reviewer measured
+    the product path as CLEAN in a container where psutil was absent, while
+    ``ps`` showed 3 live processes — a green from a broken instrument, on the
+    ticket about a leak that hides behind a green. PS-14's rule is to check the
+    instrument before attributing anything to the product, and an instrument
+    that cannot fail cannot be checked.
     """
     try:
         import psutil
-    except Exception:  # pragma: no cover - psutil is a declared dependency
-        return []
+    except Exception as exc:  # pragma: no cover - psutil is a declared dependency
+        raise RuntimeError(
+            "process_group_survivors cannot measure: psutil is unavailable, so "
+            "'no survivors' would be indistinguishable from 'could not look'. "
+            "psutil is a declared dependency (pyproject.toml); install it "
+            "before drawing any conclusion from a survivor count."
+        ) from exc
 
     alive: "list[int]" = []
     for proc in psutil.process_iter(["pid", "status"]):

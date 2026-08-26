@@ -39,8 +39,8 @@ from .watchdog import child_pids, reap_process_tree
 # restated here, so the tooling path and the product paths cannot drift: a fix
 # to one is a fix to both. `tests/` imports `src.*` throughout this suite.
 from src.services.browser.process_group import (  # noqa: E402
-    new_session_kwargs,
-    resolve_group,
+    popen_in_new_session,
+    recorded_group,
 )
 
 #: How long to wait for the served app to answer on its port. The real app
@@ -128,7 +128,16 @@ class ServedApp:
         # Resolved BEFORE anything is signalled, for the same reason the
         # descendants are: once the leader is reaped and waited on, its pid can
         # be recycled and must not be re-resolved into somebody else's group.
-        pgid = resolve_group(self.process.pid)
+        #
+        # PREFERS THE VALUE RECORDED AT LAUNCH. `resolve_group` asks the kernel,
+        # and the kernel stops answering (ESRCH) the moment the leader has been
+        # waited on — while the GROUP is still alive and still killable. That
+        # made the backstop return None on precisely the `else` branch below,
+        # whose whole premise is that the parent has ALREADY EXITED and left a
+        # serving grandchild. The backstop was therefore absent exactly where
+        # the orphans are the problem. This is the TOOLING path — the class of
+        # process observed at 361% CPU for 12.5h on a user's workstation.
+        pgid = recorded_group(self.process)
 
         if self.process.poll() is None:
             family = self.descendants()
@@ -191,7 +200,7 @@ def serve_app(repo_root: str, home: str | None = None, patch: str = ""):
     # A served app must never inherit a stale display or the selftest gate.
     env.pop("PERSONA_SELFTEST", None)
 
-    proc = subprocess.Popen(
+    proc = popen_in_new_session(
         [sys.executable, "-c", script],
         stdout=log,
         stderr=subprocess.STDOUT,
@@ -205,7 +214,12 @@ def serve_app(repo_root: str, home: str | None = None, patch: str = ""):
         # descendant enumerated from the pid we hold is only visible while its
         # parent is still alive. This is the TOOLING path — the class of
         # process observed at 361% CPU for 12.5h on a user's workstation.
-        **new_session_kwargs(),
+        #
+        # ⚠️ VIA THE HELPER, NOT BY HAND. The session alone is only half the
+        # fix: `popen_in_new_session` also RECORDS the group on the handle, and
+        # `stop()` needs that recorded value because it tears down on a branch
+        # where the parent has already exited and the kernel will no longer
+        # answer `getpgid`.
     )
     app = ServedApp(
         url=f"http://127.0.0.1:{port}/",

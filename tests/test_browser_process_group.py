@@ -332,3 +332,201 @@ def test_start_own_session_makes_a_forked_child_its_own_leader():
         assert answer == b"1", "the forked child did not become its own leader"
     finally:
         os.close(r)
+
+
+# --------------------------------------------------------------------------
+# THE PRODUCT LAUNCH PATH ITSELF (PS-192 round 2)
+#
+# Round 1 shipped a green suite while the product path still leaked 3/3. Every
+# test above builds its handle with `popen_in_new_session`, so they pinned the
+# HELPER and never `spawn_browser`'s actual launch shape. `spawn_browser`
+# passed `start_new_session=True` BY HAND, which creates the session but never
+# records the group — and `launcher.py:400` waits the leader on every launch,
+# after which `getpgid` answers ESRCH and the teardown degrades to a
+# single-process kill. The two shapes differ ONLY in whether the pgid was
+# recorded at launch, which is why a test must look at the real one.
+# --------------------------------------------------------------------------
+
+def _fake_engine(tmp_path):
+    """A WRAPPER that spawns children and EXITS — the fpchrome.AppImage shape.
+
+    Only the wrapper shape leaks: chromium launched DIRECTLY honours SIGTERM
+    and reaps its own tree. The defect lives in the shim layer, so the fixture
+    has to be a shim or it measures a path with no defect.
+    """
+    script = tmp_path / "fake_engine.sh"
+    script.write_text("#!/bin/sh\nfor i in 1 2 3; do sleep 300 & done\nexit 0\n")
+    script.chmod(0o755)
+    return str(script)
+
+
+def _drive_spawn_browser(monkeypatch, tmp_path, engine):
+    """Call the REAL `spawn_browser`, with only the engine binary swapped."""
+    from src.models.profile import Profile
+    from src.services.browser import process as _process
+
+    class _Store:
+        def get(self, *a, **k): return None
+        def resolve(self, *a, **k): return None
+
+    class _Bookmarks:
+        def resolve_selection(self, *a, **k): return []
+
+    monkeypatch.setattr(_process, "DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(_process, "ProxyStore", _Store)
+    monkeypatch.setattr(_process, "BookmarkStore", _Bookmarks)
+    monkeypatch.setattr(_process, "write_window_entry", lambda name: None)
+    monkeypatch.setattr(_process, "seed_bookmarks", lambda *a, **k: None)
+    monkeypatch.setattr(_process, "seed_profile_prefs", lambda *a, **k: None)
+    monkeypatch.setattr(_process, "FINGERPRINT_CHROMIUM", engine)
+    return _process, _process.spawn_browser(Profile(name="ps192-real"))
+
+
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="POSIX process groups")
+def test_spawn_browser_records_its_process_group_at_launch(monkeypatch, tmp_path):
+    # THE ROUND-1 GAP, stated directly: the recorded group must be present on a
+    # handle built by `spawn_browser` ITSELF, not merely on one built by the
+    # helper. Asserted AFTER the leader is waited on, because that is the
+    # moment live re-resolution goes blind and the recorded value is the only
+    # thing left that can address the orphans.
+    from src.services.browser.process_group import recorded_group
+
+    _process, proc = _drive_spawn_browser(
+        monkeypatch, tmp_path, _fake_engine(tmp_path)
+    )
+    pgid = proc.pid
+    try:
+        proc.wait()  # exactly what launcher.py:400's wait_for_exit thread does
+        assert group_of(proc.pid) is None, (
+            "precondition: a waited-on leader must be unresolvable, or this "
+            "test cannot tell a recorded group from a live lookup"
+        )
+        assert recorded_group(proc) == pgid, (
+            "spawn_browser did not record its process group at launch — the "
+            "teardown will degrade to a single-process kill and orphan the "
+            "whole engine tree (measured 3/3 surviving in round 1)"
+        )
+    finally:
+        _kill_leftovers(pgid)
+
+
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="POSIX process groups")
+def test_a_real_spawn_browser_launch_leaves_no_survivor(monkeypatch, tmp_path):
+    # The ticket's bar (DoD #4) applied to the PRODUCT path and driven through
+    # the REAL `process.terminate()`, with the leader waited on first — the
+    # failure path DoD #3 is about, and the one round 1 still leaked on.
+    _process, proc = _drive_spawn_browser(
+        monkeypatch, tmp_path, _fake_engine(tmp_path)
+    )
+    pgid = proc.pid
+    try:
+        # THREE, not four: the wrapper spawns its children and exits at once
+        # (that is the fpchrome.AppImage shape, and the whole reason the leak
+        # exists), so the leader is already a zombie awaiting our wait() and is
+        # correctly excluded from the survivor count. The three orphans-to-be
+        # are what a single-process kill would leave behind.
+        assert _settle(pgid, 3) == 3, "the engine tree did not come up (3 children)"
+        proc.wait()
+
+        _process.terminate(proc, "ps192-real", timeout=5)
+
+        assert _settle(pgid, 0) == 0, (
+            "processes survived a completed teardown of the PRODUCT launch "
+            "path — this is the site PS-192 was filed for"
+        )
+    finally:
+        _kill_leftovers(pgid)
+
+
+# --------------------------------------------------------------------------
+# PORTABILITY: the module's stated contract on a platform without killpg
+# --------------------------------------------------------------------------
+
+def test_a_recorded_group_still_falls_back_when_killpg_is_unavailable(monkeypatch):
+    # The module docstring promises the reaper "degrades to proc.kill() where
+    # [killpg] does not exist". It did not: `recorded_group` returns the
+    # stashed attr WITHOUT checking killpg (only `resolve_group` guards it), so
+    # a recorded handle took the group branch, `_signal_group` raised
+    # AttributeError internally, swallowed it as False — and the process was
+    # signalled by NEITHER path. Strictly worse than the code replaced.
+    called = {"terminate": False, "kill": False}
+
+    class _Handle:
+        pid = 4321
+        _persona_pgid = 4321  # recorded at launch, as the helper does
+        def terminate(self): called["terminate"] = True
+        def kill(self): called["kill"] = True
+        def wait(self, timeout=None): return 0
+
+    monkeypatch.delattr(os, "killpg", raising=False)
+
+    hit_group = terminate_process_group(_Handle(), timeout=0.1)
+
+    assert hit_group is False, (
+        "no group can have been signalled without os.killpg"
+    )
+    assert called["terminate"] and called["kill"], (
+        "a recorded-group handle was signalled NEITHER by killpg NOR by the "
+        "documented terminate()/kill() fallback — the browser is left alive"
+    )
+
+
+def test_the_survivor_count_cannot_report_success_when_it_cannot_look(monkeypatch):
+    # This is the MEASUREMENT'S OWN EVIDENCE FUNCTION, and PS-192's reviewer
+    # measured the product path as CLEAN in a container with no psutil while
+    # `ps` showed 3 live processes — a green from a broken instrument, on the
+    # ticket about a leak that hides behind a green (PS-14). "Nothing survived"
+    # and "I could not look" must never render as the same value.
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _no_psutil(name, *args, **kwargs):
+        if name == "psutil":
+            raise ImportError("simulated: psutil unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_psutil)
+
+    with pytest.raises(RuntimeError, match="cannot measure"):
+        process_group_survivors(os.getpgrp())
+
+
+# --------------------------------------------------------------------------
+# THE TOOLING PATH (tests/ui_driver/server.py) — PS-192 caution #2
+#
+# The processes observed at 361% CPU for 12.5h were `/usr/lib/chromium/chromium
+# --headless`: the SYSTEM browser, i.e. agent TOOLING, not persona's engine. So
+# this path gets the same measured bar as the product one. Its `stop()` runs a
+# descendant WALK first and uses the group only as a backstop — but it resolved
+# that group LIVE, and the kernel stops answering `getpgid` the moment the
+# leader is waited on. The backstop was therefore None on precisely the branch
+# whose premise is that the parent has ALREADY EXITED.
+# --------------------------------------------------------------------------
+
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="POSIX process groups")
+def test_the_served_app_backstop_still_resolves_after_its_parent_exits(tmp_path):
+    from tests.ui_driver.server import ServedApp
+
+    # The wrapper shape: spawn children, exit at once. `serve_app`'s child is a
+    # python process that starts flet, which starts its own children, and the
+    # driven tests add a playwright node driver with a chromium behind it.
+    proc = popen_in_new_session(
+        ["/bin/sh", "-c", "for i in 1 2 3; do sleep 300 & done; exit 0"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    pgid = proc.pid
+    app = ServedApp(url="", home=str(tmp_path), port=0, process=proc)
+    try:
+        assert _settle(pgid, 3) == 3, "the tooling tree did not come up"
+        proc.wait()  # the exited-parent branch stop() must handle
+
+        app.stop()
+
+        assert _settle(pgid, 0) == 0, (
+            "processes survived the tooling teardown — this is the class "
+            "observed at 361% CPU for 12.5h on a user's workstation"
+        )
+    finally:
+        _kill_leftovers(pgid)
