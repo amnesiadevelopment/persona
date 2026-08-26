@@ -790,11 +790,20 @@ def test_real_hardware_is_never_read_as_a_software_rasteriser():
 # stops". PS-186's sweep produced the first records that fire it, so the
 # finding is REPORTED (EVIDENCE.md §3) and the census is pinned here.
 #
-# Both are chromium/linux: creepjs reads the container's real SwiftShader while
-# pixelscan reads an Intel identity in the SAME record. That is simultaneously a
-# self-contradiction and a leak of the machine underneath, which is why the rule
-# ranks it above a plain contradiction and why these two are listed separately
-# from the four in LEAK_FREE_CONTRADICTIONS below.
+# The first two are chromium/linux from PS-186's CHECKER sweep: creepjs reads
+# the container's real SwiftShader while pixelscan reads an Intel identity in
+# the SAME record. That is simultaneously a self-contradiction and a leak of
+# the machine underneath, which is why the rule ranks it above a plain
+# contradiction and why they are listed separately from LEAK_FREE_CONTRADICTIONS
+# below.
+#
+# The last two are chromium/linux from PS-189's REALM sweep, and they are the
+# same leak read from the other side. PS-186 asked "do two checkers agree?";
+# PS-189 asked "do twelve realms of ONE launch agree?" and found exactly one
+# that does not — the `ServiceWorkerGlobalScope`, which is authored by neither
+# identity author and so falls through to the host. Same defect, two
+# instruments, so both records are censused rather than one being treated as a
+# duplicate of the other. See `tests/test_ps189_service_worker_realm.py`.
 #
 # Do NOT empty this list to make the suite green. It is empty only for a corpus
 # that has never read a leaking record, and ours now has.
@@ -805,16 +814,34 @@ HOST_LEAK_RECORDS = {
     os.path.join(
         "ps186-2026-08-26", "matrix", "reading.chromium.linux.seed24601.json"
     ),
+    os.path.join(
+        "ps189-2026-08-26", "derived-matrix",
+        "realm-matrix.chromium.linux.seed24601.json",
+    ),
+    os.path.join(
+        "ps189-2026-08-26", "derived-matrix",
+        "realm-matrix.chromium.linux.seed5150.json",
+    ),
 }
 
 
-def test_the_host_leak_census_is_exactly_the_two_linux_records():
+def test_the_host_leak_census_is_exactly_the_named_records():
     """The false-alarm measurement, pinned — and it is no longer zero.
 
     Kept as an EXACT census rather than a "no new leaks" inequality: an
     inequality silently absorbs the next leaking record, which is the failure
     mode the ticket's standing instruction exists to prevent. A new leak fails
     here loudly and has to be explained.
+
+    The census is NAMED, never counted, in both this test's name and its body.
+    A count in the name is a second place the truth has to be maintained, and
+    PS-189 round 1 shipped a census test called "...five" that asserted seven
+    — the list underneath was right and the name misinformed. Naming the set
+    and asserting against the set leaves exactly one place to be wrong.
+
+    Both directions are asserted by the equality: a record that starts leaking
+    fails, and so does a censused record that STOPS leaking. The second is not
+    a formality — it is how we learn the rule went blind, or that a fix landed.
     """
     leaking = []
     for path in discover():
@@ -847,13 +874,21 @@ def discover() -> "list[str]":
 # The records that contradict themselves WITHOUT leaking the host renderer.
 #
 # The first three are the original AMD-vs-NVIDIA split this rule was written
-# against. The last two are new in PS-186 and are a DIFFERENT shape: one vendor
+# against. The next two are new in PS-186 and are a DIFFERENT shape: one vendor
 # (apple), two different adapters in the same record, because our `MAC_GPUS`
 # pool and the packaged engine author the identity independently and pixelscan
 # and creepjs each read a different author —
 #
 #   seed 5150 : pixelscan "Apple M2 Pro" (ours) vs creepjs "Apple M4" (engine)
 #   seed 24601: pixelscan "Apple M1"     (ours) vs creepjs "Apple M2" (engine)
+#
+# The last two are PS-189's macos REALM records, and they are that same split
+# seen from inside a single launch: the `ServiceWorkerGlobalScope` reports the
+# ENGINE's M2/M4 while the other eleven realms report our pool's M1/M2 Pro.
+# They are CONTRADICTIONS rather than leaks because on macos the engine does
+# author a plausible card — the realm falls through to the engine, not to the
+# host. That difference IS the finding: one unauthored realm, whose value
+# depends on whether the arm underneath it is spoofed at all.
 #
 # Caught by the ADAPTER branch, not the identity branch: the brand-level term
 # agrees and only the card differs, which is exactly the case that branch exists
@@ -868,6 +903,14 @@ LEAK_FREE_CONTRADICTIONS = {
     os.path.join(
         "ps186-2026-08-26", "matrix", "reading.chromium.macos.seed24601.json"
     ),
+    os.path.join(
+        "ps189-2026-08-26", "derived-matrix",
+        "realm-matrix.chromium.macos.seed24601.json",
+    ),
+    os.path.join(
+        "ps189-2026-08-26", "derived-matrix",
+        "realm-matrix.chromium.macos.seed5150.json",
+    ),
 }
 
 
@@ -880,12 +923,37 @@ def test_the_check_fires_on_exactly_the_censused_records():
     the census here means a future change to the rule that starts flagging
     clean records fails loudly instead of being absorbed.
 
-    WAS THREE, IS SEVEN (PS-186). The four added records all fire for REAL
-    product reasons that are reported rather than tuned away — two chromium/
-    linux host leaks and two chromium/macos two-author adapter splits. The
-    census is expressed as the union of the two named sets so that a reader can
-    see WHICH KIND each record is; `findings()` is deliberately the sum of both
-    populations, so this asserts against that same sum.
+    IT WAS THREE (PS-143/PS-150), GREW WITH PS-186, AND GREW AGAIN WITH PS-189.
+    Deliberately stated as a direction of travel and NOT as a number: the
+    census is the union of the two named sets above, and those sets are the
+    single place the membership is written down. Every record added since the
+    original three fires for a REAL product reason that is reported rather than
+    tuned away.
+
+    The two sets are the reason to read this list rather than count it, because
+    they record WHICH KIND each record is:
+
+      HOST_LEAK_RECORDS       — chromium/linux, the container's real SwiftShader
+                                reaching a reader. Invariant #0.
+      LEAK_FREE_CONTRADICTIONS — two authors disagreeing about a card that is
+                                itself plausible. A linkability problem, not a
+                                leak.
+
+    Both instruments are represented in both sets: PS-186 read two CHECKERS and
+    PS-189 read twelve REALMS of a single launch. They agree, which is what
+    makes the finding a property of the product rather than of one instrument.
+
+    `findings()` is deliberately the sum of both populations, so this asserts
+    against that same sum — and the disjointness assertion below keeps a
+    leaking record from being double-counted as a contradiction.
+
+    THE WINDOWS PAIR IS DELIBERATELY ABSENT, and its absence is load-bearing:
+    it is the GREEN half of the red-and-green proof the ticket requires. Do not
+    read it as an arm that was skipped. Read
+    `tests/test_ps189_service_worker_realm.py` for why windows cannot serve as
+    a control for realm coverage — it is clean precisely BECAUSE
+    `ENGINE_AUTHORED_IDENTITY_ARMS` stands our layer down there, leaving the
+    engine as the single author of every realm.
     """
     flagged = []
     for path in discover():

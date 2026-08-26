@@ -1,0 +1,204 @@
+{
+  "schema_version": 4,
+  "source": "PS-189 realm sweep (scripts/ps189_realm_gpu.py)",
+  "arm": "linux",
+  "seed": 5150,
+  "masking_layer_state": "on",
+  "declared_machine": "linux",
+  "observed_at": "2026-08-26T13:29:14Z",
+  "venue": "loopback (127.0.0.1) \u2014 no third party contacted, no exit in the picture",
+  "readings": [
+    {
+      "checker": "realm:iframe_about_blank",
+      "item": "gpu_renderer",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)"
+    },
+    {
+      "checker": "realm:iframe_about_blank",
+      "item": "gpu_vendor",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "Google Inc. (Intel)"
+    },
+    {
+      "checker": "realm:iframe_same_origin",
+      "item": "gpu_renderer",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)"
+    },
+    {
+      "checker": "realm:iframe_same_origin",
+      "item": "gpu_vendor",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "Google Inc. (Intel)"
+    },
+    {
+      "checker": "realm:iframe_srcdoc",
+      "item": "gpu_renderer",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)"
+    },
+    {
+      "checker": "realm:iframe_srcdoc",
+      "item": "gpu_vendor",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "Google Inc. (Intel)"
+    },
+    {
+      "checker": "realm:page",
+      "item": "gpu_renderer",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)"
+    },
+    {
+      "checker": "realm:page",
+      "item": "gpu_vendor",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "Google Inc. (Intel)"
+    },
+    {
+      "checker": "realm:page_webgl2",
+      "item": "gpu_renderer",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)"
+    },
+    {
+      "checker": "realm:page_webgl2",
+      "item": "gpu_vendor",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "Google Inc. (Intel)"
+    },
+    {
+      "checker": "realm:service_worker",
+      "item": "gpu_renderer",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+    },
+    {
+      "checker": "realm:service_worker",
+      "item": "gpu_vendor",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "Google Inc. (Google)"
+    },
+    {
+      "checker": "realm:shared_worker",
+      "item": "gpu_renderer",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)"
+    },
+    {
+      "checker": "realm:shared_worker",
+      "item": "gpu_vendor",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "Google Inc. (Intel)"
+    },
+    {
+      "checker": "realm:worker",
+      "item": "gpu_renderer",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)"
+    },
+    {
+      "checker": "realm:worker",
+      "item": "gpu_vendor",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "Google Inc. (Intel)"
+    },
+    {
+      "checker": "realm:worker_http",
+      "item": "gpu_renderer",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)"
+    },
+    {
+      "checker": "realm:worker_http",
+      "item": "gpu_vendor",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "Google Inc. (Intel)"
+    },
+    {
+      "checker": "realm:worker_in_iframe",
+      "item": "gpu_renderer",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)"
+    },
+    {
+      "checker": "realm:worker_in_iframe",
+      "item": "gpu_vendor",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "Google Inc. (Intel)"
+    },
+    {
+      "checker": "realm:worker_module",
+      "item": "gpu_renderer",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)"
+    },
+    {
+      "checker": "realm:worker_module",
+      "item": "gpu_vendor",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "Google Inc. (Intel)"
+    },
+    {
+      "checker": "realm:worker_nested",
+      "item": "gpu_renderer",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)"
+    },
+    {
+      "checker": "realm:worker_nested",
+      "item": "gpu_vendor",
+      "vector": "gpu_claimed",
+      "state": "read",
+      "adverse": false,
+      "value": "Google Inc. (Intel)"
+    }
+  ]
+}

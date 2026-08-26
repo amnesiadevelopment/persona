@@ -60,6 +60,51 @@ Lessons the old registry paid for, which still bind here:
   ``tests/test_worker_wrap.py`` executes the generated bootstrap through three
   worker generations in isolated ``node:vm`` realms for exactly this reason.
 
+⚠️ ONE REALM IS NOT COVERED, AND IT LEAKS: THE SERVICE WORKER (PS-189)
+-----------------------------------------------------------------------
+Read the bullet above as the INTENT it is, not as a completed inventory. The
+chaining below wraps ``Worker`` and ``SharedWorker`` — both CONSTRUCTORS the
+page calls — and a ``ServiceWorkerGlobalScope`` is reached by NEITHER, because
+a service worker is never constructed by the page at all: it is REGISTERED with
+the browser (``navigator.serviceWorker.register``) and started by the browser,
+often for a later navigation, so there is no construction for a constructor
+wrapper to intercept and no realm handle to chain onto. An MV3 content script
+does not run there either.
+
+MEASURED, not deduced — ``scripts/ps189_realm_gpu.py``, layer ON, one launch,
+one instant, both seeds. Twelve realms read; ELEVEN reported the profile's
+authored card and the service worker reported something else:
+
+    linux/24601   11 realms: ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 ...)
+                  service_worker: ANGLE (Google, ... SwiftShader ...)  <- THE HOST
+    macos/24601   11 realms: ANGLE (Apple, ... Apple M1 ...)
+                  service_worker: ANGLE (Apple, ... Apple M2 ...)      <- the ENGINE
+
+That is Invariant #0 on linux (the GPU-less container's real software
+rasteriser reaching a third-party page) and the PS-155/PS-161 two-author
+contradiction on macos — ONE hole with two faces, depending only on whether the
+engine happens to author that arm. Confirmed live: creepjs prints
+``ServiceWorkerGlobalScope`` immediately above the ``gpu:`` row it leaked, and
+it is the only worker-scope label on the page.
+
+WINDOWS IS CLEAN HERE FOR A REASON THAT DOES NOT GENERALISE. On windows
+``gpu_ext.ENGINE_AUTHORED_IDENTITY_ARMS`` stands our layer down entirely, so the
+ENGINE authors every realm including this one and there is no second author to
+disagree with. So a green windows reading is NOT evidence that this module's
+realm coverage is complete, and windows must never be used as the control for
+that question.
+
+WHY THIS IS NOT FIXED HERE. Both techniques this module already relies on were
+tried against the service worker and REFUSED by the browser (measured, same
+script): registering a SW from a ``blob:`` URL — the re-blob trick the whole
+worker path is built on — fails with *"The URL protocol of the script
+('blob:...') is not supported"*, and a cross-origin script URL fails with a
+``SecurityError``. ``ServiceWorkerContainer.prototype.register`` IS patchable
+(writable and configurable), so a HOOK exists, but no delivery technique does:
+there is nowhere to put our leaf. Suppressing registration outright would close
+the leak and break every site that needs a service worker — a product decision,
+not this module's to take. See PS-189 for the full record.
+
 Worker scheme (proven by locale_ext): blob:/data: workers are re-blobbed under
 the same scheme (the site's CSP already allows that scheme, so it stays allowed)
 with the fragment prepended; http(s) workers get an importScripts shim. Module
