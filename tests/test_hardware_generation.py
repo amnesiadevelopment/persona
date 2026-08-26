@@ -239,17 +239,21 @@ console.log(JSON.stringify({
 # fixture that models an impossible append would not model a maintainer's real
 # commit. The name is obviously synthetic so it can never be mistaken for one of
 # the harvested tuples in tests/fixtures/linux-webgl-reference.md.
-_LINUX_GPUS_TAIL = (
-    '(ADL-S GT1), OpenGL 4.6)" }\n  ];'
-)
-_LINUX_GPUS_APPENDED = (
-    '(ADL-S GT1), OpenGL 4.6)" },\n'
-    '    { unmaskedVendor: "Google Inc. (AMD)",\n'
-    '      unmaskedRenderer: "ANGLE (AMD, AMD Radeon RX 9999 TEST '
-    '(radeonsi testonly ACO), OpenGL 4.6)", since: %d }\n  ];'
-    % NEXT_GEN
-)
+#
+# APPENDED TO A PYTHON LIST, NOT TO A JS STRING (PS-190). Until PS-190 the four
+# GPU pools existed ONLY as JS array literals inside `gpu_ext._CONTENT_SCRIPT`,
+# so `_append_gpu` had to patch the pool by string replacement, anchored on the
+# last entry's renderer text. They are now tagged `gpu_ext.GpuEntry` records
+# that the emitted JS is rendered from, so the append is an ordinary list
+# append and the anchor — along with the "did the anchor still match?" assert
+# that guarded it — is gone. The anchor is not merely unnecessary now, it was
+# LOAD-BEARING in a way worth recording: it made this helper's reach a function
+# of one pool's formatting, which is why the tagged-path tests below could only
+# ever be written against LINUX_GPUS.
 _APPENDED_GPU = "AMD Radeon RX 9999 TEST"
+_APPENDED_LINUX_RENDERER = (
+    "ANGLE (AMD, AMD Radeon RX 9999 TEST (radeonsi testonly ACO), OpenGL 4.6)"
+)
 
 
 def _gpu_seen(tmp_path, seed, generation, tag):
@@ -280,14 +284,26 @@ def _gpu_seen(tmp_path, seed, generation, tag):
 
 
 def _append_gpu(monkeypatch):
-    assert _LINUX_GPUS_TAIL in gpu_ext._CONTENT_SCRIPT, (
-        "LINUX_GPUS tail anchor no longer matches — re-derive it before "
-        "trusting this test, which otherwise silently appends nothing"
-    )
+    """Append a tagged card to LINUX_GPUS, the way a maintainer's commit would.
+
+    A plain list append now that the pools are Python records — no string
+    anchor, and nothing that can silently append nothing.
+    """
     monkeypatch.setattr(
-        gpu_ext, "_CONTENT_SCRIPT",
-        gpu_ext._CONTENT_SCRIPT.replace(_LINUX_GPUS_TAIL, _LINUX_GPUS_APPENDED),
+        gpu_ext, "LINUX_GPUS",
+        gpu_ext.LINUX_GPUS + [
+            gpu_ext.GpuEntry(
+                unmasked_vendor="Google Inc. (AMD)",
+                unmasked_renderer=_APPENDED_LINUX_RENDERER,
+                since=NEXT_GEN,
+            )
+        ],
     )
+    # The pools are rendered THROUGH the registry, so the registry is what the
+    # emitted JS reads. Patching only the module-level name would leave
+    # GPU_POOLS pointing at the original list and append nothing — the modern
+    # form of the failure the old tail anchor existed to catch.
+    monkeypatch.setitem(gpu_ext.GPU_POOLS, "LINUX_GPUS", gpu_ext.LINUX_GPUS)
 
 
 # A handful of seeds rather than all 60: each one spawns a node process. Chosen
@@ -320,6 +336,226 @@ def test_appended_gpu_is_reachable_by_a_new_profile(tmp_path, monkeypatch):
         "no seed in 0..59 was picked onto the appended GPU at the new "
         "generation — the append is inert and the list cannot be maintained"
     )
+
+
+# --------------------------------------------------------------------------
+# PS-190 — the GPU pools' UNTAGGED-append tripwire, and the pool-CLASS guard
+# --------------------------------------------------------------------------
+#
+# WHAT WAS MISSING, PRECISELY. The two GPU tests above are genuinely
+# behavioural, but `_append_gpu` appends a `since=NEXT_GEN` entry — a TAGGED
+# one. So they prove the TAGGED path works and can never catch the edit a
+# maintainer actually writes when widening a pool, which is an append with no
+# `since` at all. Measured on the shipped tree before this section existed: an
+# untagged append to `MAC_GPUS` (pool 2 -> 3) re-indexed 9 of 12 generation-0
+# seeds onto a different graphics card — 75% of EXISTING profiles — and the
+# full suite went GREEN on that commit. That is the same linkage event PS-54
+# closed, arriving through the one pool family PS-54's guards did not cover.
+#
+# WHY A FROZEN CENSUS RATHER THAN `all(e.since == 0)`. The obvious guard is the
+# one the python pools already carried, and it is POLARITY-INVERTED against the
+# procedure it exists to protect: it goes GREEN on the unsafe edit (an untagged
+# append IS `since == 0`, so it satisfies the assertion) and RED on the
+# DOCUMENTED CORRECT one (bump the constant, tag the new entry `since=1` — now
+# `all(e.since == 0)` is false and the suite fails a maintainer who followed
+# the procedure exactly). Verified both ways by execution, not by reading.
+#
+# So the invariant below is stated the way it actually needs to hold across a
+# bump: generation 0's VISIBLE pool must be the list as it SHIPPED — contents,
+# ORDER, and therefore divisor — pinned against a frozen census, plus "no
+# shipped entry's `since` exceeds CURRENT_HARDWARE_GENERATION". Both halves
+# survive a bump: tagging a new entry `since=1` leaves generation 0's visible
+# pool untouched (GREEN, correctly), while an UNTAGGED append lands in
+# generation 0's pool and changes its divisor (RED, correctly).
+#
+# WHY THE CENSUS IS RENDERER STRINGS AND NOT A COUNT. A count catches an append
+# but not a SUBSTITUTION or a REORDER, and both of those re-index exactly as
+# hard: `pool[seed % len(pool)]` depends on order, not merely on length. The
+# census pins the identity and the position of every shipped card.
+_GPU_GENERATION_ZERO_CENSUS: dict[str, tuple[str, ...]] = {
+    "WIN_GPUS": (
+        "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002487) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "ANGLE (NVIDIA, NVIDIA GeForce RTX 3070 (0x00002484) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x0000A7A1) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "ANGLE (Intel, Intel(R) UHD Graphics 630 (0x00003E9B) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "ANGLE (AMD, AMD Radeon RX 6600 (0x000073FF) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    ),
+    "MAC_GPUS": (
+        "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)",
+        "ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Pro, Unspecified Version)",
+    ),
+    "ANDROID_GPUS": (
+        "ANGLE (Qualcomm, Adreno (TM) 730, OpenGL ES 3.2)",
+        "ANGLE (Qualcomm, Adreno (TM) 660, OpenGL ES 3.2)",
+        "ANGLE (ARM, Mali-G78 MP20, OpenGL ES 3.2)",
+        "ANGLE (ARM, Mali-G710 MC10, OpenGL ES 3.2)",
+    ),
+    "LINUX_GPUS": (
+        "ANGLE (AMD, AMD Radeon RX 6800 (radeonsi navi21 ACO), OpenGL 4.6)",
+        "ANGLE (AMD, AMD Radeon RX 7900 XTX (radeonsi navi31 ACO), OpenGL 4.6)",
+        "ANGLE (AMD, AMD Radeon RX 7600 (radeonsi navi33 ACO), OpenGL 4.6)",
+        "ANGLE (AMD, AMD Radeon RX 6600 (radeonsi navi23 LLVM 18.1.6), OpenGL 4.6)",
+        "ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)",
+        "ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)",
+        "ANGLE (Intel, Mesa Intel(R) HD Graphics 530 (SKL GT2), OpenGL 4.6)",
+        "ANGLE (Intel, Mesa Intel(R) UHD Graphics 770 (ADL-S GT1), OpenGL 4.6)",
+    ),
+}
+
+
+def test_the_gpu_census_covers_every_shipped_pool():
+    # AC4, and the half that makes the tests below cover the pool CLASS rather
+    # than the four pools someone thought of. A FIFTH pool added to
+    # gpu_ext.GPU_POOLS later — a new arm's cards — fails HERE until its
+    # shipped contents are pinned, so it cannot be added silently and then
+    # widened untagged.
+    #
+    # This is the completeness claim PS-176 failed audit twice for making with
+    # a probe that could not have matched the remaining case, so it is asserted
+    # in BOTH directions: every registered pool has a census, and every census
+    # names a registered pool (a stale key for a deleted pool would otherwise
+    # sit here forever, quietly covering nothing).
+    assert set(gpu_ext.GPU_POOLS) == set(_GPU_GENERATION_ZERO_CENSUS), (
+        "GPU_POOLS and the generation-0 census disagree about which pools "
+        "exist — a new pool must be pinned here before it ships, and a "
+        "removed one must be unpinned"
+    )
+    # And the registry is what the product RENDERS FROM, not a list beside it:
+    # if these came apart, the census could cover a pool the extension never
+    # emits while the emitted one went unguarded.
+    for name, pool in gpu_ext.GPU_POOLS.items():
+        assert getattr(gpu_ext, name) is pool, (
+            f"{name} in GPU_POOLS is not the module-level {name} the "
+            "extension renders from"
+        )
+
+
+def test_an_untagged_gpu_append_really_does_re_index_existing_profiles(
+    tmp_path, monkeypatch
+):
+    # AC3 — the BEHAVIOURAL half, and the control that stops the census guard
+    # from being a test of its own fixture.
+    #
+    # READ THE CLAIM CAREFULLY. It is NOT "an untagged append moves nobody" —
+    # that is false and always will be, because nothing in the generation
+    # mechanism can protect a profile from an append it can SEE. An untagged
+    # entry is `since=0`, so it lands squarely in generation 0's visible pool
+    # and re-indexes it; that is the hazard, not a bug to be fixed here.
+    #
+    # So what is asserted is the LINK the tripwire rests on, in both
+    # directions: (a) an untagged append genuinely moves existing profiles when
+    # MEASURED THROUGH A PAGE, and (b) the census guard rejects exactly that
+    # pool state. Without (a) the guard could be pinning a census that no
+    # longer corresponds to anything a page reads; without (b) the measurement
+    # would be a finding nobody acts on.
+    #
+    # linux, NEVER windows — windows is engine-authored, so this extension
+    # deliberately does not write the identity pair there and the harness would
+    # read its fall-through sentinel on BOTH sides of the append and "pass"
+    # while measuring nothing. `_gpu_seen` asserts the sentinel is absent, so
+    # that trap fails loudly rather than passing quietly.
+    before = {s: _gpu_seen(tmp_path, s, 0, "ubefore") for s in _GPU_SEEDS}
+
+    # The edit a maintainer widening the pool actually writes: NO `since` tag.
+    untagged = gpu_ext.GpuEntry(
+        unmasked_vendor="Google Inc. (AMD)",
+        unmasked_renderer=_APPENDED_LINUX_RENDERER,
+    )
+    assert untagged.since == 0, (
+        "an untagged entry must default to generation 0 — that default is "
+        "what makes this append dangerous, and what the census guard catches"
+    )
+    monkeypatch.setattr(gpu_ext, "LINUX_GPUS", gpu_ext.LINUX_GPUS + [untagged])
+    monkeypatch.setitem(gpu_ext.GPU_POOLS, "LINUX_GPUS", gpu_ext.LINUX_GPUS)
+
+    after = {s: _gpu_seen(tmp_path, s, 0, "uafter") for s in _GPU_SEEDS}
+
+    # (a) It really moves EXISTING (generation-0) profiles, page-observably.
+    moved = [s for s in _GPU_SEEDS if after[s] != before[s]]
+    assert moved, (
+        "an untagged append to LINUX_GPUS moved NO profile across "
+        f"{len(_GPU_SEEDS)} seeds — the divisor cannot have changed, so this "
+        "test is no longer measuring the hazard the census guard exists for"
+    )
+
+    # (b) And the guard rejects this exact pool state. Asserted by CALLING the
+    # guard, so the two cannot drift apart: if someone weakens the census, this
+    # fails here rather than leaving a green suite over a re-indexing pool.
+    with pytest.raises(AssertionError):
+        test_generation_zero_sees_every_gpu_pool_exactly_as_it_shipped()
+
+
+def test_a_tagged_gpu_append_moves_nobody_and_keeps_the_guard_green(
+    tmp_path, monkeypatch
+):
+    # The counterweight, and the half that proves the tripwire is not simply
+    # "any edit fails". The DOCUMENTED CORRECT procedure — tag the new entry
+    # with the bumped generation — leaves every existing profile's identity
+    # untouched AND leaves the census guard green, so a maintainer who follows
+    # the procedure is not fought by the suite.
+    #
+    # This is the polarity the old `all(e.since == 0)` latch got backwards: it
+    # went green on the untagged append above and RED on this one.
+    before = {s: _gpu_seen(tmp_path, s, 0, "tbefore") for s in _GPU_SEEDS}
+    _append_gpu(monkeypatch)
+    after = {s: _gpu_seen(tmp_path, s, 0, "tafter") for s in _GPU_SEEDS}
+
+    assert after == before
+    assert not any(
+        _APPENDED_GPU in v["unmaskedRenderer"] for v in after.values()
+    )
+    # The guard stays green on the correct edit — no exception.
+    test_generation_zero_sees_every_gpu_pool_exactly_as_it_shipped()
+
+
+def test_generation_zero_sees_every_gpu_pool_exactly_as_it_shipped():
+    # THE TRIPWIRE. An UNTAGGED append to any GPU pool lands in generation 0's
+    # visible pool, changing its length and therefore the divisor of every
+    # existing profile's pick — so it fails here. A correctly TAGGED append
+    # (since = the bumped CURRENT_HARDWARE_GENERATION) is invisible to
+    # generation 0 and leaves this untouched, so the documented procedure stays
+    # green. Reordering or substituting a shipped card fails too: the census
+    # pins order and identity, not just the count.
+    for name, pool in gpu_ext.GPU_POOLS.items():
+        shipped = tuple(
+            e.unmasked_renderer
+            for e in gpu_ext.gpu_pool_for_generation(pool, 0)
+        )
+        # An unpinned pool is a MISSING GUARD, not a KeyError. Say so, because
+        # the maintainer who trips this is the one adding a fifth pool and the
+        # remedy is not obvious from a bare key name.
+        assert name in _GPU_GENERATION_ZERO_CENSUS, (
+            f"{name} is registered in GPU_POOLS but has no entry in "
+            "_GPU_GENERATION_ZERO_CENSUS, so nothing is guarding it against an "
+            "untagged append. Pin its shipped contents there (renderer "
+            "strings, in shipped order) in the same commit that adds the pool."
+        )
+        assert shipped == _GPU_GENERATION_ZERO_CENSUS[name], (
+            f"generation 0's visible {name} is no longer the pool as it "
+            f"shipped. An existing profile picks with "
+            f"`pool[seed % len(visible(pool, 0))]`, so this re-indexes live "
+            f"profiles onto different graphics cards under their session "
+            f"cookies. If you are ADDING a card: bump "
+            f"CURRENT_HARDWARE_GENERATION and tag the new entry "
+            f"`since=<that number>` — see models/hardware_generation.py."
+        )
+
+
+def test_no_shipped_gpu_entry_is_tagged_beyond_the_current_generation():
+    # The other half of the generalised latch, and the one that survives a
+    # bump. An entry tagged with a generation NOBODY has been minted into yet
+    # is unreachable until the constant catches up — the "tag first, bump
+    # never" mistake the module docstring warns about, which silently makes a
+    # newly-added card dead rather than loudly failing.
+    for name, pool in gpu_ext.GPU_POOLS.items():
+        for e in pool:
+            assert 0 <= e.since <= CURRENT_HARDWARE_GENERATION, (
+                f"{name} has an entry tagged since={e.since}, but "
+                f"CURRENT_HARDWARE_GENERATION is "
+                f"{CURRENT_HARDWARE_GENERATION} — bump the constant in the "
+                f"same commit, or nothing can ever be picked onto it: "
+                f"{e.unmasked_renderer}"
+            )
 
 
 # --------------------------------------------------------------------------
@@ -678,16 +914,60 @@ def test_legacy_profiles_present_what_they_always_did_after_an_append(
 # The filter itself
 # --------------------------------------------------------------------------
 
-def test_every_shipped_entry_is_generation_zero():
+def test_generation_zero_sees_every_python_pool_exactly_as_it_shipped():
     # Generation 0 is what every pre-existing profile reads, so its pool must be
     # the entire shipped list — contents, ORDER and therefore divisor. If a
     # shipped entry were ever renumbered above 0, the profiles pinned to it would
     # be the ones this whole mechanism exists to protect.
-    assert all(e.since == 0 for e in DESKTOP_RESOLUTIONS)
-    assert all(p.since == 0 for p in ANDROID_PRESETS + IOS_PRESETS)
-    assert visible_entries(DESKTOP_RESOLUTIONS, 0) == DESKTOP_RESOLUTIONS
-    assert visible_entries(IOS_PRESETS, 0) == IOS_PRESETS
-    assert visible_entries(ANDROID_PRESETS, 0) == ANDROID_PRESETS
+    #
+    # THIS USED TO ASSERT `all(e.since == 0)`, WHICH IS POLARITY-INVERTED
+    # AGAINST THE PROCEDURE IT PROTECTS (PS-190). Verified by execution, both
+    # ways: an UNSAFE untagged append satisfies `since == 0` and went GREEN,
+    # while the DOCUMENTED CORRECT edit — bump CURRENT_HARDWARE_GENERATION, tag
+    # the new entry `since=1` — made it go RED and failed a maintainer who
+    # followed the documented procedure exactly. A guard that fires on the
+    # correct edit and not on the dangerous one is worse than no guard: it
+    # trains people to work around it.
+    #
+    # Stated instead as the invariant that actually needs to hold, and that
+    # SURVIVES A BUMP: generation 0's VISIBLE pool is the list as it shipped.
+    # A tagged append is invisible to generation 0 (green, correctly); an
+    # untagged one lands in it and changes the divisor (red, correctly). The
+    # census pins contents AND order, because `pool[seed % len(pool)]` depends
+    # on both — a reorder or a substitution re-indexes as hard as an append,
+    # and a count-only check would miss either.
+    assert [e.size for e in visible_entries(DESKTOP_RESOLUTIONS, 0)] == [
+        (1366, 768), (1440, 900), (1536, 864), (1600, 900), (1920, 1080),
+        (1680, 1050), (1920, 1200), (2560, 1080), (2560, 1440),
+    ]
+    assert [p.key for p in visible_entries(IOS_PRESETS, 0)] == [
+        "iphone-15", "iphone-14",
+    ]
+    assert [p.key for p in visible_entries(ANDROID_PRESETS, 0)] == [
+        "pixel-7", "galaxy-s23", "xiaomi-13",
+    ]
+
+
+def test_no_shipped_python_entry_is_tagged_beyond_the_current_generation():
+    # The other half of the generalised latch — the bump-surviving replacement
+    # for `all(e.since == 0)`. An entry tagged with a generation nobody has been
+    # minted into yet is unreachable until the constant catches up: the "tag
+    # first, bump never" mistake, which makes a newly-added entry silently dead
+    # rather than loudly failing.
+    for label, pool in (
+        ("DESKTOP_RESOLUTIONS", DESKTOP_RESOLUTIONS),
+        ("IOS_PRESETS", IOS_PRESETS),
+        ("ANDROID_PRESETS", ANDROID_PRESETS),
+        ("ANDROID_TOUCH_POINTS", ANDROID_TOUCH_POINTS),
+        ("CORES_MEMORY", device_ext.CORES_MEMORY),
+    ):
+        for e in pool:
+            assert 0 <= e.since <= CURRENT_HARDWARE_GENERATION, (
+                f"{label} has an entry tagged since={e.since}, but "
+                f"CURRENT_HARDWARE_GENERATION is {CURRENT_HARDWARE_GENERATION}"
+                " — bump the constant in the same commit, or nothing can ever "
+                "be picked onto it"
+            )
 
 
 def test_normalize_generation_never_yields_an_empty_pool():

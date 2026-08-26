@@ -117,7 +117,6 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
-import re
 import sys
 import time
 
@@ -179,11 +178,19 @@ def collision_probability(values: "list[str]") -> float:
     return sum((c / n) ** 2 for c in counts.values())
 
 
-# The arms this module knows persona ships a fallback pool for, and the JS
-# variable each one is emitted as. Separated from the scrape itself so
-# "this arm has no pool by design" and "this arm HAS a pool and we failed to
-# read it" can be told apart — they are different facts and must not share a
-# return value.
+# The arms this module knows persona ships a fallback pool for, and the name
+# each one's pool is registered under in ``gpu_ext.GPU_POOLS``. Separated from
+# the lookup itself so "this arm has no pool by design" and "this arm HAS a pool
+# and we failed to read it" can be told apart — they are different facts and
+# must not share a return value.
+#
+# THESE WERE JS VARIABLE NAMES READ BY REGEX UNTIL PS-190. The pools are now
+# tagged Python records (``gpu_ext.GpuEntry``) that the JS is rendered from, so
+# the name is a dict key rather than a token to scrape and the count is a
+# ``len()`` rather than a substring tally. The failure mode that motivated the
+# careful 0-means-two-things contract below — a regex drifting out of step with
+# the literals' formatting — can no longer occur, but the contract is KEPT: a
+# name missing from the registry still has to read as "we failed to look".
 _POOL_VAR_FOR_ARM = {
     "windows": "WIN_GPUS",
     "macos": "MAC_GPUS",
@@ -195,9 +202,9 @@ _POOL_VAR_FOR_ARM = {
 def has_known_pool(arm: str) -> bool:
     """Whether persona is KNOWN to ship a fallback pool for this arm.
 
-    Answered from the arm name alone, never from the scrape — so a scrape that
-    returns nothing on an arm that IS in this map reads as a broken scrape
-    rather than as an arm with no pool.
+    Answered from the arm name alone, never from the size lookup — so a lookup
+    that returns nothing on an arm that IS in this map reads as a failure to
+    read the pool rather than as an arm with no pool.
     """
     return arm in _POOL_VAR_FOR_ARM
 
@@ -205,13 +212,21 @@ def has_known_pool(arm: str) -> bool:
 def fallback_pool_size(arm: str) -> int:
     """How many entries OUR OWN pool for this arm holds.
 
-    Read out of the emitted extension source rather than duplicated here, so
-    the bar tracks the pool automatically.
+    Read from ``gpu_ext.GPU_POOLS`` — the tagged Python records the emitted JS
+    is rendered from — rather than duplicated here, so the bar tracks the pool
+    automatically. This used to scrape the JS template with a regex; PS-190
+    lifted the pools into Python data, so the count is now a ``len()`` of the
+    real list and cannot drift with the literals' formatting.
+
+    COUNTED UNFILTERED, ACROSS EVERY GENERATION, DELIBERATELY. The bar this
+    feeds is a statement about the variety persona's pool offers, compared
+    against readings taken from an engine that knows nothing about generations.
+    Filtering to one generation would make the bar depend on which profile
+    happened to be measured.
 
     Returns 0 in TWO different situations, which callers must NOT conflate:
     the arm has no pool at all (:func:`has_known_pool` is False), or the arm
-    has one and this scrape could not find it — a regex that drifted out of
-    step with the pool literals' formatting. Pair every call with
+    has one and it could not be read. Pair every call with
     :func:`has_known_pool`: 0 on a known-pool arm means WE FAILED TO LOOK, and
     a missing bar must never be read as a bar that was met.
     """
@@ -221,11 +236,7 @@ def fallback_pool_size(arm: str) -> int:
     name = _POOL_VAR_FOR_ARM.get(arm)
     if not name:
         return 0
-    src = gpu_ext._CONTENT_SCRIPT
-    m = re.search(r"var " + name + r" = \[(.*?)\n  \];", src, re.S)
-    if not m:
-        return 0
-    return m.group(1).count("unmaskedVendor")
+    return len(gpu_ext.GPU_POOLS.get(name, ()))
 
 
 def bar_for(arm: str) -> "float | None":
@@ -388,12 +399,15 @@ def classify(readings: "dict[str, dict[int, str | None]]") -> dict:
             entry["verdict"] = "INCONCLUSIVE"
             entry["detail"] = (
                 f"persona ships a fallback pool for {arm!r}, but this module "
-                "could not read its size out of the emitted extension source "
-                "— most likely the pool literals were reformatted and "
-                "fallback_pool_size's regex no longer matches. Without the bar "
-                "there is nothing to compare against, so this is NOT a pass: "
-                f"the {p:.1%} collision rate measured here is unjudged. Fix "
-                "the scrape in fallback_pool_size and re-run."
+                "could not read its size. The arm is named in "
+                f"_POOL_VAR_FOR_ARM as {_POOL_VAR_FOR_ARM.get(arm)!r}, but "
+                "that name yielded no entries from gpu_ext.GPU_POOLS — either "
+                "the key is absent from the registry (the two have drifted "
+                "apart) or the pool registered under it is empty. Without the "
+                "bar there is nothing to compare against, so this is NOT a "
+                f"pass: the {p:.1%} collision rate measured here is unjudged. "
+                "Re-register the pool in gpu_ext.GPU_POOLS (or correct the arm "
+                "mapping in _POOL_VAR_FOR_ARM) and re-run."
             )
         elif bar is not None and p > bar * (1.0 + BAR_TOLERANCE):
             entry["verdict"] = "TOO_NARROW"
