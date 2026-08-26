@@ -38,7 +38,6 @@ from .dialogs.bookmark import open_bookmark_dialog
 from .dialogs.pool import open_pool_dialog
 from .dialogs.confirm import open_confirm_dialog
 from .handlers import AppHandlers
-from .log_format import log_line_control
 from .refs import UIRefs
 from .state import ITEMS_PER_PAGE, AppState
 from .theme import ACCENT_STYLE, COLORS, configure_page
@@ -393,29 +392,15 @@ class App:
     def _build_sidebar(self) -> ft.Container:
         r = self.refs
         assert r is not None
-        log_panel = ft.Column(
-            spacing=4,
-            controls=[
-                ft.Row(
-                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                    controls=[
-                        r.log_toggle_btn,
-                        ft.IconButton(
-                            icon=ft.Icons.OPEN_IN_FULL,
-                            icon_size=14,
-                            icon_color=COLORS["text_sub"],
-                            on_click=lambda _: self.h.open_log_fullscreen(),
-                        ),
-                    ],
-                ),
-                r.log_column,
-            ],
-        )
+        # DIRECTION A: the Activity Log no longer lives in the sidebar at all —
+        # it is docked full-width along the bottom of the window (see
+        # _build_log_dock). The sidebar keeps only navigation and the engine /
+        # version cluster, so nothing is crushed when the window is short.
         engine_panel = self._build_engines_panel()
         return build_sidebar(
             active_page=self._active_page,
             on_navigate=self._navigate,
-            log_panel=log_panel,
+            log_panel=None,
             engine_panel=engine_panel,
             version_panel=self._build_version_panel(),
             on_logo_click=self._on_logo_click,
@@ -718,11 +703,46 @@ class App:
             content=ft.Column(spacing=4, controls=rows),
         )
 
-    def _build_root_layout(self, r: UIRefs) -> ft.Row:
-        r.log_toggle_btn.on_click = lambda _: self.h.toggle_log()
+    def _build_root_layout(self, r: UIRefs) -> ft.Control:
+        """The Activity Log as a full-width console docked along the bottom.
+
+        The log spans the WHOLE window under both the 200px rail and the page,
+        rather than living inside the rail. That is what frees the sidebar (its
+        bottom cluster no longer competes with a log panel for a fixed 200px of
+        width) and what gives the stream a reading line wide enough for the row
+        to have real columns — see components/log_dock.py.
+
+        The console's opening height is a BUDGET against the window, not a
+        constant: at the app's own minimum size a fixed dock left the rail too
+        short to show its own bottom cluster, so the dock yields there instead
+        (it is the element the operator can drag back).
+        """
+        from .components.log_dock import LogDock
+
         self._sidebar_host = ft.Container(content=self._build_sidebar())
         self._page_host = ft.Container(expand=True)
-        return ft.Row(
+        window_height = None
+        with contextlib.suppress(Exception):
+            page = self.page
+            window_height = getattr(page, "height", None) or getattr(
+                page.window, "height", None
+            )
+        self._dock = LogDock(
+            on_fullscreen=self.h.open_log_fullscreen, window_height=window_height
+        )
+        with contextlib.suppress(Exception):
+            self._dock.set_profiles(p.name for p in self.pm.list_profiles())
+
+        # The budget above is computed from the height the window has RIGHT
+        # NOW, and the window can be resized afterwards. The app opens at
+        # 1280x820 with a 1024x680 minimum, so dragging down to the minimum is
+        # an ordinary gesture — and without this the dock kept its launch-time
+        # height and starved the rail by 116px, which is the same fault the
+        # budget was written to fix, only reached through the resize path.
+        with contextlib.suppress(Exception):
+            self.page.on_resize = self._on_window_resize
+
+        upper = ft.Row(
             expand=True,
             spacing=0,
             controls=[
@@ -731,6 +751,48 @@ class App:
                 self._page_host,
             ],
         )
+
+        # The console is the LAST child of a full-height Column, so it spans
+        # sidebar AND page: the log's width is no longer hostage to the rail.
+        return ft.Column(
+            expand=True,
+            spacing=0,
+            controls=[upper, self._dock.root],
+        )
+
+    def _on_window_resize(self, e=None) -> None:
+        """Re-apply the console's rail budget after the window changes size.
+
+        AC8 is a property of the window SIZE — "at 1024x680 the trash entry
+        keeps visible separation" — not of how the window arrived there. The
+        launch path honoured that and the resize path did not, so an operator
+        who dragged a 1280x820 window down to the minimum got a dock still
+        sized for the taller window and a rail 116px short of showing its own
+        bottom cluster.
+
+        The event carries the new height, but it is not trusted blindly: flet
+        reports page height, and a headless/served session can report nothing
+        at all, so a missing or unusable value falls back to the page and then
+        to the window. A resize that cannot be measured must leave the console
+        alone rather than collapse it to the minimum.
+        """
+        dock = getattr(self, "_dock", None)
+        if dock is None:
+            return
+        height = None
+        for candidate in (
+            getattr(e, "height", None),
+            getattr(self.page, "height", None),
+            getattr(getattr(self.page, "window", None), "height", None),
+        ):
+            with contextlib.suppress(TypeError, ValueError):
+                if candidate and float(candidate) > 0:
+                    height = float(candidate)
+                    break
+        if height is None:
+            return
+        dock.apply_window_height(height)
+        self._safe_update()
 
     def _on_logo_click(self) -> None:
         """Logo click = "scan": a single red beam sweeps down-and-back-up over
@@ -3758,20 +3820,34 @@ class App:
             self.state.schedule_refresh()
 
     def _flush_log(self) -> None:
+        """Feed the Activity Log console, and let IT decide about scrolling.
+
+        The tail is handed over with the ring's sequence number, which is what
+        turns a flush into an APPEND: the console paints only the rows that are
+        genuinely new and leaves every existing row — and therefore every
+        scroll position the operator has established — exactly where it is. The
+        old panel replaced its whole child list here on every flush, up to every
+        ~0.15s while profiles launch, which is what made the region impossible
+        to read while it was busy.
+
+        THE CONSOLE IS THE ONLY LOG SURFACE THIS PAINTS. The sidebar panel that
+        used to be repainted here is gone with the log's move out of the rail,
+        and the two paths once cited as its readers do not read it: the
+        fullscreen dialog takes state.get_all_log_lines() (handlers.py) and the
+        panic wipe calls state.clear_log() — both go to STATE, not to controls.
+        So the legacy paint built 14 flet Text controls on every flush, up to
+        every ~0.15s while profiles launch, into a container that was then
+        hidden unconditionally: pure dead work on the one hot path this ticket
+        exists to make cheaper.
+        """
         text = self.state.flush_log()
         if text is not None and self.refs:
             lines = [ln for ln in text.split("\n") if ln]
-            sidebar_lines = lines[-6:]
-            # Wrap long lines (Mars: they were clipping) — the ListView scrolls,
-            # so the panel keeps a comfortable fixed height instead of growing
-            # per line and the wrapped continuation stays readable.
-            self.refs.log_list.controls = [
-                log_line_control(ln, wrap=True) for ln in sidebar_lines
-            ]
-            self.refs.log_column.height = 150
-            self.refs.log_column.visible = (
-                bool(sidebar_lines) and not self.state.log_collapsed
-            )
+            dock = getattr(self, "_dock", None)
+            if dock is not None:
+                with contextlib.suppress(Exception):
+                    dock.set_profiles(p.name for p in self.pm.list_profiles())
+                dock.render(lines, seq=self.state.log_seq())
 
     def _ui(self, fn) -> None:
         """Run fn on the flet session (UI) thread. Flet's control tree and

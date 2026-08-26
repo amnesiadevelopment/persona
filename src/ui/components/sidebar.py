@@ -54,13 +54,28 @@ def _nav_button(
 def build_sidebar(
     active_page: str,
     on_navigate: Callable[[str], None],
-    log_panel: ft.Control,
+    log_panel: ft.Control | None = None,
     engine_panel: ft.Control | None = None,
     version_panel: ft.Control | None = None,
     on_logo_click: Callable[[], None] | None = None,
 ) -> ft.Container:
+    # THE NAV IS THE PART THAT GIVES, and it gives by SCROLLING rather than by
+    # crushing. The rail is a hard 200px and nothing in it used to scroll, so a
+    # short window pushed the bottom cluster down until `trash` sat flush
+    # against the engines dropdown — and at the app's own minimum size (1024x680)
+    # it went further than that: the engines panel was clipped to a sliver and
+    # the version panel was pushed out of the rail entirely.
+    #
+    # `expand=True` is what makes the scroll real. A scrollable Column with no
+    # expand still claims its full NATURAL height inside a parent Column, so it
+    # never scrolls and simply overflows — the scroll mode alone fixed nothing.
+    # Expanded, the nav takes exactly the room the fixed bottom cluster leaves
+    # it and scrolls inside that, so a short window costs a scroll gesture
+    # instead of costing the operator two controls.
     nav = ft.Column(
         spacing=6,
+        scroll=ft.ScrollMode.AUTO,
+        expand=True,
         controls=[
             _nav_button(key, icon, label, active_page == key, on_navigate)
             for key, icon, label in _NAV_ITEMS
@@ -102,7 +117,11 @@ def build_sidebar(
     return ft.Container(
         width=200,
         bgcolor=COLORS["sidebar"],
-        padding=ft.Padding.symmetric(horizontal=16, vertical=22),
+        # 22px top and bottom cost 44px of a rail that needs every pixel at the
+        # app's minimum window size — measured there, `trash` was still clipped
+        # by ~9px with the dock already at its 120px floor, so the rail is where
+        # the remaining space had to come from. Horizontal padding is untouched.
+        padding=ft.Padding.symmetric(horizontal=16, vertical=10),
         content=ft.Column(
             spacing=0,
             expand=True,
@@ -116,18 +135,23 @@ def build_sidebar(
                 ),
                 ft.Divider(height=24, color=COLORS["border"]),
                 nav,
-                # Push the bottom cluster down, but keep a guaranteed gap + a
-                # hairline above it so the engines panel never sits flush against
-                # the 'connect' nav item when the window is short and the expand
-                # spacer collapses to nothing.
-                ft.Container(expand=True, height=16),
+                # A gap that CANNOT collapse — and deliberately NOT `expand`.
+                # `expand` yields all of its height when the window is short, so
+                # a spacer alone guaranteed nothing: measured at the app's own
+                # minimum size (1024x680), `trash` ended up 3px from the engines
+                # dropdown, two unrelated controls reading as one cluster. It
+                # must not be expandable for a second reason too: the nav above
+                # is the expanding child now, and a second `expand` sibling
+                # splits the free space with it 50/50 — which clipped the nav
+                # mid-list (at `tags`) while leaving blank rail below it.
+                ft.Container(height=14),
                 *(
                     [ft.Divider(height=1, color=COLORS["border"]), engine_panel]
                     if engine_panel is not None
                     else []
                 ),
                 *([version_panel] if version_panel is not None else []),
-                log_panel,
+                *([log_panel] if log_panel is not None else []),
             ],
         ),
     )
