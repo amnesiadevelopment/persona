@@ -553,6 +553,19 @@ def _record(
     because each fix searched for the previous field's symptom rather than for
     the class ("what does this helper derive from the replaying machine?").
 
+    ⚠️ That rule is ENFORCED, not merely stated here. ``tests/
+    test_verify_engine_gpu_variance.py::
+    test_replay_partitions_EVERY_key_so_a_new_field_cannot_be_added_unclassified``
+    asserts set-EQUALITY over the keys this function writes, partitioned into
+    source-preserved / recomputed / parameter / replay-stamped. **Adding a key
+    below without classifying it there turns that test RED**, which is the
+    whole point: three rounds of this ticket were each lost to a new field
+    that every existing test was structurally unable to see, because a test
+    that names three fields leaves the fourth free. If you are reading this
+    because that test just failed, the fix is to decide which half of the
+    partition your new field belongs in — if it describes the machine that
+    MEASURED, preserve it from ``source`` as the three above are.
+
     ⚠️ What is deliberately NOT preserved is ``result``: it is RECOMPUTED, and
     that is the point of a re-verdict. See :func:`_cmd_replay` for the one
     consequence of that which an operator must know about.

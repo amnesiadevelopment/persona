@@ -682,3 +682,91 @@ def test_a_record_predating_the_arm_set_field_falls_back_to_local(tmp_path):
     assert written["engine_authored_arms"] == sorted(
         v.ENGINE_AUTHORED_IDENTITY_ARMS
     )
+
+
+# ---------------------------------------------------------------------------
+# The CLASS, not the instances.
+#
+# Rounds 3, 4 and 5 of PS-176 each cost a full review round to the SAME defect
+# wearing a different field name: `_record` re-derived a provenance value from
+# the REPLAYING machine, and every test in this file stayed green because each
+# one names the fields that already exist. A test that names three fields
+# leaves the fourth free.
+#
+# The guard against the next one was, until this test, a sentence in the
+# `_record` docstring. This ticket exists because the standard ruled for this
+# module was "not a note in a docstring, not a manual step — a check that runs
+# and can go red", so the provenance contract was being held to a weaker
+# standard than the thing the module was written to enforce.
+#
+# Proven by injection rather than asserted: adding a 4th locally-derived field
+# (`"measured_on_platform": sys.platform`) to `_record` leaves all 37 of the
+# tests above GREEN, while `replay` of a foreign record stamps it "linux".
+# The test below goes RED on that same injection, naming the fix in its message.
+# ---------------------------------------------------------------------------
+
+
+def test_replay_partitions_EVERY_key_so_a_new_field_cannot_be_added_unclassified(
+    tmp_path,
+):
+    """Pins the CLASS, not the three fields the class has produced so far.
+
+    The load-bearing line is the ``set(written) ==`` equality: it fails on a
+    key ADDED, not merely on the three that exist today. That is what forces a
+    maintainer to classify a new field AT THE MOMENT THEY ADD IT, rather than
+    discovering a round later that `replay` has been quietly overwriting it.
+    """
+    src_doc = {
+        # Every field hardcoded FOREIGN — never derived from this machine.
+        # Deriving the expected value from the local resolver is the confound
+        # that hid this defect for two rounds: the fixture's arms were
+        # ["windows"], identical to the local set by construction, so a
+        # regenerated value was indistinguishable from a preserved one.
+        "measured_at": "2026-08-20T06:40:00+00:00",
+        "engine_build": "999.0.NOT-THIS-MACHINES-BUILD",
+        "engine_authored_arms": ["linux", "macos", "windows"],
+        "readings": {"windows": {str(s): "Vendor | SAME" for s in SEEDS}},
+        "result": {"verdict": "STALE-FROM-THE-ARCHIVE"},
+    }
+    record = tmp_path / "foreign.json"
+    record.write_text(json.dumps(src_doc), encoding="utf-8")
+    out = tmp_path / "re.json"
+
+    v._cmd_replay(argparse.Namespace(record=str(record), output=str(out)))
+    written = json.loads(out.read_text(encoding="utf-8"))
+
+    # Describes the MEASURING machine -> must survive the replay untouched.
+    SOURCE_PRESERVED = {"measured_at", "engine_build", "engine_authored_arms"}
+    # Re-judged on purpose: reproducing the verdict IS the point of a replay.
+    RECOMPUTED = {"result"}
+    # Carried through from the source document, not derived.
+    PARAMETER = {"readings"}
+    # The replay's OWN moment, deliberately distinct from `measured_at`.
+    REPLAY_STAMPED = {"replayed_at"}
+
+    assert set(written) == (
+        SOURCE_PRESERVED | RECOMPUTED | PARAMETER | REPLAY_STAMPED
+    ), (
+        "`_record` writes a key this test does not classify. Every field that "
+        "describes the MEASURING machine must be source-preserved; classify it "
+        "here and in _record, or replay will silently stamp it with the "
+        "REPLAYING machine's value -- the defect class of PS-176 rounds 3, 4 "
+        "and 5, each of which reached main green."
+    )
+
+    for key in SOURCE_PRESERVED:
+        assert written[key] == src_doc[key], (
+            f"{key} was re-derived from the REPLAYING machine. The remedy for "
+            f"a red run is to name the measured build in "
+            f"policy.KNOWN_BAD_VERSIONS; a substituted value is plausible and "
+            f"wrong, so the operator blocklists the wrong build."
+        )
+
+    # The other half of the partition: `result` must NOT be inherited, or
+    # `replay` would echo the archived verdict instead of re-judging it.
+    assert written["result"] != src_doc["result"]
+    assert written["result"]["per_arm"]["windows"]["verdict"] == "CONSTANT"
+
+    # The replay's own stamp is present and cannot be mistaken for the
+    # measurement's moment.
+    assert written["replayed_at"] not in (None, "", src_doc["measured_at"])
