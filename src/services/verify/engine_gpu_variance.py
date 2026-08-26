@@ -543,8 +543,19 @@ def _record(
     """The artifact written by both ``check`` and ``replay``.
 
     ``source`` is the record being RE-VERDICTED, and is passed by ``replay``
-    only. Its provenance — ``measured_at`` and ``engine_build`` — is
-    PRESERVED, never re-derived.
+    only. Its provenance — ``measured_at``, ``engine_build`` and
+    ``engine_authored_arms`` — is PRESERVED, never re-derived.
+
+    Those THREE fields are the whole provenance set: they answer *when*, *which
+    build*, and *which arms were deferring* at the moment of measurement. Any
+    field added here that describes the MEASURING machine belongs in that list
+    too — the defect this guards against has now been fixed once per field,
+    because each fix searched for the previous field's symptom rather than for
+    the class ("what does this helper derive from the replaying machine?").
+
+    ⚠️ What is deliberately NOT preserved is ``result``: it is RECOMPUTED, and
+    that is the point of a re-verdict. See :func:`_cmd_replay` for the one
+    consequence of that which an operator must know about.
 
     ⚠️ This is load-bearing, not tidiness. ``replay`` runs on a machine that
     is NOT the machine that measured: the documented case is a laptop with no
@@ -571,7 +582,18 @@ def _record(
         # to an empty string that reads like a value.
         "measured_at": src.get("measured_at") or now,
         "engine_build": src.get("engine_build") or engine_build(),
-        "engine_authored_arms": sorted(ENGINE_AUTHORED_IDENTITY_ARMS),
+        # Membership, NOT the `or` used above: an empty list is a LEGITIMATE
+        # value here ("no arm was deferring") and it is falsy, so `or` would
+        # silently substitute this machine's set for a real measured empty —
+        # the same defect, reintroduced for the one case that most needs it.
+        # The remedy for a red run is to REMOVE the arm from
+        # ENGINE_AUTHORED_IDENTITY_ARMS, so the local set is EXPECTED to
+        # differ from the archived one by the time anyone replays it.
+        "engine_authored_arms": (
+            src["engine_authored_arms"]
+            if "engine_authored_arms" in src
+            else sorted(ENGINE_AUTHORED_IDENTITY_ARMS)
+        ),
         "readings": {
             a: {str(s): v for s, v in by.items()} for a, by in readings.items()
         },
@@ -630,10 +652,39 @@ def _cmd_replay(args: argparse.Namespace) -> int:
 
     It deliberately cannot be mistaken for a measurement: it takes no reading
     and is a separate subcommand from ``check``. With ``--output`` it inherits
-    the source record's ``measured_at`` and ``engine_build`` rather than
-    stamping its own (see :func:`_record`), and records its own moment as
-    ``replayed_at`` — so the re-verdict can never be read as a fresh reading,
-    and the tag an operator blocklists is the one that was actually measured.
+    the source record's ``measured_at``, ``engine_build`` and
+    ``engine_authored_arms`` rather than stamping its own (see
+    :func:`_record`), and records its own moment as ``replayed_at`` — so the
+    re-verdict can never be read as a fresh reading, and the tag an operator
+    blocklists is the one that was actually measured.
+
+    ⚠️ NOT COVERED — the verdict is re-judged against TODAY'S BAR, not the bar
+    the reading was measured against. ``classify`` re-derives
+    ``bar_collision_probability`` and ``fallback_pool_size`` from THIS
+    machine's ``gpu_ext`` pools, because the readings are replayed but the bar
+    is not carried. If persona's own pool for an arm is edited between the
+    measurement and the replay, an identical archived reading can be re-judged
+    differently. Measured, not reasoned — 10 seeds at 38% collision:
+
+        pool 5 (bar 20%)  -> TOO_NARROW, exit 1     <- as measured
+        pool 2 (bar 50%)  -> OK,         exit 0     <- same readings, replayed
+
+    The blast radius is bounded, and was measured rather than assumed:
+
+    * ``CONSTANT`` is IMMUNE — ``len(distinct) == 1`` is decided before the bar
+      is consulted, so the Level 2 breach this module exists to catch cannot be
+      re-judged away at any pool size (verified at pools 2, 5 and 50).
+    * ``INCONCLUSIVE`` is IMMUNE — the ``MIN_SEEDS`` floor precedes the bar.
+    * An unreadable pool fails SAFE (``INCONCLUSIVE``/exit 2, never a pass).
+    * Only ``TOO_NARROW`` <-> ``OK`` can move, and only if a pool is edited.
+
+    It does NOT affect the gate: ``check`` measures and judges on the same
+    machine in the same run, so the scheduled job is unaffected. This is a
+    property of the FORENSIC path only. Whether ``replay`` should re-judge
+    against the current bar (a deliberate "would this still fail today?") or
+    reproduce the archived verdict is a DESIGN DECISION, not a defect to be
+    quietly patched — it is recorded here and raised on PS-176 rather than
+    decided by the worker that found it.
     """
     try:
         with open(args.record, encoding="utf-8") as fh:
