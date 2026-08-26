@@ -574,15 +574,19 @@ class LogDock:
         self._desired_height = self.height
         self.body.height = self.height
         self._paint_size()
+        # ONE update, and it is the BODY. Two other things were tried here and
+        # both broke the gesture, so this is measured rather than chosen:
+        #
+        #   * updating `self.root` re-materialises the whole console INCLUDING
+        #     the grip, and replacing a GestureDetector mid-gesture makes
+        #     Flutter's arena drop the drag it is tracking — 0px of travel;
+        #   * updating `self._size_label` as well (it lives inside the body,
+        #     which is already being updated) produced the same 0px, because
+        #     the second patch lands while the first is still being applied.
+        #
+        # The label is a child of the body, so one body update carries both the
+        # new height and the new readout.
         self._safe_update(self.body)
-        # DELIBERATELY NOT self.root. Updating the root re-materialises the
-        # whole console INCLUDING the grip, and replacing a GestureDetector
-        # mid-gesture makes Flutter's arena drop the drag it was tracking — so
-        # the console moved on the first frame and then froze, which reads as
-        # exactly the "grip does nothing" fault this direction exists to fix.
-        # Measured: with the root update in place a real pointer drag moved the
-        # band by 0px; without it, 1:1.
-        self._safe_update(self._size_label)
 
     def _paint_size(self) -> None:
         n = self.rows
