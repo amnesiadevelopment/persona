@@ -487,14 +487,21 @@ def test_engine_build_reads_unknown_rather_than_empty_when_unresolvable(
 # ship: the neighbouring round-trip test uses it and stayed green throughout.
 FOREIGN_BUILD = "999.0.NOT-THIS-MACHINES-BUILD"
 FOREIGN_MEASURED_AT = "2026-08-20T06:40:00+00:00"
+# Deliberately a SUPERSET of the single arm the product defers on today, so it
+# cannot equal the local set on any machine that ships the current constant.
+# The previous value here was ["windows"] — identical to the local set, which
+# is the SAME confound the comment above warns about, applied to the one field
+# the fixture did not guard. That is why `engine_authored_arms` kept being
+# regenerated while every test around it stayed green.
+FOREIGN_ARMS = ["linux", "macos", "windows"]
 
 
-def _foreign_record(values) -> dict:
+def _foreign_record(values, *, arms=None) -> dict:
     """A record as some OTHER machine's `check --output` would have written it."""
     return {
         "measured_at": FOREIGN_MEASURED_AT,
         "engine_build": FOREIGN_BUILD,
-        "engine_authored_arms": ["windows"],
+        "engine_authored_arms": FOREIGN_ARMS if arms is None else arms,
         "readings": {"windows": {str(s): v_ for s, v_ in zip(SEEDS, values)}},
         "result": {"verdict": "FINDING"},
     }
@@ -592,3 +599,86 @@ def test_a_record_predating_the_provenance_fields_still_resolves_them(tmp_path):
     assert written["engine_build"] == v.engine_build()
     assert written["engine_build"]
     assert written["measured_at"]
+
+
+def test_replay_preserves_the_measured_arm_set_rather_than_this_machines(
+    tmp_path,
+):
+    # The third provenance field, and the one that survived two rounds of
+    # fixing the other two. It records WHICH ARMS WERE DEFERRING WHEN THE
+    # BREACH WAS MEASURED — exactly the context needed to act on a red run.
+    #
+    # It is load-bearing precisely BECAUSE of the documented remedy: a red run
+    # tells the operator to "remove it from ENGINE_AUTHORED_IDENTITY_ARMS". So
+    # the local set is EXPECTED to differ from the archived one by the time
+    # anyone replays the artifact. Re-deriving it there produces a re-verdict
+    # asserting that NO arm was engine-authored while still carrying a Level 2
+    # breach reading for `windows` — an internally self-contradictory evidence
+    # base, produced by the tool whose job is to preserve the record, and made
+    # worse precisely because the operator did the right thing.
+    assert sorted(v.ENGINE_AUTHORED_IDENTITY_ARMS) != FOREIGN_ARMS, (
+        "fixture must not collide with the local arm set, or this cannot fail"
+    )
+
+    record = tmp_path / "from-the-runner.json"
+    record.write_text(
+        json.dumps(_foreign_record(["Vendor | SAME"] * len(SEEDS))),
+        encoding="utf-8",
+    )
+
+    out = tmp_path / "re-verdict.json"
+    assert v._cmd_replay(
+        argparse.Namespace(record=str(record), output=str(out))
+    ) == v.EXIT_FINDING
+
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert written["engine_authored_arms"] == FOREIGN_ARMS
+    assert written["engine_authored_arms"] != sorted(
+        v.ENGINE_AUTHORED_IDENTITY_ARMS
+    )
+
+
+def test_replay_preserves_an_arm_set_the_operator_has_since_emptied(
+    tmp_path, monkeypatch
+):
+    # The end state of the documented remedy, and the reason this field must
+    # NOT use the `or` pattern the other two provenance fields use: an EMPTY
+    # list is a LEGITIMATE measured value here ("no arm was deferring"), and it
+    # is falsy. `or` would silently substitute this machine's set for it,
+    # reintroducing the identical defect for the one case where the archive and
+    # the live constant differ the most.
+    monkeypatch.setattr(v, "ENGINE_AUTHORED_IDENTITY_ARMS", frozenset({"windows"}))
+
+    record = tmp_path / "from-the-runner.json"
+    record.write_text(
+        json.dumps(_foreign_record(["Vendor | SAME"] * len(SEEDS), arms=[])),
+        encoding="utf-8",
+    )
+
+    out = tmp_path / "re-verdict.json"
+    v._cmd_replay(argparse.Namespace(record=str(record), output=str(out)))
+
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert written["engine_authored_arms"] == []
+
+
+def test_a_record_predating_the_arm_set_field_falls_back_to_local(tmp_path):
+    # The mirror image, so the membership test cannot over-apply: a genuinely
+    # ABSENT key (a record written before the field existed) must still resolve
+    # to something rather than to null. Absence and a measured empty list are
+    # different claims, and only the second one is preserved.
+    record = tmp_path / "old.json"
+    record.write_text(
+        json.dumps({
+            "readings": {"windows": {str(s): "Vendor | SAME" for s in SEEDS}},
+        }),
+        encoding="utf-8",
+    )
+
+    out = tmp_path / "re-verdict.json"
+    v._cmd_replay(argparse.Namespace(record=str(record), output=str(out)))
+
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert written["engine_authored_arms"] == sorted(
+        v.ENGINE_AUTHORED_IDENTITY_ARMS
+    )
