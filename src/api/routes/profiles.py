@@ -307,6 +307,12 @@ def export_profile(
     pm: IProfileManager = Depends(get_profile_manager),
 ) -> ExportResponse:
     require_profile(name, pm)
+    # `export_dir` is used as given, and that is deliberate — see the DESTINATION
+    # POLICY note above export_to_zip in services/profile/transfer.py (PS-180).
+    # Short version: this route is reachable only by someone already holding the
+    # operator's token on the operator's own machine, and export exists to put a
+    # profile somewhere else. The check below is an existence check, not a
+    # confinement, and it is not standing in for one.
     if not pathlib.Path(body.export_dir).is_dir():
         raise HTTPException(status_code=400, detail="export_dir is not a directory")
 
