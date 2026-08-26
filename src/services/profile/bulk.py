@@ -1,4 +1,5 @@
 from ...utils.validation import validate_profile_name
+from .coherence import IncoherentProfile
 
 
 def parse_names(text: str) -> list[str]:
@@ -34,9 +35,24 @@ def bulk_create(
         if not valid:
             skipped.append(name)
             continue
-        if manager.add_profile(
-            name, proxy, os_type, search_engine=search_engine, tags=tags
-        ):
+        # A coherence rule refuses by RAISING, and this function's contract is
+        # to refuse individually and keep going: `skipped` is its designed
+        # refusal channel, already used for a bad name and for add_profile
+        # returning falsy. Letting the exception propagate would abort the batch
+        # MID-LOOP — names earlier in the list are created and persisted while
+        # the return value never arrives, so the caller (ui/actions/profile.py
+        # on_create, whose `str | None` return is ITS error channel) gets
+        # neither the result dict nor a message. The whole batch shares one
+        # os_type, so a storage refusal (PS-187) skips every name rather than
+        # some; that is correct, and it is reported instead of thrown.
+        try:
+            accepted = manager.add_profile(
+                name, proxy, os_type, search_engine=search_engine, tags=tags
+            )
+        except IncoherentProfile:
+            skipped.append(name)
+            continue
+        if accepted:
             created.append(name)
         else:
             skipped.append(name)

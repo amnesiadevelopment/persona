@@ -448,3 +448,216 @@ def test_gpu_ext_re_exports_the_table_rather_than_restating_it():
     # a profile is stored as and the value the GPU pool keys on can disagree.
     for spelling in sorted(RECOGNISED_OS_TYPES) + UNRECOGNISED_VALUES:
         assert gpu_ext._os_norm(spelling) == canonical_os_type(spelling)
+
+
+# ---------------------------------------------------------------------------
+# ROUND 2 — the refusal must be DELIVERED, not merely raised.
+#
+# The round-1 change made a non-canonical `os_type` unstorable, and that half
+# held. What it did not check is what each caller DOES with the new refusal.
+# Two lanes were enumerated on this ticket as callers and then never opened:
+# the MCP tool and `bulk_create`. Both let the exception escape.
+#
+# ⚠️ THIS IS THE SAME MISTAKE THE TICKET WARNED ABOUT, ONE LEVEL UP. Round 1
+# stopped enumerating doors and made the FIELD carry the guarantee — correctly.
+# But the refusal that guarantee produces still travels through hand-written
+# per-lane handling, so "which doors did I remember to check" came back as
+# "which lanes did I remember to catch in". The tests below are therefore
+# written as a PROPERTY over the lanes — every lane that can be handed a bad
+# value must answer with a value — rather than as one test per lane I happened
+# to think of.
+#
+# WHY IT MATTERS THAT THE RULE IS NEW HERE. Measured at the merge-base: the MCP
+# lane could not raise at all before this ticket. `create_profile` passes
+# (name, proxy, os_type, tags) and no engine/device_type, so the pair rules were
+# structurally unreachable through it. This rule is the FIRST refusal ever to
+# reach an off-machine automation client — so "the doors already catch it" was
+# not a weaker claim than it looked, it was false about the lane with the least
+# ability to recover.
+# ---------------------------------------------------------------------------
+
+
+def _mcp_create(mcp, name, os_type):
+    """Call the real MCP tool and return the dict the client actually receives.
+
+    Deliberately goes through ``call_tool`` rather than the Python function:
+    the finding is about what an off-machine caller GETS, and an exception that
+    escapes the tool body is only observable from the far side of that boundary.
+    """
+    import asyncio
+    import json
+
+    result = asyncio.run(mcp.call_tool(name, os_type))
+    return json.loads(result[0].text)
+
+
+@pytest.fixture
+def mcp_harness(mgr):
+    """The real MCP server, bound to the isolated ProfileManager."""
+    from src.api.mcp_server import build_mcp
+    from src.core.container import Container
+
+    c = Container()
+    c._instances["pm"] = mgr
+    return build_mcp(c), mgr
+
+
+@pytest.mark.parametrize("bad", BAD_VALUES)
+def test_the_mcp_lane_answers_a_refusal_instead_of_throwing(mcp_harness, bad):
+    """AC: the automation client gets a structured refusal carrying the reason.
+
+    Asserts on the RESPONSE and on the RESTING STATE, never on whether a
+    validator ran (PS-11). On the round-1 branch this raised IncoherentProfile
+    out of the tool body: `call_tool` surfaces that to the client as an error
+    payload, and the message naming the canonical spelling — the most useful
+    thing the rule produces — was discarded.
+    """
+    mcp, mgr = mcp_harness
+    out = _mcp_create(mcp, "create_profile", {"name": f"m-{bad!r}", "os_type": bad})
+
+    assert out.get("created") is False, (
+        f"os_type={bad!r} must not report a successful creation; got {out!r}"
+    )
+    assert out.get("error") == "refused", (
+        f"the lane must use the structured-refusal shape it already uses for a "
+        f"refused launch, so a client can branch on it; got {out!r}"
+    )
+    # The reason must survive to the client. It is the only thing that tells an
+    # operator what to write instead.
+    assert "os_type" in out.get("detail", ""), (
+        f"the refusal reason must reach the caller, not be swallowed; got {out!r}"
+    )
+
+    # END STATE: nothing came to rest. This is the assertion that would still
+    # catch a lane that answered politely and stored the value anyway.
+    assert f"m-{bad!r}" not in mgr.profiles
+
+
+@pytest.mark.parametrize("good", sorted(CANONICAL_OS_TYPES))
+def test_the_mcp_lane_still_creates_every_canonical_spelling(mcp_harness, good):
+    """The refusal must not have narrowed what legitimately works.
+
+    Measured at the merge-base, all five arms answered {'created': True}. If a
+    handler ever turned a canonical value into a refusal, the tests above would
+    all still pass — they only assert that bad values fail.
+    """
+    mcp, mgr = mcp_harness
+    out = _mcp_create(mcp, "create_profile", {"name": f"ok-{good}", "os_type": good})
+
+    assert out.get("created") is True, f"os_type={good!r} must still create; got {out!r}"
+    assert mgr.profiles[f"ok-{good}"].os_type == good
+
+
+@pytest.mark.parametrize("bad", BAD_VALUES)
+def test_bulk_create_reports_a_refusal_through_skipped_and_persists_nothing(mgr, bad):
+    """AC: the batch refuses individually and keeps going, as its contract says.
+
+    `bulk_create` has a designed refusal channel — the `skipped` list, already
+    used for a bad name and for add_profile returning falsy. A raise bypasses
+    it and propagates MID-LOOP, so names earlier in the batch are created and
+    persisted while the return value never arrives; its caller
+    (ui/actions/profile.py on_create, whose `str | None` return is ITS error
+    channel and which has no try) gets neither the dict nor a message.
+
+    The `created` name is placed FIRST in the batch on purpose: a mid-loop raise
+    is only distinguishable from a clean refusal when something before the
+    failure point would have been persisted.
+    """
+    from src.services.profile.bulk import bulk_create
+
+    names = [f"bulk-a-{bad!r}", f"bulk-b-{bad!r}"]
+    result = bulk_create(mgr, names, "", bad)
+
+    assert result["created"] == [], (
+        f"os_type={bad!r} cannot be stored, so no name in the batch may be "
+        f"reported as created; got {result!r}"
+    )
+    assert sorted(result["skipped"]) == sorted(names), (
+        f"every name must be reported through the designed `skipped` channel; "
+        f"got {result!r}"
+    )
+
+    # END STATE: the loop did not persist a partial batch on its way out.
+    for n in names:
+        assert n not in mgr.profiles, (
+            f"{n!r} was persisted despite the batch being refused — the raise "
+            f"aborted the loop after committing earlier names."
+        )
+
+
+def test_bulk_create_still_creates_a_canonical_batch(mgr):
+    """The `skipped` routing must not have swallowed the working path."""
+    from src.services.profile.bulk import bulk_create
+
+    result = bulk_create(mgr, ["bulk-ok-1", "bulk-ok-2"], "", "windows")
+
+    assert sorted(result["created"]) == ["bulk-ok-1", "bulk-ok-2"]
+    assert result["skipped"] == []
+    assert mgr.profiles["bulk-ok-1"].os_type == "windows"
+
+
+def test_no_write_lane_lets_the_refusal_escape_as_an_exception(mgr, tmp_path):
+    """THE PROPERTY: every lane answers with a value; none throws at its caller.
+
+    Written over the lanes as a SET rather than as one test per lane, because
+    "the lanes I remembered to check" is precisely what failed round 1 — the
+    ticket's own door enumeration NAMED the MCP tool, and its exception
+    handling still went unexamined. A new lane added to this list gets the
+    assertion for free; a new lane not added is the residual, and it is stated
+    rather than hidden: this closes the lanes that exist, it does not make the
+    delivery of a refusal structural the way `__setattr__` made the repair
+    structural.
+
+    The two lanes that already handled it (REST -> 400, dialog -> inline
+    message) are exercised too, so a regression in either is caught here rather
+    than being assumed to hold because it held before.
+    """
+    from src.api.mcp_server import build_mcp
+    from src.core.container import Container
+    from src.services.profile.bulk import bulk_create
+
+    c = Container()
+    c._instances["pm"] = mgr
+    mcp = build_mcp(c)
+
+    def _via_mcp(bad):
+        return _mcp_create(mcp, "create_profile", {"name": f"p-mcp-{bad!r}", "os_type": bad})
+
+    def _via_bulk(bad):
+        return bulk_create(mgr, [f"p-bulk-{bad!r}"], "", bad)
+
+    def _via_rest(bad):
+        # The REST lane translates IncoherentProfile into a 400. Exercise the
+        # translation the route performs, not the route's plumbing.
+        from fastapi import HTTPException
+
+        from src.services.profile.coherence import IncoherentProfile
+
+        try:
+            mgr.add_profile(f"p-rest-{bad!r}", "", bad, tags=[])
+        except IncoherentProfile as e:
+            return HTTPException(status_code=400, detail=str(e))
+        return None
+
+    lanes = {"mcp": _via_mcp, "bulk": _via_bulk, "rest": _via_rest}
+
+    for bad in BAD_VALUES:
+        for lane_name, lane in lanes.items():
+            try:
+                answer = lane(bad)
+            except Exception as e:  # noqa: BLE001 — that is the whole assertion
+                raise AssertionError(
+                    f"lane {lane_name!r} let {type(e).__name__} escape to its "
+                    f"caller for os_type={bad!r}. A refusal must be DELIVERED "
+                    f"as a value this lane's caller already knows how to read."
+                ) from e
+            assert answer is not None, (
+                f"lane {lane_name!r} answered nothing at all for os_type={bad!r}"
+            )
+
+    # END STATE, once more and over every lane at once: after driving all of
+    # them with every bad value, the manager holds nothing non-canonical.
+    for name, p in mgr.profiles.items():
+        assert p.os_type in CANONICAL_OS_TYPES, (
+            f"{name!r} came to rest carrying os_type={p.os_type!r}"
+        )

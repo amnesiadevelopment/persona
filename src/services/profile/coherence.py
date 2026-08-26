@@ -365,11 +365,28 @@ def unstorable_os_type_error(os_type: str) -> str | None:
 def assert_storable_os_type(os_type: str) -> None:
     """Raise IncoherentProfile unless this spelling may be authored.
 
-    Raised as ``IncoherentProfile`` on purpose: every door that writes a profile
-    already catches it and translates it (400 at the REST lane, an inline
-    message in the profile dialog), so the refusal reaches the operator with
-    its reason through machinery that already exists rather than through a new
-    exception type each caller would have to learn.
+    Raised as ``IncoherentProfile`` on purpose: it is the refusal type the
+    coherence rules already use, so a door that already translates a pair
+    refusal translates this one with no new exception type to learn — 400 at
+    the REST lane (``routes/profiles.py``), an inline message in the profile
+    dialog (``ui/actions/profile.py``), a structured
+    ``{"created": False, "error": "refused", "detail": ...}`` at the MCP lane
+    (``api/mcp_server.py``), and the ``skipped`` channel in ``bulk_create``.
+
+    ⚠️ THAT LIST WAS NOT FREE, AND THE ORIGINAL CLAIM HERE WAS FALSE. This
+    docstring used to assert that "every door that writes a profile already
+    catches it", which was true of the REST lane and the dialog and NOT of the
+    MCP lane or ``bulk_create``: both were enumerated as callers on PS-187 and
+    neither had its exception handling checked. The MCP lane measurably could
+    not raise before this rule existed — it passes no ``engine`` and no
+    ``device_type``, so the pair rules were structurally unreachable through it
+    — so this rule was the first refusal ever to reach an off-machine
+    automation client, and it escaped uncaught. Both lanes now handle it.
+
+    So: do not read this list as a standing guarantee about doors not written
+    yet. A NEW caller of ``add_profile`` / ``update_profile`` must decide how it
+    reports a refusal, exactly as these four did. Saying "every door already
+    catches it" is what told the previous engineer they need not look.
     """
     reason = unstorable_os_type_error(os_type)
     if reason is not None:
