@@ -914,16 +914,60 @@ def test_legacy_profiles_present_what_they_always_did_after_an_append(
 # The filter itself
 # --------------------------------------------------------------------------
 
-def test_every_shipped_entry_is_generation_zero():
+def test_generation_zero_sees_every_python_pool_exactly_as_it_shipped():
     # Generation 0 is what every pre-existing profile reads, so its pool must be
     # the entire shipped list — contents, ORDER and therefore divisor. If a
     # shipped entry were ever renumbered above 0, the profiles pinned to it would
     # be the ones this whole mechanism exists to protect.
-    assert all(e.since == 0 for e in DESKTOP_RESOLUTIONS)
-    assert all(p.since == 0 for p in ANDROID_PRESETS + IOS_PRESETS)
-    assert visible_entries(DESKTOP_RESOLUTIONS, 0) == DESKTOP_RESOLUTIONS
-    assert visible_entries(IOS_PRESETS, 0) == IOS_PRESETS
-    assert visible_entries(ANDROID_PRESETS, 0) == ANDROID_PRESETS
+    #
+    # THIS USED TO ASSERT `all(e.since == 0)`, WHICH IS POLARITY-INVERTED
+    # AGAINST THE PROCEDURE IT PROTECTS (PS-190). Verified by execution, both
+    # ways: an UNSAFE untagged append satisfies `since == 0` and went GREEN,
+    # while the DOCUMENTED CORRECT edit — bump CURRENT_HARDWARE_GENERATION, tag
+    # the new entry `since=1` — made it go RED and failed a maintainer who
+    # followed the documented procedure exactly. A guard that fires on the
+    # correct edit and not on the dangerous one is worse than no guard: it
+    # trains people to work around it.
+    #
+    # Stated instead as the invariant that actually needs to hold, and that
+    # SURVIVES A BUMP: generation 0's VISIBLE pool is the list as it shipped.
+    # A tagged append is invisible to generation 0 (green, correctly); an
+    # untagged one lands in it and changes the divisor (red, correctly). The
+    # census pins contents AND order, because `pool[seed % len(pool)]` depends
+    # on both — a reorder or a substitution re-indexes as hard as an append,
+    # and a count-only check would miss either.
+    assert [e.size for e in visible_entries(DESKTOP_RESOLUTIONS, 0)] == [
+        (1366, 768), (1440, 900), (1536, 864), (1600, 900), (1920, 1080),
+        (1680, 1050), (1920, 1200), (2560, 1080), (2560, 1440),
+    ]
+    assert [p.key for p in visible_entries(IOS_PRESETS, 0)] == [
+        "iphone-15", "iphone-14",
+    ]
+    assert [p.key for p in visible_entries(ANDROID_PRESETS, 0)] == [
+        "pixel-7", "galaxy-s23", "xiaomi-13",
+    ]
+
+
+def test_no_shipped_python_entry_is_tagged_beyond_the_current_generation():
+    # The other half of the generalised latch — the bump-surviving replacement
+    # for `all(e.since == 0)`. An entry tagged with a generation nobody has been
+    # minted into yet is unreachable until the constant catches up: the "tag
+    # first, bump never" mistake, which makes a newly-added entry silently dead
+    # rather than loudly failing.
+    for label, pool in (
+        ("DESKTOP_RESOLUTIONS", DESKTOP_RESOLUTIONS),
+        ("IOS_PRESETS", IOS_PRESETS),
+        ("ANDROID_PRESETS", ANDROID_PRESETS),
+        ("ANDROID_TOUCH_POINTS", ANDROID_TOUCH_POINTS),
+        ("CORES_MEMORY", device_ext.CORES_MEMORY),
+    ):
+        for e in pool:
+            assert 0 <= e.since <= CURRENT_HARDWARE_GENERATION, (
+                f"{label} has an entry tagged since={e.since}, but "
+                f"CURRENT_HARDWARE_GENERATION is {CURRENT_HARDWARE_GENERATION}"
+                " — bump the constant in the same commit, or nothing can ever "
+                "be picked onto it"
+            )
 
 
 def test_normalize_generation_never_yields_an_empty_pool():
