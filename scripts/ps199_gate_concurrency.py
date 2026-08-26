@@ -172,6 +172,82 @@ def part_c(port: int) -> None:
         tree.close()
 
 
+def part_d() -> None:
+    """Coalescing measured at REALISTIC arrival, not only the favourable one.
+
+    Part B and the burst harness release every caller at once. That is the BEST
+    possible case for coalescing and it flatters the fix: a page's connections
+    arrive STAGGERED, not simultaneously. This measures both, because the
+    honest claim is narrower than the headline number.
+
+    The mechanism that makes staggered arrival worse is structural, not noise:
+    a caller arriving just AFTER a scan starts cannot be answered by it (that
+    scan began before the caller's not_before), so it waits for the in-flight
+    scan AND THEN for a fresh one — ~2 scan costs, against 1 for the inline
+    path. That is inherent to the freshness rule; removing it would turn the
+    coalescer into the TTL cache this design deliberately rejected.
+
+    The scan is synthetic (a fixed sleep at the PR's own measured ~100 ms) so
+    the arrival pattern is the only variable, and the inline path is bounded by
+    the real asyncio.to_thread pool width rather than being given unlimited
+    parallelism it does not have in production.
+    """
+    scan_cost = 0.100
+    n = 64
+    pool = min(32, (os.cpu_count() or 1) + 4)   # what asyncio.to_thread gives us
+
+    print("\n=== D. Arrival pattern is the variable the headline number hides ===")
+    print(f"   {n} callers, {scan_cost * 1000:.0f} ms scan, inline path bounded by "
+          f"the real to_thread pool ({pool} wide)")
+    print(f"{'arrival':>16} {'path':>11} {'scans':>6} {'median ms':>10} "
+          f"{'max ms':>8} {'wall s':>7}")
+
+    def run(gap: float, coalesced: bool) -> tuple[int, float, float, float]:
+        scans = []
+        lock = threading.Lock()
+        waits: list[float] = [0.0] * n
+
+        def scanner(root_pid):
+            with lock:
+                scans.append(time.monotonic())
+            time.sleep(scan_cost)
+            return {(1234, 9999)}
+
+        coalescer = peerauth._ScanCoalescer()
+        sem = threading.Semaphore(pool)          # the inline path's real ceiling
+
+        def caller(i: int) -> None:
+            t0 = time.monotonic()
+            if coalesced:
+                coalescer.scan(4242, t0, scanner=scanner)
+            else:
+                with sem:
+                    scanner(4242)
+            waits[i] = (time.monotonic() - t0) * 1000.0
+
+        threads = [threading.Thread(target=caller, args=(i,)) for i in range(n)]
+        t0 = time.monotonic()
+        for t in threads:
+            t.start()
+            if gap:
+                time.sleep(gap)
+        for t in threads:
+            t.join(timeout=120)
+        wall = time.monotonic() - t0
+        return len(scans), statistics.median(waits), max(waits), wall
+
+    for label, gap in (("simultaneous", 0.0), ("staggered 5ms", 0.005),
+                       ("staggered 20ms", 0.020)):
+        for path, coalesced in (("inline", False), ("coalescer", True)):
+            s, med, mx, wall = run(gap, coalesced)
+            print(f"{label:>16} {path:>11} {s:>6} {med:>10.1f} {mx:>8.1f} {wall:>7.2f}")
+
+    print("   => under BURST (the reported symptom) coalescing is a large win.")
+    print("      At a stagger near the scan cost it can be a median LOSS, and the")
+    print("      max column shows the 2-scan worst case. Both are real; the fix is")
+    print("      justified by the burst case, not by an unconditional speedup.")
+
+
 def main() -> None:
     print("platform:", sys.platform, "| mechanism:", peerauth.mechanism_state())
     srv, port = _sink()
@@ -179,6 +255,7 @@ def main() -> None:
         part_a(port)
         part_b(port)
         part_c(port)
+        part_d()
     finally:
         srv.close()
 

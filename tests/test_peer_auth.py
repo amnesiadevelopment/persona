@@ -900,3 +900,151 @@ def test_a_scanner_that_raises_does_not_wedge_later_callers():
     assert time.monotonic() - started < 5, (
         "a caller after a failed scan blocked — the in-flight marker leaked"
     )
+
+
+def test_a_scanner_that_raises_a_baseexception_does_not_mask_it_or_lose_the_wakeup():
+    """The BaseException boundary, which `except Exception` does not cover.
+
+    KeyboardInterrupt / SystemExit / CancelledError are not Exceptions. Before
+    this was fixed, one out of the scanner skipped the handler, left `result`
+    unbound, and the finally clause raised UnboundLocalError — three separate
+    harms, and this test pins all three:
+
+    1. The ORIGINAL exception must survive. A Ctrl-C during a scan is a routine
+       desktop shutdown path; reporting it as UnboundLocalError turns an
+       ordinary quit into what looks like a bug in this module.
+    2. notify_all() must still run, or every ALREADY-BLOCKED waiter falls
+       through to the full _WAIT_SLICE_SECONDS poll instead of being woken —
+       a second of added latency in a change whose purpose is removing it.
+    3. The failed scan must still be published, so the next caller is not
+       forced to redo work that already completed.
+    """
+    coalescer = peerauth._ScanCoalescer()
+    root = 4242
+
+    # The waiter must be blocked AT THE MOMENT the BaseException lands — it is
+    # the one that loses its wakeup — so the raising scan is held open until the
+    # waiter is demonstrably parked on the condition.
+    in_scan = threading.Event()
+    waiter_parked = threading.Event()
+    woke_at: list[float] = []
+
+    def waiter():
+        in_scan.wait(10)                  # only contend once a scan is running
+        waiter_parked.set()
+        coalescer.scan(root, time.monotonic(), scanner=lambda r: {(3, 4)})
+        woke_at.append(time.monotonic())
+
+    blocked = threading.Thread(target=waiter, daemon=True)
+    blocked.start()
+
+    raised_at: list[float] = []
+
+    def interrupt(root_pid):
+        in_scan.set()
+        waiter_parked.wait(10)
+        time.sleep(0.2)                   # let the waiter reach _cond.wait()
+        raised_at.append(time.monotonic())
+        raise KeyboardInterrupt("user quit mid-scan")
+
+    with pytest.raises(KeyboardInterrupt):
+        coalescer.scan(root, time.monotonic(), scanner=interrupt)
+
+    blocked.join(timeout=10)
+    assert woke_at, "the blocked waiter never returned at all"
+    assert woke_at[0] - raised_at[0] < coalescer._WAIT_SLICE_SECONDS, (
+        "a blocked waiter was not woken and had to time out its poll slice — "
+        "notify_all() was skipped, which is the latency this change removes"
+    )
+    assert root in coalescer._done, (
+        "the failed scan was never published, so its work is discarded and the "
+        "next caller starts over"
+    )
+    assert not coalescer._running, (
+        "the in-flight marker leaked after a BaseException"
+    )
+
+
+def test_a_wedged_scan_does_not_stall_every_other_caller_for_that_tree():
+    """The blast radius of sharing, bounded.
+
+    Before coalescing, a scan that blocked hurt exactly ONE connection. Sharing
+    a scan shares its slowness too, so without a bound this change would convert
+    a single stuck enumeration into a stalled listener — precisely the stall
+    PS-199 is about. _tree_endpoints has no timeout and is the operation most
+    likely to block on a stuck /proc read, or on GetExtendedTcpTable on the
+    Windows path this ticket concerns.
+
+    Past _SHARE_TIMEOUT_SECONDS a caller stops waiting and scans independently,
+    which is exactly what it did before this class existed.
+    """
+    coalescer = peerauth._ScanCoalescer()
+    coalescer._SHARE_TIMEOUT_SECONDS = 0.3      # keep the test quick
+    wedge = threading.Event()
+
+    def hangs(root_pid):
+        wedge.wait(30)                           # a scan stuck in the kernel
+        return {(1, 2)}
+
+    threading.Thread(
+        target=lambda: coalescer.scan(99, time.monotonic(), scanner=hangs),
+        daemon=True,
+    ).start()
+    time.sleep(0.1)
+
+    try:
+        started = time.monotonic()
+        result = coalescer.scan(99, time.monotonic(), scanner=lambda r: {(3, 4)})
+        elapsed = time.monotonic() - started
+    finally:
+        wedge.set()
+
+    assert result == {(3, 4)}, (
+        "the fallback caller was answered from the wedged scan rather than its "
+        "own — a wedged scan must not be able to answer anyone"
+    )
+    assert elapsed < 5, (
+        f"a caller blocked {elapsed:.1f}s behind ONE wedged scan — sharing has "
+        "turned a per-connection slowness into an all-connections stall"
+    )
+
+
+def test_completed_scans_do_not_accumulate_for_trees_that_are_gone():
+    """Retention is bounded, because a dead pid's endpoint set buys nothing.
+
+    A completed scan can only ever answer a waiter that is ALREADY blocked (a
+    caller arriving later needs a scan that started after IT did), so retaining
+    one per pid that has since exited is a pure leak: every profile launched in
+    an app session left a permanent entry holding a full endpoint set.
+    """
+    coalescer = peerauth._ScanCoalescer()
+    big = {(i, i + 1) for i in range(240)}       # a browser-sized tree
+
+    for pid in range(200):
+        coalescer.scan(pid, time.monotonic(), scanner=lambda r: big)
+
+    assert len(coalescer._done) <= coalescer._MAX_RETAINED_TREES, (
+        f"{len(coalescer._done)} completed scans retained after 200 distinct "
+        "trees — dead pids are never evicted"
+    )
+
+
+def test_binding_a_gate_forgets_any_scan_remembered_for_that_pid():
+    """A pid is REUSED by the OS, and that is a freshness hole, not tidiness.
+
+    If a scan for a previous tree that happened to hold this pid survived the
+    bind, a waiter on the NEW tree could be answered by an endpoint set that
+    describes a completely different process.
+    """
+    stale = {(1234, 9999)}
+    peerauth._scan_coalescer.scan(
+        os.getpid(), time.monotonic(), scanner=lambda r: stale
+    )
+    assert os.getpid() in peerauth._scan_coalescer._done
+
+    PeerGate("test").bind_to_process(os.getpid())
+
+    assert os.getpid() not in peerauth._scan_coalescer._done, (
+        "a scan for a previous tree survived a re-bind of the same pid — it "
+        "can now answer for a different process"
+    )
