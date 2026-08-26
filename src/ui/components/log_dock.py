@@ -40,7 +40,7 @@ from ..log_console import (
     SEV_COLOR,
     StreamState,
     event_row,
-    severity,
+    parse_event,
 )
 from ..theme.colors import COLORS
 
@@ -77,6 +77,25 @@ MAX_ROWS = 600
 RAIL_CONTENT_HEIGHT = 560
 
 
+def affordable_height(window_height: float | None) -> int:
+    """The TALLEST console this window can afford without starving the rail.
+
+    The budget itself, with no opinion about what the operator wants: whatever
+    is left once the rail has been given the height it needs to show all of
+    itself, clamped to the grip's own bounds. A window whose height is unknown
+    constrains nothing, so it affords the maximum.
+
+    Split out of :func:`default_height` because the two questions are genuinely
+    different once the window can RESIZE: "what should it open at" is asked
+    once, but "what may it be right now" is asked on every resize, and an
+    operator who dragged the console to 400px must not have that silently
+    rewritten to the 236px opening default just because he nudged the window.
+    """
+    if not window_height or window_height <= 0:
+        return MAX_HEIGHT
+    return max(MIN_HEIGHT, min(MAX_HEIGHT, int(window_height) - RAIL_CONTENT_HEIGHT))
+
+
 def default_height(window_height: float | None) -> int:
     """The console's opening height for a window of this height.
 
@@ -86,10 +105,7 @@ def default_height(window_height: float | None) -> int:
     cannot. Still clamped to the same bounds the grip uses, so the console can
     never open smaller than it is usable.
     """
-    if not window_height or window_height <= 0:
-        return OPEN_HEIGHT
-    affordable = int(window_height) - RAIL_CONTENT_HEIGHT
-    return max(MIN_HEIGHT, min(MAX_HEIGHT, min(OPEN_HEIGHT, affordable)))
+    return min(OPEN_HEIGHT, affordable_height(window_height))
 
 
 class LogDock:
@@ -107,15 +123,17 @@ class LogDock:
         # Sized against the window rather than a constant, so a short window
         # does not cost the sidebar its bottom cluster — see default_height.
         self.height = default_height(window_height)
+        #: The height the OPERATOR wants, which is not always the height he can
+        #: have. The applied height is min(this, whatever the window can
+        #: afford), so a window that shrinks takes height away and a window
+        #: that grows back HANDS IT BACK — without a resize ever overwriting a
+        #: deliberate drag. See apply_window_height.
+        self._desired_height = OPEN_HEIGHT
 
         #: How many lines the app has EVER produced, as of the last paint. The
         #: dock appends the difference rather than diffing text, so repeated
         #: identical lines cannot confuse it into re-rendering the tail.
         self._seq = 0
-        #: Trimming the front of the list moves every row below it. That is
-        #: exactly what must not happen under someone who is reading, so an
-        #: overflowing list is left overflowing until the follow resumes.
-        self._trim_deferred = False
         #: True only between a USER scroll notification and the END that closes
         #: it. Auto-scroll's own animation emits UPDATE frames whose position
         #: lags the extent it is animating toward, and reading those as a
@@ -287,8 +305,42 @@ class LogDock:
         rather than a expression buried in a gesture callback.
         """
         self.height = max(MIN_HEIGHT, min(MAX_HEIGHT, int(height)))
+        # A height the operator chose HIMSELF is what he wants back when the
+        # window has room again — so the grip moves the desire, not just the
+        # applied value. apply_window_height moves only the applied one.
+        self._desired_height = self.height
         self.body.height = self.height
         self._safe_update(self.body)
+
+    def apply_window_height(self, window_height: float | None) -> int:
+        """Re-apply the rail budget for a window that just changed size.
+
+        THE FAULT THIS EXISTS FOR: the budget used to be computed exactly once,
+        at build time, from the startup window height. The app opens at
+        1280x820 and its minimum is 1024x680, so dragging DOWN to the minimum
+        is an ordinary supported gesture — and it left a 236px dock in a 680px
+        window, i.e. 444px for a rail that needs 560px. The rail then starved
+        by 116px exactly as it did before any of this was fixed, only reached
+        through the resize path instead of the launch path. AC8 is a property
+        of the window SIZE, not of how the window got to that size.
+
+        Yields height when the window cannot afford the current one, and hands
+        it back (never past what he asked for) when it can — so an operator's
+        deliberate 400px drag survives a shrink-and-restore round trip instead
+        of being permanently rewritten to the opening default.
+
+        Returns the applied height so a caller can assert on it.
+        """
+        allowed = affordable_height(window_height)
+        target = min(self._desired_height, allowed)
+        desired = self._desired_height
+        self.height = max(MIN_HEIGHT, min(MAX_HEIGHT, int(target)))
+        # Deliberately NOT through set_height: this is the window speaking, not
+        # the operator, and it must not overwrite what he asked for.
+        self._desired_height = desired
+        self.body.height = self.height
+        self._safe_update(self.body)
+        return self.height
 
     def _build_collapsed_strip(self) -> ft.Control:
         """Collapsed, but NOT off.
@@ -464,7 +516,16 @@ class LogDock:
         self._follow_label.color = COLORS["warning"] if paused else COLORS["success"]
         self._total_label.value = f"· {self.state.total} events"
         self._counter.value = f"+{n}" if n else ""
-        sev = severity(self.state.last_line)
+        # Classify the SAME TEXT THE ROW DOES, not the raw stored line. The row
+        # renders parse_event()'s message ("Session ended"); the raw line still
+        # carries its timestamp ("10:00:04  > Session ended: mail-us-011"), and
+        # severity() has anchored rules — `startswith("session ended")` — that
+        # a leading timestamp silently defeats. Classifying the raw line made
+        # the collapsed pulse report IDLE/grey for an event the open console
+        # painted FAIL/red. Collapsed is the one state where the pulse is the
+        # only signal the operator gets, so it must not disagree with the row
+        # it stands for. Any future anchored rule would break the same way.
+        _, _, _, sev = parse_event(self.state.last_line, self.profiles)
         self._pulse.bgcolor = SEV_COLOR.get(sev, COLORS["success"])
 
     # ----------------------------------------------------------------- feed
@@ -482,12 +543,10 @@ class LogDock:
         because he is pinned to the bottom anyway.
         """
         if not self.state.following:
-            self._trim_deferred = len(self.list.controls) > MAX_ROWS
             return
         excess = len(self.list.controls) - MAX_ROWS
         if excess > 0:
             del self.list.controls[:excess]
-        self._trim_deferred = False
 
     def render(self, lines: list[str], seq: int | None = None) -> None:
         """Paint the console from the current tail — by APPENDING.

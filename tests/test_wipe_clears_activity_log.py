@@ -4,8 +4,8 @@ Clearing the FILE log (tests/test_wipe_clears_logs.py) is only half the surface.
 `_load_recent_log_lines()` is the SEED, and it runs in exactly one place —
 `AppState.__init__`, i.e. application startup. The Activity Log the operator
 reads is the in-memory ring `AppState._log_lines`, which accumulates
-independently via `add_log()` and is rendered by the sidebar panel (`_flush_log`)
-and the fullscreen dialog (`get_all_log_lines`).
+independently via `add_log()` and is rendered by the bottom console dock
+(`_flush_log`) and the fullscreen dialog (`get_all_log_lines`).
 
 So before this change the primary flow still failed the ticket's own headline:
 the operator hits panic wipe, opens the Activity Log, and reads the wiped
@@ -66,9 +66,6 @@ def _real_refs() -> UIRefs:
     return UIRefs(
         stats_text=ft.Text(),
         running_text=ft.Text(),
-        log_list=ft.ListView(),
-        log_column=ft.Container(),
-        log_toggle_btn=ft.TextButton(),
         content_subtitle=ft.Text(),
         profile_list_area=ft.Column(),
         prev_btn=ft.IconButton(),
@@ -179,19 +176,28 @@ def test_the_fullscreen_activity_log_dialog_names_no_wiped_profile(app):
     assert _naming(shown[0]) == [], shown[0]
 
 
-def test_the_sidebar_log_panel_repaints_empty_after_the_wipe(app):
-    # The panel keeps its last painted lines until a flush happens, so clearing
+def test_the_console_dock_repaints_empty_after_the_wipe(app):
+    # The console keeps its last painted ROWS until a flush happens, so clearing
     # the ring without marking a flush pending would leave the names on screen
     # anyway. _do_wipe clears BEFORE _refresh_profiles() so the repaint lands in
     # the same pass — assert the real controls, not the intent.
+    #
+    # This asserts the dock, which is the surface that renders the ring since
+    # the log moved out of the rail (PS-179). The console appends by sequence
+    # number rather than rebuilding, so the wipe is specifically the one case
+    # that MUST discard painted rows: clear_log() drives the seq backwards, and
+    # a console that ignored that would keep showing the wiped identity.
+    from src.ui.components.log_dock import LogDock
+
+    app._dock = LogDock()
     _seed_a_session(app)
     app._flush_log()
-    assert app.refs.log_list.controls, "premise: the sidebar had painted lines"
+    assert app._dock.row_count, "premise: the console had painted rows"
+    assert _naming([r for r in app.state.get_all_log_lines()]), "premise: naming it"
 
     _wipe_through_the_real_dialog(app)
 
-    assert app.refs.log_list.controls == []
-    assert app.refs.log_column.visible is False
+    assert app._dock.row_count == 0, "the console still holds rows after the wipe"
 
 
 def test_every_wiped_profile_is_gone_from_the_log_not_just_the_first(app):
