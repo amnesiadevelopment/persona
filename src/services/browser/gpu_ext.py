@@ -70,6 +70,9 @@ import json
 import pathlib
 
 from ...models.hardware_generation import normalize_generation
+from ...models.os_type import OS_NORM_TABLE
+from ...models.os_type import RECOGNISED_OS_TYPES as _RECOGNISED_OS_TYPES
+from ...models.os_type import canonical_os_type
 from .engine_platform import ENGINE_HONOURED_PLATFORMS as _ENGINE_HONOURED_PLATFORMS
 from .engine_platform import engine_honours
 from .worker_wrap import realm_bootstrap_js, realm_guard_js
@@ -839,24 +842,25 @@ ENGINE_AUTHORED_IDENTITY_ARMS = frozenset({"windows"})
 ENGINE_HONOURED_PLATFORMS = _ENGINE_HONOURED_PLATFORMS
 
 
-# The RAW ``os_type`` spellings the fold recognises. Derived FROM the fold's own
-# table rather than restated beside it, so the two cannot drift: teach
-# ``_OS_NORM_TABLE`` a new spelling and it is recognised here automatically.
+# The RAW ``os_type`` spellings the fold recognises, and the fold itself.
+#
+# ⚠️ NEITHER IS DEFINED HERE ANY MORE (PS-187). The table moved DOWN to
+# ``models/os_type.py`` and is RE-EXPORTED here, exactly as
+# ``ENGINE_HONOURED_PLATFORMS`` above is re-exported from ``engine_platform``
+# and for the identical reason: a second copy is the drift that produced the
+# `win` leak. Every existing reader of these three names still finds them here.
+#
+# It had to move because the same vocabulary now governs what may be STORED,
+# and that guarantee is enforced at the MODEL (``Profile.__setattr__``) — the
+# one place every write door funnels through. ``models/`` cannot import
+# ``services/`` without inverting the dependency direction, so the owner is the
+# model and this layer is the consumer.
 #
 # NOTE this set is about GPU POOL selection, NOT about authorship — see
 # ``ENGINE_HONOURED_PLATFORMS`` above for why asking it the authorship question
-# is what produced the ``win`` host leak.
-_OS_NORM_TABLE = (
-    (("ios", "iphone", "ipad", "ipados"), "ios"),
-    (("macos", "mac", "darwin"), "macos"),
-    (("android",), "android"),
-    (("linux",), "linux"),
-    (("windows", "win"), "windows"),
-)
-
-RECOGNISED_OS_TYPES = frozenset(
-    spelling for spellings, _arm in _OS_NORM_TABLE for spelling in spellings
-)
+# is what produced the `win` host leak.
+_OS_NORM_TABLE = OS_NORM_TABLE
+RECOGNISED_OS_TYPES = _RECOGNISED_OS_TYPES
 
 
 def _os_norm(os_type: str) -> str:
@@ -866,12 +870,12 @@ def _os_norm(os_type: str) -> str:
     selection wants (a plausible desktop card beats no card). Authorship is a
     SEPARATE question and must not be read off this value — see
     :func:`engine_authors_identity_for_engine_platform`.
+
+    Delegates to the model's ``canonical_os_type`` rather than re-walking the
+    table, so the value this layer POOLS on and the value the model STORES are
+    computed by one function and cannot disagree.
     """
-    ot = str(os_type).lower()
-    for spellings, arm in _OS_NORM_TABLE:
-        if ot in spellings:
-            return arm
-    return "windows"
+    return canonical_os_type(os_type)
 
 
 def engine_authors_identity(os_norm: str) -> bool:
