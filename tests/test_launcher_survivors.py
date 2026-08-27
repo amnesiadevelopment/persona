@@ -323,10 +323,159 @@ def test_scanning_survives_an_unreadable_registry(tmp_path, monkeypatch):
     """A registry that cannot be read refuses nothing and does not crash
     startup."""
     path = tmp_path / "s.json"
-    path.write_text("not json at all")
+    path.write_text("not json at all", encoding="utf-8")
 
     bl = _quiet_launcher(monkeypatch, SessionRegistry(str(path)))
     survivors, unknown = bl.scan_survivors()
 
     assert survivors == []
     assert unknown == []
+
+
+def test_two_concurrent_launches_of_one_profile_spawn_only_one_browser(
+    tmp_path, monkeypatch
+):
+    """THE CHECK AND THE RESERVATION ARE ONE ATOMIC STEP.
+
+    Two browsers on a single profile directory is the defect this whole ticket
+    exists to remove, and a restart is not the only way to reach it: two
+    concurrent launches of ONE profile can reach it inside a single process. If
+    the membership check and the `_starting` reservation happen in two separate
+    acquisitions, both callers read "not running", both reserve, and both
+    spawn.
+
+    The window is not instruction-sized, which is why this is worth a test
+    rather than a comment: the survivor probe sits between the two, and it does
+    psutil/file IO. The delay injected below stands in for that IO — it does not
+    manufacture the race, it makes an existing one observable instead of
+    relying on thread scheduling.
+
+    THE UI's is_loading FLAG DOES NOT COVER THIS. It serialises clicks on a
+    card; the API and MCP lanes call start_thread directly and have no such
+    flag — the same two lanes that motivate the guard living here at all.
+    """
+    reg = SessionRegistry(str(tmp_path / "s.json"))
+
+    spawned: list[str] = []
+    spawn_lock = threading.Lock()
+
+    def _spawn(profile):
+        with spawn_lock:
+            spawned.append(profile.name)
+        return _Proc()
+
+    monkeypatch.setattr(launcher_mod, "spawn_browser", _spawn)
+    monkeypatch.setattr(launcher_mod, "wait_for_exit", lambda *a, **k: None)
+    monkeypatch.setattr(BrowserLauncher, "_monitor_process", lambda *a, **k: None)
+
+    bl = BrowserLauncher(registry=reg)
+
+    # Stand in for the psutil IO the real probe performs, so both threads are
+    # reliably inside the check->reserve window rather than depending on the
+    # scheduler to interleave them.
+    real_survivor_for = bl.survivor_for
+
+    def _slow_survivor_for(name):
+        time.sleep(0.2)
+        return real_survivor_for(name)
+
+    monkeypatch.setattr(bl, "survivor_for", _slow_survivor_for)
+
+    both_ready = threading.Barrier(2)
+
+    def _launch():
+        both_ready.wait(timeout=5)
+        bl.start_thread(Profile(name="alpha", os_type="windows"), lambda m: None)
+
+    threads = [threading.Thread(target=_launch) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+    assert not any(t.is_alive() for t in threads), "a launch thread hung"
+
+    assert spawned == ["alpha"], (
+        "two concurrent launches of one profile spawned "
+        f"{len(spawned)} browsers against a single profile directory: {spawned}"
+    )
+
+
+def test_a_survivor_refusal_releases_the_slot_it_reserved(tmp_path, monkeypatch):
+    """A REFUSAL MUST NOT COST THE PROFILE ITS NEXT LAUNCH.
+
+    The reservation is taken before the survivor probe, so the refusal path now
+    owns a slot it has to give back. If it leaks, `alpha` sits in `_starting`
+    for the life of the process and EVERY later launch is refused as a
+    duplicate — a permanent lockout, which is the failure mode this ticket
+    forbids in its strongest form: there is no gesture in the UI that clears it.
+
+    So: refuse over a live survivor, let that survivor die, and assert the very
+    next launch is allowed.
+    """
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    reg = SessionRegistry(str(tmp_path / "s.json"))
+    reg.record(make_record("alpha", proc, "chromium"))
+
+    spawned: list[str] = []
+    monkeypatch.setattr(
+        launcher_mod,
+        "spawn_browser",
+        lambda profile: spawned.append(profile.name) or _Proc(),
+    )
+    monkeypatch.setattr(launcher_mod, "wait_for_exit", lambda *a, **k: None)
+    monkeypatch.setattr(BrowserLauncher, "_monitor_process", lambda *a, **k: None)
+
+    bl = BrowserLauncher(registry=reg)
+    bl.scan_survivors()
+
+    try:
+        bl.start_thread(Profile(name="alpha", os_type="windows"), lambda m: None)
+        assert spawned == [], "the live survivor must have refused this launch"
+    finally:
+        proc.kill()
+        proc.wait()
+
+    assert "alpha" not in bl._starting, (
+        "the refusal leaked its reservation: alpha is stuck in _starting and "
+        "every future launch will be refused as a duplicate"
+    )
+
+    # The survivor is gone now, so the guard must let the user back in.
+    bl.start_thread(Profile(name="alpha", os_type="windows"), lambda m: None)
+
+    assert spawned == ["alpha"], (
+        "a refusal cost the profile its next launch — this is the lockout"
+    )
+
+
+def test_a_probe_that_raises_allows_the_launch_and_leaks_no_slot(
+    tmp_path, monkeypatch
+):
+    """AN UNANSWERABLE LIVENESS QUESTION FAILS OPEN, AND FAILS CLEAN.
+
+    `liveness_of` is written to answer UNKNOWN rather than raise, but the guard
+    must not depend on that discipline holding forever: an exception escaping
+    the probe would otherwise propagate out of start_thread with the slot still
+    reserved, which both refuses this launch and locks out every later one.
+    """
+    reg = SessionRegistry(str(tmp_path / "s.json"))
+
+    spawned: list[str] = []
+    monkeypatch.setattr(
+        launcher_mod,
+        "spawn_browser",
+        lambda profile: spawned.append(profile.name) or _Proc(),
+    )
+    monkeypatch.setattr(launcher_mod, "wait_for_exit", lambda *a, **k: None)
+    monkeypatch.setattr(BrowserLauncher, "_monitor_process", lambda *a, **k: None)
+
+    bl = BrowserLauncher(registry=reg)
+
+    def _boom(name):
+        raise RuntimeError("psutil exploded")
+
+    monkeypatch.setattr(bl, "survivor_for", _boom)
+
+    bl.start_thread(Profile(name="alpha", os_type="windows"), lambda m: None)
+
+    assert spawned == ["alpha"], "an unanswerable probe must not refuse a launch"
