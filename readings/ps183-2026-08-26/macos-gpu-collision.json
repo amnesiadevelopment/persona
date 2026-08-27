@@ -1,0 +1,38 @@
+{
+  "ticket": "PS-183",
+  "question": "Does widening MAC_GPUS 2->11 (9 entries tagged since:1) cut the macOS GPU collision into the ~15% band, and does it move any EXISTING profile?",
+  "measured_at": "2026-08-26T19:56:05.417627+00:00",
+  "venue": "LOOPBACK / node. The emitted gpu.js is EXECUTED and the patched getParameter is CALLED (the _GPU_READ harness pattern in tests/test_hardware_generation.py). No third party is contacted and no exit is needed.",
+  "why_not_engine_gpu_variance": "engine_gpu_variance.measure() launches with install_layer=False, so OUR layer is OFF and MAC_GPUS never reaches the page - it reads the ENGINE's identity. macos is not in ENGINE_AUTHORED_IDENTITY_ARMS (={windows}), so on this arm our pool is what ships. The tool's arithmetic (collision_probability, the Simpson index) IS reused here; only the source of the readings differs. No second instrument was built.",
+  "arithmetic": "src.services.verify.engine_gpu_variance.collision_probability (Simpson index)",
+  "seeds": "1..64 inclusive",
+  "per_generation": {
+    "0": {
+      "visible_pool_size": 2,
+      "seeds": 64,
+      "collision_probability": 0.5005,
+      "distribution": {
+        "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)": 33,
+        "ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Pro, Unspecified Version)": 31
+      }
+    },
+    "1": {
+      "visible_pool_size": 11,
+      "seeds": 64,
+      "collision_probability": 0.0957,
+      "distribution": {
+        "ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Max, Unspecified Version)": 8,
+        "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)": 7,
+        "ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Pro, Unspecified Version)": 7,
+        "ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Pro, Unspecified Version)": 7,
+        "ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Max, Unspecified Version)": 6,
+        "ANGLE (Apple, ANGLE Metal Renderer: Apple M4, Unspecified Version)": 6,
+        "ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Max, Unspecified Version)": 6,
+        "ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Pro, Unspecified Version)": 5,
+        "ANGLE (Apple, ANGLE Metal Renderer: Apple M4 Pro, Unspecified Version)": 4,
+        "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)": 4,
+        "ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)": 4
+      }
+    }
+  }
+}

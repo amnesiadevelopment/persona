@@ -75,9 +75,11 @@ from src.services.browser.resolution import (
 # a 2-entry pool, a divisor change from 2 to 3 cannot hide in an unsampled gap.
 SEEDS = list(range(60))
 
-# The generation an appended entry would be tagged with. The production constant
-# is 0 today; a maintainer adding hardware bumps it and tags the new entries with
-# the bumped value, so the append these tests simulate is `since=+1`.
+# The generation an appended entry would be tagged with. The production
+# constant is 1 today (PS-183 bumped it from 0 when it widened MAC_GPUS); a
+# maintainer adding hardware bumps it again and tags the new entries with the
+# bumped value, so the append these tests simulate is `since=+1` whatever the
+# constant currently is — which is why this is derived rather than hardcoded.
 NEXT_GEN = CURRENT_HARDWARE_GENERATION + 1
 
 

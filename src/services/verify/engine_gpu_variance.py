@@ -209,8 +209,70 @@ def has_known_pool(arm: str) -> bool:
     return arm in _POOL_VAR_FOR_ARM
 
 
-def fallback_pool_size(arm: str) -> int:
-    """How many entries OUR OWN pool for this arm holds.
+def _pool_entry_generations(arm: str) -> "list[int] | None":
+    """The ``since`` generation of EVERY entry in the arm's pool, in order.
+
+    An entry with no explicit ``since`` is generation 0 — that is the
+    dataclass default on :class:`gpu_ext.GpuEntry`, the same default the
+    emitted JS's own ``visible()`` applies, and the same one
+    ``hardware_generation`` documents.
+
+    READ FROM THE TAGGED PYTHON RECORDS, NOT FROM THE EMITTED JS. This used to
+    scrape ``_CONTENT_SCRIPT`` with a pair of regexes and cross-check them
+    against each other, because the pools existed only as hand-maintained JS
+    literals. PS-190 lifted them into ``gpu_ext.GPU_POOLS`` as real objects, so
+    the generations are now read off ``entry.since`` directly. The whole class
+    of failure that cross-check existed to catch — two regexes drifting apart
+    as the literals' formatting changed, and reporting a pool size no pool
+    has — cannot occur any more, so the cross-check is gone rather than kept
+    as ceremony.
+
+    None still means WE FAILED TO LOOK, which is deliberately NOT the same as
+    an empty pool: the arm has no registry entry, or the name it registers is
+    absent from ``GPU_POOLS``. A None propagates to a 0 from
+    :func:`fallback_pool_size` and thence to an ``INCONCLUSIVE`` verdict, which
+    is this module's standing "we failed to look" answer.
+    """
+    from .. import browser  # noqa: F401  (kept for a stable import root)
+    from ..browser import gpu_ext
+
+    name = _POOL_VAR_FOR_ARM.get(arm)
+    if not name:
+        return None
+    pool = gpu_ext.GPU_POOLS.get(name)
+    if pool is None:
+        return None
+    return [int(getattr(e, "since", 0) or 0) for e in pool]
+
+
+def pool_sizes_by_generation(arm: str) -> "dict[int, int]":
+    """How big the arm's VISIBLE pool is, per profile generation.
+
+    Maps generation -> number of entries a profile of that generation can be
+    picked onto. Keys are every generation at which the answer CHANGES (0
+    plus each distinct ``since``), so a pool nobody has tagged returns a single
+    ``{0: n}`` and a split pool shows the split.
+
+    This is the reading :func:`fallback_pool_size` collapses to one number, and
+    it is the one to quote when the question is about profiles that ALREADY
+    EXIST rather than about profiles minted today. Empty dict when the scrape
+    could not be trusted — see :func:`_pool_entry_generations`.
+    """
+    from types import SimpleNamespace
+
+    from ...models.hardware_generation import visible_entries
+
+    sinces = _pool_entry_generations(arm)
+    if sinces is None:
+        return {}
+    entries = [SimpleNamespace(since=s) for s in sinces]
+    # visible_entries owns the filter rule; re-implementing it here is exactly
+    # the duplication this module refuses everywhere else.
+    return {g: len(visible_entries(entries, g)) for g in sorted(set([0] + sinces))}
+
+
+def fallback_pool_size(arm: str, generation: "int | None" = None) -> int:
+    """How many entries OUR OWN pool for this arm holds AT ``generation``.
 
     Read from ``gpu_ext.GPU_POOLS`` — the tagged Python records the emitted JS
     is rendered from — rather than duplicated here, so the bar tracks the pool
@@ -218,11 +280,37 @@ def fallback_pool_size(arm: str) -> int:
     lifted the pools into Python data, so the count is now a ``len()`` of the
     real list and cannot drift with the literals' formatting.
 
-    COUNTED UNFILTERED, ACROSS EVERY GENERATION, DELIBERATELY. The bar this
-    feeds is a statement about the variety persona's pool offers, compared
-    against readings taken from an engine that knows nothing about generations.
-    Filtering to one generation would make the bar depend on which profile
-    happened to be measured.
+    NOT COUNTED UNFILTERED — AND THAT IS A DELIBERATE REVERSAL, RECORDED HERE
+    BECAUSE IT OVERTURNS WHAT THIS DOCSTRING USED TO PROMISE. PS-190 stated
+    the count was taken "UNFILTERED, ACROSS EVERY GENERATION, DELIBERATELY",
+    reasoning that filtering "would make the bar depend on which profile
+    happened to be measured". That reasoning is preserved and still binds — the
+    bar must NOT wobble from one measured profile to the next — but an
+    unfiltered ``len()`` is the wrong instrument for it, and while every entry
+    was ``since=0`` the two were indistinguishable so nothing exposed the
+    difference. PS-183 tagged nine of eleven ``MAC_GPUS`` entries and separated
+    them: an unfiltered count claims a variety NO profile is ever offered,
+    because ``pick()`` divides by the length of the profile's OWN generation's
+    visible pool and never by the whole array's. So the count is filtered, and
+    stability is bought the honest way instead — by a generation ARGUMENT that
+    defaults to a fixed constant rather than to the profile under measurement.
+    Same guarantee, sound arithmetic.
+
+    ⚠️ THE POOL IS NOT ONE NUMBER — IT IS ONE NUMBER PER GENERATION. Entries
+    carry a ``since`` tag and a profile only sees entries at or below its own
+    frozen generation (``models/hardware_generation.py``), so "the size of
+    MAC_GPUS" is an ill-formed question. ``generation`` defaults to
+    ``CURRENT_HARDWARE_GENERATION`` — the pool a profile created TODAY draws
+    from — which is the right default for this gate's own question (see
+    :func:`bar_for`) and is the WIDEST answer, hence the most flattering.
+
+    It is therefore NOT the figure the installed base sees, and on macOS the
+    gap is the whole finding rather than a rounding detail: ``MAC_GPUS`` holds
+    11 entries of which 9 are ``since=1`` (PS-183), so this returns 11 at the
+    default while every macOS profile that existed before that widening sees
+    **2**, and collides at 50.0% rather than 9.1%. Call
+    :func:`pool_sizes_by_generation` when you need that split, and never quote
+    this function's default as "how often two macOS profiles collide".
 
     Returns 0 in TWO different situations, which callers must NOT conflate:
     the arm has no pool at all (:func:`has_known_pool` is False), or the arm
@@ -230,24 +318,51 @@ def fallback_pool_size(arm: str) -> int:
     :func:`has_known_pool`: 0 on a known-pool arm means WE FAILED TO LOOK, and
     a missing bar must never be read as a bar that was met.
     """
-    from .. import browser  # noqa: F401  (kept for a stable import root)
-    from ..browser import gpu_ext
+    from ...models.hardware_generation import CURRENT_HARDWARE_GENERATION
 
-    name = _POOL_VAR_FOR_ARM.get(arm)
-    if not name:
+    sizes = pool_sizes_by_generation(arm)
+    if not sizes:
         return 0
-    return len(gpu_ext.GPU_POOLS.get(name, ()))
+    gen = CURRENT_HARDWARE_GENERATION if generation is None else int(generation)
+    # The visible pool at `gen` is the one for the highest tagged generation
+    # at or below it.
+    eligible = [g for g in sizes if g <= gen]
+    if not eligible:
+        return 0
+    return sizes[max(eligible)]
 
 
-def bar_for(arm: str) -> "float | None":
+def bar_for(arm: str, generation: "int | None" = None) -> "float | None":
     """The collision probability the engine must BEAT on this arm.
 
     It is the collision probability of persona's own pool for the arm, assumed
     uniform (which is what ``pick()``'s modulo over a hash produces, and what
     the measured distributions confirm to within a fraction of a percent). None
     when there is no pool to compare against.
+
+    ⚠️ WHICH GENERATION'S POOL, AND WHY — stated because it is a judgement, not
+    an obvious default. This gate asks "would deferring to the engine COST us
+    unlinkability?", and that is a decision about profiles minted from now on:
+    profiles that already exist keep the identity they were issued, whichever
+    way the arm is decided. So the pool we would be GIVING UP is the one a new
+    profile draws from, and the bar defaults to ``CURRENT_HARDWARE_GENERATION``.
+    That is also the STRICTER reading on any widened arm — a wider pool is a
+    higher bar for the engine to clear — so the default cannot let a deferral
+    through on a technicality.
+
+    It does mean this number is NOT a claim about the installed base. On macOS
+    the bar is 9.1% (11 entries at generation 1) while every pre-PS-183 macOS
+    profile sits in a 2-entry pool at 50.0%. Both are true; they answer
+    different questions. :func:`classify` reports the split alongside the bar
+    for exactly that reason.
     """
-    n = fallback_pool_size(arm)
+    # Called with ONE argument on the default path, deliberately. Tests
+    # simulate a drifted scrape by substituting a single-parameter stub for
+    # fallback_pool_size, and a gate whose failure path cannot be exercised is
+    # worse than a slightly awkward call site here.
+    n = fallback_pool_size(arm) if generation is None else fallback_pool_size(
+        arm, generation
+    )
     if n <= 0:
         return None
     return 1.0 / n
@@ -365,6 +480,14 @@ def classify(readings: "dict[str, dict[int, str | None]]") -> dict:
             "identities": distinct,
             "fallback_pool_size": fallback_pool_size(arm),
             "bar_collision_probability": bar,
+            # The per-generation split behind the two figures above. Both of
+            # those describe the pool a profile minted TODAY draws from; on an
+            # arm that has been widened, profiles that already exist sit in a
+            # SMALLER pool and collide MORE often, and reporting only the
+            # flattering number would be the same "varied, therefore fine"
+            # move this module exists to refuse. Recorded per arm so the
+            # archived reading carries it too — see pool_sizes_by_generation.
+            "pool_sizes_by_generation": pool_sizes_by_generation(arm),
         }
         if len(readable) < MIN_SEEDS:
             entry["verdict"] = "INCONCLUSIVE"
@@ -496,6 +619,21 @@ def format_result(result: dict) -> str:
             + (f", collision {p:.1%}" if p is not None else "")
         )
         lines.append(f"    {e['detail']}")
+        # An arm whose pool is split across generations gets the split printed,
+        # because the bar above describes only the newest one. Silent on a
+        # single-generation arm — there is nothing to disambiguate there, and
+        # printing {0: 5} on every run would train the reader to skip the line.
+        sizes = e.get("pool_sizes_by_generation") or {}
+        if len(sizes) > 1:
+            split = ", ".join(
+                f"gen {g}: {n} entries, {1.0 / n:.1%}" if n else f"gen {g}: none"
+                for g, n in sorted(sizes.items())
+            )
+            lines.append(
+                f"    ⚠️ our own pool is NOT one size — {split}. The bar above "
+                "is the NEWEST generation's; profiles created before the pool "
+                "was widened still sit in the smaller one."
+            )
 
     # PS-192: the SAMPLE's own line, printed on every run — complete or not.
     # Printed unconditionally on purpose: a completeness note that appears only
@@ -798,11 +936,12 @@ def _cmd_replay(args: argparse.Namespace) -> int:
 
     ⚠️ NOT COVERED — the verdict is re-judged against TODAY'S BAR, not the bar
     the reading was measured against. ``classify`` re-derives
-    ``bar_collision_probability`` and ``fallback_pool_size`` from THIS
-    machine's ``gpu_ext`` pools, because the readings are replayed but the bar
-    is not carried. If persona's own pool for an arm is edited between the
-    measurement and the replay, an identical archived reading can be re-judged
-    differently. Measured, not reasoned — 10 seeds at 38% collision:
+    ``bar_collision_probability``, ``fallback_pool_size`` and
+    ``pool_sizes_by_generation`` from THIS machine's ``gpu_ext`` pools, because
+    the readings are replayed but the bar is not carried. If persona's own pool
+    for an arm is edited between the measurement and the replay, an identical
+    archived reading can be re-judged differently. Measured, not reasoned — 10
+    seeds at 38% collision:
 
         pool 5 (bar 20%)  -> TOO_NARROW, exit 1     <- as measured
         pool 2 (bar 50%)  -> OK,         exit 0     <- same readings, replayed

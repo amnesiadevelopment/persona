@@ -13,6 +13,10 @@ could not have failed, which this project does not count as coverage.
 
 import argparse
 import json
+import pathlib
+import shutil
+import subprocess
+import sys
 
 import pytest
 
@@ -150,6 +154,132 @@ def test_has_known_pool_agrees_with_the_arms_whose_size_can_actually_be_read():
             f"{arm} is declared a known-pool arm but its size reads as 0 — "
             "_POOL_VAR_FOR_ARM and gpu_ext.GPU_POOLS have drifted apart"
         )
+
+
+def test_the_pool_size_is_reported_per_generation_not_as_one_number():
+    # THE DEFECT THIS PINS. `fallback_pool_size` scraped `unmaskedVendor`
+    # occurrences and never looked at `since:`, so it counted entries that NO
+    # EXISTING PROFILE CAN BE PICKED ONTO. After PS-183 widened MAC_GPUS from 2
+    # to 11 with nine `since=1` entries, that made bar_for("macos") report 9.1%
+    # while every macOS profile that already existed sat in a 2-entry pool
+    # colliding at 50.0% — the helper advertised unlinkability those profiles
+    # do not have.
+    #
+    # Asserted as a RELATIONSHIP to gpu_ext's own filter rather than against
+    # the literals 2 and 11: hardcoding those would make this test restate the
+    # pool instead of checking the mechanism, and it would go red on the next
+    # legitimate widening for no reason.
+    from types import SimpleNamespace
+
+    from src.models.hardware_generation import (
+        CURRENT_HARDWARE_GENERATION,
+        visible_entries,
+    )
+
+    for arm in ("windows", "macos", "linux", "android"):
+        sizes = v.pool_sizes_by_generation(arm)
+        assert sizes, f"{arm}: the per-generation scrape returned nothing"
+
+        # Every reported size must equal what gpu_ext's OWN filter yields.
+        sinces = v._pool_entry_generations(arm)
+        entries = [SimpleNamespace(since=s) for s in sinces]
+        for gen, n in sizes.items():
+            assert n == len(visible_entries(entries, gen)), (
+                f"{arm} gen {gen}: reported {n} entries, but the shipped "
+                f"filter yields {len(visible_entries(entries, gen))}"
+            )
+
+        # The default must be the CURRENT generation's pool, not the raw list.
+        assert v.fallback_pool_size(arm) == len(
+            visible_entries(entries, CURRENT_HARDWARE_GENERATION)
+        )
+
+    # And the split must actually be VISIBLE on a widened arm — a helper that
+    # merely accepts a generation argument while reporting one number would
+    # pass every assertion above.
+    macos = v.pool_sizes_by_generation("macos")
+    assert len(macos) > 1, (
+        "macos was widened across a generation boundary by PS-183, so its "
+        "pool has more than one size; a single entry here means the `since:` "
+        "scrape stopped seeing the tags"
+    )
+    assert macos[0] < macos[max(macos)], (
+        "the older generation must see FEWER entries than the newer one"
+    )
+
+
+def test_an_existing_profiles_smaller_pool_is_not_hidden_behind_the_new_bar():
+    # The number the gate compares against is the NEWEST generation's, which is
+    # the right question for "should we defer this arm?" but is NOT a claim
+    # about the installed base. That distinction has to survive in the OUTPUT,
+    # or the only record of it is a docstring nobody reads at 3am.
+    result = v.classify(_arm(["c0", "c1", "c2", "c3", "c4"] * 2, arm="macos"))
+    entry = result["per_arm"]["macos"]
+
+    # The split rides the reading, so an ARCHIVED record carries it too.
+    assert entry["pool_sizes_by_generation"] == v.pool_sizes_by_generation("macos")
+
+    # And it is printed, with the older generation's worse figure spelled out
+    # rather than left for the reader to divide.
+    text = v.format_result(
+        {"arms_checked": ["macos"], "per_arm": {"macos": entry}}
+    )
+    assert "gen 0: 2 entries, 50.0%" in text, text
+    assert "NOT one size" in text, text
+
+
+def test_a_single_generation_arm_does_not_print_a_meaningless_split():
+    # Printing "gen 0: 5 entries" on every unwidened arm would train the reader
+    # to skip the line — and this line only earns its space by being rare.
+    entry = v.classify(_arm(["c0", "c1", "c2", "c3", "c4"] * 2))["per_arm"][
+        "windows"
+    ]
+    assert len(entry["pool_sizes_by_generation"]) == 1
+    text = v.format_result(
+        {"arms_checked": ["windows"], "per_arm": {"windows": entry}}
+    )
+    assert "NOT one size" not in text, text
+
+
+def test_a_pool_that_cannot_be_read_reads_as_failed_to_look_not_as_empty(
+    monkeypatch,
+):
+    # An unreadable pool must fail SAFE, into this module's standing "we failed
+    # to look" answer — never into a small pool (which would LOWER the bar and
+    # let a narrow engine pass) or a large one (which would raise it).
+    #
+    # ⚠️ WHAT THIS TEST USED TO EXERCISE NO LONGER EXISTS, and the replacement
+    # is deliberately a DIFFERENT trigger for the SAME contract. It used to
+    # corrupt the JS in `gpu_ext._CONTENT_SCRIPT` so the two regexes
+    # `_pool_entry_generations` ran (per-entry, and a cruder `unmaskedVendor`
+    # tally) disagreed about the entry count. PS-190 lifted the pools out of
+    # the JS into `gpu_ext.GPU_POOLS` as real objects and PS-183 read the tags
+    # off `entry.since` directly, so there are no regexes left to drift and
+    # mangling the JS text now proves nothing about this function. Rewriting
+    # the fixture to keep the old trigger alive would have pinned a scrape that
+    # is gone; the contract is what survives, so the contract is what is pinned.
+    #
+    # The surviving way to fail to look: the arm is registered in
+    # `_POOL_VAR_FOR_ARM` but that name is absent from `GPU_POOLS` — the two
+    # having drifted apart, which is exactly the "we failed to look" case the
+    # 0-means-two-things contract exists for.
+    assert v._POOL_VAR_FOR_ARM["android"] == "ANDROID_GPUS"
+    pools = {k: val for k, val in gpu_ext.GPU_POOLS.items() if k != "ANDROID_GPUS"}
+    assert "ANDROID_GPUS" not in pools, "fixture no longer matches the source"
+    monkeypatch.setattr(gpu_ext, "GPU_POOLS", pools)
+
+    # has_known_pool still claims the arm — that is the point of the contract:
+    # a 0 here means WE FAILED TO LOOK, not "this arm ships no pool".
+    assert v.has_known_pool("android") is True
+    assert v._pool_entry_generations("android") is None
+    assert v.pool_sizes_by_generation("android") == {}
+    assert v.fallback_pool_size("android") == 0
+    assert v.bar_for("android") is None
+
+    # ...and that 0 must reach the verdict as INCONCLUSIVE, not as a pass.
+    result = v.classify(_arm(["c0", "c1", "c2", "c3", "c4"] * 2, arm="android"))
+    assert result["per_arm"]["android"]["verdict"] == "INCONCLUSIVE"
+    assert v.exit_code_for(result) == v.EXIT_CANNOT_RUN
 
 
 # --------------------------------------------------------------------------
@@ -947,3 +1077,144 @@ def test_an_all_unreadable_run_is_reported_as_truncated_too():
     assert cov["complete"] is False
     assert (cov["seeds_readable"], cov["seeds_requested"]) == (0, 10)
     assert v.exit_code_for(result) == v.EXIT_CANNOT_RUN
+
+
+# --------------------------------------------------------------------------
+# The archived reading script must measure the tree it SITS IN
+# --------------------------------------------------------------------------
+#
+# This one is pinned by VENUE, not by inspection, and that is the whole point.
+# `readings/ps183-2026-08-26/measure.py` produced this ticket's two headline
+# figures. It once resolved the tree under measurement from a hard-coded
+# absolute path, and that defect is invisible to reading the code: the line is
+# short, obvious and looks correct. It is also invisible to a green suite run
+# in the authoring container, because there the fixed path happens to BE the
+# right tree.
+#
+# It only becomes visible when the script is run somewhere else — and then it
+# does not crash, which is the dangerous part. It imports whatever tree lives
+# at the fixed path, succeeds, and prints a confident figure for a pool it
+# never looked at. Demonstrated: placed in a 2-entry worktree the old line
+# reported 21.9% over five cards, four of which did not exist in that tree;
+# the corrected line reported the true 53.1% over the two that did.
+#
+# A reading that agrees with you no matter which tree it stands in is a
+# fabricated confirmation, and it is the one output a `readings/` directory
+# must never produce — the reason PS-16 commits readings at all is the
+# "re-derive, never edit-to-match" rule.
+#
+# So the assertion is not "line 9 contains __file__" (that pins the spelling,
+# not the property, and PS-11 is explicit that this does not count). The
+# assertion is that the script, placed in a foreign tree, reports THAT tree's
+# numbers. Every module it imports is stubbed there with a sentinel, so a
+# script that reaches past its own location cannot produce this output.
+
+_SENTINEL_A = "ANGLE (Apple, ANGLE Metal Renderer: SENTINEL-FAKE-TREE-A, Unspecified Version)"
+_SENTINEL_B = "ANGLE (Apple, ANGLE Metal Renderer: SENTINEL-FAKE-TREE-B, Unspecified Version)"
+# A value no real pool would ever return, so the printed figure identifies
+# WHICH tree's collision_probability() actually ran.
+_SENTINEL_P = 0.4242
+
+
+def _materialise_foreign_tree(root):
+    """A minimal tree that answers every import `measure.py` makes.
+
+    Deliberately NOT a copy of the repo: every module here returns a sentinel,
+    so any output containing one proves the import resolved HERE, and output
+    containing real Apple cards proves it resolved somewhere else.
+    """
+    browser = root / "src" / "services" / "browser"
+    verify = root / "src" / "services" / "verify"
+    browser.mkdir(parents=True)
+    verify.mkdir(parents=True)
+
+    (browser / "engine_platform.py").write_text(
+        "def engine_platform_for(os_type, device):\n"
+        "    return 'sentinel-platform'\n",
+        encoding="utf-8",
+    )
+    (verify / "engine_gpu_variance.py").write_text(
+        # Ignores its input on purpose: the figure is an identity marker.
+        f"def collision_probability(values):\n"
+        f"    return {_SENTINEL_P}\n",
+        encoding="utf-8",
+    )
+    # Emits a real extension the committed harness.js can execute, so the
+    # script's own "did the extension actually patch getParameter?" assertion
+    # is exercised rather than bypassed.
+    (browser / "gpu_ext.py").write_text(
+        "import pathlib\n"
+        f"A = {_SENTINEL_A!r}\n"
+        f"B = {_SENTINEL_B!r}\n"
+        "def build_gpu_extension(seed, os_type, out_dir, generation,\n"
+        "                        engine_platform=None):\n"
+        "    d = pathlib.Path(out_dir)\n"
+        "    d.mkdir(parents=True, exist_ok=True)\n"
+        "    card = A if seed % 2 else B\n"
+        "    (d / 'gpu.js').write_text(\n"
+        "        'for (const C of [self.WebGLRenderingContext, '\n"
+        "        'self.WebGL2RenderingContext]) {'\n"
+        "        '  C.prototype.getParameter = function (p) {'\n"
+        "        '    if (p === 0x9246) return ' + repr(card).replace(\"'\", '\"') + ';'\n"
+        "        '    if (p === 0x9245) return \"Google Inc. (Apple)\";'\n"
+        "        '    return null;'\n"
+        "        '  };'\n"
+        "        '}',\n"
+        "        encoding='utf-8')\n"
+        "    return str(d)\n",
+        encoding="utf-8",
+    )
+    return root
+
+
+@pytest.mark.skipif(shutil.which("node") is None,
+                    reason="the reading harness executes the emitted gpu.js under node")
+def test_the_reading_script_measures_the_tree_it_is_placed_in(tmp_path):
+    # Materialise a foreign tree and drop the COMMITTED script into it,
+    # byte-for-byte, at the same relative location it occupies in the repo.
+    foreign = _materialise_foreign_tree(tmp_path / "foreign-tree")
+    readings_dir = foreign / "readings" / "ps183-2026-08-26"
+    readings_dir.mkdir(parents=True)
+
+    src_dir = pathlib.Path(__file__).resolve().parents[1] / "readings" / "ps183-2026-08-26"
+    for name in ("measure.py", "harness.js"):
+        shutil.copy(src_dir / name, readings_dir / name)
+
+    # Run it from a cwd that is NEITHER tree, so nothing can be resolved by
+    # accident of where the command happened to be typed.
+    out = subprocess.run(
+        [sys.executable, str(readings_dir / "measure.py"), "1", "8"],
+        capture_output=True, text=True, timeout=180, cwd=str(tmp_path),
+    )
+    assert out.returncode == 0, out.stderr
+
+    # It measured THIS tree: both sentinel cards, and this tree's own
+    # collision_probability(). None of these strings exist in the real repo.
+    assert "SENTINEL-FAKE-TREE-A" in out.stdout
+    assert "SENTINEL-FAKE-TREE-B" in out.stdout
+    assert f"{_SENTINEL_P:.4f}" in out.stdout
+    assert "seeds=8" in out.stdout
+
+    # And it did NOT reach past itself into the tree this suite is running in.
+    # If the script resolves its imports from a fixed absolute path, it reports
+    # real Apple cards here and succeeds while measuring the wrong pool — the
+    # exact failure this pins, which no amount of reading the line reveals.
+    assert "Apple M" not in out.stdout
+
+
+def test_the_reading_script_does_not_resolve_its_tree_from_a_fixed_path(tmp_path):
+    # The mutation guard for the test above. That test passes trivially in the
+    # authoring container if the hard-coded path and the real repo coincide, so
+    # this one states the structural property directly: the script must not
+    # carry an absolute filesystem literal for the tree it imports.
+    #
+    # Kept narrow deliberately — it pins the ABSENCE of the defect class, while
+    # the venue test above pins the behaviour. Neither alone is sufficient.
+    script = pathlib.Path(__file__).resolve().parents[1] / "readings" / "ps183-2026-08-26" / "measure.py"
+    code = [ln for ln in script.read_text(encoding="utf-8").splitlines()
+            if not ln.lstrip().startswith("#")]
+
+    path_setup = [ln for ln in code if "sys.path.insert" in ln]
+    assert path_setup, "the script must still put its own tree on sys.path"
+    for line in path_setup:
+        assert "__file__" in line, f"tree resolved from a fixed path: {line!r}"
