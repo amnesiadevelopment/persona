@@ -1,0 +1,292 @@
+{
+  "ticket": "PS-185",
+  "measured_at": "2026-08-26T09:09:58.575570+00:00",
+  "venue": "loopback (127.0.0.1) \u2014 no proxy, no exit, no third party",
+  "layer": "installed (install_layer=True) \u2014 the product's own surface",
+  "seeds": [
+    1337,
+    4242,
+    9001
+  ],
+  "engines": [
+    "firefox",
+    "chromium"
+  ],
+  "engine_builds": {
+    "chromium": {
+      "engine": "fingerprint-chromium",
+      "present": true,
+      "build": "148.0.7778.215",
+      "sha256": "a5fa5e6c05cb7fa3617ec2ca642ad3cc6e586ac5249cc29edb0a602d695685f0",
+      "declared_digest": "a5fa5e6c05cb7fa3617ec2ca642ad3cc6e586ac5249cc29edb0a602d695685f0",
+      "digest_matches_manifest": true
+    },
+    "firefox": {
+      "engine": "invisible_playwright/firefox",
+      "invisible_playwright_importable": true,
+      "invisible_core_version": "20.14.0",
+      "binary": "/home/yatfa/.cache/ms-playwright/firefox-1532/firefox/firefox",
+      "present": true,
+      "build": "Mozilla Firefox 151.0"
+    }
+  },
+  "readings": {
+    "firefox": {
+      "1337": {
+        "label": "firefox/seed1337/layer=on",
+        "seed": 1337,
+        "layer": {
+          "route": "init_scripts",
+          "installed": [
+            "audio",
+            "locale",
+            "webgl"
+          ],
+          "failed": {},
+          "complete": true
+        },
+        "reading": {
+          "vectors": {
+            "audio_digest": "35.749981",
+            "canvas_pixel_hash": "2735004646:bytes8192:mid6144",
+            "intl_locale": "en-US",
+            "navigator_language": "en-US",
+            "webgl_pixel_hash": "dabeff0d"
+          },
+          "note": ""
+        },
+        "error": "",
+        "sandbox_waived": false,
+        "dev_shm_waived": false,
+        "dev_shm_bytes": null,
+        "engine": "firefox"
+      },
+      "4242": {
+        "label": "firefox/seed4242/layer=on",
+        "seed": 4242,
+        "layer": {
+          "route": "init_scripts",
+          "installed": [
+            "audio",
+            "locale",
+            "webgl"
+          ],
+          "failed": {},
+          "complete": true
+        },
+        "reading": {
+          "vectors": {
+            "audio_digest": "35.749964",
+            "canvas_pixel_hash": "2735004646:bytes8192:mid6144",
+            "intl_locale": "en-US",
+            "navigator_language": "en-US",
+            "webgl_pixel_hash": "eb6c926b"
+          },
+          "note": ""
+        },
+        "error": "",
+        "sandbox_waived": false,
+        "dev_shm_waived": false,
+        "dev_shm_bytes": null,
+        "engine": "firefox"
+      },
+      "9001": {
+        "label": "firefox/seed9001/layer=on",
+        "seed": 9001,
+        "layer": {
+          "route": "init_scripts",
+          "installed": [
+            "audio",
+            "locale",
+            "webgl"
+          ],
+          "failed": {},
+          "complete": true
+        },
+        "reading": {
+          "vectors": {
+            "audio_digest": "35.749975",
+            "canvas_pixel_hash": "994724504:bytes8192:mid6144",
+            "intl_locale": "en-US",
+            "navigator_language": "en-US",
+            "webgl_pixel_hash": "4df84217"
+          },
+          "note": ""
+        },
+        "error": "",
+        "sandbox_waived": false,
+        "dev_shm_waived": false,
+        "dev_shm_bytes": null,
+        "engine": "firefox"
+      }
+    },
+    "chromium": {
+      "1337": {
+        "label": "chromium/seed1337/layer=on",
+        "seed": 1337,
+        "layer": {
+          "route": "extensions",
+          "installed": [
+            "audio",
+            "canvas_ctx",
+            "device",
+            "gpu",
+            "locale",
+            "measuretext",
+            "native",
+            "stealth",
+            "voice",
+            "webgl"
+          ],
+          "failed": {},
+          "complete": true
+        },
+        "reading": {
+          "vectors": {
+            "audio_digest": "124.036636",
+            "canvas_pixel_hash": "43978124:bytes8192:mid6144",
+            "intl_locale": "en-US",
+            "navigator_language": "en-US",
+            "webgl_pixel_hash": "95ebd0dd"
+          },
+          "note": ""
+        },
+        "error": "",
+        "sandbox_waived": true,
+        "dev_shm_waived": false,
+        "dev_shm_bytes": 1073741824,
+        "engine": "chromium"
+      },
+      "4242": {
+        "label": "chromium/seed4242/layer=on",
+        "seed": 4242,
+        "layer": {
+          "route": "extensions",
+          "installed": [
+            "audio",
+            "canvas_ctx",
+            "device",
+            "gpu",
+            "locale",
+            "measuretext",
+            "native",
+            "stealth",
+            "voice",
+            "webgl"
+          ],
+          "failed": {},
+          "complete": true
+        },
+        "reading": {
+          "vectors": {
+            "audio_digest": "124.036578",
+            "canvas_pixel_hash": "4044089155:bytes8192:mid6144",
+            "intl_locale": "en-US",
+            "navigator_language": "en-US",
+            "webgl_pixel_hash": "c85ceb58"
+          },
+          "note": ""
+        },
+        "error": "",
+        "sandbox_waived": true,
+        "dev_shm_waived": false,
+        "dev_shm_bytes": 1073741824,
+        "engine": "chromium"
+      },
+      "9001": {
+        "label": "chromium/seed9001/layer=on",
+        "seed": 9001,
+        "layer": {
+          "route": "extensions",
+          "installed": [
+            "audio",
+            "canvas_ctx",
+            "device",
+            "gpu",
+            "locale",
+            "measuretext",
+            "native",
+            "stealth",
+            "voice",
+            "webgl"
+          ],
+          "failed": {},
+          "complete": true
+        },
+        "reading": {
+          "vectors": {
+            "audio_digest": "124.046576",
+            "canvas_pixel_hash": "1211239796:bytes8192:mid6144",
+            "intl_locale": "en-US",
+            "navigator_language": "en-US",
+            "webgl_pixel_hash": "d83cff45"
+          },
+          "note": ""
+        },
+        "error": "",
+        "sandbox_waived": true,
+        "dev_shm_waived": false,
+        "dev_shm_bytes": 1073741824,
+        "engine": "chromium"
+      }
+    }
+  },
+  "verdicts": {
+    "firefox": {
+      "webgl_pixel_hash": {
+        "seeds": {
+          "1337": "dabeff0d",
+          "4242": "eb6c926b",
+          "9001": "4df84217"
+        },
+        "verdict": "DIFFERS",
+        "detail": "the seeds produced 3 distinct values, so this vector does not tie the two profiles together."
+      },
+      "canvas_pixel_hash": {
+        "seeds": {
+          "1337": "2735004646:bytes8192:mid6144",
+          "4242": "2735004646:bytes8192:mid6144",
+          "9001": "994724504:bytes8192:mid6144"
+        },
+        "verdict": "DIFFERS",
+        "detail": "the seeds produced 2 distinct values, so this vector does not tie the two profiles together."
+      }
+    },
+    "chromium": {
+      "webgl_pixel_hash": {
+        "seeds": {
+          "1337": "95ebd0dd",
+          "4242": "c85ceb58",
+          "9001": "d83cff45"
+        },
+        "verdict": "DIFFERS",
+        "detail": "the seeds produced 3 distinct values, so this vector does not tie the two profiles together."
+      },
+      "canvas_pixel_hash": {
+        "seeds": {
+          "1337": "43978124:bytes8192:mid6144",
+          "4242": "4044089155:bytes8192:mid6144",
+          "9001": "1211239796:bytes8192:mid6144"
+        },
+        "verdict": "DIFFERS",
+        "detail": "the seeds produced 3 distinct values, so this vector does not tie the two profiles together."
+      }
+    }
+  },
+  "cross_engine_contrast": {
+    "webgl_pixel_hash": {
+      "per_engine": {
+        "firefox": "DIFFERS",
+        "chromium": "DIFFERS"
+      },
+      "reading": "Both engines vary this vector by seed on the loopback probe."
+    },
+    "canvas_pixel_hash": {
+      "per_engine": {
+        "firefox": "DIFFERS",
+        "chromium": "DIFFERS"
+      },
+      "reading": "Both engines vary this vector by seed on the loopback probe."
+    }
+  }
+}
