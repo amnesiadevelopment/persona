@@ -1218,3 +1218,297 @@ def test_the_reading_script_does_not_resolve_its_tree_from_a_fixed_path(tmp_path
     assert path_setup, "the script must still put its own tree on sys.path"
     for line in path_setup:
         assert "__file__" in line, f"tree resolved from a fixed path: {line!r}"
+
+
+# --------------------------------------------------------------------------
+# PS-191 — THE COMPARISON ITSELF: a biased estimator against a limit bar
+#
+# The defect these pin is NOT "the threshold was a bit tight". `classify` used
+# to compare the PLUG-IN Simpson index (biased upward at finite N) against
+# `bar_for` = 1/k (the collision probability of a uniform draw IN THE LIMIT).
+# Those two quantities are not comparable, and the gap is the bias term
+# `(1 - 1/k)/N`. So a PERFECTLY uniform pool was flagged TOO_NARROW for being
+# exactly what it should be.
+#
+# ⚠️ WHAT MAKES THESE COVERAGE RATHER THAN CEREMONY (PS-11). A test that
+# asserts the p-value "is a number between 0 and 1" would pass against a stub
+# returning 0.5 forever. The property is TWO-SIDED and every test below pins
+# one side of it against the other: a uniform draw at realistic N must NOT be
+# flagged by the bias term alone, AND a genuinely degenerate arm must STILL be
+# flagged. Either half alone is satisfiable by a broken gate — the first by one
+# that passes everything, the second by the old gate that flagged everything.
+#
+# THE FIXTURES ARE PS-185's REAL MEASUREMENTS, at N=24 against
+# fingerprint-chromium/148.0.7778.215, taken on loopback with the masking layer
+# both ON and OFF.
+#
+# ⚠️ THEY ARE VENDORED AS COUNTS RATHER THAN READ FROM `readings/`, and that is
+# deliberate rather than lazy: PS-185's records are on an unmerged branch
+# (`feature/PS-185-loopback-matrix-measurements`) and are NOT in this tree, so a
+# test that opened a path would be a test that skipped. The identity STRINGS do
+# not matter to any statistic here — only the multiset of counts does — so the
+# counts are the whole reading for this purpose.
+#
+# ⚠️ AND THE POOL SIZE IS PINNED FROM THE RECORD, NEVER READ LIVE. PS-183 has
+# since widened MAC_GPUS from 2 entries to 11, so today's `bar_for("macos")` is
+# 1/11 while PS-185 measured against 1/2. Reading the live pool would silently
+# re-point these fixtures at a bar the measurement never faced and quietly stop
+# testing the thing they exist to test.
+# --------------------------------------------------------------------------
+
+# arm -> (identity counts at N=24, the pool size AS MEASURED by PS-185)
+PS185_LAYER_ON = {
+    "windows": ([5, 4, 4, 3, 2, 2, 2, 1, 1], 5),
+    "macos": ([15, 9], 2),
+    "linux": ([6, 6, 3, 3, 3, 2, 1], 8),
+    "android": ([9, 6, 5, 4], 4),
+}
+
+# The engine's own identities, with persona's layer NOT installed. linux and
+# android hand every single profile the SAME SwiftShader string.
+PS185_LAYER_OFF = {
+    "windows": ([5, 4, 4, 3, 2, 2, 2, 1, 1], 5),
+    "macos": ([17, 7], 2),
+    "linux": ([24], 8),
+    "android": ([24], 4),
+}
+
+# PS-185's own published p-values, from an INDEPENDENT 200,000-trial
+# Monte-Carlo run (seed 20260826). This module computes the null EXACTLY, by
+# enumeration, so agreeing with these to within sampling noise is a real
+# cross-check between two different methods rather than a restatement.
+PS185_PUBLISHED_P_LAYER_ON = {
+    "windows": 1.000000,
+    "macos": 0.308370,
+    "linux": 0.163825,
+    "android": 0.579675,
+}
+
+
+def _values_from_counts(counts):
+    """Expand identity counts into the reading list `classify` consumes."""
+    out = []
+    for i, c in enumerate(counts):
+        out.extend([f"IDENTITY-{i}"] * c)
+    return out
+
+
+def _classify_at_pool_size(counts, pool_size, monkeypatch, arm="windows"):
+    """Classify a fixture against the pool size it was MEASURED against."""
+    monkeypatch.setattr(v, "fallback_pool_size", lambda a, g=None: pool_size)
+    values = _values_from_counts(counts)
+    return v.classify({arm: dict(enumerate(values))})["per_arm"][arm]
+
+
+@pytest.mark.parametrize("arm", sorted(PS185_LAYER_ON))
+def test_a_uniform_draw_at_realistic_n_is_not_flagged_by_the_bias_term(
+    arm, monkeypatch
+):
+    # DoD 1 and 2. Every one of PS-185's layer-ON readings is consistent with
+    # uniform selection, and NONE may be flagged. Under the old comparison
+    # THREE of these four were TOO_NARROW.
+    counts, pool = PS185_LAYER_ON[arm]
+    entry = _classify_at_pool_size(counts, pool, monkeypatch, arm=arm)
+    assert entry["verdict"] == "OK", (
+        f"{arm} layer-ON is consistent with a uniform draw (PS-185 measured "
+        f"p={PS185_PUBLISHED_P_LAYER_ON[arm]:.3f}) and must not be flagged"
+    )
+    assert entry["uniform_p_value"] > v.ALPHA
+
+
+def test_android_scored_better_than_uniform_predicts_and_was_still_flagged(
+    monkeypatch
+):
+    # ⚠️ THE AIRTIGHT CASE — the one arm whose artefact is provable without any
+    # judgement call, and the reason this ticket exists at all.
+    #
+    # android scored 0.2743 on the plug-in statistic. A PERFECTLY uniform draw
+    # from the same 4-entry pool at N=24 is EXPECTED to score 0.2812. So the
+    # arm did BETTER than uniform predicts — and the old gate still called it
+    # TOO_NARROW, because it compared that 0.2743 against the LIMIT value of
+    # 0.2500. An arm cannot be worse than uniform while scoring better than
+    # uniform predicts; that is a defect in the comparison, not a finding.
+    counts, pool = PS185_LAYER_ON["android"]
+    entry = _classify_at_pool_size(counts, pool, monkeypatch, arm="android")
+
+    measured = entry["collision_probability"]
+    expected_if_uniform = entry["expected_collision_under_uniform"]
+    bar = entry["bar_collision_probability"]
+
+    assert measured == pytest.approx(0.2743, abs=1e-4)
+    assert expected_if_uniform == pytest.approx(0.28125, abs=1e-6)
+    assert bar == pytest.approx(0.25)
+
+    # The contradiction that proves the old comparison unsound, stated as an
+    # assertion rather than as a comment: BELOW uniform expectation, ABOVE the
+    # limit bar. Both at once.
+    assert measured < expected_if_uniform
+    assert measured > bar
+    assert entry["meets_bar"] is False       # the old gate's flag, still visible
+    assert entry["verdict"] == "OK"          # the corrected verdict
+
+
+@pytest.mark.parametrize("arm", ["linux", "android"])
+def test_a_genuinely_constant_arm_is_still_caught_after_the_fix(arm, monkeypatch):
+    # DoD 3. THE OTHER HALF OF THE PROPERTY, and the half that stops this fix
+    # from being "make the gate stop complaining". With the masking layer OFF,
+    # linux and android hand all 24 profiles the SAME identity — a flat Level 2
+    # breach, PS-185 p=0.000. A correction that greened these would be worse
+    # than the defect it replaced.
+    counts, pool = PS185_LAYER_OFF[arm]
+    entry = _classify_at_pool_size(counts, pool, monkeypatch, arm=arm)
+    assert entry["verdict"] == "CONSTANT"
+    assert entry["collision_probability"] == pytest.approx(1.0)
+    assert entry["uniform_p_value"] == pytest.approx(0.0, abs=1e-9)
+    # It must name the remedy, not merely report the badness.
+    assert "ENGINE_AUTHORED_IDENTITY_ARMS" in entry["detail"]
+
+
+def test_the_constant_path_does_not_depend_on_the_bar_comparison(monkeypatch):
+    # DoD 6-adjacent, and the ticket asked for this to be CONFIRMED rather than
+    # assumed. `classify` reaches CONSTANT before it ever consults the bar, so
+    # an arm whose every profile shares one identity is a finding even when the
+    # bar cannot be read at all. Pinned because the fix moved code around that
+    # branch and a reordering would silently downgrade the most severe verdict
+    # this gate has into INCONCLUSIVE.
+    monkeypatch.setattr(v, "fallback_pool_size", lambda a, g=None: 0)
+    entry = v.classify(_arm(["ANGLE (Google, Vulkan 1.3.0 (SwiftShader …"] * 10))
+    entry = entry["per_arm"]["windows"]
+    assert entry["verdict"] == "CONSTANT"
+    assert entry["bar_collision_probability"] is None
+    assert entry["uniform_p_value"] is None
+
+
+def test_the_exact_null_reproduces_ps185s_independent_monte_carlo(monkeypatch):
+    # A cross-method check. PS-185 estimated these p-values by sampling
+    # (200,000 trials, seed 20260826); this module derives them by exhaustive
+    # enumeration in integer arithmetic. Two different methods landing on the
+    # same four numbers is evidence the null model itself is right — which no
+    # amount of re-running either method alone would give.
+    for arm, (counts, pool) in sorted(PS185_LAYER_ON.items()):
+        got = v.uniform_collision_p_value(_values_from_counts(counts), pool)
+        assert got == pytest.approx(
+            PS185_PUBLISHED_P_LAYER_ON[arm], abs=5e-3
+        ), f"{arm}: exact {got} disagrees with PS-185's sampled estimate"
+
+
+def test_a_real_narrowing_is_still_caught_at_the_sample_sizes_we_run():
+    # ⚠️ THE MUTATION PROOF, and the direct answer to PS-14's warning that a
+    # corrected gate which suddenly passes everything is as suspect as one that
+    # flags everything. If the only evidence for this fix were that the four
+    # measured arms turned green, a `return "OK"` stub would satisfy it.
+    #
+    # So: hold the pool at 8 and N at 24 (PS-185's linux cell, which the fix
+    # turns green) and collapse the ENGINE's effective variety step by step.
+    # The gate must keep passing what is genuinely uniform and start failing
+    # where the narrowing is real.
+    def p_for(effective_pool):
+        base, rem = divmod(24, effective_pool)
+        counts = [base + 1] * rem + [base] * (effective_pool - rem)
+        return v.uniform_collision_p_value(_values_from_counts(counts), 8)
+
+    # A full 8-wide draw and a 7-wide one are ordinary sampling outcomes.
+    assert p_for(8) > v.ALPHA
+    assert p_for(7) > v.ALPHA
+    # Collapsing to 5 of 8 or fewer is caught — including the 1-entry extreme.
+    for effective in (5, 4, 3, 2, 1):
+        assert p_for(effective) <= v.ALPHA, (
+            f"an engine using only {effective} of 8 identities went unflagged"
+        )
+    # And the verdict is MONOTONE: narrower is never less suspicious.
+    ps = [p_for(j) for j in range(1, 9)]
+    assert ps == sorted(ps), f"p-value is not monotone in variety: {ps}"
+
+
+def test_a_pass_on_an_arm_above_its_bar_does_not_read_as_a_clean_bill(
+    monkeypatch
+):
+    # ⛔ THE LAUNDERING GUARD. macos passes the corrected test (p=0.31) while
+    # colliding 53.1% of the time, because a 2-entry pool drawn PERFECTLY still
+    # links half the fleet. That pass is a statement about SELECTION, not about
+    # SAFETY, and the two are easiest to conflate exactly here.
+    #
+    # PS-191 is explicit that turning macos green must not launder the real
+    # weakness PS-183 owns. This pins the mechanism that prevents it: the
+    # absolute collision rate and the bar survive into the record, `meets_bar`
+    # stays FALSE, and the printed output says so out loud.
+    counts, pool = PS185_LAYER_ON["macos"]
+    monkeypatch.setattr(v, "fallback_pool_size", lambda a, g=None: pool)
+    result = v.classify({"macos": dict(enumerate(_values_from_counts(counts)))})
+    entry = result["per_arm"]["macos"]
+
+    assert entry["verdict"] == "OK"
+    # The uncomfortable numbers are NOT dropped just because the verdict is OK.
+    assert entry["collision_probability"] == pytest.approx(0.53125)
+    assert entry["meets_bar"] is False
+    assert entry["collision_probability"] > entry["bar_collision_probability"]
+
+    out = v.format_result(result)
+    assert "53.1%" in out, "the real collision rate must stay in the output"
+    # It must not read as an unqualified green.
+    assert "does NOT say the POOL is wide enough" in out
+    assert "ABOVE" in out
+
+
+def test_an_undersampled_arm_is_still_inconclusive_rather_than_passed(
+    monkeypatch
+):
+    # DoD 6. MIN_SEEDS is evaluated BEFORE the bar and before the p-value, so a
+    # thin sample can never be certified — it fails safe with a wide null
+    # instead of quietly passing. Pinned because the fix added a new branch
+    # after that check and reordering would let "we failed to look" wear the
+    # code that means "we looked and it was fine".
+    monkeypatch.setattr(v, "fallback_pool_size", lambda a, g=None: 8)
+    result = v.classify({"windows": {1: "A", 2: "B", 3: "C"}})
+    entry = result["per_arm"]["windows"]
+    assert entry["verdict"] == "INCONCLUSIVE"
+    assert entry["collision_probability"] is None
+    # No p-value is computed for a sample too thin to judge, so nothing here
+    # can be mistaken for evidence.
+    assert entry.get("uniform_p_value") is None
+    assert v.exit_code_for(result) == v.EXIT_CANNOT_RUN
+    assert v.exit_code_for(result) != v.EXIT_PASS
+
+
+def test_an_engine_wider_than_our_own_pool_is_never_a_finding():
+    # The null model is "n draws over k cells", which cannot represent an
+    # observation with MORE distinct identities than the pool holds. That is
+    # not an error state — it is an engine drawing from something wider than
+    # the bar assumes, which is strictly good news and must never be flagged.
+    # windows layer-ON is exactly this: 9 distinct identities against a
+    # 5-entry pool.
+    values = _values_from_counts([5, 4, 4, 3, 2, 2, 2, 1, 1])
+    assert len(set(values)) == 9
+    assert v.uniform_collision_p_value(values, 5) == 1.0
+
+
+def test_no_pool_yields_no_p_value_rather_than_a_confident_one():
+    # A missing bar must not produce a number a caller could read as a pass —
+    # the same "we failed to look ≠ we looked and it was fine" discipline the
+    # rest of this module keeps, applied to the new statistic.
+    assert v.uniform_collision_p_value(["A", "B", "C"], 0) is None
+    assert v.uniform_collision_p_value([], 5) is None
+
+
+def test_the_exact_null_is_a_real_distribution_not_an_approximation():
+    # The enumeration's own soundness invariant, asserted directly: the weights
+    # it assigns must total k**N, because it partitions exactly that many
+    # equally likely assignments. If this ever fails the p-values above are
+    # meaningless, so it is pinned rather than trusted.
+    for n, k in ((6, 3), (8, 4), (10, 2)):
+        weights = v._sum_of_squares_null_weights(n, k)
+        assert sum(weights.values()) == k ** n
+    # And it is a probability: the most collided outcome possible has p > 0,
+    # and every outcome is at least as likely as the degenerate one.
+    assert v.uniform_collision_p_value(["A"] * 6, 3) == pytest.approx(
+        3 / 3 ** 6
+    )
+
+
+def test_the_verdict_is_deterministic_so_a_rerun_cannot_flip_it():
+    # A gate whose red/green flickers teaches its readers to re-run it until it
+    # is green. The exact path has no randomness at all; this pins that the
+    # answer is byte-identical across repeated calls.
+    values = _values_from_counts([15, 9])
+    first = v.uniform_collision_p_value(values, 2)
+    assert all(v.uniform_collision_p_value(values, 2) == first for _ in range(5))
