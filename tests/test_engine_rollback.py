@@ -279,8 +279,8 @@ def _profile_last_opened_by(tmp_path, build, prefs=True):
         "[Compatibility]\n"
         "LastVersion=151.0_x/x\n"
         f"LastPlatformDir=/cache/{build}\n"
-        f"LastAppDir=/cache/{build}/browser\n"
-    , encoding="utf-8")
+        f"LastAppDir=/cache/{build}/browser\n", encoding="utf-8"
+    )
     if prefs:
         (prof / "prefs.js").write_text('user_pref("x", 1);\n', encoding="utf-8")
     (prof / "cookies.sqlite").write_bytes(b"USER-COOKIES")

@@ -38,8 +38,8 @@ def _run_in_deleted_cwd(snippet: str) -> subprocess.CompletedProcess:
         [sys.executable, "-c", prelude + snippet],
         capture_output=True,
         text=True,
-        cwd=REPO_ROOT,
-     encoding="utf-8")
+        cwd=REPO_ROOT, encoding="utf-8",
+    )
 
 
 GUARD = '''

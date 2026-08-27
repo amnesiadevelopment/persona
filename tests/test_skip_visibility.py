@@ -50,8 +50,8 @@ def _run_pytest(cwd: Path, *args: str, env_extra: dict[str, str] | None = None):
         env=env,
         capture_output=True,
         text=True,
-        timeout=120,
-     encoding="utf-8")
+        timeout=120, encoding="utf-8",
+    )
 
 
 @pytest.fixture
@@ -234,8 +234,8 @@ def test_an_explicit_marker_beats_reason_matching(sandbox: Path):
         "import pytest\n"
         "@pytest.mark.requires_capability('browser')\n"
         "def test_marked_but_cryptic_reason():\n"
-        "    pytest.skip('conditions not met')\n"
-    , encoding="utf-8")
+        "    pytest.skip('conditions not met')\n", encoding="utf-8"
+    )
 
     declared = _run_pytest(
         sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser"}
@@ -268,8 +268,8 @@ def test_a_marker_is_policed_on_every_capability_it_names(sandbox: Path):
         "import pytest\n"
         "@pytest.mark.requires_capability('browser', 'node')\n"
         "def test_needs_browser_and_node():\n"
-        "    pytest.skip('node not available')\n"
-    , encoding="utf-8")
+        "    pytest.skip('node not available')\n", encoding="utf-8"
+    )
 
     result = _run_pytest(
         sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "node"}
@@ -318,8 +318,8 @@ def test_a_marker_adds_to_reason_matching_instead_of_replacing_it(sandbox: Path)
         "import pytest\n"
         "@pytest.mark.requires_capability('browser_chromium')\n"
         "def test_two_armed_probe():\n"
-        "    pytest.skip('firefox not runnable here: no binary')\n"
-    , encoding="utf-8")
+        "    pytest.skip('firefox not runnable here: no binary')\n", encoding="utf-8"
+    )
 
     # CI's actual declaration. The marker does not name firefox; the REASON
     # does, and that must still be caught.
@@ -347,8 +347,8 @@ def test_a_marker_adds_to_reason_matching_instead_of_replacing_it(sandbox: Path)
         "import pytest\n"
         "@pytest.mark.requires_capability('browser_chromium')\n"
         "def test_two_armed_probe():\n"
-        "    pytest.skip('chromium engine not runnable here: no build')\n"
-    , encoding="utf-8")
+        "    pytest.skip('chromium engine not runnable here: no build')\n", encoding="utf-8"
+    )
     gated = _run_pytest(
         sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser"}
     )
@@ -382,8 +382,8 @@ def test_a_marker_naming_an_unknown_capability_is_a_hard_error(sandbox: Path):
         "import pytest\n"
         "@pytest.mark.requires_capability('browserr')\n"
         "def test_marked_with_a_typo():\n"
-        "    pytest.skip('conditions not met')\n"
-    , encoding="utf-8")
+        "    pytest.skip('conditions not met')\n", encoding="utf-8"
+    )
 
     result = _run_pytest(
         sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser"}
@@ -428,8 +428,8 @@ def test_a_valid_marker_still_collects_normally(sandbox: Path):
         "import pytest\n"
         "@pytest.mark.requires_capability('browser', 'node')\n"
         "def test_well_formed_marker():\n"
-        "    assert True\n"
-    , encoding="utf-8")
+        "    assert True\n", encoding="utf-8"
+    )
 
     result = _run_pytest(sandbox, "-q")
 
@@ -445,8 +445,8 @@ def test_an_xfail_is_not_mistaken_for_a_declined_test(sandbox: Path):
         "import pytest\n"
         "@pytest.mark.xfail(reason='firefox not runnable here: known')\n"
         "def test_expected_to_fail():\n"
-        "    assert False\n"
-    , encoding="utf-8")
+        "    assert False\n", encoding="utf-8"
+    )
 
     result = _run_pytest(
         sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser"}
@@ -557,8 +557,8 @@ class TestTheUmbrellaKeepsTheOldDeclarationMeaningWhatItMeant:
             "import pytest\n"
             "@pytest.mark.requires_capability('browser')\n"
             "def test_marked_but_cryptic_reason():\n"
-            "    pytest.skip('conditions not met')\n"
-        , encoding="utf-8")
+            "    pytest.skip('conditions not met')\n", encoding="utf-8"
+        )
 
         result = _run_pytest(
             sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser"}

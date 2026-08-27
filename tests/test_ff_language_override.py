@@ -764,8 +764,8 @@ def cloak_probe(tmp_path_factory):
     (d / "harness.js").write_text(_HARNESS, encoding="utf-8")
     out = subprocess.run(
         [node, str(d / "harness.js"), str(d / "lang.js"), str(d / "outer.js")],
-        capture_output=True, text=True, timeout=60,
-     encoding="utf-8")
+        capture_output=True, text=True, timeout=60, encoding="utf-8",
+    )
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
 
@@ -1036,8 +1036,8 @@ def arity_probe(tmp_path_factory):
     (d / "harness.js").write_text(_ARITY_HARNESS, encoding="utf-8")
     out = subprocess.run(
         [node, str(d / "harness.js"), str(d / "lang.js")],
-        capture_output=True, text=True, timeout=60,
-     encoding="utf-8")
+        capture_output=True, text=True, timeout=60, encoding="utf-8",
+    )
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
 
@@ -1072,8 +1072,8 @@ def test_the_arity_probe_can_actually_SEE_the_tell():
          "const W=function(locales,options){};"
          "console.log(JSON.stringify({wrapper:W.length,"
          "native:Intl.DateTimeFormat.length}))"],
-        capture_output=True, text=True, timeout=60,
-     encoding="utf-8")
+        capture_output=True, text=True, timeout=60, encoding="utf-8",
+    )
     assert out.returncode == 0, out.stderr
     got = json.loads(out.stdout)
     assert got["native"] == 0

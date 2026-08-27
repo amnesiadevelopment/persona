@@ -832,8 +832,8 @@ def test_relaunch_bat_actually_relaunches_on_windows(tmp_path):
     src.write_text(
         "class P { static void Main() { "
         f'System.IO.File.WriteAllText(@"{marker}", "up"); '
-        "System.Threading.Thread.Sleep(8000); } }"
-    , encoding="utf-8")
+        "System.Threading.Thread.Sleep(8000); } }", encoding="utf-8"
+    )
     exe = tmp_path / "persona-relaunch-check.exe"
     built = subprocess.run(
         [_CSC, "/nologo", "/target:winexe", f"/out:{exe}", str(src)],

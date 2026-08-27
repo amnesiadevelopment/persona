@@ -1155,8 +1155,8 @@ def _run_smoke(bundle_root: Path):
         ],
         capture_output=True,
         text=True,
-        timeout=300,
-     encoding="utf-8")
+        timeout=300, encoding="utf-8",
+    )
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
@@ -1819,8 +1819,8 @@ def _run_flatten(bundle_root: Path):
         [_sys.executable, str(FLATTEN_SCRIPT), str(bundle_root)],
         capture_output=True,
         text=True,
-        timeout=120,
-     encoding="utf-8")
+        timeout=120, encoding="utf-8",
+    )
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
@@ -1983,8 +1983,8 @@ def test_a_foreign_pywintypes_squatting_the_name_is_fatal(tmp_path) -> None:
     root = _pywin32_bundle(tmp_path)
     sp = root / "site-packages"
     sp.joinpath("pywintypes.py").write_text(
-        'raise ImportError("I am NOT pywin32 pywintypes")\n'
-    , encoding="utf-8")
+        'raise ImportError("I am NOT pywin32 pywintypes")\n', encoding="utf-8"
+    )
 
     rc, out = _run_flatten(root)
     assert rc != 0, (
@@ -2080,8 +2080,8 @@ def test_a_stale_pywintypes_survives_a_wheel_layout_change_and_is_fatal(tmp_path
     (sp / "win32" / "lib" / "pywintypes.py").unlink()
     # ...but something else already occupies the name at the importable level.
     sp.joinpath("pywintypes.py").write_text(
-        'raise ImportError("stale file from an earlier, different build")\n'
-    , encoding="utf-8")
+        'raise ImportError("stale file from an earlier, different build")\n', encoding="utf-8"
+    )
 
     rc, out = _run_flatten(root)
     assert rc != 0, (

@@ -137,8 +137,8 @@ def _run_inner(
                 *extra_args,
             ],
             capture_output=True, text=True, cwd=REPO_ROOT,
-            env=env, timeout=OUTER_LIMIT,
-         encoding="utf-8")
+            env=env, timeout=OUTER_LIMIT, encoding="utf-8",
+        )
     except subprocess.TimeoutExpired:
         pytest.fail(
             f"the inner run HUNG for {OUTER_LIMIT}s with a {bound}s bound and "
@@ -694,8 +694,8 @@ def test_a_conftest_copied_away_from_the_repo_still_starts(tmp_path):
     # coat, so the inner run is pinned to the unbounded condition everywhere.
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-p", "no:timeout", "-p", "no:randomly"],
-        capture_output=True, text=True, cwd=str(sandbox), timeout=OUTER_LIMIT,
-     encoding="utf-8")
+        capture_output=True, text=True, cwd=str(sandbox), timeout=OUTER_LIMIT, encoding="utf-8",
+    )
     output = result.stdout + result.stderr
 
     assert result.returncode == 0, (

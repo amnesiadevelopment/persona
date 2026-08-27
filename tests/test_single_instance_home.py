@@ -96,8 +96,8 @@ def test_acquire_under_relocated_home_creates_no_dot_persona_on_the_host(tmp_pat
         env=env,
         capture_output=True,
         text=True,
-        timeout=120,
-     encoding="utf-8")
+        timeout=120, encoding="utf-8",
+    )
     assert proc.returncode == 0, proc.stderr
 
     residue = fake_home / ".persona"

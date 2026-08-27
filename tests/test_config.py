@@ -17,8 +17,8 @@ def _import_config_with(env_overrides, tmp_home):
         cwd=os.path.dirname(os.path.dirname(__file__)),
         env=env,
         capture_output=True,
-        text=True,
-     encoding="utf-8")
+        text=True, encoding="utf-8",
+    )
     return r
 
 
@@ -77,8 +77,8 @@ def test_unwritable_persona_home_falls_back_not_crash(tmp_path):
         cwd=os.path.dirname(os.path.dirname(__file__)),
         env=env,
         capture_output=True,
-        text=True,
-     encoding="utf-8")
+        text=True, encoding="utf-8",
+    )
     assert r.returncode == 0, r.stderr
     # it fell back to ~/.persona, not the impossible path
     assert bad_home not in r.stdout

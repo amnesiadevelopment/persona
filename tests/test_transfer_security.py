@@ -121,8 +121,8 @@ def test_export_excludes_the_browser_child_scratch_dir(tmp_path):
     scratch = pdir / CHILD_TMPDIR_NAME
     (scratch / "appimage_extracted_deadbeef" / "opt").mkdir(parents=True)
     (scratch / "appimage_extracted_deadbeef" / "opt" / "chrome").write_text(
-        "x" * 1024
-    , encoding="utf-8")
+        "x" * 1024, encoding="utf-8"
+    )
     (scratch / "org.chromium.Chromium.AbCdEf").mkdir(parents=True)
     (pdir / "cookies.sqlite").write_text("ok", encoding="utf-8")
 

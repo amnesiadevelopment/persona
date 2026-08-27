@@ -849,8 +849,8 @@ def _drive_checker_cli(credential_path):
         text=True,
         # Refusal is decided before any network work, so this is generous.
         # It is a guard against a hang becoming a silent pass, not a budget.
-        timeout=120,
-     encoding="utf-8")
+        timeout=120, encoding="utf-8",
+    )
 
 
 def test_the_CLI_exits_2_and_shows_no_traceback_for_a_binary_credential(

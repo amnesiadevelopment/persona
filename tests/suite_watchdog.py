@@ -202,7 +202,7 @@ def _emergency_stream():
     ``fileno()`` it needs.
     """
     try:
-        return os.fdopen(os.dup(2), "w", closefd=True)
+        return os.fdopen(os.dup(2), "w", closefd=True, encoding="utf-8")
     except Exception:
         pass
 

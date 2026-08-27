@@ -5043,8 +5043,8 @@ def _write_compat(prof, engine_dir):
         "[Compatibility]\n"
         "LastVersion=151.0_x/x\n"
         f"LastPlatformDir={engine_dir}\n"
-        f"LastAppDir={engine_dir}/browser\n"
-    , encoding="utf-8")
+        f"LastAppDir={engine_dir}/browser\n", encoding="utf-8"
+    )
 
 
 def test_reset_prefs_on_engine_build_change_drops_prefs(tmp_path):

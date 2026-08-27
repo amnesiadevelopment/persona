@@ -218,8 +218,8 @@ def test_a_malformed_record_does_not_abort_the_whole_load(tmp_path, monkeypatch)
                     "payload": {},
                 },
             }
-        )
-    , encoding="utf-8")
+        ), encoding="utf-8"
+    )
     assert [e.name for e in TrashStore().list()] == ["keeper"]
 
 
