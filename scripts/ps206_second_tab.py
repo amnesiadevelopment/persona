@@ -82,7 +82,7 @@ USAGE
 -----
     python3 scripts/ps206_second_tab.py all
     python3 scripts/ps206_second_tab.py baseline --tabs 5
-    python3 scripts/ps206_second_tab.py failover [--mode polite|abrupt] [--pin-failover]
+    python3 scripts/ps206_second_tab.py failover [--mode polite|abrupt]
     python3 scripts/ps206_second_tab.py content
     python3 scripts/ps206_second_tab.py concurrency [--conns 48]
 
@@ -181,8 +181,11 @@ def upstream_parts(url: str):
 # had it False, so pinning changed no live behaviour; it is pinned so a daily
 # engine autobump cannot flip it unobserved.
 #
-# So this set matching the shipped launch is the whole point of the file, and
-# --pin-failover is now a NO-OP kept only to keep older invocations working.
+# So this set matching the shipped launch is the whole point of the file. The
+# --pin-failover flag that used to sit alongside it was REMOVED by PS-217: once
+# the pref moved into this set the flag could not change the run, and its banner
+# still reported the flag rather than the applied value, so a default run pinned
+# the pref and printed that it had not.
 SHIPPED_PROXIED_PREFS = {
     "media.peerconnection.ice.relay_only": True,
     "media.peerconnection.ice.no_host": True,
@@ -443,6 +446,28 @@ def control_invalid(leg) -> str:
             f"downstream is interpretable. !!")
 
 
+def failover_pinned(prefs) -> bool:
+    """Is network.proxy.failover_direct actually pinned in THIS run's prefs?
+
+    Read back out of the pref dict the run will hand to the engine - never from
+    a flag, a constant, or anything else that merely CLAIMS to describe it.
+
+    This exists as a function so the banner cannot drift away from the run: the
+    banner is the first line of a pasted reading (EVIDENCE.md tells the next
+    PS-206 runner to re-run this script), and for one commit it read a
+    now-decoupled --pin-failover flag and printed `pinned=False` on a run that
+    pinned the pref. A reading that misstates its own configuration looks
+    attributable and gets cited, which is worse than one that is plainly wrong.
+    """
+    return prefs.get("network.proxy.failover_direct") is False
+
+
+def run_banner(host, port, user, prefs) -> str:
+    """The one-line configuration banner every run leads with."""
+    return (f"proxy {host}:{port} auth={'yes' if user else 'no'}   "
+            f"failover_direct pinned={failover_pinned(prefs)}")
+
+
 # ------------------------------------------------------------------------- legs
 
 def leg_baseline(proxy_url, prefs, tabs):
@@ -668,10 +693,11 @@ def main():
     ap.add_argument("--tabs", type=int, default=5)
     ap.add_argument("--conns", type=int, default=48)
     ap.add_argument("--mode", default="polite", choices=["polite", "abrupt"])
-    ap.add_argument("--pin-failover", action="store_true",
-                    help="NO-OP since PS-217: network.proxy.failover_direct=False "
-                         "is now part of the SHIPPED pref set and is always "
-                         "applied. Kept so older invocations still run")
+    # --pin-failover was REMOVED by PS-217 rather than kept as a no-op.
+    # network.proxy.failover_direct=False is now part of SHIPPED_PROXIED_PREFS
+    # and is applied on every run, so the flag could not change anything - and a
+    # flag that cannot change the run is worse than absent, because the next
+    # reader reaches for it as a CONTROL and gets a pinned run either way.
     args = ap.parse_args()
 
     if socks is None:
@@ -679,12 +705,9 @@ def main():
 
     proxy_url = load_proxy_url(args)
     prefs = dict(SHIPPED_PROXIED_PREFS)
-    if args.pin_failover:
-        prefs["network.proxy.failover_direct"] = False
 
     host, port, user, _ = upstream_parts(proxy_url)
-    print(f"proxy {host}:{port} auth={'yes' if user else 'no'}   "
-          f"failover_direct pinned={args.pin_failover}")
+    print(run_banner(host, port, user, prefs))
 
     verdicts = {}
     if args.leg in ("all", "baseline"):

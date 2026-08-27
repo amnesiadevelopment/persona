@@ -165,3 +165,39 @@ python3 -m invisible_playwright fetch     # NB: the verb is `fetch`, not `instal
 ```
 
 This does not change the ticket's outcome — Windows remains the unmeasured platform and the symptom remains unexplained — but it does mean the Linux "did not reproduce" is bounded by **one more caveat than I originally claimed**, and saying so is worth more than a tidier record.
+
+---
+
+## Correction — `--pin-failover` no longer exists (PS-217, 2026-08-27)
+
+Line 123 above says: *"The `--pin-failover` flag exists on the harness so the second
+one can be measured directly if it is ever suspected again."* **That is no longer true,
+and the reason it is no longer true is that the thing it offered to measure is now
+always on.**
+
+The recorded measurements above are left exactly as they were run. This note is
+appended rather than edited in, because the sentence was true when it was written and
+the reading should show what was believed at the time.
+
+**What changed.** PS-217's finding 2 was that the shipped Firefox launch never pinned
+`network.proxy.failover_direct` while the verify harness did. PS-217 closed that by
+pinning the shipped launch, and this harness's `SHIPPED_PROXIED_PREFS` gained the pref
+to stay equal to it. At that point `--pin-failover` could no longer change a run, so it
+was removed outright rather than kept as a no-op: a flag that cannot alter the run is
+one a future reader reaches for as a **control**, and it would have handed them a pinned
+run whichever way they passed it.
+
+**A defect this produced, now fixed, that matters for any reading taken between then
+and now.** For one commit the harness printed `failover_direct pinned=False` on a run
+that *did* pin it — the banner still read the flag after the pref had moved into the
+shipped set. **If you are holding a pasted run whose first line says
+`failover_direct pinned=False`, that line is not evidence the pref was unpinned.** Check
+whether the run predates this correction; the legs themselves are unaffected, only the
+banner was wrong. The banner now reports the value read back out of the pref dict the
+run actually uses, and a test pins it.
+
+**What to do now instead of passing the flag.** Nothing — `failover_direct=False` is
+applied on every run, which is what the shipped product does, so the harness measures
+the browser we ship. To measure the *opposite* (failover permitted), edit
+`SHIPPED_PROXIED_PREFS` deliberately and say so in the reading, rather than looking for
+a flag.
