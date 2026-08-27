@@ -66,7 +66,14 @@ def open_log_dialog(page: ft.Page, log_lines: list[str], profiles=None) -> None:
     # flat stream is what the dock already gives.
     state = {"sev": "all", "profile": "", "query": "", "lanes": True}
 
-    body = ft.ListView(expand=True, spacing=0)
+    # A CONTAINER, not a ListView. The two views this dialog can show have
+    # different scrolling shapes: the flat stream is one scroller, while LANES
+    # is a Row of per-machine scrollers side by side. Nesting that Row inside
+    # an outer ListView gives it unbounded height, which Flutter refuses to lay
+    # out — measured as the dialog silently failing to open at all. So the body
+    # is a plain box whose CONTENT is swapped, and each view brings its own
+    # scroller.
+    body = ft.Container(expand=True)
     count_label = ft.Text("", size=11, color=COLORS["text_sub"], font_family=MONO)
 
     def matching() -> list[str]:
@@ -182,7 +189,7 @@ def open_log_dialog(page: ft.Page, log_lines: list[str], profiles=None) -> None:
         count_label.value = f"{len(rows)} of {len(log_lines)}"
 
         if not rows:
-            body.controls = _empty()
+            body.content = ft.Column(spacing=0, controls=_empty())
         elif state["lanes"]:
             # Group into lanes, ordered by the roster so the columns do not
             # reshuffle as events arrive — a lane that moves while he is
@@ -194,16 +201,18 @@ def open_log_dialog(page: ft.Page, log_lines: list[str], profiles=None) -> None:
             ordered = [p for p in sorted(profiles) if p in grouped]
             if NO_PROFILE in grouped:
                 ordered.append(NO_PROFILE)
-            body.controls = [
-                ft.Row(
-                    expand=True,
-                    spacing=0,
-                    vertical_alignment=ft.CrossAxisAlignment.START,
-                    controls=[_lane(p, grouped[p]) for p in ordered],
-                )
-            ]
+            body.content = ft.Row(
+                expand=True,
+                spacing=0,
+                vertical_alignment=ft.CrossAxisAlignment.START,
+                controls=[_lane(p, grouped[p]) for p in ordered],
+            )
         else:
-            body.controls = [event_row(ln, profiles) for ln in rows]
+            body.content = ft.ListView(
+                expand=True,
+                spacing=0,
+                controls=[event_row(ln, profiles) for ln in rows],
+            )
 
         with __import__("contextlib").suppress(Exception):
             body.update()
