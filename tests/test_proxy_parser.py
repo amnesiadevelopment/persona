@@ -8,6 +8,7 @@ from src.utils.proxy_parser import (
     parse_proxy_server,
     split_proxy_url,
 )
+from src.utils.validation import validate_proxy_format
 
 
 def test_build_no_auth():
@@ -303,14 +304,144 @@ def test_engine_proxy_dict_refuses_rather_than_dropping_credentials(bad):
         engine_proxy_dict(bad)
 
 
-def test_engine_proxy_dict_refusal_never_echoes_the_credential():
+# Inputs whose refusal message is built from something DERIVED from the URL.
+#
+# THE OLD VERSION OF THIS TEST USED ONLY `ftp://user:pw@host:port` AND COULD NOT
+# FAIL. That URL has a REAL scheme, so urlsplit puts the userinfo in
+# `.username` and it never reaches the message — the one shape that was never at
+# risk was the only one asserted. Every case below was MEASURED to publish
+# credential material before _safe_to_quote.
+#
+# The third element records HOW the input reaches the parser, because the two
+# groups are reachable by different call sites and neither is hypothetical:
+#
+#   True  — validate_proxy_format ACCEPTS it, so a user can save it. Asserted
+#           below, so if the validator ever tightens, the case is re-picked
+#           rather than silently becoming untestable.
+#   False — the validator rejects it, but `browser_tier.py` and
+#           `ps217_second_tab_ui.py` pass a raw proxy_url straight in with no
+#           validate gate, so the parser still receives these. They are kept
+#           precisely because the save gate is NOT what protects this function.
+#
+# The secrets are distinctive strings so a leak greps unambiguously.
+CREDENTIAL_ECHO_CASES = [
+    # userinfo lands in .scheme, NOT .username — the leak the reviewer found.
+    ("hunter2user:hunter2pw://x@1.2.3.4:1080", ["hunter2user", "hunter2pw"], True),
+    (
+        "hunter2user:hunter2pw://x@host.example.com:1080",
+        ["hunter2user", "hunter2pw"],
+        True,
+    ),
+    # urllib's port error quotes the offending substring, which here is a
+    # fragment of the PASSWORD.
+    (
+        "socks5://hunter2user:hunter2pw://x@1.2.3.4:1080",
+        ["hunter2user", "hunter2pw"],
+        True,
+    ),
+    ("socks5://hunter2user:hunter2pw@1.2.3.4:notaport", ["hunter2user", "hunter2pw"], False),
+    # a real scheme (the original case) — still must not echo.
+    ("ftp://hunter2user:hunter2pw@1.2.3.4:1080", ["hunter2user", "hunter2pw"], True),
+    # malformed IPv6: urlsplit raises before any field is readable.
+    ("socks5://hunter2user:hunter2pw@[bad:ipv6:1080", ["hunter2user", "hunter2pw"], False),
+    # passwordless — the username is still a credential.
+    ("socks5://hunter2user@1.2.3.4:notaport", ["hunter2user"], False),
+]
+
+
+@pytest.mark.parametrize("bad,secrets,save_reachable", CREDENTIAL_ECHO_CASES)
+def test_engine_proxy_dict_refusal_never_echoes_the_credential(
+    bad, secrets, save_reachable
+):
     # The refusal message reaches logs and a pipe the UI renders. It carries
     # the credential, so it must never contain it — the same rule
     # verify/socks_fetch.parse_socks5h states for its own refusal.
     try:
-        engine_proxy_dict("ftp://hunter2user:hunter2pass@1.2.3.4:1080")
+        engine_proxy_dict(bad)
     except ProxyUrlUnparseable as e:
-        assert "hunter2pass" not in str(e)
-        assert "hunter2user" not in str(e)
+        for secret in secrets:
+            assert secret not in str(e), f"refusal echoed {secret!r}: {e}"
+        # The message must still be USEFUL. A blanket "" would trivially pass
+        # the assertion above while telling the user nothing.
+        assert "proxy URL" in str(e) or "proxy scheme" in str(e)
     else:  # pragma: no cover - the case above must raise
         raise AssertionError("expected a refusal")
+
+
+@pytest.mark.parametrize("bad,secrets,save_reachable", CREDENTIAL_ECHO_CASES)
+def test_credential_echo_cases_have_the_reachability_they_claim(
+    bad, secrets, save_reachable
+):
+    # Pins the third element above so the reachability annotation cannot rot
+    # into a comment that is no longer true — the failure mode this whole
+    # rework is about. A case marked save-reachable is a proxy a user can
+    # actually store; the rest reach the parser through the ungated call sites.
+    ok, _ = validate_proxy_format(bad)
+    assert ok is save_reachable, (
+        f"{bad!r} save-reachability is {ok}, annotated {save_reachable}"
+    )
+
+
+def test_refusal_still_names_the_scheme_when_there_is_no_credential():
+    # The guard must not be a blanket gag: with no userinfo there is nothing to
+    # protect, and the scheme name is the whole diagnostic value of the message.
+    with pytest.raises(ProxyUrlUnparseable, match="gopher"):
+        engine_proxy_dict("gopher://1.2.3.4:1080")
+
+
+# --------------------------------------------------------------- PS-217 parity
+#
+# The PS-206 harness used to hand-copy the launch path's proxy_dict and assert
+# in its docstring that the copy was verbatim. PS-217 refactored the shipped
+# function and the copy silently diverged — the harness then measured a browser
+# we do not ship, which is PS-217's own finding 2 re-created in the harness.
+#
+# These two tests make the claim STRUCTURAL instead of asserted: it is now
+# impossible for the harness and the shipped launch to disagree without a test
+# going red, on either axis (the proxy dict, and the proxied pref set).
+
+
+def _load_ps206():
+    import importlib.util
+    import pathlib
+
+    path = (
+        pathlib.Path(__file__).resolve().parent.parent
+        / "scripts"
+        / "ps206_second_tab.py"
+    )
+    spec = importlib.util.spec_from_file_location("ps206_second_tab", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "socks5://bob:secret@1.2.3.4:1080",
+        "socks5h://bob:secret@1.2.3.4:1080",  # the scheme the old copy dropped
+        "1.2.3.4:8080",
+        "http://1.2.3.4:8080",
+    ],
+)
+def test_ps206_harness_builds_the_same_proxy_dict_as_the_shipped_launch(url):
+    # The harness must measure the product. It now IMPORTS engine_proxy_dict,
+    # so this cannot drift — but it is pinned because the previous copy's
+    # docstring predicted its own divergence and was right.
+    assert _load_ps206().proxy_dict(url) == engine_proxy_dict(url)
+
+
+def test_ps206_harness_prefs_match_the_shipped_proxied_prefs():
+    # Same claim on the pref axis. network.proxy.failover_direct is the one
+    # that matters: the harness/product asymmetry on it WAS finding 2, so a
+    # harness pref set that stops matching the shipped one re-opens it.
+    from src.services.browser.invisible_launch import _profile_prefs
+
+    shipped = _profile_prefs(
+        {"proxy_url": "socks5://bob:pw@1.2.3.4:1080", "search_engine": "duckduckgo"}
+    )
+    harness = _load_ps206().SHIPPED_PROXIED_PREFS
+    mismatched = {k: (v, shipped.get(k)) for k, v in harness.items() if shipped.get(k) != v}
+    assert not mismatched, f"harness prefs diverged from the shipped launch: {mismatched}"
+    assert harness["network.proxy.failover_direct"] is False

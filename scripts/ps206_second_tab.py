@@ -103,6 +103,10 @@ import tempfile
 import threading
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.utils.proxy_parser import engine_proxy_dict  # noqa: E402
+
 try:
     import socks  # PySocks
 except Exception:  # pragma: no cover - dependency is declared in requirements
@@ -125,28 +129,38 @@ def load_proxy_url(args) -> str:
 
 
 def proxy_dict(proxy_url: str):
-    """Verbatim mirror of src/services/browser/invisible_launch.py::_proxy_dict.
+    """The SHIPPED engine proxy dict, by IMPORT (see engine_proxy_dict).
 
-    Copied rather than imported ON PURPOSE: this harness must measure what the
-    SHIPPED launch builds, and an import would silently follow a refactor of
-    that function while this docstring kept claiming otherwise.
+    THIS USED TO BE A HAND-COPIED MIRROR, and the copy said it was copied "ON
+    PURPOSE" so that an import could not "silently follow a refactor of that
+    function while this docstring kept claiming otherwise". PS-217 then
+    refactored exactly that function, and the docstring's own predicted failure
+    came true: the two bodies diverged and this file kept asserting verbatim
+    parity it no longer had.
 
-    (Its socks5-only regex is a known defect owned by PS-217 - a non-socks5
-    scheme falls to {"server": url} and drops credentials. Mirrored faithfully,
-    warts and all, because mirroring the fixed version would measure a product
-    that is not the one the user is running.)
+    THE ORIGINAL REASONING ALSO INVERTED, which is why the fix is to import
+    rather than to re-copy. The copy existed to mirror a KNOWN DEFECT - the
+    socks5-only regex that dropped credentials for every other scheme - on the
+    argument that "mirroring the fixed version would measure a product that is
+    not the one the user is running". That defect is now FIXED in the shipped
+    path, so the local copy became the only thing still carrying it, and this
+    harness became the thing measuring a browser we do not ship. That is
+    PS-217's own finding 2 (harness and product configured differently),
+    re-created one directory over, in the harness that owns the PS-206 symptom.
+
+    Importing is now the behaviour that keeps the claim true: there is ONE
+    implementation, so "what this harness builds" and "what the launch builds"
+    cannot disagree.
+
+    NOTE FOR A FUTURE PS-206 RUN (readings/ps206-2026-08-27/EVIDENCE.md tells
+    you to re-run this script): a run from BEFORE 2026-08-27 measured the old
+    regex. On a socks5:// URL - which is what this harness has always been run
+    with - the two agree exactly, so previously recorded socks5 results remain
+    comparable. They differ only on the schemes the old regex silently
+    downgraded (socks5h://, uppercase, ':' in the username, '@' in the
+    password), which is the defect PS-217 removed.
     """
-    if not proxy_url:
-        return None
-    m = re.match(r"socks5://(?:([^:]+):([^@]+)@)?(.+)", proxy_url)
-    if not m:
-        return {"server": proxy_url}
-    user, pw, hostport = m.group(1), m.group(2), m.group(3)
-    d = {"server": f"socks5://{hostport}"}
-    if user:
-        d["username"] = user
-        d["password"] = pw
-    return d
+    return engine_proxy_dict(proxy_url)
 
 
 def upstream_parts(url: str):
@@ -157,11 +171,18 @@ def upstream_parts(url: str):
 
 
 # The proxied-profile prefs the SHIPPED Firefox launch applies
-# (src/services/browser/invisible_launch.py ~2350). Deliberately does NOT
-# include network.proxy.failover_direct: the verify harness pins it
-# (src/services/verify/browser_tier.py:194) and the shipped launch does not.
-# That asymmetry is PS-217's to resolve; --pin-failover measures whether it
-# matters here.
+# (src/services/browser/invisible_launch.py ~2350).
+#
+# network.proxy.failover_direct IS NOW PART OF THE SHIPPED SET and is listed
+# below. It used to be deliberately absent here, because the verify harness
+# pinned it and the shipped launch did not - that asymmetry WAS PS-217's
+# finding 2, and PS-217 resolved it by pinning the shipped launch
+# (invisible_launch.py:2479). Measured there: the engine's own baseline already
+# had it False, so pinning changed no live behaviour; it is pinned so a daily
+# engine autobump cannot flip it unobserved.
+#
+# So this set matching the shipped launch is the whole point of the file, and
+# --pin-failover is now a NO-OP kept only to keep older invocations working.
 SHIPPED_PROXIED_PREFS = {
     "media.peerconnection.ice.relay_only": True,
     "media.peerconnection.ice.no_host": True,
@@ -170,6 +191,8 @@ SHIPPED_PROXIED_PREFS = {
     "media.peerconnection.use_document_iceservers": False,
     "network.proxy.socks_remote_dns": True,
     "network.trr.mode": 5,
+    # Added by PS-217 to keep this set equal to the shipped one - see above.
+    "network.proxy.failover_direct": False,
 }
 
 # One distinct host per tab: a tab that reuses another tab's pooled connection
@@ -646,8 +669,9 @@ def main():
     ap.add_argument("--conns", type=int, default=48)
     ap.add_argument("--mode", default="polite", choices=["polite", "abrupt"])
     ap.add_argument("--pin-failover", action="store_true",
-                    help="also set network.proxy.failover_direct=False, which "
-                         "the verify harness pins and the shipped launch does not")
+                    help="NO-OP since PS-217: network.proxy.failover_direct=False "
+                         "is now part of the SHIPPED pref set and is always "
+                         "applied. Kept so older invocations still run")
     args = ap.parse_args()
 
     if socks is None:
