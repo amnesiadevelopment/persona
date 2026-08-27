@@ -21,7 +21,7 @@ def test_add_get_persist(store):
     assert store.add(c)
     assert store.get("admin").p12_path == "/vault/admin.p12"
     assert store.get("admin").url == "https://admin.example.com/login"
-    raw = json.load(open(os.environ["PERSONA_CERTS_FILE"]))
+    raw = json.load(open(os.environ["PERSONA_CERTS_FILE"], encoding="utf-8"))
     assert raw["admin"]["password"] == "s3cret"
     assert raw["admin"]["url"] == "https://admin.example.com/login"
 
@@ -97,7 +97,7 @@ def test_corrupt_file_is_quarantined_not_overwritten(store, tmp_path):
     assert corrupt, "corrupt certificates.json must be quarantined"
     # a subsequent save writes a fresh file, leaving the quarantined copy intact
     reloaded.add(Certificate(name="admin", p12_path="/a.p12", password="pw"))
-    assert json.load(open(path))["admin"]["password"] == "pw"
+    assert json.load(open(path, encoding="utf-8"))["admin"]["password"] == "pw"
 
 
 def test_save_blocked_when_quarantine_fails(store, tmp_path, monkeypatch):
@@ -116,7 +116,7 @@ def test_save_blocked_when_quarantine_fails(store, tmp_path, monkeypatch):
     assert reloaded._save_blocked is True
     # a save is a no-op; the broken file is left exactly as-is
     reloaded.add(Certificate(name="x", p12_path="/x.p12"))
-    assert open(path).read() == "}{ broken"
+    assert open(path, encoding="utf-8").read() == "}{ broken"
 
 
 def test_malformed_record_skipped_not_aborting_load(store):

@@ -23,7 +23,7 @@ def test_creates_files(tmp_path):
 
 def test_main_world_document_start(tmp_path):
     d = build_webgl_extension(1, str(tmp_path / "ext"))
-    m = json.loads((pathlib.Path(d) / "manifest.json").read_text())
+    m = json.loads((pathlib.Path(d) / "manifest.json").read_text(encoding="utf-8"))
     cs = m["content_scripts"][0]
     assert cs["world"] == "MAIN"
     assert cs["run_at"] == "document_start"
@@ -159,7 +159,7 @@ def test_every_eligible_byte_moves_when_content_is_under_budget(tmp_path):
 
 def test_patches_both_webgl_versions(tmp_path):
     d = build_webgl_extension(1, str(tmp_path / "ext"))
-    js = (pathlib.Path(d) / "webgl.js").read_text()
+    js = (pathlib.Path(d) / "webgl.js").read_text(encoding="utf-8")
     assert "readPixels" in js
     assert "WebGLRenderingContext" in js
     assert "WebGL2RenderingContext" in js
@@ -198,7 +198,7 @@ def test_native_tostring_masking(tmp_path):
     # assert_reads_native also runs the counterfactual: without native_ext's
     # patch the same probe must NOT read native.
     d = build_webgl_extension(1, str(tmp_path / "ext"))
-    js = (pathlib.Path(d) / "webgl.js").read_text()
+    js = (pathlib.Path(d) / "webgl.js").read_text(encoding="utf-8")
     assert_reads_native(
         tmp_path,
         [pathlib.Path(d) / "webgl.js"],
@@ -212,7 +212,7 @@ def test_native_tostring_masking(tmp_path):
 def test_carries_readpixels_noise_into_workers(tmp_path):
     # Detectors read a WebGL pixel hash from an OffscreenCanvas inside a Worker;
     # the readback noise must run there too, or page/worker hashes disagree.
-    js = (pathlib.Path(build_webgl_extension(1, str(tmp_path / "ext"))) / "webgl.js").read_text()
+    js = (pathlib.Path(build_webgl_extension(1, str(tmp_path / "ext"))) / "webgl.js").read_text(encoding="utf-8")
     assert "applyWebglPatch" in js
     assert "G.Worker" in js
     body = js.split("function applyWebglPatch(G)", 1)[1].split("__pnaBoot", 1)[0]
@@ -222,13 +222,13 @@ def test_carries_readpixels_noise_into_workers(tmp_path):
 
 def test_only_byte_buffers_touched(tmp_path):
     d = build_webgl_extension(1, str(tmp_path / "ext"))
-    js = (pathlib.Path(d) / "webgl.js").read_text()
+    js = (pathlib.Path(d) / "webgl.js").read_text(encoding="utf-8")
     # float/int pixel reads must be left alone (WebGL maths unaffected)
     assert "Uint8Array" in js
 
 
 def test_carries_webgl_noise_into_iframes(tmp_path):
-    js = (pathlib.Path(build_webgl_extension(1, str(tmp_path / "ext"))) / "webgl.js").read_text()
+    js = (pathlib.Path(build_webgl_extension(1, str(tmp_path / "ext"))) / "webgl.js").read_text(encoding="utf-8")
     assert "contentWindow" in js and "HTMLIFrameElement" in js
     # routed through the shared realm bootstrap, which chains the iframe
     # accessors and re-runs the installer in the child (recursively). The

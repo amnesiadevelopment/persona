@@ -65,7 +65,7 @@ def test_install_app_zip_paths_finds_flutter_assets(tmp_path, monkeypatch):
     app_dir = tmp_path / "data" / "flutter_assets" / "app"
     app_dir.mkdir(parents=True)
     (app_dir / "app.zip").write_bytes(b"code")
-    (app_dir / "app.zip.hash").write_text("h")
+    (app_dir / "app.zip.hash").write_text("h", encoding="utf-8")
     monkeypatch.setattr(fu, "_install_root", lambda: str(tmp_path))
     zip_path, hash_path = fu.install_app_zip_paths()
     assert zip_path.endswith("app.zip")
@@ -204,7 +204,7 @@ def test_swap_bat_purges_flet_extraction(tmp_path):
         old_pid=1234,
     )
     import pathlib
-    content = pathlib.Path(bat_path).read_text()
+    content = pathlib.Path(bat_path).read_text(encoding="utf-8")
     assert r"flet\app" in content
     assert "rd /s /q" in content
     # bounded so a never-dying holder can't block the relaunch forever
@@ -346,13 +346,13 @@ def _install_dir(tmp_path):
     dst_zip = app / "app.zip"
     dst_hash = app / "app.zip.hash"
     dst_zip.write_bytes(b"WORKING-RELEASE-CODE")
-    dst_hash.write_text("oldsha")
+    dst_hash.write_text("oldsha", encoding="utf-8")
     staged = tmp_path / "staged"
     staged.mkdir()
     new_zip = staged / "persona-fast-app.zip"
     new_hash = staged / "persona-fast-app.zip.hash"
     new_zip.write_bytes(b"NEW-RELEASE-CODE")
-    new_hash.write_text("newsha")
+    new_hash.write_text("newsha", encoding="utf-8")
     return dst_zip, dst_hash, new_zip, new_hash
 
 
@@ -381,13 +381,13 @@ def test_swap_retains_previous_appzip_in_install_dir(tmp_path):
 
     # the new release is live
     assert dst_zip.read_bytes() == b"NEW-RELEASE-CODE"
-    assert dst_hash.read_text() == "newsha"
+    assert dst_hash.read_text(encoding="utf-8") == "newsha"
     # and the working one it replaced still EXISTS, beside it, on the same volume
     prev_zip, prev_hash = fu.retained_paths(str(dst_zip), str(dst_hash))
     assert os.path.isfile(prev_zip), "previous app.zip was destroyed by the swap"
     assert os.path.isfile(prev_hash)
     assert open(prev_zip, "rb").read() == b"WORKING-RELEASE-CODE"
-    assert open(prev_hash).read() == "oldsha"
+    assert open(prev_hash, encoding="utf-8").read() == "oldsha"
     # retained INSIDE the install dir (survives a reboot; atomic rename), not %TEMP%
     assert os.path.dirname(prev_zip) == os.path.dirname(str(dst_zip))
 
@@ -411,7 +411,7 @@ def test_exhausted_launch_budget_restores_and_relaunches_previous(tmp_path):
     assert dst_zip.read_bytes() == b"WORKING-RELEASE-CODE"
     # the hash goes back WITH the zip — that mismatch is what makes flet
     # re-extract, since its marker now records the failed release
-    assert dst_hash.read_text() == "oldsha"
+    assert dst_hash.read_text(encoding="utf-8") == "oldsha"
     # and a launch is actually attempted from the restored pair. The recovery
     # route reaches its `start` through its own purge (see the launch-purge
     # reachability test below), so count the starts over the whole route.
@@ -434,7 +434,7 @@ def test_confirmed_boot_leaves_no_retained_pair(tmp_path):
     assert not os.path.exists(prev_hash)
     # the release that booted stays live and untouched
     assert dst_zip.read_bytes() == b"NEW-RELEASE-CODE"
-    assert dst_hash.read_text() == "newsha"
+    assert dst_hash.read_text(encoding="utf-8") == "newsha"
 
 
 def test_failed_boot_never_runs_the_confirmed_cleanup(tmp_path):
@@ -544,4 +544,4 @@ def test_recovery_route_launches_exactly_once(tmp_path):
 
     # and the restore still happened, on disk, on that same route
     assert dst_zip.read_bytes() == b"WORKING-RELEASE-CODE"
-    assert dst_hash.read_text() == "oldsha"
+    assert dst_hash.read_text(encoding="utf-8") == "oldsha"

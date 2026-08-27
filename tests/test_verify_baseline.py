@@ -317,7 +317,7 @@ class _FakePipeProc:
     def __init__(self):
         r, w = os.pipe()
         self._w = w
-        self.stdout = os.fdopen(r)
+        self.stdout = os.fdopen(r, encoding="utf-8")
 
     def say(self, line: str) -> None:
         os.write(self._w, f"{line}\n".encode())

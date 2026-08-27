@@ -219,7 +219,7 @@ def test_the_wipe_still_destroys_the_profiles_it_cleared_the_log_for(app):
     _seed_a_session(app)
     data_dir = app.pm._data_path(NAME)
     pathlib.Path(data_dir).mkdir(parents=True, exist_ok=True)
-    pathlib.Path(data_dir, "Cookies").write_text("logged-in")
+    pathlib.Path(data_dir, "Cookies").write_text("logged-in", encoding="utf-8")
 
     _wipe_through_the_real_dialog(app)
 

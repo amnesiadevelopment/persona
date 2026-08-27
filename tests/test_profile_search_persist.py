@@ -24,7 +24,7 @@ def pm(tmp_path, monkeypatch):
 def test_search_engine_persists_across_reload(pm):
     pm.add_profile("s1", "", "windows", search_engine="google")
     assert pm.profiles["s1"].search_engine == "google"
-    raw = json.load(open(os.environ["PERSONA_PROFILES_FILE"]))
+    raw = json.load(open(os.environ["PERSONA_PROFILES_FILE"], encoding="utf-8"))
     assert raw["s1"]["search_engine"] == "google"
     from src.services.profile import manager as mgr
     pm2 = mgr.ProfileManager()

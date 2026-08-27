@@ -13,7 +13,7 @@ def test_builds_unpacked_extension(tmp_path):
 
 def test_manifest_main_world_document_start(tmp_path):
     d = build_device_extension(123, str(tmp_path / "dev"), 0)
-    man = json.loads((pathlib.Path(d) / "manifest.json").read_text())
+    man = json.loads((pathlib.Path(d) / "manifest.json").read_text(encoding="utf-8"))
     cs = man["content_scripts"][0]
     assert cs["world"] == "MAIN"
     assert cs["run_at"] == "document_start"
@@ -23,7 +23,7 @@ def test_manifest_main_world_document_start(tmp_path):
 def test_seed_baked_into_script(tmp_path):
     js = pathlib.Path(
         build_device_extension(0xABCDEF, str(tmp_path / "dev"), 0) + "/device.js"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     assert str(0xABCDEF) in js
     assert "__SEED__" not in js
 
@@ -31,7 +31,7 @@ def test_seed_baked_into_script(tmp_path):
 def test_script_spoofs_screen_and_mediadevices(tmp_path):
     js = pathlib.Path(
         build_device_extension(1, str(tmp_path / "dev"), 0) + "/device.js"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     # screen geometry
     assert "availHeight" in js and "colorDepth" in js
     # a work-area inset so availHeight != height (a VM tell when equal)
@@ -50,7 +50,7 @@ def test_spoofs_hardware_concurrency_and_device_memory(tmp_path):
     # tell under a consumer-Windows identity. The script must pin a plausible pair.
     js = pathlib.Path(
         build_device_extension(1, str(tmp_path / "dev"), 0) + "/device.js"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     assert "hardwareConcurrency" in js
     assert "deviceMemory" in js
 
@@ -61,7 +61,7 @@ def test_carries_hardware_into_workers(tmp_path):
     # worker/page mismatch. The spoof must be carried into workers.
     js = pathlib.Path(
         build_device_extension(1, str(tmp_path / "dev"), 0) + "/device.js"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     assert "applyHwPatch" in js
     assert "G.Worker" in js
     # SEED lives inside applyHwPatch so .toString() re-derives the same pair
@@ -76,7 +76,7 @@ def test_carries_screen_and_hardware_into_iframes(tmp_path):
     # child frames on access.
     js = pathlib.Path(
         build_device_extension(1, str(tmp_path / "dev"), 0) + "/device.js"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     assert "contentWindow" in js
     assert "contentDocument" in js
     assert "HTMLIFrameElement" in js
@@ -90,7 +90,7 @@ def test_screen_dpr_on_shared_registry_reaches_grandchild(tmp_path):
     # every nested realm gets it — not device_ext's own non-recursive getter.
     js = pathlib.Path(
         build_device_extension(1, str(tmp_path / "dev"), 0) + "/device.js"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     assert "applyScreenPatch" in js
     assert "__pnaInstall(SELF, applyScreenPatch)" in js
     # the module's own non-recursive iframe getter for screen must be gone —
@@ -109,7 +109,7 @@ def test_macos_preset_retina_and_menubar(tmp_path):
     js = pathlib.Path(
         build_device_extension(1, str(tmp_path / "dev"), 0, os_type="macos")
         + "/device.js"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     body = js.split("function applyScreenPatch(G)", 1)[1].split("__pnaBoot", 1)[0]
     assert 'var OS = "macos"' in body
     # Retina DPR 2, 30-bit color, menu-bar (25) inset, Mac resolution pool
@@ -125,7 +125,7 @@ def test_windows_preset_stays_24bit_dpr1(tmp_path):
     js = pathlib.Path(
         build_device_extension(1, str(tmp_path / "dev"), 0, os_type="windows")
         + "/device.js"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     body = js.split("function applyScreenPatch(G)", 1)[1].split("__pnaBoot", 1)[0]
     assert 'var OS = "windows"' in body
 
@@ -136,7 +136,7 @@ def test_script_pins_device_pixel_ratio(tmp_path):
     # has. The script must pin devicePixelRatio and keep matchMedia consistent.
     js = pathlib.Path(
         build_device_extension(1, str(tmp_path / "dev"), 0) + "/device.js"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     assert "devicePixelRatio" in js
     assert "matchMedia" in js
     assert "dppx" in js
@@ -151,7 +151,7 @@ def test_matchmedia_device_dimensions_agree_with_screen(tmp_path):
     # spoofed W/H so both report the same value.
     js = pathlib.Path(
         build_device_extension(1, str(tmp_path / "dev"), 0) + "/device.js"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     assert "device-width" in js
     assert "device-height" in js
 
@@ -165,7 +165,7 @@ def test_forced_resolution_wins_without_containment_gate(tmp_path):
     js = pathlib.Path(
         build_device_extension(1, str(tmp_path / "dev"), 0, resolution=(2560, 1440))
         + "/device.js"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     assert "[2560, 1440]" in js
     assert "if (FORCED) {" in js
     # the containment comparison must no longer gate the forced branch

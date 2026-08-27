@@ -13,7 +13,7 @@ from src.utils.atomic import atomic_write_json
 def test_writes_json_content(tmp_path):
     p = tmp_path / "d.json"
     atomic_write_json(str(p), {"a": 1, "b": [2, 3]})
-    assert json.loads(p.read_text()) == {"a": 1, "b": [2, 3]}
+    assert json.loads(p.read_text(encoding="utf-8")) == {"a": 1, "b": [2, 3]}
 
 
 def test_no_temp_file_left_behind(tmp_path):
@@ -29,7 +29,7 @@ def test_existing_file_preserved_on_write_failure(tmp_path):
     # a value json can't serialize must NOT clobber the existing good file
     with pytest.raises(TypeError):
         atomic_write_json(str(p), {"bad": object()})
-    assert json.loads(p.read_text()) == {"good": 1}
+    assert json.loads(p.read_text(encoding="utf-8")) == {"good": 1}
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")

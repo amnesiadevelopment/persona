@@ -99,7 +99,7 @@ def _probe(tmp_path, locale, os_type):
     harness.write_text(_VOICE_PROBE, encoding="utf-8")
     out = subprocess.run(
         [node, str(harness), str(d / "voices.js")],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True, timeout=60, encoding="utf-8",
     )
     assert out.returncode == 0, out.stderr
     data = json.loads(out.stdout)
@@ -308,7 +308,7 @@ def _gpu(tmp_path, seed, os_type):
     harness.write_text(_GPU_PROBE, encoding="utf-8")
     out = subprocess.run(
         [node, str(harness), str(d / "gpu.js")],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True, timeout=60, encoding="utf-8",
     )
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
@@ -398,7 +398,7 @@ def test_every_arm_emits_syntactically_valid_js(tmp_path, os_type):
     d = build_voice_extension("pl-PL", str(tmp_path / f"s_{os_type}"), os_type=os_type)
     out = subprocess.run(
         [node, "--check", str(pathlib.Path(d) / "voices.js")],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True, timeout=60, encoding="utf-8",
     )
     assert out.returncode == 0, out.stderr
 

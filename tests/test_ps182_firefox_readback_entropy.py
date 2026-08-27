@@ -212,7 +212,7 @@ def _measure(base: list, which: int = 1, seeds=SEEDS,
     proc = subprocess.run(
         [node, "-e", _HARNESS],
         input=json.dumps(payload),
-        capture_output=True, text=True, timeout=120,
+        capture_output=True, text=True, timeout=120, encoding="utf-8",
     )
     assert proc.returncode == 0, (
         f"the shipped script failed to execute:\n{proc.stderr[:4000]}"

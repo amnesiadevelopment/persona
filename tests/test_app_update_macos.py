@@ -108,7 +108,7 @@ def _mac_apply_fixture(monkeypatch, tmp_path):
     staged.write_bytes(b"dmg")
     installed = tmp_path / "Applications" / "persona.app"
     (installed / "Contents").mkdir(parents=True)
-    (installed / "Contents" / "old").write_text("old")
+    (installed / "Contents" / "old").write_text("old", encoding="utf-8")
     monkeypatch.setattr(au, "installed_macos_app", lambda: str(installed))
     monkeypatch.setattr(au, "verify_staged_installer", lambda s, tag="", log=None: True)
     return staged, installed
@@ -129,7 +129,7 @@ def test_apply_and_restart_macos_swaps_app_and_relaunches(monkeypatch, tmp_path)
             mount = cmd[cmd.index("-mountpoint") + 1]
             new_app = os.path.join(mount, "persona.app", "Contents")
             os.makedirs(new_app, exist_ok=True)
-            with open(os.path.join(new_app, "new"), "w") as f:
+            with open(os.path.join(new_app, "new"), "w", encoding="utf-8") as f:
                 f.write("new")
             mounts["point"] = mount
         if cmd[0] == "ditto":
@@ -367,7 +367,7 @@ def test_apply_and_restart_translocated_updates_the_original(
     staged.write_bytes(b"dmg")
     original = tmp_path / "Downloads" / "persona.app"
     (original / "Contents").mkdir(parents=True)
-    (original / "Contents" / "old").write_text("old")
+    (original / "Contents" / "old").write_text("old", encoding="utf-8")
     monkeypatch.setattr(au, "installed_macos_app", lambda: _TRANSLOCATED)
     monkeypatch.setattr(
         au, "_translocated_original_path", lambda p: str(original)
@@ -384,7 +384,7 @@ def test_apply_and_restart_translocated_updates_the_original(
             mount = cmd[cmd.index("-mountpoint") + 1]
             new_app = os.path.join(mount, "persona.app", "Contents")
             os.makedirs(new_app, exist_ok=True)
-            with open(os.path.join(new_app, "new"), "w") as f:
+            with open(os.path.join(new_app, "new"), "w", encoding="utf-8") as f:
                 f.write("new")
         if cmd[0] == "ditto":
             import shutil
@@ -565,7 +565,7 @@ def _drive_mac_update(monkeypatch, staged, payload="new"):
             mount = cmd[cmd.index("-mountpoint") + 1]
             new_app = os.path.join(mount, "persona.app", "Contents")
             os.makedirs(new_app, exist_ok=True)
-            with open(os.path.join(new_app, payload), "w") as f:
+            with open(os.path.join(new_app, payload), "w", encoding="utf-8") as f:
                 f.write(payload)
         if cmd[0] == "ditto":
             import shutil
@@ -876,7 +876,7 @@ def test_revert_recovers_when_the_install_location_is_occupied(
         if dst.endswith(".reverting"):
             # the install location was just vacated — something else takes it
             os.makedirs(os.path.join(app, "Contents"), exist_ok=True)
-            with open(os.path.join(app, "Contents", "squatter"), "w") as f:
+            with open(os.path.join(app, "Contents", "squatter"), "w", encoding="utf-8") as f:
                 f.write("not ours")
             squatted.append(dst)
         return result

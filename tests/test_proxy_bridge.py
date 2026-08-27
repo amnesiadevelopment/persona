@@ -537,7 +537,7 @@ def test_a_dead_tunnels_trace_says_WHAT_went_wrong_not_only_its_CLASS(
         line = None
         while time.time() < deadline and line is None:
             if trace.exists():
-                for entry in trace.read_text().splitlines():
+                for entry in trace.read_text(encoding="utf-8").splitlines():
                     if "DONE" in entry and "reason=" in entry:
                         reason = entry.split("reason=", 1)[1]
                         if reason != "eof":
@@ -548,7 +548,7 @@ def test_a_dead_tunnels_trace_says_WHAT_went_wrong_not_only_its_CLASS(
 
         assert line is not None, (
             "no non-eof DONE line in the trace: "
-            + (trace.read_text() if trace.exists() else "<no trace written>")
+            + (trace.read_text(encoding="utf-8") if trace.exists() else "<no trace written>")
         )
         reason = line.split("reason=", 1)[1]
         # The class is still there...
@@ -631,7 +631,7 @@ def test_a_credential_shaped_string_cannot_reach_the_TRACE_FILE(
         text = ""
         while time.time() < deadline:
             if trace.exists():
-                text = trace.read_text()
+                text = trace.read_text(encoding="utf-8")
                 if "UPSTREAM-FAIL" in text:
                     break
             time.sleep(0.05)
@@ -671,7 +671,7 @@ def test_redaction_is_applied_by_the_SINK_so_every_trace_site_inherits_it(
 
     bridge_mod._trace("conn=1 host=x SOMETHING socks5://bob:0th3r@relay.example:1080")
 
-    written = trace.read_text()
+    written = trace.read_text(encoding="utf-8")
     assert "SOMETHING" in written, "the line itself must still be recorded"
     assert "0th3r" not in written
     assert "bob" not in written

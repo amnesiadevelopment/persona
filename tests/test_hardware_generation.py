@@ -275,7 +275,7 @@ def _gpu_seen(tmp_path, seed, generation, tag):
     harness.write_text(_GPU_READ, encoding="utf-8")
     out = subprocess.run(
         [node, str(harness), str(d / "gpu.js")],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True, timeout=60, encoding="utf-8",
     )
     assert out.returncode == 0, out.stderr
     seen = json.loads(out.stdout)
@@ -607,7 +607,7 @@ def _screen_seen(tmp_path, seed, generation, tag):
     harness.write_text(_SCREEN_READ, encoding="utf-8")
     out = subprocess.run(
         [node, str(harness), str(d / "device.js")],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True, timeout=60, encoding="utf-8",
     )
     assert out.returncode == 0, out.stderr
     seen = json.loads(out.stdout)
@@ -720,7 +720,7 @@ def _hw_seen(tmp_path, seed, generation, tag):
     harness.write_text(_HW_READ, encoding="utf-8")
     out = subprocess.run(
         [node, str(harness), str(d / "device.js")],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True, timeout=60, encoding="utf-8",
     )
     assert out.returncode == 0, out.stderr
     seen = json.loads(out.stdout)

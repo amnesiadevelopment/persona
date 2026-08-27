@@ -19,7 +19,7 @@ def test_add_get_persist(store):
     assert store.add(h)
     assert store.get("box").host == "1.2.3.4"
     # persisted to disk
-    raw = json.load(open(os.environ["PERSONA_SSH_HOSTS_FILE"]))
+    raw = json.load(open(os.environ["PERSONA_SSH_HOSTS_FILE"], encoding="utf-8"))
     assert raw["box"]["profile"] == "IE Main"
 
 

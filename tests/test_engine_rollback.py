@@ -58,7 +58,7 @@ def _make_build(root, tag, entry="firefox", marker=True):
     marker (which is what `installed_builds` requires of any non-pinned dir)."""
     d = root / tag
     d.mkdir(parents=True, exist_ok=True)
-    (d / entry).write_text("#!/bin/sh\n")
+    (d / entry).write_text("#!/bin/sh\n", encoding="utf-8")
     if marker:
         (d / MARKER).touch()
     return d
@@ -279,10 +279,10 @@ def _profile_last_opened_by(tmp_path, build, prefs=True):
         "[Compatibility]\n"
         "LastVersion=151.0_x/x\n"
         f"LastPlatformDir=/cache/{build}\n"
-        f"LastAppDir=/cache/{build}/browser\n"
+        f"LastAppDir=/cache/{build}/browser\n", encoding="utf-8"
     )
     if prefs:
-        (prof / "prefs.js").write_text('user_pref("x", 1);\n')
+        (prof / "prefs.js").write_text('user_pref("x", 1);\n', encoding="utf-8")
     (prof / "cookies.sqlite").write_bytes(b"USER-COOKIES")
     return prof
 
@@ -324,7 +324,7 @@ def test_downgrade_still_drops_the_incompatible_prefs(tmp_path):
     # by the warmup chrome prefs (#242, so the window doesn't open light). What
     # must be gone is the STALE content the other build wrote — asserting the
     # file's absence would assert the opposite of the intended behaviour.
-    body = (prof / "prefs.js").read_text()
+    body = (prof / "prefs.js").read_text(encoding="utf-8")
     assert 'user_pref("x", 1)' not in body, (
         "prefs.js is not compatible ACROSS builds in either direction; the "
         "downgrade path must still drop what the newer build wrote"
@@ -348,7 +348,7 @@ def test_forward_update_does_not_clear_the_guard(tmp_path):
     )
     # Same rewrite as the downgrade path: the stale value dies, the file itself
     # comes back carrying the warmup chrome prefs.
-    body = (prof / "prefs.js").read_text()
+    body = (prof / "prefs.js").read_text(encoding="utf-8")
     assert 'user_pref("x", 1)' not in body, "the forward prefs reset still runs"
     assert not any("ENGINE_BUILD_REVERTED" in ln for ln in lines), lines
 
@@ -372,7 +372,7 @@ def test_profile_firefox_never_opened_is_untouched(tmp_path):
 
     prof = tmp_path / "fresh"
     prof.mkdir()
-    (prof / "prefs.js").write_text('user_pref("x", 1);\n')
+    (prof / "prefs.js").write_text('user_pref("x", 1);\n', encoding="utf-8")
 
     assert inv._migrate_profile_for_engine_build(str(prof), "/cache/firefox-19") == []
     assert (prof / "prefs.js").exists()

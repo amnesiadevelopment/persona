@@ -45,6 +45,6 @@ def test_lock_frees_on_release(lockfile):
 )
 def test_lockfile_records_pid(lockfile):
     h = si.acquire()
-    with open(lockfile) as f:
+    with open(lockfile, encoding="utf-8") as f:
         assert f.read().strip() == str(os.getpid())
     h.release()
