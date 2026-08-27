@@ -30,6 +30,12 @@ def build_profile_response(
         proxy=profile.proxy,
         os_type=profile.os_type,
         device_type=getattr(profile, "device_type", "desktop"),
+        # Rule 3's verdict on the stored pair, derived on read (PS-188). See
+        # ProfileResponse: the recovery doors accept an incoherent pair by
+        # design, so this is the surface that lets an operator find one.
+        device_type_incoherence=getattr(
+            profile, "device_type_incoherence", None
+        ),
         engine=getattr(profile, "engine", "chromium"),
         resolution=getattr(profile, "resolution", "auto"),
         search_engine=getattr(profile, "search_engine", "duckduckgo"),
