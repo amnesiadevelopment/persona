@@ -41,11 +41,22 @@ own generation:
 
     visible(pool, generation) == [e for e in pool if e.since <= generation]
 
-Every entry shipped today is ``since=0``, and a profile that predates the field
-reads generation 0. So a generation-0 profile's visible pool is today's list, in
-today's order, with today's LENGTH — hence today's divisor and today's pick,
-permanently, however much the list grows afterwards. That equality is the whole
-fix; the filter is the entire mechanism.
+An entry that shipped BEFORE generations existed carries no ``since`` and reads
+as ``since=0``, and a profile that predates the field reads generation 0. So a
+generation-0 profile's visible pool is the list AS IT STOOD AT GENERATION 0 —
+those entries, in that order, with that LENGTH — hence that divisor and that
+pick, permanently, however much the list grows afterwards. That equality is the
+whole fix; the filter is the entire mechanism.
+
+⚠️ THE VISIBLE POOL IS NOT THE WHOLE LIST, and has not been since PS-183. That
+sentence above once read "today's list ... with today's LENGTH", which was true
+only while every shipped entry was ``since=0``. It is now false for ``MAC_GPUS``:
+the pool holds 11 entries, nine of them ``since=1``, so a generation-0 macOS
+profile's visible pool is 2 of 11 — and its collision probability is the 50.0%
+of that two-entry pool, NOT the 9.1% of the eleven. Any figure derived from a
+pool's raw LENGTH is therefore a statement about the newest generation only, and
+must not be quoted as the number the installed base sees. Read
+``len(visible_entries(pool, generation))``, never ``len(pool)``.
 
 WHY IT SURVIVES INSERTION, NOT MERELY APPEND. The filter is by tag, not by
 position, so a new entry dropped into the MIDDLE of a list is still invisible to
@@ -85,11 +96,18 @@ from typing import Protocol, TypeVar
 # that adds entries, and tag those entries with the bumped value. See the module
 # docstring for the full procedure — this constant is half of it.
 #
-# 0 means: nothing has been added since generations existed. Every entry in
-# every list is `since=0`, so every profile — including every profile that
-# predates the field — sees every entry, which is precisely the behaviour that
-# shipped before this module and why introducing it moved nobody.
-CURRENT_HARDWARE_GENERATION = 0
+# Generation 1 (PS-183): nine entries were added to ``gpu_ext``'s MAC_GPUS,
+# widening it from 2 to 11. That pool's two-entry form collided 50.0% of the
+# time — a shared cross-profile identifier and a Level 2 (mutual unlinkability)
+# breach — and widening was the only lever, deferring to the engine having been
+# measured and rejected (76.9%, worse). The nine are tagged ``since=1`` and this
+# constant was bumped in the same commit, per the procedure above, so no
+# EXISTING profile's visible pool changes length and none is re-indexed onto a
+# different card. Generation 0 keeps the 2-entry pool it has always presented
+# (and its 50.0% collision); generation 1 draws from all 11 at 9.1%.
+#
+# Was 0 before this, meaning: nothing had been added since generations existed.
+CURRENT_HARDWARE_GENERATION = 1
 
 
 class _HasSince(Protocol):

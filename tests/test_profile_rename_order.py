@@ -416,12 +416,18 @@ def test_the_hardware_generation_survives_a_save_load_round_trip(mgr, tmp_path):
     # invisible today, then a mass re-roll the first time a hardware list grew,
     # which is precisely the event this field exists to prevent.
     #
-    # WRITTEN WITH A NON-ZERO GENERATION ON PURPOSE. CURRENT_HARDWARE_GENERATION
-    # is 0 today, so a profile created now stores 0 — and a dropped field also
-    # reads as 0 (None -> 0 is the migration fallback). At generation 0 the two
-    # outcomes are INDISTINGUISHABLE, so a test using the freshly-minted value
-    # would pass just as happily against an allow-list with this field missing.
-    # Setting 3 is what makes the assertion able to fail.
+    # WRITTEN WITH A GENERATION NO MINT PRODUCES, ON PURPOSE. A dropped field
+    # reads as 0 (None -> 0 is the migration fallback), so the value asserted
+    # here must be one the create path would never write of its own accord —
+    # otherwise a test using the freshly-minted value would pass just as
+    # happily against an allow-list with this field missing, and the assertion
+    # could not fail. 3 is comfortably clear of CURRENT_HARDWARE_GENERATION
+    # (0 when this was written, 1 since PS-183 widened MAC_GPUS), so the
+    # round-trip is what is being tested rather than the default.
+    #
+    # Hardcoded rather than derived from the constant deliberately: deriving it
+    # would re-couple this test to the very value it must be independent of.
+    # If CURRENT_HARDWARE_GENERATION ever reaches 3, raise this literal.
     mgr.add_profile("work", "", "windows")
     mgr.profiles["work"].hardware_generation_value = 3
     mgr.save_profiles()
