@@ -40,6 +40,7 @@ it against the OS, from the test's own side, before drawing a conclusion.
 """
 
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -57,22 +58,21 @@ pytestmark = pytest.mark.timeout(120)
 # against natural exit — the same bar tests/test_browser_process_group.py uses.
 _SLEEP = "import time; time.sleep(300)"
 
-
-def _spawn_orphan_under(parent_alive_marker):
-    """A real child process, started by the test, that outlives the watch."""
-    return subprocess.Popen(
-        [sys.executable, "-c", _SLEEP],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-
-
-def _reap(proc):
-    for fn in ("kill", "wait"):
-        try:
-            getattr(proc, fn)()
-        except Exception:
-            pass
+# A three-level tree (parent -> 3 children -> 1 grandchild each = 6 descendants)
+# for the descendant-scan cost test. Multi-level deliberately: a single
+# `pgrep -P` finds only the children, so a walk that stops at depth 1 would
+# still look correct against a flat tree.
+_TREE_GRANDCHILD = "import time; time.sleep(300)"
+_TREE_CHILD = (
+    "import subprocess, sys, time; "
+    "subprocess.Popen([sys.executable, '-c', %r]); "
+    "time.sleep(300)" % _TREE_GRANDCHILD
+)
+_TREE_PARENT = (
+    "import subprocess, sys, time; "
+    "[subprocess.Popen([sys.executable, '-c', %r]) for _ in range(3)]; "
+    "time.sleep(300)" % _TREE_CHILD
+)
 
 
 def _run_thread_close_watch(
@@ -327,11 +327,6 @@ def test_the_survivor_scan_is_anchored_on_tracked_pids_not_a_profile_rescan():
         "_session_descendants must take only the tracked roots; a profile_dir "
         "parameter would re-arm the #150 relaunch race"
     )
-    # And the teardown still refuses to rescan when it has tracked pids.
-    src = inspect.getsource(il._invisible_session_body) if hasattr(
-        il, "_invisible_session_body"
-    ) else ""
-    del src  # presence is asserted by the teardown test below, not here
 
 
 def test_the_teardown_still_refuses_a_profile_dir_rescan_when_pids_are_tracked():
@@ -523,3 +518,313 @@ def test_the_thread_path_reap_still_reports_False_truthfully():
         "a handle with no process group must report that no group signal was "
         "delivered; reporting True would make the boolean meaningless"
     )
+
+
+# --------------------------------------------------------------------------
+# DEFECT B, ROUND 2 — the pre-setsid window.
+#
+# Round 1 recorded the pgid on the HANDLE at `start()` time, which is CORRECT
+# once the child is its own leader but names a group that DOES NOT EXIST YET
+# for the ~1.5ms until `_child` reaches `start_own_session()`. `killpg` answers
+# ESRCH there, `_signal_group` folded ESRCH into "delivered", and delivery is
+# what suppresses the single-process fallback — so the child was signalled by
+# NEITHER path while the caller was told a group signal had been delivered.
+# A live survivor with a completion signal over it: this ticket's own shape.
+#
+# EVERY OTHER B-TEST CALLS `proc.wait(timeout=15)` FIRST, so the child has long
+# since setsid'd and the window is invisible to all of them. That is why a
+# green suite did not catch it, and it is why this test does not wait.
+# --------------------------------------------------------------------------
+
+def _fork_child_that_setsids_LATE(cfg, wf, stop_event=None):
+    """``_child``'s shape with its first act DELAYED, to widen a real window.
+
+    The window is real at ~1.5ms (measured over 20 forks: min 1.07, median
+    1.47, max 2.50). Widening it is what makes it observable from a test
+    without a sleep-and-hope race; the code path exercised is identical.
+    """
+    from src.services.browser.process_group import start_own_session
+
+    time.sleep(_LATE_SETSID_DELAY)
+    start_own_session()
+    time.sleep(300)
+
+
+_LATE_SETSID_DELAY = 20.0
+# ⚠️ SIZED AGAINST THE REAP'S OWN INTERNAL WAITS, NOT PICKED FOR COMFORT.
+# `terminate_process_group` waits `timeout` after the SIGTERM leg and a further
+# 5s after the SIGKILL leg. If the child reaches setsid() inside that span, the
+# SIGKILL leg finds a group that NOW EXISTS and genuinely delivers — so the
+# child dies, in the mutant as well as in the fix, and the survival assertion
+# below stops discriminating. Measured: at delay=5.0 with timeout=5 the
+# mutation left assertion (2) red but assertion (1) GREEN, i.e. the harness was
+# proving less than it claimed. The delay must therefore exceed
+# reap_timeout + 5 with room to spare; 20s against a 1s timeout (~6s of waits)
+# keeps the whole reap inside the window.
+
+
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="POSIX process groups")
+@_FORK_ONLY
+def test_a_reap_inside_the_pre_setsid_window_kills_and_does_not_claim_delivery(
+    monkeypatch,
+):
+    """⭐ The round-1 regression, pinned. Two assertions, deliberately separate.
+
+    1. The child must NOT survive. Recording the pgid on the handle routed the
+       reap into the group branch, where an ESRCH counted as success and the
+       ``proc.terminate()``/``proc.kill()`` fallback never ran.
+    2. The reap must not report delivery. ``True`` is documented to mean "a
+       group signal was actually DELIVERED"; nothing was.
+
+    Kept separate so a future regression in either is attributable — the same
+    discipline ``test_reap_reports_delivery_truthfully_on_a_fork_path_handle``
+    uses in the opposite direction.
+    """
+    from src.services.browser.process_group import reap_process_group
+
+    monkeypatch.setattr(il, "_child", _fork_child_that_setsids_LATE)
+    proc = il.InvisibleProcess({}, in_process=False)
+    pid = proc.pid
+    try:
+        assert proc._fork, "this test must exercise the fork path, not the thread"
+
+        # ⚠️ THE PRECONDITION, ASSERTED RATHER THAN ASSUMED. A clean result
+        # here is only evidence if the reap genuinely happened BEFORE the child
+        # became its own leader. If setsid had already run, this test would be
+        # re-testing the ordinary path and would pass no matter what the code
+        # did — the "negative control that comes back clean" trap this ticket's
+        # method constraints name explicitly.
+        assert group_of(pid) == os.getpgrp(), (
+            "precondition: the child must still be in OUR group, i.e. it has "
+            "not called setsid() yet. Without this the window is not open and "
+            "the assertions below prove nothing"
+        )
+
+        # timeout=1 so the reap's own internal waits (timeout + 5s) finish well
+        # inside _LATE_SETSID_DELAY — see the note on that constant. A larger
+        # timeout lets the child setsid() mid-reap, the SIGKILL leg then lands
+        # on a group that really exists, and assertion (1) stops discriminating.
+        delivered = reap_process_group(proc, timeout=1)
+
+        # (1) The process must actually be gone.
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                break
+            time.sleep(0.1)
+        alive = True
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            alive = False
+        assert not alive, (
+            "the child SURVIVED a reap: the recorded pgid named a group that "
+            "did not exist yet, killpg returned ESRCH, and that was counted as "
+            "delivery — which suppressed the single-process fallback. The "
+            "process was signalled by neither path"
+        )
+
+        # (2) …and the report must not claim a group signal that never landed.
+        assert delivered is False, (
+            "reap_process_group claimed a group signal was DELIVERED to a "
+            "group that did not exist yet (ESRCH). A caller measuring teardown "
+            "cannot distinguish a real group kill from this"
+        )
+    finally:
+        try:
+            os.kill(pid, 9)
+        except Exception:
+            pass
+
+
+def test_an_esrch_does_not_suppress_the_single_process_fallback(monkeypatch):
+    """The mechanism above, isolated from fork timing so it runs everywhere.
+
+    The window test is Linux-only (the fork path) and depends on real process
+    timing. This pins the same rule directly on ``terminate_process_group``: a
+    recorded pgid that answers ESRCH is NOT delivery, and the handle must still
+    be terminated and killed. An empty group makes the fallback a harmless
+    no-op; a not-yet-created one makes it the only signal that lands.
+    """
+    from src.services.browser.process_group import terminate_process_group
+
+    called = {"terminate": False, "kill": False}
+
+    class _Handle:
+        pid = 4242
+        _persona_pgid = 4242  # recorded at launch, before setsid ran
+
+        def terminate(self):
+            called["terminate"] = True
+
+        def kill(self):
+            called["kill"] = True
+
+        def wait(self, timeout=None):
+            return 0
+
+    def _always_esrch(pgid, sig):
+        raise ProcessLookupError()
+
+    # monkeypatch (not a manual save/restore): on a platform without killpg the
+    # manual version restores nothing and leaks the stub into the whole
+    # session. `raising=False` because the attribute may not exist there.
+    monkeypatch.setattr(os, "killpg", _always_esrch, raising=False)
+
+    delivered = terminate_process_group(_Handle(), timeout=0.1)
+
+    assert called["terminate"] and called["kill"], (
+        "an ESRCH from killpg suppressed the single-process fallback. The "
+        "group may simply not exist YET (the setsid window), in which case the "
+        "handle has now been signalled by neither path"
+    )
+    assert delivered is False, (
+        "ESRCH is not delivery: nothing was signalled, so the return value "
+        "must not claim a group signal landed"
+    )
+
+
+# --------------------------------------------------------------------------
+# ROUND 2 — the descendant scan runs on EVERY poll, so it must be cheap.
+#
+# The scan asked the OS once per NODE (`pgrep -P` breadth-first), measured at
+# 84ms and 13 subprocesses per scan against a 12-child tree, every second, per
+# open profile. `_thread_close_watch`'s own docstring says the pids are polled
+# with cheap ctypes checks precisely to avoid that class of burn. One snapshot
+# answers the whole question, which is what the Windows branch already did.
+# --------------------------------------------------------------------------
+
+@pytest.mark.skipif(_platform.IS_WINDOWS, reason="the POSIX snapshot path")
+def test_the_descendant_scan_reads_the_process_table_once_not_once_per_node():
+    """The COST property, pinned structurally rather than by a timing bar.
+
+    A wall-clock assertion would be flaky on a loaded CI box. What actually
+    regressed is the SHAPE — a subprocess per node — so that is what is
+    asserted: walking a real 6-node tree must not spawn a process per node.
+    On Linux the table is a /proc read (zero subprocesses); on macOS it is a
+    single `ps`, regardless of how big the tree is.
+    """
+    real_popen = subprocess.Popen
+    spawns = {"n": 0}
+
+    def _counting_popen(*a, **kw):
+        spawns["n"] += 1
+        return real_popen(*a, **kw)
+
+    parent = subprocess.Popen(
+        [sys.executable, "-c", _TREE_PARENT],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.time() + 15
+        tree = set()
+        while time.time() < deadline:
+            tree = il._session_descendants({parent.pid}) or set()
+            if len(tree) >= 6:
+                break
+            time.sleep(0.2)
+
+        # PRECONDITION: there really is a multi-level tree to walk. Without it
+        # a low subprocess count would prove nothing at all.
+        assert len(tree) >= 6, (
+            f"precondition: expected a 6-node tree to walk, saw {sorted(tree)}"
+        )
+
+        subprocess.Popen = _counting_popen
+        try:
+            again = il._session_descendants({parent.pid})
+        finally:
+            subprocess.Popen = real_popen
+
+        assert again is not None and len(again) >= 6, "the rescan lost the tree"
+        assert spawns["n"] <= 1, (
+            f"the scan spawned {spawns['n']} subprocesses for a 6-node tree — "
+            "it is asking per NODE again. This runs on every poll of every "
+            "open profile; one snapshot must answer the whole question"
+        )
+    finally:
+        for p in sorted(il._session_descendants({parent.pid}) or set()) + [parent.pid]:
+            # Killed INDIVIDUALLY, never with killpg: this parent is not a
+            # session leader, so its pgid is the TEST RUNNER's own group.
+            try:
+                os.kill(p, 9)
+            except Exception:
+                pass
+
+
+@pytest.mark.skipif(_platform.IS_WINDOWS, reason="the POSIX snapshot path")
+def test_an_unreadable_process_table_is_no_verdict_not_an_empty_tree():
+    """The PS-192 discipline, on the new seam.
+
+    "Could not look" rendered as `[]` is what produced PS-192's false clean.
+    The snapshot has its own failure mode (an unreadable /proc, a `ps` that
+    will not run), and it must reach the caller as None so the claim neither
+    widens nor narrows.
+    """
+    import src.services.browser.invisible_launch as _il
+
+    real = _il._process_parent_table
+    try:
+        _il._process_parent_table = lambda: None
+        assert _il._session_descendants({os.getpid()}) is None, (
+            "an unreadable process table rendered as 'no descendants' — a "
+            "scan that could not run must never be read as a clean tree"
+        )
+    finally:
+        _il._process_parent_table = real
+
+
+@pytest.mark.skipif(not _platform.IS_LINUX, reason="/proc stat parsing")
+def test_the_parent_table_survives_a_process_whose_name_contains_a_paren(tmp_path):
+    """/proc/<pid>/stat's `comm` field is parenthesised AND can contain ')'.
+
+    Splitting the line on whitespace puts ppid at the wrong index for such a
+    process, which silently corrupts the tree — and a Firefox tree is exactly
+    where an odd executable name shows up. So this SPAWNS a real process named
+    ``ev)il (x`` rather than asserting the parse in the abstract: the child is
+    a copy of the interpreter under that name, and the table must still report
+    its true parent.
+    """
+    odd = tmp_path / "ev)il (x"          # comm is capped at 15 chars; this fits
+    shutil.copy(sys.executable, odd)
+    odd.chmod(0o755)
+
+    child = subprocess.Popen(
+        [str(odd), "-c", _SLEEP],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.time() + 10
+        table = None
+        while time.time() < deadline:
+            table = il._process_parent_table()
+            if table and child.pid in table:
+                break
+            time.sleep(0.1)
+
+        assert table, "precondition: the process table must be readable here"
+        # PRECONDITION: the child really is named with an embedded ')', or the
+        # parse below is never exercised on the case this test exists for.
+        comm = (
+            open(f"/proc/{child.pid}/stat", "rb").read().split(b"(", 1)[1]
+        ).rsplit(b")", 1)[0]
+        assert b")" in comm, (
+            f"precondition: comm {comm!r} has no embedded ')', so the naive "
+            "whitespace split would parse it correctly and this proves nothing"
+        )
+
+        assert table.get(child.pid) == os.getpid(), (
+            f"a process named {comm!r} was misparsed from /proc/<pid>/stat: "
+            f"ppid read as {table.get(child.pid)}, really {os.getpid()}. A "
+            "whitespace split lands on the wrong field for such a name and "
+            "silently corrupts the whole descendant tree"
+        )
+    finally:
+        try:
+            child.kill()
+        except Exception:
+            pass
