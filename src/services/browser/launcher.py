@@ -58,7 +58,14 @@ def cert_trust_status_from(msg: str) -> str | None:
 _QUIET_CLOSE_REASONS = {
     "stop-requested",
     "window-gone",
-    "all-pids-exit",
+    # PS-204: renamed from "all-pids-exit", which claimed more than the watch
+    # could observe. The watch quantifies over the pid set it captured ONCE, so
+    # the old name asserted that EVERY process the session spawned had exited —
+    # a claim it was structurally unable to falsify about a child that appeared
+    # after the capture. The new name says exactly what was checked. Renamed
+    # HERE in the same change as the emit (invisible_launch.py), or a normal
+    # close falls through to the "ended unexpectedly" branch below.
+    "tracked-pids-exit",
     "parent-pid-exit",
     "closed-event",
     "launch-failed",
