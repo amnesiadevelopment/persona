@@ -3921,6 +3921,77 @@ def _descendant_pids(root: int):
     return tree
 
 
+def _process_parent_table():
+    """``{pid: ppid}`` for EVERY process in ONE snapshot, or None if unreadable.
+
+    PS-204 round 2. The descendant walk used to ask the OS once per NODE
+    (``pgrep -P`` per pid, breadth-first), which is fine for a one-off teardown
+    query but became a per-second cost when the close-watch started scanning on
+    every poll: measured at **84ms and 13 subprocesses per scan** against a
+    12-child tree (a modest tabbed Firefox), per open profile. That is the same
+    class of burn ``_thread_close_watch``'s own docstring says the cheap ctypes
+    liveness checks exist to avoid.
+
+    One snapshot answers the whole question instead, which is what the Windows
+    branch of :func:`_session_descendants` already did with its Toolhelp
+    walk — this gives the POSIX branch the same shape: **0 subprocesses on
+    Linux** (a /proc read) and **1 on macOS** (a single ``ps``), independent of
+    how many processes the tree has.
+
+    None means "could not look" and must never be read as "no processes" — the
+    discipline PS-192's false clean was caused by breaking.
+    """
+    if _platform.IS_LINUX:
+        try:
+            entries = os.listdir("/proc")
+        except OSError:
+            return None
+        table = {}
+        for name in entries:
+            if not name.isdigit():
+                continue
+            try:
+                with open(f"/proc/{name}/stat", "rb") as f:
+                    data = f.read()
+            except OSError:
+                continue  # exited between listdir and open — normal, not fatal
+            # `comm` is parenthesised and may itself contain spaces AND ')',
+            # so the fields after it are found from the LAST ')', never by
+            # splitting the line. After it: state, ppid, ...
+            try:
+                rest = data[data.rindex(b")") + 1:].split()
+                table[int(name)] = int(rest[1])
+            except Exception:
+                continue
+        return table or None
+    # macOS has no /proc; one `ps` for the entire table, not one per node.
+    try:
+        out = subprocess.check_output(["ps", "-axo", "pid=,ppid="], text=True)
+    except Exception:
+        return None
+    table = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+            table[int(parts[0])] = int(parts[1])
+    return table or None
+
+
+def _walk_children(children, roots):
+    """Breadth-first descendants of `roots` over a prebuilt {ppid: [pid]} map."""
+    seen = set()
+    frontier = [int(r) for r in roots]
+    while frontier:
+        nxt = []
+        for p in frontier:
+            for c in children.get(p, ()):
+                if c not in seen:
+                    seen.add(c)
+                    nxt.append(c)
+        frontier = nxt
+    return seen
+
+
 def _session_descendants(roots):
     """Every live descendant of `roots`, or None when the scan can't run.
 
@@ -3935,6 +4006,10 @@ def _session_descendants(roots):
     same discipline `_profile_firefox_pids` and `_descendant_pids` already keep,
     and the reason PS-192's reviewer measured a false clean when a missing
     psutil rendered "could not look" as an empty list.
+
+    ONE SNAPSHOT ON EVERY PLATFORM (see :func:`_process_parent_table`): the
+    per-node ``pgrep`` walk this used on POSIX cost 84ms/13 subprocesses per
+    scan, every second, per open profile.
     """
     if not roots:
         return None
@@ -3945,24 +4020,14 @@ def _session_descendants(roots):
         children: dict = {}
         for p, pp, _name in entries:
             children.setdefault(pp, []).append(p)
-        seen = set()
-        frontier = [int(r) for r in roots]
-        while frontier:
-            nxt = []
-            for p in frontier:
-                for c in children.get(p, ()):
-                    if c not in seen:
-                        seen.add(c)
-                        nxt.append(c)
-            frontier = nxt
-        return seen
-    out = set()
-    for r in roots:
-        tree = _descendant_pids(int(r))
-        if tree is None:
-            return None  # pgrep unavailable — no verdict, not "none found"
-        out |= tree
-    return out
+        return _walk_children(children, roots)
+    table = _process_parent_table()
+    if table is None:
+        return None  # could not read the process table — no verdict
+    children = {}
+    for p, pp in table.items():
+        children.setdefault(pp, []).append(p)
+    return _walk_children(children, roots)
 
 
 def _proc_cmdline(pid: int):
