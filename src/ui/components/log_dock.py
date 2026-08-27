@@ -489,11 +489,25 @@ class LogDock:
         previous = self._last_profile if tail else None
         for line in lines:
             stamp, profile, _msg, _sev = parse_event(line, self.profiles)
+            grouped = False
             if tier == TIER_READING and profile and profile != previous:
                 out.append(group_separator(profile, stamp))
+                grouped = True
             if profile:
                 previous = profile
-            out.append(event_row(line, self.profiles, tier))
+            # Under a separator the profile column goes BLANK rather than
+            # repeating the name the rule directly above it just gave — see
+            # event_row's `show_profile`. Every other row keeps its name, so a
+            # run reads as "heading, then its events" instead of the name
+            # appearing twice on the same line of sight.
+            out.append(
+                event_row(
+                    line,
+                    self.profiles,
+                    tier,
+                    show_profile=not grouped,
+                )
+            )
         self._last_profile = previous
         return out
 
