@@ -36,10 +36,76 @@ need not look:
   archive lands as a tolerated already-stored record — editable, never
   stranded, exactly like a legacy record predating these rules. Reconciling it
   would mean rewriting a field at launch, which is ``process.py``'s job and not
-  this module's. See ``device_type_error``.
+  this module's. See ``device_type_error``, and the Rule 3 section below — that
+  "tolerated" outcome is now a RECORDED decision rather than an unexamined
+  residual, and the record it lands is no longer silent.
 * ``ProfileManager.restore_profile`` — intentionally EXEMPT. Restore replays a
   record that already existed, so it introduces nothing; guarding it would
   strand a trashed profile behind a conflict it did not create.
+* ``ProfileManager._load_profiles_locked`` (the legacy disk load) — does not
+  judge either rule family. It reads records written by older builds, so it is
+  a RECOVERY door like the two above, not an authoring one.
+
+RULE 3 AT THE THREE RECOVERY DOORS: ACCEPT AND RECORD (PS-188)
+--------------------------------------------------------------
+
+The three entries above are the doors that can bring a ``windows`` + ``mobile``
+record to rest. PS-188 asked, per door, whether to REFUSE, NORMALISE, or ACCEPT
+AND RECORD. The answer is the same for all three — **accept and record** — and
+the reasoning is worth keeping, because "make it symmetric with create/update"
+is the obvious wrong answer:
+
+* **REFUSE is wrong at a recovery door.** Import, restore and the legacy load
+  exist to give an operator back a profile they already have. A door that
+  refuses turns a recoverable backup into an unimportable one, at the one
+  moment the operator cannot edit the record into shape. This is the same
+  argument ``restore_profile``'s exemption has always rested on, and PS-188
+  re-checked that exemption rather than inheriting it: the recorded reason
+  still holds, and restore is additionally incapable of INTRODUCING the fault
+  (delete→restore is a round trip over a pair the product already accepted).
+* **NORMALISE has no honest form for Rule 3.** ``coherent_engine`` can
+  reconcile the PAIR because an engine exists that satisfies it. Rule 3 has no
+  such remedy: coercing ``device_type`` to ``"desktop"`` or ``os_type`` to a
+  mobile family each rewrite a field the operator never asked to change, and
+  **which of the two is the lie is not knowable from the record.** For restore
+  it is worse than merely unhelpful — that door's contract is to replay a
+  record "exactly as it was", to the point of refusing even a rename.
+
+So the behaviour at these doors is unchanged, and that was never the defect.
+The defect was that the incoherence was **SILENT**: a recovered ``windows`` +
+``mobile`` record was indistinguishable from a coherent one, on every surface.
+The RECORD half is what PS-188 adds:
+
+* ``models.profile.Profile.device_type_incoherence`` — Rule 3's verdict on a
+  STORED record, derived on read via ``device_type_error`` so this module stays
+  its single owner. Like ``__setattr__`` below it is a property of the FIELDS
+  rather than a list of doors, so it is true of the door nobody has written yet;
+  and being computed rather than stored, it needs no migration for the records
+  that already exist and cannot go stale against the fields it describes.
+* ``import_profile`` and ``restore_profile`` log the pair they let through.
+* ``api.schemas.profiles.ProfileResponse.device_type_incoherence`` exposes it,
+  so an operator can FIND the incoherent profiles they already hold — which no
+  surface previously permitted.
+
+WHAT SUCH A RECORD DOES AT LAUNCH — measured on both engines (PS-188), because
+the blast radius is what makes recording it worthwhile. PS-161 round 4 closed
+the GPU **authorship** leak (``engine_platform`` is one computation over both
+fields, handed to both consumers), and it closed exactly that one vector:
+
+* **chromium** — ``is_mobile`` is true, so an Android device preset drives the
+  UA, screen and touch, while the GPU **pool arm** (``gpu_ext._os_norm``) and
+  the **voice roster** (``voice_ext``) are still selected from ``os_type``
+  alone: a Direct3D11 renderer and Microsoft desktop voices underneath an
+  Android UA. Those two vectors still read one field.
+* **firefox** — the launch path reads NEITHER field (``invisible_launch.py``
+  has no ``device_type`` or ``is_mobile`` reference at all, #211), and the pair
+  rules make ``windows`` the only OS Firefox may carry, so a ``windows`` +
+  ``mobile`` + ``firefox`` record is pair-COHERENT, launches Firefox, and has
+  its ``device_type`` dropped entirely: the record claims a phone and the
+  browser presents a desktop Windows machine.
+
+Reconciling either belongs on the launch path (``process.py``), not in this
+module — see ``device_type_error``.
 
 ⚠️ RULE 4 IS NOT DISPOSED OF BY THAT LIST, and the difference matters. Rules 1-3
 judge a PAIR of fields, so they can only be applied where both values are in

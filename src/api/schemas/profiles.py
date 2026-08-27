@@ -40,6 +40,25 @@ class ProfileResponse(BaseModel):
     proxy: str | None
     os_type: str
     device_type: str = "desktop"
+    # Rule 3's verdict on the STORED pair: the reason this profile's
+    # os_type/device_type cannot both be true, or None when they can (PS-188).
+    #
+    # Create and update REFUSE this pair, so a profile authored through this API
+    # can never carry it. It arrives through the three RECOVERY doors, which
+    # accept it deliberately — import, restore and the legacy disk load recover
+    # records rather than authoring them, and a door that refuses turns a
+    # recoverable backup into an unimportable one.
+    #
+    # Present on the row precisely BECAUSE those doors do not refuse: the
+    # decision taken was "accept and record", and a record nobody can read is
+    # not a record. This is the read half — it is what lets an operator find the
+    # incoherent profiles they already have, which was previously impossible
+    # from any surface. Derived on read from `Profile.device_type_incoherence`,
+    # never stored, so it cannot go stale against the two fields above it.
+    #
+    # Unlike `data_dir` below, this discloses nothing about the host: it is a
+    # statement about two values the row already carries.
+    device_type_incoherence: str | None = None
     engine: str = "chromium"
     resolution: str = "auto"
     search_engine: str = "duckduckgo"

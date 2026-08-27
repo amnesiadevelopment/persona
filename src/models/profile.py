@@ -265,6 +265,56 @@ class Profile:
         """
         return normalize_generation(self.hardware_generation_value)
 
+    @property
+    def device_type_incoherence(self) -> str | None:
+        """Rule 3's verdict on THIS STORED RECORD, or None if it is coherent.
+
+        THE RESIDUAL PS-188 CLOSES. Rule 3 (``device_type == "mobile"`` requires
+        a mobile ``os_type``) is REFUSED at the two authoring doors and is not
+        evaluated at the three RECOVERY doors — ``import_profile`` normalises
+        the pair only (Rule 3 has no engine remedy), ``restore_profile`` is
+        intentionally exempt, and the legacy disk load predates the rule. Those
+        three exemptions are deliberate and stay: a door that refuses turns a
+        recoverable backup into an unimportable one. See
+        ``services/profile/coherence.py``.
+
+        So the decision for those doors is ACCEPT AND RECORD, and this property
+        is the RECORD half. The incoherence was previously SILENT — the record
+        looked exactly like a coherent one — which is the part that was actually
+        wrong. It is now ASKABLE of any profile, from any door, at any time.
+
+        WHY A DERIVED PROPERTY AND NOT A STORED FLAG, and why that is the same
+        argument ``__setattr__`` below makes for Rule 4. A stored flag is a
+        second copy of a fact that is already fully determined by
+        ``(os_type, device_type)``, so it can go stale the moment either field
+        moves — and it would need a backfill for every record already on disk,
+        including the ones this exists to describe. Computed on read, it cannot
+        drift, needs no migration, and is true of the door nobody has written
+        yet. It is a property rather than a field for one more reason: ``asdict``
+        skips properties, so this changes NOTHING about what is persisted.
+
+        NOT A REFUSAL, deliberately, and not a repair either. Unlike Rule 4's
+        ``os_type``, Rule 3 has no safe repair: coercing ``device_type`` to
+        "desktop" or ``os_type`` to "android" both silently rewrite a field the
+        operator did not ask to change, and which of the two is the lie is not
+        knowable from the record. Reporting is the only honest option — and
+        ``restore_profile``'s contract is to replay a record "exactly as it
+        was", which a repair would break outright.
+
+        The reason string is Rule 3's own message, not a second wording of it:
+        ``coherence.device_type_error`` is the single owner, so the property and
+        the refusing doors cannot come to disagree about what Rule 3 says.
+
+        Imported function-locally on purpose: ``services.profile.coherence``
+        cannot be reached without executing ``services/profile/__init__``, which
+        imports ``manager``, which imports THIS module — a module-level import
+        here closes that cycle at import time. ``process.effective_engine``
+        documents the same constraint for the same reason.
+        """
+        from ..services.profile.coherence import device_type_error
+
+        return device_type_error(self.os_type, self.device_type)
+
     def __setattr__(self, name: str, value: object) -> None:
         """Repair ``os_type`` onto the canonical vocabulary as it is STORED.
 

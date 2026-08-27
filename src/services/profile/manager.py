@@ -176,6 +176,19 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                                 "os_type",
                                 p_data.get("config", {}).get("os", "windows"),
                             ),
+                            # device_type is NOT judged here (Rule 3, PS-188:
+                            # ACCEPT AND RECORD). This door reads records
+                            # written by an older build, so it is a RECOVERY
+                            # door like import and restore, and refusing would
+                            # drop a profile the operator already owns off the
+                            # bottom of the list. An absent key defaults to
+                            # "desktop", which is coherent with every os_type;
+                            # a stored "mobile" beside a desktop os_type lands
+                            # verbatim and is reported by
+                            # `Profile.device_type_incoherence` rather than
+                            # rewritten. Repairing is not available to this
+                            # door either: which of the two fields is the lie
+                            # is not knowable from the record.
                             "device_type": p_data.get(
                                 "device_type", "desktop"
                             ),
@@ -1059,7 +1072,45 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                 # strand a trashed profile behind a conflict it did not create,
                 # which is exactly what the "already-stored records are not
                 # stranded" policy forbids. Do not "fix" this into a guard.
+                #
+                # RULE 3 (device_type), RE-EXAMINED AND DELIBERATELY LEFT
+                # EXEMPT (PS-188). The exemption above was checked rather than
+                # inherited: PS-188 asked whether symmetry with create/update
+                # should override it, and the answer is NO, on TWO grounds that
+                # both still hold.
+                #
+                #   1. The recorded reason is intact. Restore's whole contract
+                #      is to put a record back "exactly as it was" — the
+                #      docstring refuses even to RENAME, because a rename would
+                #      hand back a cookie jar under a different fingerprint. A
+                #      door bound that tightly to fidelity cannot also refuse or
+                #      rewrite: refusing would strand a trashed profile behind a
+                #      conflict the restore did not create, and a repair would
+                #      break the "exactly as it was" contract outright.
+                #   2. It is structurally incapable of introducing the fault.
+                #      The payload is a record that ALREADY passed through the
+                #      store; delete→restore is a round trip. Refusing here
+                #      would refuse a pair the product itself accepted earlier.
+                #
+                # What DOES change is that the incoherence is no longer silent:
+                # `Profile.device_type_incoherence` makes it askable of the
+                # restored record, and the log line below makes the restore
+                # itself observable. Exempt from the GUARD, not from the RECORD.
                 self.profiles[name] = Profile(**entry.payload)
+                _restored_incoherence = self.profiles[name].device_type_incoherence
+                if _restored_incoherence is not None:
+                    logger.warning(
+                        "Restored profile %r carries an incoherent "
+                        "os_type/device_type pair (%s/%s) and was replayed AS "
+                        "IS — restore is exempt from the coherence rules by "
+                        "design, because it returns a record that already "
+                        "existed (PS-188). It is editable, not stranded. "
+                        "Reason: %s",
+                        name,
+                        self.profiles[name].os_type,
+                        self.profiles[name].device_type,
+                        _restored_incoherence,
+                    )
             except Exception as e:
                 # Put the data dir back in the trash area so a failed restore
                 # leaves the profile still recoverable, not half-moved.
@@ -1257,7 +1308,16 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
 
             success, result = import_from_zip(zip_path, DATA_DIR)
             if not success:
-                return False, result
+                return False, result if isinstance(result, str) else "Import failed"
+
+            # import_from_zip's contract is (True, Profile) | (False, message),
+            # so `result` is a union until it is narrowed. Narrowed by an
+            # isinstance CHECK rather than an assert: a contract breach then
+            # reports as an ordinary import failure the operator can read,
+            # instead of raising out of a door whose whole purpose is to
+            # recover a profile without stranding it.
+            if not isinstance(result, Profile):
+                return False, "Import failed: the archive yielded no profile record"
 
             profile = result
             # Import is a door into the model, so it crosses the coherence rules
@@ -1297,6 +1357,57 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                     coherence_error(profile.os_type, profile.engine),
                 )
             profile.engine = resolved
+
+            # RULE 3 (device_type), DECIDED: ACCEPT AND RECORD (PS-188).
+            #
+            # The three options were refuse / normalise / accept-and-record.
+            #
+            # REFUSE is wrong here for the reason this door already refuses to
+            # refuse the PAIR: an archive is a RECOVERY, not an authoring act,
+            # and a door that refuses turns a recoverable backup into a
+            # permanently unimportable one at the one moment the operator has no
+            # way to edit the record into shape.
+            #
+            # NORMALISE has no honest form. coherent_engine reconciles the pair
+            # because there IS an engine that satisfies it; Rule 3 has no such
+            # remedy. Coercing device_type to "desktop" or os_type to a mobile
+            # family both rewrite a field the operator did not ask to change,
+            # and WHICH of the two is the lie is not knowable from the record.
+            #
+            # So the pair lands coherent and the triple lands VERBATIM — which
+            # is what this door already did. What was actually wrong is that it
+            # did so SILENTLY: the imported record was indistinguishable from a
+            # coherent one, so nothing downstream and nobody upstream could tell.
+            # It is now recorded. `Profile.device_type_incoherence` makes the
+            # verdict askable of the stored record from any door at any time
+            # (it is Rule 3's own message, computed, never a stored flag), and
+            # the log line below makes the import itself observable.
+            #
+            # What such a record DOES at launch, measured rather than assumed —
+            # this is the blast radius that justifies recording it at all:
+            #   * chromium: is_mobile is True, so an Android device preset drives
+            #     the UA/screen/touch, while the GPU POOL ARM and the voice
+            #     roster are still built from os_type ("windows") — a D3D11
+            #     renderer and Microsoft desktop voices under an Android UA.
+            #     (PS-161 round 4 fixed the AUTHORSHIP half of the GPU vector —
+            #     engine_platform is one computation over both fields — so the
+            #     host-rasteriser leak is closed. The pool ARM is a separate
+            #     question and still reads os_type alone.)
+            #   * firefox: the launch path reads NEITHER field (#211), so
+            #     device_type is dropped entirely and the profile presents a
+            #     desktop Windows machine while its record claims a phone.
+            # Reconciling either belongs on the launch path, not at this door.
+            if profile.device_type_incoherence is not None:
+                logger.warning(
+                    "Imported profile %r carries an incoherent "
+                    "os_type/device_type pair (%s/%s) and was stored AS IS — "
+                    "import recovers records, it does not refuse or rewrite "
+                    "them (PS-188). It is editable, not stranded. Reason: %s",
+                    profile.name,
+                    profile.os_type,
+                    profile.device_type,
+                    profile.device_type_incoherence,
+                )
 
             # The archive chose this profile's fingerprint seed. import_from_zip
             # has already thrown out anything that is not a real crc32 integer,
