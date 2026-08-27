@@ -15,8 +15,8 @@ backup into an unimportable one, and Rule 3 has no honest normalisation (which o
 WAS wrong is that the pair was **silent** — a recovered ``windows`` + ``mobile``
 record was indistinguishable from a coherent one on every surface.
 
-WHAT THESE TESTS PIN, AND WHY IT IS A PROPERTY RATHER THAN A DOOR LIST
----------------------------------------------------------------------
+WHAT THESE TESTS PIN, AND WHAT NO TEST HERE CAN PIN
+---------------------------------------------------
 
 Enumerating entry points is exactly what left this open (twice: PS-161's
 follow-up list, then PS-187's). A test that walks the doors *this* worker
@@ -27,9 +27,32 @@ a property of the RECORD:
         the pair is coherent  OR  the record itself says it is not.
 
 ``test_no_stored_profile_is_silently_incoherent`` states that over the store
-after every door has been driven, and — critically — it does not name the doors
-in its assertion. A door added next year that lands an incoherent record without
-recording it fails that test without anyone remembering to extend a list.
+after every door has been driven, and its assertion names none of them.
+
+⚠️ BE PRECISE ABOUT WHAT THAT DOES AND DOES NOT BUY, because the first version of
+this file overclaimed it in writing and a reviewer had to disprove it by
+mutation. The verdict is DERIVED ON READ (``Profile.device_type_incoherence`` is
+a function of the two fields), so "the record says so" is true BY CONSTRUCTION
+for every record that can ever exist. No assertion over stored records can
+therefore distinguish a door that records from a door that stays silent — a
+sweep that asks the record to confirm its own derivation is ``f(x) == f(x)`` and
+cannot fail. **So this file does NOT claim that a door added next year fails a
+test here.** The record half is guaranteed by DERIVATION, not by a test, and
+that is a stronger guarantee than a door list — but it is a design property, and
+saying a test enforces it would be false.
+
+What the sweep below does buy, and why it is still worth running: it checks the
+derived verdict against an oracle written INDEPENDENTLY of the implementation
+(``_independently_incoherent``, Rule 3 restated from its prose), so a
+``device_type_error`` that stopped flagging the pair — or started flagging the
+coherent ``android``+``desktop`` default — is caught over whatever the doors
+actually landed. That is ``f(x) == g(x)`` with two authors, not one.
+
+What a future silent door WOULD break is the DISCLOSURE half — the warning log
+and the REST field — and that half is inherently per-door, so it is asserted
+per-door (``test_the_recovery_doors_say_so_in_the_log``) and by the
+door-agnostic ``flagged == {"imported", "trashed"}`` census, which pins that
+import and restore land the pair verbatim AND flagged.
 
 And per PS-11: no test here asserts that a validator was CALLED. They assert what
 an operator or a downstream reader can actually observe — the stored record's own
@@ -167,24 +190,54 @@ def test_the_verdict_is_rule_3s_own_message_not_a_second_wording():
 # ---------------------------------------------------------------------------
 
 
+def _independently_incoherent(os_type, device_type) -> bool:
+    """Rule 3, restated from its PROSE rather than called.
+
+    ⚠️ THE POINT OF THIS FUNCTION IS THAT IT DOES NOT IMPORT THE IMPLEMENTATION.
+    Comparing ``profile.device_type_incoherence`` against
+    ``device_type_error(...)`` is ``f(x) == f(x)`` — the property is derived on
+    read from exactly those two fields, so that assertion cannot fail for any
+    record and passes even on a record landed with no guard at all. A reviewer
+    proved that by mutation, and it is the PS-11 shape this ticket's own method
+    constraints cite.
+
+    Rule 3 in words, from ``coherence.py``: *a ``device_type`` of "mobile"
+    requires a mobile ``os_type``*; the rule is one-directional (a mobile
+    ``os_type`` beside the "desktop" DEFAULT is fine, and is what every android
+    profile the UI ever made carries); and a ``device_type`` of ``None`` means
+    the caller had nothing to say, which earns no verdict.
+
+    Written out by hand so that a ``device_type_error`` which stopped flagging
+    the pair, or started flagging the coherent default, is CAUGHT rather than
+    agreed with.
+    """
+    if device_type is None:
+        return False
+    return device_type == "mobile" and os_type not in ("android", "ios")
+
+
 def _every_stored_profile_is_coherent_or_says_otherwise(manager):
     """The invariant, as a predicate over whatever is in the store.
 
-    Deliberately does NOT know which doors exist. It is the assertion a door
-    added next year has to satisfy without anyone remembering to extend a list —
-    which is the failure mode that produced this ticket and PS-187 both.
+    Deliberately does NOT know which doors exist — it takes the store as it
+    finds it. See this module's docstring for the honest bound on what that
+    buys: the record half is guaranteed by DERIVATION, so this cannot catch a
+    future door that stays silent, and it does not claim to. What it does catch
+    is Rule 3's verdict drifting away from Rule 3 as written, over whatever the
+    doors actually landed — which is why the oracle above is independent.
     """
     for profile in manager.profiles.values():
         recorded = profile.device_type_incoherence
-        actually = device_type_error(profile.os_type, profile.device_type)
-        # Not "a validator ran". The property is that the record's own account
-        # of itself matches the truth about its fields — so an incoherent
-        # profile that came to rest is one the record ADMITS to.
-        assert recorded == actually, (
+        expected = _independently_incoherent(profile.os_type, profile.device_type)
+        assert (recorded is not None) == expected, (
             f"profile {profile.name!r} ({profile.os_type}/"
-            f"{profile.device_type}) reports {recorded!r} but Rule 3 says "
-            f"{actually!r}"
+            f"{profile.device_type}) reports {recorded!r}, but Rule 3 as "
+            f"written says incoherent={expected}"
         )
+        # and when it does report, it reports something an operator can act on
+        if recorded is not None:
+            assert profile.device_type in recorded
+            assert profile.os_type in recorded
 
 
 def test_no_stored_profile_is_silently_incoherent(mgr, tmp_path):
@@ -457,11 +510,37 @@ def test_the_pair_still_contradicts_on_vectors_that_read_os_type_alone():
     still read `os_type` alone. So a windows+mobile record launches an Android
     device preset while its GPU pool and voices are Windows ones.
     """
-    from src.services.browser.device_presets import is_mobile_os
+    import inspect
+
+    from src.services.browser import process
+    from src.services.browser.device_presets import is_mobile_profile
     from src.services.browser.gpu_ext import _os_norm
 
-    # the launch path treats it as a phone (process.py: is_mobile_os or ==mobile)
-    assert (is_mobile_os("windows") or "mobile" == "mobile") is True
+    # The launch path treats it as a phone. Asserted TWICE, on purpose: once
+    # behaviourally against the shared predicate, and once against the launch
+    # site's real source.
+    #
+    # ⚠️ THE FIRST ASSERTION ALONE IS NOT ENOUGH, and the previous version of
+    # this test proved it the hard way — it read
+    # `is_mobile_os("windows") or "mobile" == "mobile"`, a comparison between
+    # two string literals, so it was `True` unconditionally and survived
+    # DELETING `device_type` from the launch computation. The predicate being
+    # right does not establish that the launch path CALLS it with both fields.
+    assert is_mobile_profile("windows", "mobile") is True
+    # ...and the desktop counterpart, so the above is a real distinction and
+    # not a function that returns True for everything.
+    assert is_mobile_profile("windows", "desktop") is False
+
+    # The launch site itself, read as source (the technique the Firefox test
+    # below uses correctly). This is what fails if someone drops `device_type`
+    # from the gate and re-strands the pair on the vector this ticket measured.
+    launch_src = inspect.getsource(process.spawn_browser)
+    assert "is_mobile_profile(profile.os_type, profile.device_type)" in launch_src, (
+        "the launch gate no longer computes is_mobile from BOTH fields -- a "
+        "windows+mobile record would launch as a Windows desktop while its "
+        "record claims a phone"
+    )
+
     # ...while the GPU pool arm is still chosen from os_type alone
     assert _os_norm("windows") == "windows"
     # ...as is the voice roster's arm, built from os_type with no device_type

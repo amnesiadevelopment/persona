@@ -269,37 +269,34 @@ class Profile:
     def device_type_incoherence(self) -> str | None:
         """Rule 3's verdict on THIS STORED RECORD, or None if it is coherent.
 
-        THE RESIDUAL PS-188 CLOSES. Rule 3 (``device_type == "mobile"`` requires
-        a mobile ``os_type``) is REFUSED at the two authoring doors and is not
-        evaluated at the three RECOVERY doors — ``import_profile`` normalises
-        the pair only (Rule 3 has no engine remedy), ``restore_profile`` is
-        intentionally exempt, and the legacy disk load predates the rule. Those
-        three exemptions are deliberate and stay: a door that refuses turns a
-        recoverable backup into an unimportable one. See
-        ``services/profile/coherence.py``.
+        THE RESIDUAL PS-188 CLOSES. Rule 3 is refused at the two AUTHORING doors
+        and evaluated at none of the three RECOVERY doors, deliberately — a door
+        that refuses turns a recoverable backup into an unimportable one.
+        ``services/profile/coherence.py`` owns that reasoning in full (including
+        why Rule 3 has no honest normalisation and why ``restore_profile`` stays
+        exempt); it is not restated here.
 
-        So the decision for those doors is ACCEPT AND RECORD, and this property
-        is the RECORD half. The incoherence was previously SILENT — the record
+        The decision for those doors is ACCEPT AND RECORD, and this property is
+        the RECORD half. The incoherence was previously SILENT — the record
         looked exactly like a coherent one — which is the part that was actually
         wrong. It is now ASKABLE of any profile, from any door, at any time.
 
         WHY A DERIVED PROPERTY AND NOT A STORED FLAG, and why that is the same
         argument ``__setattr__`` below makes for Rule 4. A stored flag is a
-        second copy of a fact that is already fully determined by
+        second copy of a fact already fully determined by
         ``(os_type, device_type)``, so it can go stale the moment either field
         moves — and it would need a backfill for every record already on disk,
         including the ones this exists to describe. Computed on read, it cannot
         drift, needs no migration, and is true of the door nobody has written
-        yet. It is a property rather than a field for one more reason: ``asdict``
-        skips properties, so this changes NOTHING about what is persisted.
+        yet. ``asdict`` skips properties, so this changes NOTHING about what is
+        persisted.
 
-        NOT A REFUSAL, deliberately, and not a repair either. Unlike Rule 4's
-        ``os_type``, Rule 3 has no safe repair: coercing ``device_type`` to
-        "desktop" or ``os_type`` to "android" both silently rewrite a field the
-        operator did not ask to change, and which of the two is the lie is not
-        knowable from the record. Reporting is the only honest option — and
-        ``restore_profile``'s contract is to replay a record "exactly as it
-        was", which a repair would break outright.
+        ⚠️ That derivation is a GUARANTEE, not something a test enforces: "the
+        record says so" holds by construction for every record that can exist,
+        so no assertion over stored records can catch a future door that lands
+        the pair silently. What such a door would break is the DISCLOSURE half
+        (the warning log at the door, the REST field), which is per-door and
+        tested per-door. See ``tests/test_profile_device_type_incoherence_record``.
 
         The reason string is Rule 3's own message, not a second wording of it:
         ``coherence.device_type_error`` is the single owner, so the property and

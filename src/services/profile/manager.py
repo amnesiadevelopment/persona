@@ -1307,15 +1307,15 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                 return False, f"Profile '{peeked}' already exists"
 
             success, result = import_from_zip(zip_path, DATA_DIR)
-            if not success:
-                return False, result if isinstance(result, str) else "Import failed"
 
             # import_from_zip's contract is (True, Profile) | (False, message),
-            # so `result` is a union until it is narrowed. Narrowed by an
-            # isinstance CHECK rather than an assert: a contract breach then
-            # reports as an ordinary import failure the operator can read,
-            # instead of raising out of a door whose whole purpose is to
-            # recover a profile without stranding it.
+            # so `result` is a union until it is narrowed. Narrowed ONCE, above
+            # both branches, and by an isinstance CHECK rather than an assert: a
+            # contract breach then reports as an ordinary import failure the
+            # operator can read, instead of raising out of a door whose whole
+            # purpose is to recover a profile without stranding it.
+            if not success:
+                return False, result if isinstance(result, str) else "Import failed"
             if not isinstance(result, Profile):
                 return False, "Import failed: the archive yielded no profile record"
 
