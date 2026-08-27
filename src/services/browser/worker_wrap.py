@@ -226,9 +226,45 @@ class WorkerCloak(NamedTuple):
     likewise unchanged; the patch's own properties are exactly
     ``["length", "name"]``; and a marked wrapper renders the native form exactly
     ONCE whether it was marked by the innermost or the outermost installation.
-    Delegating through all thirteen is not a cost worth optimising: a marked hit
-    answered at the innermost link measured FASTER than an unmarked passthrough
-    (372ns vs 426ns), because the passthrough reaches the real intrinsic anyway.
+    Delegating through all thirteen is not a cost worth optimising ON THIS
+    CHAIN: a marked hit answered at the innermost link measured FASTER than an
+    unmarked passthrough (372ns vs 426ns), because the passthrough reaches the
+    real intrinsic anyway.
+
+    ⚠️ THAT RESULT IS ABOUT ``Function.prototype.toString`` AND DOES NOT
+    TRANSFER TO THE DOM-INSERTION WRAPPERS, which are thirteen deep for the same
+    reason and have a completely different cost shape. Each ``toString`` link is
+    an O(1) delegation; each INSERTION link runs ``collectFrames``, i.e. a
+    ``querySelectorAll`` walk over the whole inserted subtree. Measured on the
+    generated bootstrap, both engine arms identical, ONE native insertion of a
+    200-node subtree::
+
+        door                     scans @ N=1   scans @ N=13   nodes walked @ 13
+        appendChild(element)         1              13              2587
+        appendChild(fragment)        1              13              2600
+        innerHTML = "..."            1              13                26
+        appendChild(textNode)        0               0                 0
+
+    Left unguarded that is a 13x O(subtree) amplification on ``appendChild``,
+    ``insertBefore`` and the ``innerHTML`` setter — the hottest, most heavily
+    probed functions in the DOM — and it is a TIMING tell on precisely the
+    functions whose static tells the cloak above works so hard to close: a
+    detector needs a large subtree and a clock, with no own property and no
+    ``toString`` comparison. AC2 forbids trading the Level 2 failure for a fresh
+    tell, so the reach carries a guard that keeps the scan count at ONE at every
+    depth (``tests/test_ps215_insertion_depth.py`` pins it, with falsification
+    arms that reproduce the table above on demand).
+
+    THE SCAN IS DEDUPLICATED; THE WRAPPERS ARE NOT — and the difference is the
+    whole design. "Wrap the prototype once per realm" is the obvious-looking fix
+    and it collapses the scans correctly, but each rider's wrapper closes over
+    its OWN ``LEAF``: measured on thirteen distinct leaves through creepjs's own
+    gesture, a wrap-once build reaches the phantom realm with 1 of 13 leaves
+    installed — PS-215's own defect, reintroduced in the name of closing a tell.
+    So only the OUTERMOST wrapper scans (an O(1) identity check at call time),
+    and delivery goes through the ACCESSOR CHAIN, which is already every rider's
+    link. ``test_wrap_once_would_break_delivery`` keeps the rejected design
+    executable so it cannot quietly come back.
 
     WHY THIRTEEN COPIES RATHER THAN ONE SHARED INSTALLATION GUARDED PER REALM:
     a single installation needs the N riders to COORDINATE, and they are
@@ -584,10 +620,18 @@ def realm_bootstrap_js(
       // installer in the child covers that child's own workers and frames.
       try {
         var IF = G.HTMLIFrameElement;
-        // The NATIVE contentWindow getter, kept for the connection trigger
-        // below: that path must read a child's window without going through the
-        // chained accessor it is installing here.
+        // The NATIVE contentWindow getter, kept as the connection trigger's
+        // FALLBACK for the case where no accessor could be chained at all.
         var nativeCW = null;
+        // The CHAINED contentWindow getter, captured AFTER this rider added its
+        // own link below. Reading a frame's window through THIS runs every
+        // rider's accessor wrapper, so one read delivers all thirteen leaves --
+        // which is what lets the connection trigger below do its work exactly
+        // ONCE per insertion instead of once per rider. Captured as a
+        // REFERENCE, so replacing the property afterwards (as the AC3 suite's
+        // seal does, to prove the consumer's own `.contentWindow` is never what
+        // triggers this) does not reach it.
+        var chainedCW = null;
         if (IF && IF.prototype) {
           ["contentWindow", "contentDocument"].forEach(function (prop) {
             var d0 = Object.getOwnPropertyDescriptor(IF.prototype, prop);
@@ -604,6 +648,16 @@ def realm_bootstrap_js(
                 return r;
               }%(cloak_frame_close)s,
             });
+            // Capture the chain AS IT NOW STANDS -- this rider's link on top of
+            // every earlier rider's. One call through this reference therefore
+            // runs all of them, which is what lets the connection trigger below
+            // scan and deliver ONCE per insertion rather than once per rider.
+            if (prop === "contentWindow") {
+              try {
+                var dc = Object.getOwnPropertyDescriptor(IF.prototype, prop);
+                if (dc && dc.get) chainedCW = dc.get;
+              } catch (e) {}
+            }
           });
         }
       } catch (e) {}
@@ -696,9 +750,22 @@ def realm_bootstrap_js(
             return acc;
           };
 
-          // Read each now-connected frame's window through the CAPTURED NATIVE
-          // getter and run the existing installer. Never through the chained
-          // accessor: that would re-enter our own wrapper for no reason.
+          // Deliver into each now-connected frame's window. Read through the
+          // CHAINED accessor (`chainedCW`) rather than the native one: that
+          // chain is every rider's link, each with its OWN leaf and its OWN
+          // `fresh()` guard, so ONE read here installs all thirteen leaves.
+          // This is what makes the single-scan guard below correct rather than
+          // merely cheap -- the scan is redundant across riders, but the
+          // WRAPPERS ARE NOT: each closes over a different LEAF. Suppressing
+          // twelve wrappers to save twelve scans would silently deliver ONE
+          // leaf into the phantom realm instead of thirteen, which is the very
+          // defect this ticket exists to fix. Measured, not assumed: a
+          // wrap-once build reaches the realm with 1 of 13 leaves present.
+          //
+          // `chainedCW` is a captured REFERENCE, so a later replacement of the
+          // property (a page's own override -- or the AC3 suite's throwing
+          // seal, which exists to prove the CONSUMER's `.contentWindow` read is
+          // never what triggers this) does not reach it.
           var reachFrames = function (acc) {
             try {
               for (var i = 0; i < acc.length; i++) {
@@ -708,8 +775,17 @@ def realm_bootstrap_js(
                   // A frame that did not end up in the document has no window
                   // yet; the accessor still covers it if it is read later.
                   if (el.isConnected === false) continue;
-                  var cw = nativeCW ? nativeCW.call(el) : el.contentWindow;
-                  if (cw && fresh(cw)) __pnaInstall(cw, LEAF);
+                  if (chainedCW) {
+                    // The chain installs every rider's leaf, including this
+                    // one's, so there is nothing left for us to install.
+                    chainedCW.call(el);
+                  } else {
+                    // No accessor could be chained at all. Deliver this
+                    // rider's own leaf directly; with no chain there is no
+                    // other rider to defer to.
+                    var cw = nativeCW ? nativeCW.call(el) : el.contentWindow;
+                    if (cw && fresh(cw)) __pnaInstall(cw, LEAF);
+                  }
                 } catch (e) {}
               }
             } catch (e) {}
@@ -735,12 +811,75 @@ def realm_bootstrap_js(
               // its own `this` and `arguments` (an arrow would not).
               var wrapped = ({
                 m() {
+                  // ONLY THE OUTERMOST RIDER SCANS. Thirteen riders nest
+                  // thirteen wrappers here, and -- unlike the `toString` chain,
+                  // where each link is an O(1) delegation -- each link of THIS
+                  // chain would otherwise run `collectFrames`, i.e. a
+                  // `querySelectorAll` walk over the whole inserted subtree.
+                  // Measured on the generated bootstrap, both engine arms
+                  // identical: a 200-node subtree was walked 199 times at N=1
+                  // and 2587 times at N=13, for ONE native call. That is a 13x
+                  // O(subtree) amplification on `appendChild`/`insertBefore`/
+                  // the `innerHTML` setter -- the hottest, most heavily probed
+                  // functions in the DOM -- and it is a TIMING signature on
+                  // exactly the functions whose static tells the cloak above
+                  // goes to such lengths to close. A detector needs only a
+                  // large subtree and a clock; no own property and no
+                  // `toString` comparison.
+                  //
+                  // `proto[prop] === wrapped` is that guard, and it is an O(1)
+                  // identity read taken at CALL time rather than install time,
+                  // because which rider ends up outermost is decided by load
+                  // order that no rider can know while installing. The
+                  // outermost is the one the caller actually invoked; the
+                  // twelve below it are pure passthroughs.
+                  //
+                  // WHY THE SCAN IS DEDUPLICATED BUT THE WRAPPERS ARE NOT.
+                  // Suppressing twelve WRAPPERS (wrap-once, guarded per realm)
+                  // is the obvious-looking version of this fix and it is
+                  // WRONG: each wrapper closes over its OWN `LEAF`, so twelve
+                  // fewer wrappers is twelve fewer spoofs in the phantom realm.
+                  // Measured on 13 distinct leaves through creepjs's own
+                  // gesture: wrap-once reaches the realm with 1 of 13 leaves
+                  // installed, which is the very defect this ticket exists to
+                  // fix, reintroduced in the name of closing a tell. So the
+                  // redundant thing -- the SCAN -- is what gets deduplicated,
+                  // and delivery goes through the ACCESSOR CHAIN, which is
+                  // already every rider's link (see `reachFrames`).
+                  //
+                  // THE ONE BOUNDARY, STATED RATHER THAN PAPERED OVER. This
+                  // recognises "an outer RIDER will scan" and cannot recognise
+                  // "an outer NON-RIDER will not". A rider knows the wrapper it
+                  // built and the one it wrapped; it cannot know which riders
+                  // installed after it, so the rider sitting highest among the
+                  // thirteen cannot tell a fourteenth rider above it from a
+                  // page script that wrapped the chain later. If a page wraps
+                  // these methods AFTER document_start, `proto[prop]` matches
+                  // no rider's `wrapped`, every rider reads "not outermost",
+                  // and the connection trigger goes quiet for that method.
+                  //
+                  // A fail-open default was tried and rejected: it inverts the
+                  // failure, so the NORMAL thirteen-rider case scans thirteen
+                  // times again and the amplification comes straight back.
+                  //
+                  // What the boundary costs is bounded, and the bound is why it
+                  // is acceptable: the accessor chain is untouched, so such a
+                  // frame is still covered the moment anything reads its
+                  // `.contentWindow`/`.contentDocument`. Only the INDEXED read
+                  // is missed, and only on a page that re-wraps DOM insertion
+                  // after document_start -- which is exactly the pre-PS-215
+                  // behaviour for that page, never a regression below it.
+                  var outermost = true;
+                  try { outermost = (proto[prop] === wrapped); } catch (e) {}
+
                   var acc = [];
-                  try {
-                    for (var i = 0; i < arguments.length; i++) {
-                      collectFrames(arguments[i], acc);
-                    }
-                  } catch (e) {}
+                  if (outermost) {
+                    try {
+                      for (var i = 0; i < arguments.length; i++) {
+                        collectFrames(arguments[i], acc);
+                      }
+                    } catch (e) {}
+                  }
                   // Call through FIRST and let any native throw propagate
                   // untouched: the wrapper must be transparent, including when
                   // the DOM refuses the insertion.
@@ -774,8 +913,28 @@ def realm_bootstrap_js(
                 set m(v) {
                   var r = hd.set.call(this, v);
                   try {
-                    var acc = collectFrames(this, []);
-                    if (acc.length) reachFrames(acc);
+                    // ONLY THE OUTERMOST RIDER SCANS -- the same guard, and the
+                    // same reason, as the insertion methods above. This is a
+                    // SEPARATE door with its own wrapper, so it needs its own
+                    // check: guarding the methods alone left this one still
+                    // walking the subtree thirteen times per assignment
+                    // (measured -- `appendChild` collapsed to 1 while
+                    // `innerHTML` stayed at 13).
+                    //
+                    // The identity read is on the DESCRIPTOR's setter rather
+                    // than on the property's value: `_El.prototype.innerHTML`
+                    // would INVOKE the getter and yield markup, never a
+                    // function to compare.
+                    var top = true;
+                    try {
+                      var cd = Object.getOwnPropertyDescriptor(
+                        _El.prototype, "innerHTML");
+                      top = !!(cd && cd.set === hset);
+                    } catch (e) {}
+                    if (top) {
+                      var acc = collectFrames(this, []);
+                      if (acc.length) reachFrames(acc);
+                    }
                   } catch (e) {}
                   return r;
                 },
