@@ -119,6 +119,7 @@ def _render(html: str) -> dict:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=_PAGE_TIMEOUT_S,
         )
         marker = "RESULT:"
