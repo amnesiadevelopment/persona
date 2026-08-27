@@ -5222,7 +5222,9 @@ def test_engine_build_change_leaves_quiet_startup_prefs_on_disk(tmp_path):
     # call is already there for the other two dicts, so a call-assertion would
     # pass with or without this fix.
     prof = tmp_path
-    (prof / "prefs.js").write_text('user_pref("stale.pref", 1);\n')
+    (prof / "prefs.js").write_text(
+        'user_pref("stale.pref", 1);\n', encoding="utf-8"
+    )
     _write_compat(prof, "/cache/firefox-18")
 
     lines = list(invisible_launch._migrate_profile_for_engine_build(
