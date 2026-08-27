@@ -221,7 +221,11 @@ def _cell(text: str, **kw) -> ft.Text:
     )
 
 
-def event_row(line: str, profiles: frozenset[str] | set[str]) -> ft.Control:
+def event_row(
+    line: str,
+    profiles: frozenset[str] | set[str],
+    show_profile: bool = True,
+) -> ft.Control:
     """One event, as aligned columns of fixed height.
 
     ``severity | PROFILE | message | time`` — the profile column is a fixed
@@ -229,6 +233,14 @@ def event_row(line: str, profiles: frozenset[str] | set[str]) -> ft.Control:
     one glance down a column rather than eight sentences to re-read. The
     timestamp is right-aligned in its own column at the far edge, where it is
     available without competing with the message for the eye.
+
+    ``show_profile=False`` DROPS that column, and it is dropped rather than
+    blanked. Inside a per-profile lane the column is worse than redundant: a
+    lane is roughly 290px wide, and a fixed 132px ruler plus the timestamp
+    leaves the message about 50px — measured, the messages ellipsised away to
+    nothing and every lane rendered as a stack of dots and clock times. The
+    lane header already names the machine, so the ruler has no work to do
+    there and its width belongs to the text.
     """
     stamp, profile, message, sev = parse_event(line, profiles)
 
@@ -274,6 +286,13 @@ def event_row(line: str, profiles: frozenset[str] | set[str]) -> ft.Control:
         content=_dot(sev),
     )
 
+    columns = (
+        [dot_col, profile_col, message_col, time_col]
+        if show_profile
+        # Inside a lane the ruler is dropped entirely — see the docstring.
+        else [dot_col, message_col, time_col]
+    )
+
     return ft.Container(
         height=ROW_HEIGHT,
         padding=ft.Padding.symmetric(horizontal=14, vertical=0),
@@ -284,7 +303,7 @@ def event_row(line: str, profiles: frozenset[str] | set[str]) -> ft.Control:
             # from its own font metrics. That is what keeps the columns on one
             # line across fonts — see TEXT_SIZE.
             vertical_alignment=ft.CrossAxisAlignment.STRETCH,
-            controls=[dot_col, profile_col, message_col, time_col],
+            controls=columns,
         ),
     )
 

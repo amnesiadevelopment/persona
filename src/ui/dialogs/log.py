@@ -176,7 +176,7 @@ def open_log_dialog(page: ft.Page, log_lines: list[str], profiles=None) -> None:
                             # lane header already names the machine, and
                             # repeating it on every row would spend the width
                             # the message needs.
-                            event_row(ln, frozenset(), )
+                            event_row(ln, profiles, show_profile=False)
                             for ln in lines
                         ],
                     ),
