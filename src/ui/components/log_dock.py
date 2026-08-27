@@ -257,6 +257,9 @@ class LogDock:
         #: whether it is continuing a run or starting one. Without it every
         #: appended row would look like a new run and emit its own separator.
         self._last_profile: str | None = None
+        #: Set when a DRAG changed the tier, so the re-render can happen on
+        #: release instead of mid-gesture — see set_height's `defer_tier`.
+        self._tier_dirty: bool = False
 
         self.list = ft.ListView(
             controls=[],
@@ -428,13 +431,23 @@ class LogDock:
             delta = _drag_delta_y(e)
             if delta is None:
                 return
-            # Dragging UP (negative delta) grows the console.
-            self.set_height(self.height - delta)
+            # Dragging UP (negative delta) grows the console. `defer_tier`
+            # keeps the row re-render out of the live gesture — replacing the
+            # rows mid-drag makes Flutter's arena drop it, which reads as the
+            # grip being broken all over again. See set_height.
+            self.set_height(self.height - delta, defer_tier=True)
+
+        def on_drag_end(_e) -> None:
+            # The release is the safe moment to change density: nothing is
+            # tracking a pointer any more.
+            self._settle_tier()
 
         return ft.GestureDetector(
             mouse_cursor=ft.MouseCursor.RESIZE_UP_DOWN,
             on_pan_update=on_drag,
             on_vertical_drag_update=on_drag,
+            on_pan_end=on_drag_end,
+            on_vertical_drag_end=on_drag_end,
             content=ft.Container(
                 height=GRIP_HIT_HEIGHT,
                 bgcolor=COLORS["log_bg"],
@@ -484,18 +497,24 @@ class LogDock:
         self._last_profile = previous
         return out
 
-    def set_height(self, height: float) -> None:
+    def set_height(self, height: float, defer_tier: bool = False) -> None:
         """Apply a new open height, clamped. The grip's whole effect.
 
         Kept separate from the drag handler so the clamp is one testable thing
         rather than a expression buried in a gesture callback.
 
         A height change can also change the TIER, which is this direction's
-        whole point — so when it does, the painted rows are re-rendered at the
-        new density. That rebuild is deliberately gated on the tier actually
-        changing: rebuilding on every drag frame would throw away the scroll
-        position ~10 times a second, which is the original "не адекватно
-        скролится" fault.
+        whole point. ``defer_tier`` is what keeps that from destroying the
+        gesture that caused it: re-rendering the rows REPLACES the children of
+        a subtree Flutter is mid-drag over, and the arena responds by dropping
+        the drag — measured as 0px of travel on a grip that is otherwise fine.
+        So a DRAG changes only the height while it is in flight and settles the
+        tier once on release (see :meth:`_settle_tier`); every other caller
+        re-tiers immediately, because nothing is holding a gesture open.
+
+        Rebuilding is gated on the tier ACTUALLY changing either way — a
+        rebuild on every frame would also throw the scroll position away ~10
+        times a second, which is the original "не адекватно скролится" fault.
         """
         before = self.tier
         self.height = max(MIN_HEIGHT, min(MAX_HEIGHT, int(height)))
@@ -505,11 +524,28 @@ class LogDock:
         self._desired_height = self.height
         self.body.height = self.height
         if self.tier != before:
-            self._repaint_tier()
+            if defer_tier:
+                self._tier_dirty = True
+            else:
+                self._repaint_tier()
         # ONE update per frame, and it is the BODY: the rows live inside it, so
         # a re-tier and a height change are carried by the same patch. Updating
         # the root as well replaces the grip mid-gesture and Flutter's arena
         # drops the drag — measured as 0px of travel.
+        self._safe_update(self.body)
+
+    def _settle_tier(self) -> None:
+        """Apply a tier change the drag deferred, once the gesture is over.
+
+        The release is the only safe moment to re-render the rows: nothing is
+        tracking a pointer any more, so replacing the list cannot cancel
+        anything. This is what lets the console change DENSITY as a result of a
+        drag without the drag itself dying of it.
+        """
+        if not self._tier_dirty:
+            return
+        self._tier_dirty = False
+        self._repaint_tier()
         self._safe_update(self.body)
 
     def _repaint_tier(self) -> None:
