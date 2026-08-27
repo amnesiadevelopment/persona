@@ -288,6 +288,13 @@ class App:
         self.page = page
         try:
             configure_page(page)
+            # Ask before closing while browsers are open (PS-223 outcome 2).
+            # Installed HERE, beside configure_page, rather than after the UI
+            # finishes building: the X is clickable from the moment the window
+            # is revealed, and the splash can be on screen for seconds. A hook
+            # installed after the first paint would leave that whole stretch
+            # closing silently — the exact accidental close this exists to stop.
+            self._install_close_guard(page)
             self._splash = splash_mod.Splash()
             page.add(self._splash.control)
             self._splash.start(page)
@@ -334,6 +341,11 @@ class App:
             self._refresh_profiles()
             self._refresh_engine_text()
             self.state._last_running_snapshot = self.bl.running_profile_names()
+            # Find browsers a PREVIOUS persona left running, BEFORE the first
+            # paint uses is_running to decide what each card offers. Scanning
+            # after the render would paint LAUNCH over a profile that already
+            # has a live browser — the very click this ticket exists to refuse.
+            self._scan_survivors()
         except Exception as e:
             logger.exception("Startup failed while building the first screen")
             # Force the window visible before painting the error — with
@@ -3011,6 +3023,169 @@ class App:
             threading.Thread(
                 target=lambda: self._set_server(True), daemon=True
             ).start()
+
+    def _install_close_guard(self, page: ft.Page) -> None:
+        """Intercept the window's close so it can ask first (PS-223 outcome 2).
+
+        ``prevent_close`` makes the X emit a CLOSE event instead of ending the
+        process, so the handler below decides. Every failure path here ends in
+        the window closing normally: a guard that cannot be installed must
+        leave persona closable, never wedge it shut.
+        """
+        try:
+            page.window.prevent_close = True
+            page.window.on_event = self._on_window_event
+        except Exception:
+            logger.exception(
+                "Could not install the close guard; persona will close without "
+                "asking about open browsers"
+            )
+
+    def _on_window_event(self, e) -> None:
+        """Window events; only CLOSE is acted on.
+
+        The flow, and why each branch ends where it does:
+
+        * **No browsers open** — destroy immediately. Asking a question with
+          one possible answer is not a safety feature, it is a nuisance, and a
+          user who meets a pointless dialog on every exit learns to dismiss the
+          one that matters without reading it.
+        * **Browsers open** — ask, naming them. Cancel leaves everything
+          running and the window open.
+        * **Anything raises** — destroy. See _install_close_guard: with
+          ``prevent_close`` set, a handler that throws before calling destroy()
+          leaves a window that CANNOT BE CLOSED. Failing toward closing is the
+          only safe direction once the close has been intercepted.
+        """
+        try:
+            if getattr(e, "type", None) != ft.WindowEventType.CLOSE:
+                return
+        except Exception:
+            return
+
+        page = self.page
+        try:
+            names = sorted(self._open_browser_names())
+            if not names:
+                self._destroy_window()
+                return
+
+            from .dialogs.exit_confirm import open_exit_confirm_dialog
+
+            def _confirmed() -> None:
+                # shutdown_all is the SAME teardown atexit runs — the PS-192
+                # process-group reap — reached here explicitly because the user
+                # said yes. Not a second, weaker path: the one that already
+                # works, invoked on a gesture instead of on process exit.
+                with contextlib.suppress(Exception):
+                    self.bl.shutdown_all()
+                # AND THE SURVIVORS, WHICH shutdown_all STRUCTURALLY CANNOT
+                # REACH. It reaps _active_sessions, and a browser inherited
+                # from a previous persona is by definition not in it. The
+                # dialog above named those profiles in the sentence "closing
+                # persona will close the browser(s) for: ...", so without this
+                # the promise was false for exactly the browsers this ticket is
+                # about. THIS CLICK IS THE CONSENT: the user was shown the
+                # names and pressed "close them and exit", which is what makes
+                # killing a process we did not start legitimate here — the
+                # ticket forbids a SILENT kill, not a requested one.
+                stubborn: list[str] = []
+                with contextlib.suppress(Exception):
+                    stubborn = self.bl.close_all_survivors()
+                if stubborn:
+                    # Said out loud rather than swallowed. We are on our way out
+                    # so the log is the only surface left, but a browser we
+                    # promised to close and did not is exactly the thing a user
+                    # reading a log after the fact needs to find. Its registry
+                    # record is deliberately kept (close_all_survivors forgets
+                    # only what closed), so the next start still guards it.
+                    logger.warning(
+                        "Could not close the leftover browser(s) for: %s; "
+                        "they may still be running.", ", ".join(stubborn),
+                    )
+                self._destroy_window()
+
+            assert page is not None
+            open_exit_confirm_dialog(page, names, _confirmed)
+        except Exception:
+            logger.exception(
+                "The close-confirmation dialog failed; closing persona rather "
+                "than leaving a window that cannot be closed"
+            )
+            self._destroy_window()
+
+    def _open_browser_names(self) -> set[str]:
+        """Profiles with a browser open RIGHT NOW — this session's and survivors'.
+
+        Survivors are included because closing persona is about to close them
+        too: ``shutdown_all`` reaps what this process launched, and a survivor
+        it cannot reach is still a window the user is about to lose sight of.
+        Naming only the sessions we happen to hold a handle for would
+        under-report exactly the browsers this ticket is about.
+        """
+        names: set[str] = set()
+        with contextlib.suppress(Exception):
+            names |= set(self.bl.running_profile_names())
+        with contextlib.suppress(Exception):
+            names |= {r.profile for r in self.bl.survivors()}
+        return names
+
+    def _destroy_window(self) -> None:
+        """Close for real, past the ``prevent_close`` interception."""
+        page = self.page
+        if page is None:
+            return
+        try:
+            page.window.destroy()
+        except Exception:
+            logger.exception("Could not destroy the window on close")
+
+    def _scan_survivors(self) -> None:
+        """Startup: find browsers a PREVIOUS persona left running, and SAY SO.
+
+        The user should learn about a survivor from persona, not from a launch
+        that fails with chromium's own words. Measured on a real engine
+        (PS-223): a second launch against a live profile dir aborts with exit
+        21 and ``Failed to create a ProcessSingleton for your profile
+        directory`` — which names no profile, offers no action, and leaves
+        persona still believing nothing is running.
+
+        NEITHER SILENTLY ADOPTED NOR SILENTLY KILLED, which is the ticket's
+        boundary and the reason this only logs. The survivor becomes visible
+        (the card renders as running, and its [ close ] ends it) and the user
+        decides. Killing it here would destroy work in a browser nobody asked
+        us to close; ignoring it would hand back the double launch.
+
+        The INDETERMINATE bucket is reported separately and blocks nothing —
+        those launches stay allowed, so the user is told the check could not be
+        made rather than being left to assume it passed.
+
+        Never raises: a survivor scan that fails must cost the guard, not the
+        startup it runs inside.
+        """
+        try:
+            survivors, unknown = self.bl.scan_survivors()
+        except Exception:
+            logger.exception(
+                "Could not scan for browsers left running by a previous session"
+            )
+            return
+        if survivors:
+            self._log(
+                get_string(
+                    "survivors_found",
+                    count=len(survivors),
+                    names=", ".join(sorted(r.profile for r in survivors)),
+                )
+            )
+        if unknown:
+            self._log(
+                get_string(
+                    "survivors_unknown",
+                    count=len(unknown),
+                    names=", ".join(sorted(r.profile for r in unknown)),
+                )
+            )
 
     def _show_startup_notice(self) -> None:
         """First frame after the UI builds: show the full onboarding on a real
