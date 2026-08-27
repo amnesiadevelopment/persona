@@ -137,11 +137,113 @@ EXIT_CANNOT_RUN = 2
 # not be a finding, so the comparison is made with a relative tolerance rather
 # than on raw `>`. Small enough that it cannot absorb a real narrowing: the
 # smallest genuine step at these pool sizes is on the order of a percent.
+#
+# ⚠️ SINCE PS-191 THIS NO LONGER DECIDES A VERDICT. The raw bar comparison is
+# still COMPUTED and REPORTED (`meets_bar` on every arm) because an operator
+# must keep seeing how often two profiles actually collide — but it is not what
+# flags an arm any more. See `uniform_collision_p_value` for why, and keep this
+# tolerance: the reported comparison has exactly the same ulp knife-edge it
+# always did.
 BAR_TOLERANCE = 1e-9
+
+# The significance level the variance judgement is made at. An arm is flagged
+# only when a UNIFORM draw from persona's own pool would produce a result this
+# collided less than ALPHA of the time — see `uniform_collision_p_value`.
+#
+# 0.05 is PS-185's own alpha, kept deliberately so this gate's verdicts and
+# that measurement's published p-values are read on one scale rather than two.
+# It is a false-POSITIVE rate: with four arms checked daily, a healthy fleet
+# still trips roughly one arm every five runs by chance alone, which is the
+# price of a test that can also go red for a real reason.
+#
+# ⚠️ WHY PER-ARM AND NOT A MULTIPLICITY CORRECTION (PS-191 review). Four arms
+# at 0.05 is an 18.5% family-wise false-positive rate, and this ticket's own
+# motivation is that "a gate that flags three arms out of four teaches its
+# readers to ignore it" — so the tension is real and was measured rather than
+# argued. Bonferroni (α/4 = 0.0125) was the obvious candidate:
+#
+#   * It changes NOTHING today. All eight of PS-185's committed cells return
+#     the identical verdict under both alphas — the two true signals sit at
+#     p=0.000 and the six healthy cells at p>=0.064.
+#   * It COSTS REAL DETECTION. At pool=8/N=24 an engine collapsed to 5 of its
+#     8 identities scores p=0.042: caught at 0.05, MISSED at 0.0125. That is a
+#     37% narrowing of the identity space going unreported.
+#
+# So the correction buys no accuracy on any reading we have and pays for it in
+# power, against a threat model where a partial collapse is exactly what an
+# engine regression looks like. The multiplicity concern is also weaker here
+# than the arm count suggests: the four arms are judged and REPORTED
+# INDEPENDENTLY, one verdict per arm, so an operator reads "linux is narrow",
+# never "the fleet failed" — there is no single family-wise claim being made
+# for a correction to protect.
+#
+# The alarm-fatigue problem the reviewer rightly raises is real, but its cause
+# was the BROKEN COMPARISON, not this threshold: the old gate flagged three of
+# four arms EVERY run, deterministically. This one flags a healthy arm
+# occasionally and at random, which is a different and much smaller problem.
+# If fatigue persists once this ships, the honest fix is requiring two
+# consecutive reds before alarming (which cuts the rate to 0.25% without
+# touching power at all), NOT a threshold nudge — see the PS-191 constraint
+# that any correction be statistical rather than a tolerance widened to taste.
+ALPHA = 0.05
+
+# Beyond this much work the exact null distribution is not enumerated and a
+# deterministic Monte-Carlo estimate is used instead. The exact enumeration is
+# O(k * N^2 * |states|) and superlinear in practice: measured on this tree,
+# k=11/N=24 takes 14ms and k=20/N=100 takes 13.6s. Every realistic run sits far
+# below the cap (the shipped DEFAULT_SEEDS is N=15, PS-185 measured N=24, and
+# the widest pool is 11), so the exact path is the one that actually runs; this
+# exists so an operator passing --seeds with a hundred entries gets a slower
+# answer rather than a hung job.
+EXACT_P_VALUE_MAX_WORK = 60_000
+
+# Trials for the Monte-Carlo fallback, and its FIXED seed. Fixed so two runs of
+# the same record return the same verdict: a gate whose red/green flickers on
+# re-run teaches its readers to re-run it until it is green.
+MC_TRIALS = 20_000
+MC_SEED = 20260826
 
 # Below this many readable seeds an arm is INCONCLUSIVE rather than passed. A
 # collision probability estimated from a couple of samples is not evidence, and
 # a cheap run must not be able to certify the property.
+#
+# RE-EXAMINED UNDER PS-191 AND DELIBERATELY LEFT AT 8. The finding is recorded
+# here rather than acted on, because the two things this floor could be wrong
+# about pull in opposite directions and only one of them was ever real.
+#
+# 1. THE BIAS ARGUMENT FOR RAISING IT IS NOW MOOT. The old comparison's error
+#    term was ``(1 − 1/k)/N``, which is largest exactly where N is smallest —
+#    so the floor that exists to prevent a lucky PASS sat precisely where the
+#    false FLAG was worst. At the floor itself this was not marginal: at N=8
+#    against today's 11-entry MAC_GPUS the bias term is 0.1136 while the whole
+#    bar is 0.0909, i.e. a PERFECTLY uniform draw was expected to score above
+#    its own bar by more than the bar's own width, and a run could be flagged
+#    for being flawless. Raising MIN_SEEDS would have bought that back one
+#    sample at a time. It is not needed: `uniform_collision_p_value` compares
+#    against the null AT THE OBSERVED N, so the bias is inside the null rather
+#    than beside it, and the floor no longer carries any part of that job.
+#
+# 2. WHAT THE FLOOR STILL BUYS IS POWER, AND THAT ARGUMENT SURVIVES. A small
+#    sample now fails SAFE (a wide null flags nothing) rather than fails LOUD,
+#    which is the better direction but is not free: the gate simply cannot see
+#    a moderate narrowing at N=8. Measured on this implementation, the typical
+#    case of an engine collapsed to j identities is caught at α=0.05 when:
+#
+#        N=8,  k=5  → j ≤ 2      N=15, k=5  → j ≤ 3
+#        N=8,  k=11 → j ≤ 3      N=24, k=8  → j ≤ 5
+#                                N=24, k=4  → j ≤ 3
+#
+#    So eight seeds catch a CONSTANT arm and a halved pool, and miss the rest.
+#    That is a real limit and it is why DEFAULT_SEEDS is 15 and why PS-185
+#    measured 24 — the floor is the refusal threshold, not the recommendation.
+#
+# NOT RAISED, for the reason the floor is safe as it stands: an arm below it is
+# INCONCLUSIVE, which is EXIT_CANNOT_RUN and NOT a pass, so a weak sample can
+# never certify the property — it can only decline to judge. Raising the number
+# would convert runs that currently say "we could not tell" into runs that do
+# not happen at all, trading an honest non-answer for less coverage. Changing
+# it is a judgement about how much engine time a scheduled job should spend,
+# which is a different question from the one this ticket fixed.
 MIN_SEEDS = 8
 
 # Seeds used when the caller names none. Arbitrary but FIXED, so two runs are
@@ -176,6 +278,204 @@ def collision_probability(values: "list[str]") -> float:
     for v in values:
         counts[v] = counts.get(v, 0) + 1
     return sum((c / n) ** 2 for c in counts.values())
+
+
+def _identity_counts(values: "list[str]") -> "list[int]":
+    """How many profiles got each distinct identity, commonest first."""
+    counts: "dict[str, int]" = {}
+    for v in values:
+        counts[v] = counts.get(v, 0) + 1
+    return sorted(counts.values(), reverse=True)
+
+
+def _exact_work_estimate(n: int, k: int) -> int:
+    """Rough cost of enumerating the exact null. See EXACT_P_VALUE_MAX_WORK."""
+    return k * (n + 1) * (n + 1)
+
+
+def _sum_of_squares_null_weights(n: int, k: int) -> "dict[int, int]":
+    """EXACT distribution of Σcᵢ² when n profiles are drawn uniformly from k.
+
+    Returns ``sum-of-squared-counts -> number of the kᴺ equally likely
+    assignments producing it``. Integer arithmetic throughout, so there is no
+    floating-point error to reason about and the weights provably total kᴺ
+    (asserted by the caller).
+
+    Dynamic programme over the k identities: place some number of the n
+    profiles on each in turn, carrying the multinomial coefficient. The state
+    is (profiles placed so far -> Σcᵢ² so far), which collapses the kᴺ raw
+    assignments into a few hundred states at the sizes this gate runs at.
+    """
+    from math import comb
+
+    # profiles_placed -> {sum_of_squares: weight}
+    states: "dict[int, dict[int, int]]" = {0: {0: 1}}
+    for identity in range(k):
+        is_last = identity == k - 1
+        nxt: "dict[int, dict[int, int]]" = {}
+        for placed, by_sumsq in states.items():
+            # The last identity must absorb every remaining profile; the others
+            # may take any share of what is left.
+            lowest = n - placed if is_last else 0
+            for count in range(lowest, n - placed + 1):
+                ways = comb(n - placed, count)
+                squared = count * count
+                target = nxt.setdefault(placed + count, {})
+                for sumsq, weight in by_sumsq.items():
+                    target[sumsq + squared] = (
+                        target.get(sumsq + squared, 0) + weight * ways
+                    )
+        states = nxt
+    return states[n]
+
+
+def _monte_carlo_p_value(observed_sumsq: int, n: int, k: int) -> float:
+    """Sampled stand-in for the exact null, for samples too large to enumerate.
+
+    Deterministic: its own generator seeded from the fixed ``MC_SEED``, never
+    the global one, so this cannot be perturbed by — or perturb — anything else
+    that draws random numbers in the same process.
+    """
+    import random
+
+    rng = random.Random(MC_SEED)
+    at_least_as_collided = 0
+    for _ in range(MC_TRIALS):
+        counts = [0] * k
+        for _ in range(n):
+            counts[rng.randrange(k)] += 1
+        if sum(c * c for c in counts) >= observed_sumsq:
+            at_least_as_collided += 1
+    return at_least_as_collided / MC_TRIALS
+
+
+def uniform_collision_p_value(values: "list[str]", pool_size: int) -> "float | None":
+    """P(a UNIFORM draw from ``pool_size`` collides at least this much at this N).
+
+    ⚠️ THIS IS THE COMPARISON THE GATE JUDGES ON, AND IT REPLACES A BROKEN ONE.
+    PS-191. Read this before changing anything here.
+
+    THE DEFECT IT FIXES
+    -------------------
+    :func:`collision_probability` is the PLUG-IN Simpson index, and it is
+    BIASED UPWARD at finite N. Under a genuinely uniform draw from k
+    identities::
+
+        E[Ŝ] = 1/k + (1 − 1/k)/N
+
+    :func:`bar_for` returns ``1/k`` — the collision probability of a uniform
+    draw **in the limit**. Comparing the first against the second compares an
+    estimate against a quantity it does not estimate, and the gap is the whole
+    bias term. At N=24 and k=4 a PERFECTLY uniform pool is expected to score
+    0.2812 against a 0.2500 bar, so it is flagged ``TOO_NARROW`` for being
+    exactly what it should be. That is not a tuning problem; the two numbers
+    were never comparable.
+
+    PS-185 caught it on android, and its case is airtight: android scored
+    0.2743 — BELOW the 0.2812 a uniform draw is expected to score — and the
+    gate still flagged it. An arm cannot be worse than uniform while scoring
+    better than uniform predicts.
+
+    WHY DE-BIASING THE ESTIMATOR IS NOT ENOUGH — the correction that was tried
+    -------------------------------------------------------------------------
+    The obvious repairs are to un-bias the estimate (compare
+    ``(Σcᵢ² − N)/(N(N−1))`` against ``1/k``) or to move the bar
+    (compare ``Ŝ`` against ``E[Ŝ]``). BOTH ARE STILL A POINT ESTIMATE AGAINST A
+    POINT, and both still flag macos and linux on PS-185's records. They fix
+    the CENTRE of the null and ignore its WIDTH.
+
+    That is the deeper defect. The bar is the collision probability of the very
+    pool the engine is being asked to match, so an arm that matches it exactly
+    sits ON the boundary — and a point comparison against a boundary the truth
+    sits on is a COIN FLIP. Roughly half of all healthy runs land above it. No
+    amount of centring fixes a test that is wrong half the time by
+    construction; the sampling spread has to enter the verdict.
+
+    WHAT THIS DOES INSTEAD
+    ----------------------
+    Asks a question with an actual answer: **if the engine really were drawing
+    uniformly from a pool as wide as ours, how often would it look at least
+    this collided?** That is a one-sided hypothesis test, and it is the honest
+    form of the question the gate was always trying to ask. Small p means the
+    reading is hard to explain as a healthy engine having an unlucky day, which
+    is precisely when an operator should be told.
+
+    Returns None when there is no pool to compare against (the same "no bar"
+    state :func:`bar_for` reports with None), never a number that could be
+    mistaken for a pass.
+
+    ⚠️ IT IS EXACT, NOT SAMPLED, at every size this gate realistically runs at.
+    The null is enumerated by dynamic programme in integer arithmetic — no
+    numpy, no scipy (neither is a dependency of this tree), no random seed, no
+    trial count, and the same record re-judged tomorrow returns the same verdict
+    to the last digit. Verified against PS-185's independent 200,000-trial
+    Monte-Carlo estimates, which it reproduces to within sampling noise
+    (android .5791 vs .5797, linux .1648 vs .1638, macos .3075 vs .3084,
+    windows 1.0 vs 1.0). Above ``EXACT_P_VALUE_MAX_WORK`` it degrades to a
+    fixed-seed Monte-Carlo estimate rather than hanging.
+
+    ⚠️ A LARGE p IS NOT A CERTIFICATE THAT THE ARM IS SAFE. It says the reading
+    is CONSISTENT WITH uniform selection from a pool of this size — it says
+    nothing about whether a pool of this size is wide enough. A two-entry pool
+    drawn perfectly uniformly collides 50% of the time and will score p≈1 here
+    while linking half the fleet. The POOL WIDTH question is a different one,
+    it is owned by the pool (PS-183 for ``MAC_GPUS``), and it is why
+    :func:`classify` keeps reporting the absolute collision rate and the bar
+    beside this verdict rather than replacing them with it.
+    """
+    if pool_size <= 0:
+        return None
+    if not values:
+        return None
+
+    counts = _identity_counts(values)
+    n = sum(counts)
+    if n <= 0:
+        return None
+
+    # ⚠️ THERE IS DELIBERATELY NO `len(counts) > pool_size` SHORT-CIRCUIT HERE.
+    # One was tried and it was a true-signal regression (PS-191 review). It
+    # returned the maximally-green p-value whenever the observation held more
+    # distinct identities than our pool, which is a DISTINCT-COUNT pass — the
+    # exact fallacy this module's header refuses (PS-161: "does it vary?" is
+    # the wrong question; skew is what matters). Measured at pool=5, N=24 —
+    # the live windows cell, which has 9 distinct identities and so took that
+    # branch on every real run:
+    #
+    #     [19,1,1,1,1,1]  63.5% collision  ->  p=1.0  OK      (old gate: TOO_NARROW)
+    #     [16,2,2,2,1,1]  46.9% collision  ->  p=1.0  OK      (old gate: TOO_NARROW)
+    #
+    # 79% of the fleet handed one card, passing silently, on a gate built to
+    # catch exactly that. It also made the verdict NON-MONOTONE in the very
+    # statistic it polices: [8,8,8] at 33.3% flagged while 63.5% passed.
+    #
+    # The case that branch existed to protect needs no special case, because
+    # the arithmetic already reaches it HONESTLY: a genuinely wider-than-our-
+    # pool draw has a sum-of-squares below anything the null produces, so it
+    # scores p=1.0 on its own merits. Verified on PS-185's real windows cell
+    # ([5,4,4,3,2,2,2,1,1], 9 distinct vs pool 5): p=1.0 with or without the
+    # branch, and not one of the eight committed fixture cells moves.
+    #
+    # If an explicit branch is ever wanted here it must key on the STATISTIC
+    # (observed Σcᵢ² below the null's support), NEVER on len(counts).
+    observed_sumsq = sum(c * c for c in counts)
+
+    if _exact_work_estimate(n, pool_size) <= EXACT_P_VALUE_MAX_WORK:
+        weights = _sum_of_squares_null_weights(n, pool_size)
+        total = sum(weights.values())
+        # The enumeration is exhaustive over kᴺ equally likely assignments; if
+        # that identity fails the programme is wrong, and a wrong p-value must
+        # not be returned as if it were right.
+        assert total == pool_size ** n, (
+            f"exact null enumeration is unsound: weights total {total}, "
+            f"expected {pool_size}**{n}"
+        )
+        at_least_as_collided = sum(
+            w for sumsq, w in weights.items() if sumsq >= observed_sumsq
+        )
+        return at_least_as_collided / total
+
+    return _monte_carlo_p_value(observed_sumsq, n, pool_size)
 
 
 # The arms this module knows persona ships a fallback pool for, and the name
@@ -503,6 +803,25 @@ def classify(readings: "dict[str, dict[int, str | None]]") -> dict:
 
         p = collision_probability(readable)
         entry["collision_probability"] = p
+        # The RAW bar comparison — still computed, still reported, no longer
+        # what decides the verdict (PS-191). An operator must keep seeing how
+        # often two profiles actually collide against the pool we gave up, so
+        # a p-value pass can never read as "this arm is safe" when the pool
+        # behind it is two entries wide. See uniform_collision_p_value.
+        entry["meets_bar"] = (
+            None if bar is None else not (p > bar * (1.0 + BAR_TOLERANCE))
+        )
+        # The bias term that made the old raw comparison unsound, recorded so
+        # the record carries the arithmetic rather than only its conclusion.
+        entry["expected_collision_under_uniform"] = (
+            None
+            if not entry["fallback_pool_size"]
+            else bar + (1.0 - bar) / len(readable)
+        )
+        p_uniform = uniform_collision_p_value(
+            readable, entry["fallback_pool_size"])
+        entry["uniform_p_value"] = p_uniform
+        entry["alpha"] = ALPHA
         if len(distinct) == 1:
             entry["verdict"] = "CONSTANT"
             entry["detail"] = (
@@ -532,27 +851,63 @@ def classify(readings: "dict[str, dict[int, str | None]]") -> dict:
                 "Re-register the pool in gpu_ext.GPU_POOLS (or correct the arm "
                 "mapping in _POOL_VAR_FOR_ARM) and re-run."
             )
-        elif bar is not None and p > bar * (1.0 + BAR_TOLERANCE):
+        elif p_uniform is not None and p_uniform <= ALPHA:
+            # THE FINDING, and since PS-191 it is a STATISTICAL one. Not "the
+            # estimate landed above the bar" — which a perfectly uniform pool
+            # does roughly half the time at these sample sizes — but "a pool as
+            # wide as ours, drawn uniformly, would look this collided less than
+            # ALPHA of the time". See uniform_collision_p_value.
             entry["verdict"] = "TOO_NARROW"
             entry["detail"] = (
-                f"two profiles collide {p:.1%} of the time, WORSE than the "
-                f"{bar:.1%} of persona's own {entry['fallback_pool_size']}-entry "
-                "pool for this arm. Deferring to the engine is now COSTING "
+                f"two profiles collide {p:.1%} of the time over "
+                f"{len(readable)} seeds. A uniform draw from a pool as wide as "
+                f"persona's own {entry['fallback_pool_size']}-entry pool for "
+                f"this arm would look at least this collided only "
+                f"{p_uniform:.1%} of the time (p={p_uniform:.4f} ≤ α={ALPHA}), "
+                "so this is not a sampling accident: the engine's selection is "
+                "genuinely narrower than what we gave up. Deferring is COSTING "
                 "unlinkability rather than merely removing a second author, so "
                 "the arm should return to gpu_ext's authorship."
             )
         else:
             entry["verdict"] = "OK"
-            entry["detail"] = (
+            # ⚠️ WHAT THIS PASS DOES AND DOES NOT SAY. It says the SELECTION is
+            # consistent with drawing uniformly from a pool of this width. It
+            # does NOT say the width is adequate — a 2-entry pool drawn
+            # perfectly collides 50% of the time and passes here. So the
+            # absolute collision rate stays in the sentence, and on an arm
+            # where it is above the bar the pass says so IN THE SAME BREATH
+            # rather than reporting a bare green. Removing that clause would
+            # turn this gate into the laundering machine PS-191 warned about.
+            detail = (
                 f"{len(distinct)} distinct identities over {len(readable)} "
                 f"seeds; two profiles collide {p:.1%} of the time"
-                + (
+            )
+            if p_uniform is not None and bar is not None:
+                if entry["meets_bar"]:
+                    detail += (
+                        f", at or below the {bar:.1%} of persona's own "
+                        f"{entry['fallback_pool_size']}-entry pool "
+                        f"(p={p_uniform:.4f})"
+                    )
+                else:
+                    detail += (
+                        f", ABOVE the {bar:.1%} of persona's own "
+                        f"{entry['fallback_pool_size']}-entry pool — but that "
+                        "gap is what a finite sample does to this estimator, "
+                        "not evidence of narrowing: a uniform draw of "
+                        f"{len(readable)} seeds is EXPECTED to score "
+                        f"{entry['expected_collision_under_uniform']:.1%}, and "
+                        f"this reading has p={p_uniform:.4f} > α={ALPHA}. NOT "
+                        "a clean bill of health for the arm — it says selection "
+                        "is unbiased, not that the pool is wide enough."
+                    )
+            elif bar is not None:
+                detail += (
                     f", at or below the {bar:.1%} of persona's own "
                     f"{entry['fallback_pool_size']}-entry pool"
-                    if bar is not None
-                    else ""
                 )
-            )
+            entry["detail"] = detail
         per_arm[arm] = entry
 
     findings = [a for a, e in per_arm.items()
@@ -613,12 +968,31 @@ def format_result(result: dict) -> str:
         p = e["collision_probability"]
         lines.append("")
         lines.append(f"  {arm}: {e['verdict']}")
+        bar = e.get("bar_collision_probability")
+        pu = e.get("uniform_p_value")
         lines.append(
             f"    {e['distinct_identities']} distinct over "
             f"{e['seeds_readable']}/{e['seeds_requested']} readable seeds"
             + (f", collision {p:.1%}" if p is not None else "")
+            + (f" vs bar {bar:.1%}" if bar is not None else "")
+            + (f", p={pu:.4f}" if pu is not None else "")
         )
         lines.append(f"    {e['detail']}")
+        # PS-191: an arm that passes the STATISTICAL test while sitting above
+        # its own bar gets that said out loud, on its own line, every time.
+        # The pass means "selection is not skewed"; it does NOT mean "this arm
+        # is safe", and the two are easy to conflate precisely on the arms
+        # where the pool is narrowest. Printing it here keeps the distinction
+        # in front of the reader rather than buried in `detail`.
+        if e["verdict"] == "OK" and e.get("meets_bar") is False:
+            lines.append(
+                f"    ⚠️ collision {p:.1%} is ABOVE this arm's {bar:.1%} bar, "
+                "and this is still a PASS — the gap is the finite-sample bias "
+                "of the estimator, not narrowing (see the p-value). This says "
+                "SELECTION is uniform; it does NOT say the POOL is wide "
+                "enough. If this arm's collision rate is the concern, that is "
+                "a question about the pool's WIDTH, not about the engine."
+            )
         # An arm whose pool is split across generations gets the split printed,
         # because the bar above describes only the newest one. Silent on a
         # single-generation arm — there is nothing to disambiguate there, and
