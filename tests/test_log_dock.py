@@ -20,6 +20,8 @@ import tempfile
 
 os.environ.setdefault("PERSONA_HOME", tempfile.mkdtemp())
 
+import flet as ft  # noqa: E402
+
 from src.ui.components.log_dock import (  # noqa: E402
     COLLAPSED_HEIGHT,
     MAX_HEIGHT,
@@ -29,6 +31,7 @@ from src.ui.components.log_dock import (  # noqa: E402
     RAIL_CONTENT_HEIGHT,
     LogDock,
     default_height,
+    height_for_rows,
 )
 from src.ui.log_console import (  # noqa: E402
     NO_PROFILE,
@@ -260,15 +263,21 @@ def test_ac3_the_grip_is_clamped_at_both_ends():
     assert d.height == MAX_HEIGHT
     d.set_height(1)
     assert d.height == MIN_HEIGHT
+    # A height in between is SNAPPED to whole rows rather than taken verbatim
+    # — that is the direction's argument, not a rounding artefact. 300px is
+    # 11 rows and a 4px sliver, and the sliver is the "пустое место" the
+    # console is being rebuilt to remove. See quantize().
     d.set_height(300)
-    assert d.height == 300
+    assert d.height == height_for_rows(11) == 296
+    assert d.rows == 11
 
 
 def test_ac2_and_ac3_collapse_reports_and_the_height_survives_the_round_trip():
     d, lines = _dock(), []
     for i in range(5):
         _feed(d, lines, f"event {i}")
-    d.set_height(300)
+    chosen = height_for_rows(11)
+    d.set_height(chosen)
 
     d.toggle()
     assert d.state.collapsed is True
@@ -285,7 +294,7 @@ def test_ac2_and_ac3_collapse_reports_and_the_height_survives_the_round_trip():
 
     d.toggle()
     assert d.state.collapsed is False
-    assert d.height == 300 and d.body.height == 300
+    assert d.height == chosen and d.body.height == chosen
     assert d._counter.value == ""
 
 
@@ -392,27 +401,247 @@ def test_ac8_the_rail_budget_survives_a_RESIZE_not_only_a_launch():
 def test_ac8_a_resize_yields_height_but_does_not_overwrite_a_deliberate_drag():
     """A shrink borrows height; a regrow HANDS IT BACK.
 
-    The operator's own 400px drag must not be permanently rewritten to the
-    opening default just because he nudged the window smaller and back.
+    The operator's own deliberate height must not be permanently rewritten to
+    the opening default just because he nudged the window smaller and back.
     """
+    chosen = height_for_rows(15)
     d = LogDock(window_height=1200)
-    d.set_height(400)
-    assert d.height == 400
+    d.set_height(chosen)
+    assert d.height == chosen
 
     d.apply_window_height(680)
     assert 680 - d.height >= RAIL_CONTENT_HEIGHT, "the rail was starved on shrink"
-    assert d.height < 400, "the console did not yield any height"
+    assert d.height < chosen, "the console did not yield any height"
 
     d.apply_window_height(1200)
-    assert d.height == 400, "his deliberate height was not handed back"
+    assert d.height == chosen, "his deliberate height was not handed back"
 
 
 def test_ac8_an_unmeasurable_resize_leaves_the_console_alone():
     """A resize that cannot be measured must not collapse the console to the
     floor — a missing height is unknown, not zero."""
+    kept = height_for_rows(11)
     d = LogDock(window_height=1200)
-    d.set_height(300)
+    d.set_height(kept)
     d.apply_window_height(None)
-    assert d.height == 300
+    assert d.height == kept
     d.apply_window_height(0)
-    assert d.height == 300
+    assert d.height == kept
+
+
+# ---------------------------------------------------------------------------
+# PS-229: the console is sized in ROWS, the grip is bounded by the rail's
+# budget, and a drag accumulates. These complement the LIVE driving in
+# tests/ui_driver/live_log_dock.py — they are not a substitute for it.
+# ---------------------------------------------------------------------------
+
+
+def test_ps229_every_height_the_console_can_hold_is_a_whole_number_of_rows():
+    """The direction's argument, asserted as a property rather than a case.
+
+    A console sized in PIXELS lands mid-row — five rows and a two-pixel
+    sliver of a sixth — and that sliver is exactly the "пустое место" the
+    owner reported. So no reachable height may sit between two row counts.
+    """
+    from src.ui.components.log_dock import (
+        MAX_ROWS_VISIBLE,
+        MIN_ROWS,
+        height_for_rows,
+        quantize,
+        rows_for_height,
+    )
+
+    # Every height in the console's whole range snaps onto a row boundary.
+    for px in range(MIN_HEIGHT - 40, MAX_HEIGHT + 40):
+        snapped = quantize(px)
+        assert snapped == height_for_rows(rows_for_height(snapped)), px
+        assert MIN_HEIGHT <= snapped <= MAX_HEIGHT, px
+
+    # And the two functions are genuine inverses across the range.
+    for rows in range(MIN_ROWS, MAX_ROWS_VISIBLE + 1):
+        assert rows_for_height(height_for_rows(rows)) == rows
+
+
+def test_ps229_the_console_opens_at_exactly_six_rows():
+    """His number, and the reason the default is derived rather than typed.
+
+    The render measured a 186px band on a 980px window. That is EVIDENCE FROM
+    ONE MACHINE, not the spec — the spec is "six whole rows at the shipped row
+    metrics", so this asserts the ROW COUNT and lets the pixel figure fall out
+    of the row height. A future ROW_HEIGHT change must move the pixels and
+    keep the six.
+    """
+    d = LogDock(window_height=980)
+    assert d.rows == 6
+    assert d.height == height_for_rows(6)
+    assert OPEN_HEIGHT == height_for_rows(6)
+
+
+def test_ps229_a_drag_accumulates_so_growing_works_as_well_as_shrinking():
+    """THE BUG: snapping each frame made the gesture one-directional.
+
+    A drag arrives as ~10px frames and a row is 22px, so no single frame is a
+    whole row. Quantizing per frame FLOORS, so growing by 10px landed back
+    inside the row it started in and the console never grew however far he
+    dragged, while shrinking crossed a boundary immediately and worked. Up was
+    dead, down worked — which reads as the grip being broken again.
+    """
+    d = LogDock(window_height=1400)
+    start = d.rows
+
+    # Ten upward frames, none of them a whole row on its own.
+    for _ in range(10):
+        d.drag_by(-10.0)
+    assert d.rows > start, "the console did not grow under an accumulated drag"
+
+    grown = d.rows
+    for _ in range(10):
+        d.drag_by(+10.0)
+    assert d.rows < grown, "the console did not shrink back"
+
+
+def test_ps229_the_grip_is_bounded_by_the_rails_budget_not_only_by_max_height():
+    """THE KNOWN-OPEN ITEM, and the owner's decision on it.
+
+    Two paths changed the dock's height and only ONE respected the rail:
+
+        window resize -> apply_window_height() -> affordable_height()  OK
+        pointer drag  -> drag_by()             -> MAX_HEIGHT only      NOT
+
+    Measured at the app minimum (680px): the grip would drag the dock to 494px,
+    leaving 186px for a fixed cluster that needs 560px — starving it by 374px,
+    after which any window event silently healed it. That asymmetry is the
+    whole of "the ACTIVITY panel wrecks the layout generally", and it is also
+    why elements animate inside a rail whose height is being rewritten
+    underneath them mid-gesture.
+
+    The owner was asked rather than second-guessed: "боковая панель важнее —
+    ограничить лог". The rail wins. So the requirement is "continuously, from
+    1 row up TO WHATEVER THE WINDOW AFFORDS", and the ~3-row cap at the app
+    minimum is deliberate, not a defect to work around.
+    """
+    from src.ui.components.log_dock import affordable_height
+
+    # At the app's own minimum window, drag as hard as the operator can.
+    d = LogDock(window_height=680)
+    for _ in range(400):
+        d.drag_by(-10.0)
+
+    assert d.height <= affordable_height(680)
+    assert 680 - d.height >= RAIL_CONTENT_HEIGHT, "the drag starved the rail"
+    # The documented consequence of the owner's call, stated as a number so a
+    # future change that quietly raises it fails here.
+    assert d.rows == 3
+
+    # A roomy window still gives him the full range — the cap is the WINDOW's,
+    # not a new global ceiling.
+    tall = LogDock(window_height=1400)
+    for _ in range(400):
+        tall.drag_by(-10.0)
+    assert tall.height == MAX_HEIGHT
+    assert tall.rows == 20
+
+
+def test_ps229_the_grip_follows_the_window_it_is_budgeted_against():
+    """A stale budget is the same defect one resize later.
+
+    drag_by has no event carrying a window height, so it consults the last one
+    the dock was told about. If a resize did not refresh that, an operator who
+    shrank the window and then dragged would starve exactly the rail this
+    budget protects.
+    """
+    d = LogDock(window_height=1400)
+    for _ in range(400):
+        d.drag_by(-10.0)
+    assert d.rows == 20
+
+    # The window shrinks to the app minimum, then he drags again.
+    d.apply_window_height(680)
+    for _ in range(400):
+        d.drag_by(-10.0)
+    assert 680 - d.height >= RAIL_CONTENT_HEIGHT, "the drag used a stale budget"
+    assert d.rows == 3
+
+
+def test_ps229_a_console_whose_window_is_unknown_is_not_clamped_to_the_floor():
+    """A headless or served session reports no height. Unknown constrains
+    nothing — it must not silently collapse the console."""
+    d = LogDock(window_height=None)
+    for _ in range(400):
+        d.drag_by(-10.0)
+    assert d.height == MAX_HEIGHT
+
+
+def test_ps229_the_one_line_state_is_a_real_log_that_keeps_reporting():
+    """The floor is one ROW of the live console, not a separate fixed strip.
+
+    The distinction matters: a collapsed strip is a different control with a
+    different reader. At one row he still has the log, and events still land in
+    it.
+    """
+    from src.ui.components.log_dock import MIN_ROWS
+
+    d, lines = _dock(), []
+    d.set_rows(MIN_ROWS)
+    assert d.rows == 1
+    assert d.height == height_for_rows(1)
+    assert d.state.collapsed is False, "one row is the LOG, not the collapsed strip"
+    assert d.body.visible is True
+
+    _feed(d, lines, "shop-de-03: still arriving")
+    assert d.row_count == 1
+    assert "still arriving" in d._peek.value
+
+
+def test_ps229_the_size_readout_is_in_his_unit_and_is_right_from_the_first_frame():
+    """"8 rows" is checkable against what he can see; "289px" is not."""
+    d = LogDock(window_height=980)
+    assert d._size_label.value == "6 rows"
+    d.set_rows(1)
+    assert d._size_label.value == "1 row", "singular, or the readout reads as a typo"
+    d.set_rows(12)
+    assert d._size_label.value == "12 rows"
+
+
+def test_ps229_every_cell_in_the_row_shares_one_type_size():
+    """THE MISALIGNMENT MARS REPORTED, fixed by construction.
+
+    The row shipped with THREE type sizes — profile 11, message 11.5,
+    timestamp 10 — each centred INSIDE ITS OWN CELL. A text box's height comes
+    from the font's ascent+descent at its own size, so three sizes give three
+    box heights, centred independently, and the glyphs land on three different
+    baselines.
+
+    It is invisible on Linux and visible on Windows because the error is
+    font-metric: "monospace" resolves to DejaVu Sans Mono here and Consolas
+    there, so per-size rounding that cancels on one lands off-by-one on the
+    other. That is precisely why this is asserted as ONE SIZE rather than as a
+    pixel offset measured on this box — a padding tuned where the bug does not
+    reproduce would re-break where it does.
+
+    Hierarchy is carried by COLOUR and WEIGHT instead, neither of which costs a
+    vertical metric.
+    """
+    from src.ui.log_console import TEXT_SIZE
+
+    row = event_row("10:00:02  > shop-de-03: LAUNCH_FAILED: boom", ROSTER)
+    _dot, profile, message, time_col = row.content.controls
+
+    sizes = {col.content.size for col in (profile, message, time_col)}
+    assert sizes == {TEXT_SIZE}, f"three box heights again: {sizes}"
+
+    # The hierarchy that replaced the size difference is still doing its job:
+    # the columns are not all one colour.
+    colours = {col.content.color for col in (profile, message, time_col)}
+    assert len(colours) > 1, "size was removed without colour taking over"
+
+
+def test_ps229_the_severity_dot_is_centred_by_the_row_not_by_the_font():
+    """A 7px child and a ~15px text box under CrossAxisAlignment.CENTER round
+    their offsets independently — the same per-cell rounding that staggered the
+    text. Giving the dot a full-height box makes its centring a property of the
+    ROW rather than of the font."""
+    row = event_row("10:00:01  > Launching shop-de-03", ROSTER)
+    dot_col = row.content.controls[0]
+    assert dot_col.height == ROW_HEIGHT
+    assert row.content.vertical_alignment == ft.CrossAxisAlignment.STRETCH

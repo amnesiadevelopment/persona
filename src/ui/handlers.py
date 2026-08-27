@@ -1,5 +1,6 @@
 """Event handlers extracted from App for Single Responsibility compliance."""
 
+import contextlib
 from collections.abc import Callable
 
 import flet as ft
@@ -174,4 +175,12 @@ class AppHandlers:
     def open_log_fullscreen(self) -> None:
         page = self._get_page()
         assert page is not None
-        open_log_dialog(page, self._state.get_all_log_lines())
+        # The roster is passed so the fullscreen view can parse the profile out
+        # of each line (the same parse the dock's rows use) and offer a real
+        # profile filter. A failure to read it must not stop the log opening —
+        # an empty roster degrades to "all profiles" and the severity/search
+        # filters still work.
+        names: tuple = ()
+        with contextlib.suppress(Exception):
+            names = tuple(p.name for p in self._pm.list_profiles())
+        open_log_dialog(page, self._state.get_all_log_lines(), profiles=names)
