@@ -182,9 +182,9 @@ itself works fine.
 | `gh-repo.json`, `releases-all.json`, `gh-tags.json`, `gh-branches.json`, `gh-commits.json` | upstream repo state, all 13 releases/tags | §1, §5 |
 | `source-lag.json` | binary-publish vs source-commit lag per version | §1 |
 | `cdash-stable-*.json` | Chromium stable per platform | §2 |
-| `chrome-blog-posts.json` | 324 Chrome Releases posts (2026-03-10 → 2026-08-26) | §2 |
+| `chrome-blog-posts.json` | 324 Chrome Releases posts (2026-03-10 → 2026-08-26). The raw `content` (post HTML) field was **stripped for size** — it was 5.9 MB of a 6.0 MB file and exceeded the bundle harvester's per-file limit. `title` + `published` are retained, so the corpus census and the 16-of-34 desktop-Stable selection remain auditable; the *extracted result* of that HTML is already carried separately by `cve-gap.json`, from which §2's severity table re-derives in full. | §2 |
 | `cve-gap.json` | 1,284 CVEs since our build, by severity | §2 |
-| `kev.json`, `kev-chrome.json` | CISA KEV catalogue + Chrome subset | §2 |
+| `kev.json`, `kev-chrome.json` | CISA KEV catalogue + Chrome subset. `kev.json` was slimmed the same way and for the same reason — the free-text fields (`vulnerabilityName`, `shortDescription`, `requiredAction`, `notes`, `cwes`, `dueDate`) were dropped from all 1,682 entries; `cveID` / `vendorProject` / `product` / `dateAdded` / `knownRansomwareCampaignUse` are retained, so the Chrome subset (69 entries, max `dateAdded` 2026-06-09, none after our 2026-06-21 build) still re-derives from it and reconciles with `kev-chrome.json`. | §2 |
 | `results-ctrl-144b.tsv` | **the control** | §3 |
 | `results-ctrl-144-BROKEN-HARNESS.tsv` | discarded first run, kept as evidence | §3 |
 | `results-test-145.tsv`, `results-test-152.tsv` | one-major and eight-major runs | §3 |
