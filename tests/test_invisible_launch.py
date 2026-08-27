@@ -5908,3 +5908,183 @@ def test_resolvable_engine_dir_still_migrates_byte_identically(tmp_path):
     assert STALE_KEY not in (prof / "prefs.js").read_text(encoding="utf-8"), (
         "the stale pref survived a resolvable build change"
     )
+
+
+def test_profile_prefs_pins_failover_direct_for_proxied_profile():
+    # PS-217 finding 2. With network.proxy.failover_direct TRUE, Firefox answers
+    # a dead or refusing SOCKS proxy by retrying the request DIRECTLY: the page
+    # loads, nothing errors, and a profile whose entire purpose is that this
+    # cannot happen has made a clearnet connection correlated with its identity.
+    #
+    # THIS IS A PIN, NOT A FIX, AND THE MEASUREMENT SAYS SO. Measured on the
+    # bundled build (invisible_core 20.14.0): its own _BASELINE already sets
+    # this False and translate_profile_to_prefs preserves it, so the shipped
+    # default is already safe and this changed no live behaviour.
+    #
+    # What it removes is the ASYMMETRY that verify/browser_tier._prefs pinned
+    # the value while the shipped launch inherited it — the harness was running
+    # a configuration the product does not ship. The pin is load-bearing
+    # because the caller overlay is applied LAST and DOES win (measured on the
+    # same build), so the daily engine autobump could flip the default with
+    # nobody looking. Same argument the neighbouring TRR/DNS-prefetch pins make.
+    prefs = _profile_prefs({
+        "search_engine": "duckduckgo",
+        "proxy_url": "socks5://user:pass@1.2.3.4:1080",
+    })
+    assert prefs.get("network.proxy.failover_direct") is False
+
+
+def test_profile_prefs_failover_pin_matches_the_verify_harness():
+    # The finding was the DISAGREEMENT between the two configurations, so the
+    # test is an equality between them rather than two independent constants —
+    # this fails if either side drifts, which is the property that was missing.
+    from src.services.verify.browser_tier import _prefs as _verify_prefs
+
+    shipped = _profile_prefs({
+        "search_engine": "duckduckgo",
+        "proxy_url": "socks5://user:pass@1.2.3.4:1080",
+    })
+    key = "network.proxy.failover_direct"
+    assert shipped[key] == _verify_prefs()[key]
+
+
+def test_profile_prefs_no_failover_override_for_direct_profile():
+    # Gated with its neighbours: on a direct profile the real address IS the
+    # identity, so there is nothing to fail over from and pinning it would only
+    # make the profile more distinctive than a stock browser for no benefit.
+    prefs = _profile_prefs({"search_engine": "duckduckgo"})
+    assert "network.proxy.failover_direct" not in prefs
+
+
+def test_child_refuses_launch_when_proxy_url_cannot_be_parsed(monkeypatch, tmp_path):
+    # PS-217 finding 1, at the seam that matters. _proxy_dict used to fall
+    # through to {"server": <raw url>} with the credentials never extracted, so
+    # an authenticated proxy was handed a connection with NO AUTH, refused it,
+    # and the user saw a page that would not load — indistinguishable from a
+    # dropped network, with nothing anywhere saying why.
+    #
+    # The property is REFUSED **AND SAID SO**. This call site is not inside the
+    # try that wraps the engine import, so a bare raise would kill the child
+    # before the parent reads anything: a launch that dies silently, which is
+    # the very failure this replaces. So the assertions below are about the
+    # PIPE, not about an exception.
+    import os
+    import sys
+    import threading
+    import types
+
+    mod = types.ModuleType("invisible_playwright")
+
+    class FakeEngine:
+        def __init__(self, **kwargs):  # pragma: no cover - must never be built
+            raise AssertionError(
+                "the engine was launched for an unparseable proxy — this is the "
+                "direct-connection leak the refusal exists to prevent"
+            )
+
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", False)
+    # If the refusal works, the bookmark warm-up is never reached either — it
+    # starts a REAL Firefox on this profile and would go direct too.
+    monkeypatch.setattr(
+        invisible_launch, "_seed_firefox_bookmarks",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("warm-up ran for an unparseable proxy")
+        ),
+    )
+
+    r, w = os.pipe()
+    invisible_launch._child(
+        {
+            "profile_dir": str(tmp_path),
+            "profile_name": "t",
+            "seed": 1,
+            # A scheme no engine path can take. The old code handed this to the
+            # engine verbatim as a server= value.
+            "proxy_url": "ftp://bob:hunter2@1.2.3.4:1080",
+        },
+        w,
+        stop_event=threading.Event(),
+    )
+    out = os.read(r, 65536).decode()
+    os.close(r)
+
+    assert "LAUNCH_FAILED" in out, "the refusal must be reported, not silent"
+    # The reader unblocks rather than hanging on a child that vanished.
+    assert "BROWSER_CLOSED" in out
+    # ...and it must never have come up.
+    assert "BROWSER_STARTED" not in out
+    # The message carries the credential, so it must not contain it.
+    assert "hunter2" not in out
+    # #154's property still holds on this new failure path: the next launch of
+    # the same profile must not wait on a still-held lock.
+    lock = invisible_launch._profile_launch_lock(str(tmp_path))
+    assert lock.acquire(timeout=0)
+    lock.release()
+
+
+def test_child_still_launches_for_a_socks5h_proxy(monkeypatch, tmp_path):
+    # The other half of the refusal, and the one that keeps it honest: a URL the
+    # code CAN read must still launch, WITH ITS CREDENTIALS. socks5h is the
+    # scheme this project reads its credential in (verify/socks_fetch), and it
+    # is precisely what the old regex dropped the credentials for — so a fix
+    # that merely refused everything unfamiliar would pass the test above and
+    # still be wrong.
+    import os
+    import sys
+    import threading
+    import types
+
+    seen = {}
+    mod = types.ModuleType("invisible_playwright")
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            pass
+
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(invisible_launch._platform, "IS_WINDOWS", False)
+    # Captured at the warm-up seam, which is where the ONE proxy construction
+    # for this launch is handed down — the visible launch reuses that exact
+    # value (see the call site), so this is the same dict, not a parallel one.
+    def fake_seed(profile_dir, bookmarks, seed, stop_event=None, **kwargs):
+        seen.update(kwargs)
+        return True
+
+    monkeypatch.setattr(invisible_launch, "_seed_firefox_bookmarks", fake_seed)
+    # The enter never succeeds, so the launch ends promptly — this test is about
+    # what the proxy construction PRODUCED, not about a completed session.
+    monkeypatch.setattr(invisible_launch, "_enter_on_worker", lambda *a, **k: None)
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox",
+        lambda d, pids=None, rescan=True: None,
+    )
+
+    r, w = os.pipe()
+    invisible_launch._child(
+        {
+            "profile_dir": str(tmp_path),
+            "profile_name": "t",
+            "seed": 1,
+            "proxy_url": "socks5h://bob:secret@1.2.3.4:1080",
+        },
+        w,
+        stop_event=threading.Event(),
+    )
+    out = os.read(r, 65536).decode()
+    os.close(r)
+
+    assert "LAUNCH_FAILED: this profile's proxy" not in out
+    # THE CREDENTIALS SURVIVED. Asserting the whole dict rather than "some proxy
+    # key was set": the defect produced a proxy value too, it just had no
+    # username in it and carried socks5h in a server= the browser rejects.
+    assert seen["proxy"] == {
+        "server": "socks5://1.2.3.4:1080",
+        "username": "bob",
+        "password": "secret",
+    }
+    # The warm-up must also know a proxy was DECLARED, so its own fail-closed
+    # guard stays armed.
+    assert seen["proxy_declared"] is True

@@ -49,11 +49,11 @@ defect as a skipped test reporting green.
 
 from __future__ import annotations
 
-import re
 import time
 from contextlib import contextmanager
 from typing import Any, Callable
 
+from ...utils.proxy_parser import ProxyUrlUnparseable, engine_proxy_dict
 from .checkers import BROWSER_CHECKERS, Checker, ENGINE_EXIT_CHECKER
 from .exit_guard import EXPECTED_COUNTRY
 from .masking_layer import LayerReport
@@ -138,24 +138,43 @@ class EngineUnavailable(RuntimeError):
 def _proxy_dict(proxy_url: str) -> dict:
     """Turn the credential into the engine's proxy dict.
 
-    Mirrors ``services/browser/invisible_launch._proxy_dict`` — the launch path
-    the app itself uses — rather than inventing a second shape. The ``socks5h``
-    scheme this project reads its credential in is normalised back to
-    ``socks5`` for the engine, which takes remote resolution from the
-    ``network.proxy.socks_remote_dns`` pref instead of from the scheme (set in
-    :func:`_prefs`); ``socks5h`` in a ``server=`` value is a curl-ism the
-    browser would reject outright.
+    Delegates to ``utils.proxy_parser.engine_proxy_dict`` — the ONE owner,
+    shared with ``services/browser/invisible_launch._proxy_dict``, which is the
+    launch path the app itself uses. The ``socks5h`` scheme this project reads
+    its credential in is normalised back to ``socks5`` for the engine, which
+    takes remote resolution from the ``network.proxy.socks_remote_dns`` pref
+    instead of from the scheme (set in :func:`_prefs`); ``socks5h`` in a
+    ``server=`` value is a curl-ism the browser would reject outright.
+
+    ⚠️ THE DOCSTRING THAT USED TO SIT HERE CLAIMED THIS "mirrors" THE LAUNCH
+    PATH, AND IT DID NOT (PS-217). This copy's regex carried ``socks5h?`` and
+    the launch path's did not, so the scheme this project actually reads its
+    credential in worked HERE and silently lost its credentials THERE — the
+    verify-side copy held the fix the shipped path lacked, which is the reverse
+    of the usual drift and is exactly why a parity claim in prose is worth
+    nothing. Both now call one function, so the claim is structural rather than
+    asserted: they cannot disagree because there is only one of them.
+
+    Both regexes were ALSO wrong on the two delimiter axes (a ``:`` in the
+    username, an ``@`` in the password) — see the shared parser for the detail.
+    Lifting this copy into the launch path would have fixed the scheme and left
+    those two.
+
+    Raises :class:`EngineUnavailable` — not the shared parser's own error — so
+    the caller's contract is unchanged: an unusable credential fails the TIER
+    here rather than launching an engine that quietly goes direct.
     """
-    match = re.match(r"socks5h?://(?:([^:]+):([^@]+)@)?(.+)", proxy_url)
-    if not match:
+    try:
+        out = engine_proxy_dict(proxy_url)
+    except ProxyUrlUnparseable as e:
         raise EngineUnavailable(
-            "the proxy credential is not in a form the engine can take"
-        )
-    user, password, hostport = match.groups()
-    out = {"server": f"socks5://{hostport}"}
-    if user:
-        out["username"] = user
-        out["password"] = password
+            f"the proxy credential is not in a form the engine can take ({e})"
+        ) from e
+    if out is None:
+        # An empty credential. The caller only reaches this for a truthy
+        # proxy_url, so this is unreachable there — but the tier must never
+        # answer "no proxy" with a direct engine, so it is a refusal here too.
+        raise EngineUnavailable("no proxy credential was supplied")
     return out
 
 
