@@ -48,6 +48,22 @@ derived verdict against an oracle written INDEPENDENTLY of the implementation
 coherent ``android``+``desktop`` default — is caught over whatever the doors
 actually landed. That is ``f(x) == g(x)`` with two authors, not one.
 
+⚠️ THE SECOND HALF OF THAT SENTENCE HAD TO BE EARNED, AND THE WAY IT WAS EARNED
+IS THE INTERESTING PART. It was first written when every record the sweep landed
+carried ``device_type="mobile"`` — so the store held ZERO instances of the
+coherent default, and a ``device_type_error`` that started flagging
+``android``+``desktop`` sailed through the sweep untouched (a reviewer proved it
+by mutation; it was caught only by ``test_a_coherent_record_reports_nothing``).
+The store now contains that shape, landed through a door like everything else.
+
+Which door is NOT arbitrary, and getting it wrong re-breaks the claim silently:
+it is landed at the LEGACY DISK LOAD, not at ``add_profile``. The authoring door
+REFUSES, so under that mutation the sweep dies on the door's own ``assert`` and
+never reaches the oracle at all — a door assertion dressed up as a property. The
+legacy load has no guard, so the record actually COMES TO REST in the store and
+the independent oracle is the thing that judges it. Both directions have been
+mutation-verified to fail AT THE ORACLE rather than at a door.
+
 What a future silent door WOULD break is the DISCLOSURE half — the warning log
 and the REST field — and that half is inherently per-door, so it is asserted
 per-door (``test_the_recovery_doors_say_so_in_the_log``) and by the
@@ -210,6 +226,14 @@ def _independently_incoherent(os_type, device_type) -> bool:
     Written out by hand so that a ``device_type_error`` which stopped flagging
     the pair, or started flagging the coherent default, is CAUGHT rather than
     agreed with.
+
+    ⚠️ THAT SECOND DIRECTION IS ONLY REAL IF THE STORE CONTAINS THE COHERENT
+    DEFAULT, and for one round it did not: every record the sweep landed carried
+    ``device_type="mobile"``, so an implementation that started flagging
+    ``android``+``desktop`` was agreed with by omission. The sweep now lands that
+    shape at the LEGACY DISK LOAD — deliberately not at ``add_profile``, which
+    refuses and would make the sweep die on the door's own ``assert`` before this
+    oracle ever ran. Both directions are mutation-verified to fail HERE.
     """
     if device_type is None:
         return False
@@ -266,6 +290,23 @@ def test_no_stored_profile_is_silently_incoherent(mgr, tmp_path):
         "name": "legacyphone",
         "os_type": "windows",
         "device_type": "mobile",
+        "engine": "chromium",
+    }
+    # ...and beside it the COHERENT DEFAULT, which is the shape MOST records
+    # actually have: "desktop" beside a mobile os_type is what every android
+    # profile the dialog has ever made carries.
+    #
+    # ⚠️ IT IS LANDED HERE, AT A RECOVERY DOOR, AND THAT IS NOT ARBITRARY. The
+    # authoring door REFUSES, so a `device_type_error` that started flagging
+    # this shape would make `add_profile` raise and the sweep would die at the
+    # door — a door assertion, not the property. The legacy load has no guard at
+    # all, so the record REACHES THE STORE and is judged by the independent
+    # oracle below. That is the direction the docstring claims, so that is the
+    # direction it has to be able to fail in.
+    on_disk["legacydefault"] = {
+        "name": "legacydefault",
+        "os_type": "android",
+        "device_type": "desktop",
         "engine": "chromium",
     }
     with open(mod.PROFILES_FILE, "w", encoding="utf-8") as f:
