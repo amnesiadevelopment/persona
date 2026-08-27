@@ -169,6 +169,24 @@ jobs:
     outputs:
       compiled: ${{ steps.compile.outputs.compiled }}
     steps:
+      # ── ZERO THE INSTRUMENT BEFORE USING IT ──────────────────────────────
+      # `record/` lives in $GITHUB_WORKSPACE, OUTSIDE both checkouts (persona/
+      # and ucpl/), so `actions/checkout` never cleans it and a self-hosted
+      # runner does not wipe _work between runs. Left alone, a control log from
+      # an EARLIER dispatch — different tag, different day — is still on disk
+      # and is therefore *present*, which is the only condition
+      # ps218_attribute.sh's "CONTROL UNKNOWN" safety tests. A stale control
+      # would be silently treated as this run's and errors billed
+      # "PRE-EXISTING — NOT ours" against a tree that was never built here.
+      #
+      # That is the PS-192 shape this ticket cites: a confident reading from an
+      # instrument nobody re-zeroed. The guard fired on absence; staleness needs
+      # this.
+      - name: Zero record/ from any previous dispatch
+        run: |
+          rm -rf record
+          mkdir -p record
+
       - name: Check out persona (for the recording scripts)
         uses: actions/checkout@v4
         with:
@@ -187,7 +205,7 @@ jobs:
 
       - name: Record the build environment as the CONTAINER sees it
         id: env
-        run: persona/scripts/ps218_record_env.sh unmodified
+        run: persona/scripts/ps218_record_env.sh unmodified pre-prepare
         env:
           UCPL_DIR: ucpl
 
@@ -197,14 +215,49 @@ jobs:
         run: persona/scripts/ps218_build.sh prepare unmodified
         env:
           UCPL_DIR: ucpl
+          UNGOOGLED_TAG: ${{ inputs.ungoogled_tag }}
           NINJA_JOBS: ${{ inputs.ninja_jobs }}
 
+      # THE SECOND ENV PASS — the one that can actually read the container.
+      # ps218_record_env.sh probes container/cgroup memory only if the image
+      # `chromium-builder:trixie-slim` exists, and `prepare` is what builds it.
+      # Running the script only BEFORE prepare meant the else-branch was the
+      # sole reachable branch on a clean runner: the record claimed three
+      # levels (WSL2 guest / container / cgroup) while holding one, and
+      # promised a follow-up probe that did not exist anywhere in the
+      # workflow. The ticket asks for exactly this reading -- "WSL2's memory
+      # allocation is not the host's. Confirm what the build environment
+      # actually sees" -- and it is the level that governs the link step.
+      #
+      # `if: always()` so a failed prepare still records what the machine
+      # looked like; the script says plainly when the image is absent rather
+      # than reporting a zero.
+      - name: Record the build environment AFTER prepare (container level)
+        if: always()
+        run: persona/scripts/ps218_record_env.sh unmodified post-prepare
+        env:
+          UCPL_DIR: ucpl
+
+      # Reached ONLY when the de-googling patches applied. Without this guard a
+      # failed `prepare` still ran the compile against a half-patched tree, and
+      # `COMPILE_RESULT` arrived as `failure` rather than `skipped` — at which
+      # point ps218_manifest.sh's prose says "the compile was never attempted"
+      # two rows below a table saying "NO — FAILED". One document, two
+      # incompatible claims, and the prose the false one.
+      #
+      # That is precisely the outcome this ticket names as unacceptable — "a
+      # report that cannot distinguish 'it compiled' from 'it was never
+      # compiled'" — arriving through the one job whose entire purpose is to be
+      # the trustworthy control. The `patched` job has always had this guard;
+      # the control is the job that needed it most.
       - name: Compile — THE SEPARATE RESULT
         id: compile
+        if: steps.prepare.outcome == 'success'
         continue-on-error: true
         run: persona/scripts/ps218_build.sh compile unmodified
         env:
           UCPL_DIR: ucpl
+          UNGOOGLED_TAG: ${{ inputs.ungoogled_tag }}
           NINJA_JOBS: ${{ inputs.ninja_jobs }}
 
       - name: Write the manifest
@@ -265,6 +318,16 @@ jobs:
     runs-on: [self-hosted, persona-build]
     timeout-minutes: 900
     steps:
+      # Same zeroing as the control job, and for the same reason: `record/` is
+      # outside both checkouts, so nothing else cleans it between dispatches.
+      # This job additionally READS a control log copied in from the artifact,
+      # so a leftover from an earlier run is the exact input that would poison
+      # attribution.
+      - name: Zero record/ from any previous dispatch
+        run: |
+          rm -rf record
+          mkdir -p record
+
       - name: Check out persona (patches + recording scripts)
         uses: actions/checkout@v4
         with:
@@ -279,7 +342,7 @@ jobs:
           path: ucpl
 
       - name: Record the build environment as the CONTAINER sees it
-        run: persona/scripts/ps218_record_env.sh patched
+        run: persona/scripts/ps218_record_env.sh patched pre-prepare
         env:
           UCPL_DIR: ucpl
 
@@ -304,7 +367,28 @@ jobs:
         run: persona/scripts/ps218_build.sh prepare patched
         env:
           UCPL_DIR: ucpl
+          UNGOOGLED_TAG: ${{ inputs.ungoogled_tag }}
           NINJA_JOBS: ${{ inputs.ninja_jobs }}
+
+      # THE SECOND ENV PASS — the one that can actually read the container.
+      # ps218_record_env.sh probes container/cgroup memory only if the image
+      # `chromium-builder:trixie-slim` exists, and `prepare` is what builds it.
+      # Running the script only BEFORE prepare meant the else-branch was the
+      # sole reachable branch on a clean runner: the record claimed three
+      # levels (WSL2 guest / container / cgroup) while holding one, and
+      # promised a follow-up probe that did not exist anywhere in the
+      # workflow. The ticket asks for exactly this reading -- "WSL2's memory
+      # allocation is not the host's. Confirm what the build environment
+      # actually sees" -- and it is the level that governs the link step.
+      #
+      # `if: always()` so a failed prepare still records what the machine
+      # looked like; the script says plainly when the image is absent rather
+      # than reporting a zero.
+      - name: Record the build environment AFTER prepare (container level)
+        if: always()
+        run: persona/scripts/ps218_record_env.sh patched post-prepare
+        env:
+          UCPL_DIR: ucpl
 
       # THE SECOND RESULT, AND THE ONE THIS TICKET EXISTS TO PRODUCE. Whether
       # the tree our patches produced actually COMPILES. Reached only when the
@@ -317,7 +401,25 @@ jobs:
         run: persona/scripts/ps218_build.sh compile patched
         env:
           UCPL_DIR: ucpl
+          UNGOOGLED_TAG: ${{ inputs.ungoogled_tag }}
           NINJA_JOBS: ${{ inputs.ninja_jobs }}
+
+      # The control's compile log is produced by the OTHER job, so it must be
+      # brought in EXPLICITLY. It lands in `control/`, not `record/`, precisely
+      # so a leftover in the shared workspace can never be mistaken for it: the
+      # attribution script reads only this directory and refuses anything whose
+      # provenance stamp does not name this run.
+      #
+      # `continue-on-error` because the control may legitimately not exist (the
+      # unmodified tree failed to prepare, so no compile log was produced). That
+      # case is already handled — every error is then marked CONTROL UNKNOWN
+      # rather than asserted as ours.
+      - name: Fetch the control's compile log (for the control diff)
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ps218-unmodified-${{ inputs.ungoogled_tag }}
+          path: control
 
       # Attribute every compile error to the patch that touched the file, and
       # diff against the unmodified tree's errors so a failure the CONTROL also
@@ -328,6 +430,8 @@ jobs:
         env:
           UCPL_DIR: ucpl
           PATCH_DIR: persona/engine/patches/fingerprint
+          CONTROL_DIR: control
+          UNGOOGLED_TAG: ${{ inputs.ungoogled_tag }}
 
       - name: Write the manifest
         if: always()
