@@ -1,0 +1,26 @@
+{
+ "ungoogled-chromium-windows": {
+  "n": 6,
+  "jobs": 17,
+  "compute_h_median": 43.5,
+  "wall_h_median": 43.5,
+  "compute_h_min": 39.5,
+  "compute_h_max": 63.3
+ },
+ "ungoogled-chromium-macos": {
+  "n": 5,
+  "jobs": 43,
+  "compute_h_median": 23.9,
+  "wall_h_median": 15.4,
+  "compute_h_min": 22.4,
+  "compute_h_max": 26.8
+ },
+ "ungoogled-chromium-portablelinux": {
+  "n": 6,
+  "jobs": 25,
+  "compute_h_median": 32.5,
+  "wall_h_median": 19.4,
+  "compute_h_min": 30.6,
+  "compute_h_max": 34.1
+ }
+}

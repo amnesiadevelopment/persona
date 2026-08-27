@@ -1,0 +1,31 @@
+{
+ "iframe_srcdoc": {
+  "accepted": false,
+  "refusal": "TypeError: Cannot read properties of null (reading 'appendChild')"
+ },
+ "service_worker_blob": {
+  "accepted": false,
+  "refusal": "TypeError: Failed to register a ServiceWorker: The URL protocol of the script ('blob:http://127.0.0.1:42119/98b975cf-5158-4a4d-9c2e-64be9f24a8b8') is not supported."
+ },
+ "worker_blob": {
+  "accepted": true,
+  "data": {
+   "ok": true,
+   "scope": "DedicatedWorkerGlobalScope"
+  }
+ },
+ "worker_module_blob": {
+  "accepted": true,
+  "data": {
+   "ok": true,
+   "type": "module"
+  }
+ },
+ "shared_worker_blob": {
+  "accepted": true,
+  "data": {
+   "ok": true,
+   "scope": "SharedWorkerGlobalScope"
+  }
+ }
+}

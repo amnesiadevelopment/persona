@@ -1,0 +1,62 @@
+{
+ "camoufox (Firefox-fork antidetect)": {
+  "repo": "daijro/camoufox",
+  "stars": 11463,
+  "pushed_at": "2026-08-26",
+  "open_issues": 108,
+  "archived": false,
+  "releases_sampled": 10,
+  "latest_release": "2026-08-21",
+  "median_release_gap_days": 33
+ },
+ "undetected-chromedriver (runtime patch)": {
+  "repo": "ultrafunkamsterdam/undetected-chromedriver",
+  "stars": 12808,
+  "pushed_at": "2025-07-05",
+  "open_issues": 1141,
+  "archived": false,
+  "releases_sampled": 0,
+  "latest_release": null,
+  "median_release_gap_days": null
+ },
+ "patchright-python (runtime patch)": {
+  "repo": "Kaliiiiiiiiii-Vinyzu/patchright-python",
+  "stars": 1482,
+  "pushed_at": "2026-08-19",
+  "open_issues": 2,
+  "archived": false,
+  "releases_sampled": 10,
+  "latest_release": "2026-08-17",
+  "median_release_gap_days": 53
+ },
+ "nodriver (wrapper/CDP)": {
+  "repo": "ultrafunkamsterdam/nodriver",
+  "stars": 4700,
+  "pushed_at": "2026-05-13",
+  "open_issues": 14,
+  "archived": false,
+  "releases_sampled": 0,
+  "latest_release": null,
+  "median_release_gap_days": null
+ },
+ "brave-core (real Chromium distributor)": {
+  "repo": "brave/brave-core",
+  "stars": 3533,
+  "pushed_at": "2026-08-27",
+  "open_issues": 432,
+  "archived": false,
+  "releases_sampled": 0,
+  "latest_release": null,
+  "median_release_gap_days": null
+ },
+ "ungoogled-chromium (our substrate)": {
+  "repo": "ungoogled-software/ungoogled-chromium",
+  "stars": 27529,
+  "pushed_at": "2026-08-21",
+  "open_issues": 188,
+  "archived": false,
+  "releases_sampled": 10,
+  "latest_release": "2026-08-21",
+  "median_release_gap_days": 5
+ }
+}

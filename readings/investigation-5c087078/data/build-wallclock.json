@@ -1,0 +1,29 @@
+{
+ "ungoogled-chromium-windows": {
+  "runs": 36,
+  "by_conclusion": {
+   "success": 33,
+   "failure": 3
+  },
+  "success_wall_hours": {
+   "n": 33,
+   "min": 7.67,
+   "median": 42.31,
+   "max": 65.63
+  }
+ },
+ "ungoogled-chromium-macos": {
+  "runs": 58,
+  "by_conclusion": {
+   "failure": 12,
+   "cancelled": 5,
+   "success": 41
+  },
+  "success_wall_hours": {
+   "n": 41,
+   "min": 8.43,
+   "median": 28.43,
+   "max": 9676.44
+  }
+ }
+}

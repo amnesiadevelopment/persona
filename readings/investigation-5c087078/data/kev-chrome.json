@@ -1,0 +1,1046 @@
+{
+ "chrome_kev": [
+  {
+   "cveID": "CVE-2026-11645",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Out-of-Bounds Read and Write Vulnerability",
+   "dateAdded": "2026-06-09",
+   "shortDescription": "Google Chromium V8 out-of-bounds read and write vulnerability that could allow a remote attacker to execute arbitrary code inside a sandbox via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply mitigations per vendor instructions, follow applicable BOD 22-01 guidance for cloud services, or discontinue use of the product if mitigations are unavailable.",
+   "dueDate": "2026-06-23",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2026/06/stable-channel-update-for-desktop_0153744567.html ; https://issues.chromium.org/issues/506689381 ; https://nvd.nist.gov/vuln/detail/CVE-2026-11645",
+   "cwes": [
+    "CWE-787",
+    "CWE-125"
+   ]
+  },
+  {
+   "cveID": "CVE-2026-3910",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Improper Restriction of Operations Within the Bounds of a Memory Buffer Vulnerability",
+   "dateAdded": "2026-03-13",
+   "shortDescription": "Google Chromium V8 contains an improper restriction of operations within the bounds of a memory buffer vulnerability that could allow a remote attacker to execute arbitrary code inside a sandbox via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply mitigations per vendor instructions, follow applicable BOD 22-01 guidance for cloud services, or discontinue use of the product if mitigations are unavailable.",
+   "dueDate": "2026-03-27",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2026/03/stable-channel-update-for-desktop_12.html ; https://nvd.nist.gov/vuln/detail/CVE-2026-3910",
+   "cwes": [
+    "CWE-119"
+   ]
+  },
+  {
+   "cveID": "CVE-2026-2441",
+   "vendorProject": "Google",
+   "product": "Chromium",
+   "vulnerabilityName": "Google Chromium CSS Use-After-Free Vulnerability",
+   "dateAdded": "2026-02-17",
+   "shortDescription": "Google Chromium CSS contains a use-after-free vulnerability that could allow a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply mitigations per vendor instructions, follow applicable BOD 22-01 guidance for cloud services, or discontinue use of the product if mitigations are unavailable.",
+   "dueDate": "2026-03-10",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2026/02/stable-channel-update-for-desktop_13.html ; https://nvd.nist.gov/vuln/detail/CVE-2026-2441",
+   "cwes": [
+    "CWE-416"
+   ]
+  },
+  {
+   "cveID": "CVE-2025-14174",
+   "vendorProject": "Google",
+   "product": "Chromium",
+   "vulnerabilityName": "Google Chromium Out of Bounds Memory Access Vulnerability",
+   "dateAdded": "2025-12-12",
+   "shortDescription": "Google Chromium contains an out of bounds memory access vulnerability in ANGLE that could allow a remote attacker to perform out of bounds memory access via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply mitigations per vendor instructions, follow applicable BOD 22-01 guidance for cloud services, or discontinue use of the product if mitigations are unavailable.",
+   "dueDate": "2026-01-02",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2025/12/stable-channel-update-for-desktop_10.html ; https://learn.microsoft.com/en-us/deployedge/microsoft-edge-relnotes-security ; https://nvd.nist.gov/vuln/detail/CVE-2025-14174",
+   "cwes": []
+  },
+  {
+   "cveID": "CVE-2025-13223",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Type Confusion Vulnerability",
+   "dateAdded": "2025-11-19",
+   "shortDescription": "Google Chromium V8 contains a type confusion vulnerability that allows for heap corruption.",
+   "requiredAction": "Apply mitigations per vendor instructions, follow applicable BOD 22-01 guidance for cloud services, or discontinue use of the product if mitigations are unavailable.",
+   "dueDate": "2025-12-10",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2025/11/stable-channel-update-for-desktop_17.html ; https://nvd.nist.gov/vuln/detail/CVE-2025-13223",
+   "cwes": [
+    "CWE-843"
+   ]
+  },
+  {
+   "cveID": "CVE-2025-10585",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Type Confusion Vulnerability",
+   "dateAdded": "2025-09-23",
+   "shortDescription": "Google Chromium contains a type confusion vulnerability in the V8 JavaScript and WebAssembly engine.",
+   "requiredAction": "Apply mitigations per vendor instructions, follow applicable BOD 22-01 guidance for cloud services, or discontinue use of the product if mitigations are unavailable.",
+   "dueDate": "2025-10-14",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2025/09/stable-channel-update-for-desktop_17.html ; https://nvd.nist.gov/vuln/detail/CVE-2025-10585",
+   "cwes": [
+    "CWE-843"
+   ]
+  },
+  {
+   "cveID": "CVE-2025-6558",
+   "vendorProject": "Google",
+   "product": "Chromium",
+   "vulnerabilityName": "Google Chromium ANGLE and GPU Improper Input Validation Vulnerability",
+   "dateAdded": "2025-07-22",
+   "shortDescription": "Google Chromium contains an improper input validation vulnerability in ANGLE and GPU. This vulnerability could allow a remote attacker to potentially perform a sandbox escape via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply mitigations per vendor instructions, follow applicable BOD 22-01 guidance for cloud services, or discontinue use of the product if mitigations are unavailable.",
+   "dueDate": "2025-08-12",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2025/07/stable-channel-update-for-desktop_15.html ; https://nvd.nist.gov/vuln/detail/CVE-2025-6558",
+   "cwes": [
+    "CWE-20"
+   ]
+  },
+  {
+   "cveID": "CVE-2025-6554",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Type Confusion Vulnerability",
+   "dateAdded": "2025-07-02",
+   "shortDescription": "Google Chromium V8 contains a type confusion vulnerability that could allow a remote attacker to perform arbitrary read/write via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply mitigations per vendor instructions, follow applicable BOD 22-01 guidance for cloud services, or discontinue use of the product if mitigations are unavailable.",
+   "dueDate": "2025-07-23",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2025/06/stable-channel-update-for-desktop_30.html?m=1 ; https://nvd.nist.gov/vuln/detail/CVE-2025-6554",
+   "cwes": [
+    "CWE-843"
+   ]
+  },
+  {
+   "cveID": "CVE-2025-5419",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Out-of-Bounds Read and Write Vulnerability",
+   "dateAdded": "2025-06-05",
+   "shortDescription": "Google Chromium V8 contains an out-of-bounds read and write vulnerability that could allow a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply mitigations per vendor instructions, follow applicable BOD 22-01 guidance for cloud services, or discontinue use of the product if mitigations are unavailable.",
+   "dueDate": "2025-06-26",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2025/06/stable-channel-update-for-desktop.html;   https://nvd.nist.gov/vuln/detail/CVE-2025-5419\",",
+   "cwes": [
+    "CWE-125",
+    "CWE-787"
+   ]
+  },
+  {
+   "cveID": "CVE-2025-2783",
+   "vendorProject": "Google",
+   "product": "Chromium Mojo",
+   "vulnerabilityName": "Google Chromium Mojo Sandbox Escape Vulnerability",
+   "dateAdded": "2025-03-27",
+   "shortDescription": "Google Chromium Mojo on Windows contains a sandbox escape vulnerability caused by a logic error, which results from an incorrect handle being provided in unspecified circumstances. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply mitigations per vendor instructions, follow applicable BOD 22-01 guidance for cloud services, or discontinue use of the product if mitigations are unavailable.",
+   "dueDate": "2025-04-17",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2025/03/stable-channel-update-for-desktop_25.html ; https://nvd.nist.gov/vuln/detail/CVE-2025-2783",
+   "cwes": []
+  },
+  {
+   "cveID": "CVE-2024-7965",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Inappropriate Implementation Vulnerability",
+   "dateAdded": "2024-08-28",
+   "shortDescription": "Google Chromium V8 contains an inappropriate implementation vulnerability that allows a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply mitigations per vendor instructions or discontinue use of the product if mitigations are unavailable.",
+   "dueDate": "2024-09-18",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2024/08/stable-channel-update-for-desktop_21.html; https://nvd.nist.gov/vuln/detail/CVE-2024-7965",
+   "cwes": [
+    "CWE-358"
+   ]
+  },
+  {
+   "cveID": "CVE-2024-7971",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Type Confusion Vulnerability",
+   "dateAdded": "2024-08-26",
+   "shortDescription": "Google Chromium V8 contains a type confusion vulnerability that allows a remote attacker to exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply mitigations per vendor instructions or discontinue use of the product if mitigations are unavailable.",
+   "dueDate": "2024-09-16",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2024/08/stable-channel-update-for-desktop_21.html; https://nvd.nist.gov/vuln/detail/CVE-2024-7971",
+   "cwes": [
+    "CWE-843"
+   ]
+  },
+  {
+   "cveID": "CVE-2024-5274",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Type Confusion Vulnerability",
+   "dateAdded": "2024-05-28",
+   "shortDescription": "Google Chromium V8 contains a type confusion vulnerability that allows a remote attacker to execute code via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply mitigations per vendor instructions or discontinue use of the product if mitigations are unavailable.",
+   "dueDate": "2024-06-18",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2024/05/stable-channel-update-for-desktop_23.html?m=1; https://nvd.nist.gov/vuln/detail/CVE-2024-5274",
+   "cwes": [
+    "CWE-843"
+   ]
+  },
+  {
+   "cveID": "CVE-2024-4947",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Type Confusion Vulnerability",
+   "dateAdded": "2024-05-20",
+   "shortDescription": "Google Chromium V8 contains a type confusion vulnerability that allows a remote attacker to execute code via a crafted HTML page.",
+   "requiredAction": "Apply mitigations per vendor instructions or discontinue use of the product if mitigations are unavailable.",
+   "dueDate": "2024-06-10",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2024/05/stable-channel-update-for-desktop_15.html; https://nvd.nist.gov/vuln/detail/CVE-2024-4947",
+   "cwes": [
+    "CWE-843"
+   ]
+  },
+  {
+   "cveID": "CVE-2024-4761",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Out-of-Bounds Memory Write Vulnerability",
+   "dateAdded": "2024-05-16",
+   "shortDescription": "Google Chromium V8 Engine contains an unspecified out-of-bounds memory write vulnerability via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera. ",
+   "requiredAction": "Apply mitigations per vendor instructions or discontinue use of the product if mitigations are unavailable.",
+   "dueDate": "2024-06-06",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2024/05/stable-channel-update-for-desktop_13.html; https://nvd.nist.gov/vuln/detail/CVE-2024-4761",
+   "cwes": [
+    "CWE-787"
+   ]
+  },
+  {
+   "cveID": "CVE-2024-4671",
+   "vendorProject": "Google",
+   "product": "Chromium",
+   "vulnerabilityName": "Google Chromium Visuals Use-After-Free Vulnerability",
+   "dateAdded": "2024-05-13",
+   "shortDescription": "Google Chromium Visuals contains a use-after-free vulnerability that allows a remote attacker to exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply mitigations per vendor instructions or discontinue use of the product if mitigations are unavailable.",
+   "dueDate": "2024-06-03",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2024/05/stable-channel-update-for-desktop_9.html?m=1; https://nvd.nist.gov/vuln/detail/CVE-2024-4671",
+   "cwes": [
+    "CWE-416"
+   ]
+  },
+  {
+   "cveID": "CVE-2023-4762",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Type Confusion Vulnerability",
+   "dateAdded": "2024-02-06",
+   "shortDescription": "Google Chromium V8 contains a type confusion vulnerability that allows a remote attacker to execute code via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply mitigations per vendor instructions or discontinue use of the product if mitigations are unavailable.",
+   "dueDate": "2024-02-27",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2023/09/stable-channel-update-for-desktop.html; https://nvd.nist.gov/vuln/detail/CVE-2023-4762",
+   "cwes": [
+    "CWE-843"
+   ]
+  },
+  {
+   "cveID": "CVE-2024-0519",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Out-of-Bounds Memory Access Vulnerability",
+   "dateAdded": "2024-01-17",
+   "shortDescription": "Google Chromium V8 Engine contains an out-of-bounds memory access vulnerability that allows a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply mitigations per vendor instructions or discontinue use of the product if mitigations are unavailable.",
+   "dueDate": "2024-02-07",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2024/01/stable-channel-update-for-desktop_16.html; https://nvd.nist.gov/vuln/detail/CVE-2024-0519",
+   "cwes": [
+    "CWE-787"
+   ]
+  },
+  {
+   "cveID": "CVE-2023-7024",
+   "vendorProject": "Google",
+   "product": "Chromium WebRTC",
+   "vulnerabilityName": "Google Chromium WebRTC Heap Buffer Overflow Vulnerability",
+   "dateAdded": "2024-01-02",
+   "shortDescription": "Google Chromium WebRTC, an open-source project providing web browsers with real-time communication, contains a heap buffer overflow vulnerability that allows a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could impact web browsers using WebRTC, including but not limited to Google Chrome.",
+   "requiredAction": "Apply mitigations per vendor instructions or discontinue use of the product if mitigations are unavailable.",
+   "dueDate": "2024-01-23",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "This vulnerability affects a common open-source component, third-party library, or a protocol used by different products. Please check with specific vendors for information on patching status. For more information, please see: https://chromereleases.googleblog.com/2023/12/stable-channel-update-for-desktop_20.html;  https://nvd.nist.gov/vuln/detail/CVE-2023-7024",
+   "cwes": [
+    "CWE-787"
+   ]
+  },
+  {
+   "cveID": "CVE-2023-6345",
+   "vendorProject": "Google",
+   "product": "Chromium Skia",
+   "vulnerabilityName": "Google Skia Integer Overflow Vulnerability",
+   "dateAdded": "2023-11-30",
+   "shortDescription": "Google Chromium Skia contains an integer overflow vulnerability that allows a remote attacker, who has compromised the renderer process, to potentially perform a sandbox escape via a malicious file. This vulnerability affects Google Chrome and ChromeOS, Android, Flutter, and possibly other products.",
+   "requiredAction": "Apply mitigations per vendor instructions or discontinue use of the product if mitigations are unavailable.",
+   "dueDate": "2023-12-21",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "This vulnerability affects a common open-source component, third-party library, or a protocol used by different products. Please check with specific vendors for information on patching status. For more information, please see: https://chromereleases.googleblog.com/2023/11/stable-channel-update-for-desktop_28.html ;  https://nvd.nist.gov/vuln/detail/CVE-2023-6345",
+   "cwes": [
+    "CWE-190"
+   ]
+  },
+  {
+   "cveID": "CVE-2023-5217",
+   "vendorProject": "Google",
+   "product": "Chromium libvpx",
+   "vulnerabilityName": "Google Chromium libvpx Heap Buffer Overflow Vulnerability",
+   "dateAdded": "2023-10-02",
+   "shortDescription": "Google Chromium libvpx contains a heap buffer overflow vulnerability in vp8 encoding that allows a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could impact web browsers using libvpx, including but not limited to Google Chrome.",
+   "requiredAction": "Apply mitigations per vendor instructions or discontinue use of the product if mitigations are unavailable.",
+   "dueDate": "2023-10-23",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2023/09/stable-channel-update-for-desktop_27.html; https://nvd.nist.gov/vuln/detail/CVE-2023-5217",
+   "cwes": [
+    "CWE-787"
+   ]
+  },
+  {
+   "cveID": "CVE-2023-4863",
+   "vendorProject": "Google",
+   "product": "Chromium WebP",
+   "vulnerabilityName": "Google Chromium WebP Heap-Based Buffer Overflow Vulnerability",
+   "dateAdded": "2023-09-13",
+   "shortDescription": "Google Chromium WebP contains a heap-based buffer overflow vulnerability that allows a remote attacker to perform an out-of-bounds memory write via a crafted HTML page. This vulnerability can affect applications that use the WebP Codec.",
+   "requiredAction": "Apply mitigations per vendor instructions or discontinue use of the product if mitigations are unavailable.",
+   "dueDate": "2023-10-04",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2023/09/stable-channel-update-for-desktop_11.html?m=1; https://nvd.nist.gov/vuln/detail/CVE-2023-4863",
+   "cwes": [
+    "CWE-787"
+   ]
+  },
+  {
+   "cveID": "CVE-2023-3079",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Type Confusion Vulnerability",
+   "dateAdded": "2023-06-07",
+   "shortDescription": "Google Chromium V8 Engine contains a type confusion vulnerability that allows a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2023-06-28",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2023/06/stable-channel-update-for-desktop.html; https://nvd.nist.gov/vuln/detail/CVE-2023-3079",
+   "cwes": [
+    "CWE-843"
+   ]
+  },
+  {
+   "cveID": "CVE-2023-2136",
+   "vendorProject": "Google",
+   "product": "Chromium Skia",
+   "vulnerabilityName": "Google Chrome Skia Integer Overflow Vulnerability",
+   "dateAdded": "2023-04-21",
+   "shortDescription": "Google Chromium Skia contains an integer overflow vulnerability that allows a remote attacker, who has compromised the renderer process, to potentially perform a sandbox escape via a crafted HTML page. This vulnerability affects Google Chrome and ChromeOS, Android, Flutter, and possibly other products.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2023-05-12",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2023/04/stable-channel-update-for-desktop_18.html;  https://nvd.nist.gov/vuln/detail/CVE-2023-2136",
+   "cwes": [
+    "CWE-190"
+   ]
+  },
+  {
+   "cveID": "CVE-2023-2033",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Type Confusion Vulnerability",
+   "dateAdded": "2023-04-17",
+   "shortDescription": "Google Chromium V8 Engine contains a type confusion vulnerability that allows a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2023-05-08",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2023/04/stable-channel-update-for-desktop_14.html;  https://nvd.nist.gov/vuln/detail/CVE-2023-2033",
+   "cwes": [
+    "CWE-843"
+   ]
+  },
+  {
+   "cveID": "CVE-2022-3038",
+   "vendorProject": "Google",
+   "product": "Chromium Network Service",
+   "vulnerabilityName": "Google Chromium Network Service Use-After-Free Vulnerability",
+   "dateAdded": "2023-03-30",
+   "shortDescription": "Google Chromium Network Service contains a use-after-free vulnerability that allows a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2023-04-20",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2022/08/stable-channel-update-for-desktop_30.html;  https://nvd.nist.gov/vuln/detail/CVE-2022-3038",
+   "cwes": [
+    "CWE-416"
+   ]
+  },
+  {
+   "cveID": "CVE-2022-4262",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Type Confusion Vulnerability",
+   "dateAdded": "2022-12-05",
+   "shortDescription": "Google Chromium V8 Engine contains a type confusion vulnerability that allows a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2022-12-26",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2022/12/stable-channel-update-for-desktop.html;  https://nvd.nist.gov/vuln/detail/CVE-2022-4262",
+   "cwes": [
+    "CWE-122",
+    "CWE-843"
+   ]
+  },
+  {
+   "cveID": "CVE-2022-4135",
+   "vendorProject": "Google",
+   "product": "Chromium GPU",
+   "vulnerabilityName": "Google Chromium GPU Heap Buffer Overflow Vulnerability",
+   "dateAdded": "2022-11-28",
+   "shortDescription": "Google Chromium GPU contains a heap buffer overflow vulnerability that allows a remote attacker, who has compromised the renderer process, to potentially perform a sandbox escape via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2022-12-19",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2022/11/stable-channel-update-for-desktop_24.html;  https://nvd.nist.gov/vuln/detail/CVE-2022-4135",
+   "cwes": [
+    "CWE-787"
+   ]
+  },
+  {
+   "cveID": "CVE-2022-3723",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Type Confusion Vulnerability",
+   "dateAdded": "2022-10-28",
+   "shortDescription": "Google Chromium V8 Engine contains a type confusion vulnerability that allows a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2022-11-18",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2022/10/stable-channel-update-for-desktop_27.html;  https://nvd.nist.gov/vuln/detail/CVE-2022-3723",
+   "cwes": [
+    "CWE-122",
+    "CWE-843"
+   ]
+  },
+  {
+   "cveID": "CVE-2022-3075",
+   "vendorProject": "Google",
+   "product": "Chromium Mojo",
+   "vulnerabilityName": "Google Chromium Mojo Insufficient Data Validation Vulnerability",
+   "dateAdded": "2022-09-08",
+   "shortDescription": "Google Chromium Mojo contains an insufficient data validation vulnerability that allows a remote attacker, who has compromised the renderer process, to potentially perform a sandbox escape via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2022-09-29",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2022/09/stable-channel-update-for-desktop.html, https://msrc.microsoft.com/update-guide/vulnerability/CVE-2022-3075;  https://nvd.nist.gov/vuln/detail/CVE-2022-3075",
+   "cwes": [
+    "CWE-20"
+   ]
+  },
+  {
+   "cveID": "CVE-2022-2856",
+   "vendorProject": "Google",
+   "product": "Chromium Intents",
+   "vulnerabilityName": "Google Chromium Intents Insufficient Input Validation Vulnerability",
+   "dateAdded": "2022-08-18",
+   "shortDescription": "Google Chromium Intents contains an insufficient validation of untrusted input vulnerability that allows a remote attacker to browse to a malicious website via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2022-09-08",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://chromereleases.googleblog.com/2022/08/stable-channel-update-for-desktop_16.html;  https://nvd.nist.gov/vuln/detail/CVE-2022-2856",
+   "cwes": [
+    "CWE-20"
+   ]
+  },
+  {
+   "cveID": "CVE-2021-30533",
+   "vendorProject": "Google",
+   "product": "Chromium PopupBlocker",
+   "vulnerabilityName": "Google Chromium PopupBlocker Security Bypass Vulnerability",
+   "dateAdded": "2022-06-27",
+   "shortDescription": "Google Chromium PopupBlocker contains an insufficient policy enforcement vulnerability that allows a remote attacker to bypass navigation restrictions via a crafted iframe. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2022-07-18",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2021-30533",
+   "cwes": [
+    "CWE-863"
+   ]
+  },
+  {
+   "cveID": "CVE-2019-5825",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Out-of-Bounds Write Vulnerability",
+   "dateAdded": "2022-06-08",
+   "shortDescription": "Google Chromium V8 Engine contains an out-of-bounds write vulnerability that allows a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2022-06-22",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2019-5825",
+   "cwes": [
+    "CWE-787"
+   ]
+  },
+  {
+   "cveID": "CVE-2018-6065",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Integer Overflow Vulnerability",
+   "dateAdded": "2022-06-08",
+   "shortDescription": "Google Chromium V8 Engine contains an integer overflow vulnerability that allows a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2022-06-22",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2018-6065",
+   "cwes": [
+    "CWE-190",
+    "CWE-787"
+   ]
+  },
+  {
+   "cveID": "CVE-2018-17480",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Out-of-Bounds Write Vulnerability",
+   "dateAdded": "2022-06-08",
+   "shortDescription": "Google Chromium V8 Engine contains out-of-bounds write vulnerability that allows a remote attacker to execute code inside a sandbox via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2022-06-22",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2018-17480",
+   "cwes": [
+    "CWE-787"
+   ]
+  },
+  {
+   "cveID": "CVE-2018-17463",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Remote Code Execution Vulnerability",
+   "dateAdded": "2022-06-08",
+   "shortDescription": "Google Chromium V8 Engine contains an unspecified vulnerability that allows a remote attacker to execute code inside a sandbox via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2022-06-22",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2018-17463",
+   "cwes": []
+  },
+  {
+   "cveID": "CVE-2017-5070",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Type Confusion Vulnerability",
+   "dateAdded": "2022-06-08",
+   "shortDescription": "Google Chromium V8 Engine contains a type confusion vulnerability that allows a remote attacker to execute code inside a sandbox via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2022-06-22",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2017-5070",
+   "cwes": [
+    "CWE-843"
+   ]
+  },
+  {
+   "cveID": "CVE-2017-5030",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Memory Corruption Vulnerability",
+   "dateAdded": "2022-06-08",
+   "shortDescription": "Google Chromium V8 Engine contains a memory corruption vulnerability that allows a remote attacker to execute code via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2022-06-22",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2017-5030",
+   "cwes": [
+    "CWE-125"
+   ]
+  },
+  {
+   "cveID": "CVE-2016-5198",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Out-of-Bounds Memory Vulnerability",
+   "dateAdded": "2022-06-08",
+   "shortDescription": "Google Chromium V8 Engine contains an out-of-bounds memory access vulnerability that allows a remote attacker to perform read/write operations, leading to code execution, via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2022-06-22",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2016-5198",
+   "cwes": [
+    "CWE-125",
+    "CWE-787"
+   ]
+  },
+  {
+   "cveID": "CVE-2016-1646",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Out-of-Bounds Read Vulnerability",
+   "dateAdded": "2022-06-08",
+   "shortDescription": "Google Chromium V8 Engine contains an out-of-bounds read vulnerability that allows a remote attacker to cause a denial of service or possibly have another unspecified impact via crafted JavaScript code. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2022-06-22",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2016-1646",
+   "cwes": [
+    "CWE-119"
+   ]
+  },
+  {
+   "cveID": "CVE-2019-5786",
+   "vendorProject": "Google",
+   "product": "Chrome Blink",
+   "vulnerabilityName": "Google Chrome Blink Use-After-Free Vulnerability",
+   "dateAdded": "2022-05-23",
+   "shortDescription": "Google Chrome Blink contains a heap use-after-free vulnerability that allows an attacker to potentially perform out of bounds memory access via a crafted HTML page.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2022-06-13",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2019-5786",
+   "cwes": [
+    "CWE-416"
+   ]
+  },
+  {
+   "cveID": "CVE-2019-13720",
+   "vendorProject": "Google",
+   "product": "Chrome WebAudio",
+   "vulnerabilityName": "Google Chrome WebAudio Use-After-Free Vulnerability",
+   "dateAdded": "2022-05-23",
+   "shortDescription": "Google Chrome WebAudio contains a use-after-free vulnerability that allows a remote attacker to potentially exploit heap corruption via a crafted HTML page.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2022-06-13",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2019-13720",
+   "cwes": [
+    "CWE-416"
+   ]
+  },
+  {
+   "cveID": "CVE-2022-1364",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Type Confusion Vulnerability",
+   "dateAdded": "2022-04-15",
+   "shortDescription": "Google Chromium V8 Engine contains a type confusion vulnerability that allows a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2022-05-06",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2022-1364",
+   "cwes": [
+    "CWE-843"
+   ]
+  },
+  {
+   "cveID": "CVE-2022-1096",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Type Confusion Vulnerability",
+   "dateAdded": "2022-03-28",
+   "shortDescription": "Google Chromium V8 Engine contains a type confusion vulnerability that allows a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2022-04-18",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2022-1096",
+   "cwes": [
+    "CWE-843"
+   ]
+  },
+  {
+   "cveID": "CVE-2022-0609",
+   "vendorProject": "Google",
+   "product": "Chromium Animation",
+   "vulnerabilityName": "Google Chromium Animation Use-After-Free Vulnerability",
+   "dateAdded": "2022-02-15",
+   "shortDescription": "Google Chromium Animation contains a use-after-free vulnerability that allows a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2022-03-01",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2022-0609",
+   "cwes": [
+    "CWE-416"
+   ]
+  },
+  {
+   "cveID": "CVE-2020-6572",
+   "vendorProject": "Google",
+   "product": "Chrome Media",
+   "vulnerabilityName": "Google Chrome Media Use-After-Free Vulnerability",
+   "dateAdded": "2022-01-10",
+   "shortDescription": "Google Chrome Media contains a use-after-free vulnerability that allows a remote attacker to execute code via a crafted HTML page.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2022-07-10",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2020-6572",
+   "cwes": [
+    "CWE-416"
+   ]
+  },
+  {
+   "cveID": "CVE-2021-4102",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Use-After-Free Vulnerability",
+   "dateAdded": "2021-12-15",
+   "shortDescription": "Google Chromium V8 Engine contains a use-after-free vulnerability that allows a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2021-12-29",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2021-4102",
+   "cwes": [
+    "CWE-416"
+   ]
+  },
+  {
+   "cveID": "CVE-2020-16010",
+   "vendorProject": "Google",
+   "product": "Chrome for Android UI",
+   "vulnerabilityName": "Google Chrome for Android UI Heap Buffer Overflow Vulnerability",
+   "dateAdded": "2021-11-03",
+   "shortDescription": "Google Chrome for Android UI contains a heap buffer overflow vulnerability that allows a remote attacker, who has compromised the renderer process, to potentially perform a sandbox escape via a crafted HTML page.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2022-05-03",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2020-16010",
+   "cwes": [
+    "CWE-787"
+   ]
+  },
+  {
+   "cveID": "CVE-2020-15999",
+   "vendorProject": "Google",
+   "product": "Chrome FreeType",
+   "vulnerabilityName": "Google Chrome FreeType Heap Buffer Overflow Vulnerability",
+   "dateAdded": "2021-11-03",
+   "shortDescription": "Google Chrome uses FreeType, an open-source software library to render fonts, which contains a heap buffer overflow vulnerability in the function Load_SBit_Png when processing PNG images embedded into fonts. This vulnerability is part of an exploit chain with CVE-2020-17087 on Windows and CVE-2020-16010 on Android.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2021-11-17",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2020-15999",
+   "cwes": [
+    "CWE-787"
+   ]
+  },
+  {
+   "cveID": "CVE-2021-21166",
+   "vendorProject": "Google",
+   "product": "Chromium",
+   "vulnerabilityName": "Google Chromium Race Condition Vulnerability",
+   "dateAdded": "2021-11-03",
+   "shortDescription": "Google Chromium contains a race condition vulnerability that allows a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2021-11-17",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2021-21166",
+   "cwes": [
+    "CWE-122",
+    "CWE-362"
+   ]
+  },
+  {
+   "cveID": "CVE-2020-16017",
+   "vendorProject": "Google",
+   "product": "Chrome",
+   "vulnerabilityName": "Google Chrome Use-After-Free Vulnerability",
+   "dateAdded": "2021-11-03",
+   "shortDescription": "Google Chrome contains a use-after-free vulnerability that allows a remote attacker, who has compromised the renderer process, to potentially perform a sandbox escape via a crafted HTML page.  ",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2022-05-03",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2020-16017",
+   "cwes": [
+    "CWE-416"
+   ]
+  },
+  {
+   "cveID": "CVE-2021-37976",
+   "vendorProject": "Google",
+   "product": "Chromium",
+   "vulnerabilityName": "Google Chromium Information Disclosure Vulnerability",
+   "dateAdded": "2021-11-03",
+   "shortDescription": "Google Chromium contains an information disclosure vulnerability within the core memory component that allows a remote attacker to obtain potentially sensitive information from process memory via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2021-11-17",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2021-37976",
+   "cwes": [
+    "CWE-862"
+   ]
+  },
+  {
+   "cveID": "CVE-2020-16009",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Type Confusion Vulnerability",
+   "dateAdded": "2021-11-03",
+   "shortDescription": "Google Chromium V8 Engine contains a type confusion vulnerability that allows a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2022-05-03",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2020-16009",
+   "cwes": [
+    "CWE-787",
+    "CWE-843"
+   ]
+  },
+  {
+   "cveID": "CVE-2021-30632",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Out-of-Bounds Write Vulnerability",
+   "dateAdded": "2021-11-03",
+   "shortDescription": "Google Chromium V8 Engine contains an out-of-bounds write vulnerability that allows a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2021-11-17",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2021-30632",
+   "cwes": [
+    "CWE-122"
+   ]
+  },
+  {
+   "cveID": "CVE-2020-16013",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Incorrect Implementation Vulnerabililty",
+   "dateAdded": "2021-11-03",
+   "shortDescription": "Google Chromium V8 Engine contains an inappropriate implementation vulnerability that allows a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2022-05-03",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2020-16013",
+   "cwes": [
+    "CWE-787"
+   ]
+  },
+  {
+   "cveID": "CVE-2021-30633",
+   "vendorProject": "Google",
+   "product": "Chromium Indexed DB API",
+   "vulnerabilityName": "Google Chromium Indexed DB API Use-After-Free Vulnerability",
+   "dateAdded": "2021-11-03",
+   "shortDescription": "Google Chromium Indexed DB API contains a use-after-free vulnerability that allows a remote attacker, who has compromised the renderer process, to potentially perform a sandbox escape via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2021-11-17",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2021-30633",
+   "cwes": [
+    "CWE-416"
+   ]
+  },
+  {
+   "cveID": "CVE-2021-21148",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Heap Buffer Overflow Vulnerability",
+   "dateAdded": "2021-11-03",
+   "shortDescription": "Google Chromium V8 Engine contains a heap buffer overflow vulnerability that allows a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2021-11-17",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2021-21148",
+   "cwes": [
+    "CWE-122"
+   ]
+  },
+  {
+   "cveID": "CVE-2021-37973",
+   "vendorProject": "Google",
+   "product": "Chromium Portals",
+   "vulnerabilityName": "Google Chromium Portals Use-After-Free Vulnerability",
+   "dateAdded": "2021-11-03",
+   "shortDescription": "Google Chromium Portals contains a use-after-free vulnerability that allows a remote attacker, who has compromised the renderer process, to potentially perform a sandbox escape via a crafted HTML page. This vulnerability affects web browsers that utilize Chromium, including Google Chrome and Microsoft Edge.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2021-11-17",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2021-37973",
+   "cwes": [
+    "CWE-416"
+   ]
+  },
+  {
+   "cveID": "CVE-2021-30551",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Type Confusion Vulnerability",
+   "dateAdded": "2021-11-03",
+   "shortDescription": "Google Chromium V8 Engine contains a type confusion vulnerability that allows a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2021-11-17",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2021-30551",
+   "cwes": [
+    "CWE-122",
+    "CWE-843"
+   ]
+  },
+  {
+   "cveID": "CVE-2021-37975",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Use-After-Free Vulnerability",
+   "dateAdded": "2021-11-03",
+   "shortDescription": "Google Chromium V8 Engine contains a use-after-free vulnerability that allows a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2021-11-17",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2021-37975",
+   "cwes": [
+    "CWE-416"
+   ]
+  },
+  {
+   "cveID": "CVE-2020-6418",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Type Confusion Vulnerability",
+   "dateAdded": "2021-11-03",
+   "shortDescription": "Google Chromium V8 Engine contains a type confusion vulnerability allows a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2022-05-03",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2020-6418",
+   "cwes": [
+    "CWE-843"
+   ]
+  },
+  {
+   "cveID": "CVE-2021-30554",
+   "vendorProject": "Google",
+   "product": "Chromium WebGL",
+   "vulnerabilityName": "Google Chromium WebGL Use-After-Free Vulnerability",
+   "dateAdded": "2021-11-03",
+   "shortDescription": "Google Chromium WebGL contains a use-after-free vulnerability that allows a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2021-11-17",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2021-30554",
+   "cwes": [
+    "CWE-416"
+   ]
+  },
+  {
+   "cveID": "CVE-2021-21206",
+   "vendorProject": "Google",
+   "product": "Chromium Blink",
+   "vulnerabilityName": "Google Chromium Blink Use-After-Free Vulnerability",
+   "dateAdded": "2021-11-03",
+   "shortDescription": "Google Chromium Blink contains a use-after-free vulnerability that allows a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2021-11-17",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2021-21206",
+   "cwes": [
+    "CWE-416"
+   ]
+  },
+  {
+   "cveID": "CVE-2021-38000",
+   "vendorProject": "Google",
+   "product": "Chromium Intents",
+   "vulnerabilityName": "Google Chromium Intents Improper Input Validation Vulnerability",
+   "dateAdded": "2021-11-03",
+   "shortDescription": "Google Chromium Intents contains an improper input validation vulnerability that allows a remote attacker to arbitrarily browser to a malicious URL via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2021-11-17",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2021-38000",
+   "cwes": [
+    "CWE-20"
+   ]
+  },
+  {
+   "cveID": "CVE-2021-38003",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Memory Corruption Vulnerability",
+   "dateAdded": "2021-11-03",
+   "shortDescription": "Google Chromium V8 Engine has a bug in JSON.stringify, where the internal TheHole value can leak to script code, causing memory corruption. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2021-11-17",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2021-38003",
+   "cwes": [
+    "CWE-122",
+    "CWE-755"
+   ]
+  },
+  {
+   "cveID": "CVE-2021-21224",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Type Confusion Vulnerability",
+   "dateAdded": "2021-11-03",
+   "shortDescription": "Google Chromium V8 Engine contains a type confusion vulnerability that allows a remote attacker to execute code inside a sandbox via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2021-11-17",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2021-21224",
+   "cwes": [
+    "CWE-843"
+   ]
+  },
+  {
+   "cveID": "CVE-2021-21193",
+   "vendorProject": "Google",
+   "product": "Chromium Blink",
+   "vulnerabilityName": "Google Chromium Blink Use-After-Free Vulnerability",
+   "dateAdded": "2021-11-03",
+   "shortDescription": "Google Chromium Blink contains a use-after-free vulnerability that allows a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2021-11-17",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2021-21193",
+   "cwes": [
+    "CWE-416"
+   ]
+  },
+  {
+   "cveID": "CVE-2021-21220",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Improper Input Validation Vulnerability",
+   "dateAdded": "2021-11-03",
+   "shortDescription": "Google Chromium V8 Engine contains an improper input validation vulnerability that allows a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2021-11-17",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2021-21220",
+   "cwes": [
+    "CWE-20",
+    "CWE-122"
+   ]
+  },
+  {
+   "cveID": "CVE-2021-30563",
+   "vendorProject": "Google",
+   "product": "Chromium V8",
+   "vulnerabilityName": "Google Chromium V8 Type Confusion Vulnerability",
+   "dateAdded": "2021-11-03",
+   "shortDescription": "Google Chromium V8 Engine contains a type confusion vulnerability that allows a remote attacker to potentially exploit heap corruption via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+   "requiredAction": "Apply updates per vendor instructions.",
+   "dueDate": "2021-11-17",
+   "knownRansomwareCampaignUse": "Unknown",
+   "notes": "https://nvd.nist.gov/vuln/detail/CVE-2021-30563",
+   "cwes": [
+    "CWE-122",
+    "CWE-843"
+   ]
+  }
+ ],
+ "after_our_build": []
+}

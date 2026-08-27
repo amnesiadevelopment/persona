@@ -1,0 +1,128 @@
+patch	status	files_total	files_missing	hunks	hunks_failed	detail
+upstream-fixes/missing-dependencies.patch	CONFLICT	8	0	8	0	
+core/inox-patchset/0001-fix-building-without-safebrowsing.patch	CONFLICT	14	0	24	2	Hunk #2 FAILED at 131.;Hunk #1 FAILED at 40.;
+core/inox-patchset/0003-disable-autofill-download-manager.patch	OFFSET	1	0	1	0	
+core/inox-patchset/0005-disable-default-extensions.patch	OFFSET	4	0	5	0	
+core/inox-patchset/0015-disable-update-pings.patch	OFFSET	1	0	1	0	
+core/inox-patchset/0021-disable-rlz.patch	CLEAN	2	0	2	0	
+core/iridium-browser/safe_browsing-disable-incident-reporting.patch	OFFSET	5	0	5	0	
+core/iridium-browser/safe_browsing-disable-reporting-of-safebrowsing-over.patch	OFFSET	1	0	2	0	
+core/iridium-browser/all-add-trk-prefixes-to-possibly-evil-connections.patch	CONFLICT	33	0	33	2	Hunk #1 FAILED at 13.;Hunk #1 FAILED at 14.;
+core/ungoogled-chromium/disable-crash-reporter.patch	OFFSET	3	0	4	0	
+core/ungoogled-chromium/disable-google-host-detection.patch	CONFLICT	8	0	17	2	Hunk #3 FAILED at 52.;Hunk #1 FAILED at 728.;
+core/ungoogled-chromium/replace-google-search-engine-with-nosearch.patch	NO_TARGET	1	1	1	0	can't find file to patch at input line 3;
+core/ungoogled-chromium/toggle-translation-via-switch.patch	CONFLICT	5	0	9	1	Hunk #1 FAILED at 12.;
+core/ungoogled-chromium/disable-untraceable-urls.patch	OFFSET	3	0	3	0	
+core/ungoogled-chromium/disable-profile-avatar-downloading.patch	CLEAN	1	0	1	0	
+core/ungoogled-chromium/disable-gcm.patch	CLEAN	1	0	7	0	
+core/ungoogled-chromium/disable-domain-reliability.patch	CLEAN	5	0	7	0	
+core/ungoogled-chromium/block-trk-and-subdomains.patch	OFFSET	13	2	17	0	
+core/ungoogled-chromium/disable-gaia.patch	CLEAN	1	0	1	0	
+core/ungoogled-chromium/disable-fonts-googleapis-references.patch	CONFLICT	5	0	7	1	Hunk #1 FAILED at 646.;
+core/ungoogled-chromium/disable-webstore-urls.patch	OFFSET	6	0	13	0	
+core/ungoogled-chromium/fix-learn-doubleclick-hsts.patch	CLEAN	1	0	1	0	
+core/ungoogled-chromium/disable-webrtc-log-uploader.patch	OFFSET	2	0	4	0	
+core/ungoogled-chromium/fix-building-with-prunned-binaries.patch	CONFLICT	61	4	108	21	Hunk #1 FAILED at 369.;Hunk #3 FAILED at 1182.;
+core/ungoogled-chromium/disable-network-time-tracker.patch	CONFLICT	1	0	1	1	Hunk #1 FAILED at 300.;
+core/ungoogled-chromium/disable-mei-preload.patch	CONFLICT	2	0	3	3	Hunk #1 FAILED at 368.;Hunk #2 FAILED at 1180.;
+core/ungoogled-chromium/fix-building-without-safebrowsing.patch	CONFLICT	108	0	168	34	Hunk #1 FAILED at 39.;Hunk #1 FAILED at 171.;
+core/ungoogled-chromium/remove-unused-preferences-fields.patch	CONFLICT	236	2	467	24	Hunk #1 FAILED at 290.;Hunk #1 FAILED at 13.;
+core/ungoogled-chromium/block-requests.patch	CONFLICT	10	1	12	0	can't find file to patch at input line 117;
+core/ungoogled-chromium/disable-privacy-sandbox.patch	OFFSET	7	0	12	0	
+core/ungoogled-chromium/doh-changes.patch	CLEAN	4	0	4	0	
+core/ungoogled-chromium/extensions-manifestv2.patch	OFFSET	5	0	7	0	
+core/ungoogled-chromium/remove-f1-shortcut.patch	CLEAN	1	0	1	0	
+core/ungoogled-chromium/move-js-optimizer-unfamiliar-sites.patch	CONFLICT	4	0	4	2	Hunk #1 FAILED at 13.;Hunk #1 FAILED at 9.;
+core/ungoogled-chromium/build-with-wasm-rollup.patch	NO_TARGET	1	1	2	0	can't find file to patch at input line 3;
+core/bromite/disable-fetching-field-trials.patch	OFFSET	2	0	5	0	
+extra/ungoogled-chromium/add-ungoogled-flag-headers.patch	OFFSET	7	6	7	0	
+extra/inox-patchset/0006-modify-default-prefs.patch	CONFLICT	12	0	13	1	Hunk #1 FAILED at 129.;
+extra/inox-patchset/0008-restore-classic-ntp.patch	CLEAN	1	0	1	0	
+extra/inox-patchset/0013-disable-missing-key-warning.patch	CLEAN	1	0	1	0	
+extra/inox-patchset/0016-chromium-sandbox-pie.patch	CLEAN	1	0	1	0	
+extra/inox-patchset/0019-disable-battery-status-service.patch	CLEAN	2	0	4	0	
+extra/debian/disable/google-api-warning.patch	OFFSET	1	0	1	0	
+extra/iridium-browser/mime_util-force-text-x-suse-ymp-to-be-downloaded.patch	CLEAN	1	0	1	0	
+extra/iridium-browser/prefs-always-prompt-for-download-directory-by-defaul.patch	CLEAN	1	0	1	0	
+extra/iridium-browser/updater-disable-auto-update.patch	CLEAN	1	0	1	0	
+extra/iridium-browser/Remove-EV-certificates.patch	OFFSET	1	0	1	0	
+extra/iridium-browser/browser-disable-profile-auto-import-on-first-run.patch	OFFSET	1	0	1	0	
+extra/bromite/fingerprinting-flags-client-rects-and-measuretext.patch	OFFSET	19	0	27	0	
+extra/bromite/flag-max-connections-per-host.patch	OFFSET	6	0	10	0	
+extra/bromite/flag-fingerprinting-canvas-image-data-noise.patch	OFFSET	11	0	14	0	
+extra/ungoogled-chromium/add-components-ungoogled.patch	CLEAN	3	3	3	0	
+extra/ungoogled-chromium/disable-formatting-in-omnibox.patch	CLEAN	2	0	2	0	
+extra/ungoogled-chromium/add-ipv6-probing-option.patch	OFFSET	4	0	5	0	
+extra/ungoogled-chromium/remove-disable-setuid-sandbox-as-bad-flag.patch	CLEAN	1	0	1	0	
+extra/ungoogled-chromium/disable-intranet-redirect-detector.patch	CLEAN	1	0	1	0	
+extra/ungoogled-chromium/enable-page-saving-on-more-pages.patch	OFFSET	4	0	5	0	
+extra/ungoogled-chromium/disable-download-quarantine.patch	OFFSET	4	0	9	0	
+extra/ungoogled-chromium/fix-building-without-mdns-and-service-discovery.patch	CLEAN	1	0	1	0	
+extra/ungoogled-chromium/add-flag-to-configure-extension-downloading.patch	CONFLICT	6	0	8	1	Hunk #1 FAILED at 9.;
+extra/ungoogled-chromium/add-flag-for-search-engine-collection.patch	CONFLICT	5	0	10	1	Hunk #1 FAILED at 15.;
+extra/ungoogled-chromium/add-flag-to-disable-beforeunload.patch	CLEAN	2	0	3	0	
+extra/ungoogled-chromium/add-flag-to-force-punycode-hostnames.patch	CLEAN	2	0	3	0	
+extra/ungoogled-chromium/add-flag-to-show-avatar-button.patch	OFFSET	3	0	3	0	
+extra/ungoogled-chromium/add-suggestions-url-field.patch	OFFSET	13	0	33	0	
+extra/ungoogled-chromium/add-flag-to-hide-crashed-bubble.patch	CONFLICT	2	0	2	1	Hunk #1 FAILED at 140.;
+extra/ungoogled-chromium/add-flag-to-scroll-tabs.patch	OFFSET	4	0	7	0	
+extra/ungoogled-chromium/enable-paste-and-go-new-tab-button.patch	FUZZ	2	0	3	0	Hunk #1 FAILED at 289.;Hunk #1 FAILED at 83.;
+extra/ungoogled-chromium/add-flag-for-bookmark-bar-ntp.patch	CLEAN	3	0	4	0	
+extra/ungoogled-chromium/enable-menu-on-reload-button.patch	OFFSET	1	0	1	0	
+extra/ungoogled-chromium/add-flag-for-omnibox-autocomplete-filtering.patch	CONFLICT	6	0	9	1	Hunk #1 FAILED at 23.;
+extra/ungoogled-chromium/disable-dial-repeating-discovery.patch	CLEAN	1	0	2	0	
+extra/ungoogled-chromium/remove-uneeded-ui.patch	CONFLICT	29	0	40	2	Hunk #1 FAILED at 88.;Hunk #2 FAILED at 259.;
+extra/ungoogled-chromium/add-flag-to-close-window-with-last-tab.patch	CONFLICT	3	0	5	1	Hunk #3 FAILED at 3164.;
+extra/ungoogled-chromium/add-flag-to-convert-popups-to-tabs.patch	OFFSET	3	0	5	0	
+extra/ungoogled-chromium/add-flag-to-disable-local-history-expiration.patch	CONFLICT	2	0	4	1	Hunk #2 FAILED at 1342.;
+extra/ungoogled-chromium/add-extra-channel-info.patch	CLEAN	1	0	1	0	
+extra/ungoogled-chromium/prepopulated-search-engines.patch	OFFSET	1	0	1	0	
+extra/ungoogled-chromium/fix-distilled-icons.patch	CLEAN	1	0	1	0	
+extra/ungoogled-chromium/add-flag-to-clear-data-on-exit.patch	OFFSET	4	0	7	0	
+extra/ungoogled-chromium/add-flag-for-tabsearch-button.patch	CONFLICT	5	0	7	2	Hunk #1 FAILED at 4.;Hunk #2 FAILED at 213.;
+extra/ungoogled-chromium/add-flag-for-qr-generator.patch	CLEAN	4	0	5	0	
+extra/ungoogled-chromium/add-flag-for-grab-handle.patch	CONFLICT	2	0	2	1	Hunk #1 FAILED at 83.;
+extra/ungoogled-chromium/add-flag-for-close-confirmation.patch	OFFSET	4	0	11	0	
+extra/ungoogled-chromium/keep-expired-flags.patch	OFFSET	1	0	3	0	
+extra/ungoogled-chromium/add-flag-for-custom-ntp.patch	OFFSET	3	0	4	0	
+extra/ungoogled-chromium/add-flag-for-tab-hover-cards.patch	OFFSET	5	0	7	0	
+extra/ungoogled-chromium/add-flag-to-hide-tab-close-buttons.patch	OFFSET	2	0	3	0	
+extra/ungoogled-chromium/add-flag-to-disable-tls-grease.patch	CLEAN	2	0	3	0	
+extra/ungoogled-chromium/add-flag-to-change-http-accept-header.patch	CONFLICT	3	0	5	2	Hunk #1 FAILED at 4.;Hunk #2 FAILED at 12.;
+extra/ungoogled-chromium/add-flag-to-disable-sharing-hub.patch	CLEAN	2	0	3	0	
+extra/ungoogled-chromium/add-flag-for-disabling-link-drag.patch	OFFSET	5	0	7	0	
+extra/ungoogled-chromium/add-flag-to-hide-extensions-menu.patch	CONFLICT	2	0	5	1	Hunk #4 FAILED at 972.;
+extra/ungoogled-chromium/add-flag-to-hide-fullscreen-exit-ui.patch	OFFSET	3	0	3	0	
+extra/ungoogled-chromium/add-flag-for-incognito-themes.patch	OFFSET	3	0	4	0	
+extra/ungoogled-chromium/add-flags-for-referrer-customization.patch	CONFLICT	11	2	17	1	Hunk #2 FAILED at 399.;
+extra/ungoogled-chromium/default-webrtc-ip-handling-policy.patch	OFFSET	1	0	1	0	
+extra/ungoogled-chromium/add-flags-for-existing-switches.patch	OFFSET	3	2	3	0	
+extra/ungoogled-chromium/first-run-page.patch	OFFSET	4	1	5	0	
+extra/ungoogled-chromium/add-flag-to-reduce-system-info.patch	CONFLICT	5	0	8	3	Hunk #1 FAILED at 159.;Hunk #2 FAILED at 182.;
+extra/ungoogled-chromium/add-flag-to-remove-client-hints.patch	OFFSET	6	0	9	0	
+extra/ungoogled-chromium/disable-downloads-page-referrer-url.patch	FUZZ	1	0	1	0	Hunk #1 FAILED at 38.;
+extra/ungoogled-chromium/enable-extra-locales.patch	CLEAN	4	0	5	0	
+extra/ungoogled-chromium/disable-chromelabs.patch	CLEAN	1	0	1	0	
+extra/ungoogled-chromium/remove-pac-size-limit.patch	CLEAN	1	0	1	0	
+extra/ungoogled-chromium/enable-certificate-transparency-and-add-flag.patch	CLEAN	2	0	2	0	
+extra/ungoogled-chromium/add-flag-to-spoof-webgl-renderer-info.patch	OFFSET	5	0	6	0	
+extra/ungoogled-chromium/add-flag-to-increase-incognito-storage-quota.patch	CLEAN	4	0	6	0	
+extra/ungoogled-chromium/add-credits.patch	CLEAN	3	1	5	0	
+extra/ungoogled-chromium/disable-ai-search-shortcuts.patch	CLEAN	2	0	2	0	
+extra/ungoogled-chromium/disable-fedcm-by-default.patch	OFFSET	1	0	1	0	
+extra/fingerprint/000-add-fingerprint-switches.patch	OFFSET	3	0	3	0	
+extra/fingerprint/001-disable-runtime.enable.patch	NO_TARGET	2	2	3	0	can't find file to patch at input line 5;can't find file to patch at input line 68;
+extra/fingerprint/002-user-agent-fingerprint.patch	CONFLICT	10	1	19	4	Hunk #2 FAILED at 250.;Hunk #3 FAILED at 264.;
+extra/fingerprint/003-audio-fingerprint.patch	OFFSET	1	0	3	0	
+extra/fingerprint/005-hardware-concurrency-fingerprint.patch	CLEAN	2	0	2	0	
+extra/fingerprint/006-font-fingerprint.patch	OFFSET	1	0	3	0	
+extra/fingerprint/007-shadow-root.patch	CONFLICT	3	0	3	1	Hunk #1 FAILED at 842.;
+extra/fingerprint/009-webdriver.patch	OFFSET	1	0	1	0	
+extra/fingerprint/010-headless.patch	OFFSET	1	0	1	0	
+extra/fingerprint/011-gpu-info.patch	OFFSET	7	4	9	0	
+extra/fingerprint/012-canvas-get-image-data.patch	OFFSET	3	0	9	0	
+extra/fingerprint/013-canvas-toDataURL.patch	CLEAN	1	0	3	0	
+extra/fingerprint/014-client-rects.patch	CONFLICT	6	0	13	1	Hunk #1 FAILED at 35.;
+extra/fingerprint/015-canvas-measure-text.patch	OFFSET	1	0	1	0	
+extra/fingerprint/016-webgl-readPixels.patch	FUZZ	1	0	4	0	Hunk #1 FAILED at 29.;
+extra/fingerprint/018-timezone.patch	CLEAN	1	0	4	0	

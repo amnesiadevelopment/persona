@@ -1,0 +1,18 @@
+[
+  {
+    "name": "144.0.7559.132",
+    "commit": {
+      "sha": "831623f2965e34554304caabfc3a1e4e3741db1f",
+      "url": "https://api.github.com/repos/adryfish/fingerprint-chromium/commits/831623f2965e34554304caabfc3a1e4e3741db1f"
+    },
+    "protected": false
+  },
+  {
+    "name": "main",
+    "commit": {
+      "sha": "3f61b0dfa665e883da8824b1450601fc529dd006",
+      "url": "https://api.github.com/repos/adryfish/fingerprint-chromium/commits/3f61b0dfa665e883da8824b1450601fc529dd006"
+    },
+    "protected": false
+  }
+]

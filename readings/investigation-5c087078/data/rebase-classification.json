@@ -1,0 +1,1272 @@
+[
+ {
+  "patch": "upstream-fixes/missing-dependencies.patch",
+  "family": "upstream-fixes",
+  "ctrl_144": "CLEAN",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 8,
+  "failed_145": 0,
+  "failed_152": 3
+ },
+ {
+  "patch": "core/inox-patchset/0001-fix-building-without-safebrowsing.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 24,
+  "failed_145": 2,
+  "failed_152": 12
+ },
+ {
+  "patch": "core/inox-patchset/0003-disable-autofill-download-manager.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "OFFSET",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "core/inox-patchset/0005-disable-default-extensions.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 5,
+  "failed_145": 0,
+  "failed_152": 3
+ },
+ {
+  "patch": "core/inox-patchset/0015-disable-update-pings.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "OFFSET",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "core/inox-patchset/0021-disable-rlz.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "OFFSET",
+  "hunks": 2,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "core/iridium-browser/safe_browsing-disable-incident-reporting.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "OFFSET",
+  "hunks": 5,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "core/iridium-browser/safe_browsing-disable-reporting-of-safebrowsing-over.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 2,
+  "failed_145": 0,
+  "failed_152": 2
+ },
+ {
+  "patch": "core/iridium-browser/all-add-trk-prefixes-to-possibly-evil-connections.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 33,
+  "failed_145": 2,
+  "failed_152": 8
+ },
+ {
+  "patch": "core/ungoogled-chromium/disable-crash-reporter.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "OFFSET",
+  "hunks": 4,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "core/ungoogled-chromium/disable-google-host-detection.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 17,
+  "failed_145": 2,
+  "failed_152": 7
+ },
+ {
+  "patch": "core/ungoogled-chromium/replace-google-search-engine-with-nosearch.patch",
+  "family": "core",
+  "ctrl_144": "NO_TARGET",
+  "at_145": "NO_TARGET",
+  "at_152": "NO_TARGET",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "core/ungoogled-chromium/toggle-translation-via-switch.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 9,
+  "failed_145": 1,
+  "failed_152": 3
+ },
+ {
+  "patch": "core/ungoogled-chromium/disable-untraceable-urls.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "OFFSET",
+  "hunks": 3,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "core/ungoogled-chromium/disable-profile-avatar-downloading.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "CLEAN",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "core/ungoogled-chromium/disable-gcm.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "CLEAN",
+  "hunks": 7,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "core/ungoogled-chromium/disable-domain-reliability.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "CONFLICT",
+  "hunks": 7,
+  "failed_145": 0,
+  "failed_152": 1
+ },
+ {
+  "patch": "core/ungoogled-chromium/block-trk-and-subdomains.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 17,
+  "failed_145": 0,
+  "failed_152": 2
+ },
+ {
+  "patch": "core/ungoogled-chromium/disable-gaia.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "CONFLICT",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 1
+ },
+ {
+  "patch": "core/ungoogled-chromium/disable-fonts-googleapis-references.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 7,
+  "failed_145": 1,
+  "failed_152": 0
+ },
+ {
+  "patch": "core/ungoogled-chromium/disable-webstore-urls.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 13,
+  "failed_145": 0,
+  "failed_152": 3
+ },
+ {
+  "patch": "core/ungoogled-chromium/fix-learn-doubleclick-hsts.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "FUZZ",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "core/ungoogled-chromium/disable-webrtc-log-uploader.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 4,
+  "failed_145": 0,
+  "failed_152": 4
+ },
+ {
+  "patch": "core/ungoogled-chromium/fix-building-with-prunned-binaries.patch",
+  "family": "core",
+  "ctrl_144": "CONFLICT",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 108,
+  "failed_145": 21,
+  "failed_152": 59
+ },
+ {
+  "patch": "core/ungoogled-chromium/disable-network-time-tracker.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 1,
+  "failed_145": 1,
+  "failed_152": 1
+ },
+ {
+  "patch": "core/ungoogled-chromium/disable-mei-preload.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 3,
+  "failed_145": 3,
+  "failed_152": 3
+ },
+ {
+  "patch": "core/ungoogled-chromium/fix-building-without-safebrowsing.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 168,
+  "failed_145": 34,
+  "failed_152": 72
+ },
+ {
+  "patch": "core/ungoogled-chromium/remove-unused-preferences-fields.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 467,
+  "failed_145": 24,
+  "failed_152": 145
+ },
+ {
+  "patch": "core/ungoogled-chromium/block-requests.patch",
+  "family": "core",
+  "ctrl_144": "CONFLICT",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 12,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "core/ungoogled-chromium/disable-privacy-sandbox.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 12,
+  "failed_145": 0,
+  "failed_152": 6
+ },
+ {
+  "patch": "core/ungoogled-chromium/doh-changes.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "CONFLICT",
+  "hunks": 4,
+  "failed_145": 0,
+  "failed_152": 1
+ },
+ {
+  "patch": "core/ungoogled-chromium/extensions-manifestv2.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 7,
+  "failed_145": 0,
+  "failed_152": 5
+ },
+ {
+  "patch": "core/ungoogled-chromium/remove-f1-shortcut.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "OFFSET",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "core/ungoogled-chromium/move-js-optimizer-unfamiliar-sites.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 4,
+  "failed_145": 2,
+  "failed_152": 2
+ },
+ {
+  "patch": "core/ungoogled-chromium/build-with-wasm-rollup.patch",
+  "family": "core",
+  "ctrl_144": "NO_TARGET",
+  "at_145": "NO_TARGET",
+  "at_152": "NO_TARGET",
+  "hunks": 2,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "core/bromite/disable-fetching-field-trials.patch",
+  "family": "core",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "OFFSET",
+  "hunks": 5,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-ungoogled-flag-headers.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "OFFSET",
+  "hunks": 7,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/inox-patchset/0006-modify-default-prefs.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 13,
+  "failed_145": 1,
+  "failed_152": 2
+ },
+ {
+  "patch": "extra/inox-patchset/0008-restore-classic-ntp.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "FUZZ",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/inox-patchset/0013-disable-missing-key-warning.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "CLEAN",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/inox-patchset/0016-chromium-sandbox-pie.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "CLEAN",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/inox-patchset/0019-disable-battery-status-service.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "CLEAN",
+  "hunks": 4,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/debian/disable/google-api-warning.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "OFFSET",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/iridium-browser/mime_util-force-text-x-suse-ymp-to-be-downloaded.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "CLEAN",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/iridium-browser/prefs-always-prompt-for-download-directory-by-defaul.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "OFFSET",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/iridium-browser/updater-disable-auto-update.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "CONFLICT",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 1
+ },
+ {
+  "patch": "extra/iridium-browser/Remove-EV-certificates.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "OFFSET",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/iridium-browser/browser-disable-profile-auto-import-on-first-run.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "OFFSET",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/bromite/fingerprinting-flags-client-rects-and-measuretext.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 27,
+  "failed_145": 0,
+  "failed_152": 4
+ },
+ {
+  "patch": "extra/bromite/flag-max-connections-per-host.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 10,
+  "failed_145": 0,
+  "failed_152": 3
+ },
+ {
+  "patch": "extra/bromite/flag-fingerprinting-canvas-image-data-noise.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 14,
+  "failed_145": 0,
+  "failed_152": 3
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-components-ungoogled.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "CLEAN",
+  "hunks": 3,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/ungoogled-chromium/disable-formatting-in-omnibox.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "OFFSET",
+  "hunks": 2,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-ipv6-probing-option.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 5,
+  "failed_145": 0,
+  "failed_152": 2
+ },
+ {
+  "patch": "extra/ungoogled-chromium/remove-disable-setuid-sandbox-as-bad-flag.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "FUZZ",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/ungoogled-chromium/disable-intranet-redirect-detector.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "CLEAN",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/ungoogled-chromium/enable-page-saving-on-more-pages.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 5,
+  "failed_145": 0,
+  "failed_152": 1
+ },
+ {
+  "patch": "extra/ungoogled-chromium/disable-download-quarantine.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 9,
+  "failed_145": 0,
+  "failed_152": 2
+ },
+ {
+  "patch": "extra/ungoogled-chromium/fix-building-without-mdns-and-service-discovery.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "CLEAN",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-to-configure-extension-downloading.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 8,
+  "failed_145": 1,
+  "failed_152": 4
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-for-search-engine-collection.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 10,
+  "failed_145": 1,
+  "failed_152": 2
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-to-disable-beforeunload.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "CONFLICT",
+  "hunks": 3,
+  "failed_145": 0,
+  "failed_152": 1
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-to-force-punycode-hostnames.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "CLEAN",
+  "hunks": 3,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-to-show-avatar-button.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 3,
+  "failed_145": 0,
+  "failed_152": 1
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-suggestions-url-field.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 33,
+  "failed_145": 0,
+  "failed_152": 18
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-to-hide-crashed-bubble.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 2,
+  "failed_145": 1,
+  "failed_152": 1
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-to-scroll-tabs.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 7,
+  "failed_145": 0,
+  "failed_152": 1
+ },
+ {
+  "patch": "extra/ungoogled-chromium/enable-paste-and-go-new-tab-button.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "FUZZ",
+  "at_152": "FUZZ",
+  "hunks": 3,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-for-bookmark-bar-ntp.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "CONFLICT",
+  "hunks": 4,
+  "failed_145": 0,
+  "failed_152": 1
+ },
+ {
+  "patch": "extra/ungoogled-chromium/enable-menu-on-reload-button.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 1
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-for-omnibox-autocomplete-filtering.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 9,
+  "failed_145": 1,
+  "failed_152": 3
+ },
+ {
+  "patch": "extra/ungoogled-chromium/disable-dial-repeating-discovery.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "CLEAN",
+  "hunks": 2,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/ungoogled-chromium/remove-uneeded-ui.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 40,
+  "failed_145": 2,
+  "failed_152": 19
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-to-close-window-with-last-tab.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 5,
+  "failed_145": 1,
+  "failed_152": 2
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-to-convert-popups-to-tabs.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 5,
+  "failed_145": 0,
+  "failed_152": 1
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-to-disable-local-history-expiration.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 4,
+  "failed_145": 1,
+  "failed_152": 1
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-extra-channel-info.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "CLEAN",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/ungoogled-chromium/prepopulated-search-engines.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 1
+ },
+ {
+  "patch": "extra/ungoogled-chromium/fix-distilled-icons.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "CLEAN",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-to-clear-data-on-exit.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 7,
+  "failed_145": 0,
+  "failed_152": 3
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-for-tabsearch-button.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 7,
+  "failed_145": 2,
+  "failed_152": 4
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-for-qr-generator.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "CONFLICT",
+  "hunks": 5,
+  "failed_145": 0,
+  "failed_152": 2
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-for-grab-handle.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 2,
+  "failed_145": 1,
+  "failed_152": 1
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-for-close-confirmation.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 11,
+  "failed_145": 0,
+  "failed_152": 9
+ },
+ {
+  "patch": "extra/ungoogled-chromium/keep-expired-flags.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 3,
+  "failed_145": 0,
+  "failed_152": 1
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-for-custom-ntp.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "OFFSET",
+  "hunks": 4,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-for-tab-hover-cards.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 7,
+  "failed_145": 0,
+  "failed_152": 4
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-to-hide-tab-close-buttons.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 3,
+  "failed_145": 0,
+  "failed_152": 2
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-to-disable-tls-grease.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "CONFLICT",
+  "hunks": 3,
+  "failed_145": 0,
+  "failed_152": 1
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-to-change-http-accept-header.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 5,
+  "failed_145": 2,
+  "failed_152": 2
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-to-disable-sharing-hub.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "CLEAN",
+  "hunks": 3,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-for-disabling-link-drag.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 7,
+  "failed_145": 0,
+  "failed_152": 1
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-to-hide-extensions-menu.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 5,
+  "failed_145": 1,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-to-hide-fullscreen-exit-ui.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 3,
+  "failed_145": 0,
+  "failed_152": 1
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-for-incognito-themes.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 4,
+  "failed_145": 0,
+  "failed_152": 1
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flags-for-referrer-customization.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 17,
+  "failed_145": 1,
+  "failed_152": 7
+ },
+ {
+  "patch": "extra/ungoogled-chromium/default-webrtc-ip-handling-policy.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "FUZZ",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flags-for-existing-switches.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "OFFSET",
+  "hunks": 3,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/ungoogled-chromium/first-run-page.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 5,
+  "failed_145": 0,
+  "failed_152": 3
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-to-reduce-system-info.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 8,
+  "failed_145": 3,
+  "failed_152": 3
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-to-remove-client-hints.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "OFFSET",
+  "hunks": 9,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/ungoogled-chromium/disable-downloads-page-referrer-url.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "FUZZ",
+  "at_152": "FUZZ",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/ungoogled-chromium/enable-extra-locales.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "OFFSET",
+  "hunks": 5,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/ungoogled-chromium/disable-chromelabs.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "CONFLICT",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 1
+ },
+ {
+  "patch": "extra/ungoogled-chromium/remove-pac-size-limit.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "OFFSET",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/ungoogled-chromium/enable-certificate-transparency-and-add-flag.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "OFFSET",
+  "hunks": 2,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-to-spoof-webgl-renderer-info.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "OFFSET",
+  "hunks": 6,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-flag-to-increase-incognito-storage-quota.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "CONFLICT",
+  "hunks": 6,
+  "failed_145": 0,
+  "failed_152": 2
+ },
+ {
+  "patch": "extra/ungoogled-chromium/add-credits.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "OFFSET",
+  "hunks": 5,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/ungoogled-chromium/disable-ai-search-shortcuts.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "CONFLICT",
+  "hunks": 2,
+  "failed_145": 0,
+  "failed_152": 2
+ },
+ {
+  "patch": "extra/ungoogled-chromium/disable-fedcm-by-default.patch",
+  "family": "extra",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "FUZZ",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/fingerprint/000-add-fingerprint-switches.patch",
+  "family": "fingerprint",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 3,
+  "failed_145": 0,
+  "failed_152": 1
+ },
+ {
+  "patch": "extra/fingerprint/001-disable-runtime.enable.patch",
+  "family": "fingerprint",
+  "ctrl_144": "NO_TARGET",
+  "at_145": "NO_TARGET",
+  "at_152": "NO_TARGET",
+  "hunks": 3,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/fingerprint/002-user-agent-fingerprint.patch",
+  "family": "fingerprint",
+  "ctrl_144": "CLEAN",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 19,
+  "failed_145": 4,
+  "failed_152": 7
+ },
+ {
+  "patch": "extra/fingerprint/003-audio-fingerprint.patch",
+  "family": "fingerprint",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 3,
+  "failed_145": 0,
+  "failed_152": 1
+ },
+ {
+  "patch": "extra/fingerprint/005-hardware-concurrency-fingerprint.patch",
+  "family": "fingerprint",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "CLEAN",
+  "hunks": 2,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/fingerprint/006-font-fingerprint.patch",
+  "family": "fingerprint",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 3,
+  "failed_145": 0,
+  "failed_152": 1
+ },
+ {
+  "patch": "extra/fingerprint/007-shadow-root.patch",
+  "family": "fingerprint",
+  "ctrl_144": "OFFSET",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 3,
+  "failed_145": 1,
+  "failed_152": 1
+ },
+ {
+  "patch": "extra/fingerprint/009-webdriver.patch",
+  "family": "fingerprint",
+  "ctrl_144": "OFFSET",
+  "at_145": "OFFSET",
+  "at_152": "OFFSET",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/fingerprint/010-headless.patch",
+  "family": "fingerprint",
+  "ctrl_144": "OFFSET",
+  "at_145": "OFFSET",
+  "at_152": "OFFSET",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/fingerprint/011-gpu-info.patch",
+  "family": "fingerprint",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "OFFSET",
+  "hunks": 9,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/fingerprint/012-canvas-get-image-data.patch",
+  "family": "fingerprint",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "CONFLICT",
+  "hunks": 9,
+  "failed_145": 0,
+  "failed_152": 1
+ },
+ {
+  "patch": "extra/fingerprint/013-canvas-toDataURL.patch",
+  "family": "fingerprint",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "CONFLICT",
+  "hunks": 3,
+  "failed_145": 0,
+  "failed_152": 1
+ },
+ {
+  "patch": "extra/fingerprint/014-client-rects.patch",
+  "family": "fingerprint",
+  "ctrl_144": "CLEAN",
+  "at_145": "CONFLICT",
+  "at_152": "CONFLICT",
+  "hunks": 13,
+  "failed_145": 1,
+  "failed_152": 3
+ },
+ {
+  "patch": "extra/fingerprint/015-canvas-measure-text.patch",
+  "family": "fingerprint",
+  "ctrl_144": "CLEAN",
+  "at_145": "OFFSET",
+  "at_152": "OFFSET",
+  "hunks": 1,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/fingerprint/016-webgl-readPixels.patch",
+  "family": "fingerprint",
+  "ctrl_144": "CLEAN",
+  "at_145": "FUZZ",
+  "at_152": "FUZZ",
+  "hunks": 4,
+  "failed_145": 0,
+  "failed_152": 0
+ },
+ {
+  "patch": "extra/fingerprint/018-timezone.patch",
+  "family": "fingerprint",
+  "ctrl_144": "CLEAN",
+  "at_145": "CLEAN",
+  "at_152": "CONFLICT",
+  "hunks": 4,
+  "failed_145": 0,
+  "failed_152": 1
+ }
+]
