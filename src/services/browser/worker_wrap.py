@@ -137,6 +137,15 @@ class WorkerCloak(NamedTuple):
     * ``apply``   — statements that cloak the ``Worker``/``SharedWorker`` wrapper.
     * ``frame_open`` / ``frame_close`` — wrapped AROUND the iframe accessor
       function expression, which is an argument position and cannot take one.
+    * ``hook_mark`` — statements spliced inside ``__markHook``, which cloaks the
+      DOM-insertion wrappers the INDEXED-frame reach installs (PS-215). Those
+      are ``appendChild``/``insertBefore``/``replaceChild``, the five variadic
+      ``Element`` inserters and the ``innerHTML`` setter — hotter and more
+      commonly probed than anything else the bootstrap wraps, so this seam is
+      mandatory rather than optional. It receives ``f`` (the wrapper), ``n``
+      (its ``.name``) and ``__sn`` (the name its SOURCE TEXT should report,
+      already defaulted to ``n``); ``.name`` is set by the shared code, so an
+      engine's text here only has to add its own native-source marker.
 
     Two further fields carry the engine's WORKER-BODY DELIVERY, which is not a
     cloak at all:
@@ -155,32 +164,122 @@ class WorkerCloak(NamedTuple):
     install an UNCLOAKED wrapper, i.e. the exact class of tell PS-78 round 3 was
     rejected for. One object per engine makes that pairing unexpressible.
 
-    Chromium's form is the ORIGINAL text and must stay byte-identical: it is the
+    Chromium's form was the ORIGINAL text, kept byte-identical because it is the
     baseline every prior readback was taken against (the PS-78 boundary,
-    "Chromium is unchanged"). Its ``setup``, frame pair and both delivery fields
-    are therefore EMPTY STRINGS spliced at points chosen so that the empty case
-    reproduces the old template exactly — no stray blank line, no moved
-    indentation.
+    "Chromium is unchanged"). Its frame pair and both delivery fields are still
+    EMPTY STRINGS spliced at points chosen so that the empty case reproduces the
+    old template exactly — no stray blank line, no moved indentation.
+
+    ⚠️ ``setup`` IS NO LONGER EMPTY ON CHROMIUM, and that is a deliberate,
+    scoped break of the sentence above rather than an oversight. PS-215 added
+    the INDEXED-frame reach, whose DOM-insertion wrappers must be cloaked on
+    BOTH engines, so Chromium's ``setup`` now carries
+    :data:`_CHROMIUM_HOOK_CLOAK_SETUP`. Read the PS-78 boundary as what it was
+    defending — *the readbacks must not move* — not as a prohibition on ever
+    adding text:
+
+    * Nothing PREVIOUSLY generated changed. The ``Worker``/``SharedWorker``
+      wrapper still takes ``__pnaName`` (``apply`` is untouched, and
+      ``tests/test_ff_webgl_seed.py::test_chromiums_bootstrap_keeps_its_marker``
+      pins it), and the two iframe accessors are still spliced bare.
+    * The added text only installs a closure WeakMap and CHAINS
+      ``Function.prototype.toString``, which composes with native_ext's
+      ``__pnaName`` reader rather than replacing or racing it.
+    * It is additive per realm and reaches no value channel, so no digest moves
+      — ``tests/test_realm_value_channels.py`` is the neighbour that pins that.
+
+    WHY THESE WRAPPERS DO NOT TAKE ``__pnaName`` LIKE EVERY OTHER CHROMIUM ONE:
+    see :data:`_CHROMIUM_HOOK_CLOAK_SETUP`. Briefly — ``appendChild``'s
+    own-property list is known by heart, so a marker there is a cheaper tell
+    than the ``toString`` comparison it exists to satisfy.
     """
 
     setup: str
     apply: str
     frame_open: str
     frame_close: str
+    hook_mark: str = ""
     blob_setup: str = ""
     blob_resolve: str = ""
+
+
+# --- the DOM-insertion wrappers' cloak, on CHROMIUM -------------------------
+#
+# THE ONE PLACE THE CHROMIUM BOOTSTRAP DOES NOT USE `__pnaName`, and the reason
+# is a constraint rather than a preference.
+#
+# Everywhere else on this engine a wrapper carries a non-enumerable `__pnaName`
+# own property and native_ext.py's single `Function.prototype.toString` patch
+# reads it. That is a fine trade for `Worker`: a page that enumerates
+# `Worker`'s own properties is already doing something unusual.
+#
+# It is NOT a fine trade for the functions the PS-215 indexed-frame reach wraps.
+# `appendChild`, `insertBefore` and the `innerHTML` setter are among the most
+# heavily exercised functions in the DOM, their own-property lists (`length`,
+# `name`) are known by heart, and `Object.getOwnPropertyNames(el.appendChild)`
+# returning a third name is a ONE-LINE tell — cheaper to run than the
+# `toString` comparison the marker exists to satisfy. PS-215's AC2 forbids
+# trading the Level 2 failure it fixes for a fresh detectable tell, so these
+# wrappers add no own property on EITHER engine.
+#
+# Hence a closure WeakMap here too, mirroring the Firefox seam below. It is
+# CHAINED, not flag-guarded, so it composes with native_ext's `__pnaName`
+# reader, with the leaf's cloak, and with the other twelve modules' copies
+# instead of racing them for the single slot: whichever patch is outermost
+# answers a hit it knows and otherwise delegates down.
+#
+# V8's ONE-LINE native shape, not SpiderMonkey's three-line one — emitting the
+# wrong engine's form is itself a masking tell, one
+# `Array.prototype.map.toString()` comparison away.
+#
+# Spliced INSIDE `__pnaInstall` (like every other `setup`) so it ships with
+# `__pnaInstall.toString()` and every realm gets its own; a map in an enclosing
+# scope would be undefined in a worker.
+_CHROMIUM_HOOK_CLOAK_SETUP = r"""
+
+      // --- cloak for the DOM-insertion wrappers (Chromium) -----------------
+      // See the note beside _CHROMIUM_HOOK_CLOAK_SETUP in worker_wrap.py for
+      // why these wrappers do NOT take native_ext's `__pnaName` marker.
+      var __hnm = (typeof WeakMap === "function") ? new WeakMap() : null;
+      // G's Function, never the lexical one: the installer reaches a child
+      // frame as a PARENT-REALM function object, so a bare `Function.prototype`
+      // would re-patch the parent's and leave the child's pristine while the
+      // wrappers ARE installed into the child.
+      var __hF = G.Function;
+      var __hpts = (__hF && __hF.prototype && __hF.prototype.toString)
+                   || Function.prototype.toString;
+      var __hts = function () {
+        'use strict';
+        try {
+          var n = __hnm && __hnm.get(this);
+          if (typeof n === "string") {
+            return "function " + n + "() { [native code] }";
+          }
+        } catch (e) {}
+        return __hpts.apply(this, arguments);
+      };
+      try {
+        // The patch must itself read as native: a detector stringifies
+        // Function.prototype.toString to catch exactly this trick.
+        if (__hnm) { __hnm.set(__hts, "toString"); }
+        Object.defineProperty(__hts, "name", { value: "toString", configurable: true });
+        if (__hF && __hF.prototype) { __hF.prototype.toString = __hts; }
+      } catch (e) {}"""
 
 
 # Chromium: mark the wrapper for the single `Function.prototype.toString` patch
 # native_ext.py installs from the extension side, which reads `__pnaName`.
 CHROMIUM_WORKER_CLOAK = WorkerCloak(
-    setup="",
+    setup=_CHROMIUM_HOOK_CLOAK_SETUP,
     apply=(
         '        try { Object.defineProperty(W, "__pnaName", { value: Orig.name }); } catch (e) {}\n'
         '        try { Object.defineProperty(W, "name", { value: Orig.name }); } catch (e) {}'
     ),
     frame_open="",
     frame_close="",
+    hook_mark=(
+        "\n            try { if (__hnm) { __hnm.set(f, __sn); } } catch (e) {}"
+    ),
 )
 
 
@@ -385,10 +484,15 @@ def realm_bootstrap_js(
       // installer in the child covers that child's own workers and frames.
       try {
         var IF = G.HTMLIFrameElement;
+        // The NATIVE contentWindow getter, kept for the connection trigger
+        // below: that path must read a child's window without going through the
+        // chained accessor it is installing here.
+        var nativeCW = null;
         if (IF && IF.prototype) {
           ["contentWindow", "contentDocument"].forEach(function (prop) {
             var d0 = Object.getOwnPropertyDescriptor(IF.prototype, prop);
             if (!d0 || !d0.get) return;
+            if (prop === "contentWindow") nativeCW = d0.get;
             Object.defineProperty(IF.prototype, prop, {
               configurable: true, enumerable: d0.enumerable,
               get: %(cloak_frame_open)sfunction () {
@@ -403,6 +507,188 @@ def realm_bootstrap_js(
           });
         }
       } catch (e) {}
+
+      // --- child frames reached by INDEXED access (self[N]) ----------------
+      // The accessors above are the only door into a child realm, and a
+      // consumer that never opens it never triggers them. CreepJS takes its
+      // phantom iframe by INDEX -- `self[numberOfIframes]`, a WindowProxy read
+      // off the window's indexed properties -- and builds its WebGL context
+      // from that realm. That read does not invoke
+      // `HTMLIFrameElement.prototype.contentWindow`, so the leaf was never
+      // installed there and the detector received UNPERTURBED pixels while the
+      // page realm reported spoofed ones (PS-193; readings/ps193-2026-08-26).
+      //
+      // So this is a TRIGGER problem, not a DOOR problem: the installer below
+      // is the same `__pnaInstall(w, LEAF)` the accessor calls, and the window
+      // still comes from the captured NATIVE getter. What is added is an event
+      // that fires when the consumer never touches the accessor -- the frame
+      // becoming CONNECTED to the document.
+      //
+      // WHY IT MUST BE SYNCHRONOUS, AND WHY MutationObserver IS WRONG HERE.
+      // CreepJS's read is synchronous with the insertion: `appendChild(frag)`
+      // is followed on the NEXT STATEMENT by `self[n]`. A same-document
+      // iframe's window exists as soon as it is connected, so a synchronous
+      // hook on the insertion call lands before the read. A MutationObserver
+      // delivers on a MICROTASK -- after that read has already taken the
+      // unspoofed realm. Every asynchronous trigger is structurally too late,
+      // which is worth recording because an observer is the obvious-looking
+      // answer.
+      //
+      // The `SEEN`/`fresh()` guard above is reused rather than duplicated, so a
+      // frame that is inserted, removed and re-inserted -- or one reached BOTH
+      // by connection and later by the accessor -- installs exactly once.
+      //
+      // THESE ARE HOT, HEAVILY PROBED FUNCTIONS and the reach must not itself
+      // become a readable tell, so every wrapper here goes through the engine's
+      // cloak seam (`cloak_hook_mark`) exactly as the accessor pair does. PS-78
+      // round 2 left a bare `__pnaName` on Firefox's `Worker` -- an own property
+      // no browser has, on an engine with no extension to read it. Not again.
+      try {
+        var _Node = G.Node, _El = G.Element;
+        if (_Node && _Node.prototype && _El && _El.prototype) {
+          // `f` gets `.name` = n; its SOURCE TEXT reports `s` (a setter's name
+          // carries a `set ` prefix that its source text does not).
+          var __markHook = function (f, n, s, len) {
+            var __sn = (s === undefined) ? n : s;
+            try {
+              Object.defineProperty(f, "name", { value: n, configurable: true });
+            } catch (e) {}
+            // ARITY IS AN OWN PROPERTY TOO, and it is as cheap to read as the
+            // name. `appendChild.length` is 1 and `insertBefore.length` is 2;
+            // a wrapper that takes its arguments through `arguments` reports 0,
+            // so leaving it alone would swap the `toString` tell this seam
+            // closes for a `length` tell it opened. Copied from the ORIGINAL
+            // rather than hard-coded, so an engine whose arity differs from the
+            // spec still matches itself.
+            try {
+              if (typeof len === "number") {
+                Object.defineProperty(f, "length", { value: len, configurable: true });
+              }
+            } catch (e) {}%(cloak_hook_mark)s
+            return f;
+          };
+
+          // Collect iframes from a node BEFORE it is inserted: a
+          // DocumentFragment is EMPTIED by insertion, so a scan afterwards
+          // finds nothing. CreepJS inserts exactly that -- its iframe rides in
+          // on a fragment.
+          var collectFrames = function (n, acc) {
+            try {
+              if (!n || typeof n !== "object") return acc;
+              var nt = n.nodeType;
+              // 1 = element, 11 = DocumentFragment. Anything else (text,
+              // comment) cannot contain a frame; bail before touching the DOM.
+              if (nt !== 1 && nt !== 11) return acc;
+              if (nt === 1) {
+                try {
+                  var tn = n.tagName;
+                  if (tn && String(tn).toLowerCase() === "iframe") acc.push(n);
+                } catch (e) {}
+              }
+              try {
+                var qsa = n.querySelectorAll;
+                if (typeof qsa === "function") {
+                  var list = qsa.call(n, "iframe");
+                  for (var i = 0; i < list.length; i++) acc.push(list[i]);
+                }
+              } catch (e) {}
+            } catch (e) {}
+            return acc;
+          };
+
+          // Read each now-connected frame's window through the CAPTURED NATIVE
+          // getter and run the existing installer. Never through the chained
+          // accessor: that would re-enter our own wrapper for no reason.
+          var reachFrames = function (acc) {
+            try {
+              for (var i = 0; i < acc.length; i++) {
+                try {
+                  var el = acc[i];
+                  if (!el) continue;
+                  // A frame that did not end up in the document has no window
+                  // yet; the accessor still covers it if it is read later.
+                  if (el.isConnected === false) continue;
+                  var cw = nativeCW ? nativeCW.call(el) : el.contentWindow;
+                  if (cw && fresh(cw)) __pnaInstall(cw, LEAF);
+                } catch (e) {}
+              }
+            } catch (e) {}
+          };
+
+          // Wrap an insertion METHOD. Every argument is scanned, which covers
+          // all eight uniformly: appendChild(n), insertBefore(n, ref),
+          // replaceChild(new, old) and the variadic Element methods.
+          var hookInsert = function (proto, prop) {
+            try {
+              var orig = proto[prop];
+              if (typeof orig !== "function") return;
+              // METHOD SHORTHAND -- `({ m() {} }).m`, NOT `({ m: function
+              // () {} }).m`. The two look interchangeable and are not: a
+              // function EXPRESSION owns `prototype` (plus `arguments` and
+              // `caller`), a native DOM method owns only `length` and `name`,
+              // and `Object.getOwnPropertyNames(el.appendChild)` returning
+              // "prototype" is a ONE-LINE tell -- cheaper for a detector to run
+              // than the `toString` comparison the cloak below satisfies.
+              // `delete` cannot repair it afterwards, because a function's
+              // `prototype` is non-configurable. A shorthand method is not a
+              // constructor and so has none to begin with, while still binding
+              // its own `this` and `arguments` (an arrow would not).
+              var wrapped = ({
+                m() {
+                  var acc = [];
+                  try {
+                    for (var i = 0; i < arguments.length; i++) {
+                      collectFrames(arguments[i], acc);
+                    }
+                  } catch (e) {}
+                  // Call through FIRST and let any native throw propagate
+                  // untouched: the wrapper must be transparent, including when
+                  // the DOM refuses the insertion.
+                  var r = orig.apply(this, arguments);
+                  if (acc.length) reachFrames(acc);
+                  return r;
+                },
+              }).m;
+              __markHook(wrapped, prop, undefined, orig.length);
+              proto[prop] = wrapped;
+            } catch (e) {}
+          };
+
+          ["appendChild", "insertBefore", "replaceChild"].forEach(function (p) {
+            hookInsert(_Node.prototype, p);
+          });
+          ["append", "prepend", "after", "before", "replaceWith"].forEach(
+            function (p) { hookInsert(_El.prototype, p); });
+
+          // The parse-and-insert door. Scanned AFTER the set, on `this`: the
+          // frames do not exist until the parser has built them.
+          try {
+            var hd = Object.getOwnPropertyDescriptor(_El.prototype, "innerHTML");
+            if (hd && hd.set) {
+              // ACCESSOR SYNTAX, for the same reason the inserters are method
+              // shorthand: a native setter owns only `length` and `name`, while
+              // a `function (v) {}` expression also owns `prototype`,
+              // `arguments` and `caller`. Scanned AFTER the set, on `this` --
+              // the frames do not exist until the parser has built them.
+              var hset = Object.getOwnPropertyDescriptor({
+                set m(v) {
+                  var r = hd.set.call(this, v);
+                  try {
+                    var acc = collectFrames(this, []);
+                    if (acc.length) reachFrames(acc);
+                  } catch (e) {}
+                  return r;
+                },
+              }, "m").set;
+              __markHook(hset, "set innerHTML", "innerHTML", hd.set.length);
+              Object.defineProperty(_El.prototype, "innerHTML", {
+                configurable: true, enumerable: hd.enumerable,
+                get: hd.get, set: hset,
+              });
+            }
+          } catch (e) {}
+        }
+      } catch (e) {}
     } catch (e) {}
   };
 
@@ -414,6 +700,7 @@ def realm_bootstrap_js(
             "cloak_apply": cloak.apply,
             "cloak_frame_open": cloak.frame_open,
             "cloak_frame_close": cloak.frame_close,
+            "cloak_hook_mark": cloak.hook_mark,
             "blob_setup": cloak.blob_setup,
             "blob_resolve": cloak.blob_resolve,
         }
@@ -636,6 +923,14 @@ def firefox_worker_cloak() -> WorkerCloak:
         # argument position and cannot take a statement.
         frame_open="__bcloak(",
         frame_close=', "get " + prop, prop)',
+        # The DOM-insertion wrappers of the PS-215 indexed-frame reach. Same
+        # closure WeakMap as everything else on this engine, so they add no own
+        # property — `__bcloak` already sets `.name`, and `__markHook` has set
+        # it too by the time this runs, so only the source-text registration is
+        # needed here.
+        hook_mark=(
+            "\n            try { if (__bnm) { __bnm.set(f, __sn); } } catch (e) {}"
+        ),
         blob_setup=_FIREFOX_BLOB_RETAIN_SETUP,
         blob_resolve=_FIREFOX_BLOB_RESOLVE,
     )
