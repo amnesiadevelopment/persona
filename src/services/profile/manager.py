@@ -1253,7 +1253,20 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                     held_open.add(os.path.realpath(filename))
 
             truncated_any = False
-            for path in glob.glob(os.path.join(log_dir, "persona_*.log")):
+            # glob.escape ONLY the directory half. glob interprets
+            # metacharacters across the WHOLE pattern, including the directory
+            # portion; PERSONA_HOME is operator-overridable (config.py:15-16,
+            # "e.g. for a portable layout") and LOG_DIR is derived from it
+            # (LOG_DIR = _under_home("logs", ...)), so a home whose name
+            # contains `[` would produce a pattern matching nothing and this
+            # clear would be a SILENT no-op: no exception, no empty-result
+            # branch, the wipe reports success while the log still names every
+            # profile it just destroyed. `[` and `]` are legal on both POSIX and
+            # Windows, and user-named portable directories are exactly where an
+            # overridden home comes from.
+            # The "persona_*.log" half must keep its metacharacters.
+            pattern = os.path.join(glob.escape(log_dir), "persona_*.log")
+            for path in glob.glob(pattern):
                 try:
                     if os.path.realpath(path) in held_open:
                         os.truncate(path, 0)
