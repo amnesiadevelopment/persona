@@ -43,7 +43,7 @@ impossible value ``gpu_ext``'s android arm exists to prevent. ``gpu_ext`` keeps
 taking ``os_type`` for the pool and takes this value for authorship.
 """
 
-from .device_presets import is_mobile_os
+from .device_presets import is_mobile_profile
 
 # The platform values the ENGINE itself honours. Kept identical to
 # ``verify.browser_tier.DECLARED_MACHINES`` — the repo's other statement of the
@@ -99,7 +99,7 @@ def engine_platform_for(os_type: str, device_type: str = "desktop") -> str:
     normalised into looking like it is. :func:`engine_honours` is the question
     to ask about the result.
     """
-    if is_mobile_os(os_type) or device_type == "mobile":
+    if is_mobile_profile(os_type, device_type):
         return "macos" if os_type == "ios" else "linux"
     return os_type
 

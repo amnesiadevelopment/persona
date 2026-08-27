@@ -221,3 +221,28 @@ def get_preset(key: str) -> DevicePreset | None:
 
 def is_mobile_os(os_type: str) -> bool:
     return os_type in ("android", "ios")
+
+
+def is_mobile_profile(os_type: str, device_type: str | None = "desktop") -> bool:
+    """Whether this profile is ASSEMBLED as a mobile device at launch.
+
+    The one predicate, with two consumers: ``process.py`` gates the device
+    preset / UA / window size / touch extension on it, and ``engine_platform``
+    decides from it which desktop platform backs the profile at the engine.
+    Both used to spell the expression out themselves, which is precisely the
+    "two authors, each deciding from its own copy of the question" shape
+    ``engine_platform``'s module docstring was written about — the previous two
+    review rounds on PS-161 were both that shape, in the same direction.
+
+    ⚠️ IT READS ``device_type``, NOT ``os_type`` ALONE, and that is the whole
+    reason it takes two arguments. ``windows`` + ``mobile`` is a pair the
+    AUTHORING doors refuse and the three RECOVERY doors accept (PS-188), so the
+    record really does exist and really does launch: dropping ``device_type``
+    here would launch it as a Windows desktop while its record claims a phone,
+    and would hand ``engine_platform`` a ``windows`` it must not answer.
+
+    This is a deduplication, NOT a new guard — PS-188 explicitly adds no guard
+    on the GPU vector, which PS-161 round 4 closed. The behaviour is unchanged
+    at both call sites; there is simply no second copy left to drift.
+    """
+    return is_mobile_os(os_type) or device_type == "mobile"

@@ -29,7 +29,12 @@ from .env_policy import (
     scrub_inherited_environment,
 )
 from .resolution import parse_resolution, resolve_resolution
-from .device_presets import is_mobile_os, pick_preset, pick_touch_points
+from .device_presets import (
+    is_mobile_os,
+    is_mobile_profile,
+    pick_preset,
+    pick_touch_points,
+)
 from .engine_platform import engine_platform_for
 from .engine_version import (
     ChromiumVersion,
@@ -425,9 +430,10 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
         # Mobile profiles are assembled at this layer (the engine has no Android/iOS
         # mode): a real device preset drives the UA, window size, screen and the
         # touch/Client-Hints extension. A profile is mobile when its OS is a mobile
-        # family (android/ios) — device_type is kept on the model for the API but
-        # the OS is the source of truth so the UI only needs the OS dropdown.
-        is_mobile = is_mobile_os(profile.os_type) or profile.device_type == "mobile"
+        # family (android/ios) OR device_type says so — the predicate is owned by
+        # device_presets.is_mobile_profile and shared with engine_platform, so the
+        # launch gate and the platform the engine is told cannot drift apart.
+        is_mobile = is_mobile_profile(profile.os_type, profile.device_type)
         # The one string the engine is told, computed ONCE, here, BEFORE the
         # extensions are built — because build_gpu_extension takes it and
         # resolves WHO AUTHORS the WebGL identity pair from it. It used to be
