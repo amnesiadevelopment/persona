@@ -66,6 +66,14 @@ is persona's own `gpu_ext` pool drawing through `pick()`, which is what those pr
 A bare `measured` in this column would put both under one label. See Edit 3 for why the distinction
 is load-bearing and what the other authorship arm reads.
 
+⚠️ **The `macos` cell has an EPOCH, and it is already out of date.** `RISK 53.1%` is an accurate
+measurement of the **2-entry** `MAC_GPUS` this run drew from on 2026-08-26. **PS-183 has since widened
+that pool to 11 entries** (`8945189`, landed 2026-08-27), so the cell now understates what macos
+ships — the bar for an 11-entry pool is `1/11` rather than `1/2`. PS-185 did **not** re-measure it:
+that needs a sweep, and PS-183 owns the pool. Read this cell as *"measured, on the pre-PS-183 pool"*
+and **re-run the sweep before quoting it as current**. Nothing else in this column is affected —
+`windows`, `linux` and `android` pools were untouched by PS-183.
+
 ⚠️ **The `android` row is the android GPU POOL, not mobile device-type coverage.** The row label is
 PS-16's existing one and this patch does not rename it, but the two are different axes: no mobile
 *device type* is reachable on this tier at all (`browser_tier.DECLARED_MACHINES` has no mobile

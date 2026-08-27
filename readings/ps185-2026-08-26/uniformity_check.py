@@ -121,15 +121,57 @@ def monte_carlo_p(observed: float, k: int, n: int, trials: int, rng) -> float:
     return hits / trials
 
 
-def analyse(record: dict, *, trials: int, seed: int) -> dict:
+def epoch_pool_sizes(record: dict) -> dict:
+    """The pool size PER ARM as of the moment this sweep was taken.
+
+    ``k`` is not a property of the readings and it is not a summary the sweep
+    wrote about itself — it is an **environmental input**, recorded. The sweep
+    stores it per arm as ``fallback_pool_size``, and that record is the only
+    witness to what the pool held when the draws were taken: 24 observed
+    identities cannot recover it.
+
+    Read it from the record rather than from the live product, because the two
+    describe different moments. See ``analyse``'s ``pool_sizes`` argument.
+    """
+    per_arm = (record.get("result") or {}).get("per_arm") or {}
+    return {
+        arm: blk.get("fallback_pool_size")
+        for arm, blk in per_arm.items()
+        if blk.get("fallback_pool_size")
+    }
+
+
+def analyse(record: dict, *, trials: int, seed: int,
+            pool_sizes: "dict | None" = None) -> dict:
+    """Score each arm's draw against the pool it was actually drawn from.
+
+    ``pool_sizes`` pins ``k`` to the MEASUREMENT EPOCH. Omit it and ``k`` comes
+    from the live product, which is correct only while the pool has not moved
+    since the sweep ran.
+
+    ⚠️ WHY THE PIN EXISTS. Scoring a committed draw against today's pool is
+    comparing a measurement to a reference that did not exist when it was
+    taken, and it does not merely shift a number — it flips the verdict. PS-183
+    widened ``MAC_GPUS`` 2 -> 11 the day after this reading set was measured:
+    the same 24 macos readings then score against a ``1/11`` bar instead of
+    ``1/2``, the p-value falls 0.308 -> 0.000, and the arm reads as a **genuine
+    narrowing finding** that is nothing but an unrelated ticket widening a
+    pool. That is the false attribution PS-14 exists to prevent, and it would
+    have rewritten a published verdict retroactively every time someone edited
+    the pool.
+    """
     rng = random.Random(seed)
     out = {}
     for arm in sorted(record["readings"]):
         values = [v for v in record["readings"][arm].values() if v]
         n = len(values)
         counts = list(collections.Counter(values).values())
-        k = egv.fallback_pool_size(arm)
-        bar = egv.bar_for(arm)
+        if pool_sizes is not None and pool_sizes.get(arm):
+            k = pool_sizes[arm]
+            bar = 1.0 / k if k > 0 else None
+        else:
+            k = egv.fallback_pool_size(arm)
+            bar = egv.bar_for(arm)
         module_verdict = record["result"]["per_arm"][arm]["verdict"]
 
         entry = {

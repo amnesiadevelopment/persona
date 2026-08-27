@@ -55,7 +55,10 @@ from readback_vectors import verdict_for as _verdict_for  # noqa: E402
 # `analyse()` a deterministic function of the readings plus two recorded
 # parameters, and it reproduces every stored p-value exactly on all four arms
 # in both modes. See `_analysed`.
-from uniformity_check import analyse as _analyse  # noqa: E402
+from uniformity_check import (  # noqa: E402
+    analyse as _analyse,
+    epoch_pool_sizes as _epoch_pool_sizes,
+)
 
 LAYER_OFF = HERE / "engine-gpu-variance.layer-off.json"
 LAYER_ON = HERE / "engine-gpu-variance.layer-on.json"
@@ -745,10 +748,26 @@ def _analysed(src: dict, trials: int, seed: int) -> dict:
     file's ``ARMS`` order, silently lands a different answer — macos comes back
     0.308535 instead of the stored 0.308370. Call the instrument; do not
     reimplement its loop.
+
+    ⚠️ ``k`` IS PINNED TO THE MEASUREMENT EPOCH, read from the sweep's own
+    ``fallback_pool_size`` witness rather than from the live product. Round 6
+    took it live, which was strictly better than echoing the uniformity
+    record's copy *while the two agreed* — and PS-183 then widened ``MAC_GPUS``
+    2 -> 11 the day after these readings were taken. The same committed macos
+    draw scored against a ``1/11`` bar instead of ``1/2`` moves p 0.308 ->
+    0.000 and flips the arm from **artefact** to **genuine**, manufacturing a
+    product finding out of an unrelated pool edit (PS-14). The pool is an
+    environmental INPUT the sweep recorded, not a summary it wrote about
+    itself, and 24 draws cannot recover it — so the record is the only witness.
+    ``k`` is part of the cache key for the same reason the readings are.
     """
-    key = (json.dumps(src["readings"], sort_keys=True), trials, seed)
+    pools = _epoch_pool_sizes(src)
+    key = (json.dumps(src["readings"], sort_keys=True), trials, seed,
+           json.dumps(pools, sort_keys=True))
     if key not in _ANALYSIS_CACHE:
-        _ANALYSIS_CACHE[key] = _analyse(src, trials=trials, seed=seed)
+        _ANALYSIS_CACHE[key] = _analyse(
+            src, trials=trials, seed=seed, pool_sizes=pools
+        )
     return _ANALYSIS_CACHE[key]
 
 
