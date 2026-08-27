@@ -119,6 +119,103 @@ def sidebar_status_text(
     )
 
 
+#: The rollback row's two labels, as FIXED PHRASES rather than f-strings.
+#:
+#: THE COMPLAINT THIS ANSWERS. The labels were built as ``f"go back to
+#: {target}"`` and ``f"resume updates (pinned to {pin})"``, where the
+#: interpolated value is a COMPLETE BUILD IDENTIFIER — a Firefox one reads
+#: ``firefox-20_151.0_20260817150018``, 30 characters. Inside a 200px rail that
+#: cannot fit and does not fit: it is what pushed the row past the panel's edge
+#: and produced the enormous run of text under one of the engines.
+#:
+#: THE IDENTIFIER IS NOT DROPPED, IT IS RELOCATED. The row's tooltip already
+#: named the build verbatim, so taking it out of the visible text loses the
+#: operator nothing — it moves a detail from a place that cannot hold it to a
+#: place that already did.
+#:
+#: What the LABEL has to carry is WHICH GESTURE this is, and that is a fixed
+#: phrase in both states. A fixed phrase also has a fixed width, which is the
+#: property the old label lacked: no runtime string can widen these.
+_ROLLBACK_LABEL = "previous version"
+_RESUME_LABEL = "resume updates"
+
+
+def rollback_row(
+    *,
+    label: str,
+    icon: str,
+    tooltip: str,
+    cost: str = "",
+    cost_color: str | None = None,
+    on_click=None,
+) -> ft.Control:
+    """One engine's rollback row: icon + SHORT label, with the COST of the
+    gesture on its own short second line.
+
+    WHY THE COST IS ON SCREEN AND NOT ONLY IN THE TOOLTIP — this is the one
+    part of the old label that must NOT simply move into the tooltip with the
+    build identifier, and the two are different in kind:
+
+      * the build identifier answers "which build?", which an operator asks
+        deliberately, after deciding to revert. A tooltip is the right home.
+      * the COST answers "what will this do to me?", which an operator needs
+        BEFORE deciding. Firefox's revert moves no bytes — both builds are
+        already unpacked in versioned cache dirs. Chromium's RE-DOWNLOADS
+        hundreds of megabytes, over Tor, because Chromium keeps a single
+        un-versioned tree and the previous build's files are genuinely gone.
+
+    A tooltip needs a hover that a trackpad operator may never perform, so a
+    cost carried only there is a cost the operator meets AFTER clicking. A
+    one-word label that hides a several-hundred-megabyte transfer is worse than
+    the long label it replaced.
+
+    IT IS A SECOND LINE RATHER THAN A SUFFIX because the label has to fit the
+    rail with room to spare. ``previous version · re-downloads ~300 MB`` is 39
+    monospace characters against a content width of about 22, so appending it
+    would re-create the exact overflow this row exists to remove. Split across
+    two lines, the longest thing ever rendered here is 20 characters.
+
+    BOTH LINES GO THROUGH :func:`sidebar_status_text`, so both are
+    width-bounded and single-line. The bound round 2 established is not
+    weakened by adding a line beneath it — it is applied to that line too.
+    """
+    text_line = ft.Row(
+        spacing=6,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        controls=[
+            ft.Icon(icon, size=13, color=COLORS["text_dim"]),
+            sidebar_status_text(label),
+        ],
+    )
+    if not cost:
+        body: ft.Control = text_line
+    else:
+        body = ft.Column(
+            spacing=1,
+            controls=[
+                text_line,
+                ft.Row(
+                    spacing=6,
+                    controls=[
+                        # Aligns the cost under the LABEL rather than under the
+                        # icon: 13px icon + the Row's 6px spacing.
+                        ft.Container(width=13),
+                        sidebar_status_text(
+                            cost, size=9, color=cost_color or COLORS["text_dim"]
+                        ),
+                    ],
+                ),
+            ],
+        )
+    return ft.Container(
+        padding=ft.Padding.only(left=36, right=10, top=4, bottom=2),
+        on_click=(lambda _: on_click()) if on_click else None,
+        ink=bool(on_click),
+        tooltip=tooltip,
+        content=body,
+    )
+
+
 def _short_engine_version(version: str) -> str:
     """An engine version the rail can actually show on one line.
 
@@ -1400,39 +1497,46 @@ class App:
             # The panel must render even if the engine cache is unreadable.
             return ft.Container(height=0)
 
+        # THE BUILD IDENTIFIER LIVES IN THE TOOLTIP, NOT THE LABEL. A Firefox
+        # build reads `firefox-20_151.0_20260817150018` — 30 characters into a
+        # rail with room for about 22 — and interpolating it into the visible
+        # text is what pushed this row past the panel's edge. The tooltip named
+        # it already, so nothing is lost by taking it out of the label.
+        #
+        # THE COST STAYS ON SCREEN. Firefox's revert moves NO BYTES: both
+        # builds are already unpacked in versioned cache dirs, so the retained
+        # one is on disk and switching to it is instant. That is the half of
+        # PS-79's trade that belongs to this engine, and it must survive the
+        # shortening — see rollback_row for why cost and identity part company.
         if pin:
-            label, tip, action = (
-                f"resume updates (pinned to {pin})",
-                "Clear the pin and let the Firefox engine update again",
-                self._on_engine2_resume,
+            return rollback_row(
+                label=_RESUME_LABEL,
+                icon=ft.Icons.PLAY_ARROW,
+                # THE SECOND LINE SAYS THE STATE, NOT THE GESTURE. "resume
+                # updates / updates resume" is a stutter that costs a line and
+                # tells the operator nothing. What they cannot see from the
+                # label is WHY the row is offering this at all: the pin is
+                # holding automatic updates off right now.
+                cost="auto-update held off",
+                tooltip=(
+                    f"Clear the pin (currently held at {pin}) and let the "
+                    "Firefox engine update again"
+                ),
+                on_click=self._on_engine2_resume,
             )
-        elif target:
-            label, tip, action = (
-                f"go back to {target}",
-                f"Return to the retained {target} build — no download needed",
-                self._on_engine2_rollback,
+        if target:
+            return rollback_row(
+                label=_ROLLBACK_LABEL,
+                icon=ft.Icons.HISTORY,
+                cost="instant · no download",
+                tooltip=(
+                    f"Go back to the retained {target} build. Firefox keeps "
+                    "each build in its own cache directory, so this one is "
+                    "already on disk — nothing is downloaded."
+                ),
+                on_click=self._on_engine2_rollback,
             )
-        else:
-            return ft.Container(height=0)
-
-        return ft.Container(
-            padding=ft.Padding.only(left=36, right=10, top=4, bottom=2),
-            on_click=lambda _: action(),
-            ink=True,
-            tooltip=tip,
-            content=ft.Row(
-                spacing=6,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                controls=[
-                    ft.Icon(
-                        ft.Icons.HISTORY if not pin else ft.Icons.PLAY_ARROW,
-                        size=13,
-                        color=COLORS["text_dim"],
-                    ),
-                    sidebar_status_text(label),
-                ],
-            ),
-        )
+        return ft.Container(height=0)
 
     def _on_engine2_rollback(self) -> None:
         """Go back to the retained previous build. Instant: both builds are
@@ -1557,53 +1661,73 @@ class App:
             self._log(f"Chromium engine: couldn't read the rollback state ({e})")
             return ft.Container(height=0)
 
+        # THE BUILD IDENTIFIER LIVES IN THE TOOLTIP, NOT THE LABEL — the same
+        # relocation as the Firefox row next door, for the same reason, and the
+        # two engines must not describe the same situation differently.
+        #
+        # THE COST STAYS ON SCREEN, AND HERE IT IS THE EXPENSIVE ONE. Chromium
+        # keeps ONE un-versioned tree, so the previous build's files are
+        # genuinely gone and going back RE-DOWNLOADS the whole engine — a
+        # ~300-600MB transfer, over Tor. Firefox's revert next door moves no
+        # bytes at all. That asymmetry is PS-79's trade, it is the single most
+        # consequential thing this row can tell an operator, and it is exactly
+        # what a one-word label would have hidden. It is carried in the WARNING
+        # colour because it is a warning: the other engine's line is not.
         if pin:
-            label, tip, action = (
-                f"resume updates (pinned to {pin})",
-                "Clear the pin and let the Chromium engine update again",
-                self._on_engine_resume,
+            return rollback_row(
+                label=_RESUME_LABEL,
+                icon=ft.Icons.PLAY_ARROW,
+                # Says the STATE, not the gesture — same reasoning as the
+                # Firefox row next door, and the two engines must not describe
+                # the same situation differently.
+                cost="auto-update held off",
+                tooltip=(
+                    f"Clear the pin (currently held at {pin}) and let the "
+                    "Chromium engine update again"
+                ),
+                on_click=self._on_engine_resume,
             )
-        elif target:
-            label, tip, action = (
-                f"go back to {target}",
-                f"Re-download the {target} build and install it — the engine "
-                "you have now is replaced",
-                self._on_engine_rollback,
+        if target:
+            return rollback_row(
+                label=_ROLLBACK_LABEL,
+                icon=ft.Icons.HISTORY,
+                # THE FIGURE IS THE ONE THE SERVICE ACTUALLY STATES — the
+                # engine tree is ~300-600MB (updater.py), and quoting the
+                # bottom of that range as if it were the whole of it would
+                # understate the cost by half on the machine that pays most.
+                #
+                # THE VERB GOES, THE NUMBER STAYS. "re-downloads 300-600MB" is
+                # measurably one character past this cell and ellipsised to
+                # "re-downloads 300-600…", which is the "fits only at the edge"
+                # failure this round exists to remove — and it truncates the
+                # NUMBER, the one part an operator on Tor cannot do without.
+                # Dropping "re-" costs nothing that is not already in the
+                # tooltip ("re-downloads the whole engine"), so the visible
+                # line keeps the whole figure with room to spare.
+                cost="downloads 300-600MB",
+                cost_color=COLORS["warning"],
+                tooltip=(
+                    f"Go back to {target}. Chromium keeps one engine build at "
+                    "a time, so the previous build's files are gone and this "
+                    "re-downloads the whole engine (~300-600MB, over Tor) and "
+                    "replaces the engine you have now."
+                ),
+                on_click=self._on_engine_rollback,
             )
-        else:
-            # No target — but WHICH of the three "no target" states is this?
-            # is_installed() swallows its own OSError and answers False, so it
-            # needs no guard of its own, and False is the safe direction: it
-            # renders nothing, exactly as this row did before the state existed.
-            if not engine.is_installed():
-                return ft.Container(height=0)
-            try:
-                recorded = engine.current_build_recorded()
-            except Exception as e:
-                # Same fail-quiet direction as above: an unreadable record must
-                # not promise a specific number of updates. Log and say nothing.
-                self._log(f"Chromium engine: couldn't read the build record ({e})")
-                return ft.Container(height=0)
-            return self._engine_rollback_pending_row(recorded)
-
-        return ft.Container(
-            padding=ft.Padding.only(left=36, right=10, top=4, bottom=2),
-            on_click=lambda _: action(),
-            ink=True,
-            tooltip=tip,
-            content=ft.Row(
-                spacing=6,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                controls=[
-                    ft.Icon(
-                        ft.Icons.HISTORY if not pin else ft.Icons.PLAY_ARROW,
-                        size=13,
-                        color=COLORS["text_dim"],
-                    ),
-                    sidebar_status_text(label),
-                ],
-            ),
-        )
+        # No target — but WHICH of the three "no target" states is this?
+        # is_installed() swallows its own OSError and answers False, so it
+        # needs no guard of its own, and False is the safe direction: it
+        # renders nothing, exactly as this row did before the state existed.
+        if not engine.is_installed():
+            return ft.Container(height=0)
+        try:
+            recorded = engine.current_build_recorded()
+        except Exception as e:
+            # Same fail-quiet direction as above: an unreadable record must
+            # not promise a specific number of updates. Log and say nothing.
+            self._log(f"Chromium engine: couldn't read the build record ({e})")
+            return ft.Container(height=0)
+        return self._engine_rollback_pending_row(recorded)
 
     def _engine_rollback_pending_row(self, recorded: bool) -> ft.Control:
         """The line an operator sees when the engine is installed but nothing is
