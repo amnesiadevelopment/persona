@@ -25,7 +25,17 @@ def _load_recent_log_lines(limit: int = 200) -> list[str]:
     persona_*.log in LOG_DIR and reformats its lines to the UI's
     "HH:MM:SS  > message" shape."""
     try:
-        candidates = sorted(glob.glob(os.path.join(LOG_DIR, "persona_*.log")))
+        # glob.escape ONLY the directory half. glob interprets metacharacters
+        # across the WHOLE pattern, including the directory portion, and LOG_DIR
+        # derives from the operator-overridable PERSONA_HOME (config.py:15-16,
+        # "e.g. for a portable layout") — a home whose name contains `[` would
+        # produce a pattern matching nothing, `candidates` would be empty, and
+        # the operator would get a BLANK Activity Log panel instead of the
+        # session's history. `[` and `]` are legal on both POSIX and Windows,
+        # and user-named portable directories are exactly where an overridden
+        # home comes from. The "persona_*.log" half must keep its metacharacters.
+        pattern = os.path.join(glob.escape(LOG_DIR), "persona_*.log")
+        candidates = sorted(glob.glob(pattern))
         if not candidates:
             return []
         with open(candidates[-1], encoding="utf-8", errors="replace") as f:
