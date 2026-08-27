@@ -13,6 +13,10 @@ could not have failed, which this project does not count as coverage.
 
 import argparse
 import json
+import pathlib
+import shutil
+import subprocess
+import sys
 
 import pytest
 
@@ -1073,3 +1077,144 @@ def test_an_all_unreadable_run_is_reported_as_truncated_too():
     assert cov["complete"] is False
     assert (cov["seeds_readable"], cov["seeds_requested"]) == (0, 10)
     assert v.exit_code_for(result) == v.EXIT_CANNOT_RUN
+
+
+# --------------------------------------------------------------------------
+# The archived reading script must measure the tree it SITS IN
+# --------------------------------------------------------------------------
+#
+# This one is pinned by VENUE, not by inspection, and that is the whole point.
+# `readings/ps183-2026-08-26/measure.py` produced this ticket's two headline
+# figures. It once resolved the tree under measurement from a hard-coded
+# absolute path, and that defect is invisible to reading the code: the line is
+# short, obvious and looks correct. It is also invisible to a green suite run
+# in the authoring container, because there the fixed path happens to BE the
+# right tree.
+#
+# It only becomes visible when the script is run somewhere else — and then it
+# does not crash, which is the dangerous part. It imports whatever tree lives
+# at the fixed path, succeeds, and prints a confident figure for a pool it
+# never looked at. Demonstrated: placed in a 2-entry worktree the old line
+# reported 21.9% over five cards, four of which did not exist in that tree;
+# the corrected line reported the true 53.1% over the two that did.
+#
+# A reading that agrees with you no matter which tree it stands in is a
+# fabricated confirmation, and it is the one output a `readings/` directory
+# must never produce — the reason PS-16 commits readings at all is the
+# "re-derive, never edit-to-match" rule.
+#
+# So the assertion is not "line 9 contains __file__" (that pins the spelling,
+# not the property, and PS-11 is explicit that this does not count). The
+# assertion is that the script, placed in a foreign tree, reports THAT tree's
+# numbers. Every module it imports is stubbed there with a sentinel, so a
+# script that reaches past its own location cannot produce this output.
+
+_SENTINEL_A = "ANGLE (Apple, ANGLE Metal Renderer: SENTINEL-FAKE-TREE-A, Unspecified Version)"
+_SENTINEL_B = "ANGLE (Apple, ANGLE Metal Renderer: SENTINEL-FAKE-TREE-B, Unspecified Version)"
+# A value no real pool would ever return, so the printed figure identifies
+# WHICH tree's collision_probability() actually ran.
+_SENTINEL_P = 0.4242
+
+
+def _materialise_foreign_tree(root):
+    """A minimal tree that answers every import `measure.py` makes.
+
+    Deliberately NOT a copy of the repo: every module here returns a sentinel,
+    so any output containing one proves the import resolved HERE, and output
+    containing real Apple cards proves it resolved somewhere else.
+    """
+    browser = root / "src" / "services" / "browser"
+    verify = root / "src" / "services" / "verify"
+    browser.mkdir(parents=True)
+    verify.mkdir(parents=True)
+
+    (browser / "engine_platform.py").write_text(
+        "def engine_platform_for(os_type, device):\n"
+        "    return 'sentinel-platform'\n",
+        encoding="utf-8",
+    )
+    (verify / "engine_gpu_variance.py").write_text(
+        # Ignores its input on purpose: the figure is an identity marker.
+        f"def collision_probability(values):\n"
+        f"    return {_SENTINEL_P}\n",
+        encoding="utf-8",
+    )
+    # Emits a real extension the committed harness.js can execute, so the
+    # script's own "did the extension actually patch getParameter?" assertion
+    # is exercised rather than bypassed.
+    (browser / "gpu_ext.py").write_text(
+        "import pathlib\n"
+        f"A = {_SENTINEL_A!r}\n"
+        f"B = {_SENTINEL_B!r}\n"
+        "def build_gpu_extension(seed, os_type, out_dir, generation,\n"
+        "                        engine_platform=None):\n"
+        "    d = pathlib.Path(out_dir)\n"
+        "    d.mkdir(parents=True, exist_ok=True)\n"
+        "    card = A if seed % 2 else B\n"
+        "    (d / 'gpu.js').write_text(\n"
+        "        'for (const C of [self.WebGLRenderingContext, '\n"
+        "        'self.WebGL2RenderingContext]) {'\n"
+        "        '  C.prototype.getParameter = function (p) {'\n"
+        "        '    if (p === 0x9246) return ' + repr(card).replace(\"'\", '\"') + ';'\n"
+        "        '    if (p === 0x9245) return \"Google Inc. (Apple)\";'\n"
+        "        '    return null;'\n"
+        "        '  };'\n"
+        "        '}',\n"
+        "        encoding='utf-8')\n"
+        "    return str(d)\n",
+        encoding="utf-8",
+    )
+    return root
+
+
+@pytest.mark.skipif(shutil.which("node") is None,
+                    reason="the reading harness executes the emitted gpu.js under node")
+def test_the_reading_script_measures_the_tree_it_is_placed_in(tmp_path):
+    # Materialise a foreign tree and drop the COMMITTED script into it,
+    # byte-for-byte, at the same relative location it occupies in the repo.
+    foreign = _materialise_foreign_tree(tmp_path / "foreign-tree")
+    readings_dir = foreign / "readings" / "ps183-2026-08-26"
+    readings_dir.mkdir(parents=True)
+
+    src_dir = pathlib.Path(__file__).resolve().parents[1] / "readings" / "ps183-2026-08-26"
+    for name in ("measure.py", "harness.js"):
+        shutil.copy(src_dir / name, readings_dir / name)
+
+    # Run it from a cwd that is NEITHER tree, so nothing can be resolved by
+    # accident of where the command happened to be typed.
+    out = subprocess.run(
+        [sys.executable, str(readings_dir / "measure.py"), "1", "8"],
+        capture_output=True, text=True, timeout=180, cwd=str(tmp_path),
+    )
+    assert out.returncode == 0, out.stderr
+
+    # It measured THIS tree: both sentinel cards, and this tree's own
+    # collision_probability(). None of these strings exist in the real repo.
+    assert "SENTINEL-FAKE-TREE-A" in out.stdout
+    assert "SENTINEL-FAKE-TREE-B" in out.stdout
+    assert f"{_SENTINEL_P:.4f}" in out.stdout
+    assert "seeds=8" in out.stdout
+
+    # And it did NOT reach past itself into the tree this suite is running in.
+    # If the script resolves its imports from a fixed absolute path, it reports
+    # real Apple cards here and succeeds while measuring the wrong pool — the
+    # exact failure this pins, which no amount of reading the line reveals.
+    assert "Apple M" not in out.stdout
+
+
+def test_the_reading_script_does_not_resolve_its_tree_from_a_fixed_path(tmp_path):
+    # The mutation guard for the test above. That test passes trivially in the
+    # authoring container if the hard-coded path and the real repo coincide, so
+    # this one states the structural property directly: the script must not
+    # carry an absolute filesystem literal for the tree it imports.
+    #
+    # Kept narrow deliberately — it pins the ABSENCE of the defect class, while
+    # the venue test above pins the behaviour. Neither alone is sufficient.
+    script = pathlib.Path(__file__).resolve().parents[1] / "readings" / "ps183-2026-08-26" / "measure.py"
+    code = [ln for ln in script.read_text(encoding="utf-8").splitlines()
+            if not ln.lstrip().startswith("#")]
+
+    path_setup = [ln for ln in code if "sys.path.insert" in ln]
+    assert path_setup, "the script must still put its own tree on sys.path"
+    for line in path_setup:
+        assert "__file__" in line, f"tree resolved from a fixed path: {line!r}"
