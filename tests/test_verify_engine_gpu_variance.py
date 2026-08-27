@@ -1419,6 +1419,79 @@ def test_a_real_narrowing_is_still_caught_at_the_sample_sizes_we_run():
     ps = [p_for(j) for j in range(1, 9)]
     assert ps == sorted(ps), f"p-value is not monotone in variety: {ps}"
 
+    # ⚠️ THE ABOVE EXPLORES ONLY HALF THE SPACE, AND THE DEFECT LIVED IN THE
+    # OTHER HALF (PS-191 review). Every collapse `p_for` builds is EVENLY
+    # SPLIT onto `j <= 8` identities against a pool of 8, so
+    # `len(counts) <= pool_size` holds throughout and the deleted
+    # `len(counts) > pool_size` short-circuit was never reached. A mutation
+    # proof that only walks the region where the code is correct is evidence
+    # for nothing, and this one passed while that branch shipped.
+    #
+    # Two axes were missing, and both are now walked: SKEW at a fixed distinct
+    # count, and observations holding MORE distinct identities than the pool.
+    def p_skewed(counts, pool):
+        return v.uniform_collision_p_value(_values_from_counts(counts), pool)
+
+    # SKEW AXIS. Same 6 distinct identities every time, same N=24, same pool —
+    # only the concentration changes. An even split is an ordinary outcome; a
+    # dominant identity is a breach. Nothing about the distinct COUNT can tell
+    # these apart, which is precisely why the statistic has to be the skew.
+    even_six = [4, 4, 4, 4, 4, 4]
+    assert p_skewed(even_six, 8) > v.ALPHA, (
+        "an even 6-way split of 24 draws is an ordinary sampling outcome"
+    )
+    for counts in ([9, 3, 3, 3, 3, 3], [14, 2, 2, 2, 2, 2], [19, 1, 1, 1, 1, 1]):
+        assert len(counts) == len(even_six), "skew axis must hold distinct fixed"
+        assert p_skewed(counts, 8) <= v.ALPHA, (
+            f"{counts} concentrates "
+            f"{max(counts)}/24 profiles on ONE identity yet went unflagged — "
+            "the gate is reading the distinct count, not the skew"
+        )
+
+    # DISTINCT > POOL AXIS — the region the deleted branch answered blind.
+    # These hold 6 or 7 identities against a 5-entry pool, so every one of
+    # them returned p=1.0 before the fix regardless of how collided it was.
+    for counts in ([19, 1, 1, 1, 1, 1], [16, 2, 2, 2, 1, 1], [12, 3, 3, 2, 2, 1, 1]):
+        assert len(counts) > 5, "this axis requires distinct > pool_size"
+        p = p_skewed(counts, 5)
+        assert p <= v.ALPHA, (
+            f"{counts} holds {len(counts)} distinct identities against a "
+            "5-entry pool and was passed on that basis alone — a "
+            "distinct-count pass has been reintroduced"
+        )
+
+
+def test_the_suite_rejects_the_stub_that_shipped_past_it():
+    # ⚠️ THE PR THIS REPLACES ARGUED ITS OWN SOUNDNESS PARTLY FROM "a
+    # `return \"OK\"` stub fails the suite". That was true and insufficient:
+    # a stub returning 1.0 *whenever `len(counts) > pool_size`* ALSO passed
+    # the suite, and that stub is exactly what shipped and was rejected.
+    #
+    # So the discrimination claim is executed rather than asserted. This
+    # re-introduces the deleted branch as a wrapper and requires the checks
+    # above to reject it. A guard that still passes when you reinstate the
+    # defect it guards against is decoration (PS-11).
+    real = v.uniform_collision_p_value
+
+    def with_the_deleted_branch(values, pool_size):
+        counts = v._identity_counts(values)
+        if pool_size > 0 and values and len(counts) > pool_size:
+            return 1.0
+        return real(values, pool_size)
+
+    # The severe reading the old branch waved through, re-scored by the stub.
+    severe = _values_from_counts([19, 1, 1, 1, 1, 1])
+    assert v.collision_probability(severe) > 0.6, "fixture must be severely collided"
+
+    assert with_the_deleted_branch(severe, 5) == 1.0, (
+        "the stub does not reproduce the shipped defect, so this test is not "
+        "checking what it claims to check"
+    )
+    assert real(severe, 5) <= v.ALPHA, (
+        "the real implementation no longer flags a 63.5%-collision reading — "
+        "the fix has regressed"
+    )
+
 
 def test_a_pass_on_an_arm_above_its_bar_does_not_read_as_a_clean_bill(
     monkeypatch
@@ -1470,16 +1543,95 @@ def test_an_undersampled_arm_is_still_inconclusive_rather_than_passed(
     assert v.exit_code_for(result) != v.EXIT_PASS
 
 
-def test_an_engine_wider_than_our_own_pool_is_never_a_finding():
-    # The null model is "n draws over k cells", which cannot represent an
-    # observation with MORE distinct identities than the pool holds. That is
-    # not an error state — it is an engine drawing from something wider than
-    # the bar assumes, which is strictly good news and must never be flagged.
-    # windows layer-ON is exactly this: 9 distinct identities against a
-    # 5-entry pool.
+def test_an_engine_wider_than_our_own_pool_is_reached_by_the_arithmetic():
+    # ⚠️ THIS TEST PINNED THE DEFECT AS THE SPECIFICATION until PS-191's second
+    # review. It used to assert that `len(counts) > pool_size` short-circuits
+    # to p=1.0, which is a DISTINCT-COUNT pass — the exact fallacy this
+    # module's header refuses (PS-161). Measured at pool=5/N=24, that branch
+    # passed [19,1,1,1,1,1]: 79% of the fleet on one card, 63.5% collision,
+    # a reading the OLD broken gate caught.
+    #
+    # The conclusion was right and the route to it was wrong. A genuinely
+    # wider-than-our-pool draw IS strictly good news and must never be
+    # flagged — but it earns that verdict from its own sum-of-squares, which
+    # is lower than anything the null over k cells can produce. So the honest
+    # test is that the arithmetic reaches p=1.0 unaided, with no special case
+    # to guess on its behalf.
+    #
+    # windows layer-ON is exactly this shape: 9 distinct identities against a
+    # 5-entry pool, and it is the cell that took the old branch on every run.
     values = _values_from_counts([5, 4, 4, 3, 2, 2, 2, 1, 1])
     assert len(set(values)) == 9
     assert v.uniform_collision_p_value(values, 5) == 1.0
+
+    # And the point the deleted branch got wrong: MORE DISTINCT THAN THE POOL
+    # IS NOT A LICENCE TO PASS. These also hold more identities than the pool,
+    # and they are concentrated rather than spread.
+    for counts in ([19, 1, 1, 1, 1, 1], [16, 2, 2, 2, 1, 1]):
+        skewed = _values_from_counts(counts)
+        assert len(set(skewed)) > 5, "fixture must exceed the pool size"
+        p = v.uniform_collision_p_value(skewed, 5)
+        assert p <= v.ALPHA, (
+            f"{counts} holds {len(counts)} distinct identities against a "
+            f"5-entry pool and collides "
+            f"{v.collision_probability(skewed):.1%} of the time, yet scored "
+            f"p={p} — a distinct-count pass has been reintroduced"
+        )
+
+
+def test_the_verdict_is_monotone_in_the_statistic_it_polices():
+    # The deleted short-circuit made the gate NON-MONOTONE: [8,8,8] at 33.3%
+    # collision was flagged while [19,1,1,1,1,1] at 63.5% passed, because the
+    # second happened to hold more distinct identities than the pool. An
+    # operator cannot be asked to act on a verdict where colliding MORE makes
+    # a reading look BETTER.
+    #
+    # Pinned across the distinct > pool_size boundary specifically, since that
+    # is where the old branch discontinuity sat.
+    #
+    # ⚠️ `[8, 8, 8]` IS LOAD-BEARING AND MUST NOT BE DROPPED. It is the only
+    # reading here with distinct (3) <= pool (5), and without it this test is
+    # DECORATION: every other fixture exceeds the pool, so under the deleted
+    # branch they all returned 1.0, and `[1.0] * 5` is trivially sorted — the
+    # assertion could not fail against the very defect it exists to catch.
+    # Caught by reinstating the branch and watching this test stay green.
+    #
+    # That is the degenerate-fixture trap (PS-54): a test built where the two
+    # implementations are byte-identical proves nothing. The discriminating
+    # question is "if I put the defect back, would this fixture set change?"
+    # With [8, 8, 8] the defect scores it 0.0028 while everything above and
+    # below it reads 1.0 — a visible inversion, and the sequence stops being
+    # monotone.
+    readings = [
+        [5, 4, 4, 3, 2, 2, 2, 1, 1],   # 9 distinct, 13.9% — healthy
+        [6, 5, 4, 4, 3, 1, 1],         # 7 distinct, 18.1%
+        [12, 3, 3, 2, 2, 1, 1],        # 7 distinct, 29.9%
+        [8, 8, 8],                     # 3 distinct, 33.3% — distinct <= pool
+        [16, 2, 2, 2, 1, 1],           # 6 distinct, 46.9%
+        [19, 1, 1, 1, 1, 1],           # 6 distinct, 63.5% — severe
+    ]
+    assert any(len(counts) <= 5 for counts in readings), (
+        "every fixture exceeds the pool, so this test cannot distinguish the "
+        "distinct-count short-circuit from a correct implementation"
+    )
+    scored = []
+    for counts in readings:
+        values = _values_from_counts(counts)
+        scored.append(
+            (v.collision_probability(values),
+             v.uniform_collision_p_value(values, 5),
+             counts)
+        )
+
+    # Sanity: the fixtures really are ordered by increasing collision.
+    assert scored == sorted(scored, key=lambda row: row[0])
+
+    ps = [p for _, p, _ in scored]
+    assert ps == sorted(ps, reverse=True), (
+        "p-value is not monotone decreasing as collision rises: "
+        + ", ".join(f"{c!r} collision={col:.3f} p={p:.3e}"
+                    for col, p, c in scored)
+    )
 
 
 def test_no_pool_yields_no_p_value_rather_than_a_confident_one():
