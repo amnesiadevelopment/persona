@@ -3966,7 +3966,18 @@ def _process_parent_table():
         return table or None
     # macOS has no /proc; one `ps` for the entire table, not one per node.
     try:
-        out = subprocess.check_output(["ps", "-axo", "pid=,ppid="], text=True)
+        out = subprocess.check_output(
+            ["ps", "-axo", "pid=,ppid="],
+            # PS-211 convention: name the codec rather than inheriting the
+            # parent's locale one. `errors="replace"` is load-bearing here for
+            # PS-211's own stated reason, and it bites harder on this call than
+            # on the seven it fixed: the `except Exception` below would turn a
+            # UnicodeDecodeError into a no-verdict `None`, and PS-204 exists to
+            # stop exactly that — a "could not look" that reads as "nothing
+            # survived". Only digits are parsed out, so a replacement char in
+            # some other process's row cannot corrupt the pid/ppid table.
+            text=True, encoding="utf-8", errors="replace",
+        )
     except Exception:
         return None
     table = {}
