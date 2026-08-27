@@ -6,7 +6,20 @@ is the INSTRUMENT'S OWN pure collision_probability() — not a second instrument
 """
 import json, pathlib, subprocess, shutil, sys, tempfile
 
-sys.path.insert(0, "/workspace/persona")
+# Resolve the TREE UNDER MEASUREMENT from this file's own location
+# (readings/<slug>/ -> repo root), never from a fixed absolute path.
+#
+# This is not a portability nicety, it is the difference between a reading and a
+# fabrication. A hard-coded "/workspace/persona" does not FAIL in a fresh
+# checkout — /workspace/persona exists in every container this project runs, so
+# the script imports THAT tree's gpu_ext, succeeds, and prints a confident
+# figure for a pool it never measured. Placed in a 2-entry worktree it reported
+# 21.9% over eleven cards that do not exist there; corrected, the same command
+# in the same tree reports the true 53.1% over two. A crash is merely useless;
+# this agreed with whatever it was asked no matter which tree it stood in.
+#
+# Same expression as continuity.py:50 (NEW) — one spelling, deliberately.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 from src.services.browser.gpu_ext import build_gpu_extension
 from src.services.browser.engine_platform import engine_platform_for
 from src.services.verify.engine_gpu_variance import collision_probability
