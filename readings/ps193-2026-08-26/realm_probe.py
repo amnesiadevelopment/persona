@@ -18,13 +18,18 @@ two seeds, reducing each with FNV-1a. A realm the perturbation reaches gives
 two different digests; a realm it misses gives one digest twice.
 """
 
+import argparse
 import json
 import pathlib
 import sys
 
 from playwright.sync_api import sync_playwright
 
-sys.path.insert(0, "/workspace/persona")
+# Resolve the repo from THIS file's location rather than hard-coding it, so the
+# committed probe runs wherever the repo is checked out (same reason
+# realm-run.sh derives REPO_ROOT from BASH_SOURCE).
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
 from src.services.browser.webgl_ext import firefox_webgl_init_script  # noqa: E402
 
 PROBE = r"""
@@ -107,10 +112,20 @@ def run(seed):
 
 
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument(
+        "--out",
+        default="/tmp/ps193/realm-probe.json",
+        help="where to write the probe record (default: /tmp/ps193/realm-probe.json)",
+    )
+    args = ap.parse_args()
+
     res = {}
     for seed in (None, 1337, 4242):
         res["unspoofed" if seed is None else "seed_%d" % seed] = run(seed)
-    pathlib.Path("/tmp/ps193/realm-probe.json").write_text(json.dumps(res, indent=2))
+    out_path = pathlib.Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(res, indent=2))
 
     realms = ["top_canvas", "top_offscreen", "phantom_canvas", "phantom_offscreen"]
     print("%-20s %-12s %-12s %-12s  verdict" % ("realm", "unspoofed", "seed1337", "seed4242"))

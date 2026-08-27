@@ -34,7 +34,14 @@ import urllib.parse
 
 from playwright.sync_api import sync_playwright
 
-CRED_FILE = "/workspace/_secrets/test-proxy.txt"
+# Resolve the repo from THIS file's location rather than hard-coding it, so the
+# committed instrument runs wherever the repo is checked out (same reason
+# run.sh derives REPO_ROOT from BASH_SOURCE).
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+CRED_FILE = os.environ.get(
+    "PERSONA_TEST_PROXY_FILE", "/workspace/_secrets/test-proxy.txt"
+)
+WORKDIR = pathlib.Path(os.environ.get("WORKDIR", "/tmp/ps193"))
 CREEPJS_URL = "https://abrahamjuliot.github.io/creepjs"
 EXIT_URL = "https://ipinfo.io/json"
 
@@ -279,7 +286,7 @@ def build_proxy():
     if not raw:
         raise SystemExit("CREDENTIAL_ABSENT: empty file")
 
-    sys.path.insert(0, "/workspace/persona")
+    sys.path.insert(0, str(REPO_ROOT))
     from src.services.proxy.bridge import ProxyBridge
 
     bridge = ProxyBridge(raw)
@@ -319,7 +326,7 @@ def main():
 
     spoof_js = None
     if args.spoof_seed is not None:
-        sys.path.insert(0, "/workspace/persona")
+        sys.path.insert(0, str(REPO_ROOT))
         from src.services.browser.webgl_ext import firefox_webgl_init_script
 
         # THE PRODUCT'S OWN TEXT, not a transcription of it (PS-11 / PS-182).
@@ -353,7 +360,8 @@ def main():
         pg = ctx.new_page()
 
         if args.mode == "smoke":
-            sp = pathlib.Path("/tmp/ps193/smoke.html")
+            WORKDIR.mkdir(parents=True, exist_ok=True)
+            sp = WORKDIR / "smoke.html"
             sp.write_text(SMOKE_HTML)
             pg.goto("file://%s" % sp, wait_until="load", timeout=60000)
             pg.wait_for_timeout(3000)
