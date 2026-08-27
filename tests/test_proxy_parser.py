@@ -211,13 +211,88 @@ def test_engine_proxy_dict_absent_proxy_means_direct_not_refused():
 
 
 @pytest.mark.parametrize(
+    "url,expected",
+    [
+        # The bare-IP case. urlsplit reports scheme='' here — the ONLY one of
+        # the three that a falsy-scheme check would have caught.
+        ("1.2.3.4:8080", {"server": "http://1.2.3.4:8080"}),
+        # A NAMED host: urlsplit reports scheme='localhost', so this looked
+        # like an unknown-scheme URL rather than a scheme-less one.
+        ("localhost:8080", {"server": "http://localhost:8080"}),
+        # An underscore hostname — validation.py allows these explicitly
+        # ("real provider gateways like gate_us.smartproxy.com use them").
+        ("gate_us.smartproxy.com:7000", {"server": "http://gate_us.smartproxy.com:7000"}),
+    ],
+)
+def test_engine_proxy_dict_defaults_a_missing_scheme_rather_than_refusing(url, expected):
+    # REGRESSION GUARD (audit of PR #179). Refusing these made the launch path
+    # reject what the SAVE path accepts: validate_proxy_format("1.2.3.4:8080")
+    # is (True, "") and is pinned that way in tests/test_validation.py, and
+    # store.resolve hands the ref on with the scheme still absent. A profile
+    # saved exactly as the validator permits could then not launch at all.
+    #
+    # That is the mirror image of the contradiction validation.py:27-30 says it
+    # exists to prevent ("so a proxy that connects at runtime isn't rejected on
+    # save") — and the mirror is the worse direction, because it surfaces at
+    # launch time on a profile the user already saved and checked.
+    assert engine_proxy_dict(url) == expected
+
+
+def test_engine_proxy_dict_defaulting_the_scheme_EXTRACTS_credentials():
+    # The scheme-less AUTHENTICATED case, and the reason defaulting is strictly
+    # better than refusing rather than merely more permissive.
+    #
+    # urlsplit reports scheme='bob' for this input, so it never looked
+    # scheme-less at all. The merge-base regex (anchored on a literal
+    # "socks5://") did not match it either and returned {"server": <raw url>}
+    # with the credentials NEVER EXTRACTED — the exact PS-217 defect. So
+    # defaulting the scheme CLOSES one more instance of finding 1; it does not
+    # trade it away.
+    assert engine_proxy_dict("bob:pw@1.2.3.4:1080") == {
+        "server": "http://1.2.3.4:1080",
+        "username": "bob",
+        "password": "pw",
+    }
+
+
+def test_engine_proxy_dict_scheme_less_still_survives_an_at_in_the_password():
+    # The delimiter axis must keep holding once the scheme is defaulted —
+    # userinfo splits at the LAST "@" (RFC 3986), so the host is not corrupted.
+    assert engine_proxy_dict("bob:se@cret@1.2.3.4:1080") == {
+        "server": "http://1.2.3.4:1080",
+        "username": "bob",
+        "password": "se@cret",
+    }
+
+
+def test_engine_proxy_dict_default_scheme_matches_what_the_url_already_meant():
+    # THE DECISION, PINNED. `http` is not a taste call: it is what a
+    # scheme-less proxy already resolved to on BOTH engines before PS-217
+    # touched anything, so no stored profile changes meaning.
+    #
+    # parse_proxy_server is what Chromium's --proxy-server is built from for
+    # this same input (process._proxy_arg, unauthenticated branch), so this
+    # asserts the two engines AGREE rather than asserting a constant twice —
+    # if either side's default drifts, this goes red.
+    #
+    # NOTE the deliberate limit of the claim: _proxy_arg's AUTHENTICATED branch
+    # prepends socks5:// instead, because it hands the URL to ProxyBridge which
+    # speaks a real SOCKS5 handshake upstream. That asymmetry is real, is
+    # load-bearing on the Chromium side, and is out of PS-217's scope; it is
+    # documented at _DEFAULT_ENGINE_PROXY_SCHEME rather than silently changed.
+    assert engine_proxy_dict("1.2.3.4:8080")["server"] == parse_proxy_server("1.2.3.4:8080")
+
+
+@pytest.mark.parametrize(
     "bad",
     [
         "ftp://bob:pw@1.2.3.4:1080",   # a scheme no engine path can take
-        "1.2.3.4:1080",               # no scheme at all
         "socks5://bob:pw@1.2.3.4",    # no port
         "socks5://bob:pw@:1080",      # no host
         "socks5://host:notaport",     # unreadable port
+        "1.2.3.4",                    # a bare host: defaulting the scheme is
+                                      # not enough to make this usable, and a
+                                      # proxy with no port cannot be dialled
     ],
 )
 def test_engine_proxy_dict_refuses_rather_than_dropping_credentials(bad):
