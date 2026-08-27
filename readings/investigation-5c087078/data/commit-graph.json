@@ -1,0 +1,29 @@
+{
+  "shallow": false,
+  "branches": ["144.0.7559.132", "main"],
+  "tags": [
+    {"tag": "129.0.6668.100", "commit": "3a32fc400733806c5a44984a30e43f37aabead1d", "parents": "a96f128d97fab54b5d6be876e8d211914fdc260a", "commits_reachable": 2236, "root": "9456dad229d3c2a03af248f38f4e967d962c11f4", "commit_date": "2024-12-13", "toplevel_entries": 22},
+    {"tag": "130.0.6723.116", "commit": "68184fbda666a9115d1e433041eb6f9cce7f7c84", "parents": "0b5e4035314cb3da8956526db31806771ddf1238", "commits_reachable": 2245, "root": "9456dad229d3c2a03af248f38f4e967d962c11f4", "commit_date": "2024-12-14", "toplevel_entries": 22},
+    {"tag": "131.0.6778.264", "commit": "7aacbdbd6b3740e49ddafdefd6a96391c5ccdae9", "parents": "ce13975ff36087d695f1479994ffcc7c14f253f3", "commits_reachable": 2254, "root": "9456dad229d3c2a03af248f38f4e967d962c11f4", "commit_date": "2025-01-13", "toplevel_entries": 22},
+    {"tag": "132.0.6834.159", "commit": "72900c24004976fac6b7da35693d58675ab18d4a", "parents": "fc1a6e889f6f9435d67f2820dfa653a17d9c4db6", "commits_reachable": 2259, "root": "9456dad229d3c2a03af248f38f4e967d962c11f4", "commit_date": "2025-02-19", "toplevel_entries": 22},
+    {"tag": "133.0.6943.126", "commit": "b69ade245e9ec762ab9a486a3b34776bb9646f77", "parents": "f534f8cfa2aa062195fdb99f8e18b203e3fd7970", "commits_reachable": 2262, "root": "9456dad229d3c2a03af248f38f4e967d962c11f4", "commit_date": "2025-04-15", "toplevel_entries": 22},
+    {"tag": "134.0.6998.165", "commit": "6bf8f1b4ff50944c5d3ad0d72d8240cce0b7609b", "parents": "04870c51c7d5c091e70e73dc10151ed620802808", "commits_reachable": 2276, "root": "9456dad229d3c2a03af248f38f4e967d962c11f4", "commit_date": "2025-04-29", "toplevel_entries": 22},
+    {"tag": "135.0.7049.95", "commit": "c4f77ea5d08fee279c0e6c98c34b423ad363db3d", "parents": "d4bff63612f2e9b0ca11b2f03f9bc4d7b06fa426", "commits_reachable": 2286, "root": "9456dad229d3c2a03af248f38f4e967d962c11f4", "commit_date": "2025-05-31", "toplevel_entries": 22},
+    {"tag": "136.0.7103.113", "commit": "39fd2b26b6704fc389051de8d835d2f3fdb8ca12", "parents": "1a4952eb9ee8653b3bb45e3abe6e9736eeec6de0", "commits_reachable": 2293, "root": "9456dad229d3c2a03af248f38f4e967d962c11f4", "commit_date": "2025-08-11", "toplevel_entries": 22},
+    {"tag": "138.0.7204.183", "commit": "7976d16b5002b36c5f57160686c8d072869d57b6", "parents": "d591df2facf040237c7382c7756771737e7f6e59", "commits_reachable": 2310, "root": "9456dad229d3c2a03af248f38f4e967d962c11f4", "commit_date": "2025-09-14", "toplevel_entries": 22},
+    {"tag": "139.0.7258.154", "commit": "d73d9a0d1262389521b6dc3c6fabcded049dd33d", "parents": "3799c9d9576ffe9ec44d34c21eb72e9b5ce811f7", "commits_reachable": 2318, "root": "9456dad229d3c2a03af248f38f4e967d962c11f4", "commit_date": "2025-12-23", "toplevel_entries": 22},
+    {"tag": "142.0.7444.175", "commit": "f7ab85e5f39a7109a4fd45b48933be60c077ab8b", "parents": "633d41748b17aa4490cf2cff95a71d6a7907c7a8", "commits_reachable": 2337, "root": "9456dad229d3c2a03af248f38f4e967d962c11f4", "commit_date": "2026-02-27", "toplevel_entries": 22},
+    {"tag": "144.0.7559.132", "commit": "831623f2965e34554304caabfc3a1e4e3741db1f", "parents": "7607c88d3f36fcf922f704f363d818a87b67d29e", "commits_reachable": 2353, "root": "9456dad229d3c2a03af248f38f4e967d962c11f4", "commit_date": "2026-06-21", "toplevel_entries": 22},
+    {"tag": "148.0.7778.215", "commit": "3f61b0dfa665e883da8824b1450601fc529dd006", "parents": "c065c95fe70f83c829df362f0ef0f64b4ec12d1f", "commits_reachable": 13, "root": "113c0de58775fb3987ed02678350afa0bc861dfe", "commit_date": "2026-06-21", "toplevel_entries": 4}
+  ],
+  "merge_bases": {
+    "main..144.0.7559.132": "none",
+    "main..148.0.7778.215": "3f61b0dfa665e883da8824b1450601fc529dd006",
+    "142.0.7444.175..144.0.7559.132": "633d41748b17aa4490cf2cff95a71d6a7907c7a8"
+  },
+  "ancestry": {
+    "t148_is_ancestor_of_main": true,
+    "t142_is_ancestor_of_t144": false,
+    "t144_is_ancestor_of_branch144": true
+  }
+}

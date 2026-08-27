@@ -33,6 +33,62 @@ incomplete — fix that before reading the test results.**
 
 ---
 
+## Re-deriving the commit graph (§5)
+
+> ⚠️ **This is the one measurement a shallow clone will silently lie about.**
+> An earlier pass of this investigation ran `git merge-base` / `git rev-list --parents`
+> against the `--depth 1` tree from step 1 above and concluded that *"every source tag
+> is an orphan commit sharing no history with any other"*. **That was false.** In a
+> shallow tree the parent commits are simply absent, so `merge-base` finds none and
+> `rev-list --parents` shows none — the tree reports the absence of history that was
+> never downloaded. The claim was published and had to be retracted (report §5,
+> CORRECTION 3).
+
+```bash
+./scripts/commit_graph.sh /tmp/fpc-full > data/commit-graph.json
+```
+
+Clones **without** `--depth`, asserts `git rev-parse --is-shallow-repository` is
+`false` (and aborts if not), then emits per-tag parents, reachable-commit counts,
+root commits and the merge-bases. What it should show:
+
+- all 13 tags have a **parent**; `merge-base(142, 144)` = `633d4174`, which **exists**
+- 12 of 13 tags descend from a **single root** `9456dad2` (2,353 commits at tag 144)
+- tag `148.0.7778.215` is the odd one: it sits on `main`'s **separate** 13-commit root
+  `113c0de5`, and holds only 4 files
+- `merge-base(main, 144.0.7559.132)` → **genuinely none** — this part of the original
+  reading was correct, and it is what issue #41 is complaining about
+
+---
+
+## Re-running the churn attribution (§4)
+
+```bash
+cp <bundle>/scripts/attribute_churn.sh /tmp/rebase && chmod +x /tmp/rebase/attribute_churn.sh
+cd /tmp/rebase
+cp -a tree-145 tree-145-attr && ./attribute_churn.sh tree-145-attr test-145
+cp -a tree-152 tree-152-attr && ./attribute_churn.sh tree-152-attr test-152
+```
+
+Replays `apply_series.sh` move for move — same series order, same `-F0` attempt, same
+`-F3` fuzz retry, same `NO_TARGET` suppression — so the tree evolves identically. The
+only addition is that `-F0` output is parsed for `patching file <path>` / `Hunk #N
+FAILED`, charging each failed hunk to the file `patch` was on at the time. A hunk is
+counted **only** when the patch's final status is `CONFLICT`.
+
+**It must reconcile, and the reconciliation is the point:**
+
+| run | attributed | `results-*.tsv` `hunks_failed` | per-patch mismatches |
+|---|---|---|---|
+| `test-145` | 118 | 118 | 0 |
+| `test-152` | 485 | 485 | 0 |
+
+The two runs are reported **separately and never pooled**. An earlier pass quoted a
+single pooled figure of **656**, which no run in this bundle produces; it has been
+withdrawn along with the unshipped script that generated it.
+
+---
+
 ## Re-running the rebase measurement (§3, §4 of the report)
 
 Needs: `git`, `curl`, `patch`, `python3`, network access to
@@ -40,6 +96,10 @@ Needs: `git`, `curl`, `patch`, `python3`, network access to
 
 ```bash
 # 1. get the only patch set that exists (tag 144; note main and tag 148 hold no source)
+#    --depth 1 is SUFFICIENT AND CORRECT *for exporting patches*, which is all this
+#    step does. Do NOT reason about commit ancestry from this tree -- see the
+#    warning under "Re-deriving the commit graph" below. An earlier pass of this
+#    investigation did exactly that and published a false conclusion.
 mkdir -p /tmp/fpc && cd /tmp/fpc && git init -q .
 git remote add origin https://github.com/adryfish/fingerprint-chromium
 git fetch -q --depth 1 origin "+refs/tags/144.0.7559.132:refs/tags/t144"
@@ -96,13 +156,22 @@ python3 scripts/realm_class_probe.py
 ```
 
 Spawns a throwaway HTTP origin (service workers need a real origin — `file://` will
-not do) and tries a `blob:` bootstrap in four realms. Expected result, written to
-`realm-class-probe.json`:
+not do) and tries a `blob:` bootstrap in five realms, plus one same-origin control.
+Expected result, written to `realm-class-probe.json`:
 
-- dedicated / module / shared workers → **accepted**
-- `ServiceWorker` → **refused**, `TypeError: The URL protocol of the script ('blob:…') is not supported`
+- dedicated / module / shared workers, and `iframe` `srcdoc` → **accepted**
+- `ServiceWorker` from `blob:` → **refused**, `TypeError: The URL protocol of the script ('blob:…') is not supported`
+- `ServiceWorker` from same-origin `/sw.js` (the control) → **accepted**
 
-That asymmetry is the §7B finding: one realm, not a class.
+That asymmetry is the §7B finding: one realm, not a class. The same-origin control is
+what pins the refusal to the **protocol** rather than to the realm — registration
+itself works fine.
+
+> **Instrument note.** An earlier run recorded `iframe_srcdoc` as *refused* with
+> `TypeError: Cannot read properties of null (reading 'appendChild')`. That was a
+> harness bug, not a browser refusal: the probe script runs before `<body>` is
+> parsed, so `document.body` was `null`. Fixed to append to
+> `document.body || document.documentElement`.
 
 ---
 
@@ -120,7 +189,8 @@ That asymmetry is the §7B finding: one realm, not a class.
 | `results-ctrl-144-BROKEN-HARNESS.tsv` | discarded first run, kept as evidence | §3 |
 | `results-test-145.tsv`, `results-test-152.tsv` | one-major and eight-major runs | §3 |
 | `rebase-classification.json` | all 127 patches × all three tags | §3 |
-| `churn-analysis.json` | 656 failed hunks attributed by directory | §4 |
+| `churn-test-145.json`, `churn-test-152.json` | failed hunks attributed by file/area/patch, **per run** — reconciles to the matching `results-*.tsv` exactly (118 / 485) | §4 |
+| `commit-graph.json` | upstream commit ancestry from a **full** clone — parents, roots, merge-bases | §5 |
 | `deleted-144-to-152.txt` | 31 touched files upstream deleted/moved | §3 |
 | `per-patch-files.json` | which files each patch touches | §3, §4 |
 | `issues-all.json`, `prs-all.json`, `gh-comments.json` | upstream liveness evidence | §5 |

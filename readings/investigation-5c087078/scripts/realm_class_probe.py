@@ -76,7 +76,11 @@ try {
   window.addEventListener('message', m => {
     if (m.data && m.data.realm === 'srcdoc') fin('iframe_srcdoc', {accepted:true, data:m.data});
   });
-  document.body.appendChild(f);
+  // NOTE: this script runs before <body> is parsed, so document.body is null here.
+  // An earlier run of this harness used document.body.appendChild and recorded a
+  // bogus "TypeError: Cannot read properties of null (reading 'appendChild')" as
+  // though it were a browser refusal. It was an instrument bug, not a result.
+  (document.body || document.documentElement).appendChild(f);
 } catch (e) { fin('iframe_srcdoc', {accepted:false, refusal:String(e)}); }
 setTimeout(render, 4000);
 </script><body></body>

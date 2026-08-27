@@ -1,93 +1,118 @@
-[
- {
-  "version": "129.0.6668.100",
-  "binary_published": "2024-12-09",
-  "source_commit_date": "2024-12-09",
-  "source_lag_days": 0,
-  "file_count": 198
- },
- {
-  "version": "130.0.6723.116",
-  "binary_published": "2024-12-14",
-  "source_commit_date": "2024-12-14",
-  "source_lag_days": 0,
-  "file_count": 199
- },
- {
-  "version": "131.0.6778.264",
-  "binary_published": "2025-01-17",
-  "source_commit_date": "2025-01-13",
-  "source_lag_days": -4,
-  "file_count": 201
- },
- {
-  "version": "132.0.6834.159",
-  "binary_published": "2025-02-20",
-  "source_commit_date": "2025-02-19",
-  "source_lag_days": -1,
-  "file_count": 203
- },
- {
-  "version": "133.0.6943.126",
-  "binary_published": "2025-04-18",
-  "source_commit_date": "2025-04-15",
-  "source_lag_days": -3,
-  "file_count": 205
- },
- {
-  "version": "134.0.6998.165",
-  "binary_published": "2025-04-29",
-  "source_commit_date": "2025-04-29",
-  "source_lag_days": 0,
-  "file_count": 208
- },
- {
-  "version": "135.0.7049.95",
-  "binary_published": "2025-05-11",
-  "source_commit_date": "2025-05-31",
-  "source_lag_days": 20,
-  "file_count": 214
- },
- {
-  "version": "136.0.7103.113",
-  "binary_published": "2025-06-01",
-  "source_commit_date": "2025-08-11",
-  "source_lag_days": 71,
-  "file_count": 216
- },
- {
-  "version": "138.0.7204.183",
-  "binary_published": "2025-08-11",
-  "source_commit_date": "2025-09-14",
-  "source_lag_days": 34,
-  "file_count": 215
- },
- {
-  "version": "139.0.7258.154",
-  "binary_published": "2025-09-14",
-  "source_commit_date": "2025-12-23",
-  "source_lag_days": 100,
-  "file_count": 217
- },
- {
-  "version": "142.0.7444.175",
-  "binary_published": "2025-12-23",
-  "source_commit_date": "2026-02-27",
-  "source_lag_days": 66,
-  "file_count": 217
- },
- {
-  "version": "144.0.7559.132",
-  "binary_published": "2026-02-27",
-  "source_commit_date": "2026-06-21",
-  "source_lag_days": 114,
-  "file_count": 213
- },
- {
-  "version": "148.0.7778.215",
-  "binary_published": "2026-06-21",
-  "source_commit_date": "NO SOURCE",
-  "source_lag_days": null,
-  "file_count": 4
+{
+ "versions": [
+  {
+   "version": "129.0.6668.100",
+   "binary_published": "2024-12-09",
+   "source_commit_date": "2024-12-09",
+   "source_lag_days": 0,
+   "file_count": 198
+  },
+  {
+   "version": "130.0.6723.116",
+   "binary_published": "2024-12-14",
+   "source_commit_date": "2024-12-14",
+   "source_lag_days": 0,
+   "file_count": 199
+  },
+  {
+   "version": "131.0.6778.264",
+   "binary_published": "2025-01-17",
+   "source_commit_date": "2025-01-13",
+   "source_lag_days": -4,
+   "file_count": 201
+  },
+  {
+   "version": "132.0.6834.159",
+   "binary_published": "2025-02-20",
+   "source_commit_date": "2025-02-19",
+   "source_lag_days": -1,
+   "file_count": 203
+  },
+  {
+   "version": "133.0.6943.126",
+   "binary_published": "2025-04-18",
+   "source_commit_date": "2025-04-15",
+   "source_lag_days": -3,
+   "file_count": 205
+  },
+  {
+   "version": "134.0.6998.165",
+   "binary_published": "2025-04-29",
+   "source_commit_date": "2025-04-29",
+   "source_lag_days": 0,
+   "file_count": 208
+  },
+  {
+   "version": "135.0.7049.95",
+   "binary_published": "2025-05-11",
+   "source_commit_date": "2025-05-31",
+   "source_lag_days": 20,
+   "file_count": 214
+  },
+  {
+   "version": "136.0.7103.113",
+   "binary_published": "2025-06-01",
+   "source_commit_date": "2025-08-11",
+   "source_lag_days": 71,
+   "file_count": 216
+  },
+  {
+   "version": "138.0.7204.183",
+   "binary_published": "2025-08-11",
+   "source_commit_date": "2025-09-14",
+   "source_lag_days": 34,
+   "file_count": 215
+  },
+  {
+   "version": "139.0.7258.154",
+   "binary_published": "2025-09-14",
+   "source_commit_date": "2025-12-23",
+   "source_lag_days": 100,
+   "file_count": 217
+  },
+  {
+   "version": "142.0.7444.175",
+   "binary_published": "2025-12-23",
+   "source_commit_date": "2026-02-27",
+   "source_lag_days": 66,
+   "file_count": 217
+  },
+  {
+   "version": "144.0.7559.132",
+   "binary_published": "2026-02-27",
+   "source_commit_date": "2026-06-21",
+   "source_lag_days": 114,
+   "file_count": 213
+  },
+  {
+   "version": "148.0.7778.215",
+   "binary_published": "2026-06-21",
+   "source_commit_date": "NO SOURCE",
+   "source_lag_days": null,
+   "file_count": 4
+  }
+ ],
+ "statistics": {
+  "n": 12,
+  "note": "Computed over the 12 versions whose source actually landed. 148.0.7778.215 is EXCLUDED because it has no source commit at all (source_lag_days=null); it is an unbounded open tail, not a datapoint.",
+  "sorted_lag_days": [
+   -4,
+   -3,
+   -1,
+   0,
+   0,
+   0,
+   20,
+   34,
+   66,
+   71,
+   100,
+   114
+  ],
+  "min": -4,
+  "median": 10.0,
+  "median_derivation": "even-length series (n=12): mean of the middle pair = (0 + 20) / 2",
+  "mean": 33.1,
+  "max": 114
  }
-]
+}

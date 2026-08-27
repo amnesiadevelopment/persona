@@ -3,7 +3,10 @@
 **Investigation:** `5c087078-8fab-4d50-bee4-a392403de69b`
 **Measured:** 2026-08-27, all figures re-derived firsthand on that date
 **Base:** `persona` @ `7441136`
-**Extends:** PS-18 (knowledge article). Corrects it in two places, marked **CORRECTION**.
+**Extends:** PS-18 (knowledge article). Corrects PS-18 in two places (**CORRECTION 1–2**, §1).
+**Revision 2.** This pass also retracts and re-derives three claims of my own from revision 1,
+each marked in place: §5's commit-graph mechanism (**CORRECTION 3**), §1's median source lag,
+and §4's failed-hunk attribution. See §11 for the full list.
 
 ---
 
@@ -43,8 +46,10 @@ PS-18 quotes the README's delayed-release policy ("patch files will be released 
 | | days |
 |---|---|
 | min | −4 (source landed *before* the binary) |
-| median | 20 |
+| median | **10** |
 | max | **114** |
+
+The full sorted series is `−4, −3, −1, 0, 0, 0, 20, 34, 66, 71, 100, 114` — the median of an even-length series is the mean of the middle pair, `(0 + 20) / 2 = 10.0`, as `data/source-lag.json` records in `statistics.median`.
 
 The trend is monotone and recent: `139` → 100 days, `142` → 66 days, `144` → **114 days**, `148` → **never, 67 days and counting**. "One version late" describes 2025. The current state is "one version late, plus an unbounded tail".
 
@@ -136,46 +141,102 @@ Per-patch conflict rate at 152:
 | patches touching `third_party/blink/` | 21 | 13 | 61.9% |
 | patches not touching Blink | 106 | 62 | 58.5% |
 
-A 3.4-point difference on a 21-patch sample is not concentration. Attributing all **656 failed hunks** to the directory they landed in makes the picture unambiguous:
+A 3.4-point difference on a 21-patch sample is not concentration. Attributing each failed hunk to the file `patch` was working on when it failed makes the picture unambiguous. **The two runs are reported separately and never pooled** — each reconciles to its own TSV exactly (`scripts/attribute_churn.sh`, §4 method note below):
 
-| area | failed hunks | share |
+| area | @145 (one major) | share | **@152 (eight majors)** | **share** |
+|---|---|---|---|---|
+| `chrome/browser/` | 73 | 61.9% | **292** | **60.2%** |
+| `components/` | 22 | 18.6% | 106 | 21.9% |
+| `chrome/` (other) | 10 | 8.5% | 24 | 4.9% |
+| **`third_party/blink/`** | **5** | **4.2%** | **20** | **4.1%** |
+| `content/` | 4 | 3.4% | 17 | 3.5% |
+| `services/` | 0 | — | 6 | 1.2% |
+| `net/` | 0 | — | 5 | 1.0% |
+| `ui/` | 0 | — | 2 | 0.4% |
+| everything else | 4 | 3.4% | 13 | 2.7% |
+| **total** | **118** | 100% | **485** | 100% |
+
+**Blink holds 4.2% of the failed hunks at one major and 4.1% at eight** — a share that is not merely small but *flat* across an eight-major span, while `chrome/browser/` holds ~60% at both. The prediction is refuted twice over, and the second run is not an independent confirmation so much as the same result at greater depth.
+
+The worst individual files at 152 are `chrome/browser/BUILD.gn` (12), `chrome/test/BUILD.gn` (7), `chrome/browser/policy/configuration_policy_handler_list_factory.cc` (7), `chrome/browser/profiles/chrome_browser_main_extra_parts_profiles.cc` (6), `chrome/browser/signin/signin_promo_util.cc` (6), `components/signin/internal/identity_manager/primary_account_manager.cc` (6).
+
+Grouping the 485 by subsystem rather than by directory:
+
+| subsystem | failed hunks | share |
 |---|---|---|
-| `chrome/browser/` | 382 | **58.2%** |
-| `components/` | 157 | 23.9% |
-| `chrome/` (other) | 32 | 4.9% |
-| **`third_party/blink/`** | **30** | **4.6%** |
-| `content/` | 23 | 3.5% |
-| everything else | 32 | 4.9% |
+| signin / identity / account | 57 | 11.8% |
+| build config (`.gn` / `.gni`) | 52 | 10.7% |
+| safe browsing | 37 | 7.6% |
+| search engine / Google URL | 21 | 4.3% |
+| policy | 11 | 2.3% |
+| sync | 9 | 1.9% |
 
-The worst individual files are `chrome/browser/BUILD.gn` (12), `components/signin/internal/identity_manager/primary_account_manager.cc` (12), `chrome/browser/signin/signin_promo_util.cc` (10), `components/safe_browsing/core/browser/safe_browsing_metrics_collector.cc` (10).
+**The pain is in signin, build configuration, safebrowsing and search-engine plumbing — that is the de-googling surface, not the rendering engine.** (Sync and policy are named here because they are the surfaces one *expects* to hurt; measured, they are 1.9% and 2.3% and are not drivers.) This independently confirms §3's split from a second direction: the expensive work is ungoogled's, not ours, and it is expensive precisely because it fights Google integration code that Google keeps changing.
 
-**The pain is in signin, safebrowsing, sync and policy — that is the de-googling surface, not the rendering engine.** This independently confirms §3's split from a second direction: the expensive work is ungoogled's, not ours, and it is expensive precisely because it fights Google integration code that Google keeps changing.
+### Method note — how the attribution reconciles
+
+An earlier pass of this report quoted **656** failed hunks here. That figure could not be re-derived from the committed measurements and **has been withdrawn**; no run in this bundle produces it, and the script that generated it was never shipped. The replacement is `scripts/attribute_churn.sh`, which **replays `apply_series.sh` move for move** — same series order, same `-F0` attempt, same `-F3` fuzz retry, same `NO_TARGET` suppression — so the tree evolves identically and a hunk is charged **only** when the patch's final status is `CONFLICT`. Verified:
+
+| run | attributed | `results-*.tsv` `hunks_failed` | per-patch mismatches |
+|---|---|---|---|
+| `test-145` | 118 | 118 | **0** |
+| `test-152` | 485 | 485 | **0** |
+| `ctrl-144b` | 0 | 0 | 0 |
+
+Totals **and** every one of the 127 per-patch counts agree in both runs. The attribution is therefore reconciled by construction rather than by coincidence, and `data/churn-test-145.json` / `data/churn-test-152.json` replace the withdrawn `churn-analysis.json`.
+
+It also reconciles **against §3's split, from a third direction** — the per-layer figures in §3 were derived separately, from `data/rebase-classification.json` by patch family, and they sum to the same totals:
+
+| run | fingerprint (16) | core + extra + upstream-fix (111) | sum | attributed total |
+|---|---|---|---|---|
+| @145 | 6 | 0 + 19 + 93 = 112 | **118** | **118** |
+| @152 | 17 | 3 + 125 + 340 = 468 | **485** | **485** |
+
+So the same two numbers fall out of a per-patch classification, a per-file attribution, and the raw TSV column independently.
 
 ---
 
 ## 5. Q3 — Is upstream dormant, dead, or just slow?
 
-**Dormant at best, and contributing upstream is not merely unlikely — it is structurally impossible in the current repository layout.**
+**Dormant at best, and contributing upstream is impractical to the point of not being a real option — though for social rather than structural reasons (CORRECTION 3 below).**
 
 - **The maintainer's last public word anywhere in the repository was 2026-06-21** — 67 days ago, the same day as the last release, when they answered seven issues in one burst and then stopped.
 - **Four issues have been opened since. All four have zero maintainer replies.**
 - **Issue #88, "Broken GPU spoofing in 148.0.7778.215"** (2026-07-25, still open, **zero comments**) reports that in the exact build we ship, `chrome://gpu` logs `eglCreateContext: Requested version is not supported` and Cloudflare Challenge pages enter an infinite refresh loop. The reporter's workarounds are `--disable-spoofing=gpu` / `--disable-gpu` / `--use-angle=swiftshader`. **A third party is independently reporting that the GPU masking in our shipping engine is broken, and upstream has not acknowledged it in a month.**
 - The repository is not archived: 2,991 stars, 428 forks, 26 open issues, BSD-3-Clause.
 
-### Contributing upstream is theatre, and here is the mechanism
+### Contributing upstream is impractical — but the mechanism is not the one I first reported
 
-**Only two pull requests have ever been opened. Both were closed unmerged.** PR #86 (2026-07-09) was an outside attempt to supply the missing 148 source; it was closed the same day.
+**CORRECTION 3 (self-correction).** An earlier pass of this report claimed *"every source tag is an orphan commit sharing no history with any other… the repository is not a development history; it is a series of unrelated source dumps."* **That is false, and it was an artefact of my own reproduction recipe** — I had fetched the repository with `git fetch --depth 1`, which does not retrieve parent commits, so `git rev-list --parents` showed none and `git merge-base` found none. The shallow tree was reporting the absence of history I had declined to download.
 
-The reason is structural, and I verified it directly with `git merge-base`:
+Re-derived against a **full clone** (`scripts/commit_graph.sh` → `data/commit-graph.json`), the structure is this:
+
+| | |
+|---|---|
+| tag `144.0.7559.132` | commit `831623f2`, **parent `7607c88d`** |
+| tag `142.0.7444.175` | commit `f7ab85e5`, **parent `633d4174`** |
+| `merge-base(t142, t144)` | **`633d4174` — it exists** |
+| commits reachable from t144 | **2,353**, descending from a **single root** `9456dad2` (2015-06-12) |
+
+Twelve of the thirteen tags share that one continuous history — it is `ungoogled-chromium`'s own upstream history, carried wholesale. The tags are real development history, not dumps.
+
+**What is genuinely broken is narrower, and it is `main`.** `main` is a **separate 13-commit history** on its own root `113c0de5` ("Initial commit", 2024-12-14), holding nothing but the four README/LICENSE files of CORRECTION 1. Each of its 13 commits is a bare "Update to Chromium N" README bump. So:
 
 ```
-merge-base(main, tag 144) -> none          parents of tag 144: (none — orphan commit)
-merge-base(tag 142, tag 144) -> none       parents of tag 142: (none — orphan commit)
+merge-base(main, tag 144.0.7559.132)  -> none        # genuinely none
+merge-base(main, tag 148.0.7778.215)  -> 3f61b0df    # t148 IS on main
 ```
 
-**Every source tag is an orphan commit sharing no history with any other.** The repository is not a development history; it is a series of unrelated source dumps. That is why issue #41 ("How to contribute patches") reports GitHub saying *"There isn't anything to compare. main and my-branch are entirely different"* — and why the only answer it ever received, 5 months later, was from another user, not the maintainer.
+The default branch shares **no ancestor with any source tag**. That is exactly what issue #41 ("How to contribute patches") is reporting when GitHub tells its author *"There isn't anything to compare. main and my-branch are entirely different"* — the complaint is real, and the diagnosis is that the branch GitHub defaults a PR to is not the branch the source lives on.
 
-**PS-18's Option 4 (contribute upstream) should be struck.** There is no branch to target, no PR has ever been merged, and nobody is reading.
+**The practical conclusion survives, on evidence that holds:**
+
+- **Only two pull requests have ever been opened, and both were closed unmerged.** PR #86 (2026-07-09) was an outside attempt to supply the missing 148 source; closed the same day. PR #62 (2025-12-05); closed.
+- **The only branch carrying source is `144.0.7559.132`** — one branch, for one version, already superseded by the binary we ship. There is no branch tracking current development to target a PR at, because `main` is a README.
+- **67 days of maintainer silence**, four issues opened in that window with zero replies, and #88 — our shipping build's GPU spoof reported broken — ignored for a month.
+- Issue #41's only answer arrived **5 months later, from another user**, not the maintainer.
+
+**PS-18's Option 4 (contribute upstream) should still be struck** — but for the reason that no PR has ever been merged, there is no development branch to target, and nobody is reading. **Not** because the history is unmergeable: it is ordinary history, and a PR against the `144.0.7559.132` branch would rebase and merge like any other. The obstacle is social, not topological. That is a weaker mechanism than I first reported and I am recording it as such; it does not change the recommendation, because the binding constraint was always that nobody answers.
 
 ---
 
@@ -229,11 +290,16 @@ Two things are visible. **The runtime-patch strategy decays** — the most-starr
 | dedicated `Worker` | **accepted** |
 | module `Worker` | **accepted** |
 | `SharedWorker` | **accepted** |
+| `iframe` `srcdoc` (non-worker, for contrast) | **accepted** |
 | **`ServiceWorker`** | **refused** — `TypeError: The URL protocol of the script ('blob:…') is not supported` |
 
-The refusal reproduces exactly what PS-189 recorded. But it is **specific to service workers**, whose spec requires a same-origin, network-fetchable script URL so the registration can outlive the page. Every other worker realm takes the blob bootstrap our injection path depends on.
+A fifth probe pins the refusal to the *protocol* rather than to the realm: registering a service worker from a **same-origin `/sw.js`** in the identical harness is **accepted**. So `ServiceWorker` registration works fine here; it is specifically the `blob:` scriptURL it rejects.
+
+The refusal reproduces exactly what PS-189 recorded. But it is **specific to service workers**, whose spec requires a same-origin, network-fetchable script URL so the registration can outlive the page. Every other worker realm — and the non-worker `srcdoc` realm — takes the blob bootstrap our injection path depends on.
 
 **This weakens the "engine work is forced" argument and should be reported as such.** It is one realm, not a structural collapse of the extension layer. It does not, however, make the service-worker realm reachable — PS-189's three refusals still stand, and no fourth technique presented itself here.
+
+**Instrument correction.** An earlier run of this harness recorded `iframe_srcdoc` as *refused* with `TypeError: Cannot read properties of null (reading 'appendChild')`. That was **an instrument bug, not a browser refusal**: the probe script runs before `<body>` is parsed, so `document.body` was `null`. Fixed to append to `document.body || document.documentElement`; the realm accepts the blob bootstrap, as the table now records. The bug only ever affected this one contrast probe — the four worker-realm results are unchanged, and the `ServiceWorker` refusal is a real `TypeError` from `register()`.
 
 ### Sizing PS-201's Option 3 — it is patch-sized, and the reason is specific
 
@@ -296,6 +362,24 @@ Modelled on PS-18 §7, because it is the right model.
 ### One instrument failure worth recording
 
 Two figures in my raw output were artefacts, caught and discarded rather than reported: computing build wall-clock as `updated_at − run_started_at` produced a **9,676-hour** macOS build (403 days) and a **negative** one, because re-runs and artifact expiry bump `updated_at` long after a build ends. All §6 numbers come from **per-job** `started_at`/`completed_at` with a sanity filter. `data/build-wallclock.json` retains the bad values beside `data/build-summary.json` so the correction is auditable.
+
+---
+
+## 11. Revision 2 — what I retracted from my own revision 1
+
+A reviewer checked revision 1 against the committed artefacts and found three defects. All three are corrected above, in place; this section is the index, because a reader who saw revision 1 needs to know exactly which numbers moved.
+
+| § | revision 1 said | revision 2 says | why it was wrong |
+|---|---|---|---|
+| **§5** | "Every source tag is an orphan commit sharing no history with any other… a series of unrelated source dumps." Option 4 struck on that mechanism. | Every tag **has** a parent; 12 of 13 descend from one root `9456dad2` (2,353 commits at t144); `merge-base(t142,t144)` = `633d4174`. Option 4 still struck, on **social** evidence. | **My own reproduction recipe.** I ran `merge-base` against the `--depth 1` tree from README step 1. A shallow clone has no parent commits, so git correctly reported none — I read that as a fact about the repository instead of a fact about my clone. |
+| **§1** | median source lag **20 days** | median **10.0 days** | I took the 7th element of a 12-element series instead of the mean of the middle pair. `min −4` / `max 114` and the monotone recent trend were correct and are unchanged. |
+| **§4** | **656** failed hunks attributed by directory | **118** @145 and **485** @152, reported separately | The 656 was self-consistent but matched no run in this bundle, and the script that produced it was never committed. Withdrawn entirely rather than patched. |
+
+Also corrected: `data/realm-class-probe.json` carried a fifth probe (`iframe_srcdoc`) that failed with a harness error and went unmentioned in §7B. The harness is fixed and the probe now returns a real result (§7B).
+
+**What did not move.** The reviewer independently re-derived and confirmed: all three rebase tables against all three TSVs; the FP16-vs-OTHER111 split and its 18.7×/27.5× ratios; `011-gpu-info.patch` at `OFFSET` across both bumps and `005` `CLEAN`; 1,284 CVEs at 57/351/543/333 over 16 posts; 69 KEV Chrome entries with none after our build; the empty 148 tag; two branches; two PRs both closed unmerged; the 116,435-byte/16-patch set with zero service-worker references; `011`'s 445 lines across 7 files; the build timings; and the realm probe. **The recommendation is unchanged** — none of the three defects touched the evidence it rests on, and §4's Blink refutation survived the correction in a stronger form (Blink is 4.2% of failed hunks at one major and 4.1% at eight, i.e. flat).
+
+**One lesson worth carrying out of this bundle.** All three defects were *arithmetic or instrument* errors sitting inside conclusions that were substantively right — a shallow clone answering a question about history, a median taken off-by-one, a pooled figure with no surviving derivation. None was caught by re-reading the prose; all three were caught by re-running the measurement against the committed artefacts. **That is the argument for shipping the tooling next to the claim**, and it applies to §3's lower bounds as much as to anything here.
 
 ---
 
