@@ -628,3 +628,43 @@ def test_pinned_child_decode_survives_the_round_trip_under_an_ascii_locale():
         f"round trip lost data: got {ascii(proc.stdout)}, "
         f"expected {ascii(_EXPECTED)}"
     )
+
+
+def test_the_windows_failure_mode_is_silent_corruption_not_an_exception():
+    """THE WINDOWS SHAPE, PINNED -- and it is NOT the one above.
+
+    The two tests above force an ASCII locale, where the unpinned form RAISES
+    UnicodeDecodeError.  Windows is worse, and this is the whole reason a green
+    Windows CI arm is "necessary but not sufficient" (PS-211 DoD item 4):
+
+        cp1252 is a SINGLE-BYTE codec with almost no undefined slots, so it
+        decodes arbitrary bytes WITHOUT raising.  b"caf\\xc3\\xa9" comes back as
+        "cafÃ©" -- mojibake, not an exception.
+
+    So on the platform this ticket is actually about, the defect does not
+    announce itself.  It returns a WRONG STRING that a caller then matches a
+    profile path against, and the match quietly fails -- which for
+    _profile_firefox_pids means "no such process" rather than a crash.
+
+    This runs on EVERY platform (the codec is named explicitly rather than
+    inherited from the locale), so unlike the ASCII-locale pair it cannot be
+    skipped into vacuity on a UTF-8 runner.
+    """
+    emitter = [sys.executable, "-c", _EMITTER]
+    assert _ascii_only(emitter), "harness bug: argv must be ASCII"
+
+    pinned = subprocess.check_output(
+        emitter, text=True, encoding="utf-8", errors="replace", timeout=120)
+    as_cp1252 = subprocess.check_output(
+        emitter, text=True, encoding="cp1252", timeout=120)
+
+    assert pinned == _EXPECTED, (
+        f"the convention lost data: {ascii(pinned)} != {ascii(_EXPECTED)}")
+    # The point: the WRONG codec did not raise. It returned a wrong answer.
+    assert as_cp1252 != pinned, (
+        "cp1252 and utf-8 decoded these bytes identically, so this fixture no "
+        "longer carries a byte that distinguishes them and the test is vacuous"
+    )
+    assert "\u00c3" in as_cp1252, (
+        f"expected classic utf-8-through-cp1252 mojibake, got {ascii(as_cp1252)}"
+    )
