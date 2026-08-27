@@ -5194,6 +5194,61 @@ def test_engine_build_change_still_restores_the_chrome_prefs(tmp_path):
     assert "stale.pref" not in on_disk, "the stale pref must still be gone"
 
 
+def _as_prefs_js_literal(value):
+    """The literal _upsert_prefs_js writes for a Python pref value."""
+    import json
+
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    return json.dumps(str(value))
+
+
+def test_engine_build_change_leaves_quiet_startup_prefs_on_disk(tmp_path):
+    # THE PS-197 REGRESSION, one dict over from the one above. The build-change
+    # reset deleted prefs.js and re-wrote only TWO of the three families that
+    # lived in it, so on the single launch after a bump Firefox did its startup
+    # fetches — telemetry, Remote Settings, Normandy, the blocklist,
+    # safebrowsing, the captive-portal probe — at its own defaults.
+    #
+    # The timing argument is identical to the session prefs': Firefox decides
+    # whether to make those fetches AT STARTUP from prefs.js, while
+    # _NO_STARTUP_FETCH's other owner (_profile_prefs -> the engine's
+    # extra_prefs) is applied over juggler AFTER startup. Firefox then persists
+    # that late copy, so prefs.js READS correct right after the launch that was
+    # already noisy — which is exactly why this asserts on what is on disk
+    # BEFORE Firefox starts and never on "_upsert_prefs_js was called". That
+    # call is already there for the other two dicts, so a call-assertion would
+    # pass with or without this fix.
+    prof = tmp_path
+    (prof / "prefs.js").write_text('user_pref("stale.pref", 1);\n')
+    _write_compat(prof, "/cache/firefox-18")
+
+    lines = list(invisible_launch._migrate_profile_for_engine_build(
+        str(prof), "/cache/firefox-19"
+    ))
+    assert lines == [
+        "ENGINE_BUILD_CHANGED: reset prefs for the new Firefox build"
+    ], lines
+
+    on_disk = _prefs_js_pairs(prof)
+    missing = [
+        pref for pref in invisible_launch._NO_STARTUP_FETCH if pref not in on_disk
+    ]
+    assert not missing, (
+        f"the build-change re-seed left {len(missing)} quiet-startup prefs off "
+        f"disk, so the first launch on the new build fetches at Firefox "
+        f"defaults: {missing}"
+    )
+    # Present is not enough — each must carry its SHIPPED value.
+    for pref, value in invisible_launch._NO_STARTUP_FETCH.items():
+        assert on_disk[pref] == _as_prefs_js_literal(value), (
+            f"{pref} is on disk as {on_disk[pref]!r}, not its shipped value"
+        )
+    assert "stale.pref" not in on_disk, "the stale pref must still be gone"
+
+
 def test_session_restore_prefs_have_one_owner(tmp_path):
     # The same prefs must be written in two places (the engine's extra_prefs,
     # applied after startup; and prefs.js, read at startup). Pin that they come
