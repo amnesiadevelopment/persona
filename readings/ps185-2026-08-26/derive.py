@@ -78,6 +78,57 @@ def pct(x: "float | None") -> str:
     return "—" if x is None else f"{x * 100:.1f}%"
 
 
+def fnum(x: "float | None", spec: str = ".4f") -> str:
+    """Format a figure that may be absent, instead of crashing on it.
+
+    The generalised axis-1 walk destroys raw readings, and an arm whose seeds
+    are ALL unreadable legitimately produces ``None`` for every estimator
+    column. Rendering that used to raise ``TypeError: unsupported format
+    string passed to NoneType`` — the document did not report the arm as
+    unobtainable, it failed to render at all, which is the one outcome the
+    ticket rules out: ``INCONCLUSIVE`` must be *recorded*, never crashed on.
+    """
+    return "—" if x is None else format(x, spec)
+
+
+_NUMBER_WORDS = {
+    0: "none", 1: "one", 2: "two", 3: "three", 4: "four", 5: "five",
+    6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten", 11: "eleven",
+    12: "twelve",
+}
+
+
+def num_word(n: int) -> str:
+    """Small counts as words, so a COUNTED figure reads like the prose it
+    replaces. Falls back to digits rather than inventing an English rule."""
+    return _NUMBER_WORDS.get(n, str(n))
+
+
+def layer_installed(rb: dict, engine: str) -> "list[str]":
+    """The extension layer an engine's legs actually REPORTED installing.
+
+    Read from each leg's own ``layer.installed``. The sentence this feeds is
+    the stated MECHANISM behind the canvas split, and it used to spell that
+    layer out as a literal — which made the explanation immune to the evidence
+    it cites. Handing every firefox leg a canvas extension and shrinking
+    chromium's layer to two entries moved **nothing at all**: the paragraph
+    went on asserting "no canvas extension at all ... against ten on chromium"
+    over records that said neither.
+
+    Legs of one engine agree in every committed record; where they ever
+    disagree the UNION is reported, so a partial install widens the list
+    rather than hiding behind whichever leg happened to be read first.
+    """
+    seen: "list[str]" = []
+    for leg in (rb.get("readings", {}).get(engine, {}) or {}).values():
+        if not isinstance(leg, dict):
+            continue
+        for ext in ((leg.get("layer") or {}).get("installed") or []):
+            if ext not in seen:
+                seen.append(ext)
+    return sorted(seen)
+
+
 def gpu_section(off: dict, on: dict, uoff: dict, uon: dict) -> str:
     lines: "list[str]" = []
     add = lines.append
@@ -229,30 +280,48 @@ def gpu_section(off: dict, on: dict, uoff: dict, uon: dict) -> str:
             else ("artefact" if u["module_verdict"] == "TOO_NARROW" else "—")
         )
         add(
-            f"| {arm} | {u['plugin_estimate']:.4f} | "
-            f"{u['unbiased_estimate']:.4f} | "
-            f"{u['expected_plugin_under_uniform']:.4f} | "
-            f"{u['bar_collision_probability']:.4f} | "
-            f"{'—' if p is None else f'{p:.3f}'} | "
+            f"| {arm} | {fnum(u['plugin_estimate'])} | "
+            f"{fnum(u['unbiased_estimate'])} | "
+            f"{fnum(u['expected_plugin_under_uniform'])} | "
+            f"{fnum(u['bar_collision_probability'])} | "
+            f"{fnum(p, '.3f')} | "
             f"{u['module_verdict']} → {verdict} |"
         )
     add("")
     a = _uniformity_stats(uon, "android", unif_sources)
-    add(
-        f"**The single line that settles it:** android scored "
-        f"{a['plugin_estimate']:.4f}, which is BELOW the "
-        f"{a['expected_plugin_under_uniform']:.4f} a uniform draw is expected "
-        f"to score at N={a['seeds_readable']} — and the gate still called it "
-        "`TOO_NARROW`. An arm cannot be *worse than uniform* while scoring "
-        "*better than uniform predicts*. The comparison failed, not the pool."
-    )
+    # An arm with NO readable seed has no estimate to quote, and this sentence
+    # is the one the artefact finding rests on. Rendered through `fnum` it
+    # reports the absence; rendered through `:.4f` it raised TypeError and the
+    # whole document failed to build — found by the generalised axis-1 walk,
+    # which destroys an arm outright rather than truncating it. A reading that
+    # cannot be had must be RECORDED as unobtainable, never crashed on.
+    if a["plugin_estimate"] is None or a["expected_plugin_under_uniform"] is None:
+        add(
+            "**The single line that settles it:** ⚠️ android produced no "
+            "readable seed in this run, so the estimator comparison cannot be "
+            "made — `INCONCLUSIVE`, which is not a pass and must not be "
+            "written into PS-16 as one."
+        )
+    else:
+        add(
+            f"**The single line that settles it:** android scored "
+            f"{fnum(a['plugin_estimate'])}, which is BELOW the "
+            f"{fnum(a['expected_plugin_under_uniform'])} a uniform draw is "
+            f"expected to score at N={a['seeds_readable']} — and the gate "
+            "still called it `TOO_NARROW`. An arm cannot be *worse than "
+            "uniform* while scoring *better than uniform predicts*. The "
+            "comparison failed, not the pool."
+        )
     add("")
     add("**So the old \"theoretical\" figures are CONFIRMED rather than "
         "overturned:** the uniform-selection assumption behind them holds on "
         "the real draw (p = "
         + ", ".join(
             f"{arm} "
-            f"{_uniformity_stats(uon, arm, unif_sources)['monte_carlo_p_value']:.2f}"
+            + fnum(
+                _uniformity_stats(uon, arm, unif_sources)["monte_carlo_p_value"],
+                ".2f",
+            )
             for arm in ("macos", "linux", "android")
         )
         + ", none anywhere near significance). What has changed is that they "
@@ -424,9 +493,6 @@ def readback_section(rb: dict, rep: dict, repc: dict) -> str:
     )
     add("")
 
-    add("#### ⭐ The firefox `webgl_pixel_hash` question — ANSWERED, and it is "
-        "the harder answer")
-    add("")
     ff = verdicts["firefox"]["webgl_pixel_hash"]["seeds"]
     # The ANSWER is derived, not asserted. This paragraph reports which of the
     # two branches the ticket named actually happened, and the ticket is
@@ -436,6 +502,24 @@ def readback_section(rb: dict, rep: dict, repc: dict) -> str:
     _pair = _verdict_for([ff[seeds[0]], ff[seeds[1]]])[0]
     _probe_collides = _pair == "COLLIDES"
     _pair_readable = _pair != "INCONCLUSIVE"
+    # ⚠️ THE HEADING IS DERIVED FROM THE SAME VERDICT AS THE BODY.
+    # Found by the generalised axis-1 walk, on nobody's list. "the harder
+    # answer" NAMES one of the two branches — the expensive one, where the
+    # internal difference does not survive the trip out. Making the probe
+    # collide flipped the paragraph below to the OTHER branch ("the defect is
+    # upstream of delivery ... PS-182 can be verified entirely on loopback")
+    # while this heading went on calling it the harder answer, three lines
+    # above the sentence that now contradicted it. A heading that states a
+    # conclusion is a rendered claim like any other and must move with the
+    # evidence, or it is a caption disagreeing with its own section.
+    add(
+        "#### ⭐ The firefox `webgl_pixel_hash` question — "
+        + ("ANSWERED, and it is the harder answer" if not _probe_collides
+           and _pair_readable else
+           "ANSWERED, and it is the tractable answer" if _probe_collides else
+           "NOT ANSWERED — the probe returned no usable reading")
+    )
+    add("")
     add(
         "PS-16 records the one outright FAILURE in this matrix: `creepjs :: "
         "webgl_pixel_hash` reads `51df3565` for BOTH firefox seeds 1337 and "
@@ -498,11 +582,40 @@ def readback_section(rb: dict, rep: dict, repc: dict) -> str:
         if _verdict_for([cff[seeds[i]], cff[seeds[j]]])[0] == "COLLIDES"
     ]
     _cff_readable = [s for s in seeds if cff[s]]
+    # ⚠️ THE CHROMIUM CLAUSE IS DERIVED FROM CHROMIUM'S OWN READINGS.
+    # It used to be the literal "On chromium all three differ." — a hardcoded
+    # conclusion about ONE engine inside a branch selected entirely by the
+    # OTHER engine's data. Forcing chromium's canvas to collide on all three
+    # seeds rendered the recounted table row as **COLLIDES** with this
+    # sentence one line below still saying they all differ: a caption
+    # contradicting the row directly above it, in the paragraph that IS
+    # DoD #2's deliverable and that the ticket forbids averaging into one
+    # verdict. Derived from `verdict_for` — the differ's own rule, the same
+    # source the firefox clause beside it already used.
+    cch = verdicts["chromium"]["canvas_pixel_hash"]["seeds"]
+    _cch_readable = [s for s in seeds if cch[s]]
+    _cch_verdict = _verdict_for([cch[s] for s in seeds])[0]
+    if not _cch_readable:
+        _chrome_clause = (
+            " Chromium cannot be contrasted here: its canvas cells produced "
+            "no usable reading, which is `INCONCLUSIVE` and not a pass."
+        )
+    elif _cch_verdict == "COLLIDES":
+        _chrome_clause = (
+            f" On chromium the same vector COLLIDES too across "
+            f"{num_word(len(_cch_readable))} readable seeds — so this is NOT "
+            "the engine split described below, and the two engines must not "
+            "be averaged into one verdict."
+        )
+    else:
+        _chrome_clause = (
+            f" On chromium all {num_word(len(_cch_readable))} differ."
+        )
     if not _cff_readable:
         add(
             "⚠️ **The firefox canvas cells produced no usable reading**, so "
             "no split can be reported here — `INCONCLUSIVE`, which is not a "
-            "pass and must not be recorded as one."
+            "pass and must not be recorded as one." + _chrome_clause
         )
     elif _cpairs:
         i, j = _cpairs[0]
@@ -510,30 +623,58 @@ def readback_section(rb: dict, rep: dict, repc: dict) -> str:
         add(
             f"On firefox, seeds {seeds[i]} and {seeds[j]} produce the SAME canvas "
             f"hash (`{cff[seeds[i]]}`), while seed {others[0]} differs "
-            f"(`{cff[others[0]]}`). On chromium all three differ."
+            f"(`{cff[others[0]]}`)." + _chrome_clause
         )
     else:
         add(
             f"On firefox, all {len(_cff_readable)} readable seeds produced "
             "DISTINCT canvas hashes — the collision recorded previously is "
-            "not reproduced in this run. On chromium all three differ."
+            "not reproduced in this run." + _chrome_clause
         )
     add("")
+    # ⚠️ THE LAYER REPORT IS READ FROM THE LEGS, NOT SPELLED OUT.
+    # This sentence cites the layer report as its EVIDENCE, then used to
+    # hardcode both halves: the literal `['audio', 'locale', 'webgl']` and
+    # "against ten on chromium". Nothing in this file consulted
+    # `leg["layer"]` at all — a grep for it returned nothing — so giving
+    # every firefox leg a canvas extension and shrinking chromium's layer to
+    # two entries moved zero lines while the paragraph went on describing a
+    # layer report neither engine had. An explanation that cannot be
+    # contradicted by the record it cites is not evidence, it is decoration.
+    _ff_layer = layer_installed(rb, "firefox")
+    _ch_layer = layer_installed(rb, "chromium")
+    _canvas_exts = sorted(e for e in _ff_layer if "canvas" in e.lower())
     add(
         "The mechanism is recorded in `local_probe`'s own docstring and is "
         "confirmed by the layer report in these records: canvas 2D is "
         "**delegated to `--fingerprint=`, which is chromium-only**, and the "
         "firefox arm returns before it. The layer report for the firefox "
-        "readings lists `['audio', 'locale', 'webgl']` — **no canvas "
-        "extension at all** — against ten on chromium. So firefox canvas "
-        "entropy is whatever the engine happens to produce, and two seeds "
-        "colliding there is expected rather than surprising."
+        f"readings lists `{_ff_layer}` — "
+        + ("**no canvas extension at all**" if not _canvas_exts else
+           f"**including {', '.join(f'`{e}`' for e in _canvas_exts)}**")
+        + f" — against {num_word(len(_ch_layer))} on chromium. So firefox "
+        "canvas entropy is whatever the engine happens to produce, and two "
+        "seeds colliding there is expected rather than surprising."
     )
     add("")
-    add(
-        "**This is a two-engine-rule cell, not a chromium cell.** A chromium "
-        "canvas fix does not touch it."
-    )
+    # The "not a chromium cell" claim rests on the SAME layer evidence as the
+    # paragraph above, so it is derived from it rather than asserted beside
+    # it. If a future record ever shows firefox installing a canvas
+    # extension, the mechanism sentence would report that while this one went
+    # on telling the reader a chromium fix cannot touch the cell — the caption
+    # contradicting its own evidence, one paragraph later.
+    if _canvas_exts:
+        add(
+            "⚠️ **The mechanism above no longer holds in these records:** the "
+            "firefox layer reports a canvas extension, so the split is NOT "
+            "explained by its absence and this cell needs re-diagnosing "
+            "before any conclusion about ownership is drawn."
+        )
+    else:
+        add(
+            "**This is a two-engine-rule cell, not a chromium cell.** A "
+            "chromium canvas fix does not touch it."
+        )
     return "\n".join(lines)
 
 
