@@ -133,33 +133,323 @@ def empty_readback_legs(rec: dict, engine: str) -> None:
             leg["reading"] = {"vectors": {}}
 
 
-def _truncate(arm: str, mode: str):
-    def apply(r: dict) -> None:
+# ---------------------------------------------------------------------------
+# AXIS 1 — a GENERIC WALK of the raw readings
+# ---------------------------------------------------------------------------
+#
+# Round 7's blocker. Axis 1 used to be six hand-written scenarios whose entire
+# mutation vocabulary was `readings[arm][seed] = None` and
+# `leg["reading"] = {"vectors": {}}` — so of the NINE fields a readback leg
+# carries it touched exactly one. `label`, `seed`, `layer`, `error`,
+# `sandbox_waived`, `dev_shm_waived`, `dev_shm_bytes` and `engine` were never
+# mutated by anything, and axis 2 could not see them either because a reading
+# is not a stored summary. Two live defects sat in that blind spot BETWEEN the
+# axes, one of them a sentence contradicting the table row directly above it.
+#
+# A hand-written scenario list can only re-find what someone already named.
+# This walks the records instead: every field of every leg, every arm of every
+# sweep, destroyed and collapsed in turn.
+
+READBACK_KEYS = ("rb", "rep", "repc")
+GPU_MODES = ("on", "off")
+
+
+def _subpaths(node, prefix=()):
+    """Every leaf path inside a leg — the generic part of the generic walk."""
+    if isinstance(node, dict) and node:
+        for k, v in node.items():
+            yield from _subpaths(v, prefix + (k,))
+    else:
+        yield prefix
+
+
+def _get(node, path):
+    for k in path:
+        node = node[k]
+    return node
+
+
+def _set(node, path, value):
+    for k in path[:-1]:
+        node = node[k]
+    node[path[-1]] = value
+
+
+def _collapsed(value):
+    """A same-type replacement that DESTROYS the field's information.
+
+    Type-preserving for the same reason axis 2's `poison` is: a replacement
+    that changed the type could move the render by raising a formatting error
+    rather than by being consulted, reporting a clean site as dirty.
+    """
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, str):
+        return "COLLAPSED"
+    if isinstance(value, (int, float)):
+        return 999999
+    if isinstance(value, list):
+        return ["COLLAPSED"]
+    if isinstance(value, dict):
+        return {}
+    return None
+
+
+def _leg_values(records, key, engine, path):
+    out = []
+    for leg in (records[key]["readings"].get(engine, {}) or {}).values():
+        if not isinstance(leg, dict):
+            continue
+        try:
+            out.append(_get(leg, path))
+        except (KeyError, TypeError):
+            pass
+    return out
+
+
+def _readback_group(key, engine, path):
+    def mutate(value_of):
+        def apply(r):
+            for leg in (r[key]["readings"].get(engine, {}) or {}).values():
+                if not isinstance(leg, dict):
+                    continue
+                try:
+                    _set(leg, path, value_of(_get(leg, path)))
+                except (KeyError, TypeError):
+                    pass
+        return apply
+    return [
+        ("destroy", mutate(lambda _v: None)),
+        ("collapse", mutate(_collapsed)),
+    ]
+
+
+def _gpu_group(mode, arm):
+    def destroy(r):
+        for s in r[mode]["readings"][arm]:
+            r[mode]["readings"][arm][s] = None
+
+    def collapse(r):
+        for s in r[mode]["readings"][arm]:
+            r[mode]["readings"][arm][s] = "COLLAPSED-SINGLE-IDENTITY"
+
+    def truncate(r):
         truncate_arm(r[mode], arm)
-    return apply
+
+    return [("destroy", destroy), ("collapse", collapse),
+            ("truncate", truncate)]
 
 
-def _truncate_both(arm: str):
-    def apply(r: dict) -> None:
-        truncate_arm(r["on"], arm)
-        truncate_arm(r["off"], arm)
-    return apply
+def _reading_groups():
+    """Every raw-reading field, walked out of the records themselves."""
+    base = load_all()
+    groups = []
+    for key in READBACK_KEYS:
+        for engine, legs in (base[key].get("readings") or {}).items():
+            paths = []
+            for leg in legs.values():
+                if not isinstance(leg, dict):
+                    continue
+                for p in _subpaths(leg):
+                    if p not in paths:
+                        paths.append(p)
+            for path in paths:
+                groups.append((
+                    f"{key}/{engine}/{'.'.join(path)}",
+                    (key, ".".join(path)),
+                    _readback_group(key, engine, path),
+                    lambda r, key=key, engine=engine, path=path:
+                        _leg_values(r, key, engine, path),
+                ))
+    for mode in GPU_MODES:
+        for arm in sorted(base[mode]["readings"]):
+            groups.append((
+                f"gpu[{mode}]/{arm}/identity",
+                (f"gpu[{mode}]", "identity"),
+                _gpu_group(mode, arm),
+                lambda r, mode=mode, arm=arm:
+                    list(r[mode]["readings"][arm].values()),
+            ))
+    return groups
 
 
-def _empty(engine: str):
-    def apply(r: dict) -> None:
-        empty_readback_legs(r["rb"], engine)
-    return apply
+# A raw-reading field that feeds NO rendered claim is not a defect — most of
+# these records is provenance, deliberately recorded and deliberately not
+# published. So axis 1's rule is NOT "every field must move"; that rule would
+# be false, and a harness that cries wolf on 58 honest fields teaches its
+# reader to skip the output.
+#
+# Instead an inert field must be DECLARED, with the reason it is inert, and
+# the declaration is keyed by (record, field-path) — `rb` and `rep` are listed
+# separately even where they share a spelling, because they are consulted
+# differently: `layer.installed` IS a rendered claim on the three-seeds record
+# and is pure provenance on the replicates. Keying on the bare field name
+# would have waived the real one for sharing a name with the others.
+#
+# Adding a field to a record makes this fail until someone triages it, which
+# is the point: the list records a decision, it does not suppress a check.
+NOT_RENDERED = {
+    ("rb", "label"): "leg label — provenance; the render names engine+seed itself",
+    ("rb", "seed"): "duplicates the record-level `seeds` list, which is what the render iterates",
+    ("rb", "engine"): "duplicates the `readings` key the render iterates",
+    ("rb", "sandbox_waived"): "launch provenance, reported in PROVENANCE.md not in the article",
+    ("rb", "dev_shm_waived"): "launch provenance (the /dev/shm disclosure), not a measured figure",
+    ("rb", "dev_shm_bytes"): "launch provenance, not a measured figure",
+    ("rb", "layer.route"): "how the layer was installed; the article cites WHAT was installed",
+    ("rb", "layer.complete"): "install-completeness flag; the render counts `installed` instead",
+    ("rb", "layer.failed"): "empty on every committed leg; nothing to render",
+    ("rb", "error"): "rendered only for a leg that produced NO vectors (the lost-leg disclosure); a leg WITH vectors has no error to report",
+    ("rb", "reading.note"): "free-text note, empty on every committed leg",
+}
+for _k in ("rep", "repc"):
+    NOT_RENDERED.update({
+        (_k, "label"): "replicate record — feeds the instrument check only, which compares VECTORS",
+        (_k, "seed"): "replicate record — the check looks vectors up BY seed from the primary record",
+        (_k, "engine"): "replicate record — duplicates the `readings` key",
+        (_k, "sandbox_waived"): "replicate launch provenance",
+        (_k, "dev_shm_waived"): "replicate launch provenance",
+        (_k, "dev_shm_bytes"): "replicate launch provenance",
+        (_k, "layer.route"): "replicate record — the layer sentence cites the three-seeds record",
+        (_k, "layer.complete"): "replicate record — not cited by any rendered claim",
+        (_k, "layer.failed"): "replicate record — not cited by any rendered claim",
+        (_k, "layer.failed.layer"): "replicate record — the chromium@9001 lost-leg detail; the loss itself is disclosed from the ABSENT vectors",
+        (_k, "layer.installed"): "replicate record — the layer sentence cites the three-seeds record, not this one",
+        (_k, "error"): "replicate record — the lost leg is disclosed from its absent vectors, not from this string",
+        (_k, "reading.note"): "free-text note, empty on every committed leg",
+    })
 
 
-SCENARIOS = [
-    ("android layer-ON truncated 24 -> 12", _truncate("android", "on")),
-    ("macos layer-OFF truncated 24 -> 12", _truncate("macos", "off")),
-    ("linux layer-OFF truncated 24 -> 12", _truncate("linux", "off")),
-    ("windows truncated in BOTH modes 24 -> 12", _truncate_both("windows")),
-    ("firefox readback legs emptied (verdicts kept)", _empty("firefox")),
-    ("chromium readback legs emptied (verdicts kept)", _empty("chromium")),
-]
+def _cited_values(values, text):
+    """Which of a field's values appear VERBATIM in the rendered document.
+
+    This is the mechanical detector for the round-7 defect class, and it needs
+    no list of known sites. A value that is PRINTED in the article is a
+    rendered claim about the evidence by definition — so if printing it
+    survives the destruction of the very field it was read from, the article
+    may not be reading it. That is exactly how the layer sentence failed: it
+    printed `['audio', 'locale', 'webgl']` while consulting nothing, so the
+    list stayed on the page when the records stopped saying it.
+
+    Deliberately restricted to DISTINCTIVE values — lists, and strings of 8+
+    characters. A short scalar (`true`, `0`, a seed number) collides with
+    unrelated prose and would report noise as a finding.
+
+    ⚠️ A hit here is a SUSPECT, not a verdict. Two records can hold the SAME
+    value, and the article legitimately reads one of them — see
+    ``_attributable`` below, which is what tells those apart.
+    """
+    hits = []
+    for v in values:
+        if isinstance(v, list) and v:
+            if repr(v) in text:
+                hits.append(repr(v))
+        elif isinstance(v, str) and len(v) >= 8:
+            if v in text:
+                hits.append(v)
+    return hits
+
+
+def run_axis1(base: "list[str]", quiet: bool) -> "list[str]":
+    """Walk every raw-reading field. Return the labels that VIOLATE."""
+    base_text = "\n".join(base)
+    groups = _reading_groups()
+    violations: "list[str]" = []
+    print(f"\n{'=' * 76}\nAXIS 1 — destroy the raw readings, summary INTACT")
+    print(f"  {len(groups)} raw-reading fields walked (generic, from the "
+          f"records)\n")
+
+    # ---- pass 1: mutate every field, keep what each mutation rendered ----
+    observed = []
+    attributable: "set[str]" = set()
+
+    # STRUCTURAL VALUES ARE NOT MEASUREMENTS, and the distinction is drawn
+    # from the records rather than by a hand-written waiver. An engine name
+    # and a seed are IDENTIFIERS: they key `readings`, `verdicts` and
+    # `engine_builds`, they are listed in `engines` / `seeds`, and the render
+    # iterates those lists to build its tables. So "chromium" is on the page
+    # because the record says the sweep COVERED chromium — and also because
+    # prose legitimately says "chromium-only". A leg's own `engine` field is a
+    # duplicate label, and destroying it correctly moves nothing.
+    #
+    # Flagging that would be the harness inventing a defect out of a repeated
+    # identifier, which is the false-positive twin of the defect it hunts.
+    # Computed from the record's own structure, so a record that grows a new
+    # engine or seed is covered without editing this file.
+    structural: "set[str]" = set()
+    for key in READBACK_KEYS:
+        rec = load_all()[key]
+        for block in ("readings", "verdicts", "engine_builds"):
+            if isinstance(rec.get(block), dict):
+                structural.update(str(k) for k in rec[block])
+        structural.update(str(v) for v in (rec.get("engines") or []))
+        structural.update(str(v) for v in (rec.get("seeds") or []))
+
+    for label, decl_key, ops, values_of in groups:
+        moved: "list[str]" = []
+        crashed: "list[str]" = []
+        for op_name, apply in ops:
+            records = load_all()
+            apply(records)
+            try:
+                after = render(records).split("\n")
+            except Exception as exc:  # noqa: BLE001
+                # A destroyed reading must be REPORTED as unobtainable, never
+                # crashed on: `INCONCLUSIVE` is a result the article has to be
+                # able to print. A traceback prints nothing at all.
+                crashed.append(f"{op_name}: {type(exc).__name__}: {exc}")
+                continue
+            if any(b != a for b, a in zip(base, after)):
+                moved.append(op_name)
+            # ATTRIBUTION. Whatever vanished from the page when this field was
+            # destroyed is a value the article demonstrably READS from it.
+            after_text = "\n".join(after)
+            for cited in _cited_values(values_of(load_all()), base_text):
+                if cited not in after_text:
+                    attributable.add(cited)
+        observed.append((label, decl_key, values_of, moved, crashed))
+
+    # ---- pass 2: verdicts, now that attribution is known ----
+    for label, decl_key, values_of, moved, crashed in observed:
+        if crashed:
+            violations.append(f"{label} — render CRASHED: {crashed[0]}")
+            print(f"  ✗ {label}: render CRASHED — {crashed[0][:90]}")
+            continue
+
+        if moved:
+            if not quiet:
+                print(f"  ✓ {label} (moved under: {', '.join(moved)})")
+            continue
+
+        # Inert. A cited value is only FROZEN if the article reads it from
+        # nowhere. Two legitimate reasons a printed value survives the
+        # destruction of THIS field, and neither is a defect:
+        #
+        #  1. ATTRIBUTABLE — destroying some OTHER field removes it, so the
+        #     claim is live and this field is a duplicate copy. The
+        #     three-seeds record and its replicates hold identical layer
+        #     reports and the article cites the three-seeds one; flagging the
+        #     replicates for holding the same value would invent a defect.
+        #  2. STRUCTURAL — the value is an IDENTIFIER (an engine name, a
+        #     seed) that keys the record and is iterated to build the tables,
+        #     and that prose legitimately uses as a word. A leg's `engine`
+        #     field is a duplicate label, not a measurement.
+        frozen = [c for c in _cited_values(values_of(load_all()), base_text)
+                  if c not in attributable and c not in structural]
+        if frozen:
+            violations.append(
+                f"{label} — CITED BUT FROZEN: the article prints "
+                f"{frozen[0][:60]!r}, and destroying this field — or any "
+                "other — does not remove it")
+            print(f"  ✗ {label}: CITED BUT FROZEN — prints {frozen[0][:60]!r} "
+                  "but reads it from nothing")
+        elif decl_key not in NOT_RENDERED:
+            violations.append(
+                f"{label} — inert and UNDECLARED: it feeds no rendered claim, "
+                "but nothing on the record says that was intended")
+            print(f"  ✗ {label}: inert and UNDECLARED")
+        elif not quiet:
+            print(f"  ~ {label}: inert, declared ({NOT_RENDERED[decl_key]})")
+    return violations
 
 
 # ---------------------------------------------------------------------------
@@ -343,25 +633,7 @@ def main(argv: "list[str] | None" = None) -> int:
     violations: "list[str]" = []
 
     if args.axis in ("1", "both"):
-        print(f"\n{'=' * 76}\nAXIS 1 — destroy the readings, summary INTACT")
-        for name, apply in SCENARIOS:
-            records = load_all()
-            apply(records)
-            after = render(records).split("\n")
-
-            changed = [
-                (i, b, a) for i, (b, a) in enumerate(zip(base, after)) if b != a
-            ]
-            print(f"\n{'=' * 76}\nMUTATION: {name}")
-            print(f"  lines changed: {len(changed)} of {len(base)}")
-            if not changed:
-                inert.append(name)
-                print("  ⚠️  NOTHING MOVED — a rendered figure is not coming "
-                      "from the readings this mutation destroyed.")
-            elif not args.quiet:
-                for _, b, a in changed:
-                    print(f"  - {b[:150]}")
-                    print(f"  + {a[:150]}")
+        inert = run_axis1(base, args.quiet)
 
     if args.axis in ("2", "both"):
         violations = run_axis2(base, args.quiet)
@@ -369,7 +641,7 @@ def main(argv: "list[str] | None" = None) -> int:
     print()
     if inert or violations:
         if inert:
-            print("AXIS 1 — DEFECTS OF THIS CLASS REMAIN, in:")
+            print("AXIS 1 — A RENDERED CLAIM IS FROZEN AGAINST ITS EVIDENCE:")
             for name in inert:
                 print(f"  - {name}")
         if violations:
@@ -377,8 +649,9 @@ def main(argv: "list[str] | None" = None) -> int:
             for name in violations:
                 print(f"  - {name}")
         return 1
-    print("Axis 1: every scenario moved the rendered output — no figure "
-          "survives the destruction of its own readings.")
+    print("Axis 1: every raw-reading field either moves the render, or is "
+          "declared as feeding no rendered claim — and no value the article "
+          "prints survives the destruction of the field it was read from.")
     print("Axis 2: no stored summary field moves the render, except the "
           "asserted drift disclosure. The class is closed on both axes.")
     return 0

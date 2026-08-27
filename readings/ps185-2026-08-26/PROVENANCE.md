@@ -478,3 +478,151 @@ a memo keyed on identity would have reintroduced exactly the staleness the
 recount removes. The test module memoises the subprocess run and the module
 import for the same reason, which is what keeps the suite at ~3 minutes instead
 of ~7.
+
+---
+
+## 8. Round 7 — the class covers PROSE, and axis 1 was still a hand-written list
+
+Round 6 closed the stored-summary class on both axes and reported exit 0. The
+two axes were **not symmetric**, and the asymmetry had live members:
+
+| axis | how it selected what to mutate |
+|---|---|
+| 2 | **generic walk** — every scalar field of every stored summary block (215) |
+| 1 | **six hand-written scenarios**, vocabulary of exactly two operations |
+
+A readback leg carries **nine** fields. Axis 1 touched exactly one:
+
+```
+leg fields    : label, seed, layer, reading, error, sandbox_waived,
+                dev_shm_waived, dev_shm_bytes, engine
+axis 1 touched: reading.vectors   ONLY
+```
+
+So a claim resting on `layer` was invisible to axis 1 (which never mutated it)
+**and** to axis 2 (a reading is not a stored summary). Those defects sat in the
+blind spot *between* the axes. The property, restated to cover both halves:
+
+> **No rendered claim — figure *or* prose — may be frozen against the evidence
+> it describes.**
+
+Round 5's own words about axis 2 — *"a list can only re-find what someone
+already named"* — applied to axis 1 the whole time.
+
+### 8a. Axis 1 is now a generic walk of the raw readings
+
+`enumerate_summary_sites.py --axis 1` derives its mutations **from the
+records**: every leaf path of every readback leg, plus every GPU arm, walked
+out of the JSON rather than listed in the file — **95 fields**, each put
+through three operations (`destroy`, `collapse`, `truncate`). A record that
+grows a field is covered without editing the harness.
+
+Two mutation operations exist because they ask different questions: `destroy`
+removes the value (does anything read it?), `collapse` replaces it with a
+same-type wrong value (does anything read it *and care what it says*?). Both
+are type-preserving, so a moved line means the field was consulted rather than
+that a formatter raised.
+
+### 8b. The detector needed to catch FROZEN PROSE, which "did anything move?" cannot
+
+A prose defect does not announce itself by failing to move — most of these
+records is provenance that legitimately feeds no rendered claim, so "every
+field must move" is a false rule that would cry wolf on 58 honest fields.
+
+The mechanical detector is **CITED BUT FROZEN**: a value the article *prints
+verbatim* is a rendered claim about the evidence by definition, so if it
+survives the destruction of the field it was read from, the article is not
+reading it. That is exactly how the layer sentence failed — it printed
+`['audio', 'locale', 'webgl']` while consulting nothing. This needs **no list
+of known sites**, which is the whole point.
+
+Restricted to DISTINCTIVE values (lists, and strings of 8+ characters): a short
+scalar collides with unrelated prose and would report noise as a finding.
+
+### 8c. Two false-positive classes, both resolved from the records
+
+A hit is a **suspect, not a verdict**. Two legitimate reasons a printed value
+survives destruction of one field, and neither is a defect:
+
+1. **Attributable** — destroying some *other* field removes it, so the claim is
+   live and this field is a duplicate copy. The three-seeds record and its
+   replicates hold identical layer reports and the article cites the
+   three-seeds one; flagging the replicates would be the harness inventing a
+   defect. Established by mutation: whatever leaves the page when a field is
+   destroyed is recorded as read from it.
+2. **Structural** — the value is an IDENTIFIER (an engine name, a seed) that
+   *keys* `readings` / `verdicts` / `engine_builds` and is iterated to build
+   the tables, and that prose legitimately uses as a word ("chromium-only"). A
+   leg's own `engine` field is a duplicate label, not a measurement. Computed
+   from the record's own structure, so a new engine or seed is covered without
+   editing the harness.
+
+An inert field that is neither must be **declared** in `NOT_RENDERED`, keyed by
+`(record, field-path)` **with a reason**. Keyed by record and not by bare name
+for the round-6 reason: `layer.installed` IS a rendered claim on the
+three-seeds record and pure provenance on the replicates, and a name-keyed
+declaration would have waived the real one for sharing a spelling. Adding a
+field makes the harness fail until someone triages it — the list records a
+decision, it does not suppress a check.
+
+### 8d. Five sites fixed. Three were on nobody's list
+
+| # | site | what it did |
+|---|---|---|
+| S1 | canvas paragraph | `On chromium all three differ.` — a hardcoded conclusion about ONE engine inside a branch selected entirely by the OTHER engine's data |
+| S2 | mechanism sentence | spelled out `['audio', 'locale', 'webgl']` and "against ten on chromium" while consulting `leg["layer"]` nowhere |
+| **S3** | **section heading** | *"and it is the harder answer"* NAMES a branch; the body flipped to the other branch while the heading did not |
+| **S4** | **estimator row + p-value sentence** | a fully-destroyed arm raised `TypeError: unsupported format string passed to NoneType` — the document did not report the arm as unobtainable, it **failed to build at all** |
+| **S5** | **ownership verdict** | *"a two-engine-rule cell, not a chromium cell"* — the conclusion of the mechanism paragraph, left as a literal |
+
+S1 and S2 match the review's list. **S3, S4 and S5 were returned by the
+generalised walk and named by nobody**, which is the evidence that the
+enumeration is shaped by the records rather than by the review.
+
+**S1 is the sharp one.** Forcing chromium's canvas to collide rendered the
+recounted table row as **COLLIDES** with the caption one line below still
+saying all three differ — the *"27.4% computed over 24 sitting beside a seed
+count of 12"* shape, reappearing between a table and its caption, in the
+paragraph that is DoD #2's deliverable and that the ticket **forbids averaging
+into one verdict**.
+
+**S4 is a different failure mode from the rest of the class** and worth naming
+separately: every other site published something false, while this one
+published *nothing*. `INCONCLUSIVE` is a **result the article has to be able to
+print** — the ticket is explicit that anything not obtained is recorded with
+its reason — and a traceback records nothing. Only an operation that destroys
+an arm **outright** reaches it; truncation, axis 1's entire old vocabulary,
+never could.
+
+### 8e. Every fix is REVERT-PROVEN, and the proof runs in a sandbox
+
+Each fix was reverted in place, its guard confirmed to **fail**, then restored
+and md5-verified. A guard that still passes when you revert what it guards is
+decoration (PS-11).
+
+⚠️ **The revert proof runs against a COPY in `/tmp/sbx`, never the repo file.**
+An in-place run of this proof died mid-cycle and left the committed `derive.py`
+reverted on disk — a mutation harness that edits a tracked file depends on its
+own restore step surviving, which is the same argument the round-3 tests make
+for driving mutations through in-memory records. The sandbox removes the
+dependency.
+
+### 8f. What did NOT change
+
+`derived-output.txt` is **byte-identical**, and lines 6–89 still hash to
+`b2bdcef6f0ec928237b6c9630e4e99ec` — the baseline unchanged since `bd2a7ac`.
+Both sentences were *already true* of the committed records; deriving them
+changes what happens when the records stop saying so. **Seven rounds, no
+measured figure has moved.** No sweep was re-run, no reading was touched, and
+`git status` over `readings/ps185-2026-08-26/*.json` reports zero modified
+files.
+
+### 8g. The harness got slower, and the test timeout was raised to match
+
+The generalised walk is 95 fields × 3 operations, each a full render carrying
+the round-6 recount. Both axes take **~4m11s**, against a test timeout of
+300 s. That timeout was raised to 1800 s rather than trimming the walk: **a
+harness that times out reports a false green**, which is the failure mode this
+whole file exists to end. The axis-1 test also now names `--axis 1` explicitly
+instead of running the default `both`, since axis 2 has its own test and
+running both would double a four-minute walk for no extra coverage.

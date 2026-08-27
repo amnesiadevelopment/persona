@@ -792,24 +792,45 @@ def test_constant_arms_are_recounted_not_read_from_the_stored_verdict():
     )
 
 
+@pytest.mark.timeout(1800)
 def test_the_enumerator_is_committed_and_reports_every_site_moving():
     """The SEARCH ships, not just a description of it.
 
     Narrating a method leaves the next person to rebuild it. This runs the
-    committed enumerator and requires a clean exit: it destroys the raw
-    readings scenario by scenario and fails if any rendered section does not
-    move, which is the whole defect class in one command.
+    committed enumerator's AXIS 1 and requires a clean exit: it walks every
+    raw-reading field, destroys it, and fails if a rendered claim does not
+    move — which is the whole defect class in one command.
+
+    Axis 1 is named explicitly rather than running the default `both`. Axis 2
+    has its own test, and running both here would double a four-minute walk
+    for no extra coverage.
+
+    ⚠️ TWO bounds have to be raised, not one, and missing the second is how
+    this test failed after round 7 generalised the walk. The `subprocess`
+    timeout below bounds the CHILD; `pyproject.toml`'s `timeout = 120` is
+    pytest-timeout bounding the TEST THREAD, and the smaller of the two wins.
+    Raising only the child's bound left the thread bound to kill it at 120 s,
+    which reads as a harness failure rather than as the walk being slow.
+
+    Both are sized for the GENERALISED walk: round 7 replaced six hand-written
+    scenarios with 95 fields x 3 mutation operations, and the recount
+    underneath each render is 200k Monte-Carlo trials per record. Generous on
+    purpose — a harness that times out reports a false green, which is the
+    failure mode this file exists to end.
     """
     enumerator = READINGS / "enumerate_summary_sites.py"
     assert enumerator.is_file(), "the enumeration harness is not committed"
 
     proc = subprocess.run(
-        [sys.executable, str(enumerator), "--quiet"],
-        capture_output=True, text=True, encoding="utf-8", timeout=300,
+        [sys.executable, str(enumerator), "--axis", "1", "--quiet"],
+        capture_output=True, text=True, encoding="utf-8", timeout=1800,
     )
     assert proc.returncode == 0, (
-        "a rendered figure did not move when the readings underneath it were "
+        "a rendered claim did not move when the readings underneath it were "
         f"destroyed:\n{proc.stdout[-3000:]}"
+    )
+    assert "raw-reading fields walked" in proc.stdout, (
+        "axis 1 did not report walking any raw-reading fields"
     )
 
 
@@ -1048,3 +1069,197 @@ def test_axis2_exemption_is_scoped_to_the_record_that_cross_checks_it():
     assert '("gpu[on]", "seeds_readable")' in source, (
         "the exemption does not name the GPU sweep record it applies to"
     )
+
+
+# ---------------------------------------------------------------------------
+# ROUND 7 — the class covers PROSE, and axis 1 was still a hand-written list.
+#
+# Round 6 closed the stored-summary class on both axes, but the two axes were
+# not symmetric: axis 2 was a GENERIC WALK of every stored field, while axis 1
+# was six hand-written scenarios whose whole mutation vocabulary was
+# `readings[arm][seed] = None` and `leg["reading"] = {"vectors": {}}`. A
+# readback leg carries NINE fields; axis 1 touched exactly one of them.
+#
+# Live defects sat in the blind spot BETWEEN the axes — invisible to axis 1
+# (which never mutated `layer`) and to axis 2 (a reading is not a summary).
+# The property, stated to cover both halves:
+#
+#     No rendered claim — figure OR prose — may be frozen against the
+#     evidence it describes.
+#
+# The sites below were returned by the GENERALISED axis-1 walk, not supplied.
+# Two matched the review's list; three did not (the derived heading, the
+# render CRASHING on a fully-destroyed arm, and the ownership claim).
+#
+# Every mutation is driven through IN-MEMORY records. No committed evidence
+# file is ever written to.
+# ---------------------------------------------------------------------------
+
+
+def test_chromium_canvas_clause_is_derived_from_chromium_readings():
+    """S1. A hardcoded conclusion about ONE engine inside the OTHER's branch.
+
+    ``On chromium all three differ.`` was a literal, sitting in a paragraph
+    selected entirely by firefox data. Forcing chromium's canvas to collide
+    rendered the recounted table row as **COLLIDES** with this sentence one
+    line below still saying they all differ — a caption contradicting the row
+    directly above it, in the paragraph that IS DoD #2's deliverable and that
+    the ticket forbids averaging into one verdict.
+    """
+    d, _, _, _ = _records()
+    rb = d.load(d.READBACK)
+    rep, repc = d.load(d.REPLICATE), d.load(d.REPLICATE_CHROME)
+    assert "On chromium all three differ." in d.readback_section(rb, rep, repc)
+
+    for s in [str(x) for x in rb["seeds"]]:
+        rb["readings"]["chromium"][s]["reading"]["vectors"][
+            "canvas_pixel_hash"] = "SAME:bytes8192:mid6144"
+    after = d.readback_section(rb, rep, repc)
+
+    assert "On chromium all three differ." not in after, (
+        "the caption still says chromium's three seeds differ while the table "
+        "row above it reports COLLIDES"
+    )
+    assert "COLLIDES" in after
+    assert "must not be averaged into one verdict" in after, (
+        "a chromium collision is not the engine split described below, and "
+        "the paragraph must say so rather than describing a split"
+    )
+
+
+def test_layer_sentence_reads_the_layer_report_it_cites():
+    """S2. An explanation that cannot be contradicted by the record it cites.
+
+    The sentence cites "the layer report in these records" as its evidence and
+    then spelled BOTH halves out as literals. Nothing in derive.py consulted
+    ``leg["layer"]`` at all, so handing every firefox leg a canvas extension
+    and shrinking chromium's layer to two entries moved nothing while the
+    paragraph went on describing a layer report neither engine had.
+    """
+    d, _, _, _ = _records()
+    rb = d.load(d.READBACK)
+    rep, repc = d.load(d.REPLICATE), d.load(d.REPLICATE_CHROME)
+    before = d.readback_section(rb, rep, repc)
+    assert "no canvas extension at all" in before
+    assert "against ten on chromium" in before
+
+    for leg in rb["readings"]["firefox"].values():
+        leg["layer"]["installed"] = sorted(leg["layer"]["installed"] + ["canvas_ctx"])
+    for leg in rb["readings"]["chromium"].values():
+        leg["layer"]["installed"] = ["audio", "webgl"]
+    after = d.readback_section(rb, rep, repc)
+
+    assert "no canvas extension at all" not in after, (
+        "the mechanism still claims firefox installs no canvas extension "
+        "while the layer report it cites now lists one"
+    )
+    assert "against ten on chromium" not in after, (
+        "the chromium layer size is still spelled out rather than counted"
+    )
+    assert "against two on chromium" in after
+
+
+def test_ownership_claim_is_derived_from_the_same_layer_evidence():
+    """S3. The ownership verdict rests on the mechanism, so it must move with it.
+
+    ``**This is a two-engine-rule cell, not a chromium cell.**`` is the
+    conclusion of the mechanism paragraph above it. Left as a literal it would
+    keep telling the reader a chromium fix cannot touch the cell even once the
+    records stopped supporting the reason.
+    """
+    d, _, _, _ = _records()
+    rb = d.load(d.READBACK)
+    rep, repc = d.load(d.REPLICATE), d.load(d.REPLICATE_CHROME)
+    assert "not a chromium cell" in d.readback_section(rb, rep, repc)
+
+    for leg in rb["readings"]["firefox"].values():
+        leg["layer"]["installed"] = sorted(leg["layer"]["installed"] + ["canvas_ctx"])
+    after = d.readback_section(rb, rep, repc)
+
+    assert "not a chromium cell" not in after, (
+        "the ownership verdict survives the disappearance of the mechanism "
+        "it rests on"
+    )
+    assert "no longer holds in these records" in after
+
+
+def test_webgl_heading_reports_the_branch_the_body_derived():
+    """S4. A heading is a rendered claim, and this one names a branch.
+
+    "and it is the harder answer" NAMES the expensive branch — the one where
+    the internal difference does not survive the trip out. Making the probe
+    collide flips the body to the OTHER branch ("upstream of delivery ...
+    PS-182 can be verified entirely on loopback") while the heading went on
+    calling it the harder answer, three lines above the sentence that now
+    contradicted it. Found by the generalised walk; on nobody's list.
+    """
+    d, _, _, _ = _records()
+    rb = d.load(d.READBACK)
+    rep, repc = d.load(d.REPLICATE), d.load(d.REPLICATE_CHROME)
+    assert "ANSWERED, and it is the harder answer" in \
+        d.readback_section(rb, rep, repc)
+
+    for s in [str(x) for x in rb["seeds"]][:2]:
+        rb["readings"]["firefox"][s]["reading"]["vectors"][
+            "webgl_pixel_hash"] = "51df3565"
+    after = d.readback_section(rb, rep, repc)
+
+    assert "upstream of delivery" in after, "the body did not flip branch"
+    assert "the harder answer" not in after, (
+        "the heading still announces the harder branch while the body reports "
+        "the tractable one"
+    )
+    assert "the tractable answer" in after
+
+
+def test_an_unreadable_arm_is_reported_not_crashed_on():
+    """S5. INCONCLUSIVE is a RESULT the article has to be able to print.
+
+    The generalised walk destroys a field outright rather than truncating it,
+    and an arm with no readable seed legitimately produces ``None`` for every
+    estimator column. Rendering that raised ``TypeError: unsupported format
+    string passed to NoneType`` — the document did not report the arm as
+    unobtainable, it failed to build at all. A traceback publishes nothing,
+    and the ticket is explicit that anything not obtained is recorded WITH ITS
+    REASON rather than left blank.
+    """
+    d, off, on, _ = _records()
+    for seed in on["readings"]["android"]:
+        on["readings"]["android"][seed] = None
+
+    section = _gpu(d, off, on)  # must not raise
+
+    assert "no readable seed" in section, (
+        "a fully unreadable arm must be reported as unobtainable"
+    )
+    assert "INCONCLUSIVE" in section and "not a pass" in section, (
+        "an unobtainable arm must be recorded as INCONCLUSIVE and explicitly "
+        "not as a pass"
+    )
+
+
+def test_axis1_is_a_generic_walk_not_a_scenario_list():
+    """THE round-7 blocker, pinned so it cannot regress to a list.
+
+    Axis 2 was generic while axis 1 was six hand-written scenarios, and a
+    supplied list can only re-find what someone already named. This asserts
+    axis 1 derives its mutations FROM THE RECORDS and reports how many fields
+    it walked, rather than iterating a constant.
+    """
+    source = (READINGS / "enumerate_summary_sites.py").read_text(encoding="utf-8")
+
+    assert "SCENARIOS = [" not in source, (
+        "axis 1 is back to a hand-written scenario list"
+    )
+    assert "_reading_groups" in source and "_subpaths" in source, (
+        "axis 1 does not walk the reading tree generically"
+    )
+    assert "CITED BUT FROZEN" in source, (
+        "axis 1 has no detector for a value the article prints but never reads"
+    )
+    # The declaration list must carry REASONS, not just names: an inert field
+    # is a decision someone made, and the harness records it rather than
+    # silently skipping it.
+    assert "NOT_RENDERED = {" in source
+    for key in ('("rb", "layer.route")', '("rb", "error")'):
+        assert key in source, f"{key} is not declared as inert-with-a-reason"
