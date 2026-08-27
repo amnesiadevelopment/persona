@@ -945,28 +945,50 @@ def test_genuine_narrowing_verdict_is_recomputed_not_echoed():
     )
 
 
-def test_pool_size_is_recounted_from_the_product_not_the_record():
-    """`k` is an INPUT to two rendered columns, so echoing it half-derives them.
+def test_pool_size_is_pinned_to_the_measurement_epoch_not_the_live_product():
+    """`k` is an INPUT to two rendered columns, and it is an AS-OF fact.
 
-    Round 5 recomputed the estimator FORMULAE but fed them a `k` read out of
-    the stored block, leaving `E[plug-in | uniform]` and the `1/k` bar resting
-    on the record's word. This site was on nobody's list — no grep for
-    "monte_carlo" returns it — and it moves the single sentence the whole
-    artefact finding rests on ("android scored BELOW what uniform predicts").
+    Two distinct defects meet at this one field, and fixing either alone
+    leaves the other live.
+
+    ROUND 6 (still guarded below): round 5 recomputed the estimator FORMULAE
+    but fed them a `k` read out of the uniformity record's stored block,
+    leaving `E[plug-in | uniform]` and the `1/k` bar resting on the record's
+    word. That site was on nobody's list and it moves the single sentence the
+    whole artefact finding rests on.
+
+    ROUND 7: taking `k` from the LIVE product fixed that and introduced the
+    opposite failure. `k` is not a property of the readings and not a summary
+    the sweep wrote about itself — it is an ENVIRONMENTAL INPUT the sweep
+    recorded, and 24 observed draws cannot recover it. PS-183 widened
+    `MAC_GPUS` 2 -> 11 the day after these readings were taken, and the same
+    committed macos draw scored against a `1/11` bar instead of `1/2` moves
+    p 0.308 -> 0.000 and flips the arm from **artefact** to **genuine** —
+    manufacturing a product finding out of an unrelated pool edit, which is
+    the PS-14 false attribution, and rewriting a published verdict
+    retroactively every time someone edits a pool.
+
+    So `k` comes from the SWEEP's own `fallback_pool_size` witness: the record
+    of what the pool held when the draw was taken.
     """
     d = _load_derive_module()
     unif = d.load(d.UNIF_ON)
     off, on = d.load(d.LAYER_OFF), d.load(d.LAYER_ON)
 
-    unif["per_arm"]["android"]["pool_size"] = 999
-    section = d.gpu_section(off, on, d.load(d.UNIF_OFF), unif)
-    row = next(
-        ln for ln in section.split("\n")
-        if ln.startswith("| android |") and ln.count("|") == 8
-    )
+    def android_row(uon, layer_on):
+        section = d.gpu_section(off, layer_on, d.load(d.UNIF_OFF), uon)
+        return next(
+            ln for ln in section.split("\n")
+            if ln.startswith("| android |") and ln.count("|") == 8
+        ), section
+
+    # ROUND 6's guard: the uniformity record's own copy is not consulted.
+    poisoned = d.load(d.UNIF_ON)
+    poisoned["per_arm"]["android"]["pool_size"] = 999
+    row, section = android_row(poisoned, on)
     assert "| 0.2812 | 0.2500 |" in row, (
         "poisoning the stored pool_size moved the expectation column or the "
-        f"bar, so `k` is taken from the record rather than from the pool: {row}"
+        f"bar, so `k` is taken from the uniformity record's copy: {row}"
     )
     settles = next(
         ln for ln in section.split("\n") if "single line that settles it" in ln
@@ -974,6 +996,51 @@ def test_pool_size_is_recounted_from_the_product_not_the_record():
     assert "0.2812" in settles, (
         f"the sentence the artefact finding rests on moved with a poisoned "
         f"stored pool size: {settles}"
+    )
+
+    # ROUND 7's guard: the SWEEP's witness is what drives it. Move that, and
+    # the columns MUST move — otherwise `k` is coming from somewhere else.
+    epoch = d.load(d.LAYER_ON)
+    epoch["result"]["per_arm"]["android"]["fallback_pool_size"] = 11
+    moved_row, _ = android_row(unif, epoch)
+    assert "| 0.2812 | 0.2500 |" not in moved_row, (
+        "changing the pool size the SWEEP recorded did not move the estimator "
+        f"columns, so `k` is not read from the measurement epoch: {moved_row}"
+    )
+
+
+def test_the_article_reproduces_independently_of_todays_gpu_pools():
+    """The published figures must not depend on the machine rendering them.
+
+    This is the property the epoch pin buys, stated end to end: a committed
+    measurement describes the moment it was taken, so re-deriving it a month
+    later — on a product whose pools have since moved — must produce the same
+    document. Before the pin, PS-183's `MAC_GPUS` widening silently changed a
+    published verdict on all three CI platforms.
+
+    The live product is patched to the WIDENED pool rather than mocked at the
+    derive layer, so this exercises the same path a real post-PS-183 checkout
+    takes.
+    """
+    from src.services.verify import engine_gpu_variance as egv
+
+    d = _load_derive_module()
+    off, on = d.load(d.LAYER_OFF), d.load(d.LAYER_ON)
+    before = d.gpu_section(off, on, d.load(d.UNIF_OFF), d.load(d.UNIF_ON))
+
+    wide = {"windows": 5, "macos": 11, "linux": 8, "android": 4}
+    real_size, real_bar = egv.fallback_pool_size, egv.bar_for
+    try:
+        egv.fallback_pool_size = lambda arm: wide.get(arm, 0)
+        egv.bar_for = lambda arm: (1.0 / wide[arm]) if wide.get(arm) else None
+        after = d.gpu_section(off, on, d.load(d.UNIF_OFF), d.load(d.UNIF_ON))
+    finally:
+        egv.fallback_pool_size, egv.bar_for = real_size, real_bar
+
+    assert after == before, (
+        "the rendered GPU section changed when the product's GPU pools were "
+        "widened, so a committed measurement is being scored against today's "
+        "pool rather than the one it was drawn from"
     )
 
 

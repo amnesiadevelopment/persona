@@ -626,3 +626,123 @@ harness that times out reports a false green**, which is the failure mode this
 whole file exists to end. The axis-1 test also now names `--axis 1` explicitly
 instead of running the default `both`, since axis 2 has its own test and
 running both would double a four-minute walk for no extra coverage.
+
+---
+
+## 9. Round 7 (second half) — `k` is an AS-OF fact, not a recount
+
+Round 7's axis-1 work was pushed green locally and CI came back **red on all
+three platforms**. The cause was not the change. It is worth recording in full,
+because the fix that caused it was a *correct* fix for the defect it was aimed
+at, and it introduced the opposite one.
+
+### 9a. The trace, run rather than argued
+
+`8945189 [#PS-183] fix(gpu): widen MAC_GPUS 2 -> 11 with per-entry provenance`
+landed on `main` at **2026-08-27 00:57** — after this branch's previous head
+went green at **2026-08-26 22:09**. CI builds a PR merged with `main`.
+
+The decisive check was to take the PARENT commit — round 6, verified green on
+all four jobs — merge today's `main` into it, and run the failing tests:
+
+```
+FAILED test_edit3_is_the_derive_output_verbatim_as_it_claims
+FAILED test_recomputed_uniformity_matches_the_stored_record_exactly
+E  uniformity-check.layer-on.json macos: recomputed monte_carlo_p_value=0.0
+   but the committed record stores 0.30837
+```
+
+**Round 6 fails identically**, so this was never a round-7 regression. Attribute
+by experiment, not by "what changed most recently".
+
+### 9b. What actually broke
+
+Round 6 recounted `pool_size` from **the live product** via
+`engine_gpu_variance.fallback_pool_size()`. That was strictly better than
+echoing the uniformity record's copy — *while the two agreed*. PS-183 moved the
+product and they stopped agreeing:
+
+| macos | pool | bar `1/k` | Monte-Carlo p | verdict |
+|---|---|---|---|---|
+| at measurement (stored in the record) | **2** | 0.5000 | 0.308 | **artefact** |
+| today's product (after PS-183) | **11** | 0.0909 | 0.000 | **genuine** |
+
+The 24 macos readings were drawn from a **2-entry pool**. Scoring them against a
+bar for an 11-entry pool that did not exist when they were taken is comparing a
+measurement to the wrong reference — and it does not merely shift a number, it
+**flips the verdict**, manufacturing a "genuine narrowing finding" out of an
+unrelated pool widening. That is exactly the false attribution PS-14 exists to
+prevent: *check the instrument before attributing anything to the product.*
+
+It also means a **published verdict changes retroactively** whenever any ticket
+edits a pool. The article would silently rewrite its own history.
+
+### 9c. The distinction the whole class turns on
+
+`pool_size` is **not the same kind of field** as `seeds_readable`,
+`collision_probability` or `monte_carlo_p_value`:
+
+* those are **self-reports about the readings**. The readings are committed
+  ground truth, so the fix is to RECOUNT and never trust the summary.
+* `pool_size` is an **environmental INPUT, recorded**. The sweep did not compute
+  it from its readings — it wrote down what the environment was. Twenty-four
+  observed identities cannot recover the size of the pool they were drawn from,
+  so the record is the **only witness**, and "recount it from today" is not a
+  stronger reading of the evidence, it is a *different measurement*.
+
+Stated as a rule that covers both halves:
+
+> **Recount what the readings determine. Pin what the readings merely
+> witnessed.**
+
+Round 6 applied the first clause to a field governed by the second. Rounds 2–6
+were all about not trusting a stored summary; this is the one field where the
+stored value is the evidence, and the live product is the unreliable narrator.
+
+### 9d. The fix
+
+`uniformity_check.analyse()` takes an optional `pool_sizes`, and
+`epoch_pool_sizes(record)` reads `k` per arm from the **sweep's own
+`fallback_pool_size`** — the witness written beside the draws at measurement
+time. `derive.py` passes it, and `k` joins the memo key for the same reason the
+readings do.
+
+Note it is taken from the SWEEP record, **not** from the uniformity record's own
+`pool_size` copy: that copy is a transcription of a transcription, and round 6's
+guard against reading it still stands. Both guards are now pinned in one test —
+poisoning the uniformity record's copy must NOT move the render, and changing
+the sweep's witness MUST.
+
+The gate's own verdicts were checked before relying on this: `classify()`
+reproduces all eight stored verdicts exactly under both the old and the widened
+pool, so the drift was confined to the estimator columns.
+
+### 9e. What did NOT change, and the new property that guarantees it
+
+`derived-output.txt` is **byte-identical**; lines 6–89 still hash to
+`b2bdcef6f0ec928237b6c9630e4e99ec`. **Seven rounds, no measured figure has
+moved.** No sweep re-run, no reading touched, zero modified `.json` files.
+
+And now that is guaranteed rather than observed. A test patches the live product
+to PS-183's widened pools and requires the rendered GPU section to be
+**unchanged** — the property stated end to end:
+
+> A committed measurement describes the moment it was taken, so re-deriving it
+> on a product whose pools have since moved must produce the same document.
+
+### 9f. ⚠️ A GENUINE FINDING falls out of this, and it is REPORTED, not fixed
+
+The macos layer-ON cell — **53.1% over 24 seeds** — is an accurate measurement
+of a **2-entry** pool, and macos now ships **11**. So that cell is now **stale
+as a description of what ships**: PS-183 has almost certainly improved it, and
+nobody has measured how much.
+
+This ticket does **not** re-measure it. Doing so needs a sweep, which round 7 is
+explicitly forbidden from running, and PS-183 owns the pool. It is recorded here
+and in the ticket so the next person re-runs rather than assumes — the same
+disposition as PS-191 and PS-192.
+
+**This is also the two-engine rule's cousin, one axis over:** a measurement can
+be invalidated by a change to the thing it measured, not only by a defect in how
+it was taken. A reading set carries an epoch, and the epoch is part of the
+result.

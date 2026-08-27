@@ -479,6 +479,56 @@ def _is_disclosed(label: str, field: str) -> bool:
     )
 
 
+# THE SECOND EXEMPTION, AND IT IS A DIFFERENT KIND FROM THE FIRST.
+#
+# `seeds_readable` above is exempt because a rendered line CROSS-CHECKS it.
+# `fallback_pool_size` is exempt because it is not a summary at all: it is an
+# ENVIRONMENTAL INPUT the sweep recorded beside its draws — the pool `k` the
+# identities were drawn FROM. Axis 2's rule ("a rendered figure must not depend
+# on a stored field") is aimed at a summary the sweep wrote ABOUT ITSELF, and
+# it does not apply to an input, because for an input a dependency is the
+# entire point: change the pool the draw came from and the score against it
+# MUST change.
+#
+# It is exempt here precisely BECAUSE round 7 stopped reading it from the live
+# product. Recounting `k` from today's `gpu_ext` looked like the same recount
+# every other field got, and it silently rescored a committed measurement
+# against a pool that did not exist when it was taken — PS-183 widened
+# MAC_GPUS 2 -> 11 and flipped macos from `artefact` to `genuine`. Twenty-four
+# observed identities cannot recover the size of the pool behind them, so the
+# record is the only witness there is.
+#
+#     Recount what the readings determine. Pin what the readings merely
+#     witnessed.
+#
+# ⚠️ ASSERTED, NOT WAIVED, and the assertion runs the OPPOSITE way to the
+# disclosed-field one: a disclosed field must move only PROSE, while an input
+# must actually MOVE A PUBLISHED ROW somewhere. An input that changes nothing
+# is not load-bearing, which would mean the epoch pin reaches no rendered
+# figure and the article is scoring against something else entirely. See the
+# check after the walk.
+#
+# SCOPED TO `gpu[on]` ONLY, and the omission of `gpu[off]` is a measured fact
+# rather than an oversight. The layer-OFF pool size IS consulted — poisoning it
+# moves that record's bar and `E[plug-in | uniform]` internally — but the only
+# layer-OFF figures the article RENDERS are the constant-arm bullets, which
+# print a p-value to three decimals, and those arms are so far from uniform
+# that p is `0.000` at any pool size. Nothing published responds, so `gpu[off]`
+# needs no exemption: it passes the ordinary rule by not moving the render at
+# all. Listing it anyway would claim a dependency the document does not have,
+# and the assertion below would correctly call that claim inert.
+EPOCH_INPUT_FIELDS = {
+    ("gpu[on]", "fallback_pool_size"),
+}
+
+
+def _is_epoch_input(label: str, field: str) -> bool:
+    return any(
+        label.startswith(prefix) and field == name
+        for prefix, name in EPOCH_INPUT_FIELDS
+    )
+
+
 def poison(value):
     """A clearly-wrong replacement of the SAME TYPE.
 
@@ -605,6 +655,24 @@ def run_axis2(base: "list[str]", quiet: bool) -> "list[str]":
                 print(f"  ✗ {label}: moved a published row")
             elif not quiet:
                 print(f"  ~ {label}: exempt, disclosure fired (prose only)")
+            continue
+
+        if _is_epoch_input(label, field):
+            # Exempt as an INPUT, and asserted the OPPOSITE way to a disclosed
+            # field: this one MUST move a published row. `k` is the pool the
+            # identities were drawn from, so a score against it that does not
+            # respond to it is not reading the epoch at all — the article
+            # would be scoring the draw against something else, which is the
+            # very defect the pin was added to fix.
+            if not rows_moved:
+                violations.append(
+                    f"{label} — exempt as an EPOCH INPUT, but poisoning it "
+                    "moved no published row, so nothing rendered depends on "
+                    "the pool the draw came from")
+                print(f"  ✗ {label}: exemption claimed, but INERT")
+            elif not quiet:
+                print(f"  ~ {label}: exempt as an epoch input "
+                      f"({len(rows_moved)} row(s) respond to it)")
             continue
 
         if changed:
