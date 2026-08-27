@@ -59,9 +59,9 @@ Run with the fault as a well-formed SOCKS5 `0x01` refusal (a gateway that is up 
 
 ---
 
-## Two rules the harness had to enforce on itself
+## Three rules the harness had to enforce on itself
 
-Both were learned by this harness producing a **wrong answer first**, and both are now enforced in code. This is PS-14 in both directions: distrust an instrument reporting failure, *and* one reporting success.
+All three were learned by this harness producing a **wrong answer first**, and all three are now enforced in code. This is PS-14 in both directions: distrust an instrument reporting failure, *and* one reporting success.
 
 **1. Pre-flight every probe host, in every leg.** An early run printed `*** REPRODUCED ***`. It was false. The probe host `api.my-ip.io` is simply **dead through this proxy** — `curl` gets 0/5 with Firefox nowhere in the picture. A dead probe host reads at the assertion site exactly like the product defect being hunted. The host was removed and a pre-flight added. (`openstreetmap.org` is dead through this proxy too — same TLS EOF under `curl` — which explains one other tab failure that was *not* a product finding.)
 
@@ -70,6 +70,17 @@ The pre-flight initially guarded only the fault-injection leg — the one where 
 **2. The injected fault must be proven to bite — and the heal proven to take.** The first fault-injection run had every tab riding **one pooled keep-alive connection to one host**, so the break never reached a tab: the tab opened "during the outage" loaded happily and the run went green **while measuring nothing**. Now each tab loads a **distinct host**, and a green "tab during outage" **aborts the run as INVALID** rather than reporting "did not reproduce".
 
 The recovery is now checked in the same direction and for the same reason. The upstream is a **rotating backconnect gateway whose real exit can die on its own schedule**, entirely independently of the shim flag the harness clears — so "I set `fail = False`" is not evidence that the network came back. The out-of-band reachability check at step `[3]` was being *printed and discarded*; it is now **acted on**, and a proxy that did not verifiably recover aborts the run as **INVALID** before Firefox is touched. Without that branch, the decisive leg's tabs would fail because **the network was down** and the harness would report it as `*** REPRODUCED ***` — the exact false-positive class this instrument exists to refuse, one step further along than the one that already bit it.
+
+**3. The control tab is a precondition, never a verdict.** The owner's report is *"the first page loads, the tab I open afterwards does not"* — so `tab1` loading is what makes every downstream tab **interpretable**. It is not evidence for or against the defect. Three legs folded it into the verdict anyway, and it broke in **both** directions:
+
+- `leg_failover` computed `tab1_ok` and then gated the reproduction banner on `if tab1_ok and not all(after)`. When the control failed, the `and` short-circuited and control fell through to `return True` — so a **totally broken run** printed `tabs after heal: 0/3 OK` and `Not reproduced` three lines apart and exited `0`. That is the **false all-clear**, and it is the worse of the two directions: a false alarm gets investigated, a false all-clear closes the last open line of inquiry on this ticket.
+- `leg_baseline` and `leg_content` scored `all(results)` with `tab1` inside `results`, so a run where the control failed and **every second tab loaded** reported `DEFECT SEEN` — the exact opposite of what was measured.
+
+All three now score the control **separately**: a failing control returns `None` (**INVALID run**), and the verdict is computed only over the second-and-later tabs that the question is actually about.
+
+This is **not theoretical, and pre-flight cannot close it**, because pre-flight measures a *different layer* than the legs assert on. `socks_reachable` proves the **SOCKS tunnel opens** (`s.connect((host, 443))`); the legs assert on a **full HTTPS page load**. A host that accepts the CONNECT and then fails TLS sits exactly in that gap — and this very document records one on this very proxy: `openstreetmap.org`, *same TLS EOF under `curl`*. Such a host **passes pre-flight and fails the tab**. Rule 1 narrows the gap; only rule 3 stops it from becoming a verdict.
+
+A fourth defect of the same class was found while fixing these, by driving rather than reading: with `tab1` removed from `results`, a `--tabs 1` run would have scored `all([]) == True` — a **vacuous pass** reporting "no defect seen" having never opened the tab in question. `leg_baseline` now refuses a run with fewer than two tabs.
 
 ---
 
@@ -107,7 +118,7 @@ Already excluded by the ticket: the peer-ownership guard (no certificate assigne
 
 **Still `PS-217`'s, and untouched here:**
 - `_proxy_dict`'s regex recognises **only** `socks5://`; any other scheme falls to `{"server": url}` and **silently drops credentials**, which an authenticated proxy would refuse.
-- The shipped launch never pins `network.proxy.failover_direct`, while the verify harness (`verify/browser_tier.py:194`) does.
+- The shipped launch never pins `network.proxy.failover_direct`, while the verify harness (`src/services/verify/browser_tier.py:194`) does.
 
 Neither was shown to cause this symptom. The `--pin-failover` flag exists on the harness so the second one can be measured directly if it is ever suspected again.
 
