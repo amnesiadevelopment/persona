@@ -38,6 +38,8 @@ import flet as ft
 from ..log_console import (
     ROW_HEIGHT,
     SEV_COLOR,
+    SEV_FAIL,
+    SEV_OK,
     StreamState,
     event_row,
     parse_event,
@@ -236,6 +238,13 @@ class LogDock:
         #: dock appends the difference rather than diffing text, so repeated
         #: identical lines cannot confuse it into re-rendering the tail.
         self._seq = 0
+        #: The session's severity tally — see the labels in the header. Counted
+        #: as events ARRIVE rather than by re-scanning the retained tail: the
+        #: ring drops old lines, so a tally computed from what is still in
+        #: memory would silently fall as the session got longer, which is the
+        #: opposite of what a running total is for.
+        self._fail_count = 0
+        self._ok_count = 0
         #: True only between a USER scroll notification and the END that closes
         #: it. Auto-scroll's own animation emits UPDATE frames whose position
         #: lags the extent it is animating toward, and reading those as a
@@ -304,6 +313,18 @@ class LogDock:
         self._total_label = ft.Text(
             "", size=10, color=COLORS["text_sub"], font_family=MONO
         )
+        #: The severity TALLY — how many failures, how many completions, in the
+        #: whole session. This direction's answer to "what should a short dock
+        #: show?": not more rows, but the one fact the rows cannot give at a
+        #: glance. Six lines tell him what happened last; the tally tells him
+        #: whether anything is wrong at all, which is the question he opens the
+        #: app with when he is running many profiles by hand.
+        self._fail_tally = ft.Text(
+            "", size=10, color=COLORS["error"], font_family=MONO
+        )
+        self._ok_tally = ft.Text(
+            "", size=10, color=COLORS["success"], font_family=MONO
+        )
 
         self.body = ft.Container(expand=True, content=self._stream_pane())
         self.collapsed_strip = ft.Container(
@@ -336,6 +357,8 @@ class LogDock:
                     font_family=MONO,
                 ),
                 self._total_label,
+                self._fail_tally,
+                self._ok_tally,
             ],
         )
         # The whole left cluster is the collapse target, not just the 17px
@@ -651,6 +674,12 @@ class LogDock:
         self._follow_label.value = "paused — reading" if paused else "following"
         self._follow_label.color = COLORS["warning"] if paused else COLORS["success"]
         self._total_label.value = f"· {self.state.total} events"
+        # The tally is this direction's whole claim about a SHORT dock: the
+        # rows say what happened last, these say whether anything is wrong.
+        # Rendered only when non-zero — a "0 failed" that is always on screen
+        # trains the eye to ignore the place a real failure count will appear.
+        self._fail_tally.value = f"· {self._fail_count} failed" if self._fail_count else ""
+        self._ok_tally.value = f"· {self._ok_count} ok" if self._ok_count else ""
         self._counter.value = f"+{n}" if n else ""
         # Classify the SAME TEXT THE ROW DOES, not the raw stored line. The row
         # renders parse_event()'s message ("Session ended"); the raw line still
@@ -668,6 +697,23 @@ class LogDock:
 
     def set_profiles(self, names) -> None:
         self.profiles = frozenset(names or ())
+
+    def _tally(self, lines: list[str]) -> None:
+        """Fold arriving events into the session's severity counters.
+
+        Classifies the SAME TEXT THE ROW DOES — ``parse_event``'s message, not
+        the raw stored line. ``severity()`` has anchored rules
+        (``startswith("session ended")``) that a leading timestamp silently
+        defeats, so tallying the raw line would count a failure as idle and the
+        header would disagree with the rows underneath it. That is the exact
+        bug the collapsed pulse already had.
+        """
+        for line in lines:
+            _stamp, _profile, _msg, sev = parse_event(line, self.profiles)
+            if sev == SEV_FAIL:
+                self._fail_count += 1
+            elif sev == SEV_OK:
+                self._ok_count += 1
 
     def _apply_trim(self) -> None:
         """Drop rows above :data:`MAX_ROWS`, but never under a reader.
@@ -719,6 +765,7 @@ class LogDock:
                     event_row(ln, self.profiles) for ln in fresh
                 )
                 arrived = len(fresh)
+                self._tally(fresh)
 
         self._seq = seq
         self.state.total = seq

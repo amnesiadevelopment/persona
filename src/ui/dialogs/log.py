@@ -33,7 +33,15 @@ from __future__ import annotations
 
 import flet as ft
 
-from ..log_console import SEV_COLOR, SEV_FAIL, SEV_INFO, SEV_OK, event_row, parse_event
+from ..log_console import (
+    NO_PROFILE,
+    SEV_COLOR,
+    SEV_FAIL,
+    SEV_INFO,
+    SEV_OK,
+    event_row,
+    parse_event,
+)
 from ..theme.colors import COLORS
 
 MONO = "monospace"
@@ -52,7 +60,11 @@ _FILTERS = (
 def open_log_dialog(page: ft.Page, log_lines: list[str], profiles=None) -> None:
     """Open the Activity Log at full size, with the tools that size deserves."""
     profiles = frozenset(profiles or ())
-    state = {"sev": "all", "profile": "", "query": ""}
+    # `lanes` is this direction's own switch: the same events, read either as
+    # one stream or as one column per machine. It opens in LANES because that
+    # is the whole reason to make the log fullscreen in this direction — the
+    # flat stream is what the dock already gives.
+    state = {"sev": "all", "profile": "", "query": "", "lanes": True}
 
     body = ft.ListView(expand=True, spacing=0)
     count_label = ft.Text("", size=11, color=COLORS["text_sub"], font_family=MONO)
@@ -71,24 +83,128 @@ def open_log_dialog(page: ft.Page, log_lines: list[str], profiles=None) -> None:
             out.append(line)
         return out
 
+    def _empty() -> list:
+        return [
+            ft.Container(
+                padding=ft.Padding.symmetric(vertical=28),
+                content=ft.Text(
+                    "Nothing matches these filters.",
+                    size=12,
+                    color=COLORS["text_dim"],
+                    font_family=MONO,
+                ),
+            )
+        ]
+
+    def _lane(profile: str, lines: list[str]) -> ft.Control:
+        """One machine's column: its name, its state, and its own events.
+
+        THE ARGUMENT OF THIS DIRECTION. He runs many profiles BY HAND and
+        watches the log to see what the product is doing — so at full size the
+        question is not "what happened next", it is "where does each machine
+        stand". A single interleaved stream can only answer that by making him
+        read every row and sort them in his head. Lanes do the sorting.
+
+        The lane header carries the counts, so "bank-uk-07 has three failures"
+        is readable without entering the lane at all.
+        """
+        fails = 0
+        oks = 0
+        for line in lines:
+            _s, _p, _m, sev = parse_event(line, profiles)
+            if sev == SEV_FAIL:
+                fails += 1
+            elif sev == SEV_OK:
+                oks += 1
+
+        marks: list[ft.Control] = []
+        if fails:
+            marks.append(
+                ft.Text(f"{fails} failed", size=11, color=COLORS["error"], font_family=MONO)
+            )
+        if oks:
+            marks.append(
+                ft.Text(f"{oks} ok", size=11, color=COLORS["success"], font_family=MONO)
+            )
+
+        return ft.Container(
+            expand=True,
+            padding=ft.Padding.only(right=18),
+            content=ft.Column(
+                expand=True,
+                spacing=0,
+                controls=[
+                    ft.Row(
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Text(
+                                profile or NO_PROFILE,
+                                size=12,
+                                weight=ft.FontWeight.BOLD,
+                                color=COLORS["accent"] if profile else COLORS["text_sub"],
+                                font_family=MONO,
+                                no_wrap=True,
+                                max_lines=1,
+                                overflow=ft.TextOverflow.ELLIPSIS,
+                            ),
+                            *marks,
+                            ft.Text(
+                                f"{len(lines)}",
+                                size=11,
+                                color=COLORS["text_sub"],
+                                font_family=MONO,
+                            ),
+                        ],
+                    ),
+                    ft.Container(height=8),
+                    # The lane's own scroller. Each machine scrolls
+                    # independently, which is the point: reading bank-uk-07's
+                    # history must not move shop-de-03's.
+                    ft.ListView(
+                        expand=True,
+                        spacing=0,
+                        controls=[
+                            # The profile column is dropped INSIDE a lane — the
+                            # lane header already names the machine, and
+                            # repeating it on every row would spend the width
+                            # the message needs.
+                            event_row(ln, frozenset(), )
+                            for ln in lines
+                        ],
+                    ),
+                ],
+            ),
+        )
+
     def repaint(_=None) -> None:
         rows = matching()
-        body.controls = (
-            [event_row(ln, profiles) for ln in rows]
-            if rows
-            else [
-                ft.Container(
-                    padding=ft.Padding.symmetric(vertical=28),
-                    content=ft.Text(
-                        "Nothing matches these filters.",
-                        size=12,
-                        color=COLORS["text_dim"],
-                        font_family=MONO,
-                    ),
+        count_label.value = f"{len(rows)} of {len(log_lines)}"
+
+        if not rows:
+            body.controls = _empty()
+        elif state["lanes"]:
+            # Group into lanes, ordered by the roster so the columns do not
+            # reshuffle as events arrive — a lane that moves while he is
+            # reading it is the same complaint as a stream that scrolls itself.
+            grouped: dict[str, list[str]] = {}
+            for line in rows:
+                _s, prof, _m, _sev = parse_event(line, profiles)
+                grouped.setdefault(prof or NO_PROFILE, []).append(line)
+            ordered = [p for p in sorted(profiles) if p in grouped]
+            if NO_PROFILE in grouped:
+                ordered.append(NO_PROFILE)
+            body.controls = [
+                ft.Row(
+                    expand=True,
+                    spacing=0,
+                    vertical_alignment=ft.CrossAxisAlignment.START,
+                    controls=[_lane(p, grouped[p]) for p in ordered],
                 )
             ]
-        )
-        count_label.value = f"{len(rows)} of {len(log_lines)}"
+        else:
+            body.controls = [event_row(ln, profiles) for ln in rows]
+
         with __import__("contextlib").suppress(Exception):
             body.update()
             count_label.update()
@@ -131,6 +247,31 @@ def open_log_dialog(page: ft.Page, log_lines: list[str], profiles=None) -> None:
                 content=filter_texts[key],
             )
         )
+
+    # --- lanes / stream switch, same borderless text pattern as the filters.
+    lanes_text = ft.Text("lanes", size=11.5, font_family=MONO)
+
+    def paint_lanes() -> None:
+        on = bool(state["lanes"])
+        lanes_text.value = "lanes" if on else "stream"
+        lanes_text.color = COLORS["accent"] if on else COLORS["text_sub"]
+        lanes_text.weight = ft.FontWeight.BOLD if on else ft.FontWeight.NORMAL
+        with __import__("contextlib").suppress(Exception):
+            lanes_text.update()
+
+    def toggle_lanes(_) -> None:
+        state["lanes"] = not state["lanes"]
+        paint_lanes()
+        repaint()
+
+    lanes_toggle = ft.Container(
+        on_click=toggle_lanes,
+        ink=True,
+        border_radius=3,
+        padding=ft.Padding.symmetric(horizontal=9, vertical=6),
+        tooltip="Read as one stream, or as a column per profile",
+        content=lanes_text,
+    )
 
     search = ft.TextField(
         hint_text="search the log…",
@@ -213,6 +354,8 @@ def open_log_dialog(page: ft.Page, log_lines: list[str], profiles=None) -> None:
                     *filter_row,
                     ft.Container(width=8),
                     *profile_row,
+                    ft.Container(width=8),
+                    lanes_toggle,
                     ft.Container(width=220, content=search),
                     ft.IconButton(
                         icon=ft.Icons.CLOSE_FULLSCREEN,
@@ -227,6 +370,7 @@ def open_log_dialog(page: ft.Page, log_lines: list[str], profiles=None) -> None:
     )
 
     paint_filters()
+    paint_lanes()
     repaint()
 
     # No shape, no border side, no scrim colour, no actions row: the dialog is
