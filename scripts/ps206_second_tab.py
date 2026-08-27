@@ -26,9 +26,9 @@ product's OWN proxied-profile prefs, in four legs:
   concurrency hold N SOCKS connections open at once - can a live tab's sockets
               starve a new tab's?
 
-TWO RULES THIS HARNESS ENFORCES ON ITSELF
------------------------------------------
-Both were learned by this harness producing a WRONG answer first.
+THREE RULES THIS HARNESS ENFORCES ON ITSELF
+-------------------------------------------
+All three were learned by this harness producing a WRONG answer first.
 
 1. **PRE-FLIGHT EVERY PROBE HOST, IN EVERY LEG.** A host that is simply dead
    through the proxy reads at the assertion site as "the tab could not
@@ -49,8 +49,28 @@ Both were learned by this harness producing a WRONG answer first.
    any tab is touched, the run aborts as INVALID - otherwise [4] fails because
    the NETWORK is down and reports it as the product defect.
 
+3. **THE CONTROL TAB IS A PRECONDITION, NEVER A VERDICT.** The owner's report
+   is "the first page loads, the tab I open afterwards does not", so tab1
+   loading is what makes every downstream tab INTERPRETABLE - it is not
+   evidence for or against the defect. Three legs used to fold it into the
+   verdict, and it broke in BOTH directions: in ``failover`` a failing control
+   short-circuited the ``and`` and fell through to "Not reproduced" + exit 0
+   (the harness printed "tabs after heal: 0/3 OK" and "Not reproduced" three
+   lines apart), while in ``baseline``/``content`` ``all(results)`` let a
+   failing control read as DEFECT SEEN even when every SECOND tab loaded. A
+   failing control is now an INVALID run in all three.
+
+   Pre-flight (rule 1) narrows this but CANNOT close it, because it measures a
+   different layer than the legs assert on: ``socks_reachable`` proves the
+   SOCKS tunnel opens, while a leg asserts on a full HTTPS page load. A host
+   that accepts the CONNECT and then fails TLS sits exactly in that gap, and
+   EVIDENCE.md records a real one on a real proxy (openstreetmap.org, TLS EOF
+   under curl too) - it passes pre-flight and fails the tab.
+
 Both directions of PS-14: distrust an instrument that reports a failure, and
-distrust one that reports a success.
+distrust one that reports a success. A false alarm gets investigated; a false
+ALL-CLEAR closes the last open line of inquiry on this ticket, so the success
+direction is the more dangerous of the two.
 
 EXIT CODE
 ---------
@@ -105,7 +125,7 @@ def load_proxy_url(args) -> str:
 
 
 def proxy_dict(proxy_url: str):
-    """Verbatim mirror of services/browser/invisible_launch.py::_proxy_dict.
+    """Verbatim mirror of src/services/browser/invisible_launch.py::_proxy_dict.
 
     Copied rather than imported ON PURPOSE: this harness must measure what the
     SHIPPED launch builds, and an import would silently follow a refactor of
@@ -137,10 +157,11 @@ def upstream_parts(url: str):
 
 
 # The proxied-profile prefs the SHIPPED Firefox launch applies
-# (invisible_launch.py ~2350). Deliberately does NOT include
-# network.proxy.failover_direct: the verify harness pins it
-# (verify/browser_tier.py:194) and the shipped launch does not. That asymmetry
-# is PS-217's to resolve; --pin-failover measures whether it matters here.
+# (src/services/browser/invisible_launch.py ~2350). Deliberately does NOT
+# include network.proxy.failover_direct: the verify harness pins it
+# (src/services/verify/browser_tier.py:194) and the shipped launch does not.
+# That asymmetry is PS-217's to resolve; --pin-failover measures whether it
+# matters here.
 SHIPPED_PROXIED_PREFS = {
     "media.peerconnection.ice.relay_only": True,
     "media.peerconnection.ice.no_host": True,
@@ -378,6 +399,27 @@ def load(page, label, url, timeout=45000):
         return False, msg
 
 
+def control_invalid(leg) -> str:
+    """The banner for a run whose CONTROL tab never loaded.
+
+    tab1 is not part of any leg's verdict. The owner's report is "the first
+    page loads, the tab I open afterwards does not", so tab1 loading is the
+    PRECONDITION that makes every downstream tab interpretable - not evidence
+    for or against the defect.
+
+    Pre-flight narrows this but cannot close it, because it measures a
+    DIFFERENT LAYER than the legs assert on: ``socks_reachable`` proves the
+    SOCKS tunnel opens, while a leg asserts on a full HTTPS page load. A host
+    that accepts the CONNECT and then fails TLS sits exactly in that gap, and
+    EVIDENCE.md records a real one on a real proxy (openstreetmap.org, TLS EOF
+    under curl too). Such a host passes pre-flight and fails the tab.
+    """
+    return (f"\n  !! INVALID RUN ({leg}): the control tab never loaded on a "
+            f"healthy proxy.\n     The precondition for the whole question "
+            f"('the first page works') does not\n     hold, so nothing "
+            f"downstream is interpretable. !!")
+
+
 # ------------------------------------------------------------------------- legs
 
 def leg_baseline(proxy_url, prefs, tabs):
@@ -394,13 +436,29 @@ def leg_baseline(proxy_url, prefs, tabs):
               f"survived pre-flight -> driving {len(usable)} tabs, one per "
               f"host (reusing a host would measure a pooled connection).")
         tabs = len(usable)
+    if tabs < 2:
+        # `results` holds only SECOND-or-later tabs now, so a 1-tab run would
+        # score all([]) == True - a vacuous pass that reports "no defect seen"
+        # having never opened the tab the question is about. Refuse instead.
+        print(f"  ABORT (baseline): {tabs} tab(s) requested. This leg asks "
+              f"whether a SECOND tab connects;\n  with fewer than 2 there is "
+              f"no second tab and nothing to measure.")
+        return None
     results = []
     with open_engine(proxy_dict(proxy_url), prefs, "ps206-base-") as ctx:
         first = ctx.pages[0] if ctx.pages else ctx.new_page()
-        results.append(load(first, "tab1 first ", usable[0])[0])
+        # The CONTROL, scored separately from the measurement. The question
+        # this leg asks is "does a SECOND tab connect?" - including tab1 in
+        # the verdict let the tab that is NOT in question decide it, so a run
+        # where tab1 failed and tabs 2-5 all loaded reported DEFECT SEEN.
+        tab1_ok = load(first, "tab1 first ", usable[0])[0]
+        if not tab1_ok:
+            print(control_invalid("baseline"))
+            return None
         for i in range(2, tabs + 1):
             results.append(load(ctx.new_page(), f"tab{i} opened", usable[i - 1])[0])
-    print(f"  -> {sum(results)}/{len(results)} tabs loaded")
+    print(f"  -> control tab1 OK; {sum(results)}/{len(results)} SECOND-or-later "
+          f"tabs loaded")
     return all(results)
 
 
@@ -415,8 +473,12 @@ def leg_content(proxy_url, prefs):
     results, exits = [], []
     with open_engine(proxy_dict(proxy_url), p, "ps206-content-") as ctx:
         first = ctx.pages[0] if ctx.pages else ctx.new_page()
-        ok, body = load(first, "tab1 first ", usable[0])
-        results.append(ok)
+        # The CONTROL, scored separately from the measurement - see
+        # control_invalid(). `results` holds ONLY content-opened tabs.
+        tab1_ok, body = load(first, "tab1 first ", usable[0])
+        if not tab1_ok:
+            print(control_invalid("content"))
+            return None
         exits.append(body)
         for i, url in enumerate(usable[1:], start=2):
             t0 = time.time()
@@ -438,8 +500,10 @@ def leg_content(proxy_url, prefs):
                       f"{str(exc).splitlines()[0][:90]}", flush=True)
                 results.append(False)
     distinct = len({e for e in exits if e})
-    print(f"  -> {sum(results)}/{len(results)} tabs loaded; "
-          f"{distinct} distinct exit IPs "
+    # `exits` still includes the control's body on purpose: the exit-IP
+    # comparison wants tab1 in it, the VERDICT does not.
+    print(f"  -> control tab1 OK; {sum(results)}/{len(results)} content-opened "
+          f"tabs loaded; {distinct} distinct exit IPs "
           f"({'fresh proxy connection per tab' if distinct > 1 else 'shared exit'})")
     return all(results)
 
@@ -460,6 +524,19 @@ def leg_failover(proxy_url, prefs, mode):
             print("\n [1] first page, proxy healthy")
             first = ctx.pages[0] if ctx.pages else ctx.new_page()
             tab1_ok = load(first, "tab1 first ", usable[0])[0]
+            if not tab1_ok:
+                # tab1 is the CONTROL, not part of the verdict. The owner's
+                # report is "the first page loads, the tab I open afterwards
+                # does not" - so tab1 loading is the PRECONDITION that makes
+                # every downstream tab interpretable. Folding it into the
+                # verdict below let a totally broken run short-circuit the
+                # `and` and fall through to "Not reproduced" + exit 0: the
+                # harness printed "tabs after heal: 0/3 OK" and "Not
+                # reproduced" three lines apart. A false alarm gets
+                # investigated; a false ALL-CLEAR closes the last open line of
+                # inquiry on this ticket, so it is the worse direction.
+                print(control_invalid("failover"))
+                return None
 
             print("\n [2] proxy hop BREAKS (a rotating exit dies)")
             SHIM["fail"] = True
@@ -503,12 +580,15 @@ def leg_failover(proxy_url, prefs, mode):
 
     print(f"\n  shim: conns={SHIM['conns']} refused={SHIM['refused']} "
           f"forwarded={SHIM['forwarded']}")
-    print(f"  tab1 before outage : {'OK' if tab1_ok else 'FAIL'}")
+    print(f"  tab1 before outage : OK (control; a FAIL aborted the run above)")
     print(f"  tab during outage  : FAIL (fault confirmed to bite)")
     print(f"  proxy heal verified: OK (out-of-band, before any tab)")
     print(f"  tabs after heal    : {sum(after)}/{len(after)} OK")
     print(f"  original tab reload: {'OK' if reload_ok else 'FAIL'}")
-    if tab1_ok and not all(after):
+    # `after` alone decides this. tab1 is the control and is guaranteed OK by
+    # the guard at [1] - re-testing it here is what allowed a failing control
+    # to short-circuit into a false "Not reproduced".
+    if not all(after):
         print("\n  *** REPRODUCED *** a tab opened AFTER the proxy recovered "
               "still cannot connect:\n  the browser is refusing on its own "
               "memory of the failure, not on the network.")
