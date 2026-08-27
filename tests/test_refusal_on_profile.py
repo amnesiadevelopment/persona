@@ -14,9 +14,11 @@ working. An operator who does not register it reads "the profile didn't open",
 and the natural next move is to remove the protection.
 
 These tests pin the MECHANISM and the MEANING:
-  - the three refusals stay distinguishable at the surface (the wording works
-    hard to separate "never checked successfully" from "the last check FAILED",
-    and that distinction has to survive the trip to the card);
+  - every refusal stays distinguishable at the surface (the wording works hard
+    to separate "never checked successfully" from "the last check FAILED" from
+    "no zone for this country", and those distinctions have to survive the trip
+    to the card — they carry three different remedies, and one of them is NOT
+    a re-check);
   - an ordinary error does NOT mark a card (routine noise stays quiet, or the
     marker the operator must not skim past becomes one they learn to);
   - the marker survives being ignored, and carries its AGE so it cannot quietly
@@ -39,6 +41,7 @@ from src.services.proxy.errors import (
     GeographyDisprovenError,
     GeographyUnknownError,
     ProxyUnresolvedError,
+    TimezoneUnderivableError,
 )
 from src.ui.components.profile_card import build_profile_card
 
@@ -124,16 +127,62 @@ def test_a_failed_last_check_is_not_reported_as_never_checked():
     )
 
 
-def test_the_three_refusals_are_distinguishable():
-    kinds = {
-        classify_refusal(exc, 1.0).kind
-        for exc in (
-            ProxyUnresolvedError("x"),
-            GeographyUnknownError("y"),
-            GeographyDisprovenError("z"),
-        )
-    }
-    assert len(kinds) == 3, f"refusals collapsed into {kinds}"
+def test_an_underivable_timezone_is_not_reported_as_never_checked():
+    """The same swallowing hazard as the test above, on a SECOND subclass.
+
+    ``TimezoneUnderivableError`` also subclasses ``GeographyUnknownError``, so
+    the parent's branch would catch it and label it "proxy never checked" —
+    and here that is worse than merely imprecise. This proxy may have been
+    checked SUCCESSFULLY seconds ago; the geo response simply carried no
+    ``/``-form zone. Telling the operator to check it sends them to re-run a
+    check that already passed and will keep passing forever, because the
+    missing thing is a ``_COUNTRY_TZ`` row, not a check result.
+    """
+    r = classify_refusal(TimezoneUnderivableError("no zone for NG"), 100.0)
+    assert r is not None
+    assert r.kind == "timezone_underivable", (
+        f"got kind {r.kind!r} — the parent's branch swallowed the subclass, so "
+        "the operator is pointed at the wrong remedy"
+    )
+    assert "never" not in r.label.lower(), (
+        f"an underivable zone was labelled {r.label!r}, which sends the "
+        "operator to re-check a proxy whose check may already have passed"
+    )
+
+
+def test_the_two_geography_subclasses_do_not_shadow_each_other():
+    """The siblings must stay distinct from EACH OTHER, not just from the
+    parent. Neither is a subclass of the other, so a chain that confused them
+    would report a missing table row as a failed check, or vice versa — two
+    completely different remedies."""
+    assert not issubclass(TimezoneUnderivableError, GeographyDisprovenError)
+    assert not issubclass(GeographyDisprovenError, TimezoneUnderivableError)
+    assert classify_refusal(GeographyDisprovenError("x"), 1.0).kind == "geography_disproven"
+    assert classify_refusal(TimezoneUnderivableError("y"), 1.0).kind == "timezone_underivable"
+
+
+def test_every_refusal_is_distinguishable():
+    """One distinct ``kind`` per refusal — no two may collapse.
+
+    Named for the invariant rather than for a COUNT: the previous name said
+    "three", which stopped being true the moment a fourth refusal landed, and a
+    test whose name is a stale census is one nobody thinks to extend. The
+    enumeration below must carry every exception ``classify_refusal`` answers,
+    and the count is derived from it rather than written in — so adding a
+    refusal here cannot silently leave the assertion measuring the old world.
+
+    ``kind`` is a published contract (the API's 409 body and the MCP tool both
+    branch on it), so a collapse is not cosmetic: it merges two states with two
+    different remedies into one value a caller cannot tell apart.
+    """
+    excs = (
+        ProxyUnresolvedError("x"),
+        GeographyUnknownError("y"),
+        GeographyDisprovenError("z"),
+        TimezoneUnderivableError("w"),
+    )
+    kinds = {classify_refusal(exc, 1.0).kind for exc in excs}
+    assert len(kinds) == len(excs), f"refusals collapsed into {kinds}"
 
 
 def test_the_settled_sentence_is_passed_through_not_restated():
@@ -387,6 +436,7 @@ def test_refusal_wording_is_not_a_nudge_to_drop_the_proxy():
         ProxyUnresolvedError("x"),
         GeographyUnknownError("y"),
         GeographyDisprovenError("z"),
+        TimezoneUnderivableError("w"),
     ):
         label = classify_refusal(exc, now).label.lower()
         for nudge in ("direct", "without a proxy", "disable", "skip", "anyway"):
