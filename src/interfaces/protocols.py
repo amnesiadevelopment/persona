@@ -193,6 +193,10 @@ class IBrowserLauncher(Protocol):
 
     def close_survivor(self, profile_name: str) -> bool: ...
 
+    # Reached through the protocol from ui/app.py's exit-confirmation confirm
+    # handler, which holds `self.bl: IBrowserLauncher`.
+    def close_all_survivors(self) -> "list[str]": ...
+
 
 class IProxyService(Protocol):
     def check_proxy_sync(

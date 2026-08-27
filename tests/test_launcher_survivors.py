@@ -479,3 +479,121 @@ def test_a_probe_that_raises_allows_the_launch_and_leaks_no_slot(
     bl.start_thread(Profile(name="alpha", os_type="windows"), lambda m: None)
 
     assert spawned == ["alpha"], "an unanswerable probe must not refuse a launch"
+
+
+def test_a_clean_exit_keeps_the_record_of_a_browser_it_could_not_close(
+    tmp_path, monkeypatch
+):
+    """A CLEAN QUIT MUST NOT ERASE THE GUARD OVER A BROWSER IT LEFT RUNNING.
+
+    THE DEFECT THIS GUARDS, and it defeats outcome 1 on the most ordinary path
+    there is — a normal quit. `shutdown_all` reaps `_active_sessions` and
+    nothing else, so a SURVIVOR inherited from a previous persona is not killed
+    by it. But it used to finish by wiping the WHOLE registry, which deleted
+    the record of the very browser it had just failed to kill. The next persona
+    then started with an empty file, found no survivor, and offered a second
+    launch on that profile directory: the user's original bug, reached through
+    the front door.
+
+    Sequence: B adopts a live survivor -> B exits CLEANLY -> the browser is
+    still alive -> C must still find it and still refuse.
+    """
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    reg = SessionRegistry(str(tmp_path / "s.json"))
+    reg.record(make_record("alpha", proc, "chromium"))
+
+    try:
+        b = _quiet_launcher(monkeypatch, SessionRegistry(reg.path))
+        survivors, _ = b.scan_survivors()
+        assert [r.profile for r in survivors] == ["alpha"], "precondition"
+        assert "alpha" not in b._active_sessions, (
+            "precondition: a survivor is NOT a session this run owns, which is "
+            "exactly why shutdown_all cannot reach it"
+        )
+
+        # The clean/atexit path. It does not — and cannot — kill the survivor.
+        b.shutdown_all()
+
+        assert proc.poll() is None, (
+            "precondition: shutdown_all did not kill the survivor, so the "
+            "record of it is the only thing standing between the user and a "
+            "second launch"
+        )
+        assert [r.profile for r in SessionRegistry(reg.path).load()] == ["alpha"], (
+            "the clean exit erased the record of a browser that is STILL "
+            "RUNNING — the next persona will offer a second launch on this "
+            "profile directory"
+        )
+
+        c = _quiet_launcher(monkeypatch, SessionRegistry(reg.path))
+        again, _ = c.scan_survivors()
+        assert [r.profile for r in again] == ["alpha"], (
+            "the guard did not survive a clean exit"
+        )
+        assert c.is_running("alpha") is True
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_a_clean_exit_still_forgets_the_sessions_it_did_reap(tmp_path, monkeypatch):
+    """The complement, and the thing that keeps the fix above honest.
+
+    Preserving a SURVIVOR's record must not turn into preserving EVERY record:
+    a session this process launched and then reaped on the way out is genuinely
+    gone, and its record goes with it. (A leftover record would be dropped at
+    the next scan anyway — the guard is grounded in liveness, never in a
+    record's presence — but leaving it would be an accumulating lie on disk.)
+    """
+    reg = SessionRegistry(str(tmp_path / "s.json"))
+    bl = _quiet_launcher(monkeypatch, reg)
+    bl.start_thread(Profile(name="alpha", os_type="windows"), lambda m: None)
+    assert [r.profile for r in reg.load()] == ["alpha"], "precondition"
+
+    bl.shutdown_all()
+
+    assert reg.load() == [], "a session we DID reap must not keep its record"
+
+
+def test_closing_all_survivors_reports_the_one_that_would_not_die(
+    tmp_path, monkeypatch
+):
+    """The exit dialog's promise has to be answerable, including when it fails.
+
+    `close_all_survivors` is what makes the dialog's "closing persona will
+    close the browser(s) for: ..." true for survivors, which `shutdown_all`
+    structurally cannot reach. It returns the names that did NOT close so the
+    caller can say so — and, crucially, a name that would not die KEEPS ITS
+    RECORD, so the next start still guards it. Failing to close is survivable;
+    failing to close and then forgetting is the defect.
+    """
+    reg = SessionRegistry(str(tmp_path / "s.json"))
+    bl = _quiet_launcher(monkeypatch, reg)
+    bl._survivors = {
+        "alpha": SessionRecord(
+            profile="alpha", pid=1, create_time=1.0, pgid=None,
+            engine="chromium", started_at=0.0, owner_pid=0,
+        ),
+        "beta": SessionRecord(
+            profile="beta", pid=2, create_time=2.0, pgid=None,
+            engine="chromium", started_at=0.0, owner_pid=0,
+        ),
+    }
+    for rec in bl._survivors.values():
+        reg.record(rec)
+
+    monkeypatch.setattr(
+        launcher_mod, "terminate_record", lambda rec, **k: rec.profile != "beta"
+    )
+
+    stubborn = bl.close_all_survivors()
+
+    assert stubborn == ["beta"], "the caller cannot warn about what it is not told"
+    assert [r.profile for r in bl.survivors()] == ["beta"], (
+        "the one that closed must be forgotten and the one that did not must "
+        "still be held, or the guard forgets a live browser"
+    )
+    assert [r.profile for r in reg.load()] == ["beta"], (
+        "a survivor we could not close must KEEP its record, or the next start "
+        "loses the guard over a browser we promised to close and did not"
+    )

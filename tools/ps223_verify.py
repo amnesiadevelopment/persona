@@ -7,9 +7,17 @@ SECOND process against the same PERSONA_HOME and asks whether the guard holds.
 That process boundary is the whole defect and no unit test crosses it.
 
 Run:  python3 tools/ps223_verify.py <phase>
-  launch   — spawn a real browser, record it, print the pid, then SIGKILL self
-  inspect  — fresh process: scan survivors, report what the guard now says
-  stale    — write a record for a genuinely dead process, prove it does NOT block
+  launch    — spawn a real browser, record it, print the pid, then SIGKILL self
+  inspect   — fresh process: scan survivors, report what the guard now says
+  stale     — write a record for a genuinely dead process, prove it does NOT block
+  cleanexit — fresh process: adopt the survivor, then exit CLEANLY (shutdown_all,
+              the atexit path) and report whether the record — and so the guard —
+              outlived an ordinary quit. This is the round-3 defect: shutdown_all
+              reaps only _active_sessions, so it cannot kill a survivor, and it
+              used to wipe the whole registry anyway.
+  confirmed — fresh process: adopt the survivor and drive the exit dialog's
+              CONFIRM handler, which must actually close the survivor the dialog
+              promised to close (shutdown_all structurally cannot reach it).
 """
 
 import json
@@ -137,7 +145,120 @@ def phase_stale() -> None:
     print(f"REGISTRY_AFTER={reg.load()}", flush=True)
 
 
+def phase_cleanexit() -> None:
+    """A CLEAN quit must not erase the guard over a browser it left running.
+
+    shutdown_all reaps _active_sessions and nothing else, so the survivor it
+    inherited is NOT killed by it. The question is whether the record — the
+    only thing standing between the user and a second launch — is still there
+    afterwards.
+    """
+    name = os.environ.get("PS223_PROFILE", "ps223-probe")
+    bl = _launcher()
+
+    survivors, unknown = bl.scan_survivors()
+    print(f"SURVIVORS={[(r.profile, r.pid) for r in survivors]}", flush=True)
+    print(f"IN_ACTIVE_SESSIONS={name in bl._active_sessions}", flush=True)
+    pids = [r.pid for r in survivors]
+
+    # THE CLEAN EXIT — the same call atexit makes.
+    bl.shutdown_all()
+
+    for pid in pids:
+        try:
+            os.kill(pid, 0)
+            alive = True
+        except OSError:
+            alive = False
+        print(f"SURVIVOR_STILL_ALIVE_AFTER_SHUTDOWN_ALL pid={pid} {alive}", flush=True)
+
+    from src.core import config
+
+    try:
+        with open(config.SESSIONS_FILE, encoding="utf-8") as fh:
+            print(f"REGISTRY_AFTER_CLEAN_EXIT={fh.read().strip()}", flush=True)
+    except FileNotFoundError:
+        print("REGISTRY_AFTER_CLEAN_EXIT=<missing>", flush=True)
+
+    # And the question that matters: does a NEXT persona still see it?
+    nxt = _launcher()
+    again, _ = nxt.scan_survivors()
+    print(f"NEXT_PERSONA_SURVIVORS={[r.profile for r in again]}", flush=True)
+    print(f"NEXT_PERSONA_IS_RUNNING={nxt.is_running(name)}", flush=True)
+
+
+def phase_confirmed() -> None:
+    """The exit dialog's CONFIRM must make good on what it promised.
+
+    The dialog names survivors among the browsers it is about to close. This
+    drives the real confirm handler and asks whether the survivor actually died.
+    """
+    name = os.environ.get("PS223_PROFILE", "ps223-probe")
+    bl = _launcher()
+    survivors, _ = bl.scan_survivors()
+    pids = [r.pid for r in survivors]
+    print(f"SURVIVORS={[(r.profile, r.pid) for r in survivors]}", flush=True)
+
+    from src.ui.app import App
+
+    app = App.__new__(App)
+    app.bl = bl
+
+    class _W:
+        prevent_close = False
+        on_event = None
+        destroyed = False
+
+        def destroy(self):
+            type(self).destroyed = True
+
+    class _P:
+        window = _W()
+        dialogs: list = []
+
+        def show_dialog(self, d):
+            type(self).dialogs.append(d)
+
+        def pop_dialog(self):
+            pass
+
+        def update(self):
+            pass
+
+    app.page = _P()
+    names = sorted(app._open_browser_names())
+    print(f"DIALOG_WOULD_NAME={names}", flush=True)
+
+    import flet as ft
+
+    class _E:
+        type = ft.WindowEventType.CLOSE
+
+    app._on_window_event(_E())
+    dlg = _P.dialogs[0]
+    print(f"DIALOG_BODY={dlg.content.value!r}", flush=True)
+
+    # Press "close them and exit".
+    dlg.actions[1].on_click(None)
+    time.sleep(2.0)
+
+    for pid in pids:
+        try:
+            os.kill(pid, 0)
+            alive = True
+        except OSError:
+            alive = False
+        print(f"SURVIVOR_ALIVE_AFTER_CONFIRM pid={pid} {alive}", flush=True)
+    print(f"WINDOW_DESTROYED={_W.destroyed}", flush=True)
+
+
 if __name__ == "__main__":
-    {"launch": phase_launch, "inspect": phase_inspect, "stale": phase_stale}[
+    {
+        "launch": phase_launch,
+        "inspect": phase_inspect,
+        "stale": phase_stale,
+        "cleanexit": phase_cleanexit,
+        "confirmed": phase_confirmed,
+    }[
         sys.argv[1]
     ]()
