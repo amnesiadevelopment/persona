@@ -2390,6 +2390,70 @@ class App:
             ],
         )
 
+    @staticmethod
+    def _apply_status_bounds(control: ft.Text, expanded: bool) -> None:
+        """Re-apply the one-line / revealed bound to a LONG-LIVED status Text.
+
+        WHY THIS EXISTS AT ALL, because it is not obvious and it cost a capture.
+        The two engine status controls (``engine_text``, ``_engine2_text``) are
+        built ONCE in ``__init__`` and embedded in the row by reference — that
+        is deliberate and must stay, because the download callback writes to
+        them live and a snapshot here would freeze the percent mid-transfer.
+
+        But it means the reveal flag cannot be expressed by constructing the
+        control differently: the object the panel renders is the same object
+        every rebuild, carrying whatever bounds it was born with. Toggling
+        ``_engine_status_expanded`` therefore flipped the chevron's icon and
+        tooltip and changed NOTHING about the text — the row still ellipsised
+        to one line, so the reveal was a control that appeared to work and did
+        not. Caught by looking at the render, not at the semantics tree, which
+        reported the toggle as successful.
+
+        So the bound is applied to the LIVE control at build time instead. The
+        collapsed branch restates the one-line bound rather than assuming it,
+        because a control that was previously expanded has to be put back.
+        """
+        control.no_wrap = not expanded
+        control.max_lines = _STATUS_EXPANDED_MAX_LINES if expanded else 1
+        control.overflow = ft.TextOverflow.ELLIPSIS
+        # A revealed status reads as a block of prose, so it is left-aligned;
+        # collapsed it is a value at the end of a row and stays right-aligned.
+        control.text_align = (
+            ft.TextAlign.LEFT if expanded else ft.TextAlign.RIGHT
+        )
+
+    def _status_control(
+        self, live: ft.Text, expanded: bool
+    ) -> ft.Control:
+        """The status control to render for one engine row.
+
+        TWO CONTROLS, CHOSEN BY STATE, rather than one control mutated — and
+        the difference is not stylistic, it is the second bug this round.
+
+        Mutating the long-lived control's ``no_wrap``/``max_lines`` in place
+        (see :meth:`_apply_status_bounds`) sets the properties correctly and
+        the client does not repaint them: the panel hands flet the SAME object
+        it handed it last rebuild, so the reveal flipped the chevron's icon and
+        tooltip while the text stayed ellipsised to one line. The semantics
+        tree reported that as a successful toggle — only the pixels disagreed.
+
+        So the REVEALED state gets a freshly constructed control, which flet
+        has no choice but to paint. The COLLAPSED state keeps the long-lived
+        one, because that is the object the download progress callback writes
+        to live and swapping it would freeze the percent mid-transfer. The
+        trade lands on the right side: a revealed status is a static string
+        being read, while a collapsed one is the line that has to stay live.
+        """
+        if expanded:
+            return sidebar_status_text(
+                live.value or "",
+                size=12,
+                color=COLORS["text_main"],
+                expanded=True,
+            )
+        self._apply_status_bounds(live, False)
+        return live
+
     def _build_engines_panel(self) -> ft.Control:
         header = ft.Container(
             padding=ft.Padding.symmetric(horizontal=10, vertical=8),
@@ -2454,7 +2518,9 @@ class App:
                     content=self._engine_row(
                         self._engine_logo("chromium"),
                         "fp-chromium",
-                        self.engine_text,
+                        self._status_control(
+                            self.engine_text, self._engine_status_expanded
+                        ),
                         checking=self._engine_busy or self._engine_checking,
                         dot=self._engine_update_available(),
                         reveal=(
@@ -2494,7 +2560,9 @@ class App:
                     content=self._engine_row(
                         self._engine_logo("firefox"),
                         "firefox",
-                        self._engine2_text,
+                        self._status_control(
+                            self._engine2_text, self._engine2_status_expanded
+                        ),
                         checking=self._engine2_busy or self._engine2_checking,
                         dot=self._engine2_update_available(),
                         reveal=(
