@@ -54,6 +54,70 @@ from ..services.profile.filter import all_tags, filter_by_tag, filter_profiles
 #: taken theirs — so ~17 characters, with the ellipsis inside that budget.
 _VERSION_MAX_CHARS = 17
 
+#: How many lines an EXPANDED status may occupy before it is cut. The reveal
+#: has to be bounded too, or "expand" just re-creates the defect one click
+#: later: a stack trace pasted into a status string would push the panel out of
+#: shape exactly as the unbounded row did. Three lines is enough to read a real
+#: engine error ("firefox-142: signature check failed / expected sha256 ... /
+#: got ...") and small enough that the panel's shape survives it.
+_STATUS_EXPANDED_MAX_LINES = 3
+
+
+def sidebar_status_text(
+    value: str,
+    *,
+    size: int = 10,
+    color: str | None = None,
+    expanded: bool = False,
+) -> ft.Text:
+    """A status/label line that CANNOT push the engines panel out of shape.
+
+    THE COMPLAINT THIS ANSWERS, and why round 1 did not close it. The version
+    lines were bounded (see :func:`_short_engine_version` and the two engine
+    Text controls in ``__init__``) — but the GREY LABEL rows beneath them were
+    not. ``_engine_rollback_row``, ``_engine2_rollback_row`` and
+    ``_engine_rollback_pending_row`` each built a bare ``ft.Text(label, size=10,
+    color=text_dim)`` with no ``no_wrap``, no ``max_lines`` and no ``overflow``,
+    and every one of them interpolates a RUNTIME string:
+
+        f"resume updates (pinned to {pin})"
+        f"go back to {target}"
+        "rollback available after the next two engine updates"
+
+    That is the grey text seen running past the panel's right edge. The engine
+    STATUS strings are the other half: ``_engine2_status`` is assigned raw
+    service text (``"couldn't go back — see the log"``, and on the failure path
+    an arbitrary exception message), so its upper bound is whatever the engine
+    check happened to produce — the "single enormous run of text".
+
+    TWO THINGS ARE REQUIRED AND ONE ALONE IS NOT ENOUGH, which is the trap:
+
+    1. ``max_lines``/``overflow`` bound the text's own layout, and
+    2. ``expand=True`` bounds its WIDTH.
+
+    A ``Text`` inside a ``Row`` is given its intrinsic width — a Row does not
+    squeeze a child that did not ask to flex — so a long single-line string is
+    laid out at full length and simply overflows the Row, with the ellipsis
+    never engaging because, as far as the control is concerned, it was granted
+    all the room it asked for. Bounding the lines without bounding the width is
+    therefore precisely the fix that looks right and changes nothing.
+
+    ``expanded`` is the REVEAL, not a second layout: the same control, allowed
+    ``_STATUS_EXPANDED_MAX_LINES`` wrapped lines instead of one. It is still
+    bounded (see that constant) — a reveal that is unbounded is the original
+    defect deferred by one click.
+    """
+    return ft.Text(
+        value,
+        size=size,
+        color=color or COLORS["text_dim"],
+        font_family="monospace",
+        expand=True,
+        no_wrap=not expanded,
+        max_lines=_STATUS_EXPANDED_MAX_LINES if expanded else 1,
+        overflow=ft.TextOverflow.ELLIPSIS,
+    )
+
 
 def _short_engine_version(version: str) -> str:
     """An engine version the rail can actually show on one line.
@@ -245,6 +309,12 @@ class App:
         # for a situation that already has exactly one, free to drift from it.
         self._engine_unverifiable_msg: str = ""
         self._engines_open = False
+        # Whether each engine's status line is currently REVEALED (wrapped to
+        # _STATUS_EXPANDED_MAX_LINES) rather than ellipsised to one line. Per
+        # engine, not one shared flag: an operator reading a Firefox error must
+        # not have the Chromium row silently change height underneath them.
+        self._engine_status_expanded = False
+        self._engine2_status_expanded = False
         # An onboarding/changelog dialog owns the screen at startup; a staged
         # update that lands while it's open is held here and offered once the
         # onboarding closes, so the two dialogs never stack (#226).
@@ -266,8 +336,12 @@ class App:
         self._engine2_bar = ft.ProgressBar(
             value=None, color=COLORS["accent"], bgcolor=COLORS["input_bg"], height=4,
         )
-        self._engine2_detail = ft.Text(
-            "", size=10, color=COLORS["text_sub"], font_family="monospace",
+        # Bounded for the same reason as the grey label rows: this line carries
+        # progress prose assembled at runtime ("142.3 MB of 380.1 MB — 12s
+        # left"), so its length is a property of the download, not of the
+        # design. See sidebar_status_text for why expand=True is half the fix.
+        self._engine2_detail = sidebar_status_text(
+            "", color=COLORS["text_sub"]
         )
         # SINGLE LINE, BOTH OF THEM. These are the two controls the owner was
         # looking at when he said the Chromium text was longer than War and
@@ -298,11 +372,9 @@ class App:
             bgcolor=COLORS["input_bg"],
             height=4,
         )
-        self._engine_detail = ft.Text(
-            "",
-            size=10,
-            color=COLORS["text_sub"],
-            font_family="monospace",
+        # Bounded for the same reason as its Firefox twin above.
+        self._engine_detail = sidebar_status_text(
+            "", color=COLORS["text_sub"]
         )
         self.count_text = ft.Text(
             "0",
@@ -1357,10 +1429,7 @@ class App:
                         size=13,
                         color=COLORS["text_dim"],
                     ),
-                    ft.Text(
-                        label, size=10, color=COLORS["text_dim"],
-                        font_family="monospace",
-                    ),
+                    sidebar_status_text(label),
                 ],
             ),
         )
@@ -1531,10 +1600,7 @@ class App:
                         size=13,
                         color=COLORS["text_dim"],
                     ),
-                    ft.Text(
-                        label, size=10, color=COLORS["text_dim"],
-                        font_family="monospace",
-                    ),
+                    sidebar_status_text(label),
                 ],
             ),
         )
@@ -1605,12 +1671,7 @@ class App:
                     ft.Icon(
                         ft.Icons.INFO_OUTLINE, size=13, color=COLORS["text_dim"]
                     ),
-                    ft.Text(
-                        label,
-                        size=10,
-                        color=COLORS["text_dim"],
-                        font_family="monospace",
-                    ),
+                    sidebar_status_text(label),
                 ],
             ),
         )
@@ -2191,9 +2252,64 @@ class App:
             width=size, height=size, alignment=ft.Alignment.CENTER, content=inner
         )
 
+    @staticmethod
+    def _status_needs_reveal(value: str, expanded: bool) -> bool:
+        """Whether this status string is longer than its one-line cell.
+
+        Character-budgeted rather than measured, because flet gives no text
+        metrics back: the version cell is ~110px of a 200px rail and monospace
+        at size 12 runs ~6.2px per character (the same budget
+        :data:`_VERSION_MAX_CHARS` is derived from). A string at or under it
+        fits and gets NO reveal control — an affordance on a line that is
+        already whole is noise, and worse, it invites a click that visibly
+        does nothing.
+        """
+        if expanded:
+            return True
+        return len(value or "") > _VERSION_MAX_CHARS
+
+    def _toggle_engine_status(self, which: str) -> None:
+        """Reveal / re-collapse one engine's full status text in place."""
+        attr = "_engine_status_expanded" if which == "chromium" else "_engine2_status_expanded"
+        setattr(self, attr, not getattr(self, attr))
+        self._refresh_sidebar()
+
+    def _status_reveal_button(self, which: str, expanded: bool) -> ft.Control:
+        """The gesture that shows a truncated status in full.
+
+        WHY EXPAND-IN-PLACE AND NOT A TOOLTIP. A tooltip was the cheaper
+        answer and is the wrong one here for three reasons: it is invisible in
+        a screenshot (which is the artifact this design is judged from), it
+        needs a hover a touch/trackpad operator may never perform, and it is
+        the mechanism the row ALREADY uses for the full version string — so a
+        second, different meaning on the same gesture would collide with it.
+        Expanding in place is visible, clickable, and reversible.
+
+        IT IS ITS OWN CONTROL, NOT THE ROW'S CLICK. The row's ``on_click``
+        already means "check / update this engine" — a download over Tor on the
+        Chromium row. Overloading that gesture with "show me the text" would
+        make reading an error message start a hundreds-of-megabyte transfer.
+        """
+        return ft.Container(
+            on_click=lambda _: self._toggle_engine_status(which),
+            ink=True,
+            width=16,
+            height=16,
+            border_radius=3,
+            alignment=ft.Alignment.CENTER,
+            tooltip=(
+                "Hide the full status" if expanded else "Show the full status"
+            ),
+            content=ft.Icon(
+                ft.Icons.UNFOLD_LESS if expanded else ft.Icons.UNFOLD_MORE,
+                size=12,
+                color=COLORS["text_dim"],
+            ),
+        )
+
     def _engine_row(
         self, badge: ft.Control, name: str, status: ft.Control, checking: bool,
-        dot: bool = False,
+        dot: bool = False, reveal: ft.Control | None = None,
     ) -> ft.Control:
         """One engine, on ONE line: what it is, and what state it is in.
 
@@ -2265,6 +2381,11 @@ class App:
                         status,
                     ],
                 ),
+                # The reveal sits OUTSIDE the expanding Column, so widening the
+                # status never pushes it off the rail, and the Column's
+                # expand=True is what guarantees the status text is squeezed
+                # rather than allowed its intrinsic width.
+                *([reveal] if reveal is not None else []),
                 *trailing,
             ],
         )
@@ -2336,6 +2457,16 @@ class App:
                         self.engine_text,
                         checking=self._engine_busy or self._engine_checking,
                         dot=self._engine_update_available(),
+                        reveal=(
+                            self._status_reveal_button(
+                                "chromium", self._engine_status_expanded
+                            )
+                            if self._status_needs_reveal(
+                                self.engine_text.value or "",
+                                self._engine_status_expanded,
+                            )
+                            else None
+                        ),
                     ),
                 )
             )
@@ -2366,6 +2497,16 @@ class App:
                         self._engine2_text,
                         checking=self._engine2_busy or self._engine2_checking,
                         dot=self._engine2_update_available(),
+                        reveal=(
+                            self._status_reveal_button(
+                                "firefox", self._engine2_status_expanded
+                            )
+                            if self._status_needs_reveal(
+                                self._engine2_text.value or "",
+                                self._engine2_status_expanded,
+                            )
+                            else None
+                        ),
                     ),
                 )
             )
