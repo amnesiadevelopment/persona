@@ -224,6 +224,31 @@ exits (n=4) and established the unspoofed FNV baseline `1379655975` twice, which
 the baseline §2's spoofed arms are compared against. The bug is recorded rather than tidied
 away because the fix is what makes §2's arms meaningful.
 
+**The instrument changed mid-reading: the FNV-1a reducer was added after arm 2.** The
+committed `census.py` sets `fnv1a` on every record unconditionally, but the key is **absent
+entirely** (not null) from both records in `census-arm1.json` and `census-arm2.json`, and
+present in arms 3 and 4 taken three and five minutes later:
+
+| arm | taken | `fnv1a` |
+|---|---|---|
+| `census-arm1` | 22:51:56 | *(key absent)* |
+| `census-arm2` | 22:54:07 | *(key absent)* |
+| `census-arm3` | 22:57:02 | `1379655975` |
+| `census-arm4` | 22:57:36 | `1379655975` |
+
+So **the committed script is not the one that produced arms 1 and 2**, and a reader
+diffing it against those two records would find a key it cannot account for. Stated here
+rather than tidied away, for the same reason as the `$SPOOF_ARG` bug above: this reading's
+value is its provenance, so the instrument's history has to be auditable rather than its
+final version presented as though it had always been that.
+
+**The census figures are unaffected, and that is checkable rather than asserted.**
+`total_bytes` and `guard_eligible` were recorded by every version of the instrument and read
+**2912 / 32 on all four arms** — the reducer is a separate, additive column. What the
+reducer *is* load-bearing for is the unspoofed baseline `1379655975` that §2 compares the
+spoofed arms against, and that baseline comes **only from arms 3 and 4**, which §2 and the
+`$SPOOF_ARG` note above already say. No arm is re-taken and no figure moves.
+
 **`declared_machine_honoured: false` on Firefox** is engine limitation #211 — expected, not
 a finding.
 
@@ -254,12 +279,31 @@ engine was provisioned, and the exit answered on every one of the six arms.
 ## 8. Re-deriving this reading
 
 ```bash
-# provisioning is described in §7; it leaves an Xvfb-backed Firefox on :98
+# Provisioning is described in §7. It leaves an Xvfb/proot/xkb tree in a prefix
+# and a playwright-capable interpreter; point XROOT and PYTHON at them:
+export XROOT=/tmp/ps193/xroot            # default; see the note below
+export PYTHON=/path/to/venv/bin/python   # default: $REPO_ROOT/.venv/bin/python
+
 readings/ps193-2026-08-26/run.sh live  /tmp/out.json /tmp/out.log 150        # the census
 readings/ps193-2026-08-26/run.sh live  /tmp/s1.json  /tmp/s1.log  150 1337   # spoofed arm
 readings/ps193-2026-08-26/run.sh live  /tmp/s2.json  /tmp/s2.log  150 4242   # spoofed arm
-readings/ps193-2026-08-26/realm-run.sh                                       # loopback mechanism
+readings/ps193-2026-08-26/realm-run.sh /tmp/realm-probe.json                 # loopback mechanism
+
+readings/ps193-2026-08-26/derive.py                                          # re-derive §1/§2/§3 from the records
 ```
+
+Both runners resolve the repo from their own location (`BASH_SOURCE`) and execute the
+`census.py` / `realm_probe.py` committed **beside them**, following the pattern in
+`readings/ps186-2026-08-26/take-sweep.sh`. A reading whose runner executes a scratch copy of
+its own instrument is not re-derivable, because the scratch copy dies with the container.
+
+**`XROOT` is the one input that is genuinely not committable**, and it is overridable rather
+than hidden for exactly that reason: it is a tree of Debian `.deb`s unpacked into a prefix
+(§7), needed because this container has no root and so cannot install Xvfb normally.
+Rebuilding that prefix is a precondition to re-running the live arms — everything else in
+the chain is committed. If Xvfb never binds, both runners exit **90** with
+`ENGINE_NOT_PROVISIONED` rather than producing a census of zero, so a provisioning failure
+can never be misread as a finding.
 
 The credential is pinned to the **file** channel with `env -u PERSONA_TEST_PROXY` (the
 env var on this container is a *different provider* carrying a session token minted at
