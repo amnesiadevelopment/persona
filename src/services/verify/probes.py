@@ -23,10 +23,27 @@ from dataclasses import dataclass
 
 WINDOW = "window"
 WORKER = "worker"
-ALL_REALMS = (WINDOW, WORKER)
+
+# A same-origin CHILD BROWSING CONTEXT — a nested realm with its own set of
+# intrinsics, reached from the top realm by INDEXED access (``self[N]``).
+#
+# Deliberately NOT named "iframe". The name is data, and this one is load
+# bearing twice over: the test suite already uses the literal ``"iframe"`` as
+# its example of an UNKNOWN realm (it asserts that both ``run_probes`` and the
+# CLI reject it), so registering that spelling would silently invert two tests
+# from guarding a rejection into failing. "child_frame" also says the thing
+# that actually matters here — the realm is the child CONTEXT, not the element
+# that hosts it, and those are reached by different paths.
+CHILD_FRAME = "child_frame"
+
+ALL_REALMS = (WINDOW, WORKER, CHILD_FRAME)
 
 BOTH = (WINDOW, WORKER)
 WINDOW_ONLY = (WINDOW,)
+
+# Every realm the harness can enter. Reserved for probes whose vector is
+# meaningful in ALL of them — see ``realm.frameIdentity``.
+EVERY_REALM = (WINDOW, WORKER, CHILD_FRAME)
 
 # --- how a vector is expected to behave ACROSS TWO PROFILES -----------------
 #
@@ -891,6 +908,45 @@ PROBES: tuple[Probe, ...] = (
         "return {hasDocument:(typeof document!=='undefined'),"
         "hasWindow:(typeof window!=='undefined'),"
         "ctor:(self.constructor&&self.constructor.name)||null};})()",
+    ),
+    Probe(
+        "realm.frameIdentity",
+        EVERY_REALM,
+        # WHERE this realm sits in the frame tree — the one vector the top realm
+        # and a child realm are REQUIRED to disagree on.
+        #
+        # That requirement is the whole reason this record exists, and it is a
+        # deliberate answer to the trap the rest of this inventory walks into:
+        # every other probe here is seed-derived and deterministic, so a child
+        # realm reporting the same value as the window realm is the EXPECTED
+        # reading whether or not the harness ever entered the frame. Agreement
+        # proves nothing. Frame identity cannot agree — a realm that is its own
+        # top and a realm that is not are distinguishable by construction — so a
+        # divergence on this record is positive evidence that a distinct realm
+        # was actually entered, and its absence is a defect rather than a shrug.
+        #
+        # Every read is individually guarded because the three realms genuinely
+        # differ in what they expose: a Worker has no `top` and no `parent` at
+        # all, so it reports nulls rather than inventing a depth. Determinism
+        # holds in each realm (probes.py's hard requirement): the readings are
+        # a fixed shape per realm, and the walk is bounded at 64 so a cyclic or
+        # hostile parent chain cannot hang the run.
+        "(function(){"
+        "var hasTop=false,hasParent=false,selfIsTop=null,depth=null;"
+        "try{hasTop=(typeof self.top!=='undefined'&&self.top!==null);}catch(e){}"
+        "try{hasParent=(typeof self.parent!=='undefined'&&self.parent!==null"
+        "&&self.parent!==self);}catch(e){}"
+        "if(hasTop){try{selfIsTop=(self===self.top);}catch(e){selfIsTop=null;}}"
+        "if(hasTop){try{var n=0,w=self;while(n<64){var p=null;"
+        "try{p=w.parent;}catch(e){break;}"
+        "if(!p||p===w){break;}n++;w=p;}depth=n;}catch(e){depth=null;}}"
+        "return {hasTop:hasTop,hasParent:hasParent,"
+        "selfIsTop:selfIsTop,frameDepth:depth};})()",
+        note=(
+            "Realm position in the frame tree. Window and child_frame MUST "
+            "disagree here; that disagreement is what proves a child realm was "
+            "entered rather than assumed."
+        ),
     ),
 )
 
