@@ -30,19 +30,33 @@ TWO RULES THIS HARNESS ENFORCES ON ITSELF
 -----------------------------------------
 Both were learned by this harness producing a WRONG answer first.
 
-1. **PRE-FLIGHT EVERY PROBE HOST.** A host that is simply dead through the proxy
-   reads at the assertion site as "the tab could not connect". That produced a
-   false REPRODUCED banner (api.my-ip.io: 0/5 through the proxy with curl,
-   Firefox not involved). Hosts are checked before any product conclusion.
+1. **PRE-FLIGHT EVERY PROBE HOST, IN EVERY LEG.** A host that is simply dead
+   through the proxy reads at the assertion site as "the tab could not
+   connect". That produced a false REPRODUCED banner (api.my-ip.io: 0/5 through
+   the proxy with curl, Firefox not involved). EVERY leg pre-flights - a dead
+   host in baseline/content/concurrency yields an equally confident, equally
+   false "DEFECT SEEN", and two of the five hosts below were already dead
+   through one real proxy. Too few usable hosts ABORTS the leg as INVALID.
 
-2. **THE FAULT MUST BE PROVEN TO BITE.** The first fault-injection run had all
-   tabs riding ONE pooled keep-alive connection, so the injected break never
-   reached a tab and the run went green while measuring nothing. Each tab now
-   loads a DISTINCT host, and a green "tab during outage" ABORTS the run as
-   INVALID rather than reporting "did not reproduce".
+2. **THE FAULT MUST BE PROVEN TO BITE, AND THE HEAL PROVEN TO TAKE.** The first
+   fault-injection run had all tabs riding ONE pooled keep-alive connection, so
+   the injected break never reached a tab and the run went green while
+   measuring nothing. Each tab now loads a DISTINCT host, and a green "tab
+   during outage" ABORTS the run as INVALID rather than reporting "did not
+   reproduce". The recovery is checked the same way and in the same direction:
+   the upstream is a rotating backconnect gateway whose real exit can die on
+   its own schedule, so if the proxy is not verifiably reachable again BEFORE
+   any tab is touched, the run aborts as INVALID - otherwise [4] fails because
+   the NETWORK is down and reports it as the product defect.
 
 Both directions of PS-14: distrust an instrument that reports a failure, and
 distrust one that reports a success.
+
+EXIT CODE
+---------
+0 only when every leg run came back "no defect seen". Any DEFECT SEEN or any
+INVALID (instrument) exits 1, so the outcome is unambiguous when this is run on
+a machine none of us can watch and the result arrives as a pasted terminal tail.
 
 USAGE
 -----
@@ -265,9 +279,27 @@ def start_shim(upstream):
 
 # ------------------------------------------------------------------- primitives
 
-def socks_reachable(port, host, timeout=25) -> bool:
+def shim_proxy(port):
+    """The local shim's coordinates, in the same shape as ``upstream_parts``.
+
+    It speaks no-auth SOCKS5 to its client and adds credentials upstream itself,
+    hence the ``None`` user/pass.
+    """
+    return ("127.0.0.1", port, None, None)
+
+
+def socks_reachable(proxy, host, timeout=25) -> bool:
+    """Can ``host``:443 be reached through this SOCKS5 proxy?
+
+    ``proxy`` is an ``upstream_parts``-shaped ``(host, port, user, pw)`` tuple,
+    so the SAME check runs against the local shim and against the real upstream.
+    It used to hardcode ``127.0.0.1`` because it was written for the shim, which
+    is why only the shim-driven leg could pre-flight anything.
+    """
+    phost, pport, puser, ppw = proxy
     s = socks.socksocket()
-    s.set_proxy(socks.SOCKS5, "127.0.0.1", port, rdns=True)
+    s.set_proxy(socks.SOCKS5, phost, pport, rdns=True,
+                username=puser, password=ppw)
     s.settimeout(timeout)
     try:
         s.connect((host, 443))
@@ -277,22 +309,43 @@ def socks_reachable(port, host, timeout=25) -> bool:
         return False
 
 
-def preflight(port, urls):
+def preflight(proxy, urls):
     """Prove every probe host is reachable through the proxy BEFORE measuring.
 
     An unreachable probe host is an INSTRUMENT fault and reads at the assertion
     site exactly like the product defect being hunted. This already produced one
     false 'reproduced'.
+
+    EVERY leg calls this, not just the fault-injection one: a dead host in
+    baseline/content/concurrency yields an equally confident, equally false
+    'DEFECT SEEN'. Two of the five hosts below were already dead through one
+    real proxy, so this is a live risk on whatever proxy this next runs against.
     """
     print("pre-flight: probe hosts through the proxy")
     good = []
     for u in urls:
         host = u.split("/")[2]
-        if socks_reachable(port, host):
+        if socks_reachable(proxy, host):
             print(f"    {host:24} reachable")
             good.append(u)
         else:
             print(f"    {host:24} UNREACHABLE -> excluded (instrument, not product)")
+    return good
+
+
+def usable_hosts(proxy, minimum, leg):
+    """Pre-flight, and refuse to measure at all on too degraded an instrument.
+
+    Returns ``None`` (-> INVALID, never a product verdict) rather than a short
+    list, because a leg that quietly measures fewer hosts than it was designed
+    for is exactly the kind of unbounded result this ticket exists to stop.
+    """
+    good = preflight(proxy, PROBE_HOSTS)
+    if len(good) < minimum:
+        print(f"  ABORT ({leg}): {len(good)} usable probe host(s), need "
+              f"{minimum}. Refusing to measure on a degraded instrument - "
+              f"a dead host reads here exactly like the defect being hunted.")
+        return None
     return good
 
 
@@ -329,13 +382,24 @@ def load(page, label, url, timeout=45000):
 
 def leg_baseline(proxy_url, prefs, tabs):
     print("\n=== LEG: baseline (ctx.new_page(), healthy proxy) ===")
+    usable = usable_hosts(upstream_parts(proxy_url), 2, "baseline")
+    if usable is None:
+        return None
+    # ONE DISTINCT HOST PER TAB. Cycling hosts modulo would let two tabs ride
+    # one pooled keep-alive connection, so the second would not exercise a new
+    # proxy hop at all - which is the entire question. Pre-flight can exclude
+    # hosts, so the tab count follows the survivors rather than the request.
+    if tabs > len(usable):
+        print(f"  NOTE: {tabs} tabs requested, {len(usable)} probe host(s) "
+              f"survived pre-flight -> driving {len(usable)} tabs, one per "
+              f"host (reusing a host would measure a pooled connection).")
+        tabs = len(usable)
     results = []
     with open_engine(proxy_dict(proxy_url), prefs, "ps206-base-") as ctx:
         first = ctx.pages[0] if ctx.pages else ctx.new_page()
-        results.append(load(first, "tab1 first ", PROBE_HOSTS[0])[0])
+        results.append(load(first, "tab1 first ", usable[0])[0])
         for i in range(2, tabs + 1):
-            url = PROBE_HOSTS[(i - 1) % len(PROBE_HOSTS)]
-            results.append(load(ctx.new_page(), f"tab{i} opened", url)[0])
+            results.append(load(ctx.new_page(), f"tab{i} opened", usable[i - 1])[0])
     print(f"  -> {sum(results)}/{len(results)} tabs loaded")
     return all(results)
 
@@ -343,15 +407,18 @@ def leg_baseline(proxy_url, prefs, tabs):
 def leg_content(proxy_url, prefs):
     """Tabs opened by CONTENT (window.open), the closer analogue of Ctrl-T."""
     print("\n=== LEG: content-opened tabs (window.open) ===")
+    usable = usable_hosts(upstream_parts(proxy_url), 2, "content")
+    if usable is None:
+        return None
     p = dict(prefs)
     p["dom.disable_open_during_load"] = False
     results, exits = [], []
     with open_engine(proxy_dict(proxy_url), p, "ps206-content-") as ctx:
         first = ctx.pages[0] if ctx.pages else ctx.new_page()
-        ok, body = load(first, "tab1 first ", PROBE_HOSTS[0])
+        ok, body = load(first, "tab1 first ", usable[0])
         results.append(ok)
         exits.append(body)
-        for i, url in enumerate(PROBE_HOSTS[1:], start=2):
+        for i, url in enumerate(usable[1:], start=2):
             t0 = time.time()
             try:
                 with ctx.expect_page(timeout=45000) as info:
@@ -378,49 +445,67 @@ def leg_content(proxy_url, prefs):
 
 
 def leg_failover(proxy_url, prefs, mode):
-    """Break the proxy, PROVE it bit, heal it, then open tabs."""
+    """Break the proxy, PROVE it bit, heal it, PROVE it healed, then open tabs."""
     print(f"\n=== LEG: transient proxy failure (mode={mode}) ===")
     SHIM["mode"] = mode
     srv, port = start_shim(upstream_parts(proxy_url))
-    usable = preflight(port, PROBE_HOSTS)
-    if len(usable) < 4:
-        print("  ABORT: too few usable probe hosts; refusing to measure on a "
-              "degraded instrument.")
-        return None
-
-    with open_engine({"server": f"socks5://127.0.0.1:{port}"},
-                     prefs, "ps206-failover-") as ctx:
-        print("\n [1] first page, proxy healthy")
-        first = ctx.pages[0] if ctx.pages else ctx.new_page()
-        tab1_ok = load(first, "tab1 first ", usable[0])[0]
-
-        print("\n [2] proxy hop BREAKS (a rotating exit dies)")
-        SHIM["fail"] = True
-        during_ok = load(ctx.new_page(), "tab2 outage", usable[1])[0]
-        if during_ok:
-            print("\n  !! INVALID RUN: the injected fault never reached the tab "
-                  "(connection reuse).\n     Nothing is measured; not reporting "
-                  "a result. !!")
-            SHIM["fail"] = False
+    try:
+        shim = shim_proxy(port)
+        usable = usable_hosts(shim, 4, "failover")
+        if usable is None:
             return None
-        print("     fault confirmed to bite.")
 
-        print("\n [3] proxy HEALED, verified out-of-band before touching Firefox")
+        with open_engine({"server": f"socks5://127.0.0.1:{port}"},
+                         prefs, "ps206-failover-") as ctx:
+            print("\n [1] first page, proxy healthy")
+            first = ctx.pages[0] if ctx.pages else ctx.new_page()
+            tab1_ok = load(first, "tab1 first ", usable[0])[0]
+
+            print("\n [2] proxy hop BREAKS (a rotating exit dies)")
+            SHIM["fail"] = True
+            during_ok = load(ctx.new_page(), "tab2 outage", usable[1])[0]
+            if during_ok:
+                print("\n  !! INVALID RUN: the injected fault never reached the "
+                      "tab (connection reuse).\n     Nothing is measured; not "
+                      "reporting a result. !!")
+                SHIM["fail"] = False
+                return None
+            print("     fault confirmed to bite.")
+
+            print("\n [3] proxy HEALED, verified out-of-band before touching "
+                  "Firefox")
+            SHIM["fail"] = False
+            healed = socks_reachable(shim, usable[2].split("/")[2])
+            print(f"     shim reachable again: {healed}")
+            if not healed:
+                # The upstream is a ROTATING BACKCONNECT gateway: its real exit
+                # can die on its own schedule, independently of the flag just
+                # cleared. Continuing here would let [4] fail because the
+                # NETWORK is down and report it as *** REPRODUCED *** - the
+                # exact false-positive class this harness exists to refuse.
+                print("\n  !! INVALID RUN: the proxy did not actually recover; "
+                      "anything the tabs\n     report now is the network, not "
+                      "the browser. !!")
+                return None
+
+            print("\n [4] tabs opened AFTER the heal   <-- THE MEASUREMENT")
+            after = [load(ctx.new_page(), f"tab{i} healed", u)[0]
+                     for i, u in enumerate(usable[2:5], start=3)]
+
+            print("\n [5] the original tab, reloaded")
+            reload_ok = load(first, "tab1 reload", usable[0])[0]
+    finally:
         SHIM["fail"] = False
-        print(f"     shim reachable again: "
-              f"{socks_reachable(port, usable[2].split('/')[2])}")
-
-        print("\n [4] tabs opened AFTER the heal   <-- THE MEASUREMENT")
-        after = [load(ctx.new_page(), f"tab{i} healed", u)[0]
-                 for i, u in enumerate(usable[2:5], start=3)]
-
-        print("\n [5] the original tab, reloaded")
-        reload_ok = load(first, "tab1 reload", usable[0])[0]
+        try:
+            srv.shutdown()
+        finally:
+            srv.server_close()
 
     print(f"\n  shim: conns={SHIM['conns']} refused={SHIM['refused']} "
           f"forwarded={SHIM['forwarded']}")
     print(f"  tab1 before outage : {'OK' if tab1_ok else 'FAIL'}")
     print(f"  tab during outage  : FAIL (fault confirmed to bite)")
+    print(f"  proxy heal verified: OK (out-of-band, before any tab)")
     print(f"  tabs after heal    : {sum(after)}/{len(after)} OK")
     print(f"  original tab reload: {'OK' if reload_ok else 'FAIL'}")
     if tab1_ok and not all(after):
@@ -436,6 +521,13 @@ def leg_concurrency(proxy_url, n):
     """Can a live tab's held-open sockets starve a NEW tab's connection?"""
     print(f"\n=== LEG: concurrency ({n} held-open SOCKS connections) ===")
     host, port, user, pw = upstream_parts(proxy_url)
+    usable = usable_hosts((host, port, user, pw), 1, "concurrency")
+    if usable is None:
+        return None
+    # Pre-flighted, so 'established 0/N' now means the gateway refused the
+    # CONCURRENCY - not that this one host happens to be dead through the proxy.
+    target = usable[0].split("/")[2]
+    print(f"  holding connections to {target}")
     results = {}
 
     def hold(i, seconds=10):
@@ -443,7 +535,7 @@ def leg_concurrency(proxy_url, n):
         s.set_proxy(socks.SOCKS5, host, port, rdns=True, username=user, password=pw)
         s.settimeout(30)
         try:
-            s.connect(("api.ipify.org", 443))
+            s.connect((target, 443))
             results[i] = "ok"
             time.sleep(seconds)
             s.close()
@@ -505,11 +597,17 @@ def main():
         state = {True: "no defect seen", False: "DEFECT SEEN",
                  None: "INVALID (instrument)"}[v]
         print(f"  {k:12} {state}")
-    if all(v is True for v in verdicts.values()):
+    clean = all(v is True for v in verdicts.values())
+    if clean:
         print("\n  The reported symptom did NOT reproduce in these legs.")
         print("  NOTE: this fleet is LINUX. needs_fork_launch() is Linux-only, so")
         print("  Windows takes the thread launch path and records pid 0 - the")
         print("  owner's platform is NOT measured by this run.")
+    # Non-zero on anything that is not a clean 'did not reproduce'. The primary
+    # use of this harness is someone running it on a machine none of us can
+    # watch and sending back the result, so DEFECT SEEN and INVALID must be
+    # unambiguous even when they arrive as a pasted terminal tail.
+    sys.exit(0 if clean else 1)
 
 
 if __name__ == "__main__":
