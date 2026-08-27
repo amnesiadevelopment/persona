@@ -1,0 +1,151 @@
+{
+  "mode": "live",
+  "taken_at": "2026-08-26T23:00:31Z",
+  "display": ":98",
+  "spoof_seed": 4242,
+  "spoof_script_bytes": 19482,
+  "credential_channel": "file:/workspace/_secrets/test-proxy.txt",
+  "proxy_endpoint": "socks5://127.0.0.1:35203",
+  "upstream_host": "gw.dataimpulse.com",
+  "relay": "src/services/proxy/bridge.ProxyBridge",
+  "engine_build": "151.0",
+  "exit": {
+    "ip": "150.228.91.51",
+    "hostname": "customer.wrswpol1.isp.starlink.com",
+    "city": "Warsaw",
+    "region": "Mazovia",
+    "country": "PL",
+    "loc": "52.2298,21.0118",
+    "org": "AS14593 Space Exploration Technologies Corporation",
+    "postal": "00-002",
+    "timezone": "Europe/Warsaw",
+    "readme": "https://ipinfo.io/missingauth"
+  },
+  "user_agent": "Mozilla/5.0 (X11; Linux x86_64; rv:151.0) Gecko/20100101 Firefox/151.0",
+  "callsite_patch": {
+    "seen": 1,
+    "applied": true
+  },
+  "spoof_control": {
+    "canvas": {
+      "fnv": 1729355265,
+      "len": 2912,
+      "eligible": 918
+    },
+    "offscreen": {
+      "fnv": 1729355265,
+      "len": 2912,
+      "eligible": 918
+    }
+  },
+  "records": [
+    {
+      "api": "webgl1",
+      "realm": "top",
+      "x": 0,
+      "y": 0,
+      "w": 17.066666666666666,
+      "h": 42.666666666666664,
+      "w_is_int": false,
+      "h_is_int": false,
+      "dbw": 256,
+      "dbh": 256,
+      "canvas_class": "HTMLCanvasElement",
+      "canvas_w": 256,
+      "canvas_h": 256,
+      "fnv1a": 660023932,
+      "total_bytes": 2912,
+      "guard_eligible": 918,
+      "zeros": 1280,
+      "bytes_255": 714,
+      "bytes_1": 0,
+      "rgb_bytes": 2184,
+      "rgb_guard_eligible": 918,
+      "frame_url": "https://abrahamjuliot.github.io/creepjs/"
+    },
+    {
+      "api": "webgl1",
+      "realm": "top",
+      "x": 0,
+      "y": 0,
+      "w": 17.066666666666666,
+      "h": 42.666666666666664,
+      "w_is_int": false,
+      "h_is_int": false,
+      "dbw": 256,
+      "dbh": 256,
+      "canvas_class": "OffscreenCanvas",
+      "canvas_w": 256,
+      "canvas_h": 256,
+      "fnv1a": 660023932,
+      "total_bytes": 2912,
+      "guard_eligible": 918,
+      "zeros": 1280,
+      "bytes_255": 714,
+      "bytes_1": 0,
+      "rgb_bytes": 2184,
+      "rgb_guard_eligible": 918,
+      "frame_url": "https://abrahamjuliot.github.io/creepjs/"
+    },
+    {
+      "api": "creepjs-inline",
+      "realm": "creepjs-own-callsite",
+      "x": 0,
+      "y": 0,
+      "w": 17.066666666666666,
+      "h": 42.666666666666664,
+      "w_is_int": false,
+      "h_is_int": false,
+      "dbw": 256,
+      "dbh": 256,
+      "context_type": "webgl",
+      "canvas_class": "OffscreenCanvas",
+      "fnv1a": 1379655975,
+      "total_bytes": 2912,
+      "guard_eligible": 32,
+      "zeros": 2868,
+      "bytes_255": 12,
+      "bytes_1": 0,
+      "rgb_bytes": 2184,
+      "rgb_guard_eligible": 27,
+      "frame_url": "https://abrahamjuliot.github.io/creepjs/"
+    },
+    {
+      "api": "creepjs-inline",
+      "realm": "creepjs-own-callsite",
+      "x": 0,
+      "y": 0,
+      "w": 17.066666666666666,
+      "h": 42.666666666666664,
+      "w_is_int": false,
+      "h_is_int": false,
+      "dbw": 256,
+      "dbh": 256,
+      "context_type": "webgl2",
+      "canvas_class": "OffscreenCanvas",
+      "fnv1a": 1379655975,
+      "total_bytes": 2912,
+      "guard_eligible": 32,
+      "zeros": 2868,
+      "bytes_255": 12,
+      "bytes_1": 0,
+      "rgb_bytes": 2184,
+      "rgb_guard_eligible": 27,
+      "frame_url": "https://abrahamjuliot.github.io/creepjs/"
+    }
+  ],
+  "installed_realms": [
+    {
+      "realm": "top",
+      "wrapped": 2,
+      "frame_url": "https://abrahamjuliot.github.io/creepjs/"
+    }
+  ],
+  "frame_count": 1,
+  "gl": {
+    "version": "WebGL 1.0",
+    "vendor": "Mozilla",
+    "renderer": "llvmpipe, or similar"
+  },
+  "creep_webgl_row": "a8ee71dc"
+}

@@ -1,0 +1,90 @@
+{
+  "mode": "live",
+  "taken_at": "2026-08-26T22:57:36Z",
+  "display": ":98",
+  "spoof_seed": null,
+  "credential_channel": "file:/workspace/_secrets/test-proxy.txt",
+  "proxy_endpoint": "socks5://127.0.0.1:37255",
+  "upstream_host": "gw.dataimpulse.com",
+  "relay": "src/services/proxy/bridge.ProxyBridge",
+  "engine_build": "151.0",
+  "exit": {
+    "ip": "87.206.189.140",
+    "hostname": "87-206-189-140.dynamic.play.pl",
+    "city": "Ruda \u015al\u0105ska",
+    "region": "Silesia",
+    "country": "PL",
+    "loc": "50.2584,18.8563",
+    "org": "AS9141 P4 Sp. z o.o.",
+    "postal": "41-706",
+    "timezone": "Europe/Warsaw",
+    "readme": "https://ipinfo.io/missingauth"
+  },
+  "user_agent": "Mozilla/5.0 (X11; Linux x86_64; rv:151.0) Gecko/20100101 Firefox/151.0",
+  "callsite_patch": {
+    "seen": 1,
+    "applied": true
+  },
+  "records": [
+    {
+      "api": "creepjs-inline",
+      "realm": "creepjs-own-callsite",
+      "x": 0,
+      "y": 0,
+      "w": 17.066666666666666,
+      "h": 42.666666666666664,
+      "w_is_int": false,
+      "h_is_int": false,
+      "dbw": 256,
+      "dbh": 256,
+      "context_type": "webgl",
+      "canvas_class": "OffscreenCanvas",
+      "fnv1a": 1379655975,
+      "total_bytes": 2912,
+      "guard_eligible": 32,
+      "zeros": 2868,
+      "bytes_255": 12,
+      "bytes_1": 0,
+      "rgb_bytes": 2184,
+      "rgb_guard_eligible": 27,
+      "frame_url": "https://abrahamjuliot.github.io/creepjs/"
+    },
+    {
+      "api": "creepjs-inline",
+      "realm": "creepjs-own-callsite",
+      "x": 0,
+      "y": 0,
+      "w": 17.066666666666666,
+      "h": 42.666666666666664,
+      "w_is_int": false,
+      "h_is_int": false,
+      "dbw": 256,
+      "dbh": 256,
+      "context_type": "webgl2",
+      "canvas_class": "OffscreenCanvas",
+      "fnv1a": 1379655975,
+      "total_bytes": 2912,
+      "guard_eligible": 32,
+      "zeros": 2868,
+      "bytes_255": 12,
+      "bytes_1": 0,
+      "rgb_bytes": 2184,
+      "rgb_guard_eligible": 27,
+      "frame_url": "https://abrahamjuliot.github.io/creepjs/"
+    }
+  ],
+  "installed_realms": [
+    {
+      "realm": "top",
+      "wrapped": 2,
+      "frame_url": "https://abrahamjuliot.github.io/creepjs/"
+    }
+  ],
+  "frame_count": 1,
+  "gl": {
+    "version": "WebGL 1.0",
+    "vendor": "Mozilla",
+    "renderer": "llvmpipe, or similar"
+  },
+  "creep_webgl_row": "a8ee71dc"
+}

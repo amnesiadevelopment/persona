@@ -1,0 +1,71 @@
+{
+  "unspoofed": {
+    "top_canvas": {
+      "fnv": 660023932,
+      "len": 2912,
+      "eligible": 918
+    },
+    "top_offscreen": {
+      "fnv": 660023932,
+      "len": 2912,
+      "eligible": 918
+    },
+    "phantom_reached": true,
+    "phantom_offscreen": {
+      "fnv": 660023932,
+      "len": 2912,
+      "eligible": 918
+    },
+    "phantom_canvas": {
+      "fnv": 660023932,
+      "len": 2912,
+      "eligible": 918
+    }
+  },
+  "seed_1337": {
+    "top_canvas": {
+      "fnv": 855826239,
+      "len": 2912,
+      "eligible": 918
+    },
+    "top_offscreen": {
+      "fnv": 855826239,
+      "len": 2912,
+      "eligible": 918
+    },
+    "phantom_reached": true,
+    "phantom_offscreen": {
+      "fnv": 660023932,
+      "len": 2912,
+      "eligible": 918
+    },
+    "phantom_canvas": {
+      "fnv": 660023932,
+      "len": 2912,
+      "eligible": 918
+    }
+  },
+  "seed_4242": {
+    "top_canvas": {
+      "fnv": 1729355265,
+      "len": 2912,
+      "eligible": 918
+    },
+    "top_offscreen": {
+      "fnv": 1729355265,
+      "len": 2912,
+      "eligible": 918
+    },
+    "phantom_reached": true,
+    "phantom_offscreen": {
+      "fnv": 660023932,
+      "len": 2912,
+      "eligible": 918
+    },
+    "phantom_canvas": {
+      "fnv": 660023932,
+      "len": 2912,
+      "eligible": 918
+    }
+  }
+}
