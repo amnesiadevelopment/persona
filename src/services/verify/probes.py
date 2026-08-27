@@ -41,9 +41,15 @@ ALL_REALMS = (WINDOW, WORKER, CHILD_FRAME)
 BOTH = (WINDOW, WORKER)
 WINDOW_ONLY = (WINDOW,)
 
-# Every realm the harness can enter. Reserved for probes whose vector is
-# meaningful in ALL of them — see ``realm.frameIdentity``.
-EVERY_REALM = (WINDOW, WORKER, CHILD_FRAME)
+# Every realm the harness can enter — which is ALL_REALMS, by definition.
+# Reserved for probes whose vector is meaningful in all of them (see
+# ``realm.frameIdentity``). ALIASED rather than restated: written out as its
+# own tuple it is a second source of truth, and a new realm landing in one
+# tuple and not the other would empty the four ``set(p.realms) ==
+# set(ALL_REALMS)`` selectors in tests/test_verify_snapshot.py and break them
+# four files away from the edit that caused it. Aliasing makes that drift
+# impossible by construction instead of asking the next author to remember.
+EVERY_REALM = ALL_REALMS
 
 # --- how a vector is expected to behave ACROSS TWO PROFILES -----------------
 #
