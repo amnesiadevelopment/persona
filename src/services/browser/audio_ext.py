@@ -307,6 +307,21 @@ def firefox_audio_init_script(seed: int) -> str:
     the worker leaves a detector reading the REAL audio out of a worker while
     the page reports the spoofed value, which is a sharper tell than no spoof.
 
+    ⚠️ "AND CHILD FRAMES" WAS FALSE FOR A FRAME REACHED BY INDEX until PS-215,
+    and the correction belongs here rather than only at the WebGL callsite: the
+    bootstrap is SHARED, so the gap was a property of every module riding it,
+    this one included. It reached a child realm through exactly one door — the
+    chained ``HTMLIFrameElement`` accessors — and a consumer that takes its
+    frame as ``self[N]`` never opens it, so the leaf was never installed there.
+    Measured on the WebGL vector, which is where it was caught
+    (``readings/ps193-2026-08-26/EVIDENCE.md``): unperturbed pixels delivered to
+    the detector at two seeds while the page realm moved with the seed, a Level
+    2 mutual-unlinkability failure. PS-215 added a second trigger — the same
+    installer, fired when a frame becomes CONNECTED to the document — so the
+    claim above now holds for both doors. It is a TRIGGER, not a door: an
+    asynchronous one (``MutationObserver``) is structurally too late, because
+    the indexed read is synchronous with the insertion.
+
     Deliberately NOT shared with the Chromium builder beyond the patch body
     itself: the two differ only in how a wrapper is cloaked as native, and
     Chromium's cloak text is reproduced verbatim so its digests do not move.

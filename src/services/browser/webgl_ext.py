@@ -121,7 +121,38 @@ __NATIVE_WRAP__
 
   function perturbBytes(buf) {
     // Only byte-typed pixel data (the RGBA UNSIGNED_BYTE readback path).
-    if (!(buf instanceof Uint8Array) && !(buf instanceof Uint8ClampedArray)) {
+    //
+    // BRAND-CHECKED BY Object.prototype.toString, NOT BY `instanceof`, and that
+    // is a CROSS-REALM correctness requirement rather than a style choice.
+    // `instanceof` walks a prototype chain and compares against the
+    // `Uint8Array` binding THIS COPY OF THE LEAF closed over, so its answer
+    // depends on which realm the leaf was evaluated in. A buffer allocated in a
+    // DIFFERENT realm from the one whose context is being read fails that check
+    // and the readback goes out UNPERTURBED.
+    //
+    // That is not hypothetical: it is exactly how a detector reads us. CreepJS
+    // allocates its pixel buffer in the TOP realm and calls `readPixels` on a
+    // context belonging to its phantom IFRAME realm. Measured on real Firefox
+    // (PS-215, loopback, the committed `readings/ps193-2026-08-26/realm_probe.py`),
+    // one run, one instant, differing only in which realm allocated the buffer:
+    //
+    //     new win.Uint8Array(...)  (child realm) -> 855826239   perturbed
+    //     new Uint8Array(...)      (top realm)   -> 660023932   UNPERTURBED
+    //
+    // The wrapper was installed in the child realm and RAN -- it was admitted
+    // once out of two calls -- so this reads as "the spoof is not there" while
+    // the spoof is very much there and declining. The published PS-193 table
+    // (`phantom_*` seed-invariant while `top_*` moves) is produced by this, and
+    // by a missing-delivery defect, IDENTICALLY -- which is why that reading
+    // could not tell the two apart and PS-215 was written against the other one.
+    //
+    // `Object.prototype.toString` reads the object's internal type tag, which
+    // is realm-independent, so the check now answers the question it always
+    // meant to ask: "are these bytes", not "are these bytes from MY realm".
+    // Strictly permissive -- every buffer admitted before is still admitted, so
+    // same-realm digests do not move.
+    var __tag = Object.prototype.toString.call(buf);
+    if (__tag !== "[object Uint8Array]" && __tag !== "[object Uint8ClampedArray]") {
       return;
     }
     // Spend the budget over the bytes that CARRY CONTENT, never over byte
@@ -288,6 +319,20 @@ def firefox_webgl_init_script(seed: int) -> str:
     document_start in the page realm — the same moment and realm the Chromium
     content script gets — and ``realm_bootstrap_js`` carries the leaf onward into
     workers and child frames, so the worker realm is covered too.
+
+    ⚠️ "AND CHILD FRAMES" WAS FALSE FOR A FRAME REACHED BY INDEX until PS-215,
+    and the correction is worth stating because the false version read as a
+    completed inventory. The bootstrap reached a child realm through exactly one
+    door — the chained ``HTMLIFrameElement`` accessors — and a consumer that
+    takes its frame as ``self[N]`` never opens it. CreepJS does exactly that and
+    then builds its WebGL context FROM that realm, so it received unperturbed
+    pixels while the page realm moved with the seed: measured at two seeds in
+    one run (``readings/ps193-2026-08-26/EVIDENCE.md``), a Level 2 mutual-
+    unlinkability failure. PS-215 added a second trigger — the same installer,
+    fired when a frame becomes CONNECTED to the document — so the claim above
+    now holds for both doors. It is a TRIGGER, not a door: an asynchronous one
+    (``MutationObserver``) is structurally too late, because the indexed read is
+    synchronous with the insertion.
 
     Deliberately shares ``_CONTENT_SCRIPT`` with the Chromium builder rather than
     copying it: a second copy of the perturbation would let the two engines drift
