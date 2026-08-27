@@ -31,7 +31,15 @@ from .diff import (
     format_diff,
     inconclusive_count,
 )
-from .probes import ALL_REALMS, PROBES, WINDOW, WORKER, Probe, probes_for_realm
+from .probes import (
+    ALL_REALMS,
+    CHILD_FRAME,
+    PROBES,
+    WINDOW,
+    WORKER,
+    Probe,
+    probes_for_realm,
+)
 from .runner import run_probes
 from .schema_ledger import (
     SchemaLedgerViolation,
@@ -65,6 +73,7 @@ from .snapshot import (
 
 __all__ = [
     "ALL_REALMS",
+    "CHILD_FRAME",
     "INCONCLUSIVE",
     "POST_WRITER_ANNOTATIONS",
     "PROBES",

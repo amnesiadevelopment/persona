@@ -46,7 +46,7 @@ from typing import Any
 # ``probes`` is pure data plus a dataclass — it pulls no heavy dependency (the
 # lazy-import pattern ``cli`` documents exists for ``transport``, which reaches
 # playwright) and it imports nothing from this module, so there is no cycle.
-from .probes import must_differ_probes
+from .probes import PROBES, must_differ_probes
 from .snapshot import quote_path
 
 # Sentinel recorded in place of a reading that does not exist on that side.
@@ -268,6 +268,19 @@ def _probes(snapshot: dict) -> dict:
 def _realm(snapshot: dict, realm: str) -> dict:
     entries = _probes(snapshot).get(realm)
     return entries if isinstance(entries, dict) else {}
+
+
+def _realm_present(snapshot: dict, realm: str) -> bool:
+    """True when ``snapshot`` actually CARRIES this realm.
+
+    The distinction :func:`_realm` cannot make, and the one that matters: it
+    answers ``{}`` both for a realm that was recorded and read nothing and for
+    a realm the snapshot has never heard of. Those are opposite facts. The
+    second is what happens to every snapshot taken before a realm was added to
+    the inventory, and treating it as the first is how a comparator reports
+    agreement over zero readings.
+    """
+    return isinstance(_probes(snapshot).get(realm), dict)
 
 
 def _unread(side: Any) -> bool:
@@ -505,11 +518,57 @@ def diff_realms(snapshot: dict, left: str, right: str) -> list[dict]:
     with :class:`NotASnapshot` rather than compared, for the reason given on
     that exception — two empty realms agree about everything, so this would
     otherwise return ``[]`` and report agreement over zero readings.
+
+    A realm the snapshot does not CARRY is reported, never skipped. That guard
+    is deliberate and is not inherited from the one above: ``require_snapshot``
+    protects the snapshot level only, while an absent realm used to reach the
+    key intersection below as an empty mapping, intersect to nothing, and
+    return ``[]`` — agreement over zero readings, one level down. This is not
+    hypothetical: it is what every snapshot recorded before a realm joined the
+    inventory looks like, and ``build_snapshot`` omits a realm its results
+    never carried. Such a comparison is ``inconclusive`` per probe — evidence
+    we do not have, which is never a pass — and it is COUNTED, so a caller
+    gating on :func:`inconclusive_count` cannot exit 0 on it.
     """
     require_snapshot(snapshot)
+    a_here = _realm_present(snapshot, left)
+    b_here = _realm_present(snapshot, right)
     a_entries = _realm(snapshot, left)
     b_entries = _realm(snapshot, right)
     out: list[dict] = []
+
+    if not (a_here and b_here):
+        # One or both realms are not in this document at all. Report every
+        # probe that DECLARES both realms as inconclusive — the inventory, not
+        # the snapshot, decides what should have been compared, so a realm that
+        # was never recorded cannot shrink the question to nothing.
+        missing = [r for r, here in ((left, a_here), (right, b_here)) if not here]
+        for probe in PROBES:
+            if left not in probe.realms or right not in probe.realms:
+                continue
+            out.append(
+                {
+                    "probe_id": probe.id,
+                    "realm": f"{left}!={right}",
+                    "status": INCONCLUSIVE,
+                    "expected": (
+                        a_entries.get(probe.id, dict(ABSENT))
+                        if a_here
+                        else dict(ABSENT)
+                    ),
+                    "observed": (
+                        b_entries.get(probe.id, dict(ABSENT))
+                        if b_here
+                        else dict(ABSENT)
+                    ),
+                    "detail": (
+                        "realm(s) not present in this snapshot: "
+                        + ", ".join(sorted(missing))
+                    ),
+                }
+            )
+        return out
+
     for probe_id in sorted(set(a_entries) & set(b_entries)):
         # Same rule as diff_snapshots: a vector nobody could read in either
         # realm is not the two realms agreeing about it. But a vector read in
