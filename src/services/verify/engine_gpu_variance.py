@@ -117,7 +117,6 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
-import re
 import sys
 import time
 
@@ -179,11 +178,19 @@ def collision_probability(values: "list[str]") -> float:
     return sum((c / n) ** 2 for c in counts.values())
 
 
-# The arms this module knows persona ships a fallback pool for, and the JS
-# variable each one is emitted as. Separated from the scrape itself so
-# "this arm has no pool by design" and "this arm HAS a pool and we failed to
-# read it" can be told apart — they are different facts and must not share a
-# return value.
+# The arms this module knows persona ships a fallback pool for, and the name
+# each one's pool is registered under in ``gpu_ext.GPU_POOLS``. Separated from
+# the lookup itself so "this arm has no pool by design" and "this arm HAS a pool
+# and we failed to read it" can be told apart — they are different facts and
+# must not share a return value.
+#
+# THESE WERE JS VARIABLE NAMES READ BY REGEX UNTIL PS-190. The pools are now
+# tagged Python records (``gpu_ext.GpuEntry``) that the JS is rendered from, so
+# the name is a dict key rather than a token to scrape and the count is a
+# ``len()`` rather than a substring tally. The failure mode that motivated the
+# careful 0-means-two-things contract below — a regex drifting out of step with
+# the literals' formatting — can no longer occur, but the contract is KEPT: a
+# name missing from the registry still has to read as "we failed to look".
 _POOL_VAR_FOR_ARM = {
     "windows": "WIN_GPUS",
     "macos": "MAC_GPUS",
@@ -195,9 +202,9 @@ _POOL_VAR_FOR_ARM = {
 def has_known_pool(arm: str) -> bool:
     """Whether persona is KNOWN to ship a fallback pool for this arm.
 
-    Answered from the arm name alone, never from the scrape — so a scrape that
-    returns nothing on an arm that IS in this map reads as a broken scrape
-    rather than as an arm with no pool.
+    Answered from the arm name alone, never from the size lookup — so a lookup
+    that returns nothing on an arm that IS in this map reads as a failure to
+    read the pool rather than as an arm with no pool.
     """
     return arm in _POOL_VAR_FOR_ARM
 
@@ -205,18 +212,26 @@ def has_known_pool(arm: str) -> bool:
 def _pool_entry_generations(arm: str) -> "list[int] | None":
     """The ``since`` generation of EVERY entry in the arm's pool, in order.
 
-    An entry with no ``since:`` key is generation 0 — the same default
-    ``gpu_ext``'s own ``visible()`` applies, and the same one
+    An entry with no explicit ``since`` is generation 0 — that is the
+    dataclass default on :class:`gpu_ext.GpuEntry`, the same default the
+    emitted JS's own ``visible()`` applies, and the same one
     ``hardware_generation`` documents.
 
-    None means the scrape could not be trusted, which is deliberately NOT the
-    same as an empty pool. Two ways that happens: the pool literal was not
-    found at all, or the per-entry scrape and the ``unmaskedVendor`` count
-    DISAGREE about how many entries there are. The second is the important
-    one — it means the two regexes drifted apart, and silently believing
-    whichever ran last would report a pool size no pool has. A None propagates
-    to a 0 from :func:`fallback_pool_size` and thence to an ``INCONCLUSIVE``
-    verdict, which is this module's standing "we failed to look" answer.
+    READ FROM THE TAGGED PYTHON RECORDS, NOT FROM THE EMITTED JS. This used to
+    scrape ``_CONTENT_SCRIPT`` with a pair of regexes and cross-check them
+    against each other, because the pools existed only as hand-maintained JS
+    literals. PS-190 lifted them into ``gpu_ext.GPU_POOLS`` as real objects, so
+    the generations are now read off ``entry.since`` directly. The whole class
+    of failure that cross-check existed to catch — two regexes drifting apart
+    as the literals' formatting changed, and reporting a pool size no pool
+    has — cannot occur any more, so the cross-check is gone rather than kept
+    as ceremony.
+
+    None still means WE FAILED TO LOOK, which is deliberately NOT the same as
+    an empty pool: the arm has no registry entry, or the name it registers is
+    absent from ``GPU_POOLS``. A None propagates to a 0 from
+    :func:`fallback_pool_size` and thence to an ``INCONCLUSIVE`` verdict, which
+    is this module's standing "we failed to look" answer.
     """
     from .. import browser  # noqa: F401  (kept for a stable import root)
     from ..browser import gpu_ext
@@ -224,20 +239,10 @@ def _pool_entry_generations(arm: str) -> "list[int] | None":
     name = _POOL_VAR_FOR_ARM.get(arm)
     if not name:
         return None
-    src = gpu_ext._CONTENT_SCRIPT
-    m = re.search(r"var " + name + r" = \[(.*?)\n  \];", src, re.S)
-    if not m:
+    pool = gpu_ext.GPU_POOLS.get(name)
+    if pool is None:
         return None
-    block = m.group(1)
-    entries = re.findall(r"\{\s*unmaskedVendor:.*?\}", block, re.S)
-    # Cross-check the entry scrape against the cruder count. They must agree.
-    if len(entries) != block.count("unmaskedVendor"):
-        return None
-    out = []
-    for e in entries:
-        sm = re.search(r"since:\s*(\d+)", e)
-        out.append(int(sm.group(1)) if sm else 0)
-    return out
+    return [int(getattr(e, "since", 0) or 0) for e in pool]
 
 
 def pool_sizes_by_generation(arm: str) -> "dict[int, int]":
@@ -269,8 +274,27 @@ def pool_sizes_by_generation(arm: str) -> "dict[int, int]":
 def fallback_pool_size(arm: str, generation: "int | None" = None) -> int:
     """How many entries OUR OWN pool for this arm holds AT ``generation``.
 
-    Read out of the emitted extension source rather than duplicated here, so
-    the bar tracks the pool automatically.
+    Read from ``gpu_ext.GPU_POOLS`` — the tagged Python records the emitted JS
+    is rendered from — rather than duplicated here, so the bar tracks the pool
+    automatically. This used to scrape the JS template with a regex; PS-190
+    lifted the pools into Python data, so the count is now a ``len()`` of the
+    real list and cannot drift with the literals' formatting.
+
+    NOT COUNTED UNFILTERED — AND THAT IS A DELIBERATE REVERSAL, RECORDED HERE
+    BECAUSE IT OVERTURNS WHAT THIS DOCSTRING USED TO PROMISE. PS-190 stated
+    the count was taken "UNFILTERED, ACROSS EVERY GENERATION, DELIBERATELY",
+    reasoning that filtering "would make the bar depend on which profile
+    happened to be measured". That reasoning is preserved and still binds — the
+    bar must NOT wobble from one measured profile to the next — but an
+    unfiltered ``len()`` is the wrong instrument for it, and while every entry
+    was ``since=0`` the two were indistinguishable so nothing exposed the
+    difference. PS-183 tagged nine of eleven ``MAC_GPUS`` entries and separated
+    them: an unfiltered count claims a variety NO profile is ever offered,
+    because ``pick()`` divides by the length of the profile's OWN generation's
+    visible pool and never by the whole array's. So the count is filtered, and
+    stability is bought the honest way instead — by a generation ARGUMENT that
+    defaults to a fixed constant rather than to the profile under measurement.
+    Same guarantee, sound arithmetic.
 
     ⚠️ THE POOL IS NOT ONE NUMBER — IT IS ONE NUMBER PER GENERATION. Entries
     carry a ``since`` tag and a profile only sees entries at or below its own
@@ -290,8 +314,7 @@ def fallback_pool_size(arm: str, generation: "int | None" = None) -> int:
 
     Returns 0 in TWO different situations, which callers must NOT conflate:
     the arm has no pool at all (:func:`has_known_pool` is False), or the arm
-    has one and this scrape could not find it — a regex that drifted out of
-    step with the pool literals' formatting. Pair every call with
+    has one and it could not be read. Pair every call with
     :func:`has_known_pool`: 0 on a known-pool arm means WE FAILED TO LOOK, and
     a missing bar must never be read as a bar that was met.
     """
@@ -499,12 +522,15 @@ def classify(readings: "dict[str, dict[int, str | None]]") -> dict:
             entry["verdict"] = "INCONCLUSIVE"
             entry["detail"] = (
                 f"persona ships a fallback pool for {arm!r}, but this module "
-                "could not read its size out of the emitted extension source "
-                "— most likely the pool literals were reformatted and "
-                "fallback_pool_size's regex no longer matches. Without the bar "
-                "there is nothing to compare against, so this is NOT a pass: "
-                f"the {p:.1%} collision rate measured here is unjudged. Fix "
-                "the scrape in fallback_pool_size and re-run."
+                "could not read its size. The arm is named in "
+                f"_POOL_VAR_FOR_ARM as {_POOL_VAR_FOR_ARM.get(arm)!r}, but "
+                "that name yielded no entries from gpu_ext.GPU_POOLS — either "
+                "the key is absent from the registry (the two have drifted "
+                "apart) or the pool registered under it is empty. Without the "
+                "bar there is nothing to compare against, so this is NOT a "
+                f"pass: the {p:.1%} collision rate measured here is unjudged. "
+                "Re-register the pool in gpu_ext.GPU_POOLS (or correct the arm "
+                "mapping in _POOL_VAR_FOR_ARM) and re-run."
             )
         elif bar is not None and p > bar * (1.0 + BAR_TOLERANCE):
             entry["verdict"] = "TOO_NARROW"

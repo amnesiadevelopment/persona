@@ -39,16 +39,18 @@ def test_bar_is_read_from_the_shipped_pool_not_a_hardcoded_number():
     # this gate policing a number nobody updated. Assert the RELATIONSHIP to the
     # source of truth rather than the literals: hardcoding 5/2/8 here would
     # reintroduce exactly the duplication this is built to avoid.
-    import re
-
+    #
+    # THE SOURCE OF TRUTH IS NOW PYTHON DATA (PS-190). This used to re-derive
+    # the count by running the same regex over the JS template that the
+    # implementation ran — which made the test agree with the implementation by
+    # construction, including when the regex was wrong for both. The pools are
+    # now `gpu_ext.GpuEntry` records the JS is rendered from, so this reads the
+    # list itself.
     for arm, name in (
         ("windows", "WIN_GPUS"), ("macos", "MAC_GPUS"),
         ("linux", "LINUX_GPUS"), ("android", "ANDROID_GPUS"),
     ):
-        m = re.search(
-            r"var " + name + r" = \[(.*?)\n  \];", gpu_ext._CONTENT_SCRIPT, re.S
-        )
-        expected = m.group(1).count("unmaskedVendor")
+        expected = len(gpu_ext.GPU_POOLS[name])
         assert expected > 0, f"could not read {name} from the extension source"
         assert v.fallback_pool_size(arm) == expected
         assert v.bar_for(arm) == pytest.approx(1.0 / expected)
@@ -66,17 +68,21 @@ def test_a_known_pool_arm_whose_bar_cannot_be_read_is_inconclusive_not_ok(
 ):
     # THE BAR DISAPPEARING MUST NOT READ AS THE BAR BEING MET.
     #
-    # fallback_pool_size SCRAPES the pool literals out of gpu_ext's emitted
-    # source, so any reformatting there — a changed indent, a trailing comment,
-    # a reflow — can make its regex miss and return 0. Before this was fixed,
-    # bar_for then returned None, classify's TOO_NARROW branch was skipped for
-    # want of a bar, and the arm fell through to `else: OK`.
+    # fallback_pool_size reads the pool's size out of gpu_ext.GPU_POOLS — the
+    # tagged Python records the emitted JS is rendered from — so it returns 0
+    # when the arm's name in _POOL_VAR_FOR_ARM is absent from that registry, or
+    # names a pool that is empty. (Until PS-190 it SCRAPED the emitted JS with a
+    # regex and a reflow of the literals could make it miss; that failure mode
+    # is gone, but the contract below is deliberately KEPT — a name missing from
+    # the registry still has to read as "we failed to look".) Before this was
+    # fixed, bar_for then returned None, classify's TOO_NARROW branch was
+    # skipped for want of a bar, and the arm fell through to `else: OK`.
     #
     # That silently downgrades this gate from "did it vary at LEAST as well as
     # the pool we gave up?" to "did it vary AT ALL?" — and the weaker question
     # is demonstrably insufficient: macos varies (2 distinct values) while two
     # profiles collide 76.9% of the time, so it passes "varied" and fails the
-    # bar. Simulate the drift by making the scrape miss.
+    # bar. Simulate the drift by making the size unreadable.
     monkeypatch.setattr(v, "fallback_pool_size", lambda arm: 0)
 
     # Readings that are otherwise perfectly healthy: 10 seeds, 5 evenly-used
@@ -91,9 +97,19 @@ def test_a_known_pool_arm_whose_bar_cannot_be_read_is_inconclusive_not_ok(
     )
     assert result["inconclusive"] == ["windows"]
     assert v.exit_code_for(result) == v.EXIT_CANNOT_RUN
-    # The detail must name the actual cause so the next reader fixes the scrape
-    # rather than hunting the engine.
-    assert "fallback_pool_size" in entry["detail"]
+    # The detail must name the actual cause so the next reader repairs the
+    # registry drift rather than hunting the engine. Pin the two symbols an
+    # operator would have to look at — the registry the size is read from, and
+    # the map that claims this arm has a pool — because the REMEDY is what this
+    # message exists to deliver. Naming a symbol that no longer exists sends
+    # them to fix code that is not there (PS-190 code review).
+    detail = entry["detail"]
+    assert "gpu_ext.GPU_POOLS" in detail, detail
+    assert "_POOL_VAR_FOR_ARM" in detail, detail
+    # And it must NOT resurrect the pre-PS-190 remedy: there is no regex and no
+    # scrape in fallback_pool_size any more.
+    assert "regex" not in detail, detail
+    assert "scrape" not in detail, detail
 
 
 def test_a_missing_bar_does_not_downgrade_a_constant_arm_to_inconclusive(
@@ -124,15 +140,15 @@ def test_an_arm_with_no_pool_by_design_is_not_forced_inconclusive(monkeypatch):
     assert v.exit_code_for(result) == v.EXIT_PASS
 
 
-def test_has_known_pool_agrees_with_the_arms_the_scrape_can_actually_read():
+def test_has_known_pool_agrees_with_the_arms_whose_size_can_actually_be_read():
     # has_known_pool is what promotes a 0 into a finding, so it must not claim
-    # an arm the scrape cannot in fact read — that would make every run of a
+    # an arm whose size cannot in fact be read — that would make every run of a
     # healthy gate INCONCLUSIVE. Assert the two agree on the shipped source.
     for arm in ("windows", "macos", "linux", "android"):
         assert v.has_known_pool(arm) is True
         assert v.fallback_pool_size(arm) > 0, (
-            f"{arm} is declared a known-pool arm but its size scrapes as 0 — "
-            "the regex and the map have drifted apart"
+            f"{arm} is declared a known-pool arm but its size reads as 0 — "
+            "_POOL_VAR_FOR_ARM and gpu_ext.GPU_POOLS have drifted apart"
         )
 
 
@@ -221,27 +237,36 @@ def test_a_single_generation_arm_does_not_print_a_meaningless_split():
     assert "NOT one size" not in text, text
 
 
-def test_a_disagreeing_entry_scrape_reads_as_failed_to_look_not_as_empty(
+def test_a_pool_that_cannot_be_read_reads_as_failed_to_look_not_as_empty(
     monkeypatch,
 ):
-    # The two regexes (per-entry, and the cruder unmaskedVendor count) can
-    # drift apart under reformatting. Believing whichever ran last would report
-    # a pool size no pool has — so a disagreement must fail SAFE, into this
-    # module's standing "we failed to look" answer, never into a small pool
-    # (which would LOWER the bar) or a large one (which would raise it).
-    real = gpu_ext._CONTENT_SCRIPT
-    # Add an unmaskedVendor occurrence INSIDE the pool block that the entry
-    # regex cannot match as a `{ ... }` record, so the two counts disagree.
-    # It must land inside the block: the scrape only ever looks between
-    # `var ANDROID_GPUS = [` and its closing `];`, so a stray outside that
-    # span is correctly ignored and would not exercise this path at all.
-    broken = real.replace(
-        "  var ANDROID_GPUS = [\n",
-        "  var ANDROID_GPUS = [\n    // stray unmaskedVendor in a comment\n",
-    )
-    assert broken != real, "fixture no longer matches the source"
-    monkeypatch.setattr(gpu_ext, "_CONTENT_SCRIPT", broken)
+    # An unreadable pool must fail SAFE, into this module's standing "we failed
+    # to look" answer — never into a small pool (which would LOWER the bar and
+    # let a narrow engine pass) or a large one (which would raise it).
+    #
+    # ⚠️ WHAT THIS TEST USED TO EXERCISE NO LONGER EXISTS, and the replacement
+    # is deliberately a DIFFERENT trigger for the SAME contract. It used to
+    # corrupt the JS in `gpu_ext._CONTENT_SCRIPT` so the two regexes
+    # `_pool_entry_generations` ran (per-entry, and a cruder `unmaskedVendor`
+    # tally) disagreed about the entry count. PS-190 lifted the pools out of
+    # the JS into `gpu_ext.GPU_POOLS` as real objects and PS-183 read the tags
+    # off `entry.since` directly, so there are no regexes left to drift and
+    # mangling the JS text now proves nothing about this function. Rewriting
+    # the fixture to keep the old trigger alive would have pinned a scrape that
+    # is gone; the contract is what survives, so the contract is what is pinned.
+    #
+    # The surviving way to fail to look: the arm is registered in
+    # `_POOL_VAR_FOR_ARM` but that name is absent from `GPU_POOLS` — the two
+    # having drifted apart, which is exactly the "we failed to look" case the
+    # 0-means-two-things contract exists for.
+    assert v._POOL_VAR_FOR_ARM["android"] == "ANDROID_GPUS"
+    pools = {k: val for k, val in gpu_ext.GPU_POOLS.items() if k != "ANDROID_GPUS"}
+    assert "ANDROID_GPUS" not in pools, "fixture no longer matches the source"
+    monkeypatch.setattr(gpu_ext, "GPU_POOLS", pools)
 
+    # has_known_pool still claims the arm — that is the point of the contract:
+    # a 0 here means WE FAILED TO LOOK, not "this arm ships no pool".
+    assert v.has_known_pool("android") is True
     assert v._pool_entry_generations("android") is None
     assert v.pool_sizes_by_generation("android") == {}
     assert v.fallback_pool_size("android") == 0
