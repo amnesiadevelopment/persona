@@ -572,14 +572,23 @@ def test_the_window_worker_comparison_is_unchanged_by_the_new_realm():
 
 
 def test_the_existing_probe_records_kept_their_realms():
-    """AC7. All 48 pre-existing records keep exactly the realms they declared.
+    """AC7. Every pre-existing record keeps exactly the realms it declared.
 
     The new realm arrives as a NEW record, so no existing vector silently
     started being evaluated somewhere it was never validated.
+
+    Deliberately does NOT assert the inventory SIZE. ``probes.py``'s stated
+    contract is that "adding a vector MUST mean adding a record to PROBES and
+    nothing else" — a count pinned here would break that, reddening a file
+    named for the child-frame realm when someone adds an unrelated vector they
+    never touched. The per-record loop below is the assertion the docstring
+    promises, it scales, and it is what catches an existing probe silently
+    gaining the realm. A DROPPED probe is owned by
+    test_verify_baseline.py::test_a_probe_dropped_from_the_inventory_is_caught.
     """
     non_new = [p for p in probes.PROBES if p.id != "realm.frameIdentity"]
 
-    assert len(non_new) == 48
+    assert non_new
     for probe in non_new:
         assert probes.CHILD_FRAME not in probe.realms
         assert probe.realms in (probes.BOTH, probes.WINDOW_ONLY)
