@@ -270,14 +270,38 @@ class BrowserLauncher:
         self._launch_record_hook = hook
 
     def shutdown_all(self) -> None:
+        """Tear down every session THIS process started. The atexit path.
+
+        ⚠️ THIS REAPS ``_active_sessions`` AND NOTHING ELSE, and that asymmetry
+        is why the record-keeping below is per-name rather than bulk. A
+        SURVIVOR — a browser a PREVIOUS persona left running — is in neither
+        ``_active_sessions`` nor ``_starting``, so this method does not kill it
+        and cannot kill it. Wiping the whole registry here therefore erased the
+        record of a browser that was still alive, and the next persona started
+        with an empty registry, found no survivor, and offered a second launch
+        on that profile directory. That is the user's original defect reached
+        through the front door of an ordinary clean quit, so the guard is only
+        as persistent as this method is careful.
+
+        We forget exactly the sessions we terminated. A record we did not act
+        on is LEFT ALONE, and leaving it is safe because nothing anywhere
+        refuses a launch on a record's PRESENCE: ``scan_survivors`` probes
+        every record it reads, a record whose process is gone is dropped as it
+        is read, and pid reuse is discriminated by create time. A preserved
+        record can therefore only ever refuse a launch against a browser that
+        is genuinely still alive — which is the refusal this ticket exists to
+        make.
+        """
         with self._lock:
+            terminated: list[str] = []
             for name, proc in list(self._active_sessions.items()):
                 notifier = self._stop_notifiers.pop(name, None)
                 if notifier:
                     notifier.set()
                 terminate(proc, name)
+                terminated.append(name)
             self._active_sessions.clear()
-            self._forget_all_session_facts()
+            self._forget_all_session_facts(terminated)
         logger.info("All browser sessions terminated")
 
     def start_thread(
@@ -782,6 +806,45 @@ class BrowserLauncher:
             )
         return ok
 
+    def close_all_survivors(self) -> list[str]:
+        """Close every surviving browser. Returns the names that did NOT close.
+
+        The bulk counterpart of :meth:`close_survivor`, and it carries the same
+        licence: it is called ONLY from the exit-confirmation dialog, after the
+        user has been shown these profiles by name and has pressed "close them
+        and exit". That gesture is the consent — the ticket forbids a SILENT
+        kill, not a kill the user asked for.
+
+        It exists because ``shutdown_all`` structurally cannot do this job:
+        that method reaps ``_active_sessions``, and a survivor is by definition
+        not in it. Without this, the dialog named survivors among the browsers
+        it promised to close and then left them running — a sentence that was
+        untrue for precisely the browsers this ticket is about.
+
+        RETURNS THE FAILURES RATHER THAN RAISING, so the caller can say so. A
+        survivor we could not kill keeps its registry record (nothing here
+        forgets a name that did not close), so the guard still refuses a second
+        launch against it on the next start. Failing to close is survivable;
+        failing to close *and* forgetting is the defect.
+        """
+        # SNAPSHOT UNDER THE LOCK, then close off-lock. close_survivor takes
+        # this same Condition and does process IO, so iterating the live dict
+        # here would both mutate it while reading it (close_survivor forgets
+        # the name it closed) and hold the lock across a teardown.
+        with self._lock:
+            names = sorted(self._survivors)
+        stubborn: list[str] = []
+        for name in names:
+            try:
+                if not self.close_survivor(name):
+                    stubborn.append(name)
+            except Exception:
+                logger.exception(
+                    "Error closing the surviving browser for %s", name
+                )
+                stubborn.append(name)
+        return stubborn
+
     def started_at(self, profile_name: str) -> float | None:
         """Wall-clock time the session was registered, or None if not running.
 
@@ -912,23 +975,45 @@ class BrowserLauncher:
         with contextlib.suppress(Exception):
             self._registry.forget(profile_name)
 
-    def _forget_all_session_facts(self) -> None:
+    def _forget_all_session_facts(self, terminated: "list[str] | None" = None) -> None:
         """Bulk counterpart of ``_forget_session_facts`` for ``shutdown_all``.
 
         The caller MUST already hold ``self._lock``. Kept beside its per-session
         twin so the two cannot drift: this is the site that tears down EVERY
         session at once, and it is the one most easily forgotten when a new
         per-session dict is introduced.
+
+        ``terminated`` names the sessions ``shutdown_all`` ACTUALLY REAPED, and
+        only their persisted records are dropped.
         """
         self._session_started_at.clear()
         self._session_cdp_open.clear()
-        # AND THE PERSISTED MIRROR, in bulk. This runs from shutdown_all, which
-        # is the atexit path — so clearing the file here is precisely what
-        # makes "a record was still on disk at startup" mean "persona did NOT
-        # exit cleanly last time". That equivalence is the entire survivor
-        # signal outcome 3 rests on, and it is established by this line.
-        with contextlib.suppress(Exception):
-            self._registry.forget_all()
+        # AND THE PERSISTED MIRROR — BUT ONLY FOR WHAT WE KILLED.
+        #
+        # This used to call registry.forget_all(), on the reasoning that
+        # shutdown_all is the clean/atexit path, so an empty file at startup
+        # would mean "persona exited cleanly" and any surviving record would
+        # mean "it did not". That equivalence was WRONG IN THE ONE CASE THE
+        # TICKET IS ABOUT: shutdown_all reaps only _active_sessions, and a
+        # SURVIVOR inherited from a previous persona is in neither dict — so
+        # the bulk wipe deleted the record of a browser this process had just
+        # failed to kill, and the next start had no idea it was there. A clean
+        # quit was enough to erase the guard and hand back the double launch.
+        #
+        # The equivalence it protected turns out to be DECORATIVE. Nothing
+        # refuses a launch because a record EXISTS: live_records() probes every
+        # record it reads and drops the dead ones as it goes, survivor_for()
+        # re-probes before it blocks anything, and create-time comparison
+        # settles pid reuse. Record presence is therefore only ever an
+        # invitation to look, never a verdict — which is exactly what makes
+        # keeping a survivor's record safe. A preserved record cannot resurrect
+        # a stale block; it can only preserve a true one.
+        #
+        # Swallowed for the same reason as its per-session twin: a registry we
+        # cannot write must not break a teardown.
+        for name in terminated or []:
+            with contextlib.suppress(Exception):
+                self._registry.forget(name)
 
     def _monitor_process(
         self,

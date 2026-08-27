@@ -3079,6 +3079,30 @@ class App:
                 # works, invoked on a gesture instead of on process exit.
                 with contextlib.suppress(Exception):
                     self.bl.shutdown_all()
+                # AND THE SURVIVORS, WHICH shutdown_all STRUCTURALLY CANNOT
+                # REACH. It reaps _active_sessions, and a browser inherited
+                # from a previous persona is by definition not in it. The
+                # dialog above named those profiles in the sentence "closing
+                # persona will close the browser(s) for: ...", so without this
+                # the promise was false for exactly the browsers this ticket is
+                # about. THIS CLICK IS THE CONSENT: the user was shown the
+                # names and pressed "close them and exit", which is what makes
+                # killing a process we did not start legitimate here — the
+                # ticket forbids a SILENT kill, not a requested one.
+                stubborn: list[str] = []
+                with contextlib.suppress(Exception):
+                    stubborn = self.bl.close_all_survivors()
+                if stubborn:
+                    # Said out loud rather than swallowed. We are on our way out
+                    # so the log is the only surface left, but a browser we
+                    # promised to close and did not is exactly the thing a user
+                    # reading a log after the fact needs to find. Its registry
+                    # record is deliberately kept (close_all_survivors forgets
+                    # only what closed), so the next start still guards it.
+                    logger.warning(
+                        "Could not close the leftover browser(s) for: %s; "
+                        "they may still be running.", ", ".join(stubborn),
+                    )
                 self._destroy_window()
 
             assert page is not None

@@ -56,7 +56,7 @@ class _OtherEvent:
     type = ft.WindowEventType.RESIZE
 
 
-def _app(running=(), survivors=(), shutdown_raises=False):
+def _app(running=(), survivors=(), shutdown_raises=False, stubborn=()):
     """An App with its collaborators stubbed down to what the close path uses.
 
     Built with __new__ rather than a real constructor: App.__init__ builds a
@@ -65,7 +65,7 @@ def _app(running=(), survivors=(), shutdown_raises=False):
     rather than the behaviour under examination.
     """
     app = App.__new__(App)
-    calls = {"shutdown": 0}
+    calls = {"shutdown": 0, "close_survivors": 0}
 
     class _BL:
         def running_profile_names(self):
@@ -78,6 +78,10 @@ def _app(running=(), survivors=(), shutdown_raises=False):
             calls["shutdown"] += 1
             if shutdown_raises:
                 raise RuntimeError("teardown blew up")
+
+        def close_all_survivors(self):
+            calls["close_survivors"] += 1
+            return list(stubborn)
 
     app.bl = _BL()
     app.page = _FakePage()
@@ -166,6 +170,64 @@ def test_confirm_tears_the_browsers_down_and_closes():
     confirm.on_click(None)
 
     assert calls["shutdown"] == 1
+    assert app.page.window.destroyed is True
+
+
+def test_confirm_also_closes_the_survivors_the_dialog_promised_to_close():
+    """THE DIALOG MUST NOT PROMISE WHAT THE TEARDOWN CANNOT DELIVER.
+
+    The question names survivors among the browsers it is about to close — and
+    `shutdown_all` structurally cannot reach them, because it reaps
+    `_active_sessions` and a browser inherited from a previous persona is not
+    in it. So the sentence "closing persona will close the browser(s) for:
+    ghost" was untrue for exactly the browsers this ticket is about.
+
+    The user was shown the name and pressed "close them and exit": that gesture
+    is the consent that makes killing a process we did not start legitimate
+    here. The ticket forbids a SILENT kill, not a requested one.
+    """
+    app, calls = _app(running=(), survivors=("ghost",))
+    app._on_window_event(_CloseEvent())
+    assert "ghost" in app.page.dialogs[0].content.value, "precondition: promised"
+    _, confirm = _buttons(app.page.dialogs[0])
+
+    confirm.on_click(None)
+
+    assert calls["close_survivors"] == 1, (
+        "the dialog promised to close 'ghost' and nothing ever tried to"
+    )
+    assert app.page.window.destroyed is True
+
+
+def test_cancel_never_touches_a_survivor():
+    """Cancel is the default-safe answer, and the survivor teardown is the one
+    irreversible thing in this path — a cancelled close must not kill a browser
+    the user just chose to keep."""
+    app, calls = _app(running=(), survivors=("ghost",))
+    app._on_window_event(_CloseEvent())
+    cancel, _ = _buttons(app.page.dialogs[0])
+
+    cancel.on_click(None)
+
+    assert calls["close_survivors"] == 0
+    assert calls["shutdown"] == 0
+    assert app.page.window.destroyed is False
+
+
+def test_a_survivor_that_will_not_close_still_lets_persona_exit():
+    """A browser we could not kill must not wedge the window shut.
+
+    It keeps its registry record (the launcher forgets only what actually
+    closed), so the guard still refuses a second launch on the next start —
+    which is why failing to close here is survivable rather than fatal.
+    """
+    app, calls = _app(running=(), survivors=("ghost",), stubborn=("ghost",))
+    app._on_window_event(_CloseEvent())
+    _, confirm = _buttons(app.page.dialogs[0])
+
+    confirm.on_click(None)
+
+    assert calls["close_survivors"] == 1
     assert app.page.window.destroyed is True
 
 
