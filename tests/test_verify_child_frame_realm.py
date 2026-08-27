@@ -58,11 +58,96 @@ _SKIP_REASON = "no system chromium binary available to read the child-frame real
 
 _CHROMIUM = shutil.which("chromium") or shutil.which("chromium-browser")
 
-requires_chromium = pytest.mark.skipif(_CHROMIUM is None, reason=_SKIP_REASON)
-
 # One page load per evaluated expression. Generous: this bounds a whole browser
 # start, not a latency budget.
-_PAGE_TIMEOUT_S = 90
+_PAGE_TIMEOUT_S = 60
+
+# The one-off usability probe below gets a tighter bound than a real reading:
+# its whole job is to answer "does this binary render at all", and a browser
+# that cannot answer `1 + 1` inside this is not a readback channel.
+_SMOKE_TIMEOUT_S = 45
+
+# A browser test pays a whole cold browser START per page load, and two of the
+# tests below legitimately load twice (determinism needs two records; the
+# divergence control needs two realms). The suite-wide 120s bound is sized for
+# ordinary tests, and 2 x _PAGE_TIMEOUT_S does not fit inside it — so these
+# declare their own. This is a BUDGET, not a latency expectation: a working
+# chromium returns in seconds, and the gate above has already established that
+# this one works at all.
+_BROWSER_TEST_TIMEOUT_S = 300
+
+# Resolved once, on first use, and remembered. `None` means "not asked yet".
+_USABILITY: tuple | None = None
+
+
+def _chromium_usability() -> tuple:
+    """``(usable, reason)`` — does this chromium actually RENDER?
+
+    THE GATE THIS REPLACES ASKED THE WRONG QUESTION, and CI proved it. Skipping
+    on ``shutil.which(...) is None`` asks whether a FILE EXISTS. On the hosted
+    ubuntu runner a ``/usr/bin/chromium`` exists and then never renders: eight
+    consecutive launches returned nothing before their timeout, so four tests in
+    this file failed for want of a working browser while macOS — which has no
+    binary at all — skipped cleanly. A binary that cannot render once is not a
+    readback channel, and reporting that as a defect in the realm code is
+    exactly the "gate that fails for the wrong reason" ci.yml warns about:
+    chromium is provisioned NOWHERE in CI, deliberately, and `browser_chromium`
+    is a named, unprovisioned capability gap rather than an oversight.
+
+    So the question asked here is the honest one — *can this thing render?* —
+    answered by rendering. The probe is a trivial page with no iframe and no
+    realm machinery, so a failure can only mean the browser did not work: it
+    cannot be confused with a defect in the code under test.
+
+    THE WEAKNESS THIS DELIBERATELY ACCEPTS: a browser that renders a trivial
+    page and then fails on a real one still FAILS, and should — that is a
+    genuine finding about the realm, not an environment fact, and it must not
+    be silently skipped. This gate only ever forgives a browser that could not
+    render *anything*.
+    """
+    global _USABILITY
+    if _USABILITY is not None:
+        return _USABILITY
+
+    if _CHROMIUM is None:
+        _USABILITY = (False, _SKIP_REASON)
+        return _USABILITY
+
+    payload, diagnostic = _try_render(
+        _page("1 + 1"), timeout_s=_SMOKE_TIMEOUT_S
+    )
+    if payload is None or payload.get("value") != 2:
+        detail = diagnostic or f"it returned {payload!r} for `1 + 1`"
+        _USABILITY = (
+            False,
+            # Worded to stay UNCLASSIFIED by conftest's capability matching,
+            # exactly as _SKIP_REASON is. Capability matching is SUBSTRING
+            # matching, and this must not be mistaken either for `ui_driver`'s
+            # "chromium not runnable here" (a different chromium: the one the
+            # flet UI driver attaches to) or for `browser_chromium`'s
+            # "chromium engine not runnable here" (fingerprint-chromium, the
+            # product's own engine). This is a plain system browser used to
+            # read one JS expression, and no capability declares it.
+            f"the system chromium at {_CHROMIUM} cannot render a page here, "
+            f"so it is not a usable readback channel: {detail}",
+        )
+        return _USABILITY
+
+    _USABILITY = (True, "")
+    return _USABILITY
+
+
+@pytest.fixture(scope="session")
+def usable_chromium():
+    """Skip unless a system chromium is present AND able to render."""
+    usable, reason = _chromium_usability()
+    if not usable:
+        pytest.skip(reason)
+
+
+# Kept as a decorator so every test below reads the same as before; the
+# substance moved from "the file exists" to "the browser works".
+requires_chromium = pytest.mark.usefixtures("usable_chromium")
 
 
 def _js_string(text: str) -> str:
@@ -98,41 +183,65 @@ def _page(expression: str, *, preamble: str = "", extra: str = "{}") -> str:
     )
 
 
-def _render(html: str) -> dict:
+def _render(html: str, *, timeout_s: int = _PAGE_TIMEOUT_S) -> dict:
     """Load ``html`` in a real browser and return the published payload."""
+    payload, diagnostic = _try_render(html, timeout_s=timeout_s)
+    if payload is None:
+        pytest.fail(diagnostic)
+    return payload
+
+
+def _try_render(html: str, *, timeout_s: int) -> tuple:
+    """``(payload, None)`` on a successful read, ``(None, diagnostic)`` otherwise.
+
+    Split out of :func:`_render` so the usability gate below can ask "does this
+    binary render at all?" and get an ANSWER rather than a test failure. A
+    browser that cannot be launched is a fact about the environment; only a
+    browser that CAN be launched and then misbehaves is a fact about the code.
+    """
     workdir = tempfile.mkdtemp(prefix="ps210-")
     try:
         page_path = os.path.join(workdir, "page.html")
         with open(page_path, "w", encoding="utf-8") as handle:
             handle.write(html)
-        proc = subprocess.run(
-            [
-                _CHROMIUM,
-                "--headless",
-                "--no-sandbox",
-                "--disable-gpu",
-                "--user-data-dir=" + os.path.join(workdir, "profile"),
-                # Lets the page's promise chain settle before the DOM is dumped.
-                "--virtual-time-budget=5000",
-                "--dump-dom",
-                "file://" + page_path,
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=_PAGE_TIMEOUT_S,
-        )
+        try:
+            proc = subprocess.run(
+                [
+                    _CHROMIUM,
+                    "--headless",
+                    "--no-sandbox",
+                    "--disable-gpu",
+                    "--user-data-dir=" + os.path.join(workdir, "profile"),
+                    # Lets the page's promise chain settle before the DOM is
+                    # dumped.
+                    "--virtual-time-budget=5000",
+                    "--dump-dom",
+                    "file://" + page_path,
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=timeout_s,
+            )
+        except subprocess.TimeoutExpired:
+            return None, (
+                f"chromium did not return within {timeout_s}s — the browser "
+                "never rendered, so nothing was read."
+            )
+        except OSError as exc:  # binary present but not executable here
+            return None, f"chromium could not be launched: {exc}"
+
         marker = "RESULT:"
         start = proc.stdout.find(marker)
         if start == -1:
-            pytest.fail(
+            return None, (
                 "the page never published a result — the readback channel "
                 f"itself failed.\nstdout:\n{proc.stdout[:2000]}\n"
                 f"stderr:\n{proc.stderr[:2000]}"
             )
         blob = proc.stdout[start + len(marker):]
         blob = blob.split("<")[0].strip()
-        return json.loads(base64.b64decode(blob).decode("utf-8"))
+        return json.loads(base64.b64decode(blob).decode("utf-8")), None
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
@@ -207,6 +316,7 @@ def test_run_probes_returns_a_reading_from_inside_the_child_frame_realm():
 
 
 @requires_chromium
+@pytest.mark.timeout(_BROWSER_TEST_TIMEOUT_S)
 def test_the_child_frame_reading_is_deterministic_across_two_records():
     """AC7. Two records of the same profile must be byte-identical.
 
@@ -287,6 +397,7 @@ def test_the_shipped_child_frame_expression_uses_indexed_access():
 
 
 @requires_chromium
+@pytest.mark.timeout(_BROWSER_TEST_TIMEOUT_S)
 def test_window_and_child_frame_disagree_and_diff_realms_reports_it():
     """AC5, and the control that makes every assertion above non-vacuous.
 
