@@ -188,3 +188,108 @@ def test_the_gpu_patch_still_hooks_only_the_two_getparameter_cases():
         hits = [p.name for p in PATCH_DIR.glob("*.patch")
                 if name in p.read_text(encoding="utf-8", errors="replace")]
         assert not hits, f"unexpected {name!r} reference in {hits} — re-derive PS-218 step 3"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The OOM-at-link path, pinned because it is the one that breaks INVISIBLY
+# ─────────────────────────────────────────────────────────────────────────────
+# Everything above asserts over static YAML and patch files. The two below run
+# the attribution script for real, because the defect they pin was introduced by
+# an otherwise-correct fix and every static check stayed green while it shipped.
+#
+# The ticket names memory-at-link as the KNOWN failure mode of this build. An
+# OOM kill emits ninja `FAILED:` edges and a `Killed` — and NO clang
+# diagnostics. So the single most likely real failure is precisely the shape
+# that takes the script's no-diagnostics early exit. When that exit sat above
+# the edge-reporting section, a build that died reported its failing edges
+# NOWHERE: the operator holding a red build read "no compile errors found".
+#
+# That is a worse outcome than the wrong number it replaced, and no assertion in
+# this file could see it. Hence these.
+
+ATTRIBUTE_SH = REPO_ROOT / "scripts" / "ps218_attribute.sh"
+
+# A log with ninja edges and a `Killed`, and deliberately no clang diagnostics.
+OOM_AT_LINK_LOG = """\
+[49998/50000] CXX obj/content/browser/browser.o
+FAILED: obj/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.o
+FAILED: obj/chrome/chrome
+../../build/toolchain/gcc_link_wrapper.py: line 1: 12345 Killed
+ninja: build stopped: subcommand failed.
+"""
+
+
+def _run_attribution(tmp_path, log_text: str):
+    """Run the real script against a synthetic compile log."""
+    import subprocess
+
+    (tmp_path / "record").mkdir()
+    (tmp_path / "record" / "compile-patched.log").write_text(log_text, encoding="utf-8")
+
+    proc = subprocess.run(
+        ["bash", str(ATTRIBUTE_SH)],
+        cwd=tmp_path,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "UCPL_DIR": str(tmp_path),
+            "PATCH_DIR": str(PATCH_DIR),
+        },
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"script failed:\n{proc.stdout}\n{proc.stderr}"
+    return proc.stdout
+
+
+def test_a_build_that_died_at_link_still_reports_its_failing_edges(tmp_path):
+    """The known failure mode must not take a silent path.
+
+    A build killed by the OOM reaper produces edges and no diagnostics. Before
+    this was pinned, that log produced the sentence "No compile errors found"
+    and nothing else — no edge list, no count, no summary — for a build that
+    had in fact failed.
+    """
+    out = _run_attribution(tmp_path, OOM_AT_LINK_LOG)
+
+    # The edges are the ONLY evidence of failure in this log. They must appear.
+    assert "obj/chrome/chrome" in out, (
+        "the failing link edge is absent from the report: a build that died at "
+        "link would be reported as having no problems."
+    )
+    assert "failing build edges (ninja `FAILED:`): 2" in out, (
+        "the failing-edge COUNT must be reported on the no-diagnostics path"
+    )
+
+    # The summary must still print — it is where a reader looks for the totals.
+    assert "== summary ==" in out, (
+        "the summary block must not be skipped when a build dies at link"
+    )
+
+    # And the claim must be the true one. "No compile errors" beside two failing
+    # edges reads as a green to someone holding a red.
+    assert "No clang diagnostics found" in out
+    assert "No compile errors found" not in out, (
+        "a build with failing edges did NOT compile cleanly; the honest claim is "
+        "the narrower 'no clang diagnostics'."
+    )
+
+
+def test_a_clean_log_is_not_described_as_a_crash(tmp_path):
+    """The opposite zero-diagnostic case must read differently.
+
+    No diagnostics AND no edges is a log recording no compile failure. Telling
+    that reader to go hunt for an OOM kill manufactures a suspicion the evidence
+    does not support — the same class of error as the one above, inverted.
+    """
+    out = _run_attribution(tmp_path, "[50000/50000] LINK ./chrome\nninja: build completed successfully.\n")
+
+    assert "failing build edges (ninja `FAILED:`): 0" in out
+    assert "OOM kill or timeout" not in out, (
+        "a log with no failing edges must not be described as a crash"
+    )
+    # Matched on a single line: the script's prose is hard-wrapped, so
+    # "records no compile failure" spans a newline and would never match.
+    # Asserting the wrapped fragment keeps this test about the CLAIM rather
+    # than about where the paragraph happens to break.
+    assert "records no compile" in out
