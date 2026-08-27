@@ -68,10 +68,14 @@ def launch_or_stop(
         state.set_loading(name, False)
         state.schedule_refresh()
 
-    def _on_cert_trust(status: str) -> None:
+    def _on_cert_trust(status: str | None) -> None:
+        # Called twice per launch, and the `None` is not a no-op:
+        #   - at attempt start, with None, to DROP any prior verdict, so an older
+        #     "trusted" cannot stand over a session that ran untrusted;
+        #   - then with the engine's outcome, if one is announced.
         # The Firefox CA import soft-fails and the launch proceeds untrusted, so
-        # this outcome is announced exactly once. Persist it or the profile stays
-        # indistinguishable from one whose trust imported cleanly.
+        # persist whatever arrives or the profile stays indistinguishable from
+        # one whose trust imported cleanly.
         pm.set_cert_trust_status(name, status)
         state.schedule_refresh()
 

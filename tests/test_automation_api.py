@@ -61,7 +61,8 @@ class FakeLauncher:
     def started_at(self, name):
         return 1000.0 if name in self._running else None
 
-    def start_thread(self, profile, log, on_ready=None, on_stop=None):
+    def start_thread(self, profile, log, on_ready=None, on_stop=None, *,
+                     on_cert_trust=None):
         if profile.name in self._running or profile.name in self.claimed_by_racer:
             # The real launcher returns HERE, before the pop below — a duplicate
             # is not an attempt and must not erase the verdict from the attempt
@@ -74,6 +75,17 @@ class FakeLauncher:
         # A NEW attempt supersedes the previous verdict, dropped at the attempt
         # rather than at its outcome (launcher.py).
         self._last_refusal.pop(profile.name, None)
+        # The TRUST verdict is superseded by the attempt on exactly the same
+        # rule, one verdict over, and for a sharper reason: it is PERSISTED, so
+        # a verdict left standing is an affirmative "trusted" describing a
+        # session that ran with its CA untrusted (PS-198). Reproduced here for
+        # the same reason the refusal drop above is — a double that answers the
+        # real launcher's signature but not its ORDERING would let a lane pass
+        # these tests while getting the ordering wrong. Gated on the
+        # certificate and placed AFTER the duplicate return, both as in
+        # launcher.py.
+        if on_cert_trust is not None and profile.certificate:
+            on_cert_trust(None)
         exc = self.refuse_next_with
         if exc is not None:
             self.refuse_next_with = None

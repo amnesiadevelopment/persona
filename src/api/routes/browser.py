@@ -127,12 +127,36 @@ async def launch_browser(
     def _on_stop() -> None:
         bus.emit()
 
+    def _on_cert_trust(status: str | None) -> None:
+        # The Firefox CA import SOFT-FAILS: the launch proceeds with the
+        # certificate untrusted and the engine announces the outcome once.
+        # This lane dropped that announcement entirely (PS-198) — and the harm
+        # was not the silence. A verdict this lane never recorded left the
+        # PREVIOUS session's `trusted` standing over a session that ran with
+        # its CA untrusted, and it survived a restart: an affirmative clean
+        # bill of health for the launch that disproved it.
+        #
+        # `status=None` is the launcher invalidating that stale verdict at the
+        # START of the attempt. It rides the SAME callback as the outcome
+        # deliberately: this lane cannot record a verdict without also dropping
+        # the one it supersedes. `profile.name`, not `launch_profile.name` —
+        # they are equal (dataclasses.replace touches ai_control only), and the
+        # stored profile is the record being written.
+        pm.set_cert_trust_status(profile.name, status)
+        bus.emit()
+
     # Stamped BEFORE the call so the refusal read below can tell a verdict this
     # attempt produced from one left on record by an earlier attempt. See
     # api/refusal_report.py for why the attempt — not the dict — is the
     # discriminator.
     attempt_at = time.time()
-    bl.start_thread(launch_profile, _api_log, on_ready=_on_ready, on_stop=_on_stop)
+    bl.start_thread(
+        launch_profile,
+        _api_log,
+        on_ready=_on_ready,
+        on_stop=_on_stop,
+        on_cert_trust=_on_cert_trust,
+    )
 
     # A fail-closed guard refuses INSIDE start_thread, which swallows the
     # exception, records the verdict, and returns the same None a successful

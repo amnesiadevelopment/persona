@@ -782,12 +782,22 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
             self.save_profiles()
         return True
 
-    def set_cert_trust_status(self, name: str, status: str) -> bool:
+    def set_cert_trust_status(self, name: str, status: str | None) -> bool:
         """Record the outcome of the last mTLS CA trust attempt for a profile.
 
         The Firefox CA import soft-fails (the launch proceeds untrusted), so
         this is the only thing that survives the session to tell the operator
         the assigned certificate is not actually trusted.
+
+        ``status=None`` is a first-class value, not a caller's mistake: it is
+        the field's own "no verdict for the certificate now assigned", the
+        same value ``update_profile`` writes when a certificate is replaced.
+        The launcher passes it at the START of a launch attempt to invalidate
+        the previous session's verdict, so an older ``trusted`` cannot stand
+        over a session that ran untrusted (PS-198). Widened rather than given a
+        second method for the same reason ``set_last_launch_build`` takes
+        ``build: str | None`` — one writer per field, and absence is a value it
+        can express.
         """
         with self._lock:
             if name not in self.profiles:
