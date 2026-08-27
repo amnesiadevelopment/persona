@@ -485,12 +485,31 @@ class LogDock:
         from the last profile already painted, so appending to the list cannot
         emit a separator for a profile that is already at the bottom of it.
         """
+        parsed = [parse_event(line, self.profiles) for line in lines]
+
+        # A HEADING THAT INTRODUCES ONE EVENT IS NOT GROUPING, IT IS NOISE.
+        # Measured on the running app: the profiles interleave, so a naive
+        # "separator whenever the profile changes" put a heading above nearly
+        # every row and doubled the height of the stream to say nothing. So a
+        # run is only given a heading when it actually IS a run — two or more
+        # consecutive events about the same machine. Everything else keeps its
+        # own profile column and reads as an ordinary row.
+        run_len = [1] * len(parsed)
+        for i in range(len(parsed) - 2, -1, -1):
+            if parsed[i][1] and parsed[i][1] == parsed[i + 1][1]:
+                run_len[i] = run_len[i + 1] + 1
+
         out: list = []
         previous = self._last_profile if tail else None
-        for line in lines:
-            stamp, profile, _msg, _sev = parse_event(line, self.profiles)
+        for index, line in enumerate(lines):
+            stamp, profile, _msg, _sev = parsed[index]
             grouped = False
-            if tier == TIER_READING and profile and profile != previous:
+            if (
+                tier == TIER_READING
+                and profile
+                and profile != previous
+                and run_len[index] >= 2
+            ):
                 out.append(group_separator(profile, stamp))
                 grouped = True
             if profile:
