@@ -1185,7 +1185,7 @@ def test_the_reading_script_measures_the_tree_it_is_placed_in(tmp_path):
     out = subprocess.run(
         [sys.executable, str(readings_dir / "measure.py"), "1", "8"],
         capture_output=True, text=True, timeout=180, cwd=str(tmp_path),
-    )
+     encoding="utf-8")
     assert out.returncode == 0, out.stderr
 
     # It measured THIS tree: both sentinel cards, and this tree's own

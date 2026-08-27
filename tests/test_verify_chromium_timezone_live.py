@@ -173,7 +173,7 @@ def _wait_for_port(proc, profile_dir: str) -> int:
     deadline = time.monotonic() + chromium_tier.CDP_READY_TIMEOUT
     while time.monotonic() < deadline:
         if os.path.exists(path):
-            head = open(path).read().split("\n")[0].strip()
+            head = open(path, encoding="utf-8").read().split("\n")[0].strip()
             if head:
                 return int(head)
         if proc.poll() is not None:

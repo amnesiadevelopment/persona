@@ -112,7 +112,7 @@ def _run_inner(
     """
     os.makedirs(PROBE_DIR, exist_ok=True)
     path = os.path.join(PROBE_DIR, f"wedge_{uuid.uuid4().hex}.py")
-    with open(path, "w") as handle:
+    with open(path, "w", encoding="utf-8") as handle:
         handle.write(textwrap.dedent(body))
 
     env = dict(os.environ)
@@ -138,7 +138,7 @@ def _run_inner(
             ],
             capture_output=True, text=True, cwd=REPO_ROOT,
             env=env, timeout=OUTER_LIMIT,
-        )
+         encoding="utf-8")
     except subprocess.TimeoutExpired:
         pytest.fail(
             f"the inner run HUNG for {OUTER_LIMIT}s with a {bound}s bound and "
@@ -146,7 +146,7 @@ def _run_inner(
             f"which is exactly the ninety-minute defect PS-140 exists to remove."
         )
     finally:
-        with open(os.devnull, "w"):
+        with open(os.devnull, "w", encoding="utf-8"):
             pass
         if os.path.exists(path):
             os.remove(path)
@@ -679,7 +679,7 @@ def test_a_conftest_copied_away_from_the_repo_still_starts(tmp_path):
     sandbox = tmp_path / "away"
     sandbox.mkdir()
     shutil.copy(os.path.join(REPO_ROOT, "conftest.py"), sandbox)
-    (sandbox / "test_probe.py").write_text("def test_trivial():\n    assert True\n")
+    (sandbox / "test_probe.py").write_text("def test_trivial():\n    assert True\n", encoding="utf-8")
 
     # Deliberately NOT `-q`: the bound's status is printed by
     # pytest_report_header, and `-q` suppresses the header entirely — so a
@@ -695,7 +695,7 @@ def test_a_conftest_copied_away_from_the_repo_still_starts(tmp_path):
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-p", "no:timeout", "-p", "no:randomly"],
         capture_output=True, text=True, cwd=str(sandbox), timeout=OUTER_LIMIT,
-    )
+     encoding="utf-8")
     output = result.stdout + result.stderr
 
     assert result.returncode == 0, (

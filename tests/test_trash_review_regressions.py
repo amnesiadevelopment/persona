@@ -228,7 +228,7 @@ def test_trashed_data_is_never_parked_inside_a_live_profiles_data_dir(env):
     env.pm.add_profile("alpha", "", "windows")
     alpha_dir = env.pm._data_path("alpha")
     os.makedirs(alpha_dir, exist_ok=True)
-    pathlib.Path(alpha_dir, "Cookies").write_text("jar")
+    pathlib.Path(alpha_dir, "Cookies").write_text("jar", encoding="utf-8")
 
     assert env.pm.delete_profile("alpha") is True
 
@@ -252,7 +252,7 @@ def test_a_profile_named_like_the_park_area_can_itself_be_deleted(env):
     # delete_profile returned False, so the profile could not be deleted at all.
     env.pm.add_profile(".trash", "", "windows")
     os.makedirs(env.pm._data_path(".trash"), exist_ok=True)
-    pathlib.Path(env.pm._data_path(".trash"), "Cookies").write_text("jar")
+    pathlib.Path(env.pm._data_path(".trash"), "Cookies").write_text("jar", encoding="utf-8")
 
     assert env.pm.delete_profile(".trash") is True
     assert ".trash" not in env.pm.profiles
@@ -264,7 +264,7 @@ def test_deleting_a_profile_named_like_the_park_area_keeps_other_trash_intact(en
     env.pm.add_profile("alpha", "", "windows")
     alpha_dir = env.pm._data_path("alpha")
     os.makedirs(alpha_dir, exist_ok=True)
-    pathlib.Path(alpha_dir, "Cookies").write_text("jar")
+    pathlib.Path(alpha_dir, "Cookies").write_text("jar", encoding="utf-8")
     env.pm.delete_profile("alpha")
     parked = env.trash.list("profile")[0].material_path
 
@@ -272,21 +272,21 @@ def test_deleting_a_profile_named_like_the_park_area_keeps_other_trash_intact(en
     os.makedirs(env.pm._data_path(".trash"), exist_ok=True)
     env.pm.delete_profile(".trash")
 
-    assert pathlib.Path(parked, "Cookies").read_text() == "jar"
+    assert pathlib.Path(parked, "Cookies").read_text(encoding="utf-8") == "jar"
 
 
 def test_a_profile_named_like_the_park_area_restores_intact(env):
     env.pm.add_profile(".trash", "", "windows")
     d = env.pm._data_path(".trash")
     os.makedirs(d, exist_ok=True)
-    pathlib.Path(d, "Cookies").write_text("jar")
+    pathlib.Path(d, "Cookies").write_text("jar", encoding="utf-8")
     env.pm.delete_profile(".trash")
 
     entry = env.trash.list("profile")[0]
     ok, msg = env.pm.restore_profile(entry)
 
     assert (ok, msg) == (True, "")
-    assert pathlib.Path(env.pm._data_path(".trash"), "Cookies").read_text() == "jar"
+    assert pathlib.Path(env.pm._data_path(".trash"), "Cookies").read_text(encoding="utf-8") == "jar"
 
 
 # --- 3. a failed park is reported as a failure, in every lane ---
@@ -314,13 +314,13 @@ def test_a_profile_that_could_not_be_parked_is_left_completely_intact(env, monke
     env.pm.add_profile("alpha", "", "windows")
     d = env.pm._data_path("alpha")
     os.makedirs(d, exist_ok=True)
-    pathlib.Path(d, "Cookies").write_text("jar")
+    pathlib.Path(d, "Cookies").write_text("jar", encoding="utf-8")
     _break_the_park(monkeypatch)
 
     env.pm.delete_profile("alpha")
 
     assert "alpha" in env.pm.profiles
-    assert pathlib.Path(d, "Cookies").read_text() == "jar"
+    assert pathlib.Path(d, "Cookies").read_text(encoding="utf-8") == "jar"
     assert env.trash.list("profile") == []
 
 

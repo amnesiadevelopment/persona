@@ -18,7 +18,7 @@ def test_save_is_atomic_no_temp_left_and_valid(tmp_path):
     s.add("leaks", "https://browserleaks.com")
     files = list(pathlib.Path(tmp_path).iterdir())
     assert [f.name for f in files] == ["bookmarks.json"], files
-    data = json.loads((tmp_path / "bookmarks.json").read_text())
+    data = json.loads((tmp_path / "bookmarks.json").read_text(encoding="utf-8"))
     assert data["bookmarks"]["leaks"]["url"] == "https://browserleaks.com"
 
 

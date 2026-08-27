@@ -556,7 +556,7 @@ def test_the_freshness_predicate_has_a_single_definition():
     import pathlib
 
     repo_root = pathlib.Path(__file__).resolve().parent.parent
-    card_src = (repo_root / "src/ui/components/profile_card.py").read_text()
+    card_src = (repo_root / "src/ui/components/profile_card.py").read_text(encoding="utf-8")
     assert "def proxy_indicator_state" not in card_src, (
         "profile_card must not hold a second copy of the predicate"
     )

@@ -94,7 +94,7 @@ def test_a_missing_credential_file_refuses_the_run(tmp_path):
 
 def test_an_empty_credential_file_refuses_the_run(tmp_path):
     path = tmp_path / "empty.txt"
-    path.write_text("   \n")
+    path.write_text("   \n", encoding="utf-8")
     with pytest.raises(ExitNotProven) as exc:
         load_credential(str(path))
     assert "empty" in str(exc.value).lower()
@@ -102,7 +102,7 @@ def test_an_empty_credential_file_refuses_the_run(tmp_path):
 
 def test_a_credential_that_is_not_socks5_refuses_the_run(tmp_path):
     path = tmp_path / "http.txt"
-    path.write_text("http://user:pass@proxy.example:8080")
+    path.write_text("http://user:pass@proxy.example:8080", encoding="utf-8")
     with pytest.raises(ExitNotProven):
         load_credential(str(path))
 
@@ -111,13 +111,13 @@ def test_the_credential_scheme_is_rewritten_to_socks5h(tmp_path):
     """socks5 resolves the checker's hostname LOCALLY, leaking a DNS query
     naming the checker being read. socks5h sends the name for the exit."""
     path = tmp_path / "cred.txt"
-    path.write_text(CRED + "\n")
+    path.write_text(CRED + "\n", encoding="utf-8")
     assert load_credential(str(path)).startswith("socks5h://")
 
 
 def test_an_already_socks5h_credential_is_left_alone(tmp_path):
     path = tmp_path / "cred.txt"
-    path.write_text("socks5h://alice:s3cr3t@gate.example.com:10000")
+    path.write_text("socks5h://alice:s3cr3t@gate.example.com:10000", encoding="utf-8")
     assert load_credential(str(path)).count("socks5h") == 1
 
 
@@ -261,7 +261,7 @@ def test_the_file_WINS_when_both_channels_hold_a_credential(
     When they disagree, believe the channel that can be rotated.
     """
     path = tmp_path / "cred.txt"
-    path.write_text(CRED)
+    path.write_text(CRED, encoding="utf-8")
     _set_env(monkeypatch, OTHER_CRED)
 
     resolved = exit_guard.resolve_credential(str(path))
@@ -281,7 +281,7 @@ def test_a_DISAGREEMENT_between_the_two_channels_is_REPORTED(
     defensive branch.
     """
     path = tmp_path / "cred.txt"
-    path.write_text(CRED)
+    path.write_text(CRED, encoding="utf-8")
     _set_env(monkeypatch, OTHER_CRED)
 
     resolved = exit_guard.resolve_credential(str(path))
@@ -297,7 +297,7 @@ def test_two_channels_that_AGREE_are_not_reported_as_a_disagreement(
     """The container measured for this ticket had both channels byte-identical
     — the NORMAL state. It must not read as a conflict."""
     path = tmp_path / "cred.txt"
-    path.write_text(CRED)
+    path.write_text(CRED, encoding="utf-8")
     _set_env(monkeypatch, CRED)
 
     resolved = exit_guard.resolve_credential(str(path))
@@ -326,7 +326,7 @@ def test_NO_channel_leaks_the_credential_into_the_provenance_it_records(
     """`detail` is written into the RECORD, which is committed. It names a
     path or a variable NAME — a coordinate, never a value."""
     path = tmp_path / "cred.txt"
-    path.write_text(CRED)
+    path.write_text(CRED, encoding="utf-8")
     _set_env(monkeypatch, OTHER_CRED)
 
     for resolved in (
@@ -346,7 +346,7 @@ def test_a_refusal_message_never_carries_either_channels_credential(
     that get printed and pasted into tickets."""
     path = tmp_path / "cred.txt"
     # Malformed on BOTH channels, so both dispositions reach the message.
-    path.write_text("http://alice:s3cr3t@proxy.example:8080")
+    path.write_text("http://alice:s3cr3t@proxy.example:8080", encoding="utf-8")
     _set_env(monkeypatch, "http://bob:0th3r@relay.example.net:8080")
 
     with pytest.raises(ExitNotProven) as exc:
@@ -395,7 +395,7 @@ def _unreadable_perms(tmp_path):
     """A path that exists and denies reading. Requires a non-root uid."""
     path = tmp_path / "cred.txt"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(CRED)
+    path.write_text(CRED, encoding="utf-8")
     path.chmod(0)
     return str(path)
 
@@ -595,7 +595,7 @@ def test_a_credential_in_the_exceptions_message_is_redacted_on_every_platform(
 ):
     """The refusal path's redaction, staged through the seam not the filesystem."""
     path = tmp_path / "cred.txt"
-    path.write_text(CRED)
+    path.write_text(CRED, encoding="utf-8")
     # An OSError whose message carries a credential-shaped URL — the shape the
     # POSIX tests obtain from a real path, obtained here from the seam.
     _open_raising(monkeypatch, OSError(f"I/O error reading {CRED}"))
@@ -617,7 +617,7 @@ def test_the_FALLBACK_reports_redaction_holds_on_every_platform_too(
 ):
     """The second reader (`detail`, which is COMMITTED), same staging."""
     path = tmp_path / "cred.txt"
-    path.write_text(CRED)
+    path.write_text(CRED, encoding="utf-8")
     _set_env(monkeypatch, OTHER_CRED)
     _open_raising(monkeypatch, OSError(f"I/O error reading {CRED}"))
 
@@ -850,7 +850,7 @@ def _drive_checker_cli(credential_path):
         # Refusal is decided before any network work, so this is generous.
         # It is a guard against a hang becoming a silent pass, not a budget.
         timeout=120,
-    )
+     encoding="utf-8")
 
 
 def test_the_CLI_exits_2_and_shows_no_traceback_for_a_binary_credential(
@@ -978,7 +978,7 @@ def test_a_dead_relay_refuses_the_whole_run():
 
 def test_prove_exit_refuses_when_the_relay_is_dead(tmp_path):
     path = tmp_path / "cred.txt"
-    path.write_text("socks5://alice:s3cr3t@127.0.0.1:1")
+    path.write_text("socks5://alice:s3cr3t@127.0.0.1:1", encoding="utf-8")
     with pytest.raises(ExitNotProven):
         prove_exit(credential_path=str(path), timeout=5)
 

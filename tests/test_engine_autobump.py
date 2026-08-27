@@ -116,9 +116,9 @@ def test_apply_rewrites_all_pins(tmp_path):
     pp = (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
     assert f"invisible_playwright.git@{sha}" in pp
     assert "invisible_core==19.14.0" in pp
-    assert (tmp_path / "engine-baseline.txt").read_text().strip() == "firefox-19"
-    assert 'APP_VERSION = "2.9.15"' in (up / "updater.py").read_text()
-    ch = (ui / "changelog.py").read_text()
+    assert (tmp_path / "engine-baseline.txt").read_text(encoding="utf-8").strip() == "firefox-19"
+    assert 'APP_VERSION = "2.9.15"' in (up / "updater.py").read_text(encoding="utf-8")
+    ch = (ui / "changelog.py").read_text(encoding="utf-8")
     assert '"2.9.15":' in ch
     assert ch.index('"2.9.15"') < ch.index('"2.9.14"')  # newest first
 
@@ -145,4 +145,4 @@ def test_apply_resolves_sha_from_tags_when_target_is_branch(tmp_path):
     ab.apply(str(tmp_path), bp, fetch=fetch)
     assert f"invisible_playwright.git@{real_sha}" in (
         tmp_path / "pyproject.toml"
-    ).read_text()
+    ).read_text(encoding="utf-8")

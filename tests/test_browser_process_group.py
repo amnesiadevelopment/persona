@@ -356,7 +356,7 @@ def _fake_engine(tmp_path):
     has to be a shim or it measures a path with no defect.
     """
     script = tmp_path / "fake_engine.sh"
-    script.write_text("#!/bin/sh\nfor i in 1 2 3; do sleep 300 & done\nexit 0\n")
+    script.write_text("#!/bin/sh\nfor i in 1 2 3; do sleep 300 & done\nexit 0\n", encoding="utf-8")
     script.chmod(0o755)
     return str(script)
 

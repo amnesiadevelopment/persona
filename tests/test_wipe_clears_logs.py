@@ -103,7 +103,7 @@ def _make_real_profile(pm, name=NAME):
     pm.add_profile(name, "", "windows")
     data_dir = pm._data_path(name)
     os.makedirs(data_dir, exist_ok=True)
-    pathlib.Path(data_dir, "Cookies").write_text("logged-in")
+    pathlib.Path(data_dir, "Cookies").write_text("logged-in", encoding="utf-8")
     return data_dir
 
 

@@ -30,7 +30,7 @@ def test_certificate_defaults_to_none():
 def test_certificate_persists_across_reload(pm):
     pm.add_profile("c1", "", "windows", certificate="admin")
     assert pm.profiles["c1"].certificate == "admin"
-    raw = json.load(open(os.environ["PERSONA_PROFILES_FILE"]))
+    raw = json.load(open(os.environ["PERSONA_PROFILES_FILE"], encoding="utf-8"))
     assert raw["c1"]["certificate"] == "admin"
     from src.services.profile import manager as mgr
     pm2 = mgr.ProfileManager()

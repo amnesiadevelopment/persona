@@ -276,7 +276,7 @@ def _gpu_seen(tmp_path, seed, generation, tag):
     out = subprocess.run(
         [node, str(harness), str(d / "gpu.js")],
         capture_output=True, text=True, timeout=60,
-    )
+     encoding="utf-8")
     assert out.returncode == 0, out.stderr
     seen = json.loads(out.stdout)
     assert "HOST_VALUE_NOT_SPOOFED" not in seen.values(), (
@@ -608,7 +608,7 @@ def _screen_seen(tmp_path, seed, generation, tag):
     out = subprocess.run(
         [node, str(harness), str(d / "device.js")],
         capture_output=True, text=True, timeout=60,
-    )
+     encoding="utf-8")
     assert out.returncode == 0, out.stderr
     seen = json.loads(out.stdout)
     assert seen["width"] != 1, (
@@ -721,7 +721,7 @@ def _hw_seen(tmp_path, seed, generation, tag):
     out = subprocess.run(
         [node, str(harness), str(d / "device.js")],
         capture_output=True, text=True, timeout=60,
-    )
+     encoding="utf-8")
     assert out.returncode == 0, out.stderr
     seen = json.loads(out.stdout)
     assert seen["cores"] != -1 and seen["memory"] != -1, (

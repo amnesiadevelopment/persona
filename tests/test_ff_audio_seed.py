@@ -166,7 +166,7 @@ def test_chromium_extension_is_byte_identical_to_the_pre_ps73_text(tmp_path):
     edit to it moves recorded digests on an engine this ticket does not touch.
     """
     js = (pathlib.Path(build_audio_extension(12345, str(tmp_path / "ext")))
-          / "audio.js").read_text()
+          / "audio.js").read_text(encoding="utf-8")
 
     # The V8 marker cloak, and nothing from the Firefox form.
     assert "__pnaName" in js, (
@@ -187,7 +187,7 @@ def test_chromium_and_firefox_share_the_perturbation_not_the_cloak(tmp_path):
     persona extension and V8's native form is a tell on SpiderMonkey.
     """
     chromium = (pathlib.Path(build_audio_extension(999, str(tmp_path / "ext")))
-                / "audio.js").read_text()
+                / "audio.js").read_text(encoding="utf-8")
     firefox = firefox_audio_init_script(999)
 
     # shared: the perturbation and the realm bootstrap

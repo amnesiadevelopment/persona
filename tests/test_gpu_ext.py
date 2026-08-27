@@ -557,7 +557,7 @@ def _probe(tmp_path, seed, os_type, device_type="desktop"):
     out = subprocess.run(
         [node, str(harness), str(d / "gpu.js")],
         capture_output=True, text=True, timeout=60,
-    )
+     encoding="utf-8")
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
 
@@ -1005,7 +1005,7 @@ def test_emitted_script_is_syntactically_valid_for_every_os(tmp_path):
         out = subprocess.run(
             [node, "--check", str(pathlib.Path(d) / "gpu.js")],
             capture_output=True, text=True, timeout=60,
-        )
+         encoding="utf-8")
         assert out.returncode == 0, f"{os_type}: {out.stderr}"
 
 
@@ -1517,7 +1517,7 @@ def _macos_cards(tmp_path, generation, seeds=_MACOS_SEEDS):
         out = subprocess.run(
             [node, str(harness), str(d / "gpu.js")],
             capture_output=True, text=True, timeout=60,
-        )
+         encoding="utf-8")
         assert out.returncode == 0, out.stderr
         got = json.loads(out.stdout)
         assert got["unmaskedRenderer"] != "HOST_VALUE_NOT_SPOOFED", (
@@ -1625,7 +1625,7 @@ def test_macos_vendor_agrees_with_every_renderer_it_is_paired_with(tmp_path):
         harness = d / "harness.js"
         harness.write_text(_GPU_PROBE, encoding="utf-8")
         out = subprocess.run([node, str(harness), str(d / "gpu.js")],
-                             capture_output=True, text=True, timeout=60)
+                             capture_output=True, text=True, timeout=60, encoding="utf-8")
         assert out.returncode == 0, out.stderr
         got = json.loads(out.stdout)
         assert got["unmaskedVendor"] == "Google Inc. (Apple)"

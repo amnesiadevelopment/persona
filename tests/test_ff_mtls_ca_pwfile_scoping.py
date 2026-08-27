@@ -40,7 +40,7 @@ def _profile_with_ca(tmp_path):
     certdir = profile / ".persona-mtls"
     certdir.mkdir(parents=True)
     ca = certdir / "term_ca.crt"
-    ca.write_text("-----BEGIN CERTIFICATE-----\n")
+    ca.write_text("-----BEGIN CERTIFICATE-----\n", encoding="utf-8")
     return profile, certdir, ca
 
 
@@ -185,7 +185,7 @@ def test_no_persona_mtls_directory_is_conjured(monkeypatch, tmp_path):
     profile = tmp_path / "profile"
     profile.mkdir()
     ca = profile / "ca.crt"
-    ca.write_text("-----BEGIN CERTIFICATE-----\n")
+    ca.write_text("-----BEGIN CERTIFICATE-----\n", encoding="utf-8")
 
     monkeypatch.setattr(il.subprocess, "run", lambda argv, env=None, **k: _R())
 

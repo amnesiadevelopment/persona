@@ -97,7 +97,7 @@ def test_acquire_under_relocated_home_creates_no_dot_persona_on_the_host(tmp_pat
         capture_output=True,
         text=True,
         timeout=120,
-    )
+     encoding="utf-8")
     assert proc.returncode == 0, proc.stderr
 
     residue = fake_home / ".persona"
@@ -186,7 +186,7 @@ def test_explicit_lock_file_override_still_wins(tmp_path, monkeypatch):
 def test_fail_open_when_the_lock_directory_cannot_be_made(tmp_path, monkeypatch):
     """AC6. Refusing to start at all is worse than a rare second window."""
     blocker = tmp_path / "not-a-directory"
-    blocker.write_text("i am a file")
+    blocker.write_text("i am a file", encoding="utf-8")
     # makedirs() on a path whose parent is a regular file raises OSError.
     monkeypatch.setenv("PERSONA_LOCK_FILE", str(blocker / "sub" / "persona.lock"))
 

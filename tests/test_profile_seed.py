@@ -8,7 +8,7 @@ from src.services.browser.profile_seed import (
 
 
 def _prefs(tmp_path):
-    return json.loads((tmp_path / "Default" / "Preferences").read_text())
+    return json.loads((tmp_path / "Default" / "Preferences").read_text(encoding="utf-8"))
 
 
 def test_seed_writes_theme_for_fresh_profile(tmp_path):
@@ -50,9 +50,9 @@ def test_seed_skips_existing_profile(tmp_path):
     default = tmp_path / "Default"
     default.mkdir(parents=True)
     existing = default / "Preferences"
-    existing.write_text('{"user":"customized"}')
+    existing.write_text('{"user":"customized"}', encoding="utf-8")
     assert seed_profile_prefs(str(tmp_path)) is False
-    assert json.loads(existing.read_text()) == {"user": "customized"}
+    assert json.loads(existing.read_text(encoding="utf-8")) == {"user": "customized"}
 
 
 def test_seed_creates_default_dir(tmp_path):

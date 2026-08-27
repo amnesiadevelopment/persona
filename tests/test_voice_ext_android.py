@@ -100,7 +100,7 @@ def _probe(tmp_path, locale, os_type):
     out = subprocess.run(
         [node, str(harness), str(d / "voices.js")],
         capture_output=True, text=True, timeout=60,
-    )
+     encoding="utf-8")
     assert out.returncode == 0, out.stderr
     data = json.loads(out.stdout)
     assert data["voices"] != ["HOST_VALUE_NOT_SPOOFED"], (
@@ -309,7 +309,7 @@ def _gpu(tmp_path, seed, os_type):
     out = subprocess.run(
         [node, str(harness), str(d / "gpu.js")],
         capture_output=True, text=True, timeout=60,
-    )
+     encoding="utf-8")
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
 
@@ -399,7 +399,7 @@ def test_every_arm_emits_syntactically_valid_js(tmp_path, os_type):
     out = subprocess.run(
         [node, "--check", str(pathlib.Path(d) / "voices.js")],
         capture_output=True, text=True, timeout=60,
-    )
+     encoding="utf-8")
     assert out.returncode == 0, out.stderr
 
 

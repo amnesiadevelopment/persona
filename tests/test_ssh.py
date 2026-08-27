@@ -129,7 +129,7 @@ def test_tofu_policy_pins_new_host_key_0600(tmp_path, monkeypatch):
 
     kh = tmp_path / "known_hosts"
     assert kh.exists(), "a first-sight host key must be pinned"
-    content = kh.read_text()
+    content = kh.read_text(encoding="utf-8")
     assert "srv.example.com" in content
     if os.name != "nt":
         mode = stat.S_IMODE(os.stat(kh).st_mode)
