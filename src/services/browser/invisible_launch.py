@@ -62,6 +62,9 @@ from .env_policy import (
     scrub_current_process_environ,
 )
 from .firefox_bookmarks import places_ready
+# PS-217: ONE owner for the engine proxy dict, shared with the verify tier.
+# The duplication is what let the two parsers drift apart — see _proxy_dict.
+from ...utils.proxy_parser import ProxyUrlUnparseable, engine_proxy_dict
 # PS-78: the per-seed WebGL readPixels perturbation, shared with the Chromium
 # extension builder. Firefox loads no persona extension, so it takes the same
 # patch through add_init_script instead.
@@ -91,20 +94,27 @@ def get_ff_eval(name: str):
 
 
 def _proxy_dict(proxy_url: str):
-    """Turn a 'socks5://user:pass@host:port' url into invisible_playwright's
-    proxy dict. invisible_playwright does SOCKS5-with-auth natively, so no
-    local bridge is needed (unlike Camoufox)."""
-    if not proxy_url:
-        return None
-    m = re.match(r"socks5://(?:([^:]+):([^@]+)@)?(.+)", proxy_url)
-    if not m:
-        return {"server": proxy_url}
-    user, pw, hostport = m.group(1), m.group(2), m.group(3)
-    d = {"server": f"socks5://{hostport}"}
-    if user:
-        d["username"] = user
-        d["password"] = pw
-    return d
+    """Turn a proxy url into invisible_playwright's proxy dict, or REFUSE it.
+
+    invisible_playwright does SOCKS5-with-auth natively, so no local bridge is
+    needed (unlike Camoufox).
+
+    ⚠️ RAISES :class:`ProxyUrlUnparseable` on a URL it cannot fully read, and
+    that is the entire point of PS-217. This used to fall through to
+    ``{"server": proxy_url}`` with the credentials NEVER EXTRACTED — an
+    authenticated proxy then refused the connection and the user saw a page that
+    would not load, indistinguishable from a dropped network. A URL this code
+    cannot parse must never be silently downgraded to an unauthenticated one.
+
+    The parse itself lives in ``utils.proxy_parser.engine_proxy_dict`` — ONE
+    owner, shared with the verify tier, because the duplication is what let the
+    two drift apart in the first place (the verify copy grew ``socks5h`` support
+    that this one never had, while its docstring claimed it mirrored this
+    function). See that function for the three axes the old regex got wrong.
+
+    Returns None ONLY for an absent proxy, i.e. a direct profile.
+    """
+    return engine_proxy_dict(proxy_url)
 
 
 def _system_dpr() -> float:
@@ -2428,6 +2438,45 @@ def _profile_prefs(cfg: dict) -> dict:
                 # it from HTTPS documents, which is where a real session lives.
                 "network.dns.disablePrefetch": True,
                 "network.dns.disablePrefetchFromHTTPS": True,
+                # Never answer a dead or refusing proxy by going DIRECT
+                # (PS-217). With this TRUE, Firefox retries a failed SOCKS
+                # request on the operator's real address: the page then loads,
+                # nothing errors, and a profile whose entire purpose is that
+                # this cannot happen has just made a clearnet connection
+                # correlated with its identity. The user is never told.
+                #
+                # MEASURED on the bundled build rather than read from docs, and
+                # the measurement is why this is a PIN and not a fix:
+                # invisible_core 20.14.0's own `_BASELINE` (prefs.py:440)
+                # already sets it False, and driving
+                # `translate_profile_to_prefs` for a sampled profile returns
+                # False both with no overlay and with an unrelated one. So the
+                # SHIPPED DEFAULT IS ALREADY SAFE TODAY — there is no live leak
+                # here and this pref changes no current behaviour.
+                #
+                # What it removes is the ASYMMETRY. `verify/browser_tier._prefs`
+                # pins this value; the shipped launch did not, so the harness
+                # was running a configuration the product does not ship, and any
+                # conclusion it drew about failover described a browser we do
+                # not ship. Now both assert it.
+                #
+                # And the safe default is only somebody else's default: measured
+                # on the same build, `extra_prefs={...: True}` DOES win, because
+                # the caller overlay is applied LAST
+                # (`translate_profile_to_prefs` starts from `_BASELINE` and ends
+                # with `_apply_caller_overlay`). The daily 06:00 UTC engine
+                # autobump lands a new build on main with nobody looking, and a
+                # flipped upstream default would arrive silently. Exactly the
+                # argument network.trr.mode and the dns-prefetch pair above
+                # already make in their own comments — and the same shape as the
+                # engine's own note on socks5_remote_dns, where the safe
+                # behaviour being a default is precisely why it survived
+                # unasserted.
+                #
+                # Proxy-gated like its neighbours: on a direct profile the real
+                # address IS the identity and there is nothing to fail over
+                # from.
+                "network.proxy.failover_direct": False,
             }
         )
     # The chosen search engine feeds the Home button and the start page a
@@ -2998,7 +3047,37 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     # profile's own directory and fingerprint seed, so it must reach the network
     # over the same proxy the visible launch does, never on the operator's real
     # address. The visible launch reuses this exact value further down.
-    proxy = _proxy_dict(cfg.get("proxy_url", ""))
+    #
+    # PS-217: a proxy URL this code cannot fully read REFUSES THE LAUNCH rather
+    # than continuing with the credentials dropped. `_proxy_dict` used to fall
+    # through to `{"server": <raw url>}` for any scheme but the literal
+    # `socks5://`, so an authenticated proxy was handed a connection with no
+    # auth, refused it, and the user saw a page that would not load — with no
+    # error anywhere saying why.
+    #
+    # REPORTED ON THE PIPE, not raised. This call site is NOT inside the try
+    # that wraps the engine import below, so an escaping exception would kill
+    # the child before the parent reads anything: a launch that dies without
+    # saying anything, which is the exact failure mode this file warns about
+    # where `out` is opened. LAUNCH_FAILED + BROWSER_CLOSED + _finish() is the
+    # established shape for a refusal here (see the invisible_playwright import
+    # below), and the lock must be released because it is already held.
+    #
+    # FAIL-CLOSED is the correct direction: the alternative to refusing is a
+    # window that reaches the network on the operator's real address for a
+    # profile whose entire purpose is that this cannot happen. The message
+    # carries no URL — it carries the credential.
+    try:
+        proxy = _proxy_dict(cfg.get("proxy_url", ""))
+    except ProxyUrlUnparseable as e:
+        _release_lock()
+        emit(
+            f"LAUNCH_FAILED: this profile's proxy could not be understood ({e}). "
+            "Refusing to launch rather than connect without its credentials."
+        )
+        emit("BROWSER_CLOSED")
+        _finish()  # close the pipe so the monitor's reader unblocks (no fd leak)
+        return
     if not _seed_firefox_bookmarks(
         profile_dir, cfg.get("bookmarks", []), seed, stop_event, log=emit,
         proxy=proxy, proxy_declared=bool(cfg.get("proxy_url")),
