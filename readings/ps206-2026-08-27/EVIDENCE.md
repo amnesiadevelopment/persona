@@ -3,6 +3,7 @@
 **Date:** 2026-08-27
 **Platform driven:** Linux (this fleet). **The owner's platform, Windows, was NOT measured — see "Not reachable".**
 **Engine:** `invisible_playwright` 0.7.3 + the packaged build `firefox-20_151.0_20260817150018`
+⚠️ **See "A version-drift caveat on this instrument" at the bottom — the measurements below were taken on a stack that DRIFTED from `pyproject.toml`'s pin.**
 **Instrument:** `scripts/ps206_second_tab.py`
 **Proxy:** a real, authenticated, **rotating backconnect** SOCKS5 gateway (`gw.dataimpulse.com:824`)
 
@@ -107,3 +108,45 @@ Already excluded by the ticket: the peer-ownership guard (no certificate assigne
 Neither was shown to cause this symptom. The `--pin-failover` flag exists on the harness so the second one can be measured directly if it is ever suspected again.
 
 **The most valuable next step is a reading from the owner's own Windows machine**, which this harness is written to be run on unchanged.
+
+---
+
+## A version-drift caveat on this instrument — found by me, after the measurements
+
+**Every measurement above was taken on an engine stack that had drifted from this repository's own pin.** I am recording it rather than quietly re-running, because the drift is exactly the class of instrument fault this project has been bitten by before, and a reader deserves to know which stack produced these numbers.
+
+`pyproject.toml:102` pins `invisible_playwright` to an **exact commit** (`353df4f…`) with `invisible_core==20.14.0`, and the comment there says why: it is *"the commit the test suite is green against"*, pinned so a supply-chain push cannot land unverified.
+
+I installed the package **bare** (`pip install invisible_playwright`), which resolved:
+
+| | I measured on | `pyproject.toml` pins |
+|---|---|---|
+| `invisible_playwright` | 0.7.3 | commit `353df4f…` (= **0.7.1**) |
+| `invisible_core` | 20.16.0 | **20.14.0** |
+| `playwright` (driver) | 1.62.0 | **1.61.0** |
+
+**Why this matters and is not pedantry:** the driver is the thing that speaks to the browser, and this fork exists *precisely because* stock Playwright cannot do SOCKS5 auth. Measuring proxy behaviour through a driver two versions off production is measuring a slightly different product. The project's own memory corpus already carries this rule twice, and I did not follow it.
+
+**What I did about it:** installed the pinned stack (verified in place: `invisible_playwright 0.7.1`, `invisible_core 20.14.0`, `playwright 1.61.0`) and started a re-run of the baseline leg. It got:
+
+```
+tab1 first  [api.ipify.org] OK status=200 exit='109.243.64.65' 628ms
+tab2 opened [ifconfig.me  ] OK status=200 exit='83.175.179.83' 654ms
+```
+
+— consistent with the drifted-stack result, then stalled at the **container's 2 GB ceiling** (the same instrument limit documented above; memory reached 1823 MiB and the runner was reclaimed). **So the pinned-stack re-run is INCOMPLETE: two tabs of five.**
+
+### The honest status of the verdict
+
+- **Unchanged in direction, and independently corroborated where it matters most.** The `NS_ERROR_CONNECTION_REFUSED` symptom, the fault-injection legs and the concurrency leg all exercise the **proxy hop**, and the two pinned-stack tabs behaved identically to the drifted ones.
+- **But "5/5 tabs load on the pinned stack" is NOT something this reading has established.** Only 2/5 were re-measured before the ceiling.
+- **The exclusions therefore carry a version caveat**, and anyone re-opening this should re-run `scripts/ps206_second_tab.py all` on the pinned stack — ideally on a host without a 2 GB cap — before treating them as settled.
+
+**Install the pin, never bare:**
+
+```
+pip install "invisible_playwright @ git+https://github.com/feder-cr/invisible_playwright.git@353df4faac4fb202cc4d836c46d981855ecf1bd9" "invisible_core==20.14.0"
+python3 -m invisible_playwright fetch     # NB: the verb is `fetch`, not `install`
+```
+
+This does not change the ticket's outcome — Windows remains the unmeasured platform and the symptom remains unexplained — but it does mean the Linux "did not reproduce" is bounded by **one more caveat than I originally claimed**, and saying so is worth more than a tidier record.
