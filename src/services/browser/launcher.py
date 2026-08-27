@@ -676,7 +676,7 @@ class BrowserLauncher:
         notify_stopped: Callable[[], None],
         close_reason: "list[str | None]",
         last_output: "deque[str]",
-        on_cert_trust: Callable[[str], None] | None = None,
+        on_cert_trust: Callable[[str | None], None] | None = None,
     ) -> None:
         # The process being up is what makes the profile stoppable: report
         # ready NOW so the card shows a killable [stop] while the engine is
