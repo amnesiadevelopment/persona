@@ -146,8 +146,25 @@ say() {
 
   echo "## Environment"
   echo
+  echo "### As the job found the machine (before prepare)"
   echo '```'
   cat "${REC}/environment-${TREE}.txt" 2>/dev/null || echo "(not recorded)"
+  echo '```'
+  echo
+  # The SECOND pass is the one carrying the container/cgroup figures: the probe
+  # needs the build image, and `prepare` is what creates it. Printing only the
+  # first pass would reproduce the defect this fixed — a record asserting three
+  # memory levels while holding one.
+  echo "### As the BUILD CONTAINER sees it (after prepare)"
+  echo
+  echo "The ticket's instruction is explicit that these are not the same claim:"
+  echo "\"WSL2's memory allocation is not the host's.\" This is the level that"
+  echo "governs the link step, which is where ungoogled's FAQ places the common"
+  echo "out-of-memory crash."
+  echo
+  echo '```'
+  cat "${REC}/environment-${TREE}-post-prepare.txt" 2>/dev/null \
+    || echo "(not recorded — the post-prepare pass did not run)"
   echo '```'
 } > "$OUT"
 

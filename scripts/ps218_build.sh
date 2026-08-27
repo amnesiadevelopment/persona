@@ -42,6 +42,27 @@ mkdir -p "$REC"
 LOG="${REC}/${PHASE}-${TREE}.log"
 MEMLOG="${REC}/${PHASE}-${TREE}-memory.tsv"
 TIMING="${REC}/${PHASE}-${TREE}-timing.txt"
+PROV="${REC}/${PHASE}-${TREE}.provenance"
+
+# ── provenance stamp: which run, which tag, produced this log ────────────────
+# `record/` sits in $GITHUB_WORKSPACE, outside both checkouts, and a self-hosted
+# runner does not wipe _work between dispatches. The jobs now zero `record/` on
+# entry, but that alone cannot protect a log CARRIED BETWEEN JOBS (the control
+# log the patched job reads): a file that is present is not thereby a file from
+# THIS run. So every log is stamped with the tag and run that produced it, and
+# ps218_attribute.sh REFUSES a control whose stamp does not match rather than
+# trusting it.
+#
+# Absence was already handled ("CONTROL UNKNOWN"). Staleness is the same false
+# attribution arriving through a present file instead of a missing one.
+{
+  echo "phase=${PHASE}"
+  echo "tree=${TREE}"
+  echo "ungoogled_tag=${UNGOOGLED_TAG:-unknown}"
+  echo "github_run_id=${GITHUB_RUN_ID:-local}"
+  echo "github_run_attempt=${GITHUB_RUN_ATTEMPT:-1}"
+  echo "recorded=$(date -Is)"
+} > "$PROV"
 
 # ── memory sampler ───────────────────────────────────────────────────────────
 # Sampled every 5 s for the whole phase. ungoogled's FAQ names exhausted memory
@@ -115,13 +136,42 @@ case "$PHASE" in
     # elapsed time means nothing.
     if [ -n "$NINJA_EXTRA" ]; then
       # Reducing -j means bypassing upstream's fixed ninja line, so the compile
-      # is invoked directly in the same image with the same environment.
-      _use_existing_image=1 CI= _gha_final=true \
+      # is invoked directly in the same image.
+      #
+      # ⚠️ THIS BRANCH IS THE ONE LEAST ABLE TO AFFORD MISSING GUARDS. It is
+      # taken precisely when memory is tight enough to need a reduced -j, i.e.
+      # the run most likely to thrash or hang at link. Two things upstream's
+      # entrypoint does (.github/scripts/build.sh:21-30) were dropped here and
+      # are restored:
+      #
+      #   1. `timeout -k 5m -s INT 18000s` — without it the only bound was the
+      #      job's `timeout-minutes: 900`, which reports as a JOB TIMEOUT rather
+      #      than a build result. A hung link would arrive as infrastructure
+      #      noise instead of the finding this ticket is paying for.
+      #   2. the `-x chrome && -x chromedriver` check — ninja can exit 0 having
+      #      produced nothing usable; the binaries on disk settle it.
+      #
+      # The env prefix that used to sit here (`_use_existing_image=1 CI=
+      # _gha_final=true`) was INERT and is gone rather than left to mislead:
+      # those three are read only by docker-build.sh, which this branch
+      # deliberately does not invoke, and `docker run` does not forward host
+      # variables without `-e`. Keeping a prefix that reads as "same
+      # environment" while doing nothing is the sort of confident-but-false
+      # signal this whole review was about.
+      timeout -k 5m -s INT 18000s \
         docker run --rm -i -u "$(id -u):$(id -g)" -v "$(pwd):/repo" \
         chromium-builder:trixie-slim \
         bash -c "cd /repo/build/src && ninja ${NINJA_EXTRA} -C out/Default chrome chromedriver" \
         2>&1 | tee -a "$LOG"
       rc=${PIPESTATUS[0]}
+      if [ "$rc" -eq 0 ]; then
+        if [ -x build/src/out/Default/chrome ] && [ -x build/src/out/Default/chromedriver ]; then
+          :
+        else
+          echo "ninja exited 0 but chrome/chromedriver are not both present and executable" | tee -a "$LOG"
+          rc=1
+        fi
+      fi
     else
       CI=1 _prepare_only=false _gha_final=true GITHUB_OUTPUT="${GITHUB_OUTPUT:-/dev/null}" \
         ./scripts/docker-build.sh 2>&1 | tee -a "$LOG"
@@ -145,6 +195,26 @@ elapsed=$((phase_end - phase_start))
 peak_used_kb="$(awk 'NR>1 && $2>m {m=$2} END {print m+0}' "$MEMLOG")"
 peak_swap_kb="$(awk 'NR>1 && $4>m {m=$4} END {print m+0}' "$MEMLOG")"
 
+# ── did a binary actually land? ──────────────────────────────────────────────
+# Checked ON DISK rather than inferred from the exit code, because those two can
+# disagree and the binary is the one that settles it. This also populates the
+# job's `compiled` output, which was DECLARED in the workflow
+# (`outputs.compiled: ${{ steps.compile.outputs.compiled }}`) while nothing ever
+# wrote it — so it always resolved to the empty string, advertising a gate that
+# did not exist. Nothing consumes it yet; making the declaration true is the
+# minimal fix, and inventing a consumer would be a redesign this ticket forbids.
+CHROME_BIN="$(pwd)/build/src/out/Default/chrome"
+if [ -x "$CHROME_BIN" ]; then
+  CHROME_STATE="present ($(stat -c %s "$CHROME_BIN" 2>/dev/null || echo '?') bytes)"
+  COMPILED=true
+else
+  CHROME_STATE="ABSENT"
+  COMPILED=false
+fi
+if [ "$PHASE" = "compile" ] && [ -n "${GITHUB_OUTPUT:-}" ] && [ "${GITHUB_OUTPUT}" != "/dev/null" ]; then
+  echo "compiled=${COMPILED}" >> "$GITHUB_OUTPUT"
+fi
+
 {
   echo "phase:            ${PHASE}"
   echo "tree:             ${TREE}"
@@ -165,6 +235,9 @@ peak_swap_kb="$(awk 'NR>1 && $4>m {m=$4} END {print m+0}' "$MEMLOG")"
   echo "peak_mem_used_gb: $(awk -v k="$peak_used_kb" 'BEGIN{printf "%.1f", k/1048576}')"
   echo "peak_swap_used_kb:${peak_swap_kb}"
   echo "peak_swap_used_gb:$(awk -v k="$peak_swap_kb" 'BEGIN{printf "%.1f", k/1048576}')"
+  if [ "$PHASE" = "compile" ]; then
+    echo "chrome_binary:    ${CHROME_STATE}"
+  fi
   # The prediction under test, computed here so the comparison is in the record
   # rather than left as arithmetic for the reader.
   if [ "$PHASE" = "compile" ]; then
