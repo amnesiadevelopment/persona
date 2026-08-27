@@ -1,0 +1,132 @@
+[
+  {
+    "name": "148.0.7778.215",
+    "zipball_url": "https://api.github.com/repos/adryfish/fingerprint-chromium/zipball/refs/tags/148.0.7778.215",
+    "tarball_url": "https://api.github.com/repos/adryfish/fingerprint-chromium/tarball/refs/tags/148.0.7778.215",
+    "commit": {
+      "sha": "3f61b0dfa665e883da8824b1450601fc529dd006",
+      "url": "https://api.github.com/repos/adryfish/fingerprint-chromium/commits/3f61b0dfa665e883da8824b1450601fc529dd006"
+    },
+    "node_id": "REF_kwDONa-9trhyZWZzL3RhZ3MvMTQ4LjAuNzc3OC4yMTU"
+  },
+  {
+    "name": "144.0.7559.132",
+    "zipball_url": "https://api.github.com/repos/adryfish/fingerprint-chromium/zipball/refs/tags/144.0.7559.132",
+    "tarball_url": "https://api.github.com/repos/adryfish/fingerprint-chromium/tarball/refs/tags/144.0.7559.132",
+    "commit": {
+      "sha": "831623f2965e34554304caabfc3a1e4e3741db1f",
+      "url": "https://api.github.com/repos/adryfish/fingerprint-chromium/commits/831623f2965e34554304caabfc3a1e4e3741db1f"
+    },
+    "node_id": "REF_kwDONa-9trhyZWZzL3RhZ3MvMTQ0LjAuNzU1OS4xMzI"
+  },
+  {
+    "name": "142.0.7444.175",
+    "zipball_url": "https://api.github.com/repos/adryfish/fingerprint-chromium/zipball/refs/tags/142.0.7444.175",
+    "tarball_url": "https://api.github.com/repos/adryfish/fingerprint-chromium/tarball/refs/tags/142.0.7444.175",
+    "commit": {
+      "sha": "f7ab85e5f39a7109a4fd45b48933be60c077ab8b",
+      "url": "https://api.github.com/repos/adryfish/fingerprint-chromium/commits/f7ab85e5f39a7109a4fd45b48933be60c077ab8b"
+    },
+    "node_id": "REF_kwDONa-9trhyZWZzL3RhZ3MvMTQyLjAuNzQ0NC4xNzU"
+  },
+  {
+    "name": "139.0.7258.154",
+    "zipball_url": "https://api.github.com/repos/adryfish/fingerprint-chromium/zipball/refs/tags/139.0.7258.154",
+    "tarball_url": "https://api.github.com/repos/adryfish/fingerprint-chromium/tarball/refs/tags/139.0.7258.154",
+    "commit": {
+      "sha": "d73d9a0d1262389521b6dc3c6fabcded049dd33d",
+      "url": "https://api.github.com/repos/adryfish/fingerprint-chromium/commits/d73d9a0d1262389521b6dc3c6fabcded049dd33d"
+    },
+    "node_id": "REF_kwDONa-9trhyZWZzL3RhZ3MvMTM5LjAuNzI1OC4xNTQ"
+  },
+  {
+    "name": "138.0.7204.183",
+    "zipball_url": "https://api.github.com/repos/adryfish/fingerprint-chromium/zipball/refs/tags/138.0.7204.183",
+    "tarball_url": "https://api.github.com/repos/adryfish/fingerprint-chromium/tarball/refs/tags/138.0.7204.183",
+    "commit": {
+      "sha": "7976d16b5002b36c5f57160686c8d072869d57b6",
+      "url": "https://api.github.com/repos/adryfish/fingerprint-chromium/commits/7976d16b5002b36c5f57160686c8d072869d57b6"
+    },
+    "node_id": "REF_kwDONa-9trhyZWZzL3RhZ3MvMTM4LjAuNzIwNC4xODM"
+  },
+  {
+    "name": "136.0.7103.113",
+    "zipball_url": "https://api.github.com/repos/adryfish/fingerprint-chromium/zipball/refs/tags/136.0.7103.113",
+    "tarball_url": "https://api.github.com/repos/adryfish/fingerprint-chromium/tarball/refs/tags/136.0.7103.113",
+    "commit": {
+      "sha": "39fd2b26b6704fc389051de8d835d2f3fdb8ca12",
+      "url": "https://api.github.com/repos/adryfish/fingerprint-chromium/commits/39fd2b26b6704fc389051de8d835d2f3fdb8ca12"
+    },
+    "node_id": "REF_kwDONa-9trhyZWZzL3RhZ3MvMTM2LjAuNzEwMy4xMTM"
+  },
+  {
+    "name": "135.0.7049.95",
+    "zipball_url": "https://api.github.com/repos/adryfish/fingerprint-chromium/zipball/refs/tags/135.0.7049.95",
+    "tarball_url": "https://api.github.com/repos/adryfish/fingerprint-chromium/tarball/refs/tags/135.0.7049.95",
+    "commit": {
+      "sha": "c4f77ea5d08fee279c0e6c98c34b423ad363db3d",
+      "url": "https://api.github.com/repos/adryfish/fingerprint-chromium/commits/c4f77ea5d08fee279c0e6c98c34b423ad363db3d"
+    },
+    "node_id": "REF_kwDONa-9trdyZWZzL3RhZ3MvMTM1LjAuNzA0OS45NQ"
+  },
+  {
+    "name": "134.0.6998.165",
+    "zipball_url": "https://api.github.com/repos/adryfish/fingerprint-chromium/zipball/refs/tags/134.0.6998.165",
+    "tarball_url": "https://api.github.com/repos/adryfish/fingerprint-chromium/tarball/refs/tags/134.0.6998.165",
+    "commit": {
+      "sha": "6bf8f1b4ff50944c5d3ad0d72d8240cce0b7609b",
+      "url": "https://api.github.com/repos/adryfish/fingerprint-chromium/commits/6bf8f1b4ff50944c5d3ad0d72d8240cce0b7609b"
+    },
+    "node_id": "REF_kwDONa-9trhyZWZzL3RhZ3MvMTM0LjAuNjk5OC4xNjU"
+  },
+  {
+    "name": "133.0.6943.126",
+    "zipball_url": "https://api.github.com/repos/adryfish/fingerprint-chromium/zipball/refs/tags/133.0.6943.126",
+    "tarball_url": "https://api.github.com/repos/adryfish/fingerprint-chromium/tarball/refs/tags/133.0.6943.126",
+    "commit": {
+      "sha": "b69ade245e9ec762ab9a486a3b34776bb9646f77",
+      "url": "https://api.github.com/repos/adryfish/fingerprint-chromium/commits/b69ade245e9ec762ab9a486a3b34776bb9646f77"
+    },
+    "node_id": "REF_kwDONa-9trhyZWZzL3RhZ3MvMTMzLjAuNjk0My4xMjY"
+  },
+  {
+    "name": "132.0.6834.159",
+    "zipball_url": "https://api.github.com/repos/adryfish/fingerprint-chromium/zipball/refs/tags/132.0.6834.159",
+    "tarball_url": "https://api.github.com/repos/adryfish/fingerprint-chromium/tarball/refs/tags/132.0.6834.159",
+    "commit": {
+      "sha": "72900c24004976fac6b7da35693d58675ab18d4a",
+      "url": "https://api.github.com/repos/adryfish/fingerprint-chromium/commits/72900c24004976fac6b7da35693d58675ab18d4a"
+    },
+    "node_id": "REF_kwDONa-9trhyZWZzL3RhZ3MvMTMyLjAuNjgzNC4xNTk"
+  },
+  {
+    "name": "131.0.6778.264",
+    "zipball_url": "https://api.github.com/repos/adryfish/fingerprint-chromium/zipball/refs/tags/131.0.6778.264",
+    "tarball_url": "https://api.github.com/repos/adryfish/fingerprint-chromium/tarball/refs/tags/131.0.6778.264",
+    "commit": {
+      "sha": "7aacbdbd6b3740e49ddafdefd6a96391c5ccdae9",
+      "url": "https://api.github.com/repos/adryfish/fingerprint-chromium/commits/7aacbdbd6b3740e49ddafdefd6a96391c5ccdae9"
+    },
+    "node_id": "REF_kwDONa-9trhyZWZzL3RhZ3MvMTMxLjAuNjc3OC4yNjQ"
+  },
+  {
+    "name": "130.0.6723.116",
+    "zipball_url": "https://api.github.com/repos/adryfish/fingerprint-chromium/zipball/refs/tags/130.0.6723.116",
+    "tarball_url": "https://api.github.com/repos/adryfish/fingerprint-chromium/tarball/refs/tags/130.0.6723.116",
+    "commit": {
+      "sha": "68184fbda666a9115d1e433041eb6f9cce7f7c84",
+      "url": "https://api.github.com/repos/adryfish/fingerprint-chromium/commits/68184fbda666a9115d1e433041eb6f9cce7f7c84"
+    },
+    "node_id": "REF_kwDONa-9trhyZWZzL3RhZ3MvMTMwLjAuNjcyMy4xMTY"
+  },
+  {
+    "name": "129.0.6668.100",
+    "zipball_url": "https://api.github.com/repos/adryfish/fingerprint-chromium/zipball/refs/tags/129.0.6668.100",
+    "tarball_url": "https://api.github.com/repos/adryfish/fingerprint-chromium/tarball/refs/tags/129.0.6668.100",
+    "commit": {
+      "sha": "3a32fc400733806c5a44984a30e43f37aabead1d",
+      "url": "https://api.github.com/repos/adryfish/fingerprint-chromium/commits/3a32fc400733806c5a44984a30e43f37aabead1d"
+    },
+    "node_id": "REF_kwDONa-9trhyZWZzL3RhZ3MvMTI5LjAuNjY2OC4xMDA"
+  }
+]

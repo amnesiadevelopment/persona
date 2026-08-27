@@ -1,0 +1,128 @@
+patch	status	files_total	files_missing	hunks	hunks_failed	detail
+upstream-fixes/missing-dependencies.patch	CONFLICT	8	1	8	0	can't find file to patch at input line 63;
+core/inox-patchset/0001-fix-building-without-safebrowsing.patch	CLEAN	14	0	24	0	
+core/inox-patchset/0003-disable-autofill-download-manager.patch	CLEAN	1	0	1	0	
+core/inox-patchset/0005-disable-default-extensions.patch	CLEAN	4	0	5	0	
+core/inox-patchset/0015-disable-update-pings.patch	CLEAN	1	0	1	0	
+core/inox-patchset/0021-disable-rlz.patch	CLEAN	2	0	2	0	
+core/iridium-browser/safe_browsing-disable-incident-reporting.patch	CLEAN	5	0	5	0	
+core/iridium-browser/safe_browsing-disable-reporting-of-safebrowsing-over.patch	CLEAN	1	0	2	0	
+core/iridium-browser/all-add-trk-prefixes-to-possibly-evil-connections.patch	CONFLICT	33	6	33	0	can't find file to patch at input line 230;can't find file to patch at input line 293;
+core/ungoogled-chromium/disable-crash-reporter.patch	CONFLICT	3	1	4	0	can't find file to patch at input line 5;
+core/ungoogled-chromium/disable-google-host-detection.patch	CONFLICT	8	1	17	0	can't find file to patch at input line 692;
+core/ungoogled-chromium/replace-google-search-engine-with-nosearch.patch	NO_TARGET	1	1	1	0	can't find file to patch at input line 3;
+core/ungoogled-chromium/toggle-translation-via-switch.patch	CLEAN	5	0	9	0	
+core/ungoogled-chromium/disable-untraceable-urls.patch	CLEAN	3	0	3	0	
+core/ungoogled-chromium/disable-profile-avatar-downloading.patch	CLEAN	1	0	1	0	
+core/ungoogled-chromium/disable-gcm.patch	CLEAN	1	0	7	0	
+core/ungoogled-chromium/disable-domain-reliability.patch	CLEAN	5	0	7	0	
+core/ungoogled-chromium/block-trk-and-subdomains.patch	CONFLICT	13	5	17	0	can't find file to patch at input line 63;can't find file to patch at input line 73;
+core/ungoogled-chromium/disable-gaia.patch	CLEAN	1	0	1	0	
+core/ungoogled-chromium/disable-fonts-googleapis-references.patch	CLEAN	5	0	7	0	
+core/ungoogled-chromium/disable-webstore-urls.patch	CONFLICT	6	1	13	0	can't find file to patch at input line 176;
+core/ungoogled-chromium/fix-learn-doubleclick-hsts.patch	CLEAN	1	0	1	0	
+core/ungoogled-chromium/disable-webrtc-log-uploader.patch	CLEAN	2	0	4	0	
+core/ungoogled-chromium/fix-building-with-prunned-binaries.patch	CONFLICT	61	12	108	0	can't find file to patch at input line 677;can't find file to patch at input line 1113;
+core/ungoogled-chromium/disable-network-time-tracker.patch	CLEAN	1	0	1	0	
+core/ungoogled-chromium/disable-mei-preload.patch	CLEAN	2	0	3	0	
+core/ungoogled-chromium/fix-building-without-safebrowsing.patch	CONFLICT	108	3	168	0	can't find file to patch at input line 2408;can't find file to patch at input line 2765;
+core/ungoogled-chromium/remove-unused-preferences-fields.patch	CONFLICT	236	10	467	0	can't find file to patch at input line 2931;can't find file to patch at input line 2941;
+core/ungoogled-chromium/block-requests.patch	CONFLICT	10	1	12	0	can't find file to patch at input line 117;
+core/ungoogled-chromium/disable-privacy-sandbox.patch	CLEAN	7	0	12	0	
+core/ungoogled-chromium/doh-changes.patch	CLEAN	4	0	4	0	
+core/ungoogled-chromium/extensions-manifestv2.patch	CONFLICT	5	1	7	0	can't find file to patch at input line 136;
+core/ungoogled-chromium/remove-f1-shortcut.patch	CLEAN	1	0	1	0	
+core/ungoogled-chromium/move-js-optimizer-unfamiliar-sites.patch	CLEAN	4	0	4	0	
+core/ungoogled-chromium/build-with-wasm-rollup.patch	NO_TARGET	1	1	2	0	can't find file to patch at input line 3;
+core/bromite/disable-fetching-field-trials.patch	CLEAN	2	0	5	0	
+extra/ungoogled-chromium/add-ungoogled-flag-headers.patch	CLEAN	7	6	7	0	
+extra/inox-patchset/0006-modify-default-prefs.patch	CONFLICT	12	1	13	0	can't find file to patch at input line 81;
+extra/inox-patchset/0008-restore-classic-ntp.patch	CLEAN	1	0	1	0	
+extra/inox-patchset/0013-disable-missing-key-warning.patch	CLEAN	1	0	1	0	
+extra/inox-patchset/0016-chromium-sandbox-pie.patch	CLEAN	1	0	1	0	
+extra/inox-patchset/0019-disable-battery-status-service.patch	CONFLICT	2	1	4	0	can't find file to patch at input line 3;
+extra/debian/disable/google-api-warning.patch	NO_TARGET	1	1	1	0	can't find file to patch at input line 6;
+extra/iridium-browser/mime_util-force-text-x-suse-ymp-to-be-downloaded.patch	NO_TARGET	1	1	1	0	can't find file to patch at input line 14;
+extra/iridium-browser/prefs-always-prompt-for-download-directory-by-defaul.patch	CLEAN	1	0	1	0	
+extra/iridium-browser/updater-disable-auto-update.patch	CLEAN	1	0	1	0	
+extra/iridium-browser/Remove-EV-certificates.patch	NO_TARGET	1	1	1	0	can't find file to patch at input line 13;
+extra/iridium-browser/browser-disable-profile-auto-import-on-first-run.patch	CLEAN	1	0	1	0	
+extra/bromite/fingerprinting-flags-client-rects-and-measuretext.patch	CONFLICT	19	2	27	0	can't find file to patch at input line 47;can't find file to patch at input line 107;
+extra/bromite/flag-max-connections-per-host.patch	CLEAN	6	0	10	0	
+extra/bromite/flag-fingerprinting-canvas-image-data-noise.patch	CONFLICT	11	2	14	0	can't find file to patch at input line 58;can't find file to patch at input line 284;
+extra/ungoogled-chromium/add-components-ungoogled.patch	CLEAN	3	3	3	0	
+extra/ungoogled-chromium/disable-formatting-in-omnibox.patch	CLEAN	2	0	2	0	
+extra/ungoogled-chromium/add-ipv6-probing-option.patch	CLEAN	4	0	5	0	
+extra/ungoogled-chromium/remove-disable-setuid-sandbox-as-bad-flag.patch	CLEAN	1	0	1	0	
+extra/ungoogled-chromium/disable-intranet-redirect-detector.patch	CLEAN	1	0	1	0	
+extra/ungoogled-chromium/enable-page-saving-on-more-pages.patch	CLEAN	4	0	5	0	
+extra/ungoogled-chromium/disable-download-quarantine.patch	CONFLICT	4	1	9	0	can't find file to patch at input line 145;
+extra/ungoogled-chromium/fix-building-without-mdns-and-service-discovery.patch	CLEAN	1	0	1	0	
+extra/ungoogled-chromium/add-flag-to-configure-extension-downloading.patch	CLEAN	6	0	8	0	
+extra/ungoogled-chromium/add-flag-for-search-engine-collection.patch	CLEAN	5	0	10	0	
+extra/ungoogled-chromium/add-flag-to-disable-beforeunload.patch	CLEAN	2	0	3	0	
+extra/ungoogled-chromium/add-flag-to-force-punycode-hostnames.patch	CONFLICT	2	1	3	0	can't find file to patch at input line 16;
+extra/ungoogled-chromium/add-flag-to-show-avatar-button.patch	CLEAN	3	0	3	0	
+extra/ungoogled-chromium/add-suggestions-url-field.patch	CLEAN	13	0	33	0	
+extra/ungoogled-chromium/add-flag-to-hide-crashed-bubble.patch	CONFLICT	2	1	2	0	can't find file to patch at input line 6;
+extra/ungoogled-chromium/add-flag-to-scroll-tabs.patch	CLEAN	4	0	7	0	
+extra/ungoogled-chromium/enable-paste-and-go-new-tab-button.patch	CLEAN	2	0	3	0	
+extra/ungoogled-chromium/add-flag-for-bookmark-bar-ntp.patch	CLEAN	3	0	4	0	
+extra/ungoogled-chromium/enable-menu-on-reload-button.patch	CLEAN	1	0	1	0	
+extra/ungoogled-chromium/add-flag-for-omnibox-autocomplete-filtering.patch	CLEAN	6	0	9	0	
+extra/ungoogled-chromium/disable-dial-repeating-discovery.patch	CLEAN	1	0	2	0	
+extra/ungoogled-chromium/remove-uneeded-ui.patch	CONFLICT	29	3	40	0	can't find file to patch at input line 448;can't find file to patch at input line 642;
+extra/ungoogled-chromium/add-flag-to-close-window-with-last-tab.patch	CLEAN	3	0	5	0	
+extra/ungoogled-chromium/add-flag-to-convert-popups-to-tabs.patch	CLEAN	3	0	5	0	
+extra/ungoogled-chromium/add-flag-to-disable-local-history-expiration.patch	CLEAN	2	0	4	0	
+extra/ungoogled-chromium/add-extra-channel-info.patch	CLEAN	1	0	1	0	
+extra/ungoogled-chromium/prepopulated-search-engines.patch	CLEAN	1	0	1	0	
+extra/ungoogled-chromium/fix-distilled-icons.patch	CLEAN	1	0	1	0	
+extra/ungoogled-chromium/add-flag-to-clear-data-on-exit.patch	CLEAN	4	0	7	0	
+extra/ungoogled-chromium/add-flag-for-tabsearch-button.patch	CONFLICT	5	1	7	0	can't find file to patch at input line 3;
+extra/ungoogled-chromium/add-flag-for-qr-generator.patch	CONFLICT	4	1	5	0	can't find file to patch at input line 42;
+extra/ungoogled-chromium/add-flag-for-grab-handle.patch	CLEAN	2	0	2	0	
+extra/ungoogled-chromium/add-flag-for-close-confirmation.patch	CLEAN	4	0	11	0	
+extra/ungoogled-chromium/keep-expired-flags.patch	CLEAN	1	0	3	0	
+extra/ungoogled-chromium/add-flag-for-custom-ntp.patch	CLEAN	3	0	4	0	
+extra/ungoogled-chromium/add-flag-for-tab-hover-cards.patch	CLEAN	5	0	7	0	
+extra/ungoogled-chromium/add-flag-to-hide-tab-close-buttons.patch	CLEAN	2	0	3	0	
+extra/ungoogled-chromium/add-flag-to-disable-tls-grease.patch	CONFLICT	2	1	3	0	can't find file to patch at input line 14;
+extra/ungoogled-chromium/add-flag-to-change-http-accept-header.patch	CLEAN	3	0	5	0	
+extra/ungoogled-chromium/add-flag-to-disable-sharing-hub.patch	CLEAN	2	0	3	0	
+extra/ungoogled-chromium/add-flag-for-disabling-link-drag.patch	CONFLICT	5	1	7	0	can't find file to patch at input line 36;
+extra/ungoogled-chromium/add-flag-to-hide-extensions-menu.patch	CLEAN	2	0	5	0	
+extra/ungoogled-chromium/add-flag-to-hide-fullscreen-exit-ui.patch	CLEAN	3	0	3	0	
+extra/ungoogled-chromium/add-flag-for-incognito-themes.patch	CLEAN	3	0	4	0	
+extra/ungoogled-chromium/add-flags-for-referrer-customization.patch	CLEAN	11	2	17	0	
+extra/ungoogled-chromium/default-webrtc-ip-handling-policy.patch	CLEAN	1	0	1	0	
+extra/ungoogled-chromium/add-flags-for-existing-switches.patch	CLEAN	3	2	3	0	
+extra/ungoogled-chromium/first-run-page.patch	CLEAN	4	1	5	0	
+extra/ungoogled-chromium/add-flag-to-reduce-system-info.patch	CONFLICT	5	1	8	0	can't find file to patch at input line 14;
+extra/ungoogled-chromium/add-flag-to-remove-client-hints.patch	CLEAN	6	0	9	0	
+extra/ungoogled-chromium/disable-downloads-page-referrer-url.patch	CLEAN	1	0	1	0	
+extra/ungoogled-chromium/enable-extra-locales.patch	CLEAN	4	0	5	0	
+extra/ungoogled-chromium/disable-chromelabs.patch	CLEAN	1	0	1	0	
+extra/ungoogled-chromium/remove-pac-size-limit.patch	NO_TARGET	1	1	1	0	can't find file to patch at input line 3;
+extra/ungoogled-chromium/enable-certificate-transparency-and-add-flag.patch	CLEAN	2	0	2	0	
+extra/ungoogled-chromium/add-flag-to-spoof-webgl-renderer-info.patch	CLEAN	5	0	6	0	
+extra/ungoogled-chromium/add-flag-to-increase-incognito-storage-quota.patch	CLEAN	4	0	6	0	
+extra/ungoogled-chromium/add-credits.patch	CLEAN	3	1	5	0	
+extra/ungoogled-chromium/disable-ai-search-shortcuts.patch	CLEAN	2	0	2	0	
+extra/ungoogled-chromium/disable-fedcm-by-default.patch	CLEAN	1	0	1	0	
+extra/fingerprint/000-add-fingerprint-switches.patch	CLEAN	3	0	3	0	
+extra/fingerprint/001-disable-runtime.enable.patch	NO_TARGET	2	2	3	0	can't find file to patch at input line 5;can't find file to patch at input line 68;
+extra/fingerprint/002-user-agent-fingerprint.patch	CONFLICT	10	3	19	0	can't find file to patch at input line 5;can't find file to patch at input line 454;
+extra/fingerprint/003-audio-fingerprint.patch	CLEAN	1	0	3	0	
+extra/fingerprint/005-hardware-concurrency-fingerprint.patch	CLEAN	2	0	2	0	
+extra/fingerprint/006-font-fingerprint.patch	CLEAN	1	0	3	0	
+extra/fingerprint/007-shadow-root.patch	OFFSET	3	0	3	0	
+extra/fingerprint/009-webdriver.patch	OFFSET	1	0	1	0	
+extra/fingerprint/010-headless.patch	OFFSET	1	0	1	0	
+extra/fingerprint/011-gpu-info.patch	CONFLICT	7	5	9	0	can't find file to patch at input line 114;
+extra/fingerprint/012-canvas-get-image-data.patch	CLEAN	3	0	9	0	
+extra/fingerprint/013-canvas-toDataURL.patch	CLEAN	1	0	3	0	
+extra/fingerprint/014-client-rects.patch	CLEAN	6	0	13	0	
+extra/fingerprint/015-canvas-measure-text.patch	CLEAN	1	0	1	0	
+extra/fingerprint/016-webgl-readPixels.patch	CLEAN	1	0	4	0	
+extra/fingerprint/018-timezone.patch	NO_TARGET	1	1	4	0	can't find file to patch at input line 5;

@@ -1,0 +1,152 @@
+{
+ "ungoogled-chromium-windows": [
+  {
+   "date": "2026-08-23",
+   "name": "build-arm",
+   "n_jobs": 17,
+   "compute_h": 61.7,
+   "wall_h": 62.87,
+   "longest_job_h": 4.7
+  },
+  {
+   "date": "2026-08-22",
+   "name": "build-x86",
+   "n_jobs": 17,
+   "compute_h": 41.06,
+   "wall_h": 41.07,
+   "longest_job_h": 4.9
+  },
+  {
+   "date": "2026-08-22",
+   "name": "build-x64",
+   "n_jobs": 17,
+   "compute_h": 43.51,
+   "wall_h": 43.53,
+   "longest_job_h": 5.17
+  },
+  {
+   "date": "2026-08-21",
+   "name": "build-x64",
+   "n_jobs": 17,
+   "compute_h": 42.06,
+   "wall_h": 42.08,
+   "longest_job_h": 5.71
+  },
+  {
+   "date": "2026-08-21",
+   "name": "build-arm",
+   "n_jobs": 17,
+   "compute_h": 63.27,
+   "wall_h": 63.29,
+   "longest_job_h": 4.9
+  },
+  {
+   "date": "2026-08-21",
+   "name": "build-x86",
+   "n_jobs": 17,
+   "compute_h": 39.52,
+   "wall_h": 39.54,
+   "longest_job_h": 5.43
+  }
+ ],
+ "ungoogled-chromium-macos": [
+  {
+   "date": "2026-07-06",
+   "name": "Build macOS binaries of Ungoogled Chromium",
+   "n_jobs": 43,
+   "compute_h": -121.83,
+   "wall_h": 39.4,
+   "longest_job_h": 5.24
+  },
+  {
+   "date": "2026-06-21",
+   "name": "Build macOS binaries of Ungoogled Chromium",
+   "n_jobs": 43,
+   "compute_h": 23.91,
+   "wall_h": 13.63,
+   "longest_job_h": 5.19
+  },
+  {
+   "date": "2026-06-11",
+   "name": "Build macOS binaries of Ungoogled Chromium",
+   "n_jobs": 43,
+   "compute_h": 22.4,
+   "wall_h": 14.03,
+   "longest_job_h": 5.2
+  },
+  {
+   "date": "2026-06-09",
+   "name": "Build macOS binaries of Ungoogled Chromium",
+   "n_jobs": 43,
+   "compute_h": 22.7,
+   "wall_h": 15.49,
+   "longest_job_h": 5.19
+  },
+  {
+   "date": "2026-05-31",
+   "name": "Build macOS binaries of Ungoogled Chromium",
+   "n_jobs": 43,
+   "compute_h": 25.61,
+   "wall_h": 15.63,
+   "longest_job_h": 5.19
+  },
+  {
+   "date": "2026-05-15",
+   "name": "Build macOS binaries of Ungoogled Chromium",
+   "n_jobs": 43,
+   "compute_h": 26.76,
+   "wall_h": 15.37,
+   "longest_job_h": 5.19
+  }
+ ],
+ "ungoogled-chromium-portablelinux": [
+  {
+   "date": "2026-08-21",
+   "name": "Build Linux AppImage for ungoogled-chromium",
+   "n_jobs": 25,
+   "compute_h": 30.65,
+   "wall_h": 19.08,
+   "longest_job_h": 5.27
+  },
+  {
+   "date": "2026-08-21",
+   "name": "Build Linux AppImage for ungoogled-chromium",
+   "n_jobs": 25,
+   "compute_h": 32.33,
+   "wall_h": 19.37,
+   "longest_job_h": 5.16
+  },
+  {
+   "date": "2026-08-12",
+   "name": "Build Linux AppImage for ungoogled-chromium",
+   "n_jobs": 25,
+   "compute_h": 32.5,
+   "wall_h": 19.04,
+   "longest_job_h": 5.17
+  },
+  {
+   "date": "2026-08-07",
+   "name": "Build Linux AppImage for ungoogled-chromium",
+   "n_jobs": 25,
+   "compute_h": 32.01,
+   "wall_h": 18.89,
+   "longest_job_h": 5.18
+  },
+  {
+   "date": "2026-08-06",
+   "name": "Build Linux AppImage for ungoogled-chromium",
+   "n_jobs": 25,
+   "compute_h": 32.59,
+   "wall_h": 20.14,
+   "longest_job_h": 5.23
+  },
+  {
+   "date": "2026-08-04",
+   "name": "Build Linux AppImage for ungoogled-chromium",
+   "n_jobs": 25,
+   "compute_h": 34.06,
+   "wall_h": 22.61,
+   "longest_job_h": 5.34
+  }
+ ]
+}
