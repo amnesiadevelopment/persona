@@ -892,6 +892,23 @@ _SEARCH_URLS = {
 # parsing and hangs instead). The rest kill the remaining startup requests so a
 # launch never blocks on the network. NEVER blank a *.server pref to disable a
 # feature — use its enabled flag; a blank server URL is an invalid URL and hangs.
+#
+# TWO OWNERS, for the same reason _SESSION_RESTORE_PREFS below has two (read its
+# header for the full timing argument — it applies verbatim here):
+#
+#   * _profile_prefs — the engine's extra_prefs, applied over the juggler
+#     protocol AFTER startup and persisted into prefs.js by Firefox. This is the
+#     copy that covers every NORMAL launch.
+#   * _migrate_profile_for_engine_build — straight into prefs.js BEFORE Firefox
+#     starts, because a build change DELETES prefs.js and the engine's copy
+#     arrives too late to be read (PS-197).
+#
+# Every pref here decides a question Firefox asks AT STARTUP, so the late copy
+# cannot answer it on the one launch after a build bump. Adding a pref to this
+# dict gives it both owners for free; REMOVING the migration's copy silently
+# costs one noisy launch per bump and prefs.js READS correct afterwards — so,
+# exactly as for the session prefs, never check this by inspecting prefs.js
+# after a launch.
 _NO_STARTUP_FETCH = {
     "services.settings.server": "data:,#remote-settings-dummy/v1",
     "services.settings.poll_interval": 0,
@@ -1705,8 +1722,31 @@ def _migrate_profile_for_engine_build(profile_dir: str, engine_dir: str) -> list
         # unset. It then persists the late copy, which is why prefs.js READS
         # correct afterwards while the session is already lost — do not verify
         # this by inspecting prefs.js.
+        #
+        # AND the quiet-startup set, for EXACTLY the same timing reason (PS-197).
+        # Firefox decides at startup, from prefs.js, whether to poll Remote
+        # Settings, run Normandy, fetch the blocklist and safebrowsing lists, and
+        # probe the captive portal. _NO_STARTUP_FETCH travels the same late door
+        # as the session prefs — _profile_prefs opens with dict(_NO_STARTUP_FETCH)
+        # and the engine applies it over juggler AFTER startup — so on the one
+        # launch where prefs.js was just deleted those fetches all happen at
+        # Firefox's defaults before the late copy lands. Self-healing (Firefox
+        # persists the late copy, so launch two is quiet again) and NOT a leak:
+        # the proxy is a launch kwarg, not a pref, so the traffic still leaves
+        # through the tunnel. What is lost is the QUIET startup, not the tunnel.
+        # The warm-up's copy does not cover this — _init_places_db is gated
+        # behind an unseeded profile and a build change does not re-run it.
+        #
+        # _NO_STARTUP_FETCH is splatted FIRST so the two families above keep
+        # precedence by construction if a key is ever added to it. The three key
+        # spaces are pairwise disjoint today, so today the order is a no-op.
         _upsert_prefs_js(
-            profile_dir, {**_WARMUP_CHROME_PREFS, **_SESSION_RESTORE_PREFS}
+            profile_dir,
+            {
+                **_NO_STARTUP_FETCH,
+                **_WARMUP_CHROME_PREFS,
+                **_SESSION_RESTORE_PREFS,
+            },
         )
         _activate_dark_theme(profile_dir)
 
