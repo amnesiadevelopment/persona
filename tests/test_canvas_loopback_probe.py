@@ -276,8 +276,8 @@ def test_the_shared_reduction_really_computes_FNV1a_over_every_byte(tmp_path):
         encoding="utf-8",
     )
     out = subprocess.run(
-        [node, str(script)], capture_output=True, text=True, timeout=60
-    , encoding="utf-8")
+        [node, str(script)], capture_output=True, text=True, timeout=60, encoding="utf-8"
+    )
     assert out.returncode == 0, f"the shared expression did not run: {out.stderr}"
 
     got = json.loads(out.stdout)
@@ -314,8 +314,8 @@ def test_the_served_page_is_valid_javascript(tmp_path):
     script = tmp_path / "page_inline.js"
     script.write_text(inline.group(1), encoding="utf-8")
     out = subprocess.run(
-        [node, "--check", str(script)], capture_output=True, text=True, timeout=60
-    , encoding="utf-8")
+        [node, "--check", str(script)], capture_output=True, text=True, timeout=60, encoding="utf-8"
+    )
     assert out.returncode == 0, f"the probe page's script does not parse: {out.stderr}"
 
 

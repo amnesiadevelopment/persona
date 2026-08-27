@@ -304,8 +304,8 @@ console.log(JSON.stringify(out));
         script = pathlib.Path(d, "harness.js")
         script.write_text(harness, encoding="utf-8")
         proc = subprocess.run(
-            [node, str(script)], capture_output=True, text=True, timeout=60
-        , encoding="utf-8")
+            [node, str(script)], capture_output=True, text=True, timeout=60, encoding="utf-8"
+        )
     assert proc.returncode == 0, f"harness failed: {proc.stderr}"
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
@@ -495,8 +495,8 @@ console.log(JSON.stringify(out));
         script = pathlib.Path(d, "csp_harness.js")
         script.write_text(harness, encoding="utf-8")
         proc = subprocess.run(
-            [node, str(script)], capture_output=True, text=True, timeout=60
-        , encoding="utf-8")
+            [node, str(script)], capture_output=True, text=True, timeout=60, encoding="utf-8"
+        )
     assert proc.returncode == 0, f"harness failed: {proc.stderr}"
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
@@ -754,8 +754,8 @@ console.log(JSON.stringify(out));
         script = pathlib.Path(d, "cloak_harness.js")
         script.write_text(harness, encoding="utf-8")
         proc = subprocess.run(
-            [node, str(script)], capture_output=True, text=True, timeout=60
-        , encoding="utf-8")
+            [node, str(script)], capture_output=True, text=True, timeout=60, encoding="utf-8"
+        )
     assert proc.returncode == 0, f"harness failed: {proc.stderr}"
     return json.loads(proc.stdout.strip().splitlines()[-1])
 

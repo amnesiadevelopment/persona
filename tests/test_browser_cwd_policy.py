@@ -227,7 +227,7 @@ def _child_cwd_after_fork(tmp_path, sentinel=None, in_thread=False, is_linux=Tru
                 payload = json.dumps(
                     {"cwd": os.getcwd(), "started_in": started_in}
                 )
-                with os.fdopen(report_w, "w") as fh:
+                with os.fdopen(report_w, "w", encoding="utf-8") as fh:
                     fh.write(payload)
                 _finish()
 
@@ -255,7 +255,7 @@ def _child_cwd_after_fork(tmp_path, sentinel=None, in_thread=False, is_linux=Tru
             # directory" — true, uninformative, and a guess to debug. The
             # exception text costs one write and turns that into a read.
             try:
-                with os.fdopen(report_w, "w") as fh:
+                with os.fdopen(report_w, "w", encoding="utf-8") as fh:
                     fh.write(
                         json.dumps(
                             {"error": f"{type(e).__name__}: {e}"}
@@ -267,9 +267,9 @@ def _child_cwd_after_fork(tmp_path, sentinel=None, in_thread=False, is_linux=Tru
 
     os.close(write_fd)
     os.close(report_w)
-    with os.fdopen(report_r) as fh:
+    with os.fdopen(report_r, encoding="utf-8") as fh:
         payload = fh.read()
-    os.fdopen(read_fd).close()
+    os.fdopen(read_fd, encoding="utf-8").close()
     os.waitpid(pid, 0)
     assert payload, "the forked child reported no working directory"
     report = json.loads(payload)
@@ -351,7 +351,7 @@ def test_an_unreachable_directory_is_reported_on_the_pipe_not_died_on(tmp_path):
         os._exit(0)
 
     os.close(write_fd)
-    with os.fdopen(read_fd) as fh:
+    with os.fdopen(read_fd, encoding="utf-8") as fh:
         said = fh.read()
     os.waitpid(pid, 0)
 

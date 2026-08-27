@@ -55,8 +55,8 @@ def _run_ascii_locale(snippet: str) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         cwd=REPO_ROOT,
-        env=env,
-     encoding="utf-8")
+        env=env, encoding="utf-8",
+    )
 
 
 def _mkdir_cyrillic() -> str:

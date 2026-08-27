@@ -339,8 +339,8 @@ def _probe(tmp_path, *, cloak=None, csp_refuses_blob_xhr=True):
     )
 
     out = subprocess.run(
-        [node, str(harness), str(cfg)], capture_output=True, text=True, timeout=60
-    , encoding="utf-8")
+        [node, str(harness), str(cfg)], capture_output=True, text=True, timeout=60, encoding="utf-8"
+    )
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
 

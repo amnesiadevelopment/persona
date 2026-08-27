@@ -556,8 +556,8 @@ def _probe(tmp_path, seed, os_type, device_type="desktop"):
     harness.write_text(_GPU_PROBE, encoding="utf-8")
     out = subprocess.run(
         [node, str(harness), str(d / "gpu.js")],
-        capture_output=True, text=True, timeout=60,
-     encoding="utf-8")
+        capture_output=True, text=True, timeout=60, encoding="utf-8",
+    )
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
 
@@ -1004,8 +1004,8 @@ def test_emitted_script_is_syntactically_valid_for_every_os(tmp_path):
         d = build_gpu_extension(1, os_type, str(tmp_path / f"s{os_type}"), 0, engine_platform=engine_platform_for(os_type, "desktop"))
         out = subprocess.run(
             [node, "--check", str(pathlib.Path(d) / "gpu.js")],
-            capture_output=True, text=True, timeout=60,
-         encoding="utf-8")
+            capture_output=True, text=True, timeout=60, encoding="utf-8",
+        )
         assert out.returncode == 0, f"{os_type}: {out.stderr}"
 
 
@@ -1516,8 +1516,8 @@ def _macos_cards(tmp_path, generation, seeds=_MACOS_SEEDS):
         harness.write_text(_GPU_PROBE, encoding="utf-8")
         out = subprocess.run(
             [node, str(harness), str(d / "gpu.js")],
-            capture_output=True, text=True, timeout=60,
-         encoding="utf-8")
+            capture_output=True, text=True, timeout=60, encoding="utf-8",
+        )
         assert out.returncode == 0, out.stderr
         got = json.loads(out.stdout)
         assert got["unmaskedRenderer"] != "HOST_VALUE_NOT_SPOOFED", (

@@ -174,8 +174,8 @@ def _run(tmp_path, os_type, probe, *, with_gpu=False, tag="", stubs=None):
         encoding="utf-8",
     )
     out = subprocess.run(
-        [node, str(harness), str(cfg)], capture_output=True, text=True, timeout=60
-    , encoding="utf-8")
+        [node, str(harness), str(cfg)], capture_output=True, text=True, timeout=60, encoding="utf-8"
+    )
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)["result"]
 

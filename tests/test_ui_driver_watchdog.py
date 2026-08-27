@@ -381,8 +381,8 @@ def test_the_bound_still_fires_with_pytest_timeout_disabled(tmp_path):
                 "-p", "no:randomly",
                 "-x", "-q", "--no-header",
             ],
-            capture_output=True, text=True, cwd=REPO_ROOT, timeout=180,
-         encoding="utf-8")
+            capture_output=True, text=True, cwd=REPO_ROOT, timeout=180, encoding="utf-8",
+        )
         elapsed = time.monotonic() - started
         output = run.stdout + run.stderr
 

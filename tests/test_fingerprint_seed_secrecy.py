@@ -725,8 +725,8 @@ def _launch_under_unmakeable_home(tmp_path, body):
         env=env,
         capture_output=True,
         text=True,
-        timeout=120,
-     encoding="utf-8")
+        timeout=120, encoding="utf-8",
+    )
     assert proc.returncode == 0, proc.stderr
     return proc, sandbox_home
 

@@ -279,8 +279,8 @@ def _run(tmp_path, *, reflagged: bool):
     markers.write_text(_boot_markers_expr(), encoding="utf-8")
     out = subprocess.run(
         [node, str(probe), str(native), str(locale), str(markers)],
-        capture_output=True, text=True, timeout=120,
-     encoding="utf-8")
+        capture_output=True, text=True, timeout=120, encoding="utf-8",
+    )
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
 

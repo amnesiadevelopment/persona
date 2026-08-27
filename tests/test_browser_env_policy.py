@@ -225,7 +225,7 @@ def _child_environ_after_fork(tmp_path, in_thread=False, is_linux=True, cfg=None
                         )
                     }
                 )
-                with os.fdopen(report_w, "w") as fh:
+                with os.fdopen(report_w, "w", encoding="utf-8") as fh:
                     fh.write(payload)
                 _finish()
 
@@ -241,9 +241,9 @@ def _child_environ_after_fork(tmp_path, in_thread=False, is_linux=True, cfg=None
 
     os.close(write_fd)
     os.close(report_w)
-    with os.fdopen(report_r) as fh:
+    with os.fdopen(report_r, encoding="utf-8") as fh:
         payload = fh.read()
-    os.fdopen(read_fd).close()
+    os.fdopen(read_fd, encoding="utf-8").close()
     os.waitpid(pid, 0)
     assert payload, "the forked child reported no environment"
     return json.loads(payload)
@@ -743,7 +743,7 @@ def test_a_cfg_without_the_profile_data_dir_is_refused_not_launched_unpinned(tmp
         os._exit(0)
 
     os.close(write_fd)
-    with os.fdopen(read_fd) as fh:
+    with os.fdopen(read_fd, encoding="utf-8") as fh:
         said = fh.read()
     os.waitpid(pid, 0)
 

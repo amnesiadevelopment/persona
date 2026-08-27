@@ -7,6 +7,35 @@ locale.getpreferredencoding(False) -> utf-8 on Linux/macOS, cp1252 on Windows.
 The product names utf-8 on its writes, so an unnamed read disagrees with it,
 and the disagreement is invisible until a non-ASCII byte appears.
 
+WHERE THE SCOPE OF THIS FILE COMES FROM -- this is the load-bearing part, and
+the first version of this tool got it wrong.
+
+The shapes below are NOT a list assembled from the instances we happened to
+find.  A list shaped from known instances finds the known instances; that is
+the PS-176 failure mode, one level up from a narrow grep.  They are the
+shapes CPython ITSELF defines as this defect class, arrived at two ways that
+agree:
+
+  1. PEP 597.  `python -X warn_default_encoding` makes the interpreter emit an
+     EncodingWarning at every text decode that fell back to the locale.  That
+     is an EXTERNALLY OWNED definition of the class -- CPython's, not ours --
+     and it fires on exactly the shapes handled here and stays silent on every
+     correct form (encoding= named, "rb"/"wb" binary mode).
+
+  2. Introspection.  Intersecting {stdlib callables with an `encoding=None`
+     parameter} against {names actually called in tests/} yields a candidate
+     set mechanically, with no human deciding what belongs in it.
+
+`tests/test_encoding_discipline.py` re-derives (2) at test time and asserts
+this file models everything in it.  So an unmodeled shape fails the suite --
+the guard covers new SHAPES, not merely new instances of known shapes.
+
+ONE KNOWN LIMIT OF THE DERIVATION, stated rather than papered over:
+subprocess.run/check_output/call/check_call forward **kwargs to Popen, so
+introspection cannot see an `encoding` parameter on them.  They are modeled
+explicitly below and pinned by a test, because derivation (2) structurally
+cannot discover them.  Derivation (1) does see them.
+
 Line-based grep CANNOT decide this class: a call spans lines, so `encoding=`
 routinely sits on a different line from `text=True`.  This walks the AST.
 
@@ -19,15 +48,23 @@ from pathlib import Path
 
 TEXT_METHODS = {"read_text", "write_text"}
 SUBPROCESS_FNS = {"run", "check_output", "Popen", "call", "check_call"}
+# Always text, never binary: constructing one without an encoding is in class.
+ALWAYS_TEXT = {"TextIOWrapper"}
+# Default to BINARY (mode="w+b"), so only in class when a text mode is named.
+TEMPFILE_FNS = {"NamedTemporaryFile", "TemporaryFile", "SpooledTemporaryFile"}
+# Config parsers read a file on the caller's behalf under the locale codec.
+CONFIGPARSER_CLASSES = {"ConfigParser", "RawConfigParser", "SafeConfigParser"}
 # .open() on these is not a text file read: raw fd, archive, or byte stream.
 NON_FILE = {"os", "tarfile", "zipfile", "gzip", "bz2", "lzma", "io", "socket",
             "urllib", "opener", "webbrowser", "shelve", "subprocess", "dbm"}
+
 
 def _kw(node, name):
     for k in node.keywords:
         if k.arg == name:
             return k
     return None
+
 
 def _opaque_kwargs(node):
     """True if the call passes **kwargs, so its keywords cannot be enumerated.
@@ -39,18 +76,68 @@ def _opaque_kwargs(node):
     """
     return any(k.arg is None for k in node.keywords)
 
+
 def _kw_true(node, name):
     k = _kw(node, name)
     return k is not None and isinstance(k.value, ast.Constant) and k.value.value is True
 
+
 def _span(n):
     return (n.lineno, n.col_offset, n.end_lineno, n.end_col_offset)
 
+
+def _literal_mode(node, positional):
+    """The mode string if it is a literal, None if absent, False if undecidable."""
+    m = _kw(node, "mode")
+    if m is not None:
+        return m.value.value if isinstance(m.value, ast.Constant) else False
+    if positional is None:
+        return None
+    if isinstance(positional, ast.Constant) and isinstance(positional.value, str):
+        return positional.value
+    return False
+
+
+def _configparser_names(tree):
+    """Local names bound to a config parser, so `parser.read(p)` is decidable.
+
+    `read` is far too common a method name to match on the name alone -- every
+    file handle in the repo has one.  So a `.read()` call is only in class when
+    its receiver is KNOWN to be a parser: either constructed inline
+    (`ConfigParser().read(p)`) or assigned to a name in this module.
+    """
+    names = set()
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Assign) or not isinstance(n.value, ast.Call):
+            continue
+        f = n.value.func
+        ctor = f.attr if isinstance(f, ast.Attribute) else (
+               f.id if isinstance(f, ast.Name) else None)
+        if ctor in CONFIGPARSER_CLASSES:
+            for t in n.targets:
+                if isinstance(t, ast.Name):
+                    names.add(t.id)
+    return names
+
+
+def _is_parser_receiver(fn, parser_names):
+    recv = fn.value
+    if isinstance(recv, ast.Name) and recv.id in parser_names:
+        return True
+    if isinstance(recv, ast.Call):                      # ConfigParser().read(p)
+        rf = recv.func
+        ctor = rf.attr if isinstance(rf, ast.Attribute) else (
+               rf.id if isinstance(rf, ast.Name) else None)
+        return ctor in CONFIGPARSER_CLASSES
+    return False
+
+
 def find(path):
     try:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = ast.parse(path.read_bytes(), filename=str(path))
     except SyntaxError:
         return []
+    parser_names = _configparser_names(tree)
     out = []
     for n in ast.walk(tree):
         if not isinstance(n, ast.Call):
@@ -67,6 +154,40 @@ def find(path):
         if name in TEXT_METHODS:
             if not has_enc:
                 out.append((*_span(n), f"{name}()", "no encoding= -> locale default"))
+            continue
+
+        if name in ALWAYS_TEXT:
+            if not has_enc:
+                out.append((*_span(n), f"{name}()", "text wrapper without encoding="))
+            continue
+
+        if name == "read" and isinstance(fn, ast.Attribute):
+            # configparser decodes the file itself, under the locale codec.
+            if _is_parser_receiver(fn, parser_names) and not has_enc:
+                out.append((*_span(n), "ConfigParser.read()",
+                            "parses file under locale default"))
+            continue
+
+        if name == "fdopen":
+            # os.fdopen wraps a raw fd; mode defaults to "r", i.e. TEXT.
+            mode = _literal_mode(n, n.args[1] if len(n.args) > 1 else None)
+            if mode is False:
+                continue                              # non-literal: cannot decide
+            if isinstance(mode, str) and "b" in mode:
+                continue
+            if not has_enc:
+                out.append((*_span(n), "os.fdopen()",
+                            f"text mode ({mode or 'r'}) no encoding="))
+            continue
+
+        if name in TEMPFILE_FNS:
+            # Default mode is "w+b" (BINARY), so only a NAMED text mode is in class.
+            mode = _literal_mode(n, n.args[0] if n.args else None)
+            if not isinstance(mode, str) or "b" in mode:
+                continue
+            if not has_enc:
+                out.append((*_span(n), f"{name}()",
+                            f"text mode ({mode}) no encoding="))
             continue
 
         if name == "open":
@@ -86,13 +207,8 @@ def find(path):
                 if not n.args:
                     continue
                 mode_arg = n.args[1] if len(n.args) > 1 else None
-            m = _kw(n, "mode")
-            mode = None
-            if m is not None and isinstance(m.value, ast.Constant):
-                mode = m.value.value
-            elif isinstance(mode_arg, ast.Constant) and isinstance(mode_arg.value, str):
-                mode = mode_arg.value
-            elif mode_arg is not None:
+            mode = _literal_mode(n, mode_arg)
+            if mode is False:
                 continue                      # non-literal mode: cannot decide
             if isinstance(mode, str) and "b" in mode:
                 continue                      # binary: no decode, not in class
@@ -107,6 +223,7 @@ def find(path):
                 out.append((*_span(n), f"subprocess.{name}()", "text=True without encoding="))
     return out
 
+
 def main(roots):
     total = 0
     for root in roots:
@@ -118,6 +235,7 @@ def main(roots):
                 total += 1
     print(f"TOTAL: {total}", file=sys.stderr)
     return total
+
 
 if __name__ == "__main__":
     sys.exit(0 if main(sys.argv[1:] or ["tests"]) == 0 else 1)

@@ -224,7 +224,7 @@ def test_mypy_ini_declares_each_section_exactly_once() -> None:
 def test_mypy_ini_parses_without_raising() -> None:
     import configparser
 
-    configparser.ConfigParser().read(MYPY_INI)  # raises DuplicateSectionError if broken
+    configparser.ConfigParser().read(MYPY_INI, encoding="utf-8")  # raises DuplicateSectionError if broken
 
 
 def test_mypy_ini_carries_the_flags_the_run_requires() -> None:
@@ -239,7 +239,7 @@ def test_mypy_ini_carries_the_flags_the_run_requires() -> None:
     import configparser
 
     parser = configparser.ConfigParser()
-    parser.read(MYPY_INI)
+    parser.read(MYPY_INI, encoding="utf-8")
     assert parser.getboolean("mypy", "no_site_packages", fallback=False), (
         "mypy.ini does not set no_site_packages — the run will abort on a "
         "third-party syntax error instead of checking this repo"
@@ -375,8 +375,8 @@ def test_ci_advisory_mypy_run_cannot_fail_the_build(ci_yaml, tmp_path: Path) -> 
             # (That is exactly how this failed on the Windows leg: it passed
             # locally for the wrong reason and CI caught it.)
             "PATH": f"{stub_dir}{os.pathsep}{os.environ['PATH']}",
-        },
-     encoding="utf-8")
+        }, encoding="utf-8",
+    )
     assert result.returncode == 0, (
         "the repo-wide mypy step FAILS when mypy reports errors, but the tree "
         "still carries pre-existing ones — this step would be red permanently, "
