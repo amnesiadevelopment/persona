@@ -567,11 +567,32 @@ class LogDock:
 
         Rebuilds from the LINES the rows were made from, which the dock does
         not otherwise retain — so they are kept for exactly this purpose.
+
+        RE-PINNING TO THE TAIL IS NOT OPTIONAL, and leaving it out produced the
+        worst-looking bug in this direction: shrinking to the one-line ticker
+        rendered an EMPTY console. Every row is replaced by a new control, so
+        the viewport's scroll offset — hundreds of pixels down, which was the
+        bottom of the OLD taller list — now points past the end of a list whose
+        visible height is a single row. The console was full of events and
+        showed none of them.
+
+        So a rebuild ends where the stream is meant to be: at the newest entry.
+        Only when the operator is FOLLOWING, though — a tier change must not
+        yank a reader who has deliberately scrolled up back to the bottom,
+        which is the "reading must not be interrupted" rule this console was
+        built around.
         """
         if not self._painted_lines:
             return
         self._last_profile = None
         self.list.controls = self._rows_for(self._painted_lines, self.tier)
+        if self.state.following:
+            # Re-arm the property that actually yanks the viewport. It is
+            # already True while following, but the fresh control list has to
+            # be told to pin, and toggling it is what makes flet re-run the
+            # scroll on the NEW children rather than leaving the old offset.
+            self.list.auto_scroll = False
+            self.list.auto_scroll = True
 
     def apply_window_height(self, window_height: float | None) -> int:
         """Re-apply the rail budget for a window that just changed size.
