@@ -445,3 +445,104 @@ def test_ps206_harness_prefs_match_the_shipped_proxied_prefs():
     mismatched = {k: (v, shipped.get(k)) for k, v in harness.items() if shipped.get(k) != v}
     assert not mismatched, f"harness prefs diverged from the shipped launch: {mismatched}"
     assert harness["network.proxy.failover_direct"] is False
+
+
+# ------------------------------------------- PS-217 banner honesty (round 4)
+#
+# The harness's first printed line is its configuration banner, and EVIDENCE.md
+# tells the next PS-206 runner to re-run this script — so that line is what gets
+# pasted into a reading. For one commit it read the `--pin-failover` flag after
+# the pref had moved into SHIPPED_PROXIED_PREFS, so a default run PINNED
+# failover_direct and PRINTED `pinned=False`.
+#
+# That is worse than a plainly wrong reading: it misstates its own configuration
+# while looking attributable, so it gets cited. These tests pin the banner to the
+# value ACTUALLY APPLIED, so it cannot drift back to describing something else.
+
+
+def test_banner_reports_failover_pinned_on_the_default_shipped_prefs():
+    # The real default run: prefs are SHIPPED_PROXIED_PREFS verbatim, which pins
+    # the pref — so the banner must SAY pinned=True. This is the exact case that
+    # printed `pinned=False` before.
+    ps206 = _load_ps206()
+    prefs = dict(ps206.SHIPPED_PROXIED_PREFS)
+
+    assert ps206.failover_pinned(prefs) is True
+    assert "failover_direct pinned=True" in ps206.run_banner(
+        "1.2.3.4", 1080, "bob", prefs
+    )
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (False, True),   # pinned to False == failover DISABLED == pinned
+        (True, False),   # explicitly permitted — must not claim to be pinned
+    ],
+)
+def test_banner_tracks_the_pref_it_is_handed_rather_than_a_flag(value, expected):
+    # The banner must FOLLOW the pref dict the run actually uses. Hand it a dict
+    # saying the opposite of the default and the banner must change with it —
+    # this is what a constant or a decoupled flag would fail.
+    ps206 = _load_ps206()
+    prefs = dict(ps206.SHIPPED_PROXIED_PREFS)
+    prefs["network.proxy.failover_direct"] = value
+
+    assert ps206.failover_pinned(prefs) is expected
+    assert f"failover_direct pinned={expected}" in ps206.run_banner(
+        "1.2.3.4", 1080, "bob", prefs
+    )
+
+
+def test_banner_reports_unpinned_when_the_pref_is_absent_entirely():
+    # A pref that is not set at all is NOT pinned — the engine default applies,
+    # which is finding 2's original hazard. The banner must not read a missing
+    # pref as a pinned one.
+    ps206 = _load_ps206()
+    prefs = dict(ps206.SHIPPED_PROXIED_PREFS)
+    del prefs["network.proxy.failover_direct"]
+
+    assert ps206.failover_pinned(prefs) is False
+    assert "failover_direct pinned=False" in ps206.run_banner(
+        "1.2.3.4", 1080, "bob", prefs
+    )
+
+
+def test_the_removed_pin_failover_flag_is_not_accepted_again():
+    # --pin-failover was removed rather than kept as a no-op: a flag that cannot
+    # change the run is one a future reader reaches for as a CONTROL, and it
+    # would hand them a pinned run whichever way they passed it. If someone
+    # re-adds it, this goes red and they have to justify it.
+    #
+    # Matched over the AST, not the raw text, and on BOTH spellings. A substring
+    # search here is toothless in one direction and false-positive in the other:
+    # argparse declares the flag as "--pin-failover" (hyphen) while a read of it
+    # is `args.pin_failover` (underscore), so searching either spelling alone
+    # misses a re-added flag that is declared but never read - and the prose
+    # comments in this script legitimately name the flag, which a raw-text
+    # search would trip over. Verified as a falsifier: re-adding the
+    # add_argument call to main() turns this red.
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(_load_ps206().main))
+
+    declared = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and "pin-failover" in node.value
+    ]
+    read = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute) and node.attr == "pin_failover"
+    ]
+
+    assert not declared and not read, (
+        "--pin-failover is back in main() "
+        f"(declared={len(declared)}, read={len(read)}). It cannot change the "
+        "run - failover_direct is pinned in SHIPPED_PROXIED_PREFS - so it can "
+        "only mislead a reader who reaches for it as a control."
+    )
