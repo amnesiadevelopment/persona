@@ -1208,6 +1208,12 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
         # anchor the marker exists to provide, so the post-wipe Activity Log
         # starts unambiguously at the wipe.
         self._clear_logs_for_wipe()
+        # Destroy the quarantined store copies the corrupt-file guard leaves in
+        # PERSONA_HOME. Same reasoning as the log clear one directory over: the
+        # wipe purges the trash and then leaves a verbatim byte-copy of it —
+        # carrying proxy creds, SSH passwords and .p12 passwords — sitting
+        # beside the file it copied.
+        self._clear_quarantine_files_for_wipe()
         # Logged AFTER the clear so the wipe leaves a record of itself in the
         # fresh file (this line names no profile). Unconditional, unlike the old
         # `if names`, because a wipe with nothing live still purges the trash.
@@ -1266,6 +1272,87 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                 emit_session_marker(logging.getLogger("persona"))
         except Exception:
             logger.exception("Could not clear the logs during the wipe")
+
+    def _clear_quarantine_files_for_wipe(self) -> None:
+        """Destroy the quarantined store copies the corrupt-file guard leaves.
+
+        When a store file fails to parse, StoreGuardMixin._quarantine_store_file
+        renames it to `<path>.corrupt-<ts>` so the next save writes a fresh file
+        beside the original instead of over it (core/settings.py hand-rolls the
+        same thing). That guard is CORRECT and is not touched here — leaving the
+        unreadable file in place is recoverable, overwriting it is not.
+
+        What was missing is that nothing ever removed what it leaves. The
+        quarantined file is a verbatim byte-copy of the store, and three of the
+        guarded stores — proxies.json, ssh_hosts.json, certificates.json — hold
+        SOCKS5 credentials, SSH passwords/passphrases and .p12 bundle passwords
+        (which is why atomic.py writes exactly those `private=True`). trash.json
+        carries all three kinds verbatim in its payloads. The suffix embeds
+        int(time.time()), so every corruption event mints a UNIQUE name and they
+        accumulate one per event, forever.
+
+        The wipe destroys every profile, purges the trash and clears the logs,
+        so it is the one path with no recoverability requirement — nothing it
+        clears is owed to anything. Left alone, a wipe that claims everything is
+        gone would be false while a credential-bearing copy sat beside the file
+        it copied: trash/store.py states outright that the trash is "never a
+        second, less-guarded copy of the operator's identity", and a surviving
+        trash.json.corrupt-<ts> is exactly that second copy. This is the SAME
+        sweep as _clear_logs_for_wipe one directory over: that one reaches into
+        LOG_DIR to clear profile NAMES, and this one globs the home it is
+        standing in to clear proxy PASSWORDS.
+
+        SCOPE, MEASURED — do not widen this into a claim the wipe does not make.
+        The wipe does NOT destroy the LIVE credential stores (proxies.json,
+        ssh_hosts.json, certificates.json); they survive it with their contents
+        intact, which is existing behaviour this sweep does not change. Only the
+        quarantined COPIES are cleared here. Beware the confound when probing
+        this: quarantining RENAMES the live file away, so a probe that corrupts
+        a store first will see it "missing" after the wipe for a reason that has
+        nothing to do with the wipe.
+
+        DELIBERATELY NOT delete_profile or a permanent record delete: those are
+        recoverable by design, and a quarantined file may be the operator's only
+        copy of data they have not recovered yet. Destroying it on a RECOVERABLE
+        gesture would defeat the guard's stated purpose.
+
+        BOUND: store paths are env-overridable (PERSONA_PROXIES_FILE and
+        friends) and ProxyStore takes an explicit `path=`. A store relocated
+        OUTSIDE the home quarantines outside the home, where this glob does not
+        reach. This is the default-path fix; chasing every override is a
+        separate question.
+
+        Best-effort and NON-FATAL, mirroring _clear_logs_for_wipe and
+        _purge_trash_for_wipe: a wipe that raised because one file was locked
+        (Windows) would be worse than the residue it failed to clear. Each file
+        is handled independently so one locked file cannot stop the rest."""
+        try:
+            # Resolved at CALL time, not frozen at import, exactly as
+            # _clear_logs_for_wipe resolves LOG_DIR — the specs monkeypatch it.
+            from ...core import config
+
+            # glob.escape ONLY the directory half. glob interprets
+            # metacharacters across the WHOLE pattern, including the directory
+            # portion, and PERSONA_HOME is operator-overridable (config.py:15-16,
+            # "e.g. for a portable layout") — a home whose name contains `[`
+            # would produce a pattern matching nothing, and the sweep would be a
+            # SILENT no-op: no exception, no empty-result branch, the wipe
+            # reports success while the credential-bearing copy survives. `[` and
+            # `]` are legal on both POSIX and Windows, and user-named portable
+            # directories are exactly where an overridden home comes from.
+            # The "*.corrupt-*" half must keep its metacharacters.
+            pattern = os.path.join(glob.escape(config.PERSONA_HOME), "*.corrupt-*")
+            for path in glob.glob(pattern):
+                try:
+                    os.remove(path)
+                except OSError:
+                    logger.exception(
+                        "Could not clear a quarantined store file during the wipe"
+                    )
+        except Exception:
+            logger.exception(
+                "Could not clear the quarantined store files during the wipe"
+            )
 
     def _purge_trash_for_wipe(self) -> None:
         try:
