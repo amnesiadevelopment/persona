@@ -11,6 +11,23 @@ class ProxyUrlUnparseable(ValueError):
     ⚠️ THE MESSAGE NEVER CONTAINS THE URL — it carries the credential. Same rule
     :func:`services.verify.socks_fetch.parse_socks5h` states for its own
     refusal; these messages reach logs and a pipe the UI reads.
+
+    THE RULE IS ENFORCED BY :func:`_safe_to_quote`, NOT BY EACH CALL SITE BEING
+    CAREFUL. The invariant was stated here and violated anyway, so the reason it
+    was violated is recorded rather than just the rule:
+
+      urlsplit does NOT put userinfo in ``.username`` when the userinfo contains
+      a ``:`` BEFORE the ``://``. It reports ``'bob:p://w@1.2.3.4:1080'`` as
+      ``scheme='bob'``, ``username=None`` — the USERNAME lands in ``.scheme``.
+      So a guard of the shape ``if not parts.username`` reads that input as
+      credential-free and echoes the username, and a test using a URL with a
+      REAL scheme (``ftp://user:pw@…``) cannot fail, because userinfo only
+      lands in ``.username`` in the case that was never at risk.
+
+    Nothing DERIVED from the URL — not the scheme, not a urllib exception
+    string (which quotes the offending port substring, and a password fragment
+    can be read as one) — may be interpolated unless the URL is known to carry
+    no userinfo at all.
     """
 
 
@@ -70,6 +87,29 @@ _ENGINE_PROXY_SCHEMES = {
 #: explicitly puts out of scope. Recorded so the next person finds the reason
 #: instead of the discrepancy.
 _DEFAULT_ENGINE_PROXY_SCHEME = "http"
+
+
+def _safe_to_quote(proxy_url: str) -> bool:
+    """May a detail DERIVED from this URL be put in a refusal message?
+
+    Only when the URL carries no userinfo at all. The test is a bare ``"@" in
+    url`` and is deliberately CRUDE — it is a security guard, so it is wrong in
+    the safe direction on purpose:
+
+      * it cannot be fooled by the urlsplit surprise the exception's docstring
+        records, because it never asks urlsplit anything. ``parts.username`` is
+        ``None`` on exactly the authenticated inputs that leak
+        (``'bob:p://w@…'`` → ``scheme='bob'``), so any guard built on it reads
+        those as credential-free.
+      * a passwordless ``socks5://bob@host:1080`` still has an ``@``, so it is
+        also protected.
+      * the false positive is a URL with an ``@`` and no credential, which
+        costs only the scheme name in one error message.
+
+    The credential is what an ``@`` in a proxy URL means; a URL containing one
+    does not get to have any part of itself quoted back.
+    """
+    return "@" not in proxy_url
 
 
 def engine_proxy_dict(proxy_url: str | None) -> dict | None:
@@ -138,23 +178,48 @@ def engine_proxy_dict(proxy_url: str | None) -> dict | None:
     # credential — exactly what this function exists to protect.
     if "://" not in proxy_url:
         proxy_url = f"{_DEFAULT_ENGINE_PROXY_SCHEME}://{proxy_url}"
+    # EVERY message below is gated on _safe_to_quote. The detail being quoted is
+    # DERIVED from the URL (urlsplit's idea of the scheme, urllib's exception
+    # text) and each one has been measured to carry credential material on an
+    # input the SAVE path accepts — see the exception's docstring.
+    safe = _safe_to_quote(proxy_url)
+    _schemes = ", ".join(sorted(_ENGINE_PROXY_SCHEMES))
     try:
         parts = urlsplit(proxy_url)
     except ValueError as e:
         # A malformed IPv6 literal, a non-numeric port, etc. Never echo the URL.
-        raise ProxyUrlUnparseable(f"proxy URL is not a valid URL ({e})") from e
+        # urllib quotes the offending substring, and on an authenticated URL
+        # that substring can BE the credential.
+        raise ProxyUrlUnparseable(
+            f"proxy URL is not a valid URL ({e})"
+            if safe
+            else "proxy URL is not a valid URL"
+        ) from e
 
     scheme = _ENGINE_PROXY_SCHEMES.get(parts.scheme)
     if scheme is None:
+        # THE LEAK THIS GUARD EXISTS FOR: on 'bob:p://w@1.2.3.4:1080' — which
+        # validate_proxy_format ACCEPTS — urlsplit reports scheme='bob', so the
+        # unqualified form of this message publishes the USERNAME.
         raise ProxyUrlUnparseable(
             f"proxy scheme {parts.scheme!r} is not one this engine can take "
-            f"(expected one of {', '.join(sorted(_ENGINE_PROXY_SCHEMES))})"
+            f"(expected one of {_schemes})"
+            if safe
+            else f"proxy URL is not in a form this engine can read "
+            f"(expected a URL whose scheme is one of {_schemes})"
         )
 
     try:
         host, port = parts.hostname, parts.port
     except ValueError as e:
-        raise ProxyUrlUnparseable(f"proxy URL has an unreadable port ({e})") from e
+        # urllib's text quotes the unreadable port value, and a password
+        # fragment can be read as one: 'socks5://bob:p://w@1.2.3.4:1080' gives
+        # "Port could not be cast to integer value as 'p:'".
+        raise ProxyUrlUnparseable(
+            f"proxy URL has an unreadable port ({e})"
+            if safe
+            else "proxy URL has an unreadable port"
+        ) from e
     if not host:
         raise ProxyUrlUnparseable("proxy URL is missing a host")
     if not port:
