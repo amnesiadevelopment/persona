@@ -14,9 +14,11 @@ working. An operator who does not register it reads "the profile didn't open",
 and the natural next move is to remove the protection.
 
 These tests pin the MECHANISM and the MEANING:
-  - the three refusals stay distinguishable at the surface (the wording works
-    hard to separate "never checked successfully" from "the last check FAILED",
-    and that distinction has to survive the trip to the card);
+  - every refusal stays distinguishable at the surface (the wording works hard
+    to separate "never checked successfully" from "the last check FAILED" from
+    "no zone for this country", and those distinctions have to survive the trip
+    to the card — they carry three different remedies, and one of them is NOT
+    a re-check);
   - an ordinary error does NOT mark a card (routine noise stays quiet, or the
     marker the operator must not skim past becomes one they learn to);
   - the marker survives being ignored, and carries its AGE so it cannot quietly
@@ -159,16 +161,28 @@ def test_the_two_geography_subclasses_do_not_shadow_each_other():
     assert classify_refusal(TimezoneUnderivableError("y"), 1.0).kind == "timezone_underivable"
 
 
-def test_the_three_refusals_are_distinguishable():
-    kinds = {
-        classify_refusal(exc, 1.0).kind
-        for exc in (
-            ProxyUnresolvedError("x"),
-            GeographyUnknownError("y"),
-            GeographyDisprovenError("z"),
-        )
-    }
-    assert len(kinds) == 3, f"refusals collapsed into {kinds}"
+def test_every_refusal_is_distinguishable():
+    """One distinct ``kind`` per refusal — no two may collapse.
+
+    Named for the invariant rather than for a COUNT: the previous name said
+    "three", which stopped being true the moment a fourth refusal landed, and a
+    test whose name is a stale census is one nobody thinks to extend. The
+    enumeration below must carry every exception ``classify_refusal`` answers,
+    and the count is derived from it rather than written in — so adding a
+    refusal here cannot silently leave the assertion measuring the old world.
+
+    ``kind`` is a published contract (the API's 409 body and the MCP tool both
+    branch on it), so a collapse is not cosmetic: it merges two states with two
+    different remedies into one value a caller cannot tell apart.
+    """
+    excs = (
+        ProxyUnresolvedError("x"),
+        GeographyUnknownError("y"),
+        GeographyDisprovenError("z"),
+        TimezoneUnderivableError("w"),
+    )
+    kinds = {classify_refusal(exc, 1.0).kind for exc in excs}
+    assert len(kinds) == len(excs), f"refusals collapsed into {kinds}"
 
 
 def test_the_settled_sentence_is_passed_through_not_restated():
@@ -422,6 +436,7 @@ def test_refusal_wording_is_not_a_nudge_to_drop_the_proxy():
         ProxyUnresolvedError("x"),
         GeographyUnknownError("y"),
         GeographyDisprovenError("z"),
+        TimezoneUnderivableError("w"),
     ):
         label = classify_refusal(exc, now).label.lower()
         for nudge in ("direct", "without a proxy", "disable", "skip", "anyway"):
