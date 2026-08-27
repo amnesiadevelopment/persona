@@ -37,6 +37,40 @@ _ENGINE_PROXY_SCHEMES = {
     "https": "https",
 }
 
+#: The scheme assumed when a stored proxy URL carries none ("1.2.3.4:8080").
+#:
+#: A DELIBERATE CHOICE, and the tree does not agree with itself, so the evidence
+#: is recorded here rather than left to the next reader to re-derive:
+#:
+#:   validate_proxy_format   ACCEPTS a scheme-less URL (pinned, test_validation
+#:                           .py:42) — so this shape reaches us by design, and
+#:                           refusing it here makes save accept what launch
+#:                           rejects, which is the mirror of the contradiction
+#:                           validation.py:27-30 exists to prevent.
+#:   parse_proxy             http
+#:   parse_proxy_server      http
+#:   process._proxy_arg      http   (unauthenticated -> parse_proxy_server)
+#:   split_proxy_url         socks5 (the EDIT dialog's field default)
+#:   the old _proxy_dict     bare "host:port" passed through, which Playwright
+#:                           reads as an HTTP proxy.
+#:
+#: `http` wins on the only criterion that matters: it is what this input already
+#: did on BOTH engines before PS-217 touched anything, so no stored profile
+#: changes meaning. Choosing socks5 would silently re-point every scheme-less
+#: profile at a different protocol on the same address — a behaviour change
+#: disguised as a bug fix, and one that fails at connect time rather than
+#: visibly.
+#:
+#: ⚠️ KNOWN, DELIBERATELY UNFIXED ASYMMETRY. `process._proxy_arg` defaults to
+#: http here but prepends `socks5://` on its AUTHENTICATED branch, because that
+#: branch hands the URL to `ProxyBridge`, which performs a real SOCKS5 handshake
+#: upstream unconditionally (`services/proxy/bridge.py`). So Chromium's socks5
+#: is load-bearing, not arbitrary, and "make both engines default the same" is
+#: not a one-line change there — it is a Chromium-path change, which PS-217
+#: explicitly puts out of scope. Recorded so the next person finds the reason
+#: instead of the discrepancy.
+_DEFAULT_ENGINE_PROXY_SCHEME = "http"
+
 
 def engine_proxy_dict(proxy_url: str | None) -> dict | None:
     """Turn a proxy URL into the engine's proxy dict — or REFUSE it (PS-217).
@@ -68,6 +102,16 @@ def engine_proxy_dict(proxy_url: str | None) -> dict | None:
         address entirely. urlsplit splits the userinfo at the LAST ``@``, which
         is what RFC 3986 specifies.
 
+    A MISSING scheme is DEFAULTED, not refused — see
+    :data:`_DEFAULT_ENGINE_PROXY_SCHEME` for which value and why. Refusing it is
+    the one thing this function must not do: ``validate_proxy_format`` accepts a
+    scheme-less URL and is pinned that way, so refusing here would make the SAVE
+    path accept what the LAUNCH path rejects, and a profile the user entered
+    exactly as the validator permitted could not open at all. Defaulting also
+    *extracts* the credentials from ``bob:pw@host:1080``, which the old regex
+    dropped silently — so it closes another instance of the defect above rather
+    than trading it away.
+
     Credentials are unquoted, the inverse of :func:`build_proxy_url`'s quote —
     that pair is how a credential containing reserved characters survives the
     round trip (audit6 #8), and it is also the ESCAPE HATCH for a username
@@ -80,17 +124,26 @@ def engine_proxy_dict(proxy_url: str | None) -> dict | None:
     """
     if not proxy_url or proxy_url == "None":
         return None
+    # A MISSING SCHEME IS DEFAULTED, NOT REFUSED, and the test is `"://" not in`
+    # rather than a falsy `parts.scheme` — urlsplit does not report an absent
+    # scheme the way it looks like it would, and the difference is not cosmetic:
+    #
+    #   '1.2.3.4:8080'        -> scheme=''          (the only obvious case)
+    #   'localhost:8080'      -> scheme='localhost' (a NAMED host)
+    #   'bob:pw@1.2.3.4:1080' -> scheme='bob'       (an AUTHENTICATED proxy)
+    #
+    # so a falsy check catches only the first, and the other two fall into the
+    # unknown-scheme refusal below instead. All three are URLs the product
+    # accepts at save time, and the last one is the case that carries a
+    # credential — exactly what this function exists to protect.
+    if "://" not in proxy_url:
+        proxy_url = f"{_DEFAULT_ENGINE_PROXY_SCHEME}://{proxy_url}"
     try:
         parts = urlsplit(proxy_url)
     except ValueError as e:
         # A malformed IPv6 literal, a non-numeric port, etc. Never echo the URL.
         raise ProxyUrlUnparseable(f"proxy URL is not a valid URL ({e})") from e
 
-    if not parts.scheme:
-        raise ProxyUrlUnparseable(
-            "proxy URL has no scheme (expected one of "
-            f"{', '.join(sorted(_ENGINE_PROXY_SCHEMES))})"
-        )
     scheme = _ENGINE_PROXY_SCHEMES.get(parts.scheme)
     if scheme is None:
         raise ProxyUrlUnparseable(
