@@ -259,6 +259,7 @@ def event_row(
     line: str,
     profiles: frozenset[str] | set[str],
     tier: str = TIER_STANDARD,
+    show_profile: bool = True,
 ) -> ft.Control:
     """One event, at the density this console height calls for.
 
@@ -362,6 +363,20 @@ def event_row(
                 ),
             )
         columns = [dot_col, message_col]
+    elif not show_profile:
+        # READING, under a group separator that already names the profile. The
+        # column is kept as EMPTY SPACE rather than removed: dropping it would
+        # shift the message left and break the vertical ruler that every other
+        # row in the console lines up on, so a run of grouped events would read
+        # as a different layout instead of as the same one with its heading
+        # factored out. Blank, aligned, and not repeating what the rule above
+        # it already says.
+        columns = [
+            dot_col,
+            ft.Container(width=PROFILE_COL_WIDTH),
+            message_col,
+            time_col,
+        ]
     else:
         columns = [dot_col, profile_col, message_col, time_col]
 
