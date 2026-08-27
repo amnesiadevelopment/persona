@@ -3714,6 +3714,11 @@ def _thread_close_watch(profile_dir, closed, stop_event, stop_gracefully,
     # verdict.
     content_seen = False
     content_gone = 0
+    # PS-204: pids observed as descendants of the tracked set that were NOT in
+    # it. Accumulated across polls rather than sampled at the end, because the
+    # only moment this is knowable is while the parents are still alive — see
+    # the claim site below. A set, so a child seen on several polls counts once.
+    spawned_later: set = set()
     deadline = time.monotonic() + no_process_timeout
     def say(msg):
         if log:
@@ -3725,9 +3730,57 @@ def _thread_close_watch(profile_dir, closed, stop_event, stop_gracefully,
             stop_gracefully()
             return pids
         if pids is not None:
+            # PS-204: OBSERVE THE DESCENDANTS WHILE THE PARENTS ARE STILL ALIVE.
+            # This is the load-bearing ordering, not an optimisation. The claim
+            # below fires only once every tracked pid is DEAD, and a dead
+            # parent's children have been reparented to init — so a ppid walk
+            # made AT that moment can no longer associate them with this
+            # session. The only honest window in which to learn what this
+            # session spawned is while it is still running, so the widening
+            # happens here, on every poll, and the claim consumes what was
+            # already learned.
+            #
+            # Scoped to descendants of the pids WE tracked, never a profile-dir
+            # rescan: a concurrently relaunching Firefox of this profile matches
+            # a profile-dir needle (the #150 race) but can never be a descendant
+            # of this session's parent. So `rescan=False` at the teardown is
+            # untouched and stays untouched — see the PR.
+            #
+            # No verdict (None) leaves the set alone, exactly as the window and
+            # content-proc polls do: "the scan could not run" must never widen
+            # or narrow a claim.
+            kids = _session_descendants(pids)
+            if kids:
+                spawned_later |= (kids - pids)
             if not any(_pid_alive(p) for p in pids):
-                say(f"LIFECYCLE close=all-pids-exit pids={sorted(pids)}")
-                return pids  # every tracked Firefox process exited
+                # ⚠️ THE CLAIM IS NOW SCOPED TO WHAT IT ACTUALLY KNOWS.
+                # `all-pids-exit` quantified over a pid set captured ONCE and
+                # never widened, so it could not become false about a child that
+                # appeared after the capture — a completion signal structurally
+                # unable to report incompletion, which is the same shape PS-192
+                # exists to prevent, one subsystem over. A Firefox session is a
+                # parent plus a content process per tab plus GPU/socket
+                # processes; the field log (Mars, v3.0.1 Windows) shows the same
+                # two pids at watch, close and teardown, which a real tabbed
+                # session cannot be. The kill was never wrong — it was never
+                # ASKED about the others.
+                #
+                # Renamed rather than "made true": the honest scope of this
+                # observation is the TRACKED set, and DoD #2 accepts naming it
+                # honestly. `_kill_profile_firefox` still kills each tracked pid
+                # WITH ITS TREE, so the teardown remains wider than this claim.
+                # `launcher.py`'s _QUIET_CLOSE_REASONS is updated in the same
+                # change, or a normal close starts reading as an unexpected end.
+                survivors = sorted(p for p in spawned_later if _pid_alive(p))
+                if survivors:
+                    # The incompletion the old claim could not express. Emitted
+                    # BEFORE the close reason so the close still parses
+                    # identically for the launcher's regex.
+                    say(f"LIFECYCLE survivors-after-tracked-exit "
+                        f"pids={survivors}")
+                say(f"LIFECYCLE close=tracked-pids-exit pids={sorted(pids)} "
+                    f"survivors={survivors}")
+                return pids  # every TRACKED Firefox process exited
             visible = _pids_have_visible_window(pids)
             if visible:
                 window_seen = True
@@ -3866,6 +3919,126 @@ def _descendant_pids(root: int):
                     nxt.append(int(x))
         frontier = nxt
     return tree
+
+
+def _process_parent_table():
+    """``{pid: ppid}`` for EVERY process in ONE snapshot, or None if unreadable.
+
+    PS-204 round 2. The descendant walk used to ask the OS once per NODE
+    (``pgrep -P`` per pid, breadth-first), which is fine for a one-off teardown
+    query but became a per-second cost when the close-watch started scanning on
+    every poll: measured at **84ms and 13 subprocesses per scan** against a
+    12-child tree (a modest tabbed Firefox), per open profile. That is the same
+    class of burn ``_thread_close_watch``'s own docstring says the cheap ctypes
+    liveness checks exist to avoid.
+
+    One snapshot answers the whole question instead, which is what the Windows
+    branch of :func:`_session_descendants` already did with its Toolhelp
+    walk — this gives the POSIX branch the same shape: **0 subprocesses on
+    Linux** (a /proc read) and **1 on macOS** (a single ``ps``), independent of
+    how many processes the tree has.
+
+    None means "could not look" and must never be read as "no processes" — the
+    discipline PS-192's false clean was caused by breaking.
+    """
+    if _platform.IS_LINUX:
+        try:
+            entries = os.listdir("/proc")
+        except OSError:
+            return None
+        table = {}
+        for name in entries:
+            if not name.isdigit():
+                continue
+            try:
+                with open(f"/proc/{name}/stat", "rb") as f:
+                    data = f.read()
+            except OSError:
+                continue  # exited between listdir and open — normal, not fatal
+            # `comm` is parenthesised and may itself contain spaces AND ')',
+            # so the fields after it are found from the LAST ')', never by
+            # splitting the line. After it: state, ppid, ...
+            try:
+                rest = data[data.rindex(b")") + 1:].split()
+                table[int(name)] = int(rest[1])
+            except Exception:
+                continue
+        return table or None
+    # macOS has no /proc; one `ps` for the entire table, not one per node.
+    try:
+        out = subprocess.check_output(
+            ["ps", "-axo", "pid=,ppid="],
+            # PS-211 convention: name the codec rather than inheriting the
+            # parent's locale one. `errors="replace"` is load-bearing here for
+            # PS-211's own stated reason, and it bites harder on this call than
+            # on the seven it fixed: the `except Exception` below would turn a
+            # UnicodeDecodeError into a no-verdict `None`, and PS-204 exists to
+            # stop exactly that — a "could not look" that reads as "nothing
+            # survived". Only digits are parsed out, so a replacement char in
+            # some other process's row cannot corrupt the pid/ppid table.
+            text=True, encoding="utf-8", errors="replace",
+        )
+    except Exception:
+        return None
+    table = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+            table[int(parts[0])] = int(parts[1])
+    return table or None
+
+
+def _walk_children(children, roots):
+    """Breadth-first descendants of `roots` over a prebuilt {ppid: [pid]} map."""
+    seen = set()
+    frontier = [int(r) for r in roots]
+    while frontier:
+        nxt = []
+        for p in frontier:
+            for c in children.get(p, ()):
+                if c not in seen:
+                    seen.add(c)
+                    nxt.append(c)
+        frontier = nxt
+    return seen
+
+
+def _session_descendants(roots):
+    """Every live descendant of `roots`, or None when the scan can't run.
+
+    PS-204. Anchored on the pids WE tracked, never on a profile-dir rescan, and
+    that distinction is the whole safety argument: a concurrently relaunching
+    Firefox of the same profile matches a profile-dir needle (the #150 race the
+    teardown's `rescan=False` exists to avoid) but can never be a DESCENDANT of
+    this session's parent. So this observes strictly more than the tracked set
+    while remaining strictly scoped to this session.
+
+    None means "no verdict" and must never be read as "no descendants" — the
+    same discipline `_profile_firefox_pids` and `_descendant_pids` already keep,
+    and the reason PS-192's reviewer measured a false clean when a missing
+    psutil rendered "could not look" as an empty list.
+
+    ONE SNAPSHOT ON EVERY PLATFORM (see :func:`_process_parent_table`): the
+    per-node ``pgrep`` walk this used on POSIX cost 84ms/13 subprocesses per
+    scan, every second, per open profile.
+    """
+    if not roots:
+        return None
+    if _platform.IS_WINDOWS:
+        entries = _win_process_entries()
+        if entries is None:
+            return None  # snapshot failed — no verdict
+        children: dict = {}
+        for p, pp, _name in entries:
+            children.setdefault(pp, []).append(p)
+        return _walk_children(children, roots)
+    table = _process_parent_table()
+    if table is None:
+        return None  # could not read the process table — no verdict
+    children = {}
+    for p, pp in table.items():
+        children.setdefault(pp, []).append(p)
+    return _walk_children(children, roots)
 
 
 def _proc_cmdline(pid: int):
@@ -4686,6 +4859,29 @@ class InvisibleProcess:
             from .process_group import record_group_by_construction
 
             record_group_by_construction(self._proc)
+            # PS-204: RECORD IT ON THE HANDLE TOO — the same value, in the place
+            # a GENERIC teardown looks. `_signal_group` below reads it off
+            # `self._proc` and is correct; but `process_group.recorded_group()`
+            # is handed THIS object (the Popen-compatible handle), reads
+            # `_persona_pgid` off IT, finds nothing, and falls back to
+            # `resolve_group(self.pid)` — a LIVE lookup that is blind once the
+            # leader has been waited on, which it always has been by teardown
+            # time (`launcher.py`'s wait_for_exit thread).
+            #
+            # THE TREE STILL DIED WITHOUT THIS, and that is what made the defect
+            # hard to see: `terminate_process_group` fell back to
+            # `proc.terminate()`, which on this class IS group-aware, so the
+            # group got signalled by POLYMORPHISM while the group branch was
+            # skipped. What was wrong was the REPORT — `reap_process_group`
+            # returned False, documented to mean "a group signal was actually
+            # DELIVERED", on a call where one was. A caller measuring the fix
+            # could not tell a group teardown from a single-process fallback.
+            #
+            # Recording it here makes the two paths agree instead of one
+            # compensating for the other. Safe by the same argument as the line
+            # above: the value is the CHILD's pid, never a group we belong to,
+            # and `signallable_group` re-checks that on every use.
+            record_group_by_construction(self, pid=self._proc.pid)
             os.close(w)
             # PS-211: READ end of the pipe whose write end is _child's
             # `out = os.fdopen(write_fd, "w", ...)`. Pinned to the SAME codec

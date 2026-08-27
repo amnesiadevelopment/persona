@@ -347,23 +347,40 @@ def resolve_group(pid: "int | None") -> "int | None":
     return pgid
 
 
-def _signal_group(pgid: int, sig: int) -> bool:
-    """Signal an ALREADY-RESOLVED group. True if it was delivered.
+# The three outcomes of aiming a signal at a group. This is a TRI-state and
+# not a bool because the middle case is not a variety of either edge:
+# ProcessLookupError means the group is not there, which is TRUE of a group
+# that finished tearing down AND of one that does not exist YET. Collapsing it
+# onto "delivered" is what let a signal that reached nothing suppress the
+# single-process fallback — see the setsid-window note in
+# `terminate_process_group`.
+_GROUP_DELIVERED = "delivered"  # killpg accepted it: a real group was signalled
+_GROUP_ABSENT = "absent"  # ESRCH: no such group — empty, or not created yet
+_GROUP_FAILED = "failed"  # no killpg, EPERM, anything else
+
+
+def _signal_group(pgid: int, sig: int) -> str:
+    """Signal an ALREADY-RESOLVED group. Reports WHICH of the three happened.
 
     Takes a pgid rather than a pid deliberately: the caller resolves ONCE,
     before the escalation begins, and reuses that value. Re-resolving between
     the SIGTERM and the SIGKILL would read the pid after it may have been
     waited on and recycled.
+
+    ⚠️ ESRCH IS REPORTED SEPARATELY, NOT AS SUCCESS. It used to return True,
+    reasoning that an empty group is a completed teardown. That is one of its
+    two meanings; the other is a group that has not been created yet, and the
+    caller must react to them identically anyway — by falling back to the
+    single process it holds, which is a no-op when the tree really is gone and
+    the only reachable signal when it is not.
     """
     try:
         os.killpg(pgid, sig)
-        return True
+        return _GROUP_DELIVERED
     except ProcessLookupError:
-        # Nothing left in the group — a successful teardown, not a failure to
-        # be retried as a single-process kill.
-        return True
+        return _GROUP_ABSENT
     except Exception:
-        return False
+        return _GROUP_FAILED
 
 
 def terminate_process_group(proc, *, timeout: float = 10.0) -> bool:
@@ -400,15 +417,31 @@ def terminate_process_group(proc, *, timeout: float = 10.0) -> bool:
     # this module replaced, and contrary to the PORTABILITY note above.
     # Measured by deleting `os.killpg`: terminate=False kill=False.
     #
-    # `_signal_group` already reports delivery truthfully (ProcessLookupError
-    # is a SUCCESS — an empty group is a completed teardown, not a failure to
-    # retry), so its return value is the right thing to escalate on.
-    group_hit = pgid is not None and _signal_group(pgid, sigterm)
+    # ⚠️ AND ESRCH IS NOT DELIVERY EITHER — PS-204's own defect shape, one
+    # level down. `_signal_group` used to fold ProcessLookupError into True,
+    # reasoning that an empty group is a completed teardown. It is also what a
+    # group that DOES NOT EXIST YET looks like: on the fork path the pgid is
+    # recorded by construction the instant `start()` returns, while the child
+    # reaches `start_own_session()` ~1.5ms later (measured over 20 forks: min
+    # 1.07ms, median 1.47ms, max 2.50ms). A reap landing in that window aimed
+    # killpg at a group that had not been created, got ESRCH, called it
+    # delivered, and SUPPRESSED the fallback below — so the child was signalled
+    # by neither path and the caller was told a group signal had been
+    # delivered. Measured on the fork path with setsid delayed to widen the
+    # window: child alive (`Ss`) with reap reporting True; with the fallback
+    # restored, child GONE. That window is narrow but it is exactly the
+    # early-failure/stop-racing-start path this module exists for.
+    #
+    # So the fallback now runs on ABSENT as well as on FAILED. Falling back on
+    # a genuinely-empty group is a harmless no-op; NOT falling back on a
+    # not-yet-created one is a survivor.
+    term_result = _signal_group(pgid, sigterm) if pgid is not None else _GROUP_FAILED
+    group_hit = term_result == _GROUP_DELIVERED
 
     if not group_hit:
         # No group we could actually address (not a leader, a fabricated pid,
-        # already gone, or no killpg on this platform). The single process this
-        # handle names is the most we can safely reach.
+        # already gone, NOT YET CREATED, or no killpg on this platform). The
+        # single process this handle names is the most we can safely reach.
         with contextlib.suppress(Exception):
             proc.terminate()
 
@@ -424,8 +457,10 @@ def terminate_process_group(proc, *, timeout: float = 10.0) -> bool:
     #
     # Delivery-keyed for the same reason as the SIGTERM above: a recorded pgid
     # that cannot be signalled must still reach `proc.kill()`, or the handle
-    # goes un-signalled by BOTH paths.
-    kill_hit = pgid is not None and _signal_group(pgid, sigkill)
+    # goes un-signalled by BOTH paths. ABSENT (ESRCH) falls back too — see the
+    # setsid-window note above.
+    kill_result = _signal_group(pgid, sigkill) if pgid is not None else _GROUP_FAILED
+    kill_hit = kill_result == _GROUP_DELIVERED
 
     if not kill_hit:
         with contextlib.suppress(Exception):
