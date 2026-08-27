@@ -10,8 +10,17 @@ from collections.abc import Callable
 from ...core.logging import get_logger
 from ...models.profile import Profile
 from .automation_channel import opens_cdp_channel
-from .process import spawn_browser, terminate, wait_for_exit
+from .process import effective_engine, spawn_browser, terminate, wait_for_exit
 from .refusal import Refusal, classify_refusal
+from .session_registry import (
+    Liveness,
+    SessionRecord,
+    SessionRegistry,
+    default_registry,
+    liveness_of,
+    make_record,
+    terminate_record,
+)
 
 logger = get_logger("browser.launcher")
 
@@ -162,7 +171,7 @@ def is_engine_noise(msg: str) -> bool:
 
 
 class BrowserLauncher:
-    def __init__(self) -> None:
+    def __init__(self, registry: "SessionRegistry | None" = None) -> None:
         # A Condition (not a bare Lock) so stop_profile can WAIT for a
         # spawn-in-flight to leave _starting: the spawn thread notifies when it
         # registers or bails, and the stopper blocks until then. Without this a
@@ -225,6 +234,28 @@ class BrowserLauncher:
         # through a lane that forgot to record" would be indistinguishable.
         # No-op by default (headless/tests).
         self._launch_record_hook: "Callable[[Profile], None] | None" = None
+        # THE SAME SESSION FACTS, WRITTEN WHERE THEY SURVIVE US. Every dict
+        # above dies with the process, which is exactly why the launch guard
+        # goes blind after an unclean exit and offers a second browser on a
+        # profile dir that already has one (PS-223). This mirrors the
+        # registrations onto disk so the guard can still ask the question.
+        #
+        # It is a MIRROR, never the authority: what it stores is a pid to probe,
+        # and a record only ever refuses a launch after the process it names has
+        # been shown to be alive. See session_registry.py for why that
+        # distinction is the difference between a safety catch and a lockout.
+        #
+        # Injectable so tests can point it at a tmp path; resolved lazily
+        # (default_registry reads config at CALL time) so a test that moves
+        # PERSONA_HOME still gets the registry that goes with it.
+        self._registry = registry if registry is not None else default_registry()
+        # Survivors found on disk at STARTUP: browsers a previous persona
+        # launched and did not get to tear down. Populated by scan_survivors()
+        # and NEVER by a launch — a session we started this run is tracked in
+        # _active_sessions, and conflating the two is what "silently adopting"
+        # would mean. Held so the launch guard can answer without re-probing
+        # psutil on every render.
+        self._survivors: dict[str, SessionRecord] = {}
         atexit.register(self.shutdown_all)
 
     def set_launch_record_hook(
@@ -267,6 +298,35 @@ class BrowserLauncher:
                 if on_stop:
                     on_stop()
                 return
+
+        # THE SAME REFUSAL, FOR A BROWSER WE DID NOT LAUNCH. The check above can
+        # only see sessions THIS process started; a browser left behind by a
+        # previous persona is in neither dict, which is the whole defect
+        # (PS-223). The UI asks survivor_for() before it ever gets here, but
+        # start_thread is also the API and MCP lanes' entry point, and a guard
+        # that lives only in the UI is a guard two lanes do not have.
+        #
+        # Grounded in a LIVENESS PROBE, never in the record's presence:
+        # survivor_for re-probes and releases the block when the process is
+        # gone or can no longer be established. So a stale record cannot refuse
+        # a launch here either — that is the lockout this ticket forbids, and
+        # it would be worse in these lanes, which have no card to click.
+        survivor = self.survivor_for(profile.name)
+        if survivor is not None:
+            log_callback(
+                f"{profile.name} already has a browser running (pid "
+                f"{survivor.pid}) from a previous persona session — not "
+                f"launching a second one."
+            )
+            logger.warning(
+                "Refused a launch of %s: a browser from a previous session is "
+                "still running (pid %s)", profile.name, survivor.pid,
+            )
+            if on_stop:
+                on_stop()
+            return
+
+        with self._lock:
             # Reserve the slot BEFORE releasing the lock so a concurrent launch
             # of this profile can't slip past while spawn_browser() runs. Clear
             # any stale abort flag from a prior aborted launch of this name.
@@ -378,6 +438,9 @@ class BrowserLauncher:
             # the answer is taken once, from the launch, and never re-derived
             # from a record that set_ai_control can flip while the session runs.
             cdp_open = opens_cdp_channel(profile)
+            engine_name = "unknown"
+            with contextlib.suppress(Exception):
+                engine_name = effective_engine(profile)
             with self._lock:
                 aborted = profile.name in self._aborting
                 if not aborted:
@@ -387,6 +450,24 @@ class BrowserLauncher:
                     self._session_cdp_open[profile.name] = cdp_open
                     self._starting.discard(profile.name)
                     self._lock.notify_all()
+
+            if not aborted:
+                # THE SAME REGISTRATION, ONTO DISK, so the guard survives us.
+                # Written OUTSIDE the lock: it does file IO, and every other
+                # holder of this Condition (stop_profile, is_running, a
+                # concurrent launch) would block behind an fsync for no reason.
+                #
+                # Its failure is swallowed inside the registry and never
+                # raised — deliberately, and this is the one place it matters
+                # most: everything here runs inside start_thread's outer
+                # `except Exception`, which converts ANY raise into "the launch
+                # failed" and calls on_stop WHILE THE BROWSER IS ALREADY
+                # SPAWNED AND REGISTERED. A registry write that cannot happen
+                # must cost us the guard, never the session.
+                with contextlib.suppress(Exception):
+                    self._registry.record(
+                        make_record(profile.name, proc, engine_name)
+                    )
 
             if aborted:
                 # A stop/delete arrived while we were spawning. Terminate the
@@ -539,13 +620,129 @@ class BrowserLauncher:
             if profile_name in self._starting:
                 return True
             if profile_name not in self._active_sessions:
-                return False
+                return profile_name in self._survivors
             if self._active_sessions[profile_name].poll() is None:
                 return True
             del self._active_sessions[profile_name]
             self._stop_notifiers.pop(profile_name, None)
             self._forget_session_facts(profile_name)
             return False
+
+    def scan_survivors(self) -> tuple[list[SessionRecord], list[SessionRecord]]:
+        """Find browsers a PREVIOUS persona left running. Call once, at startup.
+
+        Returns ``(alive, indeterminate)``, and the split is the whole contract:
+
+        * ``alive`` — the record's process was PROBED and is still the process
+          the record named. These are real survivors, and only these may make
+          the guard refuse a launch.
+        * ``indeterminate`` — a record exists but liveness could not be
+          established (no psutil, permission denied, no create time to rule out
+          pid reuse). These are NOT adopted as survivors and never refuse
+          anything. They are returned so the caller can SAY so, because "we
+          think something may still be running and cannot tell" is information
+          the user should have, and it is the honest alternative to inventing
+          either answer.
+
+        A record whose process probed GONE is dropped from the file by the
+        registry as it reads — that is the stale-record case, and the correct
+        handling of it is silence: nothing survived, nothing to report, and
+        crucially nothing to block.
+
+        Calling this is what populates the guard, so a persona that never calls
+        it behaves exactly as it did before this ticket. That is deliberate:
+        headless lanes (tests, API, MCP) do not inherit a UI's survivor state
+        by accident.
+        """
+        alive, unknown = self._registry.live_records()
+        with self._lock:
+            # Never shadow a session THIS run owns. A profile we have launched
+            # ourselves is already tracked and stoppable through the normal
+            # path; treating it as a survivor would offer the user a second,
+            # weaker way to kill their own live session.
+            self._survivors = {
+                r.profile: r
+                for r in alive
+                if r.profile not in self._active_sessions
+                and r.profile not in self._starting
+            }
+            survivors = list(self._survivors.values())
+        if survivors:
+            logger.warning(
+                "Found %d browser session(s) still running from a previous "
+                "persona: %s", len(survivors),
+                ", ".join(sorted(r.profile for r in survivors)),
+            )
+        if unknown:
+            logger.warning(
+                "Could not establish whether %d recorded session(s) are still "
+                "running (%s); their launches are NOT refused.",
+                len(unknown), ", ".join(sorted(r.profile for r in unknown)),
+            )
+        return survivors, unknown
+
+    def survivors(self) -> list[SessionRecord]:
+        """The surviving sessions found at startup and not yet resolved."""
+        with self._lock:
+            return list(self._survivors.values())
+
+    def survivor_for(self, profile_name: str) -> "SessionRecord | None":
+        """The survivor record blocking ``profile_name``, if there is one.
+
+        RE-PROBED on every call rather than trusted from the scan. The scan is
+        a point in time, and the user may well have closed the browser by hand
+        between then and now — exactly the gesture a person takes when told
+        "this profile is already open". Answering from the cached scan would
+        keep refusing a launch against a window that is no longer there, which
+        is the lockout arriving a few minutes late instead of immediately.
+        """
+        with self._lock:
+            rec = self._survivors.get(profile_name)
+        if rec is None:
+            return None
+        state = liveness_of(rec)
+        if state is Liveness.ALIVE:
+            return rec
+        # GONE, or no longer determinable: stop refusing on its account.
+        # UNKNOWN releases the block too — see the module docstring on why an
+        # unanswerable question must not hold a profile hostage.
+        self.forget_survivor(profile_name)
+        return None
+
+    def forget_survivor(self, profile_name: str) -> None:
+        """Stop treating ``profile_name`` as having a surviving browser.
+
+        Called when the survivor has been closed, when it has been shown to be
+        gone, or when the user has been asked and chose to leave it running —
+        in the last case the block is released because the user has made an
+        informed decision, which is the opposite of silently adopting it.
+        """
+        with self._lock:
+            self._survivors.pop(profile_name, None)
+        with contextlib.suppress(Exception):
+            self._registry.forget(profile_name)
+
+    def close_survivor(self, profile_name: str) -> bool:
+        """Tear down a surviving browser at the USER'S request. True if gone.
+
+        The only path in this class that kills a process persona did not start,
+        and it exists solely so the answer to "this profile is already open"
+        can be "close it". Never called automatically.
+        """
+        with self._lock:
+            rec = self._survivors.get(profile_name)
+        if rec is None:
+            return True
+        ok = terminate_record(rec)
+        if ok:
+            self.forget_survivor(profile_name)
+            logger.info("Closed surviving browser for profile: %s", profile_name)
+        else:
+            logger.warning(
+                "Could not confirm the surviving browser for %s is gone",
+                profile_name,
+            )
+        return ok
 
     def started_at(self, profile_name: str) -> float | None:
         """Wall-clock time the session was registered, or None if not running.
@@ -662,6 +859,20 @@ class BrowserLauncher:
         """
         self._session_started_at.pop(profile_name, None)
         self._session_cdp_open.pop(profile_name, None)
+        # AND THE PERSISTED MIRROR. Dropped HERE, in the shared helper, rather
+        # than at the six call sites: the whole reason this helper exists is
+        # that a per-session fact added without visiting every teardown site
+        # leaves a dead session still asserting something about itself. For the
+        # in-memory dicts that mistake lights a stale CDP indicator; for this
+        # one it REFUSES A LAUNCH on a browser that has already exited, which
+        # is the lockout the ticket forbids. Putting it in the helper makes
+        # covering all seven sites structural instead of remembered.
+        #
+        # Swallowed: a registry we cannot write must not break a teardown. The
+        # cost of a failed forget is one stale record, and a stale record is
+        # already handled — it probes GONE and is dropped at the next read.
+        with contextlib.suppress(Exception):
+            self._registry.forget(profile_name)
 
     def _forget_all_session_facts(self) -> None:
         """Bulk counterpart of ``_forget_session_facts`` for ``shutdown_all``.
@@ -673,6 +884,13 @@ class BrowserLauncher:
         """
         self._session_started_at.clear()
         self._session_cdp_open.clear()
+        # AND THE PERSISTED MIRROR, in bulk. This runs from shutdown_all, which
+        # is the atexit path — so clearing the file here is precisely what
+        # makes "a record was still on disk at startup" mean "persona did NOT
+        # exit cleanly last time". That equivalence is the entire survivor
+        # signal outcome 3 rests on, and it is established by this line.
+        with contextlib.suppress(Exception):
+            self._registry.forget_all()
 
     def _monitor_process(
         self,

@@ -199,6 +199,12 @@ BOOKMARKS_FILE = _under_home("bookmarks.json", "PERSONA_BOOKMARKS_FILE")
 DATA_DIR = _under_home("persona_data", "PERSONA_DATA_DIR")
 LOG_DIR = _under_home("logs", "PERSONA_LOG_DIR")
 ENGINE_DIR = _under_home("engine", "PERSONA_ENGINE_DIR")
+# Which profiles had a browser running. Persisted because the launcher's own
+# record of that lives in memory and dies with the process, so after an unclean
+# exit persona would otherwise report a live browser as not running and let the
+# user launch a second one on the same profile dir (PS-223). Read only as a list
+# of pids to PROBE — never as the answer itself; see session_registry.py.
+SESSIONS_FILE = _under_home("running_sessions.json", "PERSONA_SESSIONS_FILE")
 
 LOG_LEVEL = os.getenv("PERSONA_LOG_LEVEL", "INFO")
 PROXY_CHECK_TIMEOUT = _int_env("PERSONA_PROXY_TIMEOUT", 10)

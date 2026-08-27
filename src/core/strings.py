@@ -42,6 +42,41 @@ STRINGS = {
     "browser_started": "Browser started!",
     "session_ended": "Session ended: {name}",
     "error_starting": "Error starting process: {error}",
+    # PS-223 — a browser left running by a PREVIOUS persona. The wording names
+    # the profile and says the browser is still open, because the alternative
+    # the user meets today is chromium's own refusal ("Failed to create a
+    # ProcessSingleton for your profile directory", exit 21) — engine-speak
+    # that names no profile and offers no action.
+    "already_running_survivor": (
+        "{name} is already open in a browser from a previous persona session. "
+        "Close that window, or use [ close ] on this card to end it."
+    ),
+    "survivors_found": (
+        "{count} browser session(s) from a previous persona are still running: "
+        "{names}. They were not closed when persona last exited."
+    ),
+    # The INDETERMINATE case. Said out loud rather than silently swallowed: the
+    # launch is ALLOWED (a false "already running" would lock the user out of
+    # their own profile with no way back), so the user is told that the check
+    # could not be made rather than being left to think it passed.
+    "survivors_unknown": (
+        "Could not check whether {count} recorded session(s) are still running "
+        "({names}). Launching is still allowed — check for an open browser "
+        "window first."
+    ),
+    "survivor_closed": "Closed the leftover browser for {name}.",
+    "survivor_close_failed": (
+        "Could not confirm the leftover browser for {name} closed. "
+        "Check for an open window before launching again."
+    ),
+    # The confirm-before-close dialog (PS-223 outcome 2).
+    "confirm_exit_title": "{count} profile(s) still open",
+    "confirm_exit_body": (
+        "Closing persona will close the browser(s) for: {names}.\n\n"
+        "Anything unsaved in those windows will be lost."
+    ),
+    "confirm_exit_close": "[ close them and exit ]",
+    "confirm_exit_cancel": "[ cancel ]",
     "export_profile": "Export Profile",
     "import_profile": "Import Profile",
     "export_success": "Profile exported successfully",
