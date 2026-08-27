@@ -119,6 +119,24 @@ quietly lied:
   is marked `CONTROL UNKNOWN` instead of being asserted as ours. Claiming an
   error is ours without having checked the control is the exact error this
   ticket exists to correct.
+- **Only lines that name a source file are attributed at all.** Two other kinds
+  of line appear in a failing build log and neither can be joined against the
+  ownership map, so each is counted as its own population rather than folded
+  into `UNATTRIBUTED`:
+  - ninja's `FAILED:` lines, which name an **object** path (`obj/...`);
+  - **toolchain/driver** diagnostics, which name a **tool** rather than a path —
+    `clang++: error: unable to execute command: Killed`, `ld.lld: error: out of
+    memory`. These match on `: error: ` like any diagnostic but carry no
+    `file:line:col`.
+
+  This matters most in the case the ticket calls the known failure mode. When a
+  link runs out of memory, the driver lines above are frequently the **only**
+  diagnostics in the log — so folding them into `UNATTRIBUTED` would report the
+  build machine running out of RAM as a real finding about our 16 patches, which
+  is the false attribution this ticket exists to prevent, wearing different
+  clothes. The summary therefore states `of which attributable (name a source
+  file)` beside the raw diagnostic count, so the three attribution numbers are
+  always read against the population they actually describe.
 
 ### The instrument check is enforced by the job graph
 

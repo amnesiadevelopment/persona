@@ -97,6 +97,36 @@ error_file() {
     | awk '{print $1}'
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# A THIRD POPULATION: TOOLCHAIN/DRIVER DIAGNOSTICS, WHICH NAME NO SOURCE FILE
+# ─────────────────────────────────────────────────────────────────────────────
+# `extract_errors` matches `: error: `, and that matches MORE than the ordinary
+# source diagnostic. When the OOM reaper kills the linker, the clang DRIVER
+# emits its own errors, and they carry no file:line:col at all:
+#
+#   clang++: error: unable to execute command: Killed
+#   clang++: error: linker command failed due to signal (use -v to see invocation)
+#   ld.lld: error: out of memory
+#
+# `error_file()` reduces each of those to `clang++:` / `ld.lld:` — a tool name,
+# not a path — which can never join OWNER. So without this split they land in
+# UNATTRIBUTED, the one bucket whose text tells the reader it is "a REAL
+# finding, not noise", and the three attribution counts are wrong again.
+#
+# This is the SAME defect as the `FAILED:` one directly above, arriving through
+# a different line shape: a line that cannot be attributed by file being counted
+# as though it had been. It matters because it fires in exactly the ticket's
+# named KNOWN failure mode — memory at link — where these are the only
+# diagnostics in the log, so the whole attributable population would be
+# artefacts.
+#
+# The discriminator is the shape `error_file()` already depends on: a source
+# diagnostic is `path:LINE:COL: error:`. If the line carries no line:col, there
+# is no file to attribute to, and we say so instead of guessing.
+is_source_diagnostic() {
+  [[ "$1" =~ ^(\.\./\.\./)?[^[:space:]]+:[0-9]+:[0-9]+:[[:space:]](error|fatal\ error): ]]
+}
+
 {
   echo "# PS-218 — compile failure attribution"
   echo "# generated: $(date -Is)"
@@ -242,11 +272,16 @@ error_file() {
       echo "absence of errors here — a log truncated early also looks like this."
     fi
     echo
+    # Same key set as the main summary below, so the two paths stay
+    # comparable and a reader (or a grep) never has to know which one ran.
+    # With zero diagnostics every attribution count is necessarily zero.
     echo "== summary =="
     echo "total distinct clang diagnostics: 0"
+    echo "  of which attributable (name a source file): 0"
     echo "attributed to one of our patches: 0"
     echo "pre-existing (control had them too): 0"
     echo "unattributed (file not touched by us): 0"
+    echo "toolchain/driver (name no source file, not attributed): 0"
     echo "failing build edges (counted separately, not attributed): ${#EDGES[@]}"
     $CONTROL_AVAILABLE || echo "control diff: NOT PERFORMED (no usable control log) — see note above"
     exit 0
@@ -255,6 +290,8 @@ error_file() {
   attributed=0
   preexisting=0
   unattributed=0
+  toolchain=0
+  TOOLCHAIN_LINES=()
 
   for e in "${ERRS[@]}"; do
     f="$(error_file "$e")"
@@ -264,6 +301,16 @@ error_file() {
       echo "    ${e}"
       echo
       preexisting=$((preexisting + 1))
+      continue
+    fi
+
+    # A driver/linker diagnostic names a TOOL, not a source file, so there is
+    # nothing to join against OWNER. Counted separately rather than dropped into
+    # UNATTRIBUTED, which would assert it as "a REAL finding" about our patches
+    # when it is actually the shape of a link that ran out of memory.
+    if ! is_source_diagnostic "$e"; then
+      TOOLCHAIN_LINES+=("$e")
+      toolchain=$((toolchain + 1))
       continue
     fi
 
@@ -287,6 +334,17 @@ error_file() {
       unattributed=$((unattributed + 1))
     fi
   done
+
+  # The heading above must never stand empty. Every diagnostic in this log can
+  # legitimately be a toolchain/driver line (the OOM-at-link case), in which
+  # case nothing was printed under it — and a bare heading reads as "no errors"
+  # to someone holding a build that failed. Say which it is.
+  if [ "$((attributed + preexisting + unattributed))" -eq 0 ]; then
+    echo "None of this log's ${#ERRS[@]} diagnostic(s) name a source file, so none"
+    echo "could be attributed to a patch. They are listed under toolchain/driver"
+    echo "below. This is NOT the same as a clean compile."
+    echo
+  fi
 
   # ── failing edges, counted and NEVER attributed ────────────────────────────
   # ninja's `FAILED:` lines name an OBJECT path (obj/...). OWNER is keyed on the
@@ -316,11 +374,35 @@ error_file() {
   fi
   echo
 
+  # ── toolchain/driver diagnostics, counted and NEVER attributed ─────────────
+  # These match `: error: ` but name a TOOL (`clang++:`, `ld.lld:`) rather than
+  # a source path, so they cannot be joined against the ownership map. Reported
+  # as their own population for the same reason the failing edges are: putting
+  # them in UNATTRIBUTED would tell the reader they are "a REAL finding" about
+  # our patches, when the usual cause is a link that ran out of memory.
+  echo "== toolchain/driver diagnostics — counted, not attributed =="
+  echo
+  if [ "${#TOOLCHAIN_LINES[@]}" -eq 0 ]; then
+    echo "none"
+  else
+    for x in "${TOOLCHAIN_LINES[@]}"; do
+      echo "    ${x}"
+    done
+    echo
+    echo "These carry no file:line:col, so there is no file to attribute them"
+    echo "to. A 'Killed' or 'out of memory' here is the OOM-at-link signature"
+    echo "the ticket names as the KNOWN failure mode — a property of the build"
+    echo "machine, NOT evidence about our 16 patches."
+  fi
+  echo
+
   echo "== summary =="
   echo "total distinct clang diagnostics: ${#ERRS[@]}"
+  echo "  of which attributable (name a source file): $((attributed + preexisting + unattributed))"
   echo "attributed to one of our patches: ${attributed}"
   echo "pre-existing (control had them too): ${preexisting}"
   echo "unattributed (file not touched by us): ${unattributed}"
+  echo "toolchain/driver (name no source file, not attributed): ${toolchain}"
   echo "failing build edges (counted separately, not attributed): ${#EDGES[@]}"
   $CONTROL_AVAILABLE || echo "control diff: NOT PERFORMED (no usable control log) — see note above"
 } | tee "$OUT"

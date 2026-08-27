@@ -293,3 +293,101 @@ def test_a_clean_log_is_not_described_as_a_crash(tmp_path):
     # Asserting the wrapped fragment keeps this test about the CLAIM rather
     # than about where the paragraph happens to break.
     assert "records no compile" in out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Toolchain/driver diagnostics: the SAME defect as `FAILED:`, different shape
+# ─────────────────────────────────────────────────────────────────────────────
+# The two tests above pin the PURE OOM shape: ninja edges plus a bare `Killed`,
+# with no `: error: ` line anywhere. That is not the only shape an OOM at link
+# takes, and it is not the common one.
+#
+# When the reaper kills the linker subprocess, the clang DRIVER reports it, and
+# those lines DO match `extract_errors`:
+#
+#   clang++: error: unable to execute command: Killed
+#   clang++: error: linker command failed due to signal (use -v to see invocation)
+#   ld.lld: error: out of memory
+#
+# They carry no file:line:col, so `error_file()` — which takes whitespace field
+# 1 — reduces them to the TOOL NAME (`clang++:`), which can never join the
+# `+++ b/` source-path ownership map. Without a separate population they fall to
+# UNATTRIBUTED, whose text tells the reader an entry there is "a REAL finding,
+# not noise" about our 16 patches. It is nothing of the kind: it is the build
+# machine running out of memory, which the ticket names as the KNOWN failure
+# mode and explicitly treats as a property of the hardware.
+#
+# This is the same error as attributing `FAILED:` lines, arriving through a
+# different line shape, and it fires in exactly the case most likely to happen.
+
+OOM_WITH_DRIVER_DIAGNOSTICS_LOG = """\
+[49998/50000] SOLINK ./libblink_core.so
+FAILED: ./libblink_core.so
+clang++: error: unable to execute command: Killed
+clang++: error: linker command failed due to signal (use -v to see invocation)
+ninja: build stopped: subcommand failed.
+"""
+
+
+def test_driver_diagnostics_are_not_attributed_as_findings_about_our_patches(tmp_path):
+    """An OOM at link must not be reported as evidence against the patch layer."""
+    out = _run_attribution(tmp_path, OOM_WITH_DRIVER_DIAGNOSTICS_LOG)
+
+    # THE DEFECT: these lines used to land in UNATTRIBUTED, which the script
+    # tells the reader is "a REAL finding, not noise".
+    assert "unattributed (file not touched by us): 0" in out, (
+        "a `clang++: error:` line names a TOOL, not a source file. Counting it "
+        "as UNATTRIBUTED asserts it is a real finding about our 16 patches, "
+        "when it is the signature of the machine running out of memory."
+    )
+    assert "toolchain/driver (name no source file, not attributed): 2" in out, (
+        "driver/linker diagnostics must be counted as their own population"
+    )
+
+    # They must still be VISIBLE — counted separately, never dropped. Silence
+    # about a failed build is the defect the round before this one fixed.
+    assert "Killed" in out, "the driver diagnostic must still be reported"
+
+    # The three attribution counts describe the ATTRIBUTABLE population only.
+    assert "of which attributable (name a source file): 0" in out
+
+
+def test_the_error_heading_never_stands_empty(tmp_path):
+    """A bare heading reads as 'no errors' to someone holding a failed build.
+
+    When every diagnostic is a driver line, nothing prints under the errors
+    heading. The report must say why rather than leaving a silence that looks
+    like a pass.
+    """
+    out = _run_attribution(tmp_path, OOM_WITH_DRIVER_DIAGNOSTICS_LOG)
+
+    body = out.split("== compile errors in the PATCHED tree ==", 1)[1]
+    body = body.split("== failing build edges", 1)[0]
+    assert body.strip(), (
+        "the errors heading printed with nothing under it: a reader sees a bare "
+        "heading and reads it as a clean compile."
+    )
+    assert "NOT the same as a clean compile" in body
+
+
+def test_a_real_source_diagnostic_is_still_attributed(tmp_path):
+    """Regression guard: the toolchain split must not swallow real errors.
+
+    The whole point of the script is attributing a source diagnostic to the
+    patch owning that file. A discriminator that rejected real diagnostics
+    would make the instrument useless while every OOM test above still passed.
+    """
+    log = (
+        "FAILED: obj/third_party/blink/renderer/modules/webgl/"
+        "webgl_rendering_context_base.o\n"
+        "../../third_party/blink/renderer/modules/webgl/"
+        "webgl_rendering_context_base.cc:1234:5: error: no matching function\n"
+    )
+    out = _run_attribution(tmp_path, log)
+
+    assert "[ATTRIBUTED ->" in out, (
+        "a normal `path:line:col: error:` diagnostic must still be attributed "
+        "to the patch that owns the file"
+    )
+    assert "of which attributable (name a source file): 1" in out
+    assert "toolchain/driver (name no source file, not attributed): 0" in out
