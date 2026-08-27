@@ -541,7 +541,7 @@ class BrowserLauncher:
         profile has never been launched this session, or its latest attempt was
         not refused. It never means "refused, but we forgot which kind": a
         refusal is only ever replaced by a newer ATTEMPT, never downgraded to a
-        bare boolean, because the whole point is that the three causes are
+        bare boolean, because the whole point is that the causes are
         distinguishable at the surface.
 
         NOT gated on the profile being stopped, and that asymmetry with

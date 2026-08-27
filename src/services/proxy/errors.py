@@ -34,6 +34,51 @@ class GeographyUnknownError(RuntimeError):
     """
 
 
+class TimezoneUnderivableError(GeographyUnknownError):
+    """A profile's proxy carries a COUNTRY, but no timezone can be derived for
+    it — the check recorded no usable zone and the country has no row in
+    ``_COUNTRY_TZ``.
+
+    Deliberately no row COUNT here. The table grows, and a number written into
+    prose is wrong the first time someone adds a row — which is precisely what
+    happened to the sentence this replaces. ``len(_COUNTRY_TZ)`` is one call
+    away and is always right; a figure quoted here is only ever a snapshot.
+
+    Distinct from both siblings in CAUSE, not in consequence. The parent means
+    "we never learned where this exits"; ``GeographyDisprovenError`` means "we
+    looked, and what we stored is contradicted"; this means **"we know the
+    country and cannot say what time it is there."**
+
+    What it replaces is the reason it exists. ``_timezone_for`` used to answer
+    this case with ``"UTC"`` — silently, with no warning and no refusal. That is
+    not a degraded profile, it is a CONTRADICTORY one: the locale table declares
+    the country (``zh-TW`` for Taiwan) while the zone declares UTC, so a checker
+    reading both sees a machine claiming one place whose clock says another.
+    ``launch_policy``'s own comment names the cost: *"otherwise a direct profile
+    shows UTC and scanners flag a 'spoofed location'"*. ``UTC`` is not a
+    legitimate value for ANY key in ``_COUNTRY_TZ`` — nothing in the table maps
+    to it — so it was never an approximation, only a sentinel that silently
+    announced "unknown" in a field an engine consumes as fact.
+
+    Fail CLOSED, for the same reason the siblings do. A profile that will not
+    launch has disclosed nothing; a profile that launches declaring a location
+    its own locale contradicts has disclosed that it is spoofed.
+
+    An exception rather than a sentinel string, on the parent's stated rule: the
+    unknown must be UNREPRESENTABLE as a zone, so no caller can ship it to an
+    engine as though it were a real one. A returned ``"UTC"`` is exactly the
+    accident that rule exists to prevent, and it was reachable for years.
+
+    The remedy is NOT a re-check — unlike both siblings. The check may already
+    have passed; the geo response simply carried no ``/``-form zone (an
+    abbreviation like ``"CST"`` fails ``_validate_geo``'s substring test, as
+    does an absent field). The remedy is to add the country's row to
+    ``_COUNTRY_TZ``, which is why the message names the country: an operator who
+    cannot launch must be told WHICH country and WHY, not handed a generic
+    error. A refusal nobody can diagnose is a worse product than a wrong zone.
+    """
+
+
 class GeographyDisprovenError(GeographyUnknownError):
     """A profile's proxy carries geography, but the most recent check FAILED —
     so the product's own latest evidence says that geography is untrue.
