@@ -132,7 +132,7 @@ def test_restore_routes_an_ssh_host_back_to_the_ssh_store(env):
 
 def test_restore_routes_a_certificate_back_to_the_cert_store(env):
     source = env.tmp_path / "src.p12"
-    source.write_text("KEY")
+    source.write_text("KEY", encoding="utf-8")
     stored = env.cstore.import_p12("admin", str(source))
     env.cstore.add(Certificate(name="admin", p12_path=stored))
     env.cstore.remove("admin")
@@ -205,7 +205,7 @@ def test_delete_permanently_destroys_a_profiles_data_dir(env):
     env.pm.add_profile("alpha", "", "windows")
     data_dir = env.pm._data_path("alpha")
     os.makedirs(data_dir, exist_ok=True)
-    pathlib.Path(data_dir, "Cookies").write_text("jar")
+    pathlib.Path(data_dir, "Cookies").write_text("jar", encoding="utf-8")
     env.pm.delete_profile("alpha")
     entry = env.svc.list()[0]
     parked = entry.material_path
@@ -216,7 +216,7 @@ def test_delete_permanently_destroys_a_profiles_data_dir(env):
 
 def test_delete_permanently_destroys_a_certificates_key_bundle(env):
     source = env.tmp_path / "src.p12"
-    source.write_text("KEYMATERIAL")
+    source.write_text("KEYMATERIAL", encoding="utf-8")
     stored = env.cstore.import_p12("admin", str(source))
     env.cstore.add(Certificate(name="admin", p12_path=stored))
     env.cstore.remove("admin")

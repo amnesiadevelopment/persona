@@ -2771,7 +2771,7 @@ def test_init_places_db_wipes_throwaway_session_state(monkeypatch, tmp_path):
         def __enter__(self):
             _make_places(str(tmp_path / "places.sqlite"))
             (tmp_path / "sessionstore.jsonlz4").write_bytes(b"x")
-            (tmp_path / "sessionCheckpoints.json").write_text("{}")
+            (tmp_path / "sessionCheckpoints.json").write_text("{}", encoding="utf-8")
             (tmp_path / "sessionstore-backups").mkdir()
             (tmp_path / "sessionstore-backups" / "recovery.jsonlz4").write_bytes(
                 b"x"
@@ -5044,7 +5044,7 @@ def _write_compat(prof, engine_dir):
         "LastVersion=151.0_x/x\n"
         f"LastPlatformDir={engine_dir}\n"
         f"LastAppDir={engine_dir}/browser\n"
-    )
+    , encoding="utf-8")
 
 
 def test_reset_prefs_on_engine_build_change_drops_prefs(tmp_path):
@@ -5057,7 +5057,7 @@ def test_reset_prefs_on_engine_build_change_drops_prefs(tmp_path):
     )
 
     prof = tmp_path
-    (prof / "prefs.js").write_text('user_pref("x", 1);\n')
+    (prof / "prefs.js").write_text('user_pref("x", 1);\n', encoding="utf-8")
     _write_compat(prof, "/cache/firefox-18")
     (prof / "cookies.sqlite").write_bytes(b"USER-COOKIES")  # user data stays
 
@@ -5074,7 +5074,7 @@ def test_reset_prefs_noop_when_build_unchanged(tmp_path):
     )
 
     prof = tmp_path
-    (prof / "prefs.js").write_text('user_pref("x", 1);\n')
+    (prof / "prefs.js").write_text('user_pref("x", 1);\n', encoding="utf-8")
     _write_compat(prof, "/cache/firefox-19")
     reset = _reset_prefs_on_engine_build_change(str(prof), "/cache/firefox-19")
     assert reset is False
@@ -5092,7 +5092,7 @@ def test_reset_prefs_noop_when_only_dir_naming_differs(tmp_path):
     )
 
     prof = tmp_path
-    (prof / "prefs.js").write_text('user_pref("x", 1);\n')
+    (prof / "prefs.js").write_text('user_pref("x", 1);\n', encoding="utf-8")
     _write_compat(prof, "/home/user/.cache/invisible-playwright/firefox-19")
     reset = _reset_prefs_on_engine_build_change(
         str(prof),
@@ -5111,7 +5111,7 @@ def test_reset_prefs_noop_when_never_opened(tmp_path):
     )
 
     prof = tmp_path
-    (prof / "prefs.js").write_text('user_pref("x", 1);\n')
+    (prof / "prefs.js").write_text('user_pref("x", 1);\n', encoding="utf-8")
     reset = _reset_prefs_on_engine_build_change(str(prof), "/cache/firefox-19")
     assert reset is False
     assert (prof / "prefs.js").exists(), "a never-opened profile keeps its prefs.js"
@@ -5149,7 +5149,7 @@ def _prefs_js_pairs(prof) -> dict:
     """The prefs actually on disk for Firefox to read at startup."""
     import re
 
-    text = (prof / "prefs.js").read_text()
+    text = (prof / "prefs.js").read_text(encoding="utf-8")
     return dict(re.findall(r'user_pref\("([^"]+)",\s*([^)]+)\);', text))
 
 
@@ -5158,7 +5158,7 @@ def test_engine_build_change_leaves_session_restore_prefs_on_disk(tmp_path):
     # prefs must be back on disk BEFORE Firefox starts — otherwise the first
     # launch on the new build opens with the user's tabs gone.
     prof = tmp_path
-    (prof / "prefs.js").write_text('user_pref("stale.pref", 1);\n')
+    (prof / "prefs.js").write_text('user_pref("stale.pref", 1);\n', encoding="utf-8")
     _write_compat(prof, "/cache/firefox-18")
 
     lines = list(invisible_launch._migrate_profile_for_engine_build(
@@ -5181,7 +5181,7 @@ def test_engine_build_change_still_restores_the_chrome_prefs(tmp_path):
     # instead of extending it would pass the test above and regress the theme,
     # so both halves are pinned in one place.
     prof = tmp_path
-    (prof / "prefs.js").write_text('user_pref("stale.pref", 1);\n')
+    (prof / "prefs.js").write_text('user_pref("stale.pref", 1);\n', encoding="utf-8")
     _write_compat(prof, "/cache/firefox-18")
 
     invisible_launch._migrate_profile_for_engine_build(
@@ -5814,7 +5814,7 @@ def test_unresolvable_engine_dir_neither_raises_nor_aborts_the_migration(
     import logging
 
     prof = tmp_path
-    (prof / "prefs.js").write_text(f'user_pref("{STALE_KEY}", 1);\n')
+    (prof / "prefs.js").write_text(f'user_pref("{STALE_KEY}", 1);\n', encoding="utf-8")
     _write_compat(prof, "/cache/firefox-18")
 
     emitted = _resolution_rig(monkeypatch, import_ok=False)
@@ -5830,7 +5830,7 @@ def test_unresolvable_engine_dir_neither_raises_nor_aborts_the_migration(
     assert list(lines) == [], "an unresolved engine dir must no-op the migration"
     # The stale pref survives — that IS the fail-open, and it is why the skip
     # has to be audible.
-    assert STALE_KEY in (prof / "prefs.js").read_text()
+    assert STALE_KEY in (prof / "prefs.js").read_text(encoding="utf-8")
     assert len(_skip_lines(emitted)) == 1, emitted
 
 
@@ -5838,7 +5838,7 @@ def test_resolvable_engine_dir_still_migrates_byte_identically(tmp_path):
     # AC4: behaviour unchanged on the healthy path. The stale pref goes and the
     # existing emit line is byte-identical to what it has always been.
     prof = tmp_path
-    (prof / "prefs.js").write_text(f'user_pref("{STALE_KEY}", 1);\n')
+    (prof / "prefs.js").write_text(f'user_pref("{STALE_KEY}", 1);\n', encoding="utf-8")
     _write_compat(prof, "/cache/firefox-18")
 
     lines = list(invisible_launch._migrate_profile_for_engine_build(
@@ -5848,6 +5848,6 @@ def test_resolvable_engine_dir_still_migrates_byte_identically(tmp_path):
     assert lines == [
         "ENGINE_BUILD_CHANGED: reset prefs for the new Firefox build"
     ], lines
-    assert STALE_KEY not in (prof / "prefs.js").read_text(), (
+    assert STALE_KEY not in (prof / "prefs.js").read_text(encoding="utf-8"), (
         "the stale pref survived a resolvable build change"
     )

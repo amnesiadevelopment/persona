@@ -18,7 +18,7 @@ def _import_config_with(env_overrides, tmp_home):
         env=env,
         capture_output=True,
         text=True,
-    )
+     encoding="utf-8")
     return r
 
 
@@ -67,7 +67,7 @@ def test_unwritable_persona_home_falls_back_not_crash(tmp_path):
     # Point PERSONA_HOME at a path UNDER a regular file — makedirs raises, and
     # the import must survive by falling back.
     afile = tmp_path / "iam_a_file"
-    afile.write_text("x")
+    afile.write_text("x", encoding="utf-8")
     bad_home = str(afile / "nested" / "home")  # parent is a file → OSError
     env = dict(os.environ)
     env["PERSONA_HOME"] = bad_home
@@ -78,7 +78,7 @@ def test_unwritable_persona_home_falls_back_not_crash(tmp_path):
         env=env,
         capture_output=True,
         text=True,
-    )
+     encoding="utf-8")
     assert r.returncode == 0, r.stderr
     # it fell back to ~/.persona, not the impossible path
     assert bad_home not in r.stdout

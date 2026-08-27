@@ -122,7 +122,7 @@ def test_firefox_and_chromium_share_the_perturbation():
     chrome = (
         pathlib.Path(build_webgl_extension(4242, str(pathlib.Path(d) / "ext")))
         / "webgl.js"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     for shared in (
         "var SEED = 4242;",
         "var BUDGET = 512;",
@@ -305,7 +305,7 @@ console.log(JSON.stringify(out));
         script.write_text(harness, encoding="utf-8")
         proc = subprocess.run(
             [node, str(script)], capture_output=True, text=True, timeout=60
-        )
+        , encoding="utf-8")
     assert proc.returncode == 0, f"harness failed: {proc.stderr}"
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
@@ -496,7 +496,7 @@ console.log(JSON.stringify(out));
         script.write_text(harness, encoding="utf-8")
         proc = subprocess.run(
             [node, str(script)], capture_output=True, text=True, timeout=60
-        )
+        , encoding="utf-8")
     assert proc.returncode == 0, f"harness failed: {proc.stderr}"
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
@@ -755,7 +755,7 @@ console.log(JSON.stringify(out));
         script.write_text(harness, encoding="utf-8")
         proc = subprocess.run(
             [node, str(script)], capture_output=True, text=True, timeout=60
-        )
+        , encoding="utf-8")
     assert proc.returncode == 0, f"harness failed: {proc.stderr}"
     return json.loads(proc.stdout.strip().splitlines()[-1])
 

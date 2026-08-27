@@ -571,7 +571,7 @@ def _blocked_home(tmp_path):
     sandbox_home = tmp_path / "real-home"
     sandbox_home.mkdir(parents=True, exist_ok=True)
     parent_that_is_a_file = tmp_path / "iamafile"
-    parent_that_is_a_file.write_text("a file, not a directory")
+    parent_that_is_a_file.write_text("a file, not a directory", encoding="utf-8")
     return parent_that_is_a_file / "persona", sandbox_home
 
 
@@ -708,7 +708,7 @@ def _launch_under_unmakeable_home(tmp_path, body):
     sandbox_home = tmp_path / "real-home"
     sandbox_home.mkdir(parents=True, exist_ok=True)
     parent_that_is_a_file = tmp_path / "iamafile"
-    parent_that_is_a_file.write_text("a file, not a directory")
+    parent_that_is_a_file.write_text("a file, not a directory", encoding="utf-8")
 
     code = "import src.core.install_secret as isec\n" + _textwrap.dedent(body).strip()
     env = dict(
@@ -726,7 +726,7 @@ def _launch_under_unmakeable_home(tmp_path, body):
         capture_output=True,
         text=True,
         timeout=120,
-    )
+     encoding="utf-8")
     assert proc.returncode == 0, proc.stderr
     return proc, sandbox_home
 
@@ -852,7 +852,7 @@ def test_two_installs_that_both_fail_to_make_their_homes_share_one_secret(
     secrets_seen = []
     for leaf in ("blocked-a", "blocked-b"):
         parent_that_is_a_file = tmp_path / leaf
-        parent_that_is_a_file.write_text("a file, not a directory")
+        parent_that_is_a_file.write_text("a file, not a directory", encoding="utf-8")
         monkeypatch.setenv("PERSONA_HOME", str(parent_that_is_a_file / "persona"))
         isec.reset_cache_for_tests()
         secrets_seen.append(isec.install_secret())

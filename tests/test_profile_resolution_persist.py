@@ -24,7 +24,7 @@ def pm(tmp_path, monkeypatch):
 def test_resolution_persists_across_reload(pm):
     pm.add_profile("r1", "", "windows", resolution="1920x1080")
     assert pm.profiles["r1"].resolution == "1920x1080"
-    raw = json.load(open(os.environ["PERSONA_PROFILES_FILE"]))
+    raw = json.load(open(os.environ["PERSONA_PROFILES_FILE"], encoding="utf-8"))
     assert raw["r1"]["resolution"] == "1920x1080"
     # a fresh manager reads it back rather than resetting to "auto"
     from src.services.profile import manager as mgr

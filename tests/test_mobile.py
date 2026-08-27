@@ -51,9 +51,9 @@ def test_mobile_ext_builds_with_touch_and_screen(tmp_path):
         device_memory=8, hardware_concurrency=8, touch_points=5,
     )
     p = pathlib.Path(d)
-    man = json.loads((p / "manifest.json").read_text())
+    man = json.loads((p / "manifest.json").read_text(encoding="utf-8"))
     assert man["content_scripts"][0]["world"] == "MAIN"
-    js = (p / "mobile.js").read_text()
+    js = (p / "mobile.js").read_text(encoding="utf-8")
     assert "maxTouchPoints" in js
     assert "ontouchstart" in js
     assert "userAgentData" in js
@@ -68,7 +68,7 @@ def test_mobile_ext_ios_drops_uadata(tmp_path):
         css_width=393, css_height=852, dpr=3.0,
         device_memory=4, hardware_concurrency=6, touch_points=5,
     )
-    js = pathlib.Path(d + "/mobile.js").read_text()
+    js = pathlib.Path(d + "/mobile.js").read_text(encoding="utf-8")
     # iOS Safari exposes no userAgentData
     assert "IS_IOS" in js
     assert "undefined" in js
@@ -82,12 +82,12 @@ def test_ios_color_depth_is_32_android_is_24(tmp_path):
         str(tmp_path / "ios"), is_ios=True, platform="iPhone", model="iPhone",
         chromium_version=None, css_width=393, css_height=852, dpr=3.0,
         device_memory=4, hardware_concurrency=6, touch_points=5,
-    ) + "/mobile.js").read_text()
+    ) + "/mobile.js").read_text(encoding="utf-8")
     android = pathlib.Path(build_mobile_extension(
         str(tmp_path / "and"), is_ios=False, platform="Android", model="Pixel 7",
         chromium_version=V("149.0.8000.10"), css_width=412, css_height=915, dpr=2.625,
         device_memory=8, hardware_concurrency=8, touch_points=5,
-    ) + "/mobile.js").read_text()
+    ) + "/mobile.js").read_text(encoding="utf-8")
     # the depth is chosen from IS_IOS at runtime, so both 32 and 24 appear in the
     # built script and the choice keys on IS_IOS
     assert "colorDepth" in ios
@@ -108,7 +108,7 @@ def test_mobile_on_shared_recursive_registry(tmp_path):
         css_width=412, css_height=915, dpr=2.625,
         device_memory=8, hardware_concurrency=8, touch_points=5,
     )
-    js = (pathlib.Path(d) / "mobile.js").read_text()
+    js = (pathlib.Path(d) / "mobile.js").read_text(encoding="utf-8")
     assert "applyMobilePatch" in js
     assert "__pnaInstall(SELF, applyMobilePatch)" in js
     assert "G.Worker" in js and "HTMLIFrameElement" in js
@@ -151,7 +151,7 @@ def test_android_navigator_platform_is_upstream_frozen_armv81(tmp_path):
         css_width=412, css_height=915, dpr=2.625,
         device_memory=8, hardware_concurrency=8, touch_points=5,
     )
-    js = (pathlib.Path(d) / "mobile.js").read_text()
+    js = (pathlib.Path(d) / "mobile.js").read_text(encoding="utf-8")
 
     m = re.search(
         r"def\(\s*nav\s*,\s*'platform'\s*,\s*IS_IOS\s*\?\s*'([^']*)'\s*:\s*'([^']*)'\s*\)",
@@ -184,7 +184,7 @@ def test_touch_constructors_gated_behind_window(tmp_path):
         css_width=412, css_height=915, dpr=2.625,
         device_memory=8, hardware_concurrency=8, touch_points=5,
     )
-    js = (pathlib.Path(d) / "mobile.js").read_text()
+    js = (pathlib.Path(d) / "mobile.js").read_text(encoding="utf-8")
     # Both TouchEvent and Touch constructor assignments must live inside a
     # `if (G.Window) { ... }` block. Find the G.Window gate that immediately
     # precedes the TouchEvent assignment (there are several G.Window checks) and

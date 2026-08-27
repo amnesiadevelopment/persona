@@ -212,8 +212,8 @@ def test_a_stale_core_is_cannot_run_not_drift(tmp_path):
     """
     before = tmp_path / "b.json"
     after = tmp_path / "a.json"
-    before.write_text(json.dumps(_snap(build="firefox-20", stack="20.14.0")))
-    after.write_text(json.dumps(_snap(build="firefox-21", stack="20.14.0")))
+    before.write_text(json.dumps(_snap(build="firefox-20", stack="20.14.0")), encoding="utf-8")
+    after.write_text(json.dumps(_snap(build="firefox-21", stack="20.14.0")), encoding="utf-8")
     code = engine_gate.main(["compare", str(before), str(after)])
     assert code == engine_gate.EXIT_CANNOT_RUN
     assert code != engine_gate.EXIT_DRIFT
@@ -222,8 +222,8 @@ def test_a_stale_core_is_cannot_run_not_drift(tmp_path):
 def test_a_stale_core_never_reports_a_pass(tmp_path, capsys):
     before = tmp_path / "b.json"
     after = tmp_path / "a.json"
-    before.write_text(json.dumps(_snap(build="firefox-20", stack="20.14.0")))
-    after.write_text(json.dumps(_snap(build="firefox-21", stack="20.14.0")))
+    before.write_text(json.dumps(_snap(build="firefox-20", stack="20.14.0")), encoding="utf-8")
+    after.write_text(json.dumps(_snap(build="firefox-21", stack="20.14.0")), encoding="utf-8")
     engine_gate.main(["compare", str(before), str(after)])
     assert "PASS" not in capsys.readouterr().out
 
@@ -338,7 +338,7 @@ def test_record_stamps_the_core_it_verified(tmp_path, monkeypatch, provisioned):
     monkeypatch.setattr(engine_gate, "record_snapshot", lambda **kw: _snap())
     out = tmp_path / "rec.json"
     assert engine_gate.main(["record", "-o", str(out)]) == engine_gate.EXIT_PASS
-    assert json.loads(out.read_text())[engine_gate.STACK_FIELD] == "20.14.0"
+    assert json.loads(out.read_text(encoding="utf-8"))[engine_gate.STACK_FIELD] == "20.14.0"
 
 
 def test_record_refuses_when_the_build_moves_under_the_recording(
@@ -718,7 +718,7 @@ def test_cli_record_writes_the_recording(tmp_path, monkeypatch, provisioned):
     monkeypatch.setattr(engine_gate, "record_snapshot", lambda **kw: _snap())
     out = tmp_path / "rec.json"
     assert engine_gate.main(["record", "-o", str(out)]) == engine_gate.EXIT_PASS
-    assert json.loads(out.read_text())["engine_build"] == "firefox-20"
+    assert json.loads(out.read_text(encoding="utf-8"))["engine_build"] == "firefox-20"
 
 
 def test_cli_record_without_a_display_exits_2(tmp_path, monkeypatch, provisioned):

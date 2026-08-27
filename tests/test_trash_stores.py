@@ -232,7 +232,7 @@ def test_trashing_a_proxy_does_not_remove_its_secret_from_disk(
     # not shredded — and they are parked at the SAME 0600 the live store used.
     pstore.add("exit-us", "socks5://user:hunter2@1.2.3.4:1080")
     pstore.delete("exit-us")
-    raw = pathlib.Path(os.environ["PERSONA_TRASH_FILE"]).read_text()
+    raw = pathlib.Path(os.environ["PERSONA_TRASH_FILE"]).read_text(encoding="utf-8")
     assert "hunter2" in raw
     # The 0600 half is a POSIX guarantee, not a Windows one, and only this LINE
     # is platform-specific — the "the secret is parked, not shredded" assertion
@@ -329,7 +329,7 @@ def test_trashing_an_ssh_host_does_not_remove_its_password_from_disk(
 ):
     sshstore.add(SSHHost(name="box", host="h", password="hunter2"))
     sshstore.remove("box")
-    raw = pathlib.Path(os.environ["PERSONA_TRASH_FILE"]).read_text()
+    raw = pathlib.Path(os.environ["PERSONA_TRASH_FILE"]).read_text(encoding="utf-8")
     assert "hunter2" in raw
 
 
@@ -356,7 +356,7 @@ def cstore(tmp_path, trash, monkeypatch):
 
 def _owned_cert(cstore, tmp_path, name="admin", body="KEYMATERIAL"):
     source = tmp_path / "source.p12"
-    source.write_text(body)
+    source.write_text(body, encoding="utf-8")
     stored = cstore.import_p12(name, str(source))
     cstore.add(
         Certificate(name=name, p12_path=stored, password="p12pass",
@@ -382,7 +382,7 @@ def test_trashing_a_certificate_moves_the_p12_instead_of_deleting_it(
     entry = trash.list("certificate")[0]
     assert not os.path.exists(stored), "it left the live location"
     assert os.path.exists(entry.material_path)
-    assert pathlib.Path(entry.material_path).read_text() == "KEYMATERIAL"
+    assert pathlib.Path(entry.material_path).read_text(encoding="utf-8") == "KEYMATERIAL"
 
 
 def test_the_parked_p12_stays_inside_personas_own_certificate_store(
@@ -406,7 +406,7 @@ def test_a_restored_certificate_points_at_a_working_bundle(
     assert (ok, msg) == (True, "")
     cert = cstore.get("admin")
     assert os.path.exists(cert.p12_path)
-    assert pathlib.Path(cert.p12_path).read_text() == "KEYMATERIAL"
+    assert pathlib.Path(cert.p12_path).read_text(encoding="utf-8") == "KEYMATERIAL"
 
 
 def test_a_restored_certificate_keeps_its_password_and_admin_url(
@@ -427,24 +427,24 @@ def test_a_legacy_certificate_outside_the_store_is_never_moved(
     # persona's to move any more than it is ours to delete. That restraint must
     # survive the trash.
     original = tmp_path / "operators-own.p12"
-    original.write_text("USER OWNED")
+    original.write_text("USER OWNED", encoding="utf-8")
     cstore.add(Certificate(name="legacy", p12_path=str(original)))
     cstore.remove("legacy")
     entry = trash.list("certificate")[0]
     assert entry.material_path == "", "nothing of ours to park"
-    assert original.exists() and original.read_text() == "USER OWNED"
+    assert original.exists() and original.read_text(encoding="utf-8") == "USER OWNED"
 
 
 def test_restoring_a_legacy_certificate_points_back_at_the_original_file(
     cstore, tmp_path, trash
 ):
     original = tmp_path / "operators-own.p12"
-    original.write_text("USER OWNED")
+    original.write_text("USER OWNED", encoding="utf-8")
     cstore.add(Certificate(name="legacy", p12_path=str(original)))
     cstore.remove("legacy")
     cstore.restore_certificate(trash.list("certificate")[0])
     assert cstore.get("legacy").p12_path == str(original)
-    assert original.read_text() == "USER OWNED"
+    assert original.read_text(encoding="utf-8") == "USER OWNED"
 
 
 def test_permanently_deleting_a_certificate_destroys_the_key_bundle(
@@ -465,7 +465,7 @@ def test_destroying_never_deletes_a_file_outside_personas_store(
     from src.services.trash.store import TrashEntry
 
     outside = tmp_path / "operators-own.p12"
-    outside.write_text("USER OWNED")
+    outside.write_text("USER OWNED", encoding="utf-8")
     entry = TrashEntry(
         id="x", kind="certificate", name="legacy", deleted_at=0.0,
         material_path=str(outside),
@@ -484,4 +484,4 @@ def test_restoring_a_certificate_is_refused_when_the_name_is_taken(
     _owned_cert(cstore, tmp_path, body="REPLACEMENT")
     ok, msg = cstore.restore_certificate(trash.list("certificate")[0])
     assert ok is False and "already exists" in msg
-    assert pathlib.Path(cstore.get("admin").p12_path).read_text() == "REPLACEMENT"
+    assert pathlib.Path(cstore.get("admin").p12_path).read_text(encoding="utf-8") == "REPLACEMENT"

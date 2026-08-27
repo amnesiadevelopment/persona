@@ -280,7 +280,7 @@ def _run(tmp_path, *, reflagged: bool):
     out = subprocess.run(
         [node, str(probe), str(native), str(locale), str(markers)],
         capture_output=True, text=True, timeout=120,
-    )
+     encoding="utf-8")
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
 

@@ -83,7 +83,7 @@ def _saved_profiles(home: str) -> list[dict]:
         text=True,
         cwd=REPO_ROOT,
         timeout=120,
-    )
+     encoding="utf-8")
     if out.returncode != 0:
         raise AssertionError(f"service-layer read failed:\n{out.stdout}\n{out.stderr}")
     return json.loads(out.stdout.strip().splitlines()[-1])

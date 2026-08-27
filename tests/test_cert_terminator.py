@@ -212,7 +212,7 @@ def test_client_pem_from_p12(tmp_path):
     _, _, p12, pw, _, _, stop = _mtls_origin(tmp_path)
     try:
         pem = term.client_pem_from_p12(p12, pw, tmp_path)
-        text = open(pem).read()
+        text = open(pem, encoding="utf-8").read()
         assert "BEGIN CERTIFICATE" in text
         assert "PRIVATE KEY" in text
     finally:
@@ -404,7 +404,7 @@ def test_stop_wipes_client_and_leaf_keys(tmp_path):
 
     # a stand-in client PEM (the decrypted key would live here)
     client_pem = os.path.join(str(tmp_path), "client.pem")
-    with open(client_pem, "w") as f:
+    with open(client_pem, "w", encoding="utf-8") as f:
         f.write("-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----\n")
 
     t = term.Terminator("admin.example.com", leaf, client_pem)
@@ -646,7 +646,7 @@ def test_unlistable_work_dir_does_not_abort_the_launch(tmp_path):
     work = str(tmp_path / "profile" / ".persona-mtls")
     os.makedirs(work)
     # Pre-existing key material we will NOT be able to enumerate.
-    with open(os.path.join(work, "term_leaf.key"), "w") as f:
+    with open(os.path.join(work, "term_leaf.key"), "w", encoding="utf-8") as f:
         f.write("-----BEGIN PRIVATE KEY-----\nstale\n-----END PRIVATE KEY-----\n")
     os.chmod(work, 0o000)
     try:
@@ -681,7 +681,7 @@ def test_unlistable_work_dir_degrades_on_every_platform(tmp_path, monkeypatch):
     os.makedirs(work)
     # Pre-existing key material the sweep will NOT be able to enumerate.
     key = os.path.join(work, "term_leaf.key")
-    with open(key, "w") as f:
+    with open(key, "w", encoding="utf-8") as f:
         f.write("-----BEGIN PRIVATE KEY-----\nstale\n-----END PRIVATE KEY-----\n")
 
     real_listdir = os.listdir

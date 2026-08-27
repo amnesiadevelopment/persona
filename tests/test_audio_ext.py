@@ -21,7 +21,7 @@ def test_creates_files(tmp_path):
 
 def test_main_world_document_start(tmp_path):
     d = build_audio_extension(1, str(tmp_path / "ext"))
-    m = json.loads((pathlib.Path(d) / "manifest.json").read_text())
+    m = json.loads((pathlib.Path(d) / "manifest.json").read_text(encoding="utf-8"))
     cs = m["content_scripts"][0]
     assert cs["world"] == "MAIN"
     assert cs["run_at"] == "document_start"
@@ -48,7 +48,7 @@ def test_seed_changes_the_observable_output(tmp_path):
 
 def test_patches_audio_readback_paths(tmp_path):
     d = build_audio_extension(1, str(tmp_path / "ext"))
-    js = (pathlib.Path(d) / "audio.js").read_text()
+    js = (pathlib.Path(d) / "audio.js").read_text(encoding="utf-8")
     # the float-buffer readers fingerprinters use
     assert "getChannelData" in js
     assert "getFloatFrequencyData" in js
@@ -87,7 +87,7 @@ def test_native_tostring_masking(tmp_path):
     # assert_reads_native also runs the counterfactual: without native_ext's
     # patch the same probe must NOT read native.
     d = build_audio_extension(1, str(tmp_path / "ext"))
-    js = (pathlib.Path(d) / "audio.js").read_text()
+    js = (pathlib.Path(d) / "audio.js").read_text(encoding="utf-8")
     assert_reads_native(
         tmp_path,
         [pathlib.Path(d) / "audio.js"],
@@ -101,7 +101,7 @@ def test_native_tostring_masking(tmp_path):
 def test_carries_audio_noise_into_workers(tmp_path):
     # Audio fingerprinting is commonly run in a worker via OfflineAudioContext;
     # the noise must apply there too, or page/worker audio hashes disagree.
-    js = (pathlib.Path(build_audio_extension(1, str(tmp_path / "ext"))) / "audio.js").read_text()
+    js = (pathlib.Path(build_audio_extension(1, str(tmp_path / "ext"))) / "audio.js").read_text(encoding="utf-8")
     assert "applyAudioPatch" in js
     assert "G.Worker" in js
     body = js.split("function applyAudioPatch(G)", 1)[1].split("__pnaBoot", 1)[0]
@@ -110,7 +110,7 @@ def test_carries_audio_noise_into_workers(tmp_path):
 
 
 def test_carries_audio_noise_into_iframes(tmp_path):
-    js = (pathlib.Path(build_audio_extension(1, str(tmp_path / "ext"))) / "audio.js").read_text()
+    js = (pathlib.Path(build_audio_extension(1, str(tmp_path / "ext"))) / "audio.js").read_text(encoding="utf-8")
     assert "contentWindow" in js and "HTMLIFrameElement" in js
     # routed through the shared realm bootstrap, which chains the iframe
     # accessors and re-runs the installer in the child (recursively). The

@@ -650,7 +650,7 @@ def test_the_scratch_directory_is_swept_so_only_one_session_lands_on_disk(tmp_pa
     planted = os.path.join(first, "appimage_extracted_deadbeef")
     os.makedirs(planted)
     leftover = os.path.join(planted, "chrome")
-    with open(leftover, "w") as fh:
+    with open(leftover, "w", encoding="utf-8") as fh:
         fh.write("last session")
     assert os.path.exists(leftover)
 
@@ -699,7 +699,7 @@ def test_a_sweep_that_cannot_clear_does_not_fail_the_launch(tmp_path):
 
     target = prepare_child_tmpdir(profile_dir)
     stuck = os.path.join(target, "wont-go")
-    with open(stuck, "w") as fh:
+    with open(stuck, "w", encoding="utf-8") as fh:
         fh.write("residue")
     os.chmod(target, 0o500)  # r-x: entries cannot be unlinked
 

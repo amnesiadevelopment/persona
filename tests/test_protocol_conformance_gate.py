@@ -37,7 +37,7 @@ def run_gate(root: Path | None = None) -> subprocess.CompletedProcess:
     cmd = [sys.executable, str(GATE)]
     if root is not None:
         cmd += ["--root", str(root)]
-    return subprocess.run(cmd, capture_output=True, text=True, cwd=str(REPO_ROOT))
+    return subprocess.run(cmd, capture_output=True, text=True, cwd=str(REPO_ROOT), encoding="utf-8")
 
 
 @pytest.fixture
@@ -376,7 +376,7 @@ def test_ci_advisory_mypy_run_cannot_fail_the_build(ci_yaml, tmp_path: Path) -> 
             # locally for the wrong reason and CI caught it.)
             "PATH": f"{stub_dir}{os.pathsep}{os.environ['PATH']}",
         },
-    )
+     encoding="utf-8")
     assert result.returncode == 0, (
         "the repo-wide mypy step FAILS when mypy reports errors, but the tree "
         "still carries pre-existing ones — this step would be red permanently, "

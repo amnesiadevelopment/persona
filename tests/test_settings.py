@@ -40,14 +40,14 @@ def test_set_writes_valid_json(tmp_path, monkeypatch):
     monkeypatch.setenv("PERSONA_SETTINGS_FILE", str(path))
     settings.set("a", 1)
     settings.set("b", [1, 2])
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     assert data["a"] == 1
     assert data["b"] == [1, 2]
 
 
 def test_corrupt_file_treated_as_empty(tmp_path, monkeypatch):
     path = tmp_path / "bad.json"
-    path.write_text("{not json")
+    path.write_text("{not json", encoding="utf-8")
     monkeypatch.setenv("PERSONA_SETTINGS_FILE", str(path))
     assert settings.get("x", "d") == "d"
 

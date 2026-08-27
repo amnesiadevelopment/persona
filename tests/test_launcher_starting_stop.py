@@ -210,7 +210,7 @@ def test_delete_waits_for_in_flight_spawn_before_rmtree(tmp_path, monkeypatch):
     def slow_spawn(profile):
         # emulate spawn_browser seeding the data dir, then holding
         os.makedirs(data_dir, exist_ok=True)
-        with open(os.path.join(data_dir, "seed.txt"), "w") as f:
+        with open(os.path.join(data_dir, "seed.txt"), "w", encoding="utf-8") as f:
             f.write("x")
         started.set()
         release.wait(2.0)

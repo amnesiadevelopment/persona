@@ -219,11 +219,11 @@ def test_a_restored_profile_keeps_its_data(env):
     pm = env.container.profile_manager
     data_dir = pm._data_path("alpha")
     os.makedirs(data_dir, exist_ok=True)
-    pathlib.Path(data_dir, "Cookies").write_text("logged-in")
+    pathlib.Path(data_dir, "Cookies").write_text("logged-in", encoding="utf-8")
     env.client.delete("/api/v1/profiles/alpha", headers=env.headers)
     entry_id = _trash(env)["entries"][0]["id"]
     env.client.post(f"/api/v1/trash/{entry_id}/restore", headers=env.headers)
-    assert pathlib.Path(data_dir, "Cookies").read_text() == "logged-in"
+    assert pathlib.Path(data_dir, "Cookies").read_text(encoding="utf-8") == "logged-in"
 
 
 def test_a_restored_entry_leaves_the_trash(env):

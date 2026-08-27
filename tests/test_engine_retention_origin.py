@@ -312,7 +312,7 @@ def test_an_engine_installed_before_the_record_existed_gets_no_target_from_its_f
     # the legacy on-disk state: a whole, complete engine with NO record beside it
     (eng.dir / "chrome.exe").write_bytes(b"MZ" + b"AAA")
     (eng.dir / "some.dll").write_bytes(b"DLL-AAA")
-    (eng.dir / ".engine-complete").write_text("ok")
+    (eng.dir / ".engine-complete").write_text("ok", encoding="utf-8")
     updater.write_version("144.0.7559.132")
 
     assert updater.is_installed() is True
@@ -486,7 +486,7 @@ def test_a_machine_with_a_recorded_previous_build_still_gets_the_working_button(
     eng = _Engine(monkeypatch, tmp_path)
 
     (eng.dir / "chrome.exe").write_bytes(b"MZ" + b"BBB")
-    (eng.dir / ".engine-complete").write_text("ok")
+    (eng.dir / ".engine-complete").write_text("ok", encoding="utf-8")
     updater.write_version("145.0.7600.100")
     updater.atomic_write_json(
         updater.BUILDS_FILE,
@@ -530,7 +530,7 @@ def test_a_pinned_machine_still_gets_the_resume_gesture(monkeypatch, tmp_path):
     eng = _Engine(monkeypatch, tmp_path)
 
     (eng.dir / "chrome.exe").write_bytes(b"MZ" + b"AAA")
-    (eng.dir / ".engine-complete").write_text("ok")
+    (eng.dir / ".engine-complete").write_text("ok", encoding="utf-8")
     updater.write_version("144.0.7559.132")
 
     from src.core import settings
@@ -572,7 +572,7 @@ def test_an_unreadable_build_record_renders_nothing_and_says_why_in_the_log(
     eng = _Engine(monkeypatch, tmp_path)
 
     (eng.dir / "chrome.exe").write_bytes(b"MZ" + b"AAA")
-    (eng.dir / ".engine-complete").write_text("ok")
+    (eng.dir / ".engine-complete").write_text("ok", encoding="utf-8")
     updater.write_version("144.0.7559.132")
 
     def boom():

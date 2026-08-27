@@ -1156,7 +1156,7 @@ def _run_smoke(bundle_root: Path):
         capture_output=True,
         text=True,
         timeout=300,
-    )
+     encoding="utf-8")
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
@@ -1820,7 +1820,7 @@ def _run_flatten(bundle_root: Path):
         capture_output=True,
         text=True,
         timeout=120,
-    )
+     encoding="utf-8")
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
@@ -1836,11 +1836,11 @@ def _pywin32_bundle(tmp_path: Path) -> Path:
     (sp / "win32" / "lib").mkdir(parents=True)
     (sp / "pywin32_system32").mkdir(parents=True)
 
-    (sp / "win32" / "lib" / "pywintypes.py").write_text("# magic redirector\n")
-    (sp / "win32" / "lib" / "win32con.py").write_text("VALUE = 1\n")
+    (sp / "win32" / "lib" / "pywintypes.py").write_text("# magic redirector\n", encoding="utf-8")
+    (sp / "win32" / "lib" / "win32con.py").write_text("VALUE = 1\n", encoding="utf-8")
     (sp / "win32" / "win32api.pyd").write_bytes(b"MZ fake extension")
     (sp / "pywin32_system32" / "pywintypes312.dll").write_bytes(b"MZ fake dll")
-    (sp / "pywin32.pth").write_text("win32\nwin32\\lib\npythonwin\n")
+    (sp / "pywin32.pth").write_text("win32\nwin32\\lib\npythonwin\n", encoding="utf-8")
     return tmp_path / "build" / "windows"
 
 
@@ -1951,7 +1951,7 @@ def test_flatten_refuses_a_pywin32_it_cannot_make_importable(tmp_path) -> None:
     """
     sp = tmp_path / "build" / "windows" / "site-packages"
     (sp / "win32" / "lib").mkdir(parents=True)
-    (sp / "pywin32.pth").write_text("win32\nwin32\\lib\n")
+    (sp / "pywin32.pth").write_text("win32\nwin32\\lib\n", encoding="utf-8")
     # the marker and the directory exist, but there is no payload at all
 
     rc, out = _run_flatten(tmp_path / "build" / "windows")
@@ -1984,7 +1984,7 @@ def test_a_foreign_pywintypes_squatting_the_name_is_fatal(tmp_path) -> None:
     sp = root / "site-packages"
     sp.joinpath("pywintypes.py").write_text(
         'raise ImportError("I am NOT pywin32 pywintypes")\n'
-    )
+    , encoding="utf-8")
 
     rc, out = _run_flatten(root)
     assert rc != 0, (
@@ -2015,11 +2015,11 @@ def test_identity_not_size_decides_already_flattened(tmp_path) -> None:
     """
     root = _pywin32_bundle(tmp_path)
     sp = root / "site-packages"
-    real = (sp / "win32" / "lib" / "pywintypes.py").read_text()
+    real = (sp / "win32" / "lib" / "pywintypes.py").read_text(encoding="utf-8")
     # byte-for-byte the same LENGTH, entirely different content
     impostor = "#" + "x" * (len(real) - 2) + "\n"
     assert len(impostor) == len(real), "the fixture must hold size constant"
-    sp.joinpath("pywintypes.py").write_text(impostor)
+    sp.joinpath("pywintypes.py").write_text(impostor, encoding="utf-8")
 
     rc, out = _run_flatten(root)
     assert rc != 0, (
@@ -2081,7 +2081,7 @@ def test_a_stale_pywintypes_survives_a_wheel_layout_change_and_is_fatal(tmp_path
     # ...but something else already occupies the name at the importable level.
     sp.joinpath("pywintypes.py").write_text(
         'raise ImportError("stale file from an earlier, different build")\n'
-    )
+    , encoding="utf-8")
 
     rc, out = _run_flatten(root)
     assert rc != 0, (

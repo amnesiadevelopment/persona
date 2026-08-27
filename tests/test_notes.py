@@ -37,7 +37,7 @@ def test_add_profile_with_notes_persists(pm):
     assert pm.add_profile("p1", "", "windows", notes="my note")
     assert pm.profiles["p1"].notes == "my note"
     # round-trip through the saved file
-    raw = json.load(open(os.environ["PERSONA_PROFILES_FILE"]))
+    raw = json.load(open(os.environ["PERSONA_PROFILES_FILE"], encoding="utf-8"))
     assert raw["p1"]["notes"] == "my note"
 
 

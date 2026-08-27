@@ -35,7 +35,7 @@ def _seed(mgr, name="alpha", cookie="jar"):
     mgr.add_profile(name, "", "windows")
     data_dir = mgr._data_path(name)
     os.makedirs(data_dir, exist_ok=True)
-    pathlib.Path(data_dir, "Cookies").write_text(cookie)
+    pathlib.Path(data_dir, "Cookies").write_text(cookie, encoding="utf-8")
     return data_dir
 
 
@@ -87,7 +87,7 @@ def test_the_data_dir_is_moved_not_copied_and_not_destroyed(mgr):
     entry = mgr._trash().list()[0]
     assert os.path.exists(entry.material_path)
     assert (
-        pathlib.Path(entry.material_path, "Cookies").read_text()
+        pathlib.Path(entry.material_path, "Cookies").read_text(encoding="utf-8")
         == "secret-session"
     )
     assert not os.path.exists(data_dir)
@@ -168,7 +168,7 @@ def test_restore_returns_the_cookies_to_the_launch_location(mgr):
     data_dir = _seed(mgr, cookie="logged-in")
     mgr.delete_profile("alpha")
     mgr.restore_profile(mgr._trash().list()[0])
-    assert pathlib.Path(data_dir, "Cookies").read_text() == "logged-in"
+    assert pathlib.Path(data_dir, "Cookies").read_text(encoding="utf-8") == "logged-in"
 
 
 def test_a_restored_profile_keeps_the_same_fingerprint_seed(mgr):
@@ -229,9 +229,9 @@ def test_a_refused_restore_leaves_the_live_profile_untouched(mgr):
     mgr.delete_profile("alpha")
     entry = mgr._trash().list()[0]
     mgr.add_profile("alpha", "", "windows")
-    pathlib.Path(mgr._data_path("alpha"), "Cookies").write_text("replacement")
+    pathlib.Path(mgr._data_path("alpha"), "Cookies").write_text("replacement", encoding="utf-8")
     mgr.restore_profile(entry)
-    assert pathlib.Path(mgr._data_path("alpha"), "Cookies").read_text() == (
+    assert pathlib.Path(mgr._data_path("alpha"), "Cookies").read_text(encoding="utf-8") == (
         "replacement"
     )
 
@@ -246,7 +246,7 @@ def test_freeing_the_name_then_restoring_works(mgr):
     mgr.delete_profile("alpha")  # frees the name
     ok, _ = mgr.restore_profile(entry)
     assert ok is True
-    assert pathlib.Path(mgr._data_path("alpha"), "Cookies").read_text() == (
+    assert pathlib.Path(mgr._data_path("alpha"), "Cookies").read_text(encoding="utf-8") == (
         "original"
     )
 
@@ -267,7 +267,7 @@ def test_destroy_refuses_a_path_outside_the_park_area(mgr, tmp_path):
     # filesystem locations, whatever a hand-edited trash.json claims.
     outside = tmp_path / "not-ours"
     outside.mkdir()
-    (outside / "keep").write_text("x")
+    (outside / "keep").write_text("x", encoding="utf-8")
     mgr.destroy_trashed_material(str(outside))
     assert (outside / "keep").exists()
 
@@ -284,7 +284,7 @@ def test_destroy_refuses_a_live_profile_data_dir(mgr):
 def test_destroy_refuses_a_traversal_path(mgr, tmp_path):
     outside = tmp_path / "escaped"
     outside.mkdir()
-    (outside / "keep").write_text("x")
+    (outside / "keep").write_text("x", encoding="utf-8")
     traversal = os.path.join(trash_data_root(), "..", "..", "escaped")
     mgr.destroy_trashed_material(traversal)
     assert (outside / "keep").exists()

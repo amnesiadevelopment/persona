@@ -1147,9 +1147,9 @@ def test_a_hand_edited_unusable_digest_refuses_and_changes_nothing(
     _install(eng, monkeypatch, "148.0.1", b"OLD", "aa" * 32, tmp_path)
     _install(eng, monkeypatch, "149.0.1", b"NEW", "bb" * 32, tmp_path)
 
-    rec = json.loads((eng.dir / "builds.json").read_text())
+    rec = json.loads((eng.dir / "builds.json").read_text(encoding="utf-8"))
     rec["previous"]["digest"] = "sha256:"
-    (eng.dir / "builds.json").write_text(json.dumps(rec))
+    (eng.dir / "builds.json").write_text(json.dumps(rec), encoding="utf-8")
 
     # It really does survive _entry as a target — otherwise this tests nothing,
     # and this is precisely why the value is worth a test at all.

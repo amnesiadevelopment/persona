@@ -214,7 +214,7 @@ def realms(tmp_path_factory):
     out = subprocess.run(
         [node, str(d / "probe.js"), str(d / "boot_a.js"), str(d / "boot_b.js")],
         capture_output=True, text=True, timeout=120,
-    )
+     encoding="utf-8")
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
 

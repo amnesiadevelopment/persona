@@ -89,7 +89,7 @@ class ServedApp:
     def output(self) -> str:
         """Whatever the child wrote — the only diagnosis when startup fails."""
         try:
-            with open(self._log_path, errors="replace") as fh:
+            with open(self._log_path, errors="replace", encoding="utf-8") as fh:
                 return fh.read()
         except OSError:
             return ""

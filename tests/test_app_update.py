@@ -833,7 +833,7 @@ def test_relaunch_bat_actually_relaunches_on_windows(tmp_path):
         "class P { static void Main() { "
         f'System.IO.File.WriteAllText(@"{marker}", "up"); '
         "System.Threading.Thread.Sleep(8000); } }"
-    )
+    , encoding="utf-8")
     exe = tmp_path / "persona-relaunch-check.exe"
     built = subprocess.run(
         [_CSC, "/nologo", "/target:winexe", f"/out:{exe}", str(src)],
@@ -860,7 +860,7 @@ def test_relaunch_bat_actually_relaunches_on_windows(tmp_path):
     fake_appdata = tmp_path / "appdata"
     cache = fake_appdata / "persona" / "persona" / "flet" / "app"
     cache.mkdir(parents=True)
-    (cache / "stale.py").write_text("x")
+    (cache / "stale.py").write_text("x", encoding="utf-8")
     env = au._relaunch_env()
     env["APPDATA"] = str(fake_appdata)
     try:
@@ -1125,7 +1125,7 @@ class _RuntimeProbe:
         if self._extract_to:
             apprun = os.path.join(self._extract_to, "squashfs-root", "AppRun")
             os.makedirs(os.path.dirname(apprun), exist_ok=True)
-            with open(apprun, "w") as f:
+            with open(apprun, "w", encoding="utf-8") as f:
                 f.write("#!/bin/sh\n")
         if self._hang:
             raise subprocess.TimeoutExpired("probe", timeout)

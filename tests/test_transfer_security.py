@@ -66,8 +66,8 @@ def test_export_excludes_mtls_key(tmp_path):
     # A profile dir with a leaked-key dir the export must NOT include.
     pdir = tmp_path / "pdata"
     (pdir / ".persona-mtls").mkdir(parents=True)
-    (pdir / ".persona-mtls" / "client.pem").write_text("SECRET KEY")
-    (pdir / "cookies.sqlite").write_text("ok")
+    (pdir / ".persona-mtls" / "client.pem").write_text("SECRET KEY", encoding="utf-8")
+    (pdir / "cookies.sqlite").write_text("ok", encoding="utf-8")
 
     profile = Profile(name="p", os_type="windows")
     ok, path = export_to_zip(profile, str(pdir), str(tmp_path))
@@ -122,9 +122,9 @@ def test_export_excludes_the_browser_child_scratch_dir(tmp_path):
     (scratch / "appimage_extracted_deadbeef" / "opt").mkdir(parents=True)
     (scratch / "appimage_extracted_deadbeef" / "opt" / "chrome").write_text(
         "x" * 1024
-    )
+    , encoding="utf-8")
     (scratch / "org.chromium.Chromium.AbCdEf").mkdir(parents=True)
-    (pdir / "cookies.sqlite").write_text("ok")
+    (pdir / "cookies.sqlite").write_text("ok", encoding="utf-8")
 
     profile = Profile(name="p", os_type="windows")
     ok, path = export_to_zip(profile, str(pdir), str(tmp_path))

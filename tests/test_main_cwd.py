@@ -39,7 +39,7 @@ def _run_in_deleted_cwd(snippet: str) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         cwd=REPO_ROOT,
-    )
+     encoding="utf-8")
 
 
 GUARD = '''
