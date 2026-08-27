@@ -167,7 +167,7 @@ def _surviving_secrets(home) -> dict[str, list[str]]:
     called" — that assertion would survive the glob being deleted."""
     out = {}
     for p in _quarantine_files(home):
-        blob = p.read_text(errors="replace")
+        blob = p.read_text(encoding="utf-8", errors="replace")
         holds = [kind for kind, secret in SECRETS.items() if secret in blob]
         if holds:
             out[p.name] = holds
@@ -219,7 +219,7 @@ def test_no_credential_of_any_kind_is_readable_in_the_home_after_the_wipe(home):
     for path in pathlib.Path(home).rglob("*"):
         if not path.is_file():
             continue
-        blob = path.read_text(errors="replace")
+        blob = path.read_text(encoding="utf-8", errors="replace")
         leaked = [kind for kind, secret in SECRETS.items() if secret in blob]
         assert not leaked, f"{path.name} still holds {leaked} after the wipe"
 
@@ -249,7 +249,7 @@ def test_the_wipe_really_destroys_what_it_claims_to(home):
     pm.add_profile("acme-viktor", "", "windows")
     data_dir = pathlib.Path(pm._data_path("acme-viktor"))
     data_dir.mkdir(parents=True, exist_ok=True)
-    (data_dir / "Cookies").write_text("logged-in")
+    (data_dir / "Cookies").write_text("logged-in", encoding="utf-8")
 
     # 2. The live trash, which holds credentials verbatim — purged by the wipe.
     pm._trash().add(
@@ -258,12 +258,18 @@ def test_the_wipe_really_destroys_what_it_claims_to(home):
         payload={"name": "p1", "url": f"socks5://user:{PROXY_SECRET}@1.2.3.4:1080"},
     )
     trash_path = home / "trash.json"
-    assert PROXY_SECRET in trash_path.read_text(), "probe broken: trash never held it"
+    assert PROXY_SECRET in trash_path.read_text(
+        encoding="utf-8"
+    ), "probe broken: trash never held it"
 
     assert pm.wipe_all_profiles() == 1
 
     assert not data_dir.exists(), "the wipe did not rmtree the profile data dir"
-    live_trash = trash_path.read_text(errors="replace") if trash_path.exists() else ""
+    live_trash = (
+        trash_path.read_text(encoding="utf-8", errors="replace")
+        if trash_path.exists()
+        else ""
+    )
     assert PROXY_SECRET not in live_trash, "the wipe did not purge the live trash"
 
 
@@ -279,20 +285,26 @@ def test_the_trash_quarantine_does_not_survive_the_wipe(home):
         payload={"name": "p1", "url": f"socks5://user:{PROXY_SECRET}@1.2.3.4:1080"},
     )
     trash_path = home / "trash.json"
-    assert PROXY_SECRET in trash_path.read_text(), "trash never held the credential"
+    assert PROXY_SECRET in trash_path.read_text(
+        encoding="utf-8"
+    ), "trash never held the credential"
 
     _tear(trash_path)
     TrashStore()  # loading the torn file quarantines it
 
     quarantined = list(pathlib.Path(home).glob("trash.json.corrupt-*"))
     assert quarantined, "trash quarantine never fired"
-    assert PROXY_SECRET in quarantined[0].read_text(errors="replace")
+    assert PROXY_SECRET in quarantined[0].read_text(encoding="utf-8", errors="replace")
 
     _manager(home).wipe_all_profiles()
 
     assert list(pathlib.Path(home).glob("trash.json.corrupt-*")) == []
     # CONTROL: the live trash is purged by the same wipe.
-    live = trash_path.read_text(errors="replace") if trash_path.exists() else ""
+    live = (
+        trash_path.read_text(encoding="utf-8", errors="replace")
+        if trash_path.exists()
+        else ""
+    )
     assert PROXY_SECRET not in live
 
 
@@ -340,20 +352,26 @@ def test_the_trash_quarantine_does_not_survive_a_wipe_from_a_bracketed_home(
         payload={"name": "p1", "url": f"socks5://user:{PROXY_SECRET}@1.2.3.4:1080"},
     )
     trash_path = bracketed_home / "trash.json"
-    assert PROXY_SECRET in trash_path.read_text(), "trash never held the credential"
+    assert PROXY_SECRET in trash_path.read_text(
+        encoding="utf-8"
+    ), "trash never held the credential"
 
     _tear(trash_path)
     TrashStore()  # loading the torn file quarantines it
 
     quarantined = list(pathlib.Path(bracketed_home).glob("trash.json.corrupt-*"))
     assert quarantined, "trash quarantine never fired"
-    assert PROXY_SECRET in quarantined[0].read_text(errors="replace")
+    assert PROXY_SECRET in quarantined[0].read_text(encoding="utf-8", errors="replace")
 
     _manager(bracketed_home).wipe_all_profiles()
 
     assert list(pathlib.Path(bracketed_home).glob("trash.json.corrupt-*")) == []
     # CONTROL: the live trash is purged by the same wipe, in the same home.
-    live = trash_path.read_text(errors="replace") if trash_path.exists() else ""
+    live = (
+        trash_path.read_text(encoding="utf-8", errors="replace")
+        if trash_path.exists()
+        else ""
+    )
     assert PROXY_SECRET not in live
 
 
