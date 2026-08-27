@@ -9,7 +9,7 @@ That drift is the point of §9 of the report ("what would have to become true").
 
 ```
 REPORT.md                     the report
-README.md                     this file
+REPRODUCING.md                this file
 scripts/                      the instruments
 data/                         raw collected evidence + derived results
 ```
