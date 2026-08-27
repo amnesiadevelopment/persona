@@ -1,0 +1,481 @@
+{
+ "run": "test-145",
+ "failed_hunks_total": 118,
+ "reconciles_to": "results-test-145.tsv column `hunks_failed`",
+ "by_area": {
+  "chrome/browser": 73,
+  "components": 22,
+  "chrome/ (other)": 10,
+  "third_party/blink (Blink)": 5,
+  "other": 4,
+  "content": 4
+ },
+ "by_file": [
+  {
+   "file": "chrome/BUILD.gn",
+   "failed_hunks": 4
+  },
+  {
+   "file": "chrome/browser/profiles/chrome_browser_main_extra_parts_profiles.cc",
+   "failed_hunks": 4
+  },
+  {
+   "file": "chrome/browser/webshare/share_service_impl.cc",
+   "failed_hunks": 4
+  },
+  {
+   "file": "components/embedder_support/user_agent_utils.cc",
+   "failed_hunks": 4
+  },
+  {
+   "file": "chrome/test/BUILD.gn",
+   "failed_hunks": 3
+  },
+  {
+   "file": "chrome/browser/safe_browsing/generated_security_settings_bundle_pref.cc",
+   "failed_hunks": 3
+  },
+  {
+   "file": "chrome/browser/site_protection/site_familiarity_utils.cc",
+   "failed_hunks": 3
+  },
+  {
+   "file": "components/signin/internal/identity_manager/primary_account_manager.cc",
+   "failed_hunks": 3
+  },
+  {
+   "file": "chrome/browser/ui/views/frame/tab_strip_region_view.cc",
+   "failed_hunks": 3
+  },
+  {
+   "file": "chrome/browser/resources/BUILD.gn",
+   "failed_hunks": 2
+  },
+  {
+   "file": "chrome/browser/ui/webui/side_panel/read_anything/read_anything_untrusted_page_handler.cc",
+   "failed_hunks": 2
+  },
+  {
+   "file": "chrome/browser/enterprise/connectors/analysis/files_request_handler.cc",
+   "failed_hunks": 2
+  },
+  {
+   "file": "chrome/browser/notifications/persistent_notification_handler.cc",
+   "failed_hunks": 2
+  },
+  {
+   "file": "chrome/browser/safe_browsing/generated_safe_browsing_pref.cc",
+   "failed_hunks": 2
+  },
+  {
+   "file": "chrome/browser/content_settings/generated_javascript_optimizer_pref.cc",
+   "failed_hunks": 2
+  },
+  {
+   "file": "chrome/browser/policy/configuration_policy_handler_list_factory.cc",
+   "failed_hunks": 2
+  },
+  {
+   "file": "content/public/browser/frame_accept_header.cc",
+   "failed_hunks": 2
+  },
+  {
+   "file": "extensions/browser/blocklist_state_fetcher.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "extensions/browser/blocklist_state_fetcher.h",
+   "failed_hunks": 1
+  },
+  {
+   "file": "components/translate/core/common/translate_util.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "google_apis/gaia/gaia_constants.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "components/google/core/common/google_util.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "content/browser/preloading/prefetch/prefetch_container.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "components/translate/core/browser/translate_language_list.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "components/dom_distiller/core/javascript/dom_distiller_viewer.js",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/BUILD.gn",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/browser_process_impl.h",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/component_updater/registration.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/password_manager/password_change_delegate_impl.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/profiles/BUILD.gn",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/ui/pdf/BUILD.gn",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/ui/views/user_education/browser_user_education_service.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/common/features.gni",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/renderer/chrome_render_frame_observer.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/utility/services.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "components/network_time/network_time_tracker.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/enterprise/connectors/analysis/content_analysis_delegate.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/enterprise/connectors/analysis/files_request_handler.h",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/extensions/BUILD.gn",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/extensions/chrome_extensions_browser_client_non_android.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/extensions/extension_service.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/page_load_metrics/observers/serp_page_load_metrics_observer.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/safe_browsing/BUILD.gn",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/safe_browsing/generated_safe_browsing_pref.h",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/safe_browsing/url_lookup_service_factory.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/ui/autofill/chrome_otp_phish_guard_delegate.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/ui/omnibox/chrome_omnibox_client.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/ui/safety_hub/revoked_permissions_service.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/ui/webui/cr_components/searchbox/searchbox_omnibox_client.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/ui/webui/settings/hats_handler.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/ui/webui/settings/security_settings_provider.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "components/device_signals/core/browser/signals_types.h",
+   "failed_hunks": 1
+  },
+  {
+   "file": "components/safe_browsing/core/browser/realtime/url_lookup_service_base.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "components/safe_browsing/core/browser/web_ui/safe_browsing_ui_util.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "extensions/browser/extension_registrar.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/chrome_content_browser_client.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/extensions/api/settings_private/prefs_util.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/extensions/extension_allowlist.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/permissions/permission_revocation_request.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/policy/browser_signin_policy_handler.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/safe_browsing/safe_browsing_service.h",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/signin/accounts_policy_manager.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/signin/signin_util.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/ui/extensions/extension_post_install_dialog_model.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/ui/toolbar/app_menu_model.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/ui/views/user_education/browser_ntp_promos.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/ui/webui/cr_components/history/history_util.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/ui/webui/signin/signin_utils_desktop.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "components/safe_browsing/content/browser/triggers/trigger_throttler.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "components/safe_browsing/core/browser/ping_manager.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "components/safe_browsing/core/browser/safe_browsing_metrics_collector.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "components/sync_preferences/common_syncable_prefs_database.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/ui/browser_ui_prefs.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/download/download_crx_util.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "components/search_engines/template_url_service.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/ui/startup/infobar_utils.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "components/omnibox/browser/autocomplete_controller.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/resources/settings/autofill_page/payments_section.html",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/ui/views/sad_tab_view.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/ui/tabs/tab_strip_model.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "components/history/core/browser/history_backend.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "chrome/browser/ui/views/extensions/extensions_toolbar_container.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "content/browser/renderer_host/navigation_request.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "third_party/blink/renderer/core/execution_context/navigator_base.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "third_party/blink/common/user_agent/user_agent_metadata.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "third_party/blink/renderer/core/frame/navigator.cc",
+   "failed_hunks": 1
+  },
+  {
+   "file": "third_party/blink/renderer/core/dom/element.h",
+   "failed_hunks": 1
+  },
+  {
+   "file": "third_party/blink/renderer/core/dom/document.cc",
+   "failed_hunks": 1
+  }
+ ],
+ "by_patch": [
+  {
+   "patch": "core/ungoogled-chromium/fix-building-without-safebrowsing.patch",
+   "failed_hunks": 34
+  },
+  {
+   "patch": "core/ungoogled-chromium/remove-unused-preferences-fields.patch",
+   "failed_hunks": 24
+  },
+  {
+   "patch": "core/ungoogled-chromium/fix-building-with-prunned-binaries.patch",
+   "failed_hunks": 21
+  },
+  {
+   "patch": "extra/fingerprint/002-user-agent-fingerprint.patch",
+   "failed_hunks": 4
+  },
+  {
+   "patch": "core/ungoogled-chromium/disable-mei-preload.patch",
+   "failed_hunks": 3
+  },
+  {
+   "patch": "extra/ungoogled-chromium/add-flag-to-reduce-system-info.patch",
+   "failed_hunks": 3
+  },
+  {
+   "patch": "core/inox-patchset/0001-fix-building-without-safebrowsing.patch",
+   "failed_hunks": 2
+  },
+  {
+   "patch": "core/iridium-browser/all-add-trk-prefixes-to-possibly-evil-connections.patch",
+   "failed_hunks": 2
+  },
+  {
+   "patch": "core/ungoogled-chromium/disable-google-host-detection.patch",
+   "failed_hunks": 2
+  },
+  {
+   "patch": "core/ungoogled-chromium/move-js-optimizer-unfamiliar-sites.patch",
+   "failed_hunks": 2
+  },
+  {
+   "patch": "extra/ungoogled-chromium/remove-uneeded-ui.patch",
+   "failed_hunks": 2
+  },
+  {
+   "patch": "extra/ungoogled-chromium/add-flag-for-tabsearch-button.patch",
+   "failed_hunks": 2
+  },
+  {
+   "patch": "extra/ungoogled-chromium/add-flag-to-change-http-accept-header.patch",
+   "failed_hunks": 2
+  },
+  {
+   "patch": "core/ungoogled-chromium/toggle-translation-via-switch.patch",
+   "failed_hunks": 1
+  },
+  {
+   "patch": "core/ungoogled-chromium/disable-fonts-googleapis-references.patch",
+   "failed_hunks": 1
+  },
+  {
+   "patch": "core/ungoogled-chromium/disable-network-time-tracker.patch",
+   "failed_hunks": 1
+  },
+  {
+   "patch": "extra/inox-patchset/0006-modify-default-prefs.patch",
+   "failed_hunks": 1
+  },
+  {
+   "patch": "extra/ungoogled-chromium/add-flag-to-configure-extension-downloading.patch",
+   "failed_hunks": 1
+  },
+  {
+   "patch": "extra/ungoogled-chromium/add-flag-for-search-engine-collection.patch",
+   "failed_hunks": 1
+  },
+  {
+   "patch": "extra/ungoogled-chromium/add-flag-to-hide-crashed-bubble.patch",
+   "failed_hunks": 1
+  },
+  {
+   "patch": "extra/ungoogled-chromium/add-flag-for-omnibox-autocomplete-filtering.patch",
+   "failed_hunks": 1
+  },
+  {
+   "patch": "extra/ungoogled-chromium/add-flag-to-close-window-with-last-tab.patch",
+   "failed_hunks": 1
+  },
+  {
+   "patch": "extra/ungoogled-chromium/add-flag-to-disable-local-history-expiration.patch",
+   "failed_hunks": 1
+  },
+  {
+   "patch": "extra/ungoogled-chromium/add-flag-for-grab-handle.patch",
+   "failed_hunks": 1
+  },
+  {
+   "patch": "extra/ungoogled-chromium/add-flag-to-hide-extensions-menu.patch",
+   "failed_hunks": 1
+  },
+  {
+   "patch": "extra/ungoogled-chromium/add-flags-for-referrer-customization.patch",
+   "failed_hunks": 1
+  },
+  {
+   "patch": "extra/fingerprint/007-shadow-root.patch",
+   "failed_hunks": 1
+  },
+  {
+   "patch": "extra/fingerprint/014-client-rects.patch",
+   "failed_hunks": 1
+  }
+ ]
+}
