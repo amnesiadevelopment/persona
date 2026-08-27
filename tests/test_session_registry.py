@@ -165,14 +165,17 @@ def test_a_corrupt_registry_reads_as_empty(tmp_path):
     honouring garbage could cost the profile entirely.
     """
     path = tmp_path / "s.json"
-    path.write_text("{ this is not json")
+    path.write_text("{ this is not json", encoding="utf-8")
 
     assert SessionRegistry(str(path)).load() == []
 
 
 def test_an_unknown_version_reads_as_empty(tmp_path):
     path = tmp_path / "s.json"
-    path.write_text(json.dumps({"version": 999, "sessions": [{"profile": "a"}]}))
+    path.write_text(
+        json.dumps({"version": 999, "sessions": [{"profile": "a"}]}),
+        encoding="utf-8",
+    )
 
     assert SessionRegistry(str(path)).load() == []
 
@@ -182,7 +185,8 @@ def test_one_corrupt_entry_does_not_discard_the_others(tmp_path):
     path = tmp_path / "s.json"
     good = _record(profile="good").to_json()
     path.write_text(
-        json.dumps({"version": 1, "sessions": [{"profile": None}, good]})
+        json.dumps({"version": 1, "sessions": [{"profile": None}, good]}),
+        encoding="utf-8",
     )
 
     assert [r.profile for r in SessionRegistry(str(path)).load()] == ["good"]

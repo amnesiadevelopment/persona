@@ -299,6 +299,18 @@ class BrowserLauncher:
                     on_stop()
                 return
 
+            # RESERVE IN THE SAME ACQUISITION THAT CHECKED. The check above and
+            # this reservation are ONE atomic step on purpose: releasing the
+            # lock between them lets two concurrent launches of one profile
+            # both read "not running" and both reserve, and the survivor probe
+            # below makes that window wide rather than instruction-sized
+            # because it performs psutil IO. Two browsers on one profile
+            # directory is the precise defect this ticket exists to remove, and
+            # the UI's is_loading flag does not serialise the API and MCP
+            # lanes. Clear any stale abort flag from a prior aborted launch.
+            self._starting.add(profile.name)
+            self._aborting.discard(profile.name)
+
         # THE SAME REFUSAL, FOR A BROWSER WE DID NOT LAUNCH. The check above can
         # only see sessions THIS process started; a browser left behind by a
         # previous persona is in neither dict, which is the whole defect
@@ -311,8 +323,36 @@ class BrowserLauncher:
         # gone or can no longer be established. So a stale record cannot refuse
         # a launch here either — that is the lockout this ticket forbids, and
         # it would be worse in these lanes, which have no card to click.
-        survivor = self.survivor_for(profile.name)
+        #
+        # PROBED OFF-LOCK, HOLDING THE SLOT. survivor_for takes this same
+        # Condition, and it does file/psutil IO; holding the lock across it
+        # would block every other holder behind a probe. The reservation above
+        # is what keeps that safe — the slot is ours for the duration, so
+        # nothing can slip past while we ask.
+        try:
+            survivor = self.survivor_for(profile.name)
+        except Exception:
+            # FAIL OPEN, AND LOUDLY. An unanswerable liveness question must not
+            # refuse a launch (the module's standing rule), but here it must
+            # also not leak the reservation we are holding: a name stuck in
+            # _starting refuses every future launch for the life of the
+            # process, which is the permanent lockout this ticket forbids in
+            # its strongest form.
+            logger.exception(
+                "Could not establish whether %s has a surviving browser; "
+                "allowing the launch rather than refusing on no evidence.",
+                profile.name,
+            )
+            survivor = None
         if survivor is not None:
+            # RELEASE THE SLOT WE RESERVED. notify_all because stop_profile
+            # blocks on this Condition waiting for a spawn-in-flight to leave
+            # _starting; without the wake it would sit out its full timeout on
+            # a launch that never happened.
+            with self._lock:
+                self._starting.discard(profile.name)
+                self._aborting.discard(profile.name)
+                self._lock.notify_all()
             log_callback(
                 f"{profile.name} already has a browser running (pid "
                 f"{survivor.pid}) from a previous persona session — not "
@@ -327,20 +367,18 @@ class BrowserLauncher:
             return
 
         with self._lock:
-            # Reserve the slot BEFORE releasing the lock so a concurrent launch
-            # of this profile can't slip past while spawn_browser() runs. Clear
-            # any stale abort flag from a prior aborted launch of this name.
-            self._starting.add(profile.name)
-            self._aborting.discard(profile.name)
             # A NEW attempt supersedes the previous verdict, so the card reports
             # the most recent one and never a badge the profile has outgrown.
             # Dropped HERE — at the attempt, not at its outcome — because the
             # only honest states are "refused, at this time" and "no verdict
             # yet": leaving the old refusal up while a relaunch is in flight
             # would assert a refusal the product is at that moment disproving.
-            # Placed AFTER the duplicate-launch return above on purpose: a click
-            # that gets refused as a duplicate is not an attempt and must not
-            # erase the verdict from the attempt that did run.
+            # Placed AFTER BOTH refusals above on purpose: a click that gets
+            # refused as a duplicate — or on account of a survivor — is not an
+            # attempt and must not erase the verdict from the attempt that did
+            # run. That is why this stayed here rather than moving up into the
+            # reservation block: the reservation is about exclusion, this is
+            # about what the card is entitled to claim.
             self._last_refusal.pop(profile.name, None)
 
         # THE SAME RULE, ONE VERDICT OVER — the trust verdict is superseded by
