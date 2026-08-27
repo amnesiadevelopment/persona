@@ -155,6 +155,36 @@ BAR_TOLERANCE = 1e-9
 # It is a false-POSITIVE rate: with four arms checked daily, a healthy fleet
 # still trips roughly one arm every five runs by chance alone, which is the
 # price of a test that can also go red for a real reason.
+#
+# ⚠️ WHY PER-ARM AND NOT A MULTIPLICITY CORRECTION (PS-191 review). Four arms
+# at 0.05 is an 18.5% family-wise false-positive rate, and this ticket's own
+# motivation is that "a gate that flags three arms out of four teaches its
+# readers to ignore it" — so the tension is real and was measured rather than
+# argued. Bonferroni (α/4 = 0.0125) was the obvious candidate:
+#
+#   * It changes NOTHING today. All eight of PS-185's committed cells return
+#     the identical verdict under both alphas — the two true signals sit at
+#     p=0.000 and the six healthy cells at p>=0.064.
+#   * It COSTS REAL DETECTION. At pool=8/N=24 an engine collapsed to 5 of its
+#     8 identities scores p=0.042: caught at 0.05, MISSED at 0.0125. That is a
+#     37% narrowing of the identity space going unreported.
+#
+# So the correction buys no accuracy on any reading we have and pays for it in
+# power, against a threat model where a partial collapse is exactly what an
+# engine regression looks like. The multiplicity concern is also weaker here
+# than the arm count suggests: the four arms are judged and REPORTED
+# INDEPENDENTLY, one verdict per arm, so an operator reads "linux is narrow",
+# never "the fleet failed" — there is no single family-wise claim being made
+# for a correction to protect.
+#
+# The alarm-fatigue problem the reviewer rightly raises is real, but its cause
+# was the BROKEN COMPARISON, not this threshold: the old gate flagged three of
+# four arms EVERY run, deterministically. This one flags a healthy arm
+# occasionally and at random, which is a different and much smaller problem.
+# If fatigue persists once this ships, the honest fix is requiring two
+# consecutive reds before alarming (which cuts the rate to 0.25% without
+# touching power at all), NOT a threshold nudge — see the PS-191 constraint
+# that any correction be statistical rather than a tolerance widened to taste.
 ALPHA = 0.05
 
 # Beyond this much work the exact null distribution is not enumerated and a
@@ -403,12 +433,31 @@ def uniform_collision_p_value(values: "list[str]", pool_size: int) -> "float | N
     if n <= 0:
         return None
 
-    # More distinct identities than our pool holds: the engine is drawing from
-    # something WIDER than the bar assumes. Nothing to flag, and the null model
-    # (n draws over k cells) cannot represent the observation anyway.
-    if len(counts) > pool_size:
-        return 1.0
-
+    # ⚠️ THERE IS DELIBERATELY NO `len(counts) > pool_size` SHORT-CIRCUIT HERE.
+    # One was tried and it was a true-signal regression (PS-191 review). It
+    # returned the maximally-green p-value whenever the observation held more
+    # distinct identities than our pool, which is a DISTINCT-COUNT pass — the
+    # exact fallacy this module's header refuses (PS-161: "does it vary?" is
+    # the wrong question; skew is what matters). Measured at pool=5, N=24 —
+    # the live windows cell, which has 9 distinct identities and so took that
+    # branch on every real run:
+    #
+    #     [19,1,1,1,1,1]  63.5% collision  ->  p=1.0  OK      (old gate: TOO_NARROW)
+    #     [16,2,2,2,1,1]  46.9% collision  ->  p=1.0  OK      (old gate: TOO_NARROW)
+    #
+    # 79% of the fleet handed one card, passing silently, on a gate built to
+    # catch exactly that. It also made the verdict NON-MONOTONE in the very
+    # statistic it polices: [8,8,8] at 33.3% flagged while 63.5% passed.
+    #
+    # The case that branch existed to protect needs no special case, because
+    # the arithmetic already reaches it HONESTLY: a genuinely wider-than-our-
+    # pool draw has a sum-of-squares below anything the null produces, so it
+    # scores p=1.0 on its own merits. Verified on PS-185's real windows cell
+    # ([5,4,4,3,2,2,2,1,1], 9 distinct vs pool 5): p=1.0 with or without the
+    # branch, and not one of the eight committed fixture cells moves.
+    #
+    # If an explicit branch is ever wanted here it must key on the STATISTIC
+    # (observed Σcᵢ² below the null's support), NEVER on len(counts).
     observed_sumsq = sum(c * c for c in counts)
 
     if _exact_work_estimate(n, pool_size) <= EXACT_P_VALUE_MAX_WORK:
