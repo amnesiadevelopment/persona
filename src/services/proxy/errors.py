@@ -36,8 +36,13 @@ class GeographyUnknownError(RuntimeError):
 
 class TimezoneUnderivableError(GeographyUnknownError):
     """A profile's proxy carries a COUNTRY, but no timezone can be derived for
-    it — the check recorded no usable zone and the country is not one of the
-    ~29 rows ``_COUNTRY_TZ`` knows.
+    it — the check recorded no usable zone and the country has no row in
+    ``_COUNTRY_TZ``.
+
+    Deliberately no row COUNT here. The table grows, and a number written into
+    prose is wrong the first time someone adds a row — which is precisely what
+    happened to the sentence this replaces. ``len(_COUNTRY_TZ)`` is one call
+    away and is always right; a figure quoted here is only ever a snapshot.
 
     Distinct from both siblings in CAUSE, not in consequence. The parent means
     "we never learned where this exits"; ``GeographyDisprovenError`` means "we

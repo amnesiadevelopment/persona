@@ -309,8 +309,11 @@ def _host_display_scale() -> float:
 def _proxy_timezone(proxy) -> str:
     """The timezone for a proxied profile — or a REFUSAL when there isn't one.
 
-    Two branches answer honestly: the zone the check recorded, else the zone
-    implied by the checked country. Both describe the EXIT, which is the only
+    Two branches try to answer: the zone the check recorded, else the zone
+    implied by the checked country. The first always answers; the second answers
+    only when the country has a ``_COUNTRY_TZ`` row, and REFUSES otherwise
+    rather than substituting ``UTC`` (see ``_timezone_for`` above, and
+    ``TimezoneUnderivableError``). Both describe the EXIT, which is the only
     location a proxied persona may claim — but only while the product still
     believes them. A stored zone whose most recent check FAILED is geography the
     product's own latest evidence disproves, so it is refused BEFORE either
@@ -329,9 +332,19 @@ def _proxy_timezone(proxy) -> str:
     no caller can ship it to an engine by accident. A persona that will not
     launch has disclosed nothing.
 
-    The refusal is escapable and the remedy is one click: check the proxy, which
-    writes country_code + timezone (ProxyStore.mark_checked), and the profile
-    then launches through the first or second branch declaring the exit's zone.
+    That refusal is escapable and the remedy is one click: check the proxy,
+    which writes country_code + timezone (ProxyStore.mark_checked), and the
+    profile then launches through the first branch declaring the exit's zone.
+
+    ⚠️ THE RE-CHECK REMEDY IS SCOPED TO THAT CASE AND DOES NOT GENERALISE. It
+    holds for the no-geography raise below and for the disproven guard above,
+    and it does NOT hold for ``TimezoneUnderivableError`` from branch 2: there
+    the check may already have PASSED and will keep passing, because what is
+    missing is a ``_COUNTRY_TZ`` row rather than a check result. A re-check
+    writes the country, reaches branch 2 again and refuses again — the remedy
+    LOOPS. That refusal names the country and its remedy is to add the row; see
+    ``TimezoneUnderivableError``, which states this, and ``refusal.py``, which
+    gives it a label that is deliberately not a re-check prompt.
 
     WHICH freshness states refuse, and why only these:
 
@@ -361,6 +374,11 @@ def _proxy_timezone(proxy) -> str:
         GeographyDisprovenError: the last recorded check FAILED, so the stored
             geography is disproven. A subclass of GeographyUnknownError, so
             every existing fail-closed handler catches it unchanged.
+        TimezoneUnderivableError: the proxy carries a COUNTRY but the check
+            recorded no usable zone and the country has no ``_COUNTRY_TZ`` row
+            — raised THROUGH this function from branch 2, via
+            ``_timezone_for``. Also a subclass of GeographyUnknownError. Alone
+            among the three, its remedy is NOT a re-check (see above).
         GeographyUnknownError: the proxy carries neither timezone nor country.
     """
     # BEFORE the branches, not after: branch 1 would otherwise keep returning a

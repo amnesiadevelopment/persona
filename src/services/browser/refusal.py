@@ -73,7 +73,17 @@ class Refusal:
     """One refused launch, as the profile's own fact.
 
     ``kind``    stable identifier for tests and callers ("proxy_unresolved",
-                "geography_disproven", "geography_unknown"). Never rendered.
+                "geography_disproven", "geography_unknown",
+                "timezone_underivable"). Never rendered.
+
+                NOT internal: this goes out over the wire as the 409 body
+                (routes/browser.py) and out of the MCP tool (mcp_server.py),
+                both of which document it as the stable value to branch on. So
+                a caller's switch is written against THIS enumeration — adding a
+                refusal without extending it leaves them branching on a list
+                that is short by the case they are most likely to hit. Every
+                value here is produced by exactly one arm of
+                ``classify_refusal`` below; keep the two in step.
     ``label``   the short scanning label (see above).
     ``detail``  the settled, full operator-facing sentence — the exception's own
                 message, passed through rather than restated.
