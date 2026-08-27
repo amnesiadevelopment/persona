@@ -1,0 +1,369 @@
+# PS-218 — TRIAL BUILD OF OUR OWN ENGINE, ON THE OWNER'S SELF-HOSTED RUNNER.
+#
+# This workflow exists to produce ONE number that no existing measurement has:
+# whether ungoogled-chromium plus our 16 fingerprint patches COMPILES. Every
+# figure the investigation (5c087078) produced measures whether a patch applies
+# as TEXT. A patch that lands with nothing worse than line-offset drift can
+# still break the build when a function it calls changed signature, and that is
+# historically where rebase work actually goes.
+#
+# NOTHING HERE SHIPS. The output is a report, a binary that exists to be
+# examined, and — if the compiles succeed — one patch. No release, no change to
+# what users install, no switch of substrate.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# WHY THIS FILE IS SEPARATE FROM ci.yml, AND MUST STAY SEPARATE
+# ─────────────────────────────────────────────────────────────────────────────
+# `ci.yml` gates every other ticket in this repo. It runs on hosted runners.
+# This workflow runs on the OWNER'S PERSONAL WORKSTATION. If that machine is
+# asleep, rebooted, or simply off, a job targeting it queues forever — and a
+# queued job that never starts is indistinguishable from one that was never
+# triggered. Folding this into ci.yml would mean the owner closing his laptop
+# could block every merge in the project. It is a separate file so that an
+# offline runner costs a pause here and nothing anywhere else.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# ⚠️ workflow_dispatch ONLY. THIS IS THE CONSTRAINT THAT PROTECTS HIS MACHINE.
+# ─────────────────────────────────────────────────────────────────────────────
+# A self-hosted runner picks up ANY workflow whose labels it matches. A build
+# triggered on push would start a multi-hour Chromium compile on his personal
+# workstation on every commit, pegging 32 cores for hours at a time, repeatedly,
+# with nobody asking. There is deliberately no `push:` and no `pull_request:`
+# trigger below, and none may be added. If a branch trigger is ever wanted it
+# must name ONE branch and must never be `main` or pull requests.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# THE RUNNER LABEL IS `persona-build`.
+# ─────────────────────────────────────────────────────────────────────────────
+# An earlier comment on PS-218 recommended `persona-build-linux`; the owner
+# registered under `persona-build` and a later comment corrected it. The
+# correction is authoritative and is what is written below. Using the wrong
+# label would queue against a label no runner carries and wait forever WITH NO
+# ERROR — the single most confusing failure mode available here.
+#
+# Registered runner: `persona-wsl-builder` on amnesiadevelopment/persona,
+# labels `self-hosted, Linux, X64, persona-build`, WSL2 Ubuntu 26.04,
+# 32 threads / 54 GB RAM / 16 GB swap, Docker 29.7.2.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# THE ORDER IS THE WHOLE DESIGN — AND IT IS ENFORCED BY `needs:`, NOT BY PROSE
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. Build the UNMODIFIED tree first. This is the INSTRUMENT CHECK. A compile
+#    failure on a patched tree has two possible causes — our patches, or an
+#    environment that cannot build Chromium at all — and one run cannot separate
+#    them. If the unmodified tree fails, the finding is about the BUILD
+#    ENVIRONMENT and says nothing whatsoever about our patches.
+#
+#    This project has been bitten by exactly this. During PS-192 a reviewer
+#    measured the product CLEAN in a container where `psutil` was missing, while
+#    `ps` showed three live processes — a green produced by a broken instrument,
+#    on the ticket about a defect that hides behind exactly that green.
+#
+#    `patched` declares `needs: unmodified`, so the patched build CANNOT run
+#    ahead of its own control. That ordering is a property of the graph rather
+#    than of anyone remembering to honour it.
+#
+# 2. Build WITH our 16 fingerprint patches, and record what breaks at COMPILE
+#    time. Patch application and compilation are SEPARATE RESULTS and are
+#    reported separately — see the `prepare` / `compile` step split below, which
+#    is what makes that separation structural rather than editorial. Conflating
+#    them is the error this ticket exists to correct.
+#
+# 3. Extend the GPU patch to the ServiceWorker realm — only once 1 and 2 have
+#    produced a working binary. That step is NOT in this workflow; it is a patch
+#    plus a verification harness, and it does not happen if there is no binary.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# DO NOT TUNE THIS TO MAKE THE BUILD GO GREEN
+# ─────────────────────────────────────────────────────────────────────────────
+# If our patches do not compile, that IS the answer being paid for. A build made
+# to succeed by quietly dropping a patch measures nothing. `continue-on-error`
+# is set on the compile steps NOT to hide failure but so that the diagnostics
+# and logs are still collected and uploaded when it fails — the failure is then
+# reported explicitly in the manifest and re-raised at the end of the job.
+#
+# A BUILD THAT FAILS IS A SUCCESSFUL OUTCOME FOR THIS TICKET. So is one that
+# succeeds. What is unacceptable is a report that cannot distinguish "it
+# compiled" from "it was never compiled", or that cannot say which of the two
+# trees a failure belongs to. Every artifact below is named for its tree.
+#
+name: engine-trial-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      ungoogled_tag:
+        description: >-
+          ungoogled-chromium-portablelinux tag to build. PICK BY WHETHER ITS
+          SOURCE EXISTS, NOT BY ITS NUMBER — fingerprint-chromium's
+          148.0.7778.215 tag contains FOUR files (two READMEs, a licence and an
+          image) with no source tree at all, while every other tag carries a
+          real one. 144.0.7559.132-1 is the newest portablelinux tag whose
+          fingerprint-chromium counterpart (144.0.7559.132) has a real tree.
+        required: true
+        default: "144.0.7559.132-1"
+      trees:
+        description: >-
+          Which trees to build. "both" runs the instrument check and then the
+          patched tree. "unmodified" runs the instrument check alone — use it to
+          establish the environment before spending hours on a patched build.
+          "patched" is deliberately NOT offered on its own: a patched build
+          without its control cannot be attributed.
+        required: true
+        default: "both"
+        type: choice
+        options:
+          - both
+          - unmodified
+      ninja_jobs:
+        description: >-
+          Ninja parallelism. LEAVE EMPTY for the upstream default (unrestricted,
+          = one job per core). ungoogled's FAQ names exhausted memory at LINK
+          time as the common build crash and prescribes cutting this before
+          adding swap. 54 GB with 16 GB swap should hold. IF YOU SET THIS, THE
+          VALUE IS RECORDED IN THE MANIFEST AND STAMPED ON THE ARTIFACT NAME —
+          one of this ticket's deliverables is a wall-clock figure tested
+          against 130 core-hours ÷ core count (~4–5.5 h here), and an
+          UNRECORDED reduction makes that figure wrong in a way no reader can
+          detect. That is why this is an input rather than a hidden default.
+        required: false
+        default: ""
+
+# READ-only, matching the posture ci.yml and release.yml document in place.
+# These jobs fetch and execute untrusted third-party code (the Chromium source
+# tarball, upstream build scripts, a toolchain downloaded at build time) and
+# must not hold a write-capable token that code could exfiltrate. Nothing here
+# writes to the repo, so nothing needs widening.
+permissions:
+  contents: read
+
+# The owner has ONE machine. Two concurrent Chromium builds on it would contend
+# for the very memory that ungoogled's FAQ names as the common crash, and would
+# make both wall-clock figures meaningless. Queue rather than cancel: a build
+# that has already burned three hours must not be discarded because someone
+# pressed the button again.
+concurrency:
+  group: engine-trial-build
+  cancel-in-progress: false
+
+env:
+  # The fingerprint-chromium tag our 16 patches were vendored from. Recorded
+  # here so the manifest can state the exact provenance of the patch set rather
+  # than leaving a reader to guess which upstream revision they came from.
+  FINGERPRINT_TAG: "144.0.7559.132"
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # STEP 1 — THE INSTRUMENT CHECK. Unmodified ungoogled-chromium, nothing of
+  # ours anywhere near it. If this fails, the finding is about the environment.
+  # ───────────────────────────────────────────────────────────────────────────
+  unmodified:
+    name: "1. unmodified tree (instrument check)"
+    runs-on: [self-hosted, persona-build]
+    # Two builds of ~4–5.5 h each are expected; the upstream CI entrypoint
+    # itself carries a 5 h ninja timeout. This ceiling is deliberately well
+    # above the prediction so that a SLOW build reports a slow wall-clock —
+    # which is a finding — instead of being killed and reported as a failure,
+    # which would not be.
+    timeout-minutes: 900
+    outputs:
+      compiled: ${{ steps.compile.outputs.compiled }}
+    steps:
+      - name: Check out persona (for the recording scripts)
+        uses: actions/checkout@v4
+        with:
+          path: persona
+
+      - name: Check out ungoogled-chromium-portablelinux
+        uses: actions/checkout@v4
+        with:
+          repository: ungoogled-software/ungoogled-chromium-portablelinux
+          ref: ${{ inputs.ungoogled_tag }}
+          # The `ungoogled-chromium` submodule carries utils/, downloads.ini,
+          # the 111 de-googling patches and flags.gn. Without it `shared.sh`
+          # cannot fetch or patch anything at all.
+          submodules: recursive
+          path: ucpl
+
+      - name: Record the build environment as the CONTAINER sees it
+        id: env
+        run: persona/scripts/ps218_record_env.sh unmodified
+        env:
+          UCPL_DIR: ucpl
+
+      - name: Apply patches (de-googling only) — PATCH APPLICATION, not compile
+        id: prepare
+        continue-on-error: true
+        run: persona/scripts/ps218_build.sh prepare unmodified
+        env:
+          UCPL_DIR: ucpl
+          NINJA_JOBS: ${{ inputs.ninja_jobs }}
+
+      - name: Compile — THE SEPARATE RESULT
+        id: compile
+        continue-on-error: true
+        run: persona/scripts/ps218_build.sh compile unmodified
+        env:
+          UCPL_DIR: ucpl
+          NINJA_JOBS: ${{ inputs.ninja_jobs }}
+
+      - name: Write the manifest
+        if: always()
+        run: persona/scripts/ps218_manifest.sh unmodified
+        env:
+          UCPL_DIR: ucpl
+          UNGOOGLED_TAG: ${{ inputs.ungoogled_tag }}
+          NINJA_JOBS: ${{ inputs.ninja_jobs }}
+          PREPARE_RESULT: ${{ steps.prepare.outcome }}
+          COMPILE_RESULT: ${{ steps.compile.outcome }}
+
+      # Logs and the manifest are uploaded WHETHER OR NOT the build succeeded.
+      # A failed build is a result this ticket is paying for, and a result whose
+      # evidence was thrown away is not a result.
+      - name: Upload the record (unmodified)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ps218-unmodified-${{ inputs.ungoogled_tag }}
+          path: |
+            record/
+          if-no-files-found: warn
+          retention-days: 30
+
+      # The binary is uploaded separately: it is large, and a reader who only
+      # wants to know WHETHER it compiled should not have to download it.
+      - name: Upload the binary (unmodified, only if it exists)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ps218-unmodified-binary-${{ inputs.ungoogled_tag }}
+          path: |
+            ucpl/build/src/out/Default/chrome
+            ucpl/build/src/out/Default/chromedriver
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # Re-raise AFTER the evidence is safely uploaded. `continue-on-error`
+      # above collects the diagnostics; this makes the job's verdict honest.
+      - name: Re-raise a failure now that the evidence is collected
+        if: steps.prepare.outcome == 'failure' || steps.compile.outcome == 'failure'
+        run: |
+          echo "::error::UNMODIFIED tree did not build (prepare=${{ steps.prepare.outcome }}, compile=${{ steps.compile.outcome }})."
+          echo "::error::Per PS-218 this is a finding about the BUILD ENVIRONMENT and says NOTHING about our 16 patches."
+          echo "::error::The patched build is intentionally skipped — attributing a patched failure without a working control is exactly the error this ticket exists to correct."
+          exit 1
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # STEP 2 — THE SUBJECT. Same tag, same container, same script; the ONLY
+  # difference is our 16 patches. `needs: unmodified` is what guarantees the
+  # control has already produced its result.
+  # ───────────────────────────────────────────────────────────────────────────
+  patched:
+    name: "2. patched tree (our 16 fingerprint patches)"
+    needs: unmodified
+    if: inputs.trees == 'both'
+    runs-on: [self-hosted, persona-build]
+    timeout-minutes: 900
+    steps:
+      - name: Check out persona (patches + recording scripts)
+        uses: actions/checkout@v4
+        with:
+          path: persona
+
+      - name: Check out ungoogled-chromium-portablelinux
+        uses: actions/checkout@v4
+        with:
+          repository: ungoogled-software/ungoogled-chromium-portablelinux
+          ref: ${{ inputs.ungoogled_tag }}
+          submodules: recursive
+          path: ucpl
+
+      - name: Record the build environment as the CONTAINER sees it
+        run: persona/scripts/ps218_record_env.sh patched
+        env:
+          UCPL_DIR: ucpl
+
+      # Our 16 go in through ungoogled's OWN mechanism. `shared.sh`'s
+      # apply_patches() already calls
+      #   utils/patches.py apply <src> <ungoogled/patches> <root/patches>
+      # — it takes MULTIPLE patch directories by design. So our layer is an
+      # ADDITION to the existing pipeline rather than a fork of the tooling,
+      # which is how fingerprint-chromium composes them today.
+      - name: Stage our 16 fingerprint patches into ungoogled's own series
+        run: persona/scripts/ps218_stage_patches.sh
+        env:
+          UCPL_DIR: ucpl
+          PATCH_DIR: persona/engine/patches/fingerprint
+
+      # THE FIRST OF THE TWO RESULTS. Whether our patches APPLY as text. This is
+      # the quantity every existing figure already measures, captured here so it
+      # can be compared against — and distinguished from — the compile below.
+      - name: Apply patches (de-googling + OUR 16) — PATCH APPLICATION
+        id: prepare
+        continue-on-error: true
+        run: persona/scripts/ps218_build.sh prepare patched
+        env:
+          UCPL_DIR: ucpl
+          NINJA_JOBS: ${{ inputs.ninja_jobs }}
+
+      # THE SECOND RESULT, AND THE ONE THIS TICKET EXISTS TO PRODUCE. Whether
+      # the tree our patches produced actually COMPILES. Reached only when the
+      # patches applied — a compile attempt on a half-patched tree would
+      # manufacture failures belonging to neither result.
+      - name: Compile — THE NUMBER THIS TICKET EXISTS TO PRODUCE
+        id: compile
+        if: steps.prepare.outcome == 'success'
+        continue-on-error: true
+        run: persona/scripts/ps218_build.sh compile patched
+        env:
+          UCPL_DIR: ucpl
+          NINJA_JOBS: ${{ inputs.ninja_jobs }}
+
+      # Attribute every compile error to the patch that touched the file, and
+      # diff against the unmodified tree's errors so a failure the CONTROL also
+      # had is never billed to one of our patches.
+      - name: Attribute compile failures to patches
+        if: always()
+        run: persona/scripts/ps218_attribute.sh
+        env:
+          UCPL_DIR: ucpl
+          PATCH_DIR: persona/engine/patches/fingerprint
+
+      - name: Write the manifest
+        if: always()
+        run: persona/scripts/ps218_manifest.sh patched
+        env:
+          UCPL_DIR: ucpl
+          UNGOOGLED_TAG: ${{ inputs.ungoogled_tag }}
+          NINJA_JOBS: ${{ inputs.ninja_jobs }}
+          PREPARE_RESULT: ${{ steps.prepare.outcome }}
+          COMPILE_RESULT: ${{ steps.compile.outcome }}
+
+      - name: Upload the record (patched)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ps218-patched-${{ inputs.ungoogled_tag }}
+          path: |
+            record/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload the binary (patched, only if it exists)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ps218-patched-binary-${{ inputs.ungoogled_tag }}
+          path: |
+            ucpl/build/src/out/Default/chrome
+            ucpl/build/src/out/Default/chromedriver
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Re-raise a failure now that the evidence is collected
+        if: steps.prepare.outcome == 'failure' || steps.compile.outcome == 'failure'
+        run: |
+          echo "::error::PATCHED tree did not build (prepare=${{ steps.prepare.outcome }}, compile=${{ steps.compile.outcome }})."
+          echo "::error::The unmodified control DID build, so this failure is attributable to our 16 patches. See record/attribution.txt for the per-patch breakdown."
+          echo "::error::Per PS-218 this is a SUCCESSFUL OUTCOME for the ticket: it is the number the ticket exists to produce. Do NOT drop a patch to make this go green."
+          exit 1
