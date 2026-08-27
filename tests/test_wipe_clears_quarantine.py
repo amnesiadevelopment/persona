@@ -42,6 +42,13 @@ quarantine rename has already moved each one aside — `exists()` then reads Fal
 for a reason that has nothing to do with the wipe. The control below therefore
 rests on the profile data dir and the live trash, both of which the wipe
 demonstrably does destroy.
+
+THE HOME PATH IS DATA, NOT A PATTERN. PERSONA_HOME is operator-overridable, and
+glob interprets metacharacters across the WHOLE pattern, directory portion
+included — so an unescaped home containing `[` yields a pattern matching
+nothing, and the sweep becomes a SILENT no-op: no exception, no empty-result
+branch, the wipe reports success while the credential-bearing copy survives.
+Two tests below drive that case under a bracketed home, bound to bytes on disk.
 """
 import os
 import pathlib
@@ -62,11 +69,10 @@ CERT_SECRET = "p12-bundle-passw0rd"
 SECRETS = {"proxy": PROXY_SECRET, "ssh": SSH_SECRET, "cert": CERT_SECRET}
 
 
-@pytest.fixture
-def home(tmp_path, monkeypatch):
-    """The shipped layout, pointed at a tmp dir: every store lives in
-    PERSONA_HOME, exactly as it does in production, so the quarantine files land
-    in the directory the wipe is standing in.
+def _point_the_layout_at(root, monkeypatch):
+    """Point the shipped layout at `root`: every store lives in PERSONA_HOME,
+    exactly as it does in production, so the quarantine files land in the
+    directory the wipe is standing in.
 
     PERSONA_HOME is read from the config MODULE at call time by the wipe, so it
     is patched there; the stores get env overrides pointing INSIDE that same
@@ -76,18 +82,37 @@ def home(tmp_path, monkeypatch):
     import src.services.profile.manager as mod
     import src.services.ssh.store as ssh_mod
 
-    monkeypatch.setattr(cfg, "PERSONA_HOME", str(tmp_path), raising=False)
+    root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(cfg, "PERSONA_HOME", str(root), raising=False)
     # ssh/store.py binds PERSONA_HOME at import; cert/trash resolve it per call.
-    monkeypatch.setattr(ssh_mod, "PERSONA_HOME", str(tmp_path), raising=False)
+    monkeypatch.setattr(ssh_mod, "PERSONA_HOME", str(root), raising=False)
     for m in (cfg, mod):
         monkeypatch.setattr(
-            m, "PROFILES_FILE", str(tmp_path / "profiles.json"), raising=False
+            m, "PROFILES_FILE", str(root / "profiles.json"), raising=False
         )
-        monkeypatch.setattr(m, "DATA_DIR", str(tmp_path / "data"), raising=False)
-    monkeypatch.setenv("PERSONA_TRASH_FILE", str(tmp_path / "trash.json"))
-    monkeypatch.setenv("PERSONA_SSH_HOSTS_FILE", str(tmp_path / "ssh_hosts.json"))
-    monkeypatch.setenv("PERSONA_CERTS_FILE", str(tmp_path / "certificates.json"))
-    return tmp_path
+        monkeypatch.setattr(m, "DATA_DIR", str(root / "data"), raising=False)
+    monkeypatch.setenv("PERSONA_TRASH_FILE", str(root / "trash.json"))
+    monkeypatch.setenv("PERSONA_SSH_HOSTS_FILE", str(root / "ssh_hosts.json"))
+    monkeypatch.setenv("PERSONA_CERTS_FILE", str(root / "certificates.json"))
+    return root
+
+
+@pytest.fixture
+def home(tmp_path, monkeypatch):
+    """The ordinary case: a home whose path holds no glob metacharacters."""
+    return _point_the_layout_at(tmp_path, monkeypatch)
+
+
+@pytest.fixture
+def bracketed_home(tmp_path, monkeypatch):
+    """The SAME layout under a home whose directory name contains `[`.
+
+    PERSONA_HOME is operator-overridable (config.py, "e.g. for a portable
+    layout"), and glob interprets metacharacters across the WHOLE pattern —
+    directory portion included. `[` and `]` are legal on both POSIX and Windows
+    (unlike `*` and `?`, which Windows forbids), and a user-named portable/USB
+    directory is exactly where an overridden home comes from."""
+    return _point_the_layout_at(tmp_path / "Persona[1] portable", monkeypatch)
 
 
 def _manager(home) -> ProfileManager:
@@ -267,6 +292,67 @@ def test_the_trash_quarantine_does_not_survive_the_wipe(home):
 
     assert list(pathlib.Path(home).glob("trash.json.corrupt-*")) == []
     # CONTROL: the live trash is purged by the same wipe.
+    live = trash_path.read_text(errors="replace") if trash_path.exists() else ""
+    assert PROXY_SECRET not in live
+
+
+# --- the home path is data, not a pattern ---
+
+
+def test_a_home_whose_name_contains_a_bracket_is_still_swept(bracketed_home):
+    """The sweep must treat PERSONA_HOME as a PATH, not as a glob pattern.
+
+    glob interprets metacharacters across the whole pattern, so joining an
+    unescaped home produces `/tmp/.../Persona[1] portable/*.corrupt-*`, in which
+    `[1]` is a character class matching the single character `1` — a directory
+    that does not exist. glob.glob then returns [], the loop body never runs, and
+    the wipe completes and reports success: no exception, no empty-result branch,
+    no signal anywhere that the sweep did nothing. That silent, safe-looking
+    failure is worse than a crash, and it re-breaks the exact claim this slice
+    exists to restore.
+
+    Bound to BYTES ON DISK, so it falsifies cleanly: drop the glob.escape and
+    this goes RED with the credential still readable in the home."""
+    _quarantine_the_stores(bracketed_home)
+    assert _quarantine_files(bracketed_home), "premise: quarantine never fired"
+
+    _manager(bracketed_home).wipe_all_profiles()
+
+    survivors = _quarantine_files(bracketed_home)
+    assert survivors == [], (
+        "the sweep no-opped on a home containing a glob metacharacter; "
+        f"quarantined credential copies survived: {[p.name for p in survivors]}"
+    )
+    assert _surviving_secrets(bracketed_home) == {}
+
+
+def test_the_trash_quarantine_does_not_survive_a_wipe_from_a_bracketed_home(
+    bracketed_home,
+):
+    """The same failure driven through the sharper instance: a single
+    trash.json.corrupt-<ts> is a second copy of all three credential kinds at
+    once. This is the case that was measured still shipping under a bracketed
+    home, so it is pinned here rather than left to the aggregate test above."""
+    trash = TrashStore()
+    trash.add(
+        kind="proxy",
+        name="p1",
+        payload={"name": "p1", "url": f"socks5://user:{PROXY_SECRET}@1.2.3.4:1080"},
+    )
+    trash_path = bracketed_home / "trash.json"
+    assert PROXY_SECRET in trash_path.read_text(), "trash never held the credential"
+
+    _tear(trash_path)
+    TrashStore()  # loading the torn file quarantines it
+
+    quarantined = list(pathlib.Path(bracketed_home).glob("trash.json.corrupt-*"))
+    assert quarantined, "trash quarantine never fired"
+    assert PROXY_SECRET in quarantined[0].read_text(errors="replace")
+
+    _manager(bracketed_home).wipe_all_profiles()
+
+    assert list(pathlib.Path(bracketed_home).glob("trash.json.corrupt-*")) == []
+    # CONTROL: the live trash is purged by the same wipe, in the same home.
     live = trash_path.read_text(errors="replace") if trash_path.exists() else ""
     assert PROXY_SECRET not in live
 

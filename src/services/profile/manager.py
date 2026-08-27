@@ -1270,7 +1270,18 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
             # _clear_logs_for_wipe resolves LOG_DIR — the specs monkeypatch it.
             from ...core import config
 
-            for path in glob.glob(os.path.join(config.PERSONA_HOME, "*.corrupt-*")):
+            # glob.escape ONLY the directory half. glob interprets
+            # metacharacters across the WHOLE pattern, including the directory
+            # portion, and PERSONA_HOME is operator-overridable (config.py:15-16,
+            # "e.g. for a portable layout") — a home whose name contains `[`
+            # would produce a pattern matching nothing, and the sweep would be a
+            # SILENT no-op: no exception, no empty-result branch, the wipe
+            # reports success while the credential-bearing copy survives. `[` and
+            # `]` are legal on both POSIX and Windows, and user-named portable
+            # directories are exactly where an overridden home comes from.
+            # The "*.corrupt-*" half must keep its metacharacters.
+            pattern = os.path.join(glob.escape(config.PERSONA_HOME), "*.corrupt-*")
+            for path in glob.glob(pattern):
                 try:
                     os.remove(path)
                 except OSError:
