@@ -3,6 +3,7 @@ from typing import Protocol
 
 from ..models.profile import Profile
 from ..services.browser.refusal import Refusal
+from ..services.browser.session_registry import SessionRecord
 from ..services.profile.pool_assignment import POOL_UNCHANGED, PoolDirective
 from ..services.profile.proxy_assignment import PROXY_UNCHANGED, ProxyDirective
 
@@ -172,6 +173,25 @@ class IBrowserLauncher(Protocol):
     def last_refusal(self, profile_name: str) -> "Refusal | None": ...
 
     def forget_refusal(self, profile_name: str) -> None: ...
+
+    # The SURVIVOR surface (PS-223): browsers a PREVIOUS persona launched and
+    # did not get to tear down. Declared here because every one of these is
+    # reached through a protocol-typed reference — ui/app.py holds
+    # `self.bl: IBrowserLauncher` and calls scan_survivors() at startup, and the
+    # launch/close paths call survivor_for/close_survivor/forget_survivor — so
+    # by this file's own stated test (is it reached through the protocol?) they
+    # belong on it.
+    def scan_survivors(
+        self,
+    ) -> "tuple[list[SessionRecord], list[SessionRecord]]": ...
+
+    def survivors(self) -> "list[SessionRecord]": ...
+
+    def survivor_for(self, profile_name: str) -> "SessionRecord | None": ...
+
+    def forget_survivor(self, profile_name: str) -> None: ...
+
+    def close_survivor(self, profile_name: str) -> bool: ...
 
 
 class IProxyService(Protocol):
