@@ -1951,12 +1951,18 @@ def _import_mtls_ca(profile_dir: str, ca_path) -> bool:
         if not os.path.isfile(os.path.join(profile_dir, "cert9.db")):
             subprocess.run(
                 [tool, "-N", "-d", db, "-f", pwfile],
+                # PS-211: `db` is f"sql:{profile_dir}", so certutil echoes a
+                # path under the profile directory back on stderr — the string
+                # logged below. Name the encoding rather than inheriting the
+                # parent's locale codec (cp1252 on Windows).
                 env=env, capture_output=True, text=True, timeout=30,
+                encoding="utf-8", errors="replace",
             )
         r = subprocess.run(
             [tool, "-A", "-n", "persona-mtls-terminator", "-t", "CT,C,C",
              "-i", str(ca_path), "-d", db, "-f", pwfile],
             env=env, capture_output=True, text=True, timeout=30,
+            encoding="utf-8", errors="replace",
         )
     except Exception as e:
         logger.exception("certutil failed to run: %s", e)
@@ -2803,7 +2809,19 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     if not in_thread and _platform.IS_LINUX:
         scrub_current_process_environ()
 
-    out = os.fdopen(write_fd, "w", buffering=1)
+    # PS-211: the WRITE end of the child->parent status pipe. `os.fdopen`
+    # defaults to TEXT mode, so without an encoding it encodes under the
+    # locale codec — cp1252 on Windows. emit() carries LAUNCH_FAILED lines
+    # built from profile paths and engine error strings, so a non-ASCII byte
+    # genuinely reaches this stream.
+    #
+    # ⚠️ PAIRED INVARIANT — this is one half of a pipe whose other half is
+    # `self.stdout = os.fdopen(r, ...)` in _ForkedChild.__init__. Both ends
+    # previously named nothing and therefore AGREED (same process, same
+    # locale). Pinning ONE end would convert that agreement into a
+    # disagreement and CREATE the defect this ticket removes. The two must be
+    # changed together and must name the SAME codec; they do.
+    out = os.fdopen(write_fd, "w", buffering=1, encoding="utf-8", errors="replace")
 
     def emit(msg: str) -> None:
         try:
@@ -3827,7 +3845,15 @@ def _descendant_pids(root: int):
         nxt = []
         for p in frontier:
             try:
-                out = subprocess.check_output(["pgrep", "-P", str(p)], text=True)
+                # PS-211: pgrep emits bare pids here, so this site is ASCII in
+                # practice — pinned anyway so the file has one rule rather than
+                # a per-site judgement about which child can emit a non-ASCII
+                # byte. errors="replace" keeps a decode fault out of the
+                # except-Exception below, which returns None (no verdict).
+                out = subprocess.check_output(
+                    ["pgrep", "-P", str(p)],
+                    text=True, encoding="utf-8", errors="replace",
+                )
             except subprocess.CalledProcessError:
                 continue  # no children of p
             except Exception:
@@ -3852,8 +3878,15 @@ def _proc_cmdline(pid: int):
         except OSError:
             return None
     try:
+        # PS-211: this is the macOS arm of _proc_cmdline, and it reads a
+        # COMMAND LINE — which on this codepath carries the profile directory
+        # path, so a non-ASCII profile puts a non-ASCII byte in this stream.
+        # The Linux arm above reads /proc in BINARY and the caller re-encodes
+        # to utf-8 below, so naming utf-8 here makes the two arms agree: bytes
+        # in, utf-8 bytes out, on both platforms.
         out = subprocess.check_output(
-            ["ps", "-p", str(pid), "-o", "command="], text=True
+            ["ps", "-p", str(pid), "-o", "command="],
+            text=True, encoding="utf-8", errors="replace",
         )
     except Exception:
         return None
@@ -4311,7 +4344,18 @@ def _profile_firefox_pids(profile_dir: str):
         out = subprocess.check_output(
             [_system32_tool("WindowsPowerShell", "v1.0", "powershell.exe"),
              "-NoProfile", "-Command", ps],
-            text=True, **_platform.no_window_kwargs(),
+            # PS-211: `text=True` alone decodes this child's stdout with the
+            # PARENT's locale codec — cp1252 on Windows, which is the ONLY
+            # platform this branch runs on. The filter above matches on
+            # $_.CommandLine, which embeds the profile directory path, so a
+            # profile under a non-ASCII path (an accented username, a
+            # non-Latin directory) puts a non-ASCII byte into exactly this
+            # stream. Convention is process.py's: name the encoding AND
+            # errors, so process discovery degrades to a replacement char
+            # rather than raising UnicodeDecodeError inside the except-Exception
+            # below, which would silently become a no-verdict None.
+            text=True, encoding="utf-8", errors="replace",
+            **_platform.no_window_kwargs(),
         )
         return {int(x) for x in out.split() if x.strip().isdigit()}
     except Exception:
@@ -4500,7 +4544,13 @@ def _firefox_pid(profile_dir: str):
             out = subprocess.check_output(
                 [_system32_tool("WindowsPowerShell", "v1.0", "powershell.exe"),
                  "-NoProfile", "-Command", ps],
-                text=True, **_platform.no_window_kwargs(),
+                # PS-211: the second Windows-only PowerShell site. Same shape as
+                # _profile_firefox_pids above — the filter matches on
+                # $_.CommandLine, which embeds the profile directory path, so a
+                # non-ASCII profile path lands a non-ASCII byte in this stream
+                # and `text=True` alone would decode it as cp1252 here.
+                text=True, encoding="utf-8", errors="replace",
+                **_platform.no_window_kwargs(),
             )
             out = out.strip()
             return int(out) if out else None
@@ -4512,7 +4562,10 @@ def _firefox_pid(profile_dir: str):
         # prefix-sibling profile (work2) isn't matched by work's pattern.
         out = subprocess.check_output(
             ["pgrep", "-f", "--", re.escape(_ff_profile_arg(profile_dir))],
-            text=True,
+            # PS-211: pgrep -f emits bare pids, so this site is ASCII in
+            # practice — pinned anyway so this file has ONE rule rather than a
+            # per-site judgement about which child can emit a non-ASCII byte.
+            text=True, encoding="utf-8", errors="replace",
         )
     except Exception:
         return None
@@ -4602,7 +4655,12 @@ class InvisibleProcess:
 
             record_group_by_construction(self._proc)
             os.close(w)
-            self.stdout = os.fdopen(r)
+            # PS-211: READ end of the pipe whose write end is _child's
+            # `out = os.fdopen(write_fd, "w", ...)`. Pinned to the SAME codec
+            # as that writer — see the paired-invariant note there. Changing
+            # only one end would turn two ends that agreed into two that
+            # disagree, which is the defect, not the fix.
+            self.stdout = os.fdopen(r, encoding="utf-8", errors="replace")
             self.pid = self._proc.pid
         else:
             # Windows/macOS: sys.executable is the flet launcher, not a python
@@ -4631,7 +4689,11 @@ class InvisibleProcess:
 
             self._thread = threading.Thread(target=_run, daemon=True)
             self._thread.start()
-            self.stdout = os.fdopen(r)
+            # PS-211: READ end of the in-thread variant of the same pipe. This
+            # is the WINDOWS/macOS arm (needs_fork_launch() is false there), so
+            # it is the one where the locale default is actually cp1252 —
+            # pinned to the same codec as the writer for the same reason.
+            self.stdout = os.fdopen(r, encoding="utf-8", errors="replace")
             self.pid = 0
         self.returncode = None
 

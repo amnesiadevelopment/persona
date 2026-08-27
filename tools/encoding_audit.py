@@ -77,6 +77,33 @@ def _opaque_kwargs(node):
     return any(k.arg is None for k in node.keywords)
 
 
+def _opaque_text_indicator(node):
+    """A POSITIVE text-decode indicator on a call we cannot fully enumerate.
+
+    PS-211.  `_opaque_kwargs` is a sound reason not to report a call as a
+    CONFIRMED offender -- but the first version of this tool turned that into a
+    bare `continue`, which DROPPED the call from the report entirely.  That is
+    an unsound silence, and it cost exactly the sites that mattered most:
+
+        subprocess.check_output([... powershell.exe ...],
+                                text=True, **_platform.no_window_kwargs())
+
+    Both Windows-only PowerShell sites in invisible_launch.py -- the two whose
+    stdout embeds a profile path and is decoded as cp1252 on the one platform
+    where that is the locale default -- were invisible to this tool for that
+    reason.  PS-184's file-level freeze was therefore covering call sites its
+    own detector could not see, and a sweep run with it would have reported
+    5 of 7 and called the file clean at 0.
+
+    `text=True` is a POSITIVE assertion that this call decodes.  The **kwargs
+    makes the ENCODING undecidable, not the DECODING.  So the honest verdict is
+    AMBIGUOUS -- hand-triage this -- never silence.  Ambiguous hits are excluded
+    from the ratchet in tests/test_encoding_discipline.py (`_scan` drops them),
+    so this reports without spuriously failing the suite.
+    """
+    return _kw_true(node, "text") or _kw_true(node, "universal_newlines")
+
+
 def _kw_true(node, name):
     k = _kw(node, name)
     return k is not None and isinstance(k.value, ast.Constant) and k.value.value is True
@@ -143,7 +170,20 @@ def find(path):
         if not isinstance(n, ast.Call):
             continue
         if _opaque_kwargs(n):
-            continue          # **kwargs: encoding may already be supplied
+            # **kwargs: encoding MAY already be supplied, so this cannot be
+            # reported as a confirmed offender.  But PS-211: do not fall
+            # silent either.  A `text=True` on the same call is a positive
+            # assertion that it DECODES, so report it as AMBIGUOUS for hand
+            # triage rather than dropping it from the report entirely.
+            if _opaque_text_indicator(n):
+                fn = n.func
+                nm = fn.attr if isinstance(fn, ast.Attribute) else (
+                     fn.id if isinstance(fn, ast.Name) else None)
+                if nm in SUBPROCESS_FNS:
+                    out.append((*_span(n), f"subprocess.{nm}()?",
+                                "AMBIGUOUS text=True with **kwargs - "
+                                "triage by hand"))
+            continue
         has_enc = _kw(n, "encoding") is not None
         fn = n.func
         name = fn.attr if isinstance(fn, ast.Attribute) else (
