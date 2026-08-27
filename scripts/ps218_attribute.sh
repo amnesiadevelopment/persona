@@ -81,6 +81,17 @@ extract_failed_edges() {
 
 # The source file a clang diagnostic refers to, normalised to repo-relative.
 # `FAILED:` lines never reach this function any more.
+#
+# ⚠️ DEPENDENCY, STATED BECAUSE IT IS NOT VISIBLE FROM THE CALL SITE: the final
+# `awk '{print $1}'` takes the FIRST WHITESPACE-DELIMITED FIELD of the line, so
+# this is correct only while the path is field 1 — the ordinary clang shape
+#     ../../path/to/file.cc:123:5: error: message
+# If you ever widen `extract_errors` to match a line whose path is NOT the first
+# field (a linker line, a `FAILED:` line, anything prefixed with a timestamp or
+# a `[1234/50000]` progress counter), this silently returns the wrong token and
+# the join against OWNER misfires — producing a confident, wrong attribution
+# rather than an obvious failure. Widen the sed to anchor on the path instead of
+# relying on position if that day comes.
 error_file() {
   sed -E 's/:[0-9]+:[0-9]+:.*$//; s/^\.\.\/\.\.\///' <<<"$1" \
     | awk '{print $1}'
@@ -181,12 +192,63 @@ error_file() {
   # ── attribute ──────────────────────────────────────────────────────────────
   echo "== compile errors in the PATCHED tree =="
   echo
-  mapfile -t ERRS < <(extract_errors "$PATCHED_LOG" | sort -u)
+  # BOTH populations are extracted BEFORE the no-diagnostics guard, and the
+  # ordering is load-bearing rather than stylistic.
+  #
+  # The guard below exits early when there are no clang diagnostics. That is the
+  # OOM-AT-LINK case, which the ticket names as the EXPECTED failure of this
+  # build: "Memory during linking is the known failure mode... ungoogled's FAQ
+  # names exhausted memory as the common build crash." A link that dies to the
+  # OOM killer emits ninja `FAILED:` edges and a `Killed` — and NO clang
+  # diagnostics at all.
+  #
+  # So if the edges were extracted below the guard (as they once were), the
+  # single most likely real failure of this build would be the one case where
+  # this script printed "no errors" and reported its failing edges NOWHERE.
+  # Extracting both here means the early-exit path can state the edge count, and
+  # the reader holding a build that died gets a number instead of a silence.
+  mapfile -t EDGES < <(extract_failed_edges "$PATCHED_LOG" | sort -u)
+  mapfile -t ERRS  < <(extract_errors "$PATCHED_LOG" | sort -u)
 
   if [ "${#ERRS[@]}" -eq 0 ]; then
-    echo "No compile errors found in the patched tree's log."
-    echo "If the build nonetheless failed, the cause is not a clang diagnostic —"
-    echo "check the tail of ${PATCHED_LOG} (link failure, OOM kill, or timeout)."
+    # "No clang diagnostics" is the TRUE claim. "No compile errors" is not — a
+    # build killed at link failed to compile, and saying otherwise beside a log
+    # full of `FAILED:` edges reads as a green to someone holding a red.
+    echo "No clang diagnostics found in the patched tree's log."
+    echo
+    echo "failing build edges (ninja \`FAILED:\`): ${#EDGES[@]}"
+    if [ "${#EDGES[@]}" -eq 0 ]; then
+      echo "    none"
+    else
+      printf '    %s\n' "${EDGES[@]}"
+    fi
+    echo
+    # The two zero-diagnostic cases are OPPOSITE outcomes and must not share
+    # wording. Edges present = the build broke at link (the ticket's known
+    # failure mode). Edges absent = nothing failed in this log at all, and
+    # telling that reader to go hunt for an OOM kill would manufacture a
+    # suspicion the evidence does not support.
+    if [ "${#EDGES[@]}" -gt 0 ]; then
+      echo "Edges but no diagnostics is the signature of a build that died at"
+      echo "LINK rather than at compile — OOM kill or timeout. The ticket names"
+      echo "that as the KNOWN failure mode for this build. These edges are the"
+      echo "evidence the build failed; they are NOT attributed to a patch,"
+      echo "because they name object paths which cannot join the ownership map."
+      echo "Check the tail of ${PATCHED_LOG} to confirm which."
+    else
+      echo "No diagnostics AND no failing edges: this log records no compile"
+      echo "failure. Whether the build SUCCEEDED is a separate question answered"
+      echo "by the on-disk binary (see the manifest's compiled flag), not by the"
+      echo "absence of errors here — a log truncated early also looks like this."
+    fi
+    echo
+    echo "== summary =="
+    echo "total distinct clang diagnostics: 0"
+    echo "attributed to one of our patches: 0"
+    echo "pre-existing (control had them too): 0"
+    echo "unattributed (file not touched by us): 0"
+    echo "failing build edges (counted separately, not attributed): ${#EDGES[@]}"
+    $CONTROL_AVAILABLE || echo "control diff: NOT PERFORMED (no usable control log) — see note above"
     exit 0
   fi
 
