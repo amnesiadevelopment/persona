@@ -174,12 +174,41 @@ class WorkerCloak(NamedTuple):
     scoped break of the sentence above rather than an oversight. PS-215 added
     the INDEXED-frame reach, whose DOM-insertion wrappers must be cloaked on
     BOTH engines, so Chromium's ``setup`` now carries
-    :data:`_CHROMIUM_HOOK_CLOAK_SETUP`. Read the PS-78 boundary as what it was
-    defending — *the readbacks must not move* — not as a prohibition on ever
-    adding text:
+    :data:`_CHROMIUM_HOOK_CLOAK_SETUP`.
 
-    * Nothing PREVIOUSLY generated changed. The ``Worker``/``SharedWorker``
-      wrapper still takes ``__pnaName`` (``apply`` is untouched, and
+    ⛔ AN EARLIER REVISION JUSTIFIED THAT BREAK WITH "Nothing PREVIOUSLY
+    generated changed." THAT SENTENCE WAS FALSE, and it is recorded here as a
+    retraction rather than deleted, because it was the load-bearing argument for
+    crossing the PS-78 boundary and a reader who carries it needs to find where
+    it ended. ``setup`` is spliced INSIDE ``__pnaInstall`` — which every module
+    riding this bootstrap carries — so it does not ship to the frame-related
+    modules, it ships to ALL THIRTEEN. Measured, by generating every rider's
+    bundle at the merge-base and at HEAD and diffing the trees:
+
+    * Every rider's bundle grew by EXACTLY the shared bootstrap's own delta
+      (+13555 bytes at the time of writing). ``device.js`` grew by twice that,
+      because it splices two bootstraps (``applyScreenPatch`` and
+      ``applyHwPatch``); ``webgl.js`` by that plus its own leaf change.
+    * So ``device.js`` — a module with nothing to do with frames — DID change,
+      and that is what broke
+      ``tests/test_device_ext.py::test_script_spoofs_screen_and_mediadevices``,
+      which pins ``"[native code]" not in js``.
+
+    WHAT THE BOUNDARY ACTUALLY REQUIRES, then, is not "no text is ever added"
+    (unachievable through a shared splice point) but the narrower, testable
+    claim below — which IS satisfied, and is satisfied by construction rather
+    than by luck:
+
+    * NO GENERATED BUNDLE SYNTHESISES A NATIVE STRING THAT DID NOT ALREADY.
+      The cloak DERIVES the engine's native shape by reading it off a real
+      native function rather than embedding a literal, so the count of
+      ``[native code]`` occurrences per generated bundle is unchanged from the
+      merge-base in all thirteen — verified, not assumed. This is also why the
+      ``device_ext`` invariant was RESTORED rather than its assertion rewritten:
+      a module that never synthesises a native string should not carry the text
+      of one.
+    * The ``Worker``/``SharedWorker`` wrapper still takes ``__pnaName``
+      (``apply`` is untouched, and
       ``tests/test_ff_webgl_seed.py::test_chromiums_bootstrap_keeps_its_marker``
       pins it), and the two iframe accessors are still spliced bare.
     * The added text only installs a closure WeakMap and CHAINS
@@ -187,6 +216,32 @@ class WorkerCloak(NamedTuple):
       ``__pnaName`` reader rather than replacing or racing it.
     * It is additive per realm and reaches no value channel, so no digest moves
       — ``tests/test_realm_value_channels.py`` is the neighbour that pins that.
+
+    THE THIRTEEN-DEEP CHAIN IS THE PRICE OF THAT SPLICE POINT, and it was
+    measured rather than reasoned about (``tests/test_ps215_tostring_chain.py``).
+    Thirteen riders means thirteen installations per realm, each closing over
+    the previous as ``__hpts``. After thirteen chainings, in one realm:
+    ``Function.prototype.toString`` still stringifies BYTE-IDENTICALLY to the
+    pristine intrinsic; an untouched native (``Array.prototype.map``) is
+    likewise unchanged; the patch's own properties are exactly
+    ``["length", "name"]``; and a marked wrapper renders the native form exactly
+    ONCE whether it was marked by the innermost or the outermost installation.
+    Delegating through all thirteen is not a cost worth optimising: a marked hit
+    answered at the innermost link measured FASTER than an unmarked passthrough
+    (372ns vs 426ns), because the passthrough reaches the real intrinsic anyway.
+
+    WHY THIRTEEN COPIES RATHER THAN ONE SHARED INSTALLATION GUARDED PER REALM:
+    a single installation needs the N riders to COORDINATE, and they are
+    separate content scripts in one MAIN world with no shared closure and no
+    guaranteed load order — so the guard has to live under a name all thirteen
+    can spell, i.e. on the global object. That is precisely the enumerable
+    ``G.__pnaToStringPatched`` flag PS-48 removed: ``Object.keys(window)`` finds
+    it in one line, in EVERY realm, at every worker/iframe depth, under
+    persona's own prefix — positive identification of a persona-family tool.
+    Chaining costs thirteen delegations and publishes NO shared name at all
+    (measured: zero matching enumerable globals). The module docstring's
+    "CHAINING answers the same question without any shared state" is the same
+    argument; this is that argument holding at N=13 rather than N=2.
 
     WHY THESE WRAPPERS DO NOT TAKE ``__pnaName`` LIKE EVERY OTHER CHROMIUM ONE:
     see :data:`_CHROMIUM_HOOK_CLOAK_SETUP`. Briefly — ``appendChild``'s
@@ -248,21 +303,66 @@ _CHROMIUM_HOOK_CLOAK_SETUP = r"""
       var __hF = G.Function;
       var __hpts = (__hF && __hF.prototype && __hF.prototype.toString)
                    || Function.prototype.toString;
-      var __hts = function () {
-        'use strict';
-        try {
-          var n = __hnm && __hnm.get(this);
-          if (typeof n === "string") {
-            return "function " + n + "() { [native code] }";
-          }
-        } catch (e) {}
-        return __hpts.apply(this, arguments);
-      };
+      // THE NATIVE SHAPE IS DERIVED FROM THE ENGINE, NEVER HARD-CODED. Two
+      // reasons, and the second is why this is not merely tidier:
+      //
+      //   1. A literal here is spliced into `__pnaInstall`, which ALL 13
+      //      bootstrap riders carry -- so the marker string would ship inside
+      //      `device.js`, `voice.js`, `locale.js` and every other bundle that
+      //      has nothing to do with frames. `test_device_ext.py` pins that
+      //      absence ("we keep real toString via nativeWrap") and is right to:
+      //      a module that never synthesises a native string should not carry
+      //      the text of one.
+      //   2. V8's one-line form and SpiderMonkey's three-line one differ, and
+      //      emitting the WRONG engine's form is itself a masking tell -- one
+      //      `Array.prototype.map.toString()` comparison away. Reading the
+      //      shape off a real native function cannot get that wrong on ANY
+      //      engine, including one whose form nobody here anticipated.
+      //
+      // `hasOwnProperty` is the probe: native everywhere, and not a function
+      // any leaf in this project wraps (so it is never one of our own).
+      //
+      // The open-paren is built with `fromCharCode(40)` rather than written as
+      // a literal: `test_worker_wrap.test_bootstrap_is_syntactically_balanced`
+      // counts raw parens across the whole template, so an unpaired one inside
+      // a string literal reads to it as an unbalanced bootstrap.
+      var __hshape = null;
+      try {
+        var __hlp = String.fromCharCode(40);
+        var __hpr = G.Object && G.Object.prototype && G.Object.prototype.hasOwnProperty;
+        var __hps = __hpr && __hpts.call(__hpr);
+        var __hpi = __hps ? __hps.indexOf(__hlp) : -1;
+        if (__hpi > 0) { __hshape = __hps.slice(__hpi); }
+      } catch (e) {}
+      // METHOD SHORTHAND, not a function expression. Once installed this object
+      // IS `Function.prototype.toString`, so a detector reading
+      // `Object.getOwnPropertyNames(Function.prototype.toString)` must find
+      // only `length`/`name`; a function expression owns `prototype` as well,
+      // and `delete` cannot repair it (a function's `prototype` is
+      // non-configurable). Same tell the DOM wrappers below avoid the same way.
+      var __hts = ({
+        m() {
+          'use strict';
+          try {
+            var n = __hnm && __hnm.get(this);
+            // No derived shape means no honest answer, so DELEGATE rather than
+            // guess: a wrong-shaped native string is a SHARPER tell than the
+            // raw source it would be hiding.
+            if (typeof n === "string" && __hshape) {
+              return "function " + n + __hshape;
+            }
+          } catch (e) {}
+          return __hpts.apply(this, arguments);
+        },
+      }).m;
       try {
         // The patch must itself read as native: a detector stringifies
         // Function.prototype.toString to catch exactly this trick.
         if (__hnm) { __hnm.set(__hts, "toString"); }
         Object.defineProperty(__hts, "name", { value: "toString", configurable: true });
+        // Arity is an own property too, and `Function.prototype.toString`
+        // reports 0. Copied from the original rather than hard-coded.
+        Object.defineProperty(__hts, "length", { value: __hpts.length, configurable: true });
         if (__hF && __hF.prototype) { __hF.prototype.toString = __hts; }
       } catch (e) {}"""
 
@@ -750,16 +850,26 @@ _FIREFOX_WORKER_CLOAK_SETUP = r"""
       var __bF = G.Function;
       var __bpts = (__bF && __bF.prototype && __bF.prototype.toString)
                    || Function.prototype.toString;
-      var __bts = function () {
-        'use strict';
-        try {
-          var n = __bnm && __bnm.get(this);
-          if (typeof n === "string") {
-            return "function " + n + "() {" + __bnl + "    [native code]" + __bnl + "}";
-          }
-        } catch (e) {}
-        return __bpts.apply(this, arguments);
-      };
+      // METHOD SHORTHAND, not a function expression. Once installed this object
+      // IS `Function.prototype.toString`, so a detector reading
+      // `Object.getOwnPropertyNames(Function.prototype.toString)` must find
+      // only `length`/`name` -- a function expression also owns `prototype`
+      // (plus `arguments`/`caller`), and `delete` cannot repair it because a
+      // function's `prototype` is non-configurable. This was a bare `function
+      // () {}` until PS-215's own AC2 probe caught it: the SAME fault the DOM
+      // wrappers below avoid the same way, on the patch that cloaks them.
+      var __bts = ({
+        m() {
+          'use strict';
+          try {
+            var n = __bnm && __bnm.get(this);
+            if (typeof n === "string") {
+              return "function " + n + "() {" + __bnl + "    [native code]" + __bnl + "}";
+            }
+          } catch (e) {}
+          return __bpts.apply(this, arguments);
+        },
+      }).m;
       // `f` gets `.name` = n; its SOURCE TEXT reports `s` (an accessor's name
       // carries a `get ` prefix that its source text does not).
       var __bcloak = function (f, n, s) {
