@@ -127,9 +127,22 @@ is_source_diagnostic() {
   [[ "$1" =~ ^(\.\./\.\./)?[^[:space:]]+:[0-9]+:[0-9]+:[[:space:]](error|fatal\ error): ]]
 }
 
+# Ownership lookup against the file-backed map (see OWNER_MAP below).
+# Emits the comma-joined patch list for a file, or nothing when no patch owns
+# it — so `[ -n "$(owner_of "$f")" ]` reads exactly as the old
+# `[ -n "${OWNER[$f]:-}" ]` did. The join is on the WHOLE field, so a path that
+# is a substring of another path cannot produce a false attribution.
+owner_of() {
+  [ -f "${OWNER_MAP:-}" ] || return 0
+  awk -F'\t' -v want="$1" '
+    $1 == want { out = (out == "" ? $2 : out ", " $2) }
+    END { if (out != "") print out }
+  ' "$OWNER_MAP"
+}
+
 {
   echo "# PS-218 — compile failure attribution"
-  echo "# generated: $(date -Is)"
+  echo "# generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo
 
   if [ ! -f "$PATCHED_LOG" ]; then
@@ -142,7 +155,12 @@ is_source_diagnostic() {
   # ── which files does each of our patches touch? ────────────────────────────
   echo "== files touched by each of our 16 patches =="
   echo
-  declare -A OWNER
+  # The ownership map is backed by a FILE rather than an associative array
+  # (`declare -A`) because that is a bash 4 feature and macOS ships bash 3.2 —
+  # where it is a hard error, not a degradation. The tests pin
+  # PATH=/usr/bin:/bin, so `bash` there IS the 3.2 the OS provides.
+  OWNER_MAP="${REC}/.owner-map"
+  : > "$OWNER_MAP"
   for p in $(ls "${PATCH_DIR}"/*.patch | sort); do
     name="$(basename "$p")"
     files=$(grep -E '^\+\+\+ b/' "$p" | sed 's|^+++ b/||' | sort -u)
@@ -153,12 +171,10 @@ is_source_diagnostic() {
       # A file can be touched by more than one patch (011 and 016 both modify
       # webgl_rendering_context_base.cc), so owners accumulate rather than
       # overwrite — reporting one of two candidates as though it were certain
-      # would be a false attribution of its own.
-      if [ -n "${OWNER[$f]:-}" ]; then
-        OWNER[$f]="${OWNER[$f]}, ${name}"
-      else
-        OWNER[$f]="${name}"
-      fi
+      # would be a false attribution of its own. Patches are walked in sorted
+      # order and `owner_of` joins in file order, so the accumulated string is
+      # identical to what the associative array produced.
+      printf '%s\t%s\n' "$f" "$name" >> "$OWNER_MAP"
     done <<<"$files"
   done
   echo
@@ -237,8 +253,18 @@ is_source_diagnostic() {
   # this script printed "no errors" and reported its failing edges NOWHERE.
   # Extracting both here means the early-exit path can state the edge count, and
   # the reader holding a build that died gets a number instead of a silence.
-  mapfile -t EDGES < <(extract_failed_edges "$PATCHED_LOG" | sort -u)
-  mapfile -t ERRS  < <(extract_errors "$PATCHED_LOG" | sort -u)
+  # `mapfile`/`readarray` is bash 4; macOS ships bash 3.2, where it is a hard
+  # error. A `while read` loop into an appended array is the 3.2 equivalent, and
+  # IFS= / -r keep it byte-faithful. `|| [ -n "$line" ]` catches a final line
+  # with no trailing newline, which `read` reports as EOF.
+  EDGES=()
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] && EDGES+=("$line")
+  done < <(extract_failed_edges "$PATCHED_LOG" | sort -u)
+  ERRS=()
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] && ERRS+=("$line")
+  done < <(extract_errors "$PATCHED_LOG" | sort -u)
 
   if [ "${#ERRS[@]}" -eq 0 ]; then
     # "No clang diagnostics" is the TRUE claim. "No compile errors" is not — a
@@ -314,8 +340,9 @@ is_source_diagnostic() {
       continue
     fi
 
-    if [ -n "${OWNER[$f]:-}" ]; then
-      echo "[ATTRIBUTED -> ${OWNER[$f]}]"
+    owners="$(owner_of "$f")"
+    if [ -n "$owners" ]; then
+      echo "[ATTRIBUTED -> ${owners}]"
       echo "    file:  ${f}"
       echo "    error: ${e}"
       $CONTROL_AVAILABLE || echo "    (CONTROL UNKNOWN — control log not usable for this run)"
@@ -358,7 +385,10 @@ is_source_diagnostic() {
   # (ninja emits both for one broken edge), so this is a count of broken build
   # edges for cross-checking, not a second population of errors. It is
   # deliberately excluded from the three attribution counts.
-  mapfile -t EDGES < <(extract_failed_edges "$PATCHED_LOG" | sort -u)
+  EDGES=()
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] && EDGES+=("$line")
+  done < <(extract_failed_edges "$PATCHED_LOG" | sort -u)
   echo "== failing build edges (ninja \`FAILED:\`) — counted, not attributed =="
   echo
   if [ "${#EDGES[@]}" -eq 0 ]; then
