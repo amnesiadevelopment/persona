@@ -159,7 +159,27 @@ def build_mcp(container: Container) -> FastMCP:
         # api/refusal_report.py — the rule lives there so this lane and the REST
         # lane cannot grow two opinions about it.
         attempt_at = time.time()
-        bl.start_thread(profile, log_callback=lambda _m: None)
+
+        def _on_cert_trust(status: str | None) -> None:
+            # The Firefox CA import SOFT-FAILS: the launch proceeds with the
+            # certificate untrusted and the engine announces the outcome once.
+            # This lane dropped that announcement entirely (PS-198) — and the
+            # harm was not the silence. A verdict this lane never recorded left
+            # the PREVIOUS session's `trusted` standing over a session that ran
+            # with its CA untrusted, and it survived a restart: an affirmative
+            # clean bill of health for the launch that disproved it.
+            #
+            # `status=None` is the launcher invalidating that stale verdict at
+            # the START of the attempt. It rides the SAME callback as the
+            # outcome deliberately: this lane cannot record a verdict without
+            # also dropping the one it supersedes.
+            pm.set_cert_trust_status(name, status)
+
+        bl.start_thread(
+            profile,
+            log_callback=lambda _m: None,
+            on_cert_trust=_on_cert_trust,
+        )
         # A guard refuses inside start_thread, which swallows the exception,
         # records the verdict, and returns the same None a successful launch
         # returns. Without this read the tool answered {"launched": True} for a

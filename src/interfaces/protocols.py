@@ -81,7 +81,7 @@ class IProfileManager(Protocol):
     # "set_cookie_status-redefinition".
     def set_cookie_status(self, name: str, status: str) -> bool: ...
 
-    def set_cert_trust_status(self, name: str, status: str) -> bool: ...
+    def set_cert_trust_status(self, name: str, status: str | None) -> bool: ...
 
     def set_last_launch_build(
         self, name: str, engine: str, build: str | None
@@ -138,7 +138,12 @@ class IBrowserLauncher(Protocol):
         on_ready: Callable[[], None] | None = None,
         on_stop: Callable[[], None] | None = None,
         *,
-        on_cert_trust: Callable[[str], None] | None = None,
+        # `str | None` rather than `str`: the launcher calls this with None at
+        # the START of an attempt to invalidate the previous session's verdict,
+        # and with the status when the engine announces one. The drop and the
+        # record ride ONE callback on purpose — a lane cannot record a verdict
+        # without also dropping the stale one it supersedes (launcher.py).
+        on_cert_trust: "Callable[[str | None], None] | None" = None,
     ) -> None: ...
 
     def stop_profile(self, profile_name: str, timeout: int = 2) -> bool: ...

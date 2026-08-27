@@ -250,7 +250,7 @@ class BrowserLauncher:
         on_ready: Callable[[], None] | None = None,
         on_stop: Callable[[], None] | None = None,
         *,
-        on_cert_trust: Callable[[str], None] | None = None,
+        on_cert_trust: "Callable[[str | None], None] | None" = None,
     ) -> None:
         with self._lock:
             if profile.name in self._active_sessions or profile.name in self._starting:
@@ -275,6 +275,43 @@ class BrowserLauncher:
             # that gets refused as a duplicate is not an attempt and must not
             # erase the verdict from the attempt that did run.
             self._last_refusal.pop(profile.name, None)
+
+        # THE SAME RULE, ONE VERDICT OVER — the trust verdict is superseded by
+        # the ATTEMPT, exactly as the refusal above is, and for a sharper
+        # reason: this one is PERSISTED. A dropped trust verdict would merely
+        # leave the field None (an honest absence that renders as nothing), but
+        # a verdict left STANDING is an affirmative "trusted" describing a
+        # session that ran with its CA untrusted — and it survives a restart.
+        # The engine announces the outcome once, and only when it reaches the
+        # cert path; a launch that reaches it and emits NOTHING (or dies before
+        # the line) must not leave the previous session's verdict on record.
+        #
+        # THE DISCRIMINATOR IS THE ATTEMPT, NOT THE MESSAGE — see
+        # api/refusal_report.py, which owns this reasoning in full. Clearing at
+        # the outcome instead would be unreachable in exactly the case that
+        # matters: no message, no clear.
+        #
+        # Delivered through on_cert_trust rather than written here so the
+        # launcher keeps knowing nothing about persistence, and — the load-
+        # bearing half — so a lane cannot half-adopt this: the drop and the
+        # record arrive through ONE wiring, and a lane that records a verdict
+        # necessarily also drops the stale one.
+        #
+        # Gated on the certificate: a profile with no certificate assigned has
+        # no verdict to invalidate and must stay byte-identical (no write, no
+        # save_profiles()). Placed AFTER the duplicate-launch return, for the
+        # reason stated above it — a click refused as a duplicate is not an
+        # attempt and must not erase the verdict from the attempt that did run.
+        if on_cert_trust is not None and profile.certificate:
+            try:
+                on_cert_trust(None)
+            except Exception:
+                # A profile that cannot drop its stale verdict must still open,
+                # matching the outcome path in _monitor_process.
+                logger.exception(
+                    "Failed to clear the stale cert trust verdict for %s; the "
+                    "launch proceeds", profile.name,
+                )
 
         log_callback(f"Starting {profile.name} ({profile.os_type})...")
         logger.info(f"Starting browser for profile: {profile.name}")
@@ -639,7 +676,7 @@ class BrowserLauncher:
         notify_stopped: Callable[[], None],
         close_reason: "list[str | None]",
         last_output: "deque[str]",
-        on_cert_trust: Callable[[str], None] | None = None,
+        on_cert_trust: Callable[[str | None], None] | None = None,
     ) -> None:
         # The process being up is what makes the profile stoppable: report
         # ready NOW so the card shows a killable [stop] while the engine is
