@@ -2815,12 +2815,14 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
     # built from profile paths and engine error strings, so a non-ASCII byte
     # genuinely reaches this stream.
     #
-    # ⚠️ PAIRED INVARIANT — this is one half of a pipe whose other half is
-    # `self.stdout = os.fdopen(r, ...)` in _ForkedChild.__init__. Both ends
-    # previously named nothing and therefore AGREED (same process, same
-    # locale). Pinning ONE end would convert that agreement into a
-    # disagreement and CREATE the defect this ticket removes. The two must be
-    # changed together and must name the SAME codec; they do.
+    # ⚠️ PAIRED INVARIANT — this is the single WRITE end of a pipe with TWO
+    # read ends, both `self.stdout = os.fdopen(r, ...)` in
+    # `InvisibleProcess.__init__`: the fork arm (Linux) and the thread arm
+    # (Windows/macOS, where re-exec can't work). All three previously named
+    # nothing and therefore AGREED (same process, same locale). Pinning ONE
+    # end would convert that agreement into a disagreement and CREATE the
+    # defect this ticket removes. All three must be changed together and must
+    # name the SAME codec; they do.
     out = os.fdopen(write_fd, "w", buffering=1, encoding="utf-8", errors="replace")
 
     def emit(msg: str) -> None:
@@ -3879,8 +3881,19 @@ def _proc_cmdline(pid: int):
             return None
     try:
         # PS-211: this is the macOS arm of _proc_cmdline, and it reads a
-        # COMMAND LINE — which on this codepath carries the profile directory
-        # path, so a non-ASCII profile puts a non-ASCII byte in this stream.
+        # COMMAND LINE — which on this codepath genuinely does carry the
+        # profile directory path (firefox is launched with `-profile <dir>`),
+        # so a non-ASCII profile really does put a non-ASCII byte in this
+        # stream. Unlike the PowerShell sites, the path is on the OUTPUT side
+        # here.
+        #
+        # Be precise about the CONSEQUENCE, though: both consumers match ASCII
+        # literals only — `b"-isForBrowser" in cmd` (_firefox_content_proc_count)
+        # and `b"firefox" in cmd` (_forked_firefox_alive) — and with
+        # errors="replace" a mojibaked path cannot disturb either match. So
+        # this is pinned for correctness of the string, not because a known
+        # verdict flips.
+        #
         # The Linux arm above reads /proc in BINARY and the caller re-encodes
         # to utf-8 below, so naming utf-8 here makes the two arms agree: bytes
         # in, utf-8 bytes out, on both platforms.
@@ -4346,13 +4359,25 @@ def _profile_firefox_pids(profile_dir: str):
              "-NoProfile", "-Command", ps],
             # PS-211: `text=True` alone decodes this child's stdout with the
             # PARENT's locale codec — cp1252 on Windows, which is the ONLY
-            # platform this branch runs on. The filter above matches on
-            # $_.CommandLine, which embeds the profile directory path, so a
-            # profile under a non-ASCII path (an accented username, a
-            # non-Latin directory) puts a non-ASCII byte into exactly this
-            # stream. Convention is process.py's: name the encoding AND
-            # errors, so process discovery degrades to a replacement char
-            # rather than raising UnicodeDecodeError inside the except-Exception
+            # platform this branch runs on. Pinned anyway so this file has ONE
+            # rule rather than a per-site judgement about which child can emit
+            # a non-ASCII byte.
+            #
+            # ⚠️ DO NOT re-derive a stronger claim here. The profile path is on
+            # the INPUT side: it is interpolated into `pat` and travels as
+            # argv, which `encoding=` does not govern at all (Windows marshals
+            # argv as UTF-16 via CreateProcessW). The `-like` comparison runs
+            # INSIDE PowerShell against its own in-memory string, out of this
+            # kwarg's reach. What comes back on STDOUT is decided by the last
+            # pipeline stage — `-ExpandProperty ProcessId`, a UInt32 — so this
+            # stream carries decimal digits and newlines, on which cp1252 and
+            # utf-8 agree byte for byte. The parse below (`isdigit()`) would be
+            # nonsensical otherwise. There is no `stderr=STDOUT`, so a
+            # PowerShell error record is never captured or decoded here either.
+            # A non-ASCII byte cannot reach this decode; this is a CONFORMANCE
+            # fix, not a latent break.
+            #
+            # errors="replace" keeps a decode fault out of the except-Exception
             # below, which would silently become a no-verdict None.
             text=True, encoding="utf-8", errors="replace",
             **_platform.no_window_kwargs(),
@@ -4544,11 +4569,18 @@ def _firefox_pid(profile_dir: str):
             out = subprocess.check_output(
                 [_system32_tool("WindowsPowerShell", "v1.0", "powershell.exe"),
                  "-NoProfile", "-Command", ps],
-                # PS-211: the second Windows-only PowerShell site. Same shape as
-                # _profile_firefox_pids above — the filter matches on
-                # $_.CommandLine, which embeds the profile directory path, so a
-                # non-ASCII profile path lands a non-ASCII byte in this stream
-                # and `text=True` alone would decode it as cp1252 here.
+                # PS-211: the second Windows-only PowerShell site. Same shape
+                # as _profile_firefox_pids above, and pinned for the same
+                # reason: ONE rule for this file rather than a per-site
+                # judgement about which child can emit a non-ASCII byte.
+                #
+                # ⚠️ Same correction as at that site — stdout here is
+                # `-First 1 -ExpandProperty ProcessId`, i.e. decimal digits,
+                # which cp1252 and utf-8 decode identically (`int(out)` below
+                # would be nonsensical otherwise). The profile path travels as
+                # argv on the INPUT side, which `encoding=` does not govern,
+                # and there is no `stderr=STDOUT` to carry an error record in.
+                # Conformance, not a latent break.
                 text=True, encoding="utf-8", errors="replace",
                 **_platform.no_window_kwargs(),
             )

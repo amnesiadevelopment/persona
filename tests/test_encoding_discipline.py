@@ -608,9 +608,9 @@ def test_pinned_child_decode_survives_the_round_trip_under_an_ascii_locale():
     """THE FIX, EXERCISED: the convention this ticket conforms to actually works.
 
     `text=True, encoding="utf-8", errors="replace"` -- process.py's convention,
-    now on all seven subprocess sites in invisible_launch.py -- must return the
+    now on all ten decode sites in invisible_launch.py -- must return the
     child's bytes decoded correctly even where the locale default cannot
-    represent them. This is the property the seven sites are being changed FOR.
+    represent them. This is the property those sites are being changed FOR.
     """
     proc = _run_under_ascii_locale(
         "import subprocess, sys\n"
@@ -642,9 +642,26 @@ def test_the_windows_failure_mode_is_silent_corruption_not_an_exception():
         "cafÃ©" -- mojibake, not an exception.
 
     So on the platform this ticket is actually about, the defect does not
-    announce itself.  It returns a WRONG STRING that a caller then matches a
-    profile path against, and the match quietly fails -- which for
-    _profile_firefox_pids means "no such process" rather than a crash.
+    announce itself.  It returns a WRONG STRING, and nothing raises.
+
+    WHERE THAT ACTUALLY BITES -- stated precisely, because an earlier round of
+    this ticket pinned the WRONG call site here and a wrong mechanism in a test
+    is worse than no mechanism, since it stops the next reader looking:
+
+      * NOT the two Windows PowerShell sites.  Their last pipeline stage is
+        `-ExpandProperty ProcessId` (a UInt32), so stdout carries decimal
+        digits, on which cp1252 and utf-8 agree byte for byte.  The profile
+        path travels as ARGV on the input side, which `encoding=` does not
+        govern.  Those two are conformance fixes.
+
+      * The child->parent STATUS PIPE is a real one.  `_child` emits
+        `LAUNCH_FAILED: browser scratch directory in {_child_tmp_root!r}: {e}`,
+        where `_child_tmp_root` is `cfg["profile_data_dir"]` -- a profile path,
+        and `repr()` leaves non-ASCII unescaped.  That is why its write end and
+        BOTH read ends move together.
+
+      * `_import_mtls_ca` is another: `db = f"sql:{profile_dir}"` goes to
+        certutil, whose stderr is decoded and logged.
 
     This runs on EVERY platform (the codec is named explicitly rather than
     inherited from the locale), so unlike the ASCII-locale pair it cannot be
