@@ -49,7 +49,22 @@ pytestmark = pytest.mark.skipif(
 # How many riders splice `realm_bootstrap_js`. Derived, never hardcoded: the
 # whole point is that this number is a property of the tree, so a fourteenth
 # rider must move the test rather than silently widen the chain.
-_SRC = pathlib.Path("src/services/browser")
+#
+# Anchored to `__file__`, NOT to the process CWD. A relative path here resolves
+# against whatever directory the interpreter happens to be in, so the glob
+# matches nothing when an earlier suite in the same session has chdir'd away —
+# `_rider_count()` then returns 0 and this file fails in a full-suite run while
+# passing in isolation. Several pre-existing suites do leave the CWD elsewhere;
+# resolving from `__file__` is the convention the rest of `tests/` already uses
+# (test_build_config.py, test_ci_verification_gates.py, test_encoding_
+# discipline.py, test_canvas_readback_probe.py) and makes this immune to it.
+_SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "services" / "browser"
+
+# The PIN. Asserted exactly (not `>=`), because a `>=` would admit a fourteenth
+# rider in silence — the precise outcome the pin exists to prevent. This is also
+# the depth the probes run at, so the number a detector would observe and the
+# number this file claims cannot drift apart.
+_RIDER_COUNT = 13
 
 
 def _rider_count() -> int:
@@ -192,7 +207,13 @@ def test_rider_count_is_thirteen():
     this file, rather than a silent widening of every realm's toString chain.
     """
     n = _rider_count()
-    assert n >= 12, f"expected the bootstrap's riders, counted {n}"
+    assert n == _RIDER_COUNT, (
+        f"rider count is {n}, this file pins {_RIDER_COUNT}. A `>=` here would "
+        f"admit a fourteenth rider in silence, which is exactly what the pin "
+        f"exists to prevent. If the change is deliberate, update _RIDER_COUNT "
+        f"and the N passed to _run() together — chain depth is what this suite "
+        f"measures, so it must move with the tree."
+    )
 
 
 @pytest.mark.parametrize(
@@ -209,7 +230,7 @@ def test_thirteen_chainings_leave_tostring_indistinguishable(engine, boot, tmp_p
     exists to keep true, measured at the depth the splice point actually
     produces rather than at the N=2 the idiom was introduced for.
     """
-    r = _run(boot, tmp_path, 13)
+    r = _run(boot, tmp_path, _RIDER_COUNT)
 
     expected = r["pristine_host"] if engine == "chromium" else _SPIDERMONKEY_TS
     assert r["ts_self"] == expected, (
@@ -245,7 +266,7 @@ def test_chain_is_depth_invariant(engine, boot, tmp_path):
     observable, the number of riders would itself be a fingerprint.
     """
     one = _run(boot, tmp_path / "a", 1)
-    many = _run(boot, tmp_path / "b", 13)
+    many = _run(boot, tmp_path / "b", _RIDER_COUNT)
 
     for key in ("ts_self", "untouched_native", "ts_own_props", "ts_name", "ts_length"):
         assert one[key] == many[key], (
@@ -282,7 +303,7 @@ def test_falsification_arms_go_red(label, anchor, replacement, tmp_path):
     An arm that stays green proves the corresponding assertion is decorative.
     """
     mutated = _mutate(_CHROMIUM, anchor, replacement)
-    r = _run(mutated, tmp_path, 13)
+    r = _run(mutated, tmp_path, _RIDER_COUNT)
 
     assert not r["ts_self_matches_pristine"], (
         f"MUTATION '{label}' did NOT change what a detector reads off "
