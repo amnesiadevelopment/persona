@@ -385,7 +385,7 @@ Also corrected: `data/realm-class-probe.json` carried a fifth probe (`iframe_src
 
 ## Reproduction
 
-Everything in this report re-derives from `scripts/` and `data/`. See `README.md` for the commands. The two most load-bearing artefacts:
+Everything in this report re-derives from `scripts/` and `data/`. See `REPRODUCING.md` for the commands. The two most load-bearing artefacts:
 
 - `data/results-ctrl-144b.tsv` — **the control.** Read this before trusting `results-test-145.tsv` or `results-test-152.tsv`. `data/results-ctrl-144-BROKEN-HARNESS.tsv` is the discarded first run, kept deliberately so the failure mode is inspectable.
 - `data/realm-class-probe.json` — the §7B result, reproducible offline with `python3 scripts/realm_class_probe.py`.
