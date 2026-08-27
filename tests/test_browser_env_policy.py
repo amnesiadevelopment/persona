@@ -225,7 +225,7 @@ def _child_environ_after_fork(tmp_path, in_thread=False, is_linux=True, cfg=None
                         )
                     }
                 )
-                with os.fdopen(report_w, "w") as fh:
+                with os.fdopen(report_w, "w", encoding="utf-8") as fh:
                     fh.write(payload)
                 _finish()
 
@@ -241,9 +241,9 @@ def _child_environ_after_fork(tmp_path, in_thread=False, is_linux=True, cfg=None
 
     os.close(write_fd)
     os.close(report_w)
-    with os.fdopen(report_r) as fh:
+    with os.fdopen(report_r, encoding="utf-8") as fh:
         payload = fh.read()
-    os.fdopen(read_fd).close()
+    os.fdopen(read_fd, encoding="utf-8").close()
     os.waitpid(pid, 0)
     assert payload, "the forked child reported no environment"
     return json.loads(payload)
@@ -650,7 +650,7 @@ def test_the_scratch_directory_is_swept_so_only_one_session_lands_on_disk(tmp_pa
     planted = os.path.join(first, "appimage_extracted_deadbeef")
     os.makedirs(planted)
     leftover = os.path.join(planted, "chrome")
-    with open(leftover, "w") as fh:
+    with open(leftover, "w", encoding="utf-8") as fh:
         fh.write("last session")
     assert os.path.exists(leftover)
 
@@ -699,7 +699,7 @@ def test_a_sweep_that_cannot_clear_does_not_fail_the_launch(tmp_path):
 
     target = prepare_child_tmpdir(profile_dir)
     stuck = os.path.join(target, "wont-go")
-    with open(stuck, "w") as fh:
+    with open(stuck, "w", encoding="utf-8") as fh:
         fh.write("residue")
     os.chmod(target, 0o500)  # r-x: entries cannot be unlinked
 
@@ -743,7 +743,7 @@ def test_a_cfg_without_the_profile_data_dir_is_refused_not_launched_unpinned(tmp
         os._exit(0)
 
     os.close(write_fd)
-    with os.fdopen(read_fd) as fh:
+    with os.fdopen(read_fd, encoding="utf-8") as fh:
         said = fh.read()
     os.waitpid(pid, 0)
 

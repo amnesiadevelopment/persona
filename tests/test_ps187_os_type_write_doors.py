@@ -211,9 +211,9 @@ def test_no_door_can_leave_a_profile_at_rest_with_a_bad_os_type(mgr, bad, tmp_pa
     import src.services.profile.manager as mod
 
     profiles_file = pathlib.Path(mod.PROFILES_FILE)
-    raw = json.loads(profiles_file.read_text()) if profiles_file.exists() else {}
+    raw = json.loads(profiles_file.read_text(encoding="utf-8")) if profiles_file.exists() else {}
     raw["legacy"] = {"name": "legacy", "os_type": bad, "engine": "chromium"}
-    profiles_file.write_text(json.dumps(raw))
+    profiles_file.write_text(json.dumps(raw), encoding="utf-8")
 
     reloaded = ProfileManager()
     assert "legacy" in reloaded.profiles, (

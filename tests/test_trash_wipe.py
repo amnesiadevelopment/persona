@@ -55,7 +55,7 @@ def _profile_with_data(pm, name, cookie="jar"):
     pm.add_profile(name, "", "windows")
     data_dir = pm._data_path(name)
     os.makedirs(data_dir, exist_ok=True)
-    pathlib.Path(data_dir, "Cookies").write_text(cookie)
+    pathlib.Path(data_dir, "Cookies").write_text(cookie, encoding="utf-8")
     return data_dir
 
 
@@ -140,7 +140,7 @@ def test_the_wipe_purges_trashed_records_of_every_kind(env):
 
 def test_the_wipe_destroys_a_trashed_certificates_key_bundle(env):
     source = env.tmp_path / "src.p12"
-    source.write_text("KEYMATERIAL")
+    source.write_text("KEYMATERIAL", encoding="utf-8")
     stored = env.cstore.import_p12("admin", str(source))
     env.cstore.add(Certificate(name="admin", p12_path=stored))
     env.cstore.remove("admin")

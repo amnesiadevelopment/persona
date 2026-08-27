@@ -29,7 +29,7 @@ def test_import_mtls_ca_builds_argv_and_env_linux(monkeypatch, tmp_path):
     monkeypatch.setattr(il, "_engine_lib_dir", lambda: "/eng")
 
     ca = tmp_path / "term_ca.crt"
-    ca.write_text("-----BEGIN CERTIFICATE-----\n")
+    ca.write_text("-----BEGIN CERTIFICATE-----\n", encoding="utf-8")
     assert il._import_mtls_ca(str(tmp_path), str(ca)) is True
     # a fresh profile (no cert9.db) gets an -N init then the -A import
     assert any("-N" in argv for argv, _ in calls)
@@ -62,7 +62,7 @@ def test_import_mtls_ca_windows_uses_bundled_dll_dir(monkeypatch, tmp_path):
     monkeypatch.setattr(il, "_certutil_path", lambda: tool)
 
     ca = tmp_path / "ca.crt"
-    ca.write_text("-----BEGIN CERTIFICATE-----\n")
+    ca.write_text("-----BEGIN CERTIFICATE-----\n", encoding="utf-8")
     assert il._import_mtls_ca(str(tmp_path), str(ca)) is True
     _, env = next((a, e) for a, e in calls if "-A" in a)
     # the bundled certutil's own dir (with its NSS DLLs) is prepended to PATH
@@ -78,5 +78,5 @@ def test_import_mtls_ca_noop_without_path(monkeypatch, tmp_path):
 def test_import_mtls_ca_missing_tool_is_soft_fail(monkeypatch, tmp_path):
     monkeypatch.setattr(il, "_certutil_path", lambda: None)
     ca = tmp_path / "ca.crt"
-    ca.write_text("x")
+    ca.write_text("x", encoding="utf-8")
     assert il._import_mtls_ca(str(tmp_path), str(ca)) is False

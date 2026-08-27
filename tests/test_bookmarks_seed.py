@@ -46,7 +46,7 @@ def test_no_checksum_key():
 def test_seed_writes_file(tmp_path):
     ok = seed_bookmarks(str(tmp_path), [Bookmark("leaks", "https://browserleaks.com")])
     assert ok is True
-    doc = json.loads((tmp_path / "Default" / "Bookmarks").read_text())
+    doc = json.loads((tmp_path / "Default" / "Bookmarks").read_text(encoding="utf-8"))
     assert doc["roots"]["bookmark_bar"]["children"][0]["name"] == "leaks"
 
 
@@ -59,6 +59,6 @@ def test_seed_skips_existing(tmp_path):
     default = tmp_path / "Default"
     default.mkdir(parents=True)
     existing = default / "Bookmarks"
-    existing.write_text('{"existing":true}')
+    existing.write_text('{"existing":true}', encoding="utf-8")
     assert seed_bookmarks(str(tmp_path), [Bookmark("a", "https://a.com")]) is False
-    assert json.loads(existing.read_text()) == {"existing": True}
+    assert json.loads(existing.read_text(encoding="utf-8")) == {"existing": True}

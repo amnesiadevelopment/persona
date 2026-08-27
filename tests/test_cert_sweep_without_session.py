@@ -33,7 +33,7 @@ def _plant_orphan(work, name="persona-mtls-zl8oz329.pem"):
     an mkstemp-named plaintext client PEM nothing in the tree knows to look for."""
     os.makedirs(work, exist_ok=True)
     path = os.path.join(work, name)
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         f.write(KEY_PEM)
     # Precondition, asserted rather than assumed: the probe starts dirty.
     assert _private_key_files(work) == [name]
@@ -55,7 +55,7 @@ def _private_key_files(work):
         if not os.path.isfile(path):
             continue
         try:
-            with open(path, "r", errors="ignore") as f:
+            with open(path, "r", errors="ignore", encoding="utf-8") as f:
                 if "PRIVATE KEY" in f.read():
                     found.append(name)
         except OSError:

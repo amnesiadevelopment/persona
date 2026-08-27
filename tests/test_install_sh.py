@@ -6,7 +6,7 @@ import re
 
 
 def _script():
-    return (pathlib.Path(__file__).parent.parent / "install.sh").read_text()
+    return (pathlib.Path(__file__).parent.parent / "install.sh").read_text(encoding="utf-8")
 
 
 def test_fetches_published_checksum():

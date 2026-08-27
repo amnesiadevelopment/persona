@@ -314,7 +314,7 @@ def _run(tmp_path, device_js, mt_js, *, top_extent=TOP_EXTENT, child_extent=CHIL
     probe.write_text(_probe_source(top_extent, child_extent), encoding="utf-8")
     out = subprocess.run(
         [node, str(probe), str(dev), str(mt)],
-        capture_output=True, text=True, timeout=120,
+        capture_output=True, text=True, timeout=120, encoding="utf-8",
     )
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)

@@ -625,7 +625,7 @@ def _engine_at(monkeypatch, tmp_path, old: bytes = b"OLD-ENGINE"):
     monkeypatch.setattr(updater, "ENGINE_BINARY", str(binary))
     monkeypatch.setattr(updater, "MARKER_FILE", str(engine_dir / ".engine-complete"))
     monkeypatch.setattr(updater, "VERSION_FILE", str(engine_dir / "version.txt"))
-    (engine_dir / ".engine-complete").write_text("ok")
+    (engine_dir / ".engine-complete").write_text("ok", encoding="utf-8")
     _force_os(monkeypatch, linux=True)
     return engine_dir, binary
 

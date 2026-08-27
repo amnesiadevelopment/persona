@@ -14,10 +14,10 @@ from tests.native_mask_probe import (
 def test_builds_manifest_and_js(tmp_path):
     d = build_native_extension(str(tmp_path / "n"))
     p = pathlib.Path(d)
-    man = json.loads((p / "manifest.json").read_text())
+    man = json.loads((p / "manifest.json").read_text(encoding="utf-8"))
     assert man["content_scripts"][0]["world"] == "MAIN"
     assert man["content_scripts"][0]["run_at"] == "document_start"
-    js = (p / "native.js").read_text()
+    js = (p / "native.js").read_text(encoding="utf-8")
     # the generated script patches Function.prototype.toString to render the
     # native form; that it actually WORKS is asserted by execution below, in
     # test_marked_wrapper_reads_native_under_call

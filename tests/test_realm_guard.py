@@ -241,7 +241,7 @@ def _run(tmp_path, content_script):
     probe = d / "probe.js"
     probe.write_text(_PROBE, encoding="utf-8")
     out = subprocess.run(
-        [node, str(probe), str(src)], capture_output=True, text=True, timeout=120,
+        [node, str(probe), str(src)], capture_output=True, text=True, timeout=120, encoding="utf-8",
     )
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)

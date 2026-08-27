@@ -183,7 +183,7 @@ def test_operator_can_add_a_known_bad_build_without_a_persona_update(tmp_path, m
     """The whole point of the local file: a build discovered to be bad can be
     refused today, not at the next release."""
     pf = tmp_path / "engine-policy.json"
-    pf.write_text(json.dumps({"known_bad_versions": ["148.0.7778.215"]}))
+    pf.write_text(json.dumps({"known_bad_versions": ["148.0.7778.215"]}), encoding="utf-8")
     monkeypatch.setattr(policy, "POLICY_FILE", str(pf))
     monkeypatch.setattr(policy, "KNOWN_BAD_VERSIONS", frozenset())
 
@@ -195,7 +195,7 @@ def test_local_file_cannot_unblock_a_shipped_known_bad(tmp_path, monkeypatch):
     """Local entries only ADD. A stale local file must not silently re-enable a
     build persona shipped knowing is broken."""
     pf = tmp_path / "engine-policy.json"
-    pf.write_text(json.dumps({"known_bad_versions": []}))
+    pf.write_text(json.dumps({"known_bad_versions": []}), encoding="utf-8")
     monkeypatch.setattr(policy, "POLICY_FILE", str(pf))
     monkeypatch.setattr(policy, "KNOWN_BAD_VERSIONS", frozenset({"148.0.7778.215"}))
 
@@ -206,7 +206,7 @@ def test_a_corrupt_policy_file_falls_back_to_the_shipped_defaults(tmp_path, monk
     """Fails OPEN to the committed defaults: a mangled file must not brick
     engine updating, and it must not drop the shipped known-bad list either."""
     pf = tmp_path / "engine-policy.json"
-    pf.write_text("{not json at all")
+    pf.write_text("{not json at all", encoding="utf-8")
     monkeypatch.setattr(policy, "POLICY_FILE", str(pf))
     monkeypatch.setattr(policy, "KNOWN_BAD_VERSIONS", frozenset({"148.0.7778.215"}))
 
@@ -241,7 +241,7 @@ def test_an_operator_may_still_impose_a_ceiling_deliberately(tmp_path, monkeypat
     """Removing the SHIPPED ceiling does not remove the operator's ability to
     pin their engine — e.g. while waiting out a checker regression."""
     pf = tmp_path / "engine-policy.json"
-    pf.write_text(json.dumps({"max_tested_major": 149}))
+    pf.write_text(json.dumps({"max_tested_major": 149}), encoding="utf-8")
     monkeypatch.setattr(policy, "POLICY_FILE", str(pf))
 
     assert policy.max_tested_major() == 149
@@ -255,7 +255,7 @@ def test_an_operator_ceiling_refusal_names_their_own_setting(tmp_path, monkeypat
     one the operator set. It must point at the knob they actually control, and
     must still not read as a download failure."""
     pf = tmp_path / "engine-policy.json"
-    pf.write_text(json.dumps({"max_tested_major": 148}))
+    pf.write_text(json.dumps({"max_tested_major": 148}), encoding="utf-8")
     monkeypatch.setattr(policy, "POLICY_FILE", str(pf))
 
     kind, message = policy.check("149.0.8000.10")
@@ -274,7 +274,7 @@ def test_a_typo_in_the_ceiling_is_ignored_rather_than_obeyed(tmp_path, monkeypat
     ceiling — the shipped default."""
     pf = tmp_path / "engine-policy.json"
     for bad in ("abc", None, True, -5, [1]):
-        pf.write_text(json.dumps({"max_tested_major": bad}))
+        pf.write_text(json.dumps({"max_tested_major": bad}), encoding="utf-8")
         monkeypatch.setattr(policy, "POLICY_FILE", str(pf))
         assert policy.max_tested_major() == policy.NO_CEILING, bad
         assert policy.is_installable("999.0.1.1") is True, bad
@@ -572,7 +572,7 @@ def test_a_refused_build_is_not_offered_as_an_available_update(tmp_path, monkeyp
     monkeypatch.setattr(app_mod.engine, "current_version", lambda: "148.0.7778.215")
     # the only ceiling that exists is one the operator set
     pf = tmp_path / "engine-policy.json"
-    pf.write_text(json.dumps({"max_tested_major": 148}))
+    pf.write_text(json.dumps({"max_tested_major": 148}), encoding="utf-8")
     monkeypatch.setattr(app_mod.engine_policy, "POLICY_FILE", str(pf))
 
     # _engine_unverifiable_tag is the PS-49 digest refusal, empty here because
@@ -591,7 +591,7 @@ def test_a_declined_build_does_not_read_as_up_to_date(tmp_path, monkeypatch):
     current — the operator would never learn their own pin is holding it back."""
     monkeypatch.setattr(app_mod.engine, "current_version", lambda: "148.0.7778.215")
     pf = tmp_path / "engine-policy.json"
-    pf.write_text(json.dumps({"max_tested_major": 148}))
+    pf.write_text(json.dumps({"max_tested_major": 148}), encoding="utf-8")
     monkeypatch.setattr(app_mod.engine_policy, "POLICY_FILE", str(pf))
 
     logs = []

@@ -89,7 +89,7 @@ class ServedApp:
     def output(self) -> str:
         """Whatever the child wrote — the only diagnosis when startup fails."""
         try:
-            with open(self._log_path, errors="replace") as fh:
+            with open(self._log_path, errors="replace", encoding="utf-8") as fh:
                 return fh.read()
         except OSError:
             return ""
@@ -193,10 +193,26 @@ def serve_app(repo_root: str, home: str | None = None, patch: str = ""):
     port = _free_port()
     script = _CHILD.format(home=home, repo=repo_root, port=port, patch=patch)
 
+    # BOTH ENDS OF THIS FILE MUST NAME utf-8, and pinning only one is worse
+    # than pinning neither (PS-184). `output()` reads this path back with
+    # encoding="utf-8"; the actual WRITER is the child's stdout, which decodes
+    # under the locale and is cp1252 on Windows. Two locale-dependent ends
+    # agree by accident; one pinned end and one locale end disagree by
+    # construction -- and `errors="replace"` on the read means the
+    # disagreement surfaces as silent mojibake in the only diagnosis available
+    # when startup fails, rather than as a crash.
+    #
+    # `mode="w", encoding="utf-8"` pins this wrapper. It is NOT the load-bearing
+    # half -- `stdout=log` hands the child a raw fd and the wrapper's codec is
+    # bypassed -- but naming it stops the next reader concluding the wrapper is
+    # the writer. PYTHONIOENCODING below is what actually pins the child.
     log = tempfile.NamedTemporaryFile(
-        prefix="persona-ui-serve-", suffix=".log", delete=False, mode="w"
+        prefix="persona-ui-serve-", suffix=".log", delete=False, mode="w",
+        encoding="utf-8",
     )
-    env = dict(os.environ, PERSONA_HOME=home)
+    # The child's stdout/stderr codec. Without this the child encodes its
+    # diagnostics under the platform locale while output() decodes utf-8.
+    env = dict(os.environ, PERSONA_HOME=home, PYTHONIOENCODING="utf-8")
     # A served app must never inherit a stale display or the selftest gate.
     env.pop("PERSONA_SELFTEST", None)
 

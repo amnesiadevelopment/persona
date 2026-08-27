@@ -26,7 +26,7 @@ def test_wipe_removes_all_profiles_and_returns_count(mgr):
     mgr.add_profile("c", "", "windows")
     # materialise a data dir for one profile
     os.makedirs(mgr._data_path("a"), exist_ok=True)
-    with open(os.path.join(mgr._data_path("a"), "cookies.sqlite"), "w") as f:
+    with open(os.path.join(mgr._data_path("a"), "cookies.sqlite"), "w", encoding="utf-8") as f:
         f.write("x")
 
     n = mgr.wipe_all_profiles()

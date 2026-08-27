@@ -174,7 +174,7 @@ def _run(tmp_path, os_type, probe, *, with_gpu=False, tag="", stubs=None):
         encoding="utf-8",
     )
     out = subprocess.run(
-        [node, str(harness), str(cfg)], capture_output=True, text=True, timeout=60
+        [node, str(harness), str(cfg)], capture_output=True, text=True, timeout=60, encoding="utf-8"
     )
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)["result"]
@@ -371,7 +371,7 @@ def test_descriptor_matches_a_non_enumerable_original(tmp_path):
                  "new HTMLCanvasElement().getContext('webkit-3d')!==null].join('|');})()",
     }), encoding="utf-8")
     out = subprocess.run([node, str(harness), str(cfg)],
-                         capture_output=True, text=True, timeout=60)
+                         capture_output=True, text=True, timeout=60, encoding="utf-8")
     assert out.returncode == 0, out.stderr
     result = json.loads(out.stdout)["result"]
     # non-enumerable preserved, invisible to for...in, and the alias still works

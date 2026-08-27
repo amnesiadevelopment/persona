@@ -9,7 +9,7 @@ def test_creates_manifest_and_script(tmp_path):
     ext = build_geo_extension(45.5, -73.6, str(tmp_path / "geo"))
     assert (pathlib.Path(ext) / "manifest.json").exists()
     assert (pathlib.Path(ext) / "geo.js").exists()
-    m = json.loads((pathlib.Path(ext) / "manifest.json").read_text())
+    m = json.loads((pathlib.Path(ext) / "manifest.json").read_text(encoding="utf-8"))
     assert m["manifest_version"] == 3
     cs = m["content_scripts"][0]
     assert cs["run_at"] == "document_start"
@@ -18,14 +18,14 @@ def test_creates_manifest_and_script(tmp_path):
 
 def test_script_embeds_coordinates(tmp_path):
     ext = build_geo_extension(45.5017, -73.5673, str(tmp_path / "geo"))
-    js = (pathlib.Path(ext) / "geo.js").read_text()
+    js = (pathlib.Path(ext) / "geo.js").read_text(encoding="utf-8")
     assert "45.5017" in js
     assert "-73.5673" in js
 
 
 def test_overrides_getcurrentposition(tmp_path):
     ext = build_geo_extension(1.0, 2.0, str(tmp_path / "geo"))
-    js = (pathlib.Path(ext) / "geo.js").read_text()
+    js = (pathlib.Path(ext) / "geo.js").read_text(encoding="utf-8")
     assert "getCurrentPosition" in js
     assert "watchPosition" in js
 
@@ -56,7 +56,7 @@ def test_geo_on_shared_recursive_registry(tmp_path):
     # about:blank/srcdoc iframe with a pristine navigator.geolocation. Route the
     # patch through the shared recursive registry so every child frame is covered.
     ext = build_geo_extension(1.0, 2.0, str(tmp_path / "geo"))
-    js = (pathlib.Path(ext) / "geo.js").read_text()
+    js = (pathlib.Path(ext) / "geo.js").read_text(encoding="utf-8")
     assert "applyGeoPatch" in js
     assert "__pnaInstall(SELF, applyGeoPatch)" in js
     assert "HTMLIFrameElement" in js
@@ -76,7 +76,7 @@ def test_deny_mode_when_coords_none(tmp_path):
     # with lat/lon None runs in DENY mode — LAT/LON serialize to null and the
     # override returns PERMISSION_DENIED (code 1).
     ext = build_geo_extension(None, None, str(tmp_path / "geo"))
-    js = (pathlib.Path(ext) / "geo.js").read_text()
+    js = (pathlib.Path(ext) / "geo.js").read_text(encoding="utf-8")
     assert "var LAT = null" in js and "var LON = null" in js
     assert "DENY" in js
     assert "PERMISSION_DENIED: 1" in js
@@ -88,7 +88,7 @@ def test_deny_mode_when_coords_none(tmp_path):
 def test_coords_mode_does_not_deny(tmp_path):
     # with real coords, DENY resolves false and success returns the pinned pos.
     ext = build_geo_extension(52.52, 13.405, str(tmp_path / "geo"))
-    js = (pathlib.Path(ext) / "geo.js").read_text()
+    js = (pathlib.Path(ext) / "geo.js").read_text(encoding="utf-8")
     assert "52.52" in js and "13.405" in js
     assert "var LAT = null" not in js
 
@@ -102,6 +102,6 @@ def test_script_is_iife_no_globals(tmp_path):
     # since geo is proxy-only). Everything must be wrapped in an IIFE so no name
     # leaks to the page.
     ext = build_geo_extension(1.0, 2.0, str(tmp_path / "geo"))
-    js = (pathlib.Path(ext) / "geo.js").read_text().strip()
+    js = (pathlib.Path(ext) / "geo.js").read_text(encoding="utf-8").strip()
     assert js.startswith("(function"), f"geo.js must start with an IIFE, got: {js[:30]!r}"
     assert js.endswith(("})();", "})()")), f"geo.js must end by invoking the IIFE, got: {js[-10:]!r}"

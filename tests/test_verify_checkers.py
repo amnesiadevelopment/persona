@@ -1100,7 +1100,7 @@ def test_write_is_atomic_and_leaves_no_temp_file(tmp_path):
     record = _record([])
     target = tmp_path / "sub" / "reading.json"
     write(record, str(target))
-    assert json.loads(target.read_text()) == record
+    assert json.loads(target.read_text(encoding="utf-8")) == record
     assert [p.name for p in (tmp_path / "sub").iterdir()] == ["reading.json"]
 
 
@@ -1555,7 +1555,7 @@ def _read(argv, tmp_path, monkeypatch, exit_country="PL", expect_rc=3):
     target = tmp_path / "reading.json"
     rc = cli.main(["read", "-o", str(target)] + argv)
     assert rc == expect_rc
-    return json.loads(target.read_text())
+    return json.loads(target.read_text(encoding="utf-8"))
 
 
 def test_a_skipped_tier_keeps_its_full_width_as_unobtainable_rows(
@@ -1690,7 +1690,7 @@ def _browser_arm(argv, tmp_path, monkeypatch, expect_rc=3):
     target = tmp_path / "reading.json"
     rc = cli.main(["read", "-o", str(target), "--skip-json"] + argv)
     assert rc == expect_rc
-    return json.loads(target.read_text()), seen
+    return json.loads(target.read_text(encoding="utf-8")), seen
 
 
 def test_the_control_arm_reaches_the_engine_with_the_layer_suppressed(
@@ -1943,7 +1943,7 @@ def _read_with_real_credential(
     rc = cli.main(["read", "-o", str(target), "--skip-browser", "--skip-json",
                    "--credential", path])
     assert rc == expect_rc
-    return json.loads(target.read_text()), used
+    return json.loads(target.read_text(encoding="utf-8")), used
 
 
 def _credential_note(record):

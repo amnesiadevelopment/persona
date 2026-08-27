@@ -328,7 +328,7 @@ def test_a_launched_android_profile_presents_the_installed_engines_version(
     # the extension regenerated into the profile dir agrees with the UA
     js = (
         pathlib.Path(tmp_path) / "droid" / ".persona-mobile-ext" / "mobile.js"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     assert f"version: '{ENGINE_MAJOR}'" in js
     assert f'FULLVER  = "{ENGINE_TAG}"' in js
 
@@ -345,12 +345,12 @@ def test_relaunching_the_same_profile_on_a_newer_engine_needs_no_migration(
     ua_first = _ua_arg(_spawn(monkeypatch, tmp_path, profile, tag="151.0.7778.215"))
     js_path = pathlib.Path(tmp_path) / "droid" / ".persona-mobile-ext" / "mobile.js"
     assert "Chrome/151.0.0.0" in ua_first
-    assert "version: '151'" in js_path.read_text()
+    assert "version: '151'" in js_path.read_text(encoding="utf-8")
 
     # engine bumped a major underneath the existing profile; no migration step
     ua_second = _ua_arg(_spawn(monkeypatch, tmp_path, profile, tag="152.0.8123.47"))
     assert "Chrome/152.0.0.0" in ua_second
-    js = js_path.read_text()
+    js = js_path.read_text(encoding="utf-8")
     assert "version: '152'" in js
     assert "version: '151'" not in js, "the stale extension was not regenerated"
 
@@ -409,7 +409,7 @@ def test_an_ios_profile_advertises_no_chromium_version(monkeypatch, tmp_path):
 
     js = (
         pathlib.Path(tmp_path) / "fone" / ".persona-mobile-ext" / "mobile.js"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     assert "__FULLVER__" not in js and "__MAJOR__" not in js
     assert OLD_FULL not in js and f"version: '{OLD_MAJOR}'" not in js
 
@@ -435,4 +435,4 @@ def _android_ext(base, version: ChromiumVersion | None = None) -> str:
         css_width=412, css_height=915, dpr=2.625,
         device_memory=8, hardware_concurrency=8, touch_points=5,
     )
-    return (pathlib.Path(d) / "mobile.js").read_text()
+    return (pathlib.Path(d) / "mobile.js").read_text(encoding="utf-8")

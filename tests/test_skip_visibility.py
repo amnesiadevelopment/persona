@@ -50,7 +50,7 @@ def _run_pytest(cwd: Path, *args: str, env_extra: dict[str, str] | None = None):
         env=env,
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=120, encoding="utf-8",
     )
 
 
@@ -88,7 +88,7 @@ def test_an_undeclared_run_still_skips_and_still_passes(sandbox: Path):
     turning every contributor's green run red because they lack a browser
     nobody asked them to install.
     """
-    (sandbox / "test_probe.py").write_text(_UNSEEN_BROWSER_TEST)
+    (sandbox / "test_probe.py").write_text(_UNSEEN_BROWSER_TEST, encoding="utf-8")
 
     result = _run_pytest(sandbox, "-q", "-rs")
 
@@ -106,7 +106,7 @@ def test_a_declared_environment_turns_a_browser_skip_into_a_failure(sandbox: Pat
     Declares browser support in an environment that plainly lacks it and
     asserts the run FAILS and names the offending test.
     """
-    (sandbox / "test_probe.py").write_text(_UNSEEN_BROWSER_TEST)
+    (sandbox / "test_probe.py").write_text(_UNSEEN_BROWSER_TEST, encoding="utf-8")
 
     result = _run_pytest(
         sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser"}
@@ -127,7 +127,7 @@ def test_the_failure_carries_the_real_exception_not_a_paraphrase(sandbox: Path):
     replaced it with a generic "browser capability missing" would destroy the
     one piece of information that says which failure this is.
     """
-    (sandbox / "test_probe.py").write_text(_UNSEEN_BROWSER_TEST)
+    (sandbox / "test_probe.py").write_text(_UNSEEN_BROWSER_TEST, encoding="utf-8")
 
     result = _run_pytest(
         sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser"}
@@ -144,7 +144,7 @@ def test_declaring_one_capability_does_not_police_another(sandbox: Path):
     Without this, the declaration would be all-or-nothing and an operator
     would be pushed back toward declaring nothing at all.
     """
-    (sandbox / "test_probe.py").write_text(_UNSEEN_BROWSER_TEST)
+    (sandbox / "test_probe.py").write_text(_UNSEEN_BROWSER_TEST, encoding="utf-8")
 
     result = _run_pytest(
         sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "node"}
@@ -162,7 +162,7 @@ def test_a_misspelled_capability_is_a_hard_error_not_a_silent_no_op(sandbox: Pat
     enforcing nothing at all: exactly the "looks like success, verified
     nothing" failure this whole ticket exists to remove. It must refuse to run.
     """
-    (sandbox / "test_probe.py").write_text(_UNSEEN_BROWSER_TEST)
+    (sandbox / "test_probe.py").write_text(_UNSEEN_BROWSER_TEST, encoding="utf-8")
 
     result = _run_pytest(
         sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "browsers"}
@@ -192,7 +192,7 @@ def test_nothing_infers_support_from_the_thing_being_checked(sandbox: Path):
     """
     import ast
 
-    tree = ast.parse(CONFTEST.read_text())
+    tree = ast.parse(CONFTEST.read_text(encoding="utf-8"))
     probing = {"importorskip", "import_module", "find_spec", "which", "__import__"}
 
     called: set[str] = set()
@@ -234,7 +234,7 @@ def test_an_explicit_marker_beats_reason_matching(sandbox: Path):
         "import pytest\n"
         "@pytest.mark.requires_capability('browser')\n"
         "def test_marked_but_cryptic_reason():\n"
-        "    pytest.skip('conditions not met')\n"
+        "    pytest.skip('conditions not met')\n", encoding="utf-8"
     )
 
     declared = _run_pytest(
@@ -268,7 +268,7 @@ def test_a_marker_is_policed_on_every_capability_it_names(sandbox: Path):
         "import pytest\n"
         "@pytest.mark.requires_capability('browser', 'node')\n"
         "def test_needs_browser_and_node():\n"
-        "    pytest.skip('node not available')\n"
+        "    pytest.skip('node not available')\n", encoding="utf-8"
     )
 
     result = _run_pytest(
@@ -318,7 +318,7 @@ def test_a_marker_adds_to_reason_matching_instead_of_replacing_it(sandbox: Path)
         "import pytest\n"
         "@pytest.mark.requires_capability('browser_chromium')\n"
         "def test_two_armed_probe():\n"
-        "    pytest.skip('firefox not runnable here: no binary')\n"
+        "    pytest.skip('firefox not runnable here: no binary')\n", encoding="utf-8"
     )
 
     # CI's actual declaration. The marker does not name firefox; the REASON
@@ -347,7 +347,7 @@ def test_a_marker_adds_to_reason_matching_instead_of_replacing_it(sandbox: Path)
         "import pytest\n"
         "@pytest.mark.requires_capability('browser_chromium')\n"
         "def test_two_armed_probe():\n"
-        "    pytest.skip('chromium engine not runnable here: no build')\n"
+        "    pytest.skip('chromium engine not runnable here: no build')\n", encoding="utf-8"
     )
     gated = _run_pytest(
         sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser"}
@@ -382,7 +382,7 @@ def test_a_marker_naming_an_unknown_capability_is_a_hard_error(sandbox: Path):
         "import pytest\n"
         "@pytest.mark.requires_capability('browserr')\n"
         "def test_marked_with_a_typo():\n"
-        "    pytest.skip('conditions not met')\n"
+        "    pytest.skip('conditions not met')\n", encoding="utf-8"
     )
 
     result = _run_pytest(
@@ -428,7 +428,7 @@ def test_a_valid_marker_still_collects_normally(sandbox: Path):
         "import pytest\n"
         "@pytest.mark.requires_capability('browser', 'node')\n"
         "def test_well_formed_marker():\n"
-        "    assert True\n"
+        "    assert True\n", encoding="utf-8"
     )
 
     result = _run_pytest(sandbox, "-q")
@@ -445,7 +445,7 @@ def test_an_xfail_is_not_mistaken_for_a_declined_test(sandbox: Path):
         "import pytest\n"
         "@pytest.mark.xfail(reason='firefox not runnable here: known')\n"
         "def test_expected_to_fail():\n"
-        "    assert False\n"
+        "    assert False\n", encoding="utf-8"
     )
 
     result = _run_pytest(
@@ -462,7 +462,7 @@ def test_the_summary_states_the_capability_held_when_nothing_declined(sandbox: P
     Silence would leave a reader unable to tell "the browser probes ran" from
     "the mechanism was never active" — the same ambiguity, relocated.
     """
-    (sandbox / "test_ok.py").write_text("def test_fine():\n    assert True\n")
+    (sandbox / "test_ok.py").write_text("def test_fine():\n    assert True\n", encoding="utf-8")
 
     result = _run_pytest(
         sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser"}
@@ -475,7 +475,7 @@ def test_the_summary_states_the_capability_held_when_nothing_declined(sandbox: P
 
 def test_the_cli_flag_and_the_env_var_are_the_same_declaration(sandbox: Path):
     """Two spellings, one meaning — CI sets an env var, a human types a flag."""
-    (sandbox / "test_probe.py").write_text(_UNSEEN_BROWSER_TEST)
+    (sandbox / "test_probe.py").write_text(_UNSEEN_BROWSER_TEST, encoding="utf-8")
 
     result = _run_pytest(sandbox, "-q", "--require-capability", "browser")
 
@@ -514,7 +514,7 @@ class TestTheUmbrellaKeepsTheOldDeclarationMeaningWhatItMeant:
         rename. Asserted end-to-end through a real run, not by inspecting the
         expansion helper, because the helper being right is not the claim.
         """
-        (sandbox / "test_probe.py").write_text(_UNSEEN_BROWSER_TEST)
+        (sandbox / "test_probe.py").write_text(_UNSEEN_BROWSER_TEST, encoding="utf-8")
 
         result = _run_pytest(
             sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser"}
@@ -535,7 +535,7 @@ class TestTheUmbrellaKeepsTheOldDeclarationMeaningWhatItMeant:
         engine-specific entry tells them to install the Firefox binary. The
         whole point of splitting the name was to make the message specific.
         """
-        (sandbox / "test_probe.py").write_text(_UNSEEN_BROWSER_TEST)
+        (sandbox / "test_probe.py").write_text(_UNSEEN_BROWSER_TEST, encoding="utf-8")
 
         result = _run_pytest(
             sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser"}
@@ -557,7 +557,7 @@ class TestTheUmbrellaKeepsTheOldDeclarationMeaningWhatItMeant:
             "import pytest\n"
             "@pytest.mark.requires_capability('browser')\n"
             "def test_marked_but_cryptic_reason():\n"
-            "    pytest.skip('conditions not met')\n"
+            "    pytest.skip('conditions not met')\n", encoding="utf-8"
         )
 
         result = _run_pytest(
@@ -584,7 +584,7 @@ class TestTheChromiumGapIsNamedAndNotQuietlyCovered:
         capability is opt-in precisely because declaring it today would be a
         promise no machine can keep.
         """
-        (sandbox / "test_probe.py").write_text(_UNSEEN_CHROMIUM_ENGINE_TEST)
+        (sandbox / "test_probe.py").write_text(_UNSEEN_CHROMIUM_ENGINE_TEST, encoding="utf-8")
 
         result = _run_pytest(
             sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser"}
@@ -604,7 +604,7 @@ class TestTheChromiumGapIsNamedAndNotQuietlyCovered:
         to be discovered by diffing the capability table would make the gap
         silent again, which is the whole defect this split removes.
         """
-        (sandbox / "test_ok.py").write_text("def test_fine():\n    assert True\n")
+        (sandbox / "test_ok.py").write_text("def test_fine():\n    assert True\n", encoding="utf-8")
 
         result = _run_pytest(
             sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser"}
@@ -630,7 +630,7 @@ class TestTheChromiumGapIsNamedAndNotQuietlyCovered:
         "chromium: ok" while nothing launches chromium would be exactly the
         false green the ticket set out to remove.
         """
-        (sandbox / "test_ok.py").write_text("def test_fine():\n    assert True\n")
+        (sandbox / "test_ok.py").write_text("def test_fine():\n    assert True\n", encoding="utf-8")
 
         result = _run_pytest(
             sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser"}
@@ -645,7 +645,7 @@ class TestTheChromiumGapIsNamedAndNotQuietlyCovered:
         """Opt-in, not inert. Whoever provisions the engine gets a real gate on
         the day they declare it — otherwise this table entry would be a comment
         with no mechanism behind it, which is a different kind of lie."""
-        (sandbox / "test_probe.py").write_text(_UNSEEN_CHROMIUM_ENGINE_TEST)
+        (sandbox / "test_probe.py").write_text(_UNSEEN_CHROMIUM_ENGINE_TEST, encoding="utf-8")
 
         result = _run_pytest(
             sandbox,
@@ -665,7 +665,7 @@ class TestSkipReportingIsOnByDefault:
         reasons and then hides the list of FAILED test names — measured on this
         suite: 30 failures rendered as an aggregate count with no names. The
         `f` and `E` are load-bearing, not decoration."""
-        config = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+        config = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         addopts = config["tool"]["pytest"]["ini_options"]["addopts"]
 
         flags = addopts.split()

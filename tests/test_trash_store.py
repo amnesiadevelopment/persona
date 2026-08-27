@@ -218,7 +218,7 @@ def test_a_malformed_record_does_not_abort_the_whole_load(tmp_path, monkeypatch)
                     "payload": {},
                 },
             }
-        )
+        ), encoding="utf-8"
     )
     assert [e.name for e in TrashStore().list()] == ["keeper"]
 
@@ -230,12 +230,12 @@ def test_an_unreadable_trash_file_is_quarantined_not_overwritten(
     # recoverable record, so it is moved aside rather than overwritten.
     path = tmp_path / "trash.json"
     monkeypatch.setenv("PERSONA_TRASH_FILE", str(path))
-    path.write_text("{not json")
+    path.write_text("{not json", encoding="utf-8")
     s = TrashStore()
     assert s.list() == []
     backups = [p for p in tmp_path.iterdir() if ".corrupt-" in p.name]
     assert len(backups) == 1, list(tmp_path.iterdir())
-    assert backups[0].read_text() == "{not json"
+    assert backups[0].read_text(encoding="utf-8") == "{not json"
 
 
 def test_new_id_is_an_opaque_hex_token(store):

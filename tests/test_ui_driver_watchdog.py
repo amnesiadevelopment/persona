@@ -370,7 +370,7 @@ def test_the_bound_still_fires_with_pytest_timeout_disabled(tmp_path):
     location exactly as they did from the repo.
     """
     inner = str(tmp_path / "test_ps104_inner_wedge.py")
-    with open(inner, "w") as handle:
+    with open(inner, "w", encoding="utf-8") as handle:
         handle.write(_INNER_TEST)
     try:
         started = time.monotonic()
@@ -381,7 +381,7 @@ def test_the_bound_still_fires_with_pytest_timeout_disabled(tmp_path):
                 "-p", "no:randomly",
                 "-x", "-q", "--no-header",
             ],
-            capture_output=True, text=True, cwd=REPO_ROOT, timeout=180,
+            capture_output=True, text=True, cwd=REPO_ROOT, timeout=180, encoding="utf-8",
         )
         elapsed = time.monotonic() - started
         output = run.stdout + run.stderr
