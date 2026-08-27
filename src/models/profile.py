@@ -265,6 +265,53 @@ class Profile:
         """
         return normalize_generation(self.hardware_generation_value)
 
+    @property
+    def device_type_incoherence(self) -> str | None:
+        """Rule 3's verdict on THIS STORED RECORD, or None if it is coherent.
+
+        THE RESIDUAL PS-188 CLOSES. Rule 3 is refused at the two AUTHORING doors
+        and evaluated at none of the three RECOVERY doors, deliberately — a door
+        that refuses turns a recoverable backup into an unimportable one.
+        ``services/profile/coherence.py`` owns that reasoning in full (including
+        why Rule 3 has no honest normalisation and why ``restore_profile`` stays
+        exempt); it is not restated here.
+
+        The decision for those doors is ACCEPT AND RECORD, and this property is
+        the RECORD half. The incoherence was previously SILENT — the record
+        looked exactly like a coherent one — which is the part that was actually
+        wrong. It is now ASKABLE of any profile, from any door, at any time.
+
+        WHY A DERIVED PROPERTY AND NOT A STORED FLAG, and why that is the same
+        argument ``__setattr__`` below makes for Rule 4. A stored flag is a
+        second copy of a fact already fully determined by
+        ``(os_type, device_type)``, so it can go stale the moment either field
+        moves — and it would need a backfill for every record already on disk,
+        including the ones this exists to describe. Computed on read, it cannot
+        drift, needs no migration, and is true of the door nobody has written
+        yet. ``asdict`` skips properties, so this changes NOTHING about what is
+        persisted.
+
+        ⚠️ That derivation is a GUARANTEE, not something a test enforces: "the
+        record says so" holds by construction for every record that can exist,
+        so no assertion over stored records can catch a future door that lands
+        the pair silently. What such a door would break is the DISCLOSURE half
+        (the warning log at the door, the REST field), which is per-door and
+        tested per-door. See ``tests/test_profile_device_type_incoherence_record``.
+
+        The reason string is Rule 3's own message, not a second wording of it:
+        ``coherence.device_type_error`` is the single owner, so the property and
+        the refusing doors cannot come to disagree about what Rule 3 says.
+
+        Imported function-locally on purpose: ``services.profile.coherence``
+        cannot be reached without executing ``services/profile/__init__``, which
+        imports ``manager``, which imports THIS module — a module-level import
+        here closes that cycle at import time. ``process.effective_engine``
+        documents the same constraint for the same reason.
+        """
+        from ..services.profile.coherence import device_type_error
+
+        return device_type_error(self.os_type, self.device_type)
+
     def __setattr__(self, name: str, value: object) -> None:
         """Repair ``os_type`` onto the canonical vocabulary as it is STORED.
 
