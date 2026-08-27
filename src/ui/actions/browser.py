@@ -27,6 +27,48 @@ def launch_or_stop(
         return
 
     if bl.is_running(name):
+        # A browser LEFT BEHIND by a previous persona is not a session this run
+        # can stop through the normal path — there is no Popen handle for it,
+        # because the dict that held it died with that process. stop_profile
+        # would find nothing and answer False, leaving the window open while
+        # the card went back to LAUNCH — which is the double-launch defect
+        # wearing a different hat (PS-223).
+        #
+        # survivor_for RE-PROBES rather than trusting the startup scan, so a
+        # window the user has since closed by hand does not keep answering yes.
+        survivor = None
+        try:
+            survivor = bl.survivor_for(name)
+        except AttributeError:
+            # A launcher without the survivor surface (a test double) behaves
+            # exactly as it did before this ticket.
+            survivor = None
+
+        if survivor is not None:
+            # THIS CLICK IS THE CONSENT. The card renders [ close ] for a
+            # profile the guard reports as running, so reaching here means the
+            # user has asked for the leftover browser to be closed. That is
+            # what makes killing it legitimate: the ticket forbids a SILENT
+            # kill, not a kill the user asked for by name.
+            log(get_string("stopping_profile", name=name))
+            state.set_loading(name, True)
+            state.schedule_refresh()
+
+            def do_close_survivor() -> None:
+                try:
+                    ok = bl.close_survivor(name)
+                    log(
+                        get_string("survivor_closed", name=name)
+                        if ok
+                        else get_string("survivor_close_failed", name=name)
+                    )
+                finally:
+                    state.set_loading(name, False)
+                    state.schedule_refresh()
+
+            threading.Thread(target=do_close_survivor, daemon=True).start()
+            return
+
         log(get_string("stopping_profile", name=name))
         state.set_loading(name, True)
         state.schedule_refresh()
