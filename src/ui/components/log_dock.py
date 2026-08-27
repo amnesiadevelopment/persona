@@ -46,17 +46,56 @@ from ..theme.colors import COLORS
 
 MONO = "monospace"
 
+#: The console's chrome: the grip bar plus the header row, i.e. everything that
+#: is NOT a log row. Every height below is this plus a whole number of rows, so
+#: a height is always "N rows" rather than a pixel count that happens to fit.
+CHROME_HEIGHT = 9 + 33
+
+#: The vertical padding the ListView adds above and below the row stack
+#: (``Padding.symmetric(vertical=6)``).
+LIST_PADDING = 12
+
+
+def height_for_rows(rows: int) -> int:
+    """The console height that shows exactly ``rows`` whole log rows.
+
+    THE COMPLAINT THIS ANSWERS. The dock opened at a height derived from the
+    WINDOW ("236px, or whatever the rail can spare"), so on his machine it
+    opened with more height than it had content to fill — "пустого места".
+    A height chosen in pixels can only accidentally be a whole number of rows;
+    this makes the row the unit, so the console opens full of log and its
+    bottom edge lands where a row ends rather than through the middle of one.
+    """
+    return CHROME_HEIGHT + LIST_PADDING + rows * ROW_HEIGHT
+
+
+#: What the console opens at, in ROWS — his number, and the whole point of
+#: rows-not-pixels: "нужно что бы изначально он был на 6 строчек".
+DEFAULT_ROWS = 6
+
 #: Height of the open console. Sits between the clamps below, and is what the
 #: operator gets before he ever touches the grip.
-OPEN_HEIGHT = 236
+OPEN_HEIGHT = height_for_rows(DEFAULT_ROWS)
 
-#: The grip's clamps. Below MIN the console cannot show enough rows to be worth
-#: reading; above MAX it starts eating the page it is supposed to sit under.
-MIN_HEIGHT = 120
-MAX_HEIGHT = 520
+#: The grip's clamps, both expressed in rows.
+#:
+#: MIN is ONE ROW, not a floor of "enough to be worth reading". He asked to be
+#: able to take it down to a single line — "либо скрыть до 1 строчки" — and the
+#: old 120px floor is what made the smallest state a fixed strip he had to
+#: reach a different control for. The grip now reaches every state he named:
+#: bigger, smaller, and one line.
+MIN_ROWS = 1
+MAX_ROWS_VISIBLE = 20
+MIN_HEIGHT = height_for_rows(MIN_ROWS)
+MAX_HEIGHT = height_for_rows(MAX_ROWS_VISIBLE)
 
 #: The collapsed strip: tall enough for one line of live text and nothing else.
 COLLAPSED_HEIGHT = 34
+
+#: How tall the grip's HIT region is. The painted bar stays a 3px line — this
+#: is the region that accepts the drag, and it is the second half of why the
+#: grip shipped unusable. See :meth:`LogDock._grip`.
+GRIP_HIT_HEIGHT = 14
 
 #: How many rows the console keeps painted. Materially more than the 6 the old
 #: panel managed — at ROW_HEIGHT this is ~13000px of scrollback against a
@@ -93,7 +132,70 @@ def affordable_height(window_height: float | None) -> int:
     """
     if not window_height or window_height <= 0:
         return MAX_HEIGHT
-    return max(MIN_HEIGHT, min(MAX_HEIGHT, int(window_height) - RAIL_CONTENT_HEIGHT))
+    return quantize(int(window_height) - RAIL_CONTENT_HEIGHT)
+
+
+def _drag_delta_y(e) -> float | None:
+    """The vertical distance one drag frame moved, from wherever flet put it.
+
+    THE DEFECT THIS FUNCTION IS. The dock's grip handler read ``e.delta_y``,
+    and on the flet version this app ships (0.85) that attribute DOES NOT
+    EXIST — the event carries ``local_delta``/``global_delta`` (``Offset``
+    objects) instead. ``e.delta_y`` therefore evaluated to ``None`` on every
+    frame and ``self.height - None`` raised a TypeError inside the gesture
+    callback, where flet swallows it. The grip received the gesture perfectly
+    and then threw it away, which is exactly the reported symptom: "я не могу
+    ползунком менять высоту активити лога".
+
+    MEASURED, not guessed. A GestureDetector driven with a real pointer in a
+    served flet app reports, per frame:
+
+        delta_y=None  local_delta=Offset(x=0, y=-9.0)  global_delta.y=-81.0
+
+    So ``local_delta.y`` is the per-frame delta and ``global_delta.y`` is the
+    cumulative one — the local value is what a per-frame ``height - delta``
+    must use.
+
+    Every candidate is tried in order rather than pinning the one that works
+    today: this is precisely the kind of attribute rename that shipped the bug,
+    and a grip that silently stops working on a flet upgrade is the failure
+    being fixed. ``delta_y`` is kept FIRST so a flet that restores it is
+    honoured natively.
+    """
+    direct = getattr(e, "delta_y", None)
+    if isinstance(direct, (int, float)):
+        return float(direct)
+    for name in ("local_delta", "delta", "global_delta"):
+        offset = getattr(e, name, None)
+        y = getattr(offset, "y", None)
+        if isinstance(y, (int, float)):
+            return float(y)
+    primary = getattr(e, "primary_delta", None)
+    if isinstance(primary, (int, float)):
+        return float(primary)
+    return None
+
+
+def rows_for_height(height: float) -> int:
+    """How many WHOLE log rows a console of this height shows.
+
+    The inverse of :func:`height_for_rows`, and the reason the grip can report
+    its own state in his units: a drag reads out as "8 rows", not "289px".
+    """
+    usable = int(height) - CHROME_HEIGHT - LIST_PADDING
+    return max(MIN_ROWS, min(MAX_ROWS_VISIBLE, usable // ROW_HEIGHT))
+
+
+def quantize(height: float) -> int:
+    """Snap a height to the nearest whole number of rows, within the clamps.
+
+    EVERY height the console can hold passes through here — the opening
+    default, a drag, and a window resize alike — so the console's bottom edge
+    always lands where a row ends. That is what removes the "пустое место" he
+    reported: a console sized in pixels shows five rows and a sliver of a
+    sixth, and the sliver reads as the panel being taller than its content.
+    """
+    return height_for_rows(rows_for_height(height))
 
 
 def default_height(window_height: float | None) -> int:
@@ -123,6 +225,37 @@ class LogDock:
         # Sized against the window rather than a constant, so a short window
         # does not cost the sidebar its bottom cluster — see default_height.
         self.height = default_height(window_height)
+        #: The UNSNAPPED height the drag is accumulating into.
+        #:
+        #: THE BUG THIS EXISTS TO FIX, measured on the running app: a drag
+        #: arrives as ~10px frames, and snapping EACH FRAME to whole rows makes
+        #: the gesture asymmetric. Quantizing floors, so growing by 10px from a
+        #: 6-row console lands back inside row 6 (186 -> 186) and the console
+        #: never grows however far he drags; shrinking by 10px crosses a
+        #: boundary immediately (186 -> 164) and it does. Up was dead, down
+        #: worked — which reads as the grip being broken again.
+        #:
+        #: So the raw height accumulates the deltas and the SNAP is applied
+        #: only to what is displayed. The console still lands on whole rows;
+        #: the gesture is just no longer forced to reach a full row within a
+        #: single frame.
+        self._raw_height = float(self.height)
+        #: The window height the budget is computed against, remembered.
+        #:
+        #: WHY THE DOCK HAS TO HOLD THIS. ``affordable_height()`` is a function
+        #: of the window, and until now only ``apply_window_height()`` ever
+        #: called it — because only the resize path was HANDED a window height.
+        #: The drag path has no event carrying one, so a grip that wants to
+        #: respect the same budget needs the last known value kept here. See
+        #: :meth:`drag_by`.
+        #:
+        #: ``None`` means "not measured" and constrains nothing, which is the
+        #: same direction ``affordable_height`` already takes: a headless or
+        #: served session that reports no height must not have its console
+        #: silently clamped to the minimum.
+        self._window_height: float | None = (
+            float(window_height) if window_height else None
+        )
         #: The height the OPERATOR wants, which is not always the height he can
         #: have. The applied height is min(this, whatever the window can
         #: afford), so a window that shrinks takes height away and a window
@@ -202,6 +335,12 @@ class LogDock:
         self._total_label = ft.Text(
             "", size=10, color=COLORS["text_sub"], font_family=MONO
         )
+        #: The size readout, in HIS unit. "8 rows" is checkable against what he
+        #: can see; "289px" is not. It is also what makes the size controls
+        #: legible as a set rather than as two anonymous arrows.
+        self._size_label = ft.Text(
+            "", size=10, color=COLORS["text_sub"], font_family=MONO
+        )
 
         self.body = ft.Container(expand=True, content=self._stream_pane())
         self.collapsed_strip = ft.Container(
@@ -253,6 +392,7 @@ class LogDock:
             controls=[
                 self._jump,
                 self._follow_label,
+                self._size_controls(),
                 ft.IconButton(
                     icon=ft.Icons.OPEN_IN_FULL,
                     icon_size=13,
@@ -274,43 +414,231 @@ class LogDock:
         )
 
     def _grip(self) -> ft.Control:
-        """The draggable top edge.
+        """The draggable top edge — the control that shipped broken.
 
-        A real ``on_pan_update``: dragging up grows the console, dragging down
-        shrinks it, clamped so it can neither vanish nor eat the page. The
-        visible grip is a short bar because an invisible drag target is a
-        feature nobody finds.
+        WHAT WAS WRONG, AND IT WAS TWO THINGS.
+
+        The user's report was "я не могу ползунком менять высоту активити лога".
+        PS-179's own acceptance record had already marked this criterion NOT
+        COVERED: the grip is a ``GestureDetector``, which paints NO semantics
+        node, so nothing could address it — six coordinate offsets across the
+        band each with a real press/move/release moved ``height`` by nothing.
+        A criterion recorded as unverified is the one he hit within minutes.
+
+        1. **It was not addressable, so it could not be verified.** The fix is
+           the ``tooltip`` below. A tooltip makes Flutter emit a real semantics
+           node for the control, which means a pointer — an operator's or a
+           driver's — can find the grip and land on it. This is not decoration:
+           it is what turns "AC3 could not be driven" into a criterion that is
+           demonstrated by a real gesture in the capture.
+
+        2. **The hit area was 9px tall.** Even found, a 9px target is a
+           precision task with the window edge nearby. The grip is now
+           :data:`GRIP_HIT_HEIGHT` tall — the PAINTED bar stays a thin 3px line
+           so the design does not change, but the region that accepts the drag
+           is comfortable. A drag target you must aim at is a drag target that
+           reads as broken.
+
+        ``on_pan_update`` is kept (it is the gesture that works once the target
+        can be hit) and joined by ``on_vertical_drag_update``: Flutter's arena
+        can award a clean vertical drag to the vertical recognizer, in which
+        case a pan-only detector never fires. Registering both means the grip
+        responds to the gesture the user actually makes rather than to the one
+        the arena happened to pick.
         """
 
-        def on_drag(e: ft.DragUpdateEvent) -> None:
-            self.set_height(self.height - e.delta_y)
+        def on_drag(e) -> None:
+            delta = _drag_delta_y(e)
+            if delta is None:
+                return
+            # Dragging UP (negative delta) grows the console. Through
+            # drag_by, NOT set_height: a single frame is smaller than a row,
+            # so the delta has to accumulate before it is snapped — see
+            # drag_by and _raw_height.
+            self.drag_by(delta)
 
         return ft.GestureDetector(
             mouse_cursor=ft.MouseCursor.RESIZE_UP_DOWN,
             on_pan_update=on_drag,
+            on_vertical_drag_update=on_drag,
             content=ft.Container(
-                height=9,
+                height=GRIP_HIT_HEIGHT,
                 bgcolor=COLORS["log_bg"],
                 alignment=ft.Alignment.CENTER,
+                # The tooltip is what makes the grip exist to a pointer at all
+                # — see the docstring. It also finally SAYS what the bar does,
+                # which no label ever did.
+                tooltip="Drag to resize the Activity Log",
                 content=ft.Container(
                     width=54, height=3, border_radius=2, bgcolor="#333333"
                 ),
             ),
         )
 
-    def set_height(self, height: float) -> None:
-        """Apply a new open height, clamped. The grip's whole effect.
+    def _size_controls(self) -> ft.Control:
+        """Smaller / bigger / one line — the size gestures, said out loud.
 
-        Kept separate from the drag handler so the clamp is one testable thing
-        rather than a expression buried in a gesture callback.
+        THE POINT OF THIS DIRECTION. The grip is fixed and it works (see
+        :meth:`_grip`), but a drag handle is a DISCOVERED control: nothing on
+        screen says it is there, nothing says what range it has, and the one
+        thing he asked for by name — "скрыть до 1 строчки" — is a gesture you
+        have to already know about. So the sizes he named become three visible,
+        one-click controls, and the drag stays as the continuous way to land
+        anywhere between them.
+
+        The readout beside them is in ROWS, which is the unit he used
+        ("на 6 строчек"). It is what tells him the console is at the size he
+        thinks it is without counting lines.
         """
-        self.height = max(MIN_HEIGHT, min(MAX_HEIGHT, int(height)))
+        def step(rows: int):
+            def go(_):
+                self.set_rows(self.rows + rows)
+
+            return go
+
+        def button(icon: str, tip: str, on_click) -> ft.Control:
+            return ft.Container(
+                on_click=on_click,
+                ink=True,
+                border_radius=3,
+                padding=ft.Padding.all(4),
+                tooltip=tip,
+                content=ft.Icon(icon, size=14, color=COLORS["text_sub"]),
+            )
+
+        return ft.Row(
+            spacing=2,
+            tight=True,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                button(ft.Icons.REMOVE, "Smaller (one row less)", step(-1)),
+                self._size_label,
+                button(ft.Icons.ADD, "Bigger (one row more)", step(+1)),
+                button(
+                    ft.Icons.MINIMIZE,
+                    "Shrink to a single line",
+                    lambda _: self.set_rows(MIN_ROWS),
+                ),
+            ],
+        )
+
+    @property
+    def rows(self) -> int:
+        """How many whole log rows the console is currently showing."""
+        return rows_for_height(self.height)
+
+    def set_rows(self, rows: int) -> int:
+        """Size the console to exactly ``rows`` rows. Returns what it applied.
+
+        The size controls' whole effect, and the reason they can be trusted:
+        they move the console in the same unit they report, so "smaller" always
+        means exactly one row less rather than an arbitrary pixel step that
+        may or may not change what is visible.
+        """
+        target = max(MIN_ROWS, min(MAX_ROWS_VISIBLE, int(rows)))
+        self.set_height(height_for_rows(target))
+        return self.rows
+
+    def drag_by(self, delta: float) -> int:
+        """Grow (or shrink) the console by one drag frame's worth of movement.
+
+        THE ACCUMULATOR IS THE WHOLE POINT — see :attr:`_raw_height`. A drag
+        arrives as ~10px frames, and a row is 22px, so no single frame is a
+        whole row. Feeding each frame through the snap independently made
+        growing impossible (10px up floors straight back to the row it started
+        in) while shrinking worked, which is precisely the "the grip does
+        nothing" report. Accumulating first and snapping the RESULT means every
+        frame counts, and the console still only ever rests on whole rows.
+
+        THE RAIL'S BUDGET BOUNDS THE DRAG, AND THAT IS A DELIBERATE OWNER
+        DECISION rather than an implementation detail. Two paths could change
+        this dock's height and only ONE of them respected the sidebar's
+        budget:
+
+            window resize -> apply_window_height() -> affordable_height()  ✅
+            pointer drag  -> drag_by()             -> MAX_HEIGHT only      ❌
+
+        Measured at the app minimum (a 680px window): the dock opened at 120px
+        leaving 560px for the rail, but the grip would happily drag it to
+        494px — leaving 186px for a fixed cluster that needs 560px, starving it
+        by 374px. Then any window event silently healed it, which is why this
+        was reported as "the ACTIVITY panel wrecks the layout generally"
+        rather than as a reproducible step. It is also the whole of Mars's
+        animation report: elements animate inside a rail whose height is being
+        rewritten underneath them mid-gesture.
+
+        THE TRADE, AND WHO MADE IT. Respecting the budget here bounds the
+        owner's own "the size is his, continuously" requirement — on a 680px
+        window the grip now stops at roughly 3 rows rather than 20. That was
+        put to the owner rather than chosen silently, and his answer was
+        explicit: "боковая панель важнее — ограничить лог". The sidebar rail
+        wins; the dock's drag is bounded by the rail's budget. So the
+        requirement now reads "continuously, from 1 row up to whatever the
+        window affords". The cap is NOT a defect to work around and NOT a
+        number to quietly raise.
+
+        Returns the row count now displayed, so a caller can assert on it.
+        """
+        # The SAME budget the resize path uses, from the same function — the
+        # fault was never that the budget was wrong, only that this call site
+        # did not consult it. Never below one row: a window too short to
+        # afford even that still owes the operator a usable console.
+        ceiling = float(max(MIN_HEIGHT, affordable_height(self._window_height)))
+        self._raw_height = max(
+            float(MIN_HEIGHT),
+            min(ceiling, self._raw_height - float(delta)),
+        )
+        self._apply_height(quantize(self._raw_height))
+        return self.rows
+
+    def set_height(self, height: float) -> None:
+        """Apply a new open height, SNAPPED to whole rows and clamped.
+
+        The size controls' and the default's path. A DRAG does not come through
+        here — it goes through :meth:`drag_by`, which accumulates — because
+        snapping a per-frame delta is what broke the gesture.
+
+        THE SNAP IS THE DIRECTION'S ARGUMENT. A console sized in pixels lands
+        mid-row, showing five rows and a two-pixel sliver of a sixth; that
+        sliver is exactly the "пустое место" he reported, and it reappears on
+        every drag no matter how good the default is. Quantizing means the
+        bottom edge always falls where a row ends, so the console is full of
+        log at every size he can put it in — and a drag reads out as "8 rows"
+        rather than as 289 pixels.
+        """
+        snapped = quantize(height)
+        # Keep the accumulator in step, so a click on "smaller" followed by a
+        # drag continues from where the button left the console rather than
+        # from wherever the last drag happened to end.
+        self._raw_height = float(snapped)
+        self._apply_height(snapped)
+
+    def _apply_height(self, height: int) -> None:
+        """Put an already-snapped height on screen."""
+        self.height = height
         # A height the operator chose HIMSELF is what he wants back when the
         # window has room again — so the grip moves the desire, not just the
         # applied value. apply_window_height moves only the applied one.
         self._desired_height = self.height
         self.body.height = self.height
+        self._paint_size()
+        # ONE update, and it is the BODY. Two other things were tried here and
+        # both broke the gesture, so this is measured rather than chosen:
+        #
+        #   * updating `self.root` re-materialises the whole console INCLUDING
+        #     the grip, and replacing a GestureDetector mid-gesture makes
+        #     Flutter's arena drop the drag it is tracking — 0px of travel;
+        #   * updating `self._size_label` as well (it lives inside the body,
+        #     which is already being updated) produced the same 0px, because
+        #     the second patch lands while the first is still being applied.
+        #
+        # The label is a child of the body, so one body update carries both the
+        # new height and the new readout.
         self._safe_update(self.body)
+
+    def _paint_size(self) -> None:
+        n = self.rows
+        self._size_label.value = f"{n} row" if n == 1 else f"{n} rows"
 
     def apply_window_height(self, window_height: float | None) -> int:
         """Re-apply the rail budget for a window that just changed size.
@@ -331,6 +659,13 @@ class LogDock:
 
         Returns the applied height so a caller can assert on it.
         """
+        # REMEMBERED, so the GRIP can consult the same budget. drag_by has no
+        # event carrying a window height, so without this the drag would keep
+        # sizing itself against whatever the window measured at LAUNCH — and an
+        # operator who shrank the window and then dragged would starve exactly
+        # the rail this budget exists to protect. See drag_by.
+        if window_height and float(window_height) > 0:
+            self._window_height = float(window_height)
         allowed = affordable_height(window_height)
         target = min(self._desired_height, allowed)
         desired = self._desired_height
@@ -399,6 +734,9 @@ class LogDock:
 
     def _build_root(self) -> ft.Control:
         self.body.height = self.height
+        # The readout must be right on the FIRST frame, not only after the
+        # first resize — it is part of how the console explains its own size.
+        self._paint_size()
         return ft.Container(
             bgcolor=COLORS["log_bg"],
             border=ft.Border.only(top=ft.BorderSide(1, COLORS["border"])),
