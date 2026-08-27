@@ -1,5 +1,5 @@
 {
-  "app_version": "2.9.18",
+  "app_version": "3.0.1",
   "engine": "firefox",
   "engine_build": "firefox-20",
   "probes": {
@@ -160,6 +160,14 @@
         "value": {
           "markerCount": 0,
           "markers": []
+        }
+      },
+      "realm.frameIdentity": {
+        "value": {
+          "frameDepth": 0,
+          "hasParent": false,
+          "hasTop": true,
+          "selfIsTop": true
         }
       },
       "realm.kind": {
@@ -454,6 +462,14 @@
         "value": {
           "markerCount": 0,
           "markers": []
+        }
+      },
+      "realm.frameIdentity": {
+        "value": {
+          "frameDepth": null,
+          "hasParent": false,
+          "hasTop": false,
+          "selfIsTop": null
         }
       },
       "realm.kind": {
