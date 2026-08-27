@@ -39,6 +39,7 @@ import hashlib
 import shutil
 import zipfile
 
+import flet as ft
 import pytest
 
 import src.core.platform as _platform
@@ -166,19 +167,41 @@ def _row_text(control) -> str:
     """What the row actually SAYS, read out of the rendered control tree.
 
     Deliberately not a substring search over some larger blob: it walks to the
-    ft.Text the operator reads. A row that renders nothing has no text, and this
-    returns "" for it rather than raising, so "says nothing" and "says X" are
-    the same kind of answer and can be compared in one assertion.
+    ft.Text controls the operator reads, in document order, and joins them.
+
+    IT RECURSES, AND THAT IS LOAD-BEARING RATHER THAN TIDY. The earlier version
+    walked exactly one level — ``control.content.controls`` — which was true of
+    the row while its label was a bare ``ft.Row``. PS-229 puts a cost line under
+    the label, so a row with a cost now nests the label one level deeper inside
+    an ``ft.Column``, and a one-level read returned ``""`` for a row rendering
+    two full lines of text.
+
+    THE DANGER THAT MAKES THIS WORTH A PARAGRAPH is not the assertions that go
+    red — those announce themselves. It is that ``""`` is also the expected
+    value for state (c) "nothing retained", so a one-level read would let the
+    "renders nothing at all" assertion pass for entirely the wrong reason: it
+    would keep passing over a row that had started rendering a paragraph. An
+    empty answer from this helper must mean "no Text anywhere in the tree", so
+    it is never confusable with "text this helper could not reach".
+
+    Structural emptiness is therefore asserted against ``height == 0`` as well
+    as against this, never against this alone.
     """
-    content = getattr(control, "content", None)
-    if content is None:
-        return ""
-    parts = []
-    for child in getattr(content, "controls", []) or []:
-        value = getattr(child, "value", None)
-        if isinstance(value, str):
-            parts.append(value)
-    return " ".join(parts)
+    found: list[str] = []
+
+    def walk(node) -> None:
+        value = getattr(node, "value", None)
+        if isinstance(node, ft.Text) and isinstance(value, str):
+            found.append(value)
+        for attr in ("content", "controls"):
+            child = getattr(node, attr, None)
+            if child is None:
+                continue
+            for c in child if isinstance(child, list) else [child]:
+                walk(c)
+
+    walk(control)
+    return " ".join(found)
 
 
 # --------------------------------------------------------------------------
@@ -498,8 +521,20 @@ def test_a_machine_with_a_recorded_previous_build_still_gets_the_working_button(
     assert updater.rollback_target()[0] == "144.0.7559.132"
 
     row = _RowOnly()._engine_rollback_row()
-    assert _row_text(row) == "go back to 144.0.7559.132", (
-        "a machine WITH a way back must still be offered it, unchanged"
+    # PS-229 replaced the interpolated label with a FIXED phrase plus a cost
+    # line. The gesture is unchanged; what changed is that no runtime string
+    # reaches the visible text, so no build tag can widen it past the rail.
+    assert _row_text(row) == "previous version downloads the engine", (
+        "a machine WITH a way back must still be offered it — now as a fixed "
+        "phrase carrying its cost, not as an interpolated build identifier"
+    )
+    assert "144.0.7559.132" not in _row_text(row), (
+        "PS-229: the build identifier must be ABSENT from the visible text — "
+        "interpolating it is what overflowed the 200px rail"
+    )
+    assert "144.0.7559.132" in (row.tooltip or ""), (
+        "and it must survive in the TOOLTIP — the operator still gets to ask "
+        "'which build?', just after deciding rather than before"
     )
     assert row.on_click is not None, (
         "the revert must still be CLICKABLE — an explanation must never "
@@ -512,9 +547,21 @@ def test_a_machine_with_a_recorded_previous_build_still_gets_the_working_button(
         "and it must be wired to the REVERT, not merely to something — a row "
         "that renders the right words on the wrong handler still cannot go back"
     )
-    assert "Re-download" in row.tooltip, (
+    # PS-79's cost warning must survive PS-229's rewording. Asserted on the
+    # SUBSTANCE, not on the old "Re-download" token: that literal was a casing
+    # accident of one phrasing, and pinning it made this test fail for a
+    # tooltip that states the cost MORE plainly than the one it replaced
+    # ("...this re-downloads the whole engine, over Tor, and replaces the
+    # engine you have now"). What must never regress is that the operator is
+    # told a transfer is coming BEFORE clicking.
+    tooltip = (row.tooltip or "").lower()
+    assert "re-download" in tooltip, (
         "PS-79's cost warning must survive: this revert moves hundreds of MB "
         "and the operator is told before clicking, not after"
+    )
+    assert "tor" in tooltip, (
+        "and it must still name the link the transfer crosses — 're-downloads' "
+        "alone understates an afternoon's wait on the machine that pays most"
     )
 
 
@@ -544,9 +591,19 @@ def test_a_pinned_machine_still_gets_the_resume_gesture(monkeypatch, tmp_path):
     assert updater.current_build_recorded() is False
 
     row = _RowOnly()._engine_rollback_row()
-    assert _row_text(row) == "resume updates (pinned to 144.0.7559.132)", (
+    # PS-229: the pin's label is a fixed phrase too, with the STATE on the
+    # second line. "auto-update held off" is the thing the label itself cannot
+    # tell you, and it is what the pinned operator actually needs to read.
+    assert _row_text(row) == "resume updates auto-update held off", (
         "a pinned operator must be offered the way out of the pin, not an "
         "explanation of why there is no rollback"
+    )
+    assert "144.0.7559.132" not in _row_text(row), (
+        "PS-229 state (b): the build identifier must be gone from the visible "
+        "text entirely — this is the 30-character string that overflowed"
+    )
+    assert "144.0.7559.132" in (row.tooltip or ""), (
+        "and it must still be reachable in the tooltip, which named it verbatim"
     )
     app = _RowOnly()
     clickable = app._engine_rollback_row()

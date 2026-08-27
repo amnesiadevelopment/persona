@@ -2428,10 +2428,38 @@ class App:
             return True
         return len(value or "") > _VERSION_MAX_CHARS
 
+    @staticmethod
+    def _status_expanded_attr(which: str) -> str:
+        """The instance attribute holding one engine's reveal flag."""
+        return (
+            "_engine_status_expanded"
+            if which == "chromium"
+            else "_engine2_status_expanded"
+        )
+
+    def _status_expanded(self, which: str) -> bool:
+        """Whether one engine's status line is currently revealed.
+
+        READ THROUGH THIS, NEVER OFF THE ATTRIBUTE DIRECTLY, and the reason is
+        a coupling one rather than a style one. ``_build_engines_panel`` is
+        reachable from construction paths that do not run ``__init__`` — the
+        progress tests build the app with ``App.__new__(App)`` precisely to
+        exercise the panel without standing up a page — so a panel builder that
+        hard-requires an attribute set only in ``__init__`` raises
+        ``AttributeError`` on every one of them, and would do so again for any
+        future partial construction.
+
+        The default is ``False`` — COLLAPSED — which is also the safe
+        direction: collapsed is the state that keeps the long-lived control
+        the download-progress callback writes to, so a panel built without
+        ``__init__`` renders the live row rather than a frozen snapshot.
+        """
+        return bool(getattr(self, self._status_expanded_attr(which), False))
+
     def _toggle_engine_status(self, which: str) -> None:
         """Reveal / re-collapse one engine's full status text in place."""
-        attr = "_engine_status_expanded" if which == "chromium" else "_engine2_status_expanded"
-        setattr(self, attr, not getattr(self, attr))
+        attr = self._status_expanded_attr(which)
+        setattr(self, attr, not self._status_expanded(which))
         self._refresh_sidebar()
 
     def _status_reveal_button(self, which: str, expanded: bool) -> ft.Control:
@@ -2679,17 +2707,17 @@ class App:
                         self._engine_logo("chromium"),
                         "fp-chromium",
                         self._status_control(
-                            self.engine_text, self._engine_status_expanded
+                            self.engine_text, self._status_expanded("chromium")
                         ),
                         checking=self._engine_busy or self._engine_checking,
                         dot=self._engine_update_available(),
                         reveal=(
                             self._status_reveal_button(
-                                "chromium", self._engine_status_expanded
+                                "chromium", self._status_expanded("chromium")
                             )
                             if self._status_needs_reveal(
                                 self.engine_text.value or "",
-                                self._engine_status_expanded,
+                                self._status_expanded("chromium"),
                             )
                             else None
                         ),
@@ -2721,17 +2749,17 @@ class App:
                         self._engine_logo("firefox"),
                         "firefox",
                         self._status_control(
-                            self._engine2_text, self._engine2_status_expanded
+                            self._engine2_text, self._status_expanded("firefox")
                         ),
                         checking=self._engine2_busy or self._engine2_checking,
                         dot=self._engine2_update_available(),
                         reveal=(
                             self._status_reveal_button(
-                                "firefox", self._engine2_status_expanded
+                                "firefox", self._status_expanded("firefox")
                             )
                             if self._status_needs_reveal(
                                 self._engine2_text.value or "",
-                                self._engine2_status_expanded,
+                                self._status_expanded("firefox"),
                             )
                             else None
                         ),
