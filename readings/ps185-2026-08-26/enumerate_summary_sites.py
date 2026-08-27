@@ -517,8 +517,43 @@ def _is_disclosed(label: str, field: str) -> bool:
 # needs no exemption: it passes the ordinary rule by not moving the render at
 # all. Listing it anyway would claim a dependency the document does not have,
 # and the assertion below would correctly call that claim inert.
+# THE SECOND EPOCH INPUT, AND IT IS THE SAME KIND AS `fallback_pool_size`
+# (PS-226). `verdict` is the sweep's record of WHAT THE GATE SAID when the draw
+# was taken. Axis 2's rule targets a summary the sweep wrote about ITSELF and
+# could recount from its own readings; this is not that. A verdict is a
+# JUDGEMENT PASSED ON those readings by a specific version of
+# `engine_gpu_variance`, so the readings WITNESSED it but do not DETERMINE it —
+# 24 identities cannot tell you which rule was applied to them, exactly as they
+# cannot recover the pool `k` they were drawn from.
+#
+#     Recount what the readings determine. Pin what the readings merely
+#     witnessed.
+#
+# It is exempt here precisely BECAUSE round 8 stopped re-asking the live gate.
+# Asking `classify` afresh looked like the same recount every other field got —
+# and it reproduced all eight stored verdicts on the day it was written — but
+# PS-191 then replaced the gate's rule (plug-in vs `1/k` bar became a one-sided
+# hypothesis test at α=0.05) twelve minutes after this reading set was
+# committed, and linux/android flipped `TOO_NARROW` -> `OK`. That re-scored a
+# finished measurement against a rule that did not exist when it was taken, and
+# left the article contradicting itself: the prose names three TOO_NARROW arms
+# while the table below it printed `OK`. The sweep record is the only witness
+# to what the gate said that day.
+#
+# ⚠️ ASSERTED, NOT WAIVED, the same way round: poisoning it MUST move a
+# published row. A quoted verdict that no longer responds to the record would
+# mean the article is reporting some other gate's opinion, which is the defect
+# the pin exists to prevent. (Measured: all four arms move their table row.)
+#
+# SCOPED TO `gpu[on]` ONLY, for the same measured reason `fallback_pool_size`
+# is. The layer-OFF verdicts ARE consulted, but the only layer-OFF figures the
+# article renders are the constant-arm bullets, which print a recounted
+# identity count and a p-value and never the verdict string. Nothing published
+# responds, so `gpu[off]` passes the ordinary rule by not moving the render at
+# all, and listing it would claim a dependency the document does not have.
 EPOCH_INPUT_FIELDS = {
     ("gpu[on]", "fallback_pool_size"),
+    ("gpu[on]", "verdict"),
 }
 
 

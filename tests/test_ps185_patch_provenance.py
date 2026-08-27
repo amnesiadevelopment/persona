@@ -1044,14 +1044,22 @@ def test_the_article_reproduces_independently_of_todays_gpu_pools():
     )
 
 
-def test_module_verdict_is_asked_of_the_gate_not_transcribed():
-    """The gate's verdict is quoted deliberately — so quote the GATE.
+def test_module_verdict_comes_from_the_sweep_record_not_a_transcription():
+    """The rendered verdict must be the SWEEP's first-hand account.
 
     This column exists to report what `engine_gpu_variance` said, so the
     estimator can be contrasted against it. That is a good reason to render it
     and NOT a reason to trust a transcription: the uniformity record's copy is
-    a copy of the sweep's copy. Asking `classify` afresh still reports the
-    gate's verdict, with one fewer link that can rot.
+    a copy of the sweep's copy, and quoting the copy is how the two can drift
+    apart without anything noticing.
+
+    ⚠️ NAME CHANGED IN PS-226, because the old one ("...is asked of the gate")
+    had stopped describing what this asserts. It never checked that the gate
+    was ASKED — poisoning the uniformity record cannot distinguish "asked the
+    live gate" from "read the sweep record", since both bypass the poisoned
+    copy. So the assertion below is unchanged and still exactly as strong; only
+    the claim in the name is now true. `test_rendered_verdict_is_pinned...`
+    below covers the half this test never reached.
     """
     d = _load_derive_module()
     unif = d.load(d.UNIF_ON)
@@ -1065,7 +1073,60 @@ def test_module_verdict_is_asked_of_the_gate_not_transcribed():
     )
     assert "POISONED" not in row and "TOO_NARROW" in row, (
         "the module verdict came from the uniformity record's transcription "
-        f"rather than from the gate itself: {row}"
+        f"rather than from the sweep's own account: {row}"
+    )
+
+
+def test_rendered_verdict_is_pinned_to_the_record_and_not_re_judged_today():
+    """A committed verdict must survive the gate's rule being rewritten.
+
+    THIS IS THE PS-226 REGRESSION. Round 6 re-asked
+    `engine_gpu_variance.classify` for this column, on the reasonable-sounding
+    grounds that the gate itself is a better source than a transcription of a
+    transcription. It reproduced all eight stored verdicts — on the day it was
+    written. PS-191 then replaced the gate's RULE twelve minutes after this
+    reading set was committed (a plug-in-vs-`1/k` bar comparison became a
+    one-sided hypothesis test at α=0.05), linux and android flipped
+    `TOO_NARROW` -> `OK`, and the article began contradicting itself: the prose
+    names three `TOO_NARROW` arms while the table below it printed `OK`.
+
+    The rule the existing `fallback_pool_size` pin already states settles it —
+    *recount what the readings determine, pin what the readings merely
+    witnessed*. A verdict is a JUDGEMENT PASSED ON these readings by one
+    version of the gate; 24 identities cannot tell you which rule was applied
+    to them any more than they can recover the pool they were drawn from.
+
+    Both halves are asserted because neither alone is the property:
+
+    * the render must MOVE with the record (else it is quoting something else);
+    * the module must not hold the live gate at all (which is what makes the
+      first half stay true after someone rewrites `classify` again).
+
+    The second half is asserted structurally rather than by monkeypatching
+    `classify`, and that is deliberate: `derive.py` bound the gate AT IMPORT,
+    so patching the product module after import would sail straight past the
+    very defect this pins and report a false pass.
+    """
+    d = _load_derive_module()
+    off, on = d.load(d.LAYER_OFF), d.load(d.LAYER_ON)
+
+    # Half 1: the rendered row is a function of the sweep record.
+    poisoned = d.load(d.LAYER_ON)
+    poisoned["result"]["per_arm"]["android"]["verdict"] = "POISONED"
+    row = next(
+        ln for ln in d.gpu_section(off, poisoned, d.load(d.UNIF_OFF),
+                                   d.load(d.UNIF_ON)).split("\n")
+        if ln.startswith("| android |") and ln.count("|") == 8
+    )
+    assert "POISONED" in row, (
+        "the rendered verdict does not respond to the sweep record it claims "
+        f"to quote, so it is being taken from somewhere else: {row}"
+    )
+
+    # Half 2: nothing re-judges the readings at render time.
+    assert not hasattr(d, "_classify"), (
+        "derive.py imports engine_gpu_variance.classify again — a committed "
+        "measurement is being re-judged by today's gate, which is PS-226"
     )
 
 

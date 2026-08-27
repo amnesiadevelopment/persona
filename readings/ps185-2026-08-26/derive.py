@@ -37,8 +37,14 @@ if str(REPO_ROOT) not in sys.path:
 # second copy of the rule in this file could drift from the one that took the
 # readings, and then the article would be derived from a rule the product does
 # not use. Every figure below is recomputed with these two functions.
+#
+# ⚠️ `classify` IS DELIBERATELY NOT IMPORTED (PS-226). It was, until re-asking
+# it began substituting today's verdict for the one the 2026-08-26 run
+# recorded — see `_uniformity_stats`. The rule above governs figures the
+# readings DETERMINE; a verdict is a judgement PASSED ON them, which they only
+# witnessed, so it is pinned to the sweep record instead. Re-adding this import
+# is how PS-226 comes back.
 from src.services.verify.engine_gpu_variance import (  # noqa: E402
-    classify as _classify,
     collision_probability as _collision_probability,
 )
 
@@ -805,12 +811,44 @@ def _uniformity_stats(unif: dict, arm: str, sources: dict) -> dict:
       ``pool_size``, ``seeds_readable``, ``monte_carlo_p_value``,
       ``consistent_with_uniform`` and ``genuine_narrowing_finding`` — all from
       ``uniformity_check.analyse``, the script that wrote these records;
-    * ``module_verdict`` — from ``engine_gpu_variance.classify``, the gate
-      itself. That column exists to report WHAT THE GATE SAID so the estimator
-      can be contrasted against it, and asking the gate afresh still reports
-      the gate's verdict — it just removes a transcription-of-a-transcription
-      (the uniformity record's copy of the sweep's copy). Verified to reproduce
-      all eight stored verdicts exactly.
+    * ``module_verdict`` — PINNED to the sweep record's own first-hand
+      ``result.per_arm[arm].verdict``, i.e. what the gate said ON THE DAY THE
+      DRAW WAS TAKEN. It is NOT re-asked of today's gate, and that is an epoch
+      pin rather than an echo — see below.
+
+    ⚠️ ``module_verdict`` IS AN EPOCH INPUT, NOT A RECOUNT (PS-226). Round 6
+    asked ``engine_gpu_variance.classify`` afresh, on the stated grounds that
+    this removed "a transcription-of-a-transcription" and reproduced all eight
+    stored verdicts exactly. It did — *on the day it was written*. Twelve
+    minutes after this reading set was committed, PS-191 replaced the gate's
+    RULE (a plug-in-vs-``1/k`` bar comparison became a one-sided hypothesis
+    test at α=0.05), and the live gate began answering ``OK`` for linux and
+    android where the 2026-08-26 run recorded ``TOO_NARROW``. That turned this
+    document against itself: the prose says *"returns ``TOO_NARROW`` for macos,
+    linux AND android"* while its own table eight lines below said ``OK → —``,
+    and the whole artefact finding rests on the contrast between the two.
+
+    This is the PS-183 defect one field over, and the distinction the existing
+    ``fallback_pool_size`` pin already draws is the one that settles it:
+
+        Recount what the readings determine. Pin what the readings merely
+        witnessed.
+
+    The 24 committed identities do not determine this column. A verdict is a
+    JUDGEMENT PASSED ON those readings by a specific version of a gate, so the
+    readings only witnessed it — exactly like the pool ``k`` they were drawn
+    from. Re-asking today's gate does not verify the old verdict, it silently
+    substitutes a NEW one and re-scores a finished measurement against a rule
+    that did not exist when it was taken. The column's stated job is to report
+    *what the gate said* so the estimator can be contrasted against it; once
+    the gate's rule moves, only the record is a witness to what it said.
+
+    Taken from the SWEEP record rather than the uniformity record's copy of it,
+    so round 6's actual point — don't quote a transcription of a transcription
+    — is kept: this is still the first-hand account, just not a fresh judgement.
+    Verified: all eight cells of both uniformity records match their sweep's
+    first-hand verdict exactly, so no figure moves and the pin changes nothing
+    except what happens when the gate is next rewritten.
 
     ``pool_size`` is recounted for a reason worth naming: round 5 recomputed
     the estimator FORMULAE but fed them a ``k`` read from the stored block, so
@@ -832,12 +870,17 @@ def _uniformity_stats(unif: dict, arm: str, sources: dict) -> dict:
         seed=unif["monte_carlo_seed"],
     )[arm]
     out = dict(stored, recounted=True, **fresh)
-    # LAST, deliberately overriding `fresh`. `analyse` carries a
-    # `module_verdict` of its own, but it reads it out of
-    # `record["result"]["per_arm"][arm]["verdict"]` — the sweep's stored
-    # summary — so taking it from `fresh` would leave this column echoed by a
-    # different route while looking recounted. Ask the gate itself instead.
-    out["module_verdict"] = _classify(src["readings"])["per_arm"][arm]["verdict"]
+    # LAST, deliberately overriding `fresh`, and PINNED TO THE EPOCH (PS-226).
+    # `analyse` carries a `module_verdict` of its own, but it reads it out of
+    # the uniformity record's copy of this same field, so taking it from
+    # `fresh` would quote a transcription of a transcription. Take the sweep's
+    # OWN first-hand account instead — and take it from the RECORD, not from
+    # today's `classify`: a verdict is a judgement passed on these readings by
+    # the gate as it stood on 2026-08-26, which the readings witnessed but do
+    # not determine. PS-191 has since replaced that rule, so re-asking the live
+    # gate substitutes a new verdict rather than verifying the old one. See the
+    # docstring for the full reasoning.
+    out["module_verdict"] = src["result"]["per_arm"][arm]["verdict"]
     return out
 
 
