@@ -236,6 +236,7 @@ def _run_attribution(tmp_path, log_text: str):
         },
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=120,
     )
     assert proc.returncode == 0, f"script failed:\n{proc.stdout}\n{proc.stderr}"
