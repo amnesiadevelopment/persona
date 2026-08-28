@@ -91,6 +91,7 @@ def _fresh_process_app(monkeypatch, *, running=()):
     app._app_update_size = 0
     app._app_update_tag = ""
     app._app_update_status = ""
+    app._app_held_logged = ""
     app._app_update_done = 0
     app._app_update_total = 0
     app._app_rollback_status = ""
@@ -476,3 +477,219 @@ def test_the_hold_is_written_where_a_later_process_will_read_it(
 
     assert os.path.exists(settings._path()), "no settings file was written"
     assert settings.app_update_hold() == REJECTED
+
+
+# --- the held release must not be RENDERED as an offer, either --------------
+#
+# The gap this section closes (found in code review of the first cut): a gate
+# that merely RETURNS leaves the caller's own state behind. Every discovery
+# path writes _app_latest/_app_update_url BEFORE calling the gate, so an early
+# return left both set, _build_version_panel computed has_update True off
+# _app_latest, and the panel rendered "[ update to 3.0.2 ]" directly above
+# "resume updates (held 3.0.2)" — offering to install the release it was
+# simultaneously explaining was held. And that button is live: its on_click is
+# _apply_update_now, which carries neither of the two original gates.
+#
+# These tests are driven through the poll's REAL field-writing sequence rather
+# than by calling _on_update_found bare, because calling it bare is precisely
+# what hid the defect. _panel_texts (above) sets _app_latest = "" before
+# rendering — a helper that constructs the state in which the bug cannot appear.
+
+
+def _discover_as_the_poll_does(app, tag, url, size=0):
+    """Reproduce _check_app_update_async's write-then-call sequence exactly.
+
+    The 60s poll (app.py) and the manual check both do:
+
+        self._app_latest = tag; self._app_update_url = url
+        self._app_update_size = size; self._app_update_tag = tag
+        self._on_update_found(tag, url)
+
+    The writes come FIRST. Any test that skips them and calls _on_update_found
+    directly is testing a state no real caller ever produces, and cannot see a
+    defect that lives in the leftovers.
+    """
+    app._app_latest = tag
+    app._app_update_url = url
+    app._app_update_size = size
+    app._app_update_tag = tag
+    app._on_update_found(tag, url)
+
+
+def _panel_texts_as_left(app, monkeypatch):
+    """Every string the panel renders FROM THE STATE THE CODE UNDER TEST LEFT.
+
+    Deliberately unlike _panel_texts, which zeroes _app_latest/_update_staged
+    for a quiet panel: here those fields ARE the subject, so blanking them
+    would erase the evidence.
+    """
+    from tests.test_app_ui import _walk_texts
+
+    monkeypatch.setattr(
+        ui_app.app_settings, "is_auto_update_enabled", lambda: False
+    )
+    return _walk_texts(app._build_version_panel())
+
+
+def test_the_panel_does_not_offer_an_update_to_the_release_it_says_is_held(
+    monkeypatch, tmp_path
+):
+    # The contradiction, asserted on the rendered row. The panel must not tell
+    # the operator "3.0.2 is held" and "[ update to 3.0.2 ]" in the same
+    # breath — the same defect _set_update_staged's docstring already refuses
+    # one gesture over ("restart into two opposite versions with no way to
+    # tell which wins"), landing on the very row AC5 is about.
+    _really_revert(monkeypatch, tmp_path)
+    monkeypatch.setattr(au, "APP_VERSION", RESTORED)
+    app = _fresh_process_app(monkeypatch)
+    _wire_update_path(monkeypatch, tmp_path, tag=REJECTED)
+
+    _discover_as_the_poll_does(app, REJECTED, "http://releases/persona-3.0.2")
+
+    texts = _panel_texts_as_left(app, monkeypatch)
+    assert not any(f"update to {REJECTED}" in t for t in texts), (
+        f"the panel offered to install the release it says is held: {texts}"
+    )
+    # and the operator is still told WHY there is no offer — silence would read
+    # as "no update exists", which is a different and misleading claim
+    assert any(f"resume updates (held {REJECTED})" in t for t in texts), texts
+
+
+def test_a_held_check_leaves_no_url_for_any_later_caller_to_install_from(
+    monkeypatch, tmp_path
+):
+    # The state assertion behind the render one. _app_update_url is read by
+    # three separate routes that never pass a hold gate — _apply_update_now's
+    # download arm, _on_version_click's "resume the download" arm, and
+    # _set_auto_update's kick-off when auto-update is switched back on. Leaving
+    # it populated arms all three; emptying it closes all three at once.
+    _really_revert(monkeypatch, tmp_path)
+    monkeypatch.setattr(au, "APP_VERSION", RESTORED)
+    app = _fresh_process_app(monkeypatch)
+    _wire_update_path(monkeypatch, tmp_path, tag=REJECTED)
+
+    _discover_as_the_poll_does(app, REJECTED, "http://releases/persona-3.0.2")
+
+    assert app._app_latest == "", "the held tag was left for the panel to offer"
+    assert app._app_update_url == "", (
+        "the held release's URL was left where three ungated callers read it"
+    )
+
+
+def test_clicking_update_now_does_not_install_a_held_release(
+    monkeypatch, tmp_path
+):
+    # The button's own gate, asserted at the decision. _apply_update_now is
+    # reachable by a direct operator click and routes through NEITHER
+    # _on_update_found nor _when_update_ready, so the two discovery gates can
+    # both be correct and this still install the rejected build.
+    #
+    # Driven with the fields populated on purpose: this is the state a click
+    # would have found before the discovery gate learned to clear them, and it
+    # is still reachable for a staged installer left from before the revert.
+    _really_revert(monkeypatch, tmp_path)
+    monkeypatch.setattr(au, "APP_VERSION", RESTORED)
+    app = _fresh_process_app(monkeypatch)
+    staged, downloads = _wire_update_path(monkeypatch, tmp_path, tag=REJECTED)
+    app._app_latest = REJECTED
+    app._app_update_url = "http://releases/persona-3.0.2"
+    app._app_update_tag = REJECTED
+
+    app._apply_update_now()
+
+    assert not _settle(lambda: downloads or app.applied, timeout=1.0), (
+        "clicking update installed the release the operator reverted away from"
+    )
+    assert downloads == [], downloads
+    assert app.applied == [], app.applied
+
+
+def test_a_staged_held_installer_is_not_applied_by_the_restart_button(
+    monkeypatch, tmp_path
+):
+    # A CONSTRUCTED state, and this test says so rather than pretending
+    # otherwise. "[ restart to update ]" renders off _update_staged alone —
+    # no _app_latest in that branch at all — so clearing the discovery fields
+    # cannot reach it, and the click goes straight to _apply_update with no
+    # download and no discovery in between.
+    #
+    # But I could not reach this state through the product: _on_app_rollback
+    # refuses to revert while _update_staged or _update_in_progress is set, so
+    # no hold can be written while an installer is staged, and _update_staged
+    # is process-lifetime ("" in __init__) so the mandatory restart empties it.
+    # The fields are therefore set by hand below, which makes this a guard
+    # against REGRESSION rather than a reproduction of a live defect: the three
+    # guards that make it unreachable live in two other modules and none of
+    # them exists to protect the hold, so a change to any one would reopen this
+    # path silently and this test is what would notice.
+    _really_revert(monkeypatch, tmp_path)
+    monkeypatch.setattr(au, "APP_VERSION", RESTORED)
+    app = _fresh_process_app(monkeypatch)
+    leftover = tmp_path / "staged-before-the-revert-3.0.2.AppImage"
+    leftover.write_bytes(b"the-bad-build")
+    app._update_staged = str(leftover)
+    app._app_update_tag = REJECTED
+
+    app._apply_update_now()
+
+    assert app.applied == [], (
+        "an installer staged before the revert re-installed the rejected build"
+    )
+
+
+def test_the_restart_button_still_applies_a_staged_release_that_is_not_held(
+    monkeypatch, tmp_path
+):
+    # The paired positive control for the gate above. Without it, an
+    # implementation that simply broke "[ restart to update ]" would pass.
+    app = _fresh_process_app(monkeypatch)
+    staged = tmp_path / "ready-3.0.3.AppImage"
+    staged.write_bytes(b"the-fix")
+    app._update_staged = str(staged)
+    app._app_update_tag = FIXED
+
+    app._apply_update_now()
+
+    assert app.applied == [str(staged)], (
+        "with no hold recorded the restart button must still install"
+    )
+
+
+def test_a_newer_release_is_still_offered_on_the_panel(monkeypatch, tmp_path):
+    # AC6 on the RENDER surface. The clearing above must be scoped to the held
+    # release: if it fired for every discovery it would silently suppress the
+    # offer for the fix release too, turning the panel permanently quiet — a
+    # worse defect than the loop being closed, and invisible without this.
+    _really_revert(monkeypatch, tmp_path)
+    monkeypatch.setattr(au, "APP_VERSION", RESTORED)
+    app = _fresh_process_app(monkeypatch)
+    # no auto-install: the question here is what the panel OFFERS, so keep the
+    # release discovered-but-not-yet-applied
+    monkeypatch.setattr(ui_app.app_update, "can_self_update", lambda: False)
+
+    _discover_as_the_poll_does(app, FIXED, "http://releases/persona-3.0.3")
+
+    texts = _panel_texts_as_left(app, monkeypatch)
+    assert any(f"update to {FIXED}" in t for t in texts), (
+        f"the fix release must still be offered on the panel: {texts}"
+    )
+
+
+def test_the_held_explanation_is_not_repeated_once_a_minute(
+    monkeypatch, tmp_path
+):
+    # A consequence of clearing _app_latest that has to be handled rather than
+    # discovered in a log file. The poll dedups on `tag != self._app_latest`,
+    # so emptying that field REOPENS it — the same held tag is rediscovered
+    # every 60 seconds. The explanation belongs once per tag, not 1,440 times
+    # a day drowning every other line in the panel the operator reads.
+    _really_revert(monkeypatch, tmp_path)
+    monkeypatch.setattr(au, "APP_VERSION", RESTORED)
+    app = _fresh_process_app(monkeypatch)
+    _wire_update_path(monkeypatch, tmp_path, tag=REJECTED)
+
+    for _ in range(5):
+        _discover_as_the_poll_does(app, REJECTED, "http://releases/persona-3.0.2")
+
+    held_lines = [m for m in app.logs if "is held" in m]
+    assert len(held_lines) == 1, held_lines
