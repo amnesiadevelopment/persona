@@ -57,11 +57,44 @@ def _safe_filename(profile_name: str) -> str:
 def _unlink_legacy_entry(entry_dir: pathlib.Path, profile_name: str) -> None:
     """Best-effort removal of this profile's pre-PS-209 (digest-less) entry.
 
-    The legacy name is ambiguous by construction, so this can only be reached
-    for a name the caller is already acting on — never as a sweep.
+    The legacy name is ambiguous BY CONSTRUCTION, and — the trap — the new
+    scheme's own output is a well-formed legacy name for a DIFFERENT profile:
+    `_safe_filename("a_b") == _legacy_safe_filename("a_b-28cb39ea")`, because
+    the digest suffix is built from `-` and hex, all of which the sanitiser
+    passes through untouched. Both names pass `validate_profile_name`, so the
+    pair is creatable. Unlinking by filename alone therefore deletes another
+    LIVE profile's CURRENT entry, which is the collision this ticket exists
+    to close, reintroduced through the migration helper.
+
+    Restricting this to "a name the caller is already acting on" does not
+    help: the caller is acting on the ATTACKER's name, and it is the victim's
+    file that shares the path. The safety property the first cut claimed —
+    "can never delete a file this app did not write" — is true and is the
+    wrong property. Every file here is one this app wrote; the hazard was
+    never a foreign file, it was another profile's current one.
+
+    So ownership is confirmed from CONTENT, not from the name: a legacy entry
+    has always carried `StartupWMClass=app_id_for(name)` (true at the
+    merge-base writer), and `app_id_for` is unambiguous — that is the premise
+    of this whole ticket — which makes it a reliable ownership token.
     """
+    path = entry_dir / _legacy_safe_filename(profile_name)
     try:
-        (entry_dir / _legacy_safe_filename(profile_name)).unlink()
+        body = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return
+    except OSError as e:
+        logger.warning(
+            "Could not read legacy desktop entry for %s: %s", profile_name, e
+        )
+        return
+
+    if f"StartupWMClass={app_id_for(profile_name)}\n" not in body:
+        # Belongs to another profile — not ours to delete.
+        return
+
+    try:
+        path.unlink()
     except FileNotFoundError:
         pass
     except OSError as e:
