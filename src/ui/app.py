@@ -2784,7 +2784,14 @@ class App:
         Here that same dedup reopening is why the log line needs its own
         de-duper: with _app_latest cleared the poll re-announces this tag every
         60 seconds, so _app_held_logged keeps the explanation to once per tag
-        instead of once a minute."""
+        instead of once a minute.
+
+        _app_held_logged is PROCESS-LIFETIME, and deliberately so: it is set in
+        __init__ beside the other update fields, so the explanation reappears
+        once per restart. That is the right scope rather than an oversight — a
+        fresh process has an empty log panel, and an operator who restarts into
+        a still-held state is exactly the one owed the sentence explaining why
+        nothing is updating. Once per launch, not once a minute."""
         self._app_latest = ""
         self._app_update_url = ""
         self._app_update_size = 0

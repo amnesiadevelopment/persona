@@ -693,3 +693,75 @@ def test_the_held_explanation_is_not_repeated_once_a_minute(
 
     held_lines = [m for m in app.logs if "is held" in m]
     assert len(held_lines) == 1, held_lines
+
+
+# --- AC6 on the SURFACE: a hold the running build moved past is SPENT --------
+#
+# AC6's words are "a hold-back that silently becomes permanent is a worse
+# defect than the one being fixed". The comparator already satisfies it — a
+# strictly newer release is not held — but the stored VALUE has no lifecycle:
+# nothing on the forward path clears it, so after the fix release installs the
+# hold string survives at the rejected version forever.
+#
+# Every panel case above renders while the running build is 3.0.1, at or below
+# the hold. That is the side of the boundary where this cannot appear. These
+# two sit on the OTHER side: running build strictly newer than the hold, with a
+# retained bundle present.
+
+
+def _move_forward_to_the_fix(monkeypatch, tmp_path):
+    """Drive a REAL forward update on top of a REAL revert, and return an App
+    running the fix release.
+
+    This is the journey AC6 exists to protect, driven end to end rather than by
+    writing a hold string and patching APP_VERSION: the update is a genuine
+    install (so a bundle genuinely occupies the retained slot afterwards) and
+    the hold is the one the revert itself wrote.
+    """
+    _really_revert(monkeypatch, tmp_path)
+    staged = _stage(monkeypatch, tmp_path, b"the-fixed-build")
+    _drive_linux_update(monkeypatch, staged)
+    monkeypatch.setattr(au, "APP_VERSION", FIXED)
+    return _fresh_process_app(monkeypatch)
+
+
+def test_a_hold_the_running_build_moved_past_does_not_hide_the_revert_row(
+    monkeypatch, tmp_path
+):
+    # THE REGRESSION THIS GUARDS, and it is against the merge-base rather than
+    # a gap in the feature: _app_rollback_row reads held FIRST and returns
+    # early, so any non-empty hold string suppresses the "go back" gesture no
+    # matter how stale it is. A bundle IS retained here — assert on the RENDERED
+    # ROW, because the whole defect lives in what the operator can and cannot
+    # click, not in what the comparator returns.
+    #
+    # The coupling is what makes it more than cosmetic: the only route to "go
+    # back" was clicking resume, which clears the hold and RE-ARMS the rejected
+    # release — reopening the PS-208 loop through the fix for it.
+    app = _move_forward_to_the_fix(monkeypatch, tmp_path)
+    assert au.rollback_target(), "a bundle must be retained for this to mean anything"
+
+    texts = _panel_texts_as_left(app, monkeypatch)
+
+    assert any("go back to the previous version" in t for t in texts), (
+        f"a retained bundle must still be revertable on {FIXED}: {texts}"
+    )
+    assert not any("held" in t for t in texts), (
+        f"a spent hold must not be reported as a live one: {texts}"
+    )
+
+
+def test_a_spent_hold_is_not_reported_while_it_suppresses_nothing(
+    monkeypatch, tmp_path
+):
+    # The comparator's half of the same boundary, asserted together so the row
+    # and the update path cannot drift apart: held_version() must answer "is it
+    # held" exactly the way update_held() does. Before the derivation these two
+    # disagreed — the row claimed a hold while every offer sailed past it.
+    _move_forward_to_the_fix(monkeypatch, tmp_path)
+
+    assert au.update_held("3.0.4") is False
+    assert au.update_held(FIXED) is False
+    assert au.held_version() == "", (
+        "a hold that can no longer suppress any offer is spent, not live"
+    )
