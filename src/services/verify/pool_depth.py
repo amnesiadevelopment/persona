@@ -45,11 +45,11 @@ deliberately does NOT route through the pairwise comparator — see THE
 PROFILE-LESS RECORDS below, which is the whole reason it reads records
 directly.
 
-THE THREE WAYS A DISTINCTNESS STATISTIC GETS SILENTLY CORRUPTED
+THE FOUR WAYS A DISTINCTNESS STATISTIC GETS SILENTLY CORRUPTED
 ------------------------------------------------------------------
-All three are present in the committed corpus this was built against, all three
-have already refuted a previous finding somewhere in this project, and all
-three arrive by **counting something that is not a fresh identity**. They are
+The first three are present in the committed corpus this was built against,
+each has already refuted a previous finding somewhere in this project, and all
+four arrive by **counting something that is not a fresh identity**. They are
 the reason the selection rules below are as strict as they are.
 
 1. **THE CONTROL ARM, AND ITS HEADERS LIE.** Both
@@ -82,6 +82,23 @@ the reason the selection rules below are as strict as they are.
    collapses a vector's declared realms into ONE value per identity before
    anything is counted, and ``collision_probability`` is therefore fed exactly
    one element per identity — which is what its Simpson index assumes.
+
+4. **THE SAME IDENTITY CAN ARRIVE TWICE WITHOUT SAYING SO.** Corruption 2 is
+   caught by the filename, which works only while the duplicate ADMITS to being
+   one: ``reading.chromium.seed111.json`` reaching the lane twice — by a copy
+   under another name, a glob over two campaign directories, or a path simply
+   listed twice — carries no ``rerun`` token and passes every per-record rule.
+   It then **collides with ITSELF**, and the report says so: the two vectors
+   this corpus uses as its positive controls (``webgl.readback`` and
+   ``canvas.readback``, 5/5 distinct) were observed reporting COLLIDING at exit
+   1 on a group ``{111, 111}``. A false leak report is the one thing an
+   instrument built to be believed cannot produce, so the identity axis is
+   defended in its own right: :func:`build_report` counts an ``(engine,
+   identity)`` pair at most ONCE, and a second arrival is excluded with a
+   reason naming the file it duplicates. ``Record.counts`` is a per-record
+   property and is structurally blind to this — it cannot see the rest of the
+   set — which is why this one rule lives at the set level and not beside the
+   other three.
 
 THE PROFILE-LESS RECORDS, AND WHY THIS LANE DOES NOT USE THE COMPARATOR
 -------------------------------------------------------------------------
@@ -189,7 +206,6 @@ EXIT_INCONCLUSIVE = 3
 # the set it counts is the set it says it counts.
 PRODUCT = "product"
 COUNTERFACTUAL = "counterfactual"
-RERUN = "rerun"
 UNRECOGNISED = "unrecognised"
 
 
@@ -553,6 +569,18 @@ def _depth_for(engine: str, probe, counted: "list[Record]") -> VectorDepth:
     # is never distinctness (two failed readings are not two profiles) and is
     # never a collision either (nor are they one profile).
     values = [v for v, ids in by_value.items() for _ in ids]
+    # THE EMPTY-SET SENTINEL, and why 1.0 is not this module contradicting its
+    # own evidence floor. With no obtained readings there is no probability to
+    # report, and 1.0 read as a VERDICT would say "certain collision" on the
+    # strength of nothing — the exact conflation the header argues against.
+    # It is never read as one: ``identities`` is 0 here, so ``measured`` is
+    # False, and every consumer gates on ``measured`` first — ``format_report``
+    # prints "no verdict" and ``collides`` is False because a vector with no
+    # values has no colliding group. The sentinel is therefore unreachable as a
+    # claim, and 1.0 rather than 0.0 is the fail-safe direction of the two: if
+    # a future consumer ever did read it ungated, it would overstate collision
+    # (a false alarm an operator checks and dismisses) rather than understate
+    # it (a leak reported clean, which nobody goes looking for).
     return VectorDepth(
         probe_id=probe.id,
         engine=engine,
@@ -580,12 +608,39 @@ def build_report(records: "list[Record]") -> PoolDepthReport:
     classifying a probe stays a matter of editing its inventory record and this
     lane cannot drift out of step with the inventory it polices.
     """
-    excluded = tuple(
-        (r.source, r.excluded_because or "excluded")
-        for r in records
-        if not r.counts
-    )
-    counted = [r for r in records if r.counts]
+    # ONE PASS, because the identity axis can only be judged against the SET.
+    # ``Record.counts`` is a per-record property and is structurally unable to
+    # see that another record already claimed this identity, so the fourth
+    # corruption is caught here or nowhere.
+    excluded: "list[tuple[str, str]]" = []
+    counted: "list[Record]" = []
+    seen: "dict[tuple[str, str], str]" = {}
+    for record in records:
+        if not record.counts:
+            excluded.append((record.source, record.excluded_because or "excluded"))
+            continue
+        key = (record.engine or "", record.identity)
+        prior = seen.get(key)
+        if prior is not None:
+            # The rerun corruption arriving by a route the FILENAME cannot
+            # show: the same profile reaching the lane twice under two names,
+            # by a copy, a glob over two campaign directories, or a path
+            # simply listed twice. Counted, it would collide with ITSELF and
+            # be reported as a leak on a vector that has none. Excluded by
+            # provenance like every other arm, and the reason names the file
+            # it duplicates so the operator can see WHICH pair collapsed.
+            excluded.append(
+                (
+                    record.source,
+                    f"duplicate of {quote_path(prior)}: identity "
+                    f"{record.identity!r} on engine {record.engine!r} is "
+                    "already counted, and one profile is one identity however "
+                    "many times it was recorded",
+                )
+            )
+            continue
+        seen[key] = record.source
+        counted.append(record)
 
     if len(counted) < 2:
         raise NotEnoughProfiles(
@@ -617,7 +672,7 @@ def build_report(records: "list[Record]") -> PoolDepthReport:
                 ),
             )
         )
-    return PoolDepthReport(engines=tuple(engines), excluded=excluded)
+    return PoolDepthReport(engines=tuple(engines), excluded=tuple(excluded))
 
 
 def report_for_paths(paths: "list[str]") -> PoolDepthReport:
@@ -706,6 +761,35 @@ def exit_code_for(report: PoolDepthReport) -> int:
     return EXIT_OK
 
 
+def run(paths: "list[str]", as_json: bool = False) -> int:
+    """Load, report, render and map to an exit code. THE whole lane, once.
+
+    Both entry points — ``python -m ...pool_depth`` below and the ``pool-depth``
+    subcommand in :mod:`cli` — call this rather than restating it. The two
+    previously carried the same dir-vs-paths dispatch, the same ``except``
+    tuple, the same json/text branch and the same exit mapping; two copies of
+    one control flow drift, and the copy that drifts is the one an operator
+    actually runs.
+    """
+    try:
+        if len(paths) == 1 and os.path.isdir(paths[0]):
+            report = report_for_directory(paths[0])
+        else:
+            report = report_for_paths(paths)
+    except (NotEnoughProfiles, OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        # The REFUSAL, and deliberately not 1: a refusal is not a finding. The
+        # named constant carries that decision so neither caller can restate it
+        # as a bare literal and quietly disagree with the other.
+        return EXIT_REFUSED
+
+    if as_json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+    else:
+        print(format_report(report))
+    return exit_code_for(report)
+
+
 def main(argv: "list[str] | None" = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m src.services.verify.pool_depth",
@@ -723,21 +807,7 @@ def main(argv: "list[str] | None" = None) -> int:
         "--json", action="store_true", help="emit the report as JSON"
     )
     args = parser.parse_args(argv)
-
-    try:
-        if len(args.paths) == 1 and os.path.isdir(args.paths[0]):
-            report = report_for_directory(args.paths[0])
-        else:
-            report = report_for_paths(args.paths)
-    except (NotEnoughProfiles, OSError, ValueError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return EXIT_REFUSED
-
-    if args.json:
-        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
-    else:
-        print(format_report(report))
-    return exit_code_for(report)
+    return run(args.paths, as_json=args.json)
 
 
 if __name__ == "__main__":  # pragma: no cover
@@ -754,7 +824,6 @@ __all__ = [
     "NotEnoughProfiles",
     "PRODUCT",
     "PoolDepthReport",
-    "RERUN",
     "Record",
     "UNRECOGNISED",
     "VectorDepth",
