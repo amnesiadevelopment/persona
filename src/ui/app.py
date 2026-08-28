@@ -2542,18 +2542,30 @@ class App:
         one of its two callers is exactly the stale reference that costs the
         next reader a round. Name, version, state — nothing else.
 
-        THE FULL VERSION IS REACHABLE THROUGH THE REVEAL CONTROL, NOT THE
-        TOOLTIP. Both rows' tooltips are static strings ("Check / update
-        fp-chromium", "Check / update the Firefox engine") naming the GESTURE,
-        and no version is interpolated into either. What surfaces the whole
-        string is the reveal chevron beside the status, which is drawn exactly
-        when the text does not fit (:meth:`_status_needs_reveal`) — a long
-        Firefox tag is 31 characters against a 17-character budget, so it is
-        drawn in precisely the state that shortens the line.
+        WHERE THE FULL VERSION IS *NOT*: neither of these two rows' tooltips.
+        Both are static strings ("Check / update fp-chromium", "Check / update
+        the Firefox engine") naming the GESTURE, with no version interpolated
+        into either. The row that DOES carry a build identifier in its tooltip
+        is the ROLLBACK row, which is a different control.
 
-        (:func:`_short_engine_version`'s own docstring says the tooltip carries
-        it verbatim; that is true of the ROLLBACK row's tooltip, which does
-        interpolate the build identifier, and not of these two.)
+        AND IT IS NOT BEHIND THE REVEAL EITHER, ONCE THE LINE HAS BEEN
+        SHORTENED — stated plainly because the arithmetic is easy to get
+        backwards. :meth:`_status_needs_reveal` draws the chevron on
+        ``len(value) > _VERSION_MAX_CHARS``, and it is fed the ALREADY
+        shortened value, which :func:`_short_engine_version` caps AT that
+        budget. So the reveal fires on a long *status* (a service string, an
+        exception message) and NOT on a long *version*:
+
+            "update → firefox-20_151.0_20260817150018"  40 → reveal drawn
+            "firefox-20_151.0…"                        17 → no reveal
+
+        That is item 6's rule working as intended — a whole line gets no
+        affordance, because one invites a click that visibly does nothing —
+        but the consequence is real and is not hidden here: in the
+        update-available state the trailing "_20260817150018" of a long
+        Firefox tag is currently reachable from nowhere in the UI. The build
+        and the upstream version, which is what the line is for, both survive.
+        Surfaced in review rather than papered over.
 
         `status` is the LIVE Text control the progress callback writes to,
         embedded as-is: a string snapshot here is what froze the row's percent
