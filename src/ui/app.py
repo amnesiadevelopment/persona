@@ -450,10 +450,57 @@ class App:
             is worse than no button: it promises the machine can undo something
             it cannot.
 
-        There is no PINNED state to mirror here: the app updater has no pin to
-        hold updates off, so the two states are "retained" and "not"."""
+        THERE IS NOW A HELD STATE TO MIRROR, and it is the third one this row
+        renders (PS-208). The engine rows have carried a PINNED state all along
+        — "the operator already went back, so offer resume" — and the app
+        updater simply had no standing instruction to show. It has one now, so
+        the states are "held", "retained" and "not", read in that order for the
+        same reason the engine rows read the pin first: after a revert BOTH are
+        true (the reverted-from build occupies the retained slot, so a "go back"
+        button is still live), and offering "go back" to someone who just went
+        back is the wrong gesture. Resume is what they need next.
+
+        This is also the surface AC5 is about. A hold the operator cannot see
+        and cannot clear is worse than the loop it fixes: _on_app_rollback's own
+        docstring argues at length that _log is NOT a visible surface, because
+        the sidebar log panel renders only while expanded. So the held state is
+        rendered on the row they are already looking at, and it is a BUTTON."""
         if self._update_in_progress or self._update_staged:
             return None
+        try:
+            held = app_update.held_version()
+        except Exception:
+            # Never let an unreadable settings file take the resume gesture
+            # away silently — that strands the operator held with no way out
+            # and nothing on screen saying why. Same lesson as the Chromium
+            # row, which logs its read failure rather than only degrading.
+            self._log("Update: couldn't read the update-hold state")
+            held = ""
+        if held:
+            return ft.Container(
+                on_click=lambda _: self._on_app_resume_updates(),
+                ink=True,
+                tooltip=(
+                    f"persona {held} is held back because you went back from "
+                    "it. Clear the hold and let it install again."
+                ),
+                padding=ft.Padding.only(top=4, bottom=2),
+                content=ft.Row(
+                    spacing=6,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        ft.Icon(
+                            ft.Icons.HISTORY, size=13, color=COLORS["text_dim"]
+                        ),
+                        ft.Text(
+                            f"resume updates (held {held})",
+                            size=10,
+                            color=COLORS["text_dim"],
+                            font_family="monospace",
+                        ),
+                    ],
+                ),
+            )
         try:
             target = app_update.rollback_target()
         except Exception:
@@ -486,6 +533,39 @@ class App:
                 ],
             ),
         )
+
+    def _on_app_resume_updates(self) -> None:
+        """Clear the app-update hold: the operator saying "go forward again".
+        The release they went back from is offered once more on the next check.
+
+        Mirrors _on_engine_resume, and carries the same asymmetry the app
+        rollback row already has: nothing moves here and nothing is on disk to
+        switch to, so going forward is an ordinary download on the next poll.
+
+        Refused while an update is pending for the same reason the revert is —
+        a hold cleared mid-install would let _when_update_ready's second gate
+        wave through the very build the operator is still deciding about."""
+        if self._update_in_progress or self._update_staged:
+            self._app_rollback_status = "can't resume while an update is pending"
+            self._refresh_sidebar()
+            return
+        try:
+            app_update.resume_app_updates(log=self._log)
+        except Exception as e:
+            self._log(f"Update: couldn't resume updates ({e})")
+            self._app_rollback_status = "couldn't resume — see the log"
+            self._refresh_sidebar()
+            return
+        # Drop the stale "restart to run the previous version" line: it named a
+        # hold that no longer exists, and leaving it up would tell the operator
+        # they are still held when they are not.
+        self._app_rollback_status = ""
+        # The next poll must be able to re-offer the release just un-held. The
+        # 60s loop dedups on `tag != self._app_latest`, so a tag still sitting
+        # in that field from the held check would be skipped forever — the
+        # resume would be nominal until a THIRD release appeared.
+        self._app_latest = ""
+        self._refresh_sidebar()
 
     def _on_app_rollback(self) -> None:
         """Put the retained previous bundle back. Instant — it is a rename, not
@@ -2669,6 +2749,31 @@ class App:
     def _on_update_found(self, tag: str, url: str) -> None:
         """A newer version exists: download it in the background right away,
         then ask before installing (see _when_update_ready)."""
+        # A DELIBERATE REVERT IS A STANDING "NOT THAT RELEASE" (PS-208), and
+        # this is the one place every discovery path converges before anything
+        # is fetched, staged or installed — the 60s poll, the manual check and
+        # the version-line click all end here. So the hold is read here rather
+        # than only on the unattended arm, mirroring app.py's engine gate at
+        # `if engine.pinned_build(): return False`.
+        #
+        # Placed ABOVE the staged short-circuit deliberately: the installer for
+        # the rejected tag is very likely still on disk (find_ready_staged is
+        # tag-keyed and the revert does not delete it), so a gate below it would
+        # let the rejected build through the readiest path of the three.
+        #
+        # Without this the revert lasts under a MINUTE. The restart it demands
+        # resets _app_latest to "" (__init__), the next poll sees the rejected
+        # tag as "not seen yet" AND as newer than the restored build, and on
+        # Linux with auto-update on _when_update_ready installs it with nobody
+        # present. That is the whole failure the hold exists to end.
+        if app_update.update_held(tag):
+            self._app_update_status = ""
+            self._log(
+                f"Update {tag} is held — you went back from it. Resume "
+                "updates to install it again."
+            )
+            self._refresh_sidebar()
+            return
         # Always refresh the sidebar so the "new version" badge shows.
         self._refresh_sidebar()
         if not app_update.can_self_update():
@@ -2787,6 +2892,23 @@ class App:
         """A verified update is staged. The Linux AppImage with auto-update on
         installs unattended when idle (headless boxes rely on that); everywhere
         else the user decides, so ask first."""
+        # Second reading of the hold, and NOT redundant with the one in
+        # _on_update_found. This is the arm where being wrong costs the most —
+        # on Linux it installs with no dialog and no operator — and it is
+        # reachable from callers that did not come through that gate: the
+        # download thread in _start_app_update calls this directly on
+        # completion, so a hold recorded WHILE a download was in flight (the
+        # operator clicking "go back" mid-download) would otherwise be honoured
+        # nowhere. A guard on the unattended path is the one place worth
+        # paying for twice.
+        if app_update.update_held(tag):
+            self._app_update_status = ""
+            self._log(
+                f"Update {tag} is held — you went back from it. Resume "
+                "updates to install it again."
+            )
+            self._refresh_sidebar()
+            return
         if (
             _platform.IS_LINUX
             and app_settings.is_auto_update_enabled()

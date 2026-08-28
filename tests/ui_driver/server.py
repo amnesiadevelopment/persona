@@ -215,6 +215,14 @@ def serve_app(repo_root: str, home: str | None = None, patch: str = ""):
     env = dict(os.environ, PERSONA_HOME=home, PYTHONIOENCODING="utf-8")
     # A served app must never inherit a stale display or the selftest gate.
     env.pop("PERSONA_SELFTEST", None)
+    # Nor an explicit settings-file override from the PARENT pytest process.
+    # PERSONA_SETTINGS_FILE deliberately OUTRANKS PERSONA_HOME (settings._path),
+    # so inheriting one would pull the child's settings back OUT of the isolated
+    # home set two lines up — every served app would share the parent's single
+    # file, and one test's write would be another's starting state. The whole
+    # point of `home` is that this child owns its data; let it derive its
+    # settings path from that home like a real install does.
+    env.pop("PERSONA_SETTINGS_FILE", None)
 
     proc = popen_in_new_session(
         [sys.executable, "-c", script],

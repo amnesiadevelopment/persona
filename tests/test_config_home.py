@@ -420,7 +420,7 @@ def test_rooted_driveless_override_is_returned_verbatim_for_all_eight(
 CALL_TIME_SITES = {
     # call-site label -> the env var that overrides it. The matching resolver
     # callables live in _call_time_resolvers() below (lazily imported).
-    "core/settings.py:68": "PERSONA_SETTINGS_FILE",
+    "core/settings.py:86": "PERSONA_SETTINGS_FILE",
     "core/single_instance.py:47": "PERSONA_LOCK_FILE",
     "api/mcp_token.py:43": "PERSONA_MCP_TOKEN_FILE",
 }
