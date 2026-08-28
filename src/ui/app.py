@@ -48,6 +48,224 @@ logger = get_logger("app")
 from ..services.profile.filter import all_tags, filter_by_tag, filter_profiles
 
 
+#: How much of an engine version string the 200px rail can carry on one line.
+#: Monospace at size 12 runs ~6.2px per character, and the version cell gets
+#: roughly 110px of the rail once the icon, the name and the state dot have
+#: taken theirs — so ~17 characters, with the ellipsis inside that budget.
+_VERSION_MAX_CHARS = 17
+
+#: How many lines an EXPANDED status may occupy before it is cut. The reveal
+#: has to be bounded too, or "expand" just re-creates the defect one click
+#: later: a stack trace pasted into a status string would push the panel out of
+#: shape exactly as the unbounded row did. Three lines is enough to read a real
+#: engine error ("firefox-142: signature check failed / expected sha256 ... /
+#: got ...") and small enough that the panel's shape survives it.
+_STATUS_EXPANDED_MAX_LINES = 3
+
+
+def sidebar_status_text(
+    value: str,
+    *,
+    size: int = 10,
+    color: str | None = None,
+    expanded: bool = False,
+) -> ft.Text:
+    """A status/label line that CANNOT push the engines panel out of shape.
+
+    THE COMPLAINT THIS ANSWERS, and why round 1 did not close it. The version
+    lines were bounded (see :func:`_short_engine_version` and the two engine
+    Text controls in ``__init__``) — but the GREY LABEL rows beneath them were
+    not. ``_engine_rollback_row``, ``_engine2_rollback_row`` and
+    ``_engine_rollback_pending_row`` each built a bare ``ft.Text(label, size=10,
+    color=text_dim)`` with no ``no_wrap``, no ``max_lines`` and no ``overflow``,
+    and every one of them interpolates a RUNTIME string:
+
+        f"resume updates (pinned to {pin})"
+        f"go back to {target}"
+        "rollback available after the next two engine updates"
+
+    That is the grey text seen running past the panel's right edge. The engine
+    STATUS strings are the other half: ``_engine2_status`` is assigned raw
+    service text (``"couldn't go back — see the log"``, and on the failure path
+    an arbitrary exception message), so its upper bound is whatever the engine
+    check happened to produce — the "single enormous run of text".
+
+    TWO THINGS ARE REQUIRED AND ONE ALONE IS NOT ENOUGH, which is the trap:
+
+    1. ``max_lines``/``overflow`` bound the text's own layout, and
+    2. ``expand=True`` bounds its WIDTH.
+
+    A ``Text`` inside a ``Row`` is given its intrinsic width — a Row does not
+    squeeze a child that did not ask to flex — so a long single-line string is
+    laid out at full length and simply overflows the Row, with the ellipsis
+    never engaging because, as far as the control is concerned, it was granted
+    all the room it asked for. Bounding the lines without bounding the width is
+    therefore precisely the fix that looks right and changes nothing.
+
+    ``expanded`` is the REVEAL, not a second layout: the same control, allowed
+    ``_STATUS_EXPANDED_MAX_LINES`` wrapped lines instead of one. It is still
+    bounded (see that constant) — a reveal that is unbounded is the original
+    defect deferred by one click.
+    """
+    return ft.Text(
+        value,
+        size=size,
+        color=color or COLORS["text_dim"],
+        font_family="monospace",
+        expand=True,
+        no_wrap=not expanded,
+        max_lines=_STATUS_EXPANDED_MAX_LINES if expanded else 1,
+        overflow=ft.TextOverflow.ELLIPSIS,
+    )
+
+
+#: The rollback row's two labels, as FIXED PHRASES rather than f-strings.
+#:
+#: THE COMPLAINT THIS ANSWERS. The labels were built as ``f"go back to
+#: {target}"`` and ``f"resume updates (pinned to {pin})"``, where the
+#: interpolated value is a COMPLETE BUILD IDENTIFIER — a Firefox one reads
+#: ``firefox-20_151.0_20260817150018``, 30 characters. Inside a 200px rail that
+#: cannot fit and does not fit: it is what pushed the row past the panel's edge
+#: and produced the enormous run of text under one of the engines.
+#:
+#: THE IDENTIFIER IS NOT DROPPED, IT IS RELOCATED. The row's tooltip already
+#: named the build verbatim, so taking it out of the visible text loses the
+#: operator nothing — it moves a detail from a place that cannot hold it to a
+#: place that already did.
+#:
+#: What the LABEL has to carry is WHICH GESTURE this is, and that is a fixed
+#: phrase in both states. A fixed phrase also has a fixed width, which is the
+#: property the old label lacked: no runtime string can widen these.
+_ROLLBACK_LABEL = "previous version"
+_RESUME_LABEL = "resume updates"
+
+
+def rollback_row(
+    *,
+    label: str,
+    icon: str,
+    tooltip: str,
+    cost: str = "",
+    cost_color: str | None = None,
+    on_click=None,
+) -> ft.Control:
+    """One engine's rollback row: icon + SHORT label, with the COST of the
+    gesture on its own short second line.
+
+    WHY THE COST IS ON SCREEN AND NOT ONLY IN THE TOOLTIP — this is the one
+    part of the old label that must NOT simply move into the tooltip with the
+    build identifier, and the two are different in kind:
+
+      * the build identifier answers "which build?", which an operator asks
+        deliberately, after deciding to revert. A tooltip is the right home.
+      * the COST answers "what will this do to me?", which an operator needs
+        BEFORE deciding. Firefox's revert moves no bytes — both builds are
+        already unpacked in versioned cache dirs. Chromium's RE-DOWNLOADS
+        hundreds of megabytes, over Tor, because Chromium keeps a single
+        un-versioned tree and the previous build's files are genuinely gone.
+
+    A tooltip needs a hover that a trackpad operator may never perform, so a
+    cost carried only there is a cost the operator meets AFTER clicking. A
+    one-word label that hides a several-hundred-megabyte transfer is worse than
+    the long label it replaced.
+
+    IT IS A SECOND LINE RATHER THAN A SUFFIX because the label has to fit the
+    rail with room to spare. ``previous version · re-downloads ~300 MB`` is 39
+    monospace characters against a content width of about 22, so appending it
+    would re-create the exact overflow this row exists to remove. Split across
+    two lines, the longest thing ever rendered here is 20 characters.
+
+    BOTH LINES GO THROUGH :func:`sidebar_status_text`, so both are
+    width-bounded and single-line. The bound round 2 established is not
+    weakened by adding a line beneath it — it is applied to that line too.
+    """
+    text_line = ft.Row(
+        spacing=6,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        controls=[
+            ft.Icon(icon, size=13, color=COLORS["text_dim"]),
+            sidebar_status_text(label),
+        ],
+    )
+    if not cost:
+        body: ft.Control = text_line
+    else:
+        body = ft.Column(
+            spacing=1,
+            controls=[
+                text_line,
+                ft.Row(
+                    spacing=6,
+                    controls=[
+                        # Aligns the cost under the LABEL rather than under the
+                        # icon: 13px icon + the Row's 6px spacing.
+                        ft.Container(width=13),
+                        sidebar_status_text(
+                            cost, size=9, color=cost_color or COLORS["text_dim"]
+                        ),
+                    ],
+                ),
+            ],
+        )
+    return ft.Container(
+        padding=ft.Padding.only(left=36, right=10, top=4, bottom=2),
+        on_click=(lambda _: on_click()) if on_click else None,
+        ink=bool(on_click),
+        tooltip=tooltip,
+        content=body,
+    )
+
+
+def _short_engine_version(version: str) -> str:
+    """An engine version the rail can actually show on one line.
+
+    THE COMPLAINT: "под хромиумом длина текста больше чем «Война и мир»". The
+    Chromium row carried a full upstream build string — ``148.0.7778.215``, and
+    with the old "update → " prefix 23 characters — into a cell with room for
+    about 17. It wrapped, and a wrapping line in a fixed-height panel is what
+    made the text visibly shift when the section opened.
+
+    An operator glancing at the rail needs to know WHICH engine and WHETHER it
+    is current. A Chromium build's identity is its MAJOR: 148 vs 147 is the
+    answer to "what am I running", while ".0.7778.215" distinguishes builds
+    nobody chooses between by hand. So a 4-part Chromium version is cut to
+    ``148.0.7778`` — the part that still reads as a version — and anything
+    else is ellipsised at the budget rather than being silently clipped.
+
+    WHERE THE FULL STRING GOES — AND THE ANSWER IS "NOWHERE", FOR THE ENGINE
+    ROWS THIS SERVES. An earlier version of this docstring said the row's
+    tooltip carries it verbatim. That is TRUE OF THE ROLLBACK ROW, whose
+    tooltip really does interpolate the build identifier, and it is FALSE of
+    the two engine status rows every caller of this function feeds: their
+    tooltips are the static gesture strings "Check / update fp-chromium" and
+    "Check / update the Firefox engine", with no version in either. It is not
+    behind the reveal chevron either — see :meth:`_engine_row`, which works
+    the arithmetic through: this function caps AT ``_VERSION_MAX_CHARS`` and
+    :meth:`_status_needs_reveal` fires only ABOVE it, so shortening a version
+    is exactly what turns the chevron off.
+
+    So on an engine row the ellipsised tail is genuinely unreachable. That is
+    accepted (PS-229): the line answers "which engine, and am I current?",
+    which the shortened form and the accent dot answer between them, and the
+    tail is a build timestamp nobody picks between by hand. Restoring an
+    affordance would break item 6's rule that a whole line gets no reveal
+    control.
+
+    Shortening happens HERE, at the source of the value, rather than by
+    clamping the Text control — a clamp would hide the overflow instead of
+    removing it, and the panel would still be sized for text nobody can read.
+    """
+    text = (version or "").strip()
+    if len(text) <= _VERSION_MAX_CHARS:
+        return text
+    parts = text.split(".")
+    if len(parts) >= 4 and all(p.isdigit() for p in parts[:3]):
+        trimmed = ".".join(parts[:3])
+        if len(trimmed) <= _VERSION_MAX_CHARS:
+            return trimmed
+    return text[: _VERSION_MAX_CHARS - 1] + "…"
+
+
 def _show_window(page: ft.Page) -> None:
     """Reveal the window (it starts hidden via hide_window_on_start). Idempotent
     and best-effort: called once the centred splash is the current frame, and
@@ -203,6 +421,12 @@ class App:
         # for a situation that already has exactly one, free to drift from it.
         self._engine_unverifiable_msg: str = ""
         self._engines_open = False
+        # Whether each engine's status line is currently REVEALED (wrapped to
+        # _STATUS_EXPANDED_MAX_LINES) rather than ellipsised to one line. Per
+        # engine, not one shared flag: an operator reading a Firefox error must
+        # not have the Chromium row silently change height underneath them.
+        self._engine_status_expanded = False
+        self._engine2_status_expanded = False
         # An onboarding/changelog dialog owns the screen at startup; a staged
         # update that lands while it's open is held here and offered once the
         # onboarding closes, so the two dialogs never stack (#226).
@@ -224,17 +448,37 @@ class App:
         self._engine2_bar = ft.ProgressBar(
             value=None, color=COLORS["accent"], bgcolor=COLORS["input_bg"], height=4,
         )
-        self._engine2_detail = ft.Text(
-            "", size=10, color=COLORS["text_sub"], font_family="monospace",
+        # Bounded for the same reason as the grey label rows: this line carries
+        # progress prose assembled at runtime ("142.3 MB of 380.1 MB — 12s
+        # left"), so its length is a property of the download, not of the
+        # design. See sidebar_status_text for why expand=True is half the fix.
+        self._engine2_detail = sidebar_status_text(
+            "", color=COLORS["text_sub"]
         )
+        # SINGLE LINE, BOTH OF THEM. These are the two controls the owner was
+        # looking at when he said the Chromium text was longer than War and
+        # Peace: given a narrow cell and no wrap rule, flet breaks a version
+        # across as many lines as it needs ("148.0" / ".7778" / ".215"), which
+        # is both the length complaint AND the "съехавший" shift — the panel's
+        # height changes with the text. Ellipsis instead of wrap makes the row
+        # a fixed one-line object. The ellipsised tail is NOT recovered from a
+        # tooltip: these two rows' tooltips are static gesture strings with no
+        # version interpolated (the ROLLBACK row is the one whose tooltip
+        # carries a build identifier). See _short_engine_version.
         self._engine2_text = ft.Text(
             "", size=12, color=COLORS["text_main"], font_family="monospace",
+            no_wrap=True, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
+            text_align=ft.TextAlign.RIGHT,
         )
         self.engine_text = ft.Text(
             "...",
             size=12,
             color=COLORS["text_main"],
             font_family="monospace",
+            no_wrap=True,
+            max_lines=1,
+            overflow=ft.TextOverflow.ELLIPSIS,
+            text_align=ft.TextAlign.RIGHT,
         )
         self._engine_start_t = 0.0
         self._engine_bar = ft.ProgressBar(
@@ -243,11 +487,9 @@ class App:
             bgcolor=COLORS["input_bg"],
             height=4,
         )
-        self._engine_detail = ft.Text(
-            "",
-            size=10,
-            color=COLORS["text_sub"],
-            font_family="monospace",
+        # Bounded for the same reason as its Firefox twin above.
+        self._engine_detail = sidebar_status_text(
+            "", color=COLORS["text_sub"]
         )
         self.count_text = ft.Text(
             "0",
@@ -1261,7 +1503,31 @@ class App:
         if self._engine2_status:
             return self._engine2_status
         if self._engine2_update_available():
-            return f"update → {self._engine2_latest}"
+            # No "update →" prose, and shortened at the source — the same
+            # treatment the Chromium row already had, for the same reasons.
+            #
+            # The prose is redundant EXACTLY WHEN IT IS MOST EXPENSIVE: this
+            # branch is the one condition under which the accent dot is drawn
+            # (the row passes dot=self._engine2_update_available()), so the
+            # words say what the dot beside them is already saying. Nine of
+            # the cell's ~17 characters went on them, and what got ellipsised
+            # away to pay for it was the build number — the only thing the
+            # line exists to tell anyone. Firefox tags are long:
+            #
+            #   "update → firefox-20_151.0_20260817150018"  (40) → "update → firefox…"
+            #   "firefox-20_151.0_20260817150018"           (31) → "firefox-20_151.0…"
+            #
+            # The second keeps the build (20) and the upstream version legible.
+            # The trailing "_20260817150018" is then reachable from NOWHERE —
+            # not this row's tooltip (a static gesture string) and not the
+            # reveal chevron, because shortening caps the value AT
+            # _VERSION_MAX_CHARS while _status_needs_reveal fires only ABOVE
+            # it. _engine_row's docstring works that arithmetic through, and
+            # test_a_shortened_version_line_draws_no_reveal_so_its_tail_is_
+            # unreachable pins the consequence. Accepted in review (PS-229):
+            # the build and upstream version are what the line is for, and a
+            # reveal on a whole line is the affordance item 6 forbids.
+            return _short_engine_version(self._engine2_latest)
         return self._engine2_version_text()
 
     def _engine2_rollback_row(self) -> ft.Control:
@@ -1285,42 +1551,46 @@ class App:
             # The panel must render even if the engine cache is unreadable.
             return ft.Container(height=0)
 
+        # THE BUILD IDENTIFIER LIVES IN THE TOOLTIP, NOT THE LABEL. A Firefox
+        # build reads `firefox-20_151.0_20260817150018` — 30 characters into a
+        # rail with room for about 22 — and interpolating it into the visible
+        # text is what pushed this row past the panel's edge. The tooltip named
+        # it already, so nothing is lost by taking it out of the label.
+        #
+        # THE COST STAYS ON SCREEN. Firefox's revert moves NO BYTES: both
+        # builds are already unpacked in versioned cache dirs, so the retained
+        # one is on disk and switching to it is instant. That is the half of
+        # PS-79's trade that belongs to this engine, and it must survive the
+        # shortening — see rollback_row for why cost and identity part company.
         if pin:
-            label, tip, action = (
-                f"resume updates (pinned to {pin})",
-                "Clear the pin and let the Firefox engine update again",
-                self._on_engine2_resume,
+            return rollback_row(
+                label=_RESUME_LABEL,
+                icon=ft.Icons.PLAY_ARROW,
+                # THE SECOND LINE SAYS THE STATE, NOT THE GESTURE. "resume
+                # updates / updates resume" is a stutter that costs a line and
+                # tells the operator nothing. What they cannot see from the
+                # label is WHY the row is offering this at all: the pin is
+                # holding automatic updates off right now.
+                cost="auto-update held off",
+                tooltip=(
+                    f"Clear the pin (currently held at {pin}) and let the "
+                    "Firefox engine update again"
+                ),
+                on_click=self._on_engine2_resume,
             )
-        elif target:
-            label, tip, action = (
-                f"go back to {target}",
-                f"Return to the retained {target} build — no download needed",
-                self._on_engine2_rollback,
+        if target:
+            return rollback_row(
+                label=_ROLLBACK_LABEL,
+                icon=ft.Icons.HISTORY,
+                cost="instant · no download",
+                tooltip=(
+                    f"Go back to the retained {target} build. Firefox keeps "
+                    "each build in its own cache directory, so this one is "
+                    "already on disk — nothing is downloaded."
+                ),
+                on_click=self._on_engine2_rollback,
             )
-        else:
-            return ft.Container(height=0)
-
-        return ft.Container(
-            padding=ft.Padding.only(left=36, right=10, top=4, bottom=2),
-            on_click=lambda _: action(),
-            ink=True,
-            tooltip=tip,
-            content=ft.Row(
-                spacing=6,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                controls=[
-                    ft.Icon(
-                        ft.Icons.HISTORY if not pin else ft.Icons.PLAY_ARROW,
-                        size=13,
-                        color=COLORS["text_dim"],
-                    ),
-                    ft.Text(
-                        label, size=10, color=COLORS["text_dim"],
-                        font_family="monospace",
-                    ),
-                ],
-            ),
-        )
+        return ft.Container(height=0)
 
     def _on_engine2_rollback(self) -> None:
         """Go back to the retained previous build. Instant: both builds are
@@ -1445,56 +1715,97 @@ class App:
             self._log(f"Chromium engine: couldn't read the rollback state ({e})")
             return ft.Container(height=0)
 
+        # THE BUILD IDENTIFIER LIVES IN THE TOOLTIP, NOT THE LABEL — the same
+        # relocation as the Firefox row next door, for the same reason, and the
+        # two engines must not describe the same situation differently.
+        #
+        # THE COST STAYS ON SCREEN, AND HERE IT IS THE EXPENSIVE ONE. Chromium
+        # keeps ONE un-versioned tree, so the previous build's files are
+        # genuinely gone and going back RE-DOWNLOADS the whole engine, over
+        # Tor. Firefox's revert next door moves no bytes at all. That asymmetry
+        # is PS-79's trade, it is the single most consequential thing this row
+        # can tell an operator, and it is exactly what a one-word label would
+        # have hidden. It is carried in the WARNING colour because it is a
+        # warning: the other engine's line is not.
+        #
+        # THE COST IS STATED WITHOUT A SIZE, DELIBERATELY — see the WHY below.
         if pin:
-            label, tip, action = (
-                f"resume updates (pinned to {pin})",
-                "Clear the pin and let the Chromium engine update again",
-                self._on_engine_resume,
+            return rollback_row(
+                label=_RESUME_LABEL,
+                icon=ft.Icons.PLAY_ARROW,
+                # Says the STATE, not the gesture — same reasoning as the
+                # Firefox row next door, and the two engines must not describe
+                # the same situation differently.
+                cost="auto-update held off",
+                tooltip=(
+                    f"Clear the pin (currently held at {pin}) and let the "
+                    "Chromium engine update again"
+                ),
+                on_click=self._on_engine_resume,
             )
-        elif target:
-            label, tip, action = (
-                f"go back to {target}",
-                f"Re-download the {target} build and install it — the engine "
-                "you have now is replaced",
-                self._on_engine_rollback,
+        if target:
+            return rollback_row(
+                label=_ROLLBACK_LABEL,
+                icon=ft.Icons.HISTORY,
+                # NO SIZE IS QUOTED, AND THAT IS A CORRECTION TO THE RENDER.
+                # The render's label read "downloads 300-600MB". That figure
+                # was checked against the code before shipping it and it is
+                # NOT a value this product knows: the three occurrences of
+                # "300-600MB" in the tree are all PROSE COMMENTS in
+                # engine/updater.py, arguing about whether to keep a second
+                # engine tree on disk (lines 52, 651, 1175). No constant, no
+                # field, no service call carries it. The only real total is
+                # the Content-Length/Content-Range that httpdl.resumable_
+                # download learns AT TRANSFER TIME — i.e. after the operator
+                # has already clicked, which is exactly too late to be a
+                # warning.
+                #
+                # So the number would have been an unsourced claim presented
+                # as measured, on a line an operator on Tor budgets an
+                # afternoon against. Per the planner's ruling on this ticket:
+                # the cost warning survives, only the fabricated precision
+                # goes. Inventing a substitute range would be manufacturing
+                # the very thing the ticket forbids.
+                #
+                # THE VERB STAYS SHORT FOR THE SAME REASON THE NUMBER WENT.
+                # "re-downloads the engine" is 23 characters against a rail
+                # that holds about 22, so it would ellipsise — and a cost line
+                # cut off mid-word is the overflow defect this panel is being
+                # rebuilt to remove, re-introduced by the fix for a different
+                # one. The render had already dropped the "re-" prefix under
+                # the same budget. "downloads" is 20 and fits; the tooltip
+                # below still says "re-downloads the whole engine" in full, so
+                # the precision is relocated rather than lost.
+                #
+                # WHAT MUST SURVIVE, AND DOES: the Chromium-vs-Firefox
+                # asymmetry. This line says bytes MOVE; the Firefox row next
+                # door says it is instant and downloads nothing. An operator
+                # on a slow or metered link still learns which of the two they
+                # are about to trigger, which is the whole purpose of the line.
+                cost="downloads the engine",
+                cost_color=COLORS["warning"],
+                tooltip=(
+                    f"Go back to {target}. Chromium keeps one engine build at "
+                    "a time, so the previous build's files are gone and this "
+                    "re-downloads the whole engine, over Tor, and replaces "
+                    "the engine you have now."
+                ),
+                on_click=self._on_engine_rollback,
             )
-        else:
-            # No target — but WHICH of the three "no target" states is this?
-            # is_installed() swallows its own OSError and answers False, so it
-            # needs no guard of its own, and False is the safe direction: it
-            # renders nothing, exactly as this row did before the state existed.
-            if not engine.is_installed():
-                return ft.Container(height=0)
-            try:
-                recorded = engine.current_build_recorded()
-            except Exception as e:
-                # Same fail-quiet direction as above: an unreadable record must
-                # not promise a specific number of updates. Log and say nothing.
-                self._log(f"Chromium engine: couldn't read the build record ({e})")
-                return ft.Container(height=0)
-            return self._engine_rollback_pending_row(recorded)
-
-        return ft.Container(
-            padding=ft.Padding.only(left=36, right=10, top=4, bottom=2),
-            on_click=lambda _: action(),
-            ink=True,
-            tooltip=tip,
-            content=ft.Row(
-                spacing=6,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                controls=[
-                    ft.Icon(
-                        ft.Icons.HISTORY if not pin else ft.Icons.PLAY_ARROW,
-                        size=13,
-                        color=COLORS["text_dim"],
-                    ),
-                    ft.Text(
-                        label, size=10, color=COLORS["text_dim"],
-                        font_family="monospace",
-                    ),
-                ],
-            ),
-        )
+        # No target — but WHICH of the three "no target" states is this?
+        # is_installed() swallows its own OSError and answers False, so it
+        # needs no guard of its own, and False is the safe direction: it
+        # renders nothing, exactly as this row did before the state existed.
+        if not engine.is_installed():
+            return ft.Container(height=0)
+        try:
+            recorded = engine.current_build_recorded()
+        except Exception as e:
+            # Same fail-quiet direction as above: an unreadable record must
+            # not promise a specific number of updates. Log and say nothing.
+            self._log(f"Chromium engine: couldn't read the build record ({e})")
+            return ft.Container(height=0)
+        return self._engine_rollback_pending_row(recorded)
 
     def _engine_rollback_pending_row(self, recorded: bool) -> ft.Control:
         """The line an operator sees when the engine is installed but nothing is
@@ -1562,12 +1873,7 @@ class App:
                     ft.Icon(
                         ft.Icons.INFO_OUTLINE, size=13, color=COLORS["text_dim"]
                     ),
-                    ft.Text(
-                        label,
-                        size=10,
-                        color=COLORS["text_dim"],
-                        font_family="monospace",
-                    ),
+                    sidebar_status_text(label),
                 ],
             ),
         )
@@ -2148,13 +2454,148 @@ class App:
             width=size, height=size, alignment=ft.Alignment.CENTER, content=inner
         )
 
+    @staticmethod
+    def _status_needs_reveal(value: str, expanded: bool) -> bool:
+        """Whether this status string is longer than its one-line cell.
+
+        Character-budgeted rather than measured, because flet gives no text
+        metrics back: the version cell is ~110px of a 200px rail and monospace
+        at size 12 runs ~6.2px per character (the same budget
+        :data:`_VERSION_MAX_CHARS` is derived from). A string at or under it
+        fits and gets NO reveal control — an affordance on a line that is
+        already whole is noise, and worse, it invites a click that visibly
+        does nothing.
+        """
+        if expanded:
+            return True
+        return len(value or "") > _VERSION_MAX_CHARS
+
+    @staticmethod
+    def _status_expanded_attr(which: str) -> str:
+        """The instance attribute holding one engine's reveal flag."""
+        return (
+            "_engine_status_expanded"
+            if which == "chromium"
+            else "_engine2_status_expanded"
+        )
+
+    def _status_expanded(self, which: str) -> bool:
+        """Whether one engine's status line is currently revealed.
+
+        READ THROUGH THIS, NEVER OFF THE ATTRIBUTE DIRECTLY, and the reason is
+        a coupling one rather than a style one. ``_build_engines_panel`` is
+        reachable from construction paths that do not run ``__init__`` — the
+        progress tests build the app with ``App.__new__(App)`` precisely to
+        exercise the panel without standing up a page — so a panel builder that
+        hard-requires an attribute set only in ``__init__`` raises
+        ``AttributeError`` on every one of them, and would do so again for any
+        future partial construction.
+
+        The default is ``False`` — COLLAPSED — which is also the safe
+        direction: collapsed is the state that keeps the long-lived control
+        the download-progress callback writes to, so a panel built without
+        ``__init__`` renders the live row rather than a frozen snapshot.
+        """
+        return bool(getattr(self, self._status_expanded_attr(which), False))
+
+    def _toggle_engine_status(self, which: str) -> None:
+        """Reveal / re-collapse one engine's full status text in place."""
+        attr = self._status_expanded_attr(which)
+        setattr(self, attr, not self._status_expanded(which))
+        self._refresh_sidebar()
+
+    def _status_reveal_button(self, which: str, expanded: bool) -> ft.Control:
+        """The gesture that shows a truncated status in full.
+
+        WHY EXPAND-IN-PLACE AND NOT A TOOLTIP. A tooltip was the cheaper
+        answer and is the wrong one here for three reasons: it is invisible in
+        a screenshot (which is the artifact this design is judged from), it
+        needs a hover a touch/trackpad operator may never perform, and it is
+        the mechanism the row ALREADY uses for the full version string — so a
+        second, different meaning on the same gesture would collide with it.
+        Expanding in place is visible, clickable, and reversible.
+
+        IT IS ITS OWN CONTROL, NOT THE ROW'S CLICK. The row's ``on_click``
+        already means "check / update this engine" — a download over Tor on the
+        Chromium row. Overloading that gesture with "show me the text" would
+        make reading an error message start a hundreds-of-megabyte transfer.
+        """
+        return ft.Container(
+            on_click=lambda _: self._toggle_engine_status(which),
+            ink=True,
+            width=16,
+            height=16,
+            border_radius=3,
+            alignment=ft.Alignment.CENTER,
+            tooltip=(
+                "Hide the full status" if expanded else "Show the full status"
+            ),
+            content=ft.Icon(
+                ft.Icons.UNFOLD_LESS if expanded else ft.Icons.UNFOLD_MORE,
+                size=12,
+                color=COLORS["text_dim"],
+            ),
+        )
+
     def _engine_row(
         self, badge: ft.Control, name: str, status: ft.Control, checking: bool,
-        dot: bool = False,
+        dot: bool = False, reveal: ft.Control | None = None,
     ) -> ft.Control:
-        # `status` is the LIVE Text control the progress callback writes to,
-        # embedded as-is: a string snapshot here is what froze the row's
-        # percent while the byte counter beneath it kept moving.
+        """One engine, on ONE line: what it is, and what state it is in.
+
+        THE COMPLAINT THIS ANSWERS. "под хромиумом длина текста больше чем
+        «Война и мир»" — the Chromium entry read as a paragraph in a 200px
+        rail. Two mechanisms produced that, and both are fixed here rather than
+        padded around:
+
+        1. **The row was a two-line block.** Name above, version below, in a
+           ``Column``. Two engines therefore cost four lines plus their
+           spacing, in the rail that is already short at the app's minimum
+           window size — which is the same budget that was clipping `trash`.
+           Name and version now share one line, halving the panel.
+
+        2. **The version line wrapped, so it became THREE lines.** It carried
+           "update → 148.0.7778.215" — 23 characters of monospace in ~120px of
+           usable rail — and nothing stopped it wrapping, so the text visibly
+           shifted the moment the section opened. That is the "съехавший" half
+           of the report. The version is now shortened at the source (see
+           :func:`_short_engine_version`) and pinned to a single line.
+
+        The "update →" prose is gone because it was saying what the accent DOT
+        already says — on BOTH rows: this is the shared builder for the
+        Chromium and Firefox entries, and a claim made here that held for only
+        one of its two callers is exactly the stale reference that costs the
+        next reader a round. Name, version, state — nothing else.
+
+        WHERE THE FULL VERSION IS *NOT*: neither of these two rows' tooltips.
+        Both are static strings ("Check / update fp-chromium", "Check / update
+        the Firefox engine") naming the GESTURE, with no version interpolated
+        into either. The row that DOES carry a build identifier in its tooltip
+        is the ROLLBACK row, which is a different control.
+
+        AND IT IS NOT BEHIND THE REVEAL EITHER, ONCE THE LINE HAS BEEN
+        SHORTENED — stated plainly because the arithmetic is easy to get
+        backwards. :meth:`_status_needs_reveal` draws the chevron on
+        ``len(value) > _VERSION_MAX_CHARS``, and it is fed the ALREADY
+        shortened value, which :func:`_short_engine_version` caps AT that
+        budget. So the reveal fires on a long *status* (a service string, an
+        exception message) and NOT on a long *version*:
+
+            "update → firefox-20_151.0_20260817150018"  40 → reveal drawn
+            "firefox-20_151.0…"                        17 → no reveal
+
+        That is item 6's rule working as intended — a whole line gets no
+        affordance, because one invites a click that visibly does nothing —
+        but the consequence is real and is not hidden here: in the
+        update-available state the trailing "_20260817150018" of a long
+        Firefox tag is currently reachable from nowhere in the UI. The build
+        and the upstream version, which is what the line is for, both survive.
+        Surfaced in review rather than papered over.
+
+        `status` is the LIVE Text control the progress callback writes to,
+        embedded as-is: a string snapshot here is what froze the row's percent
+        while the byte counter beneath it kept moving.
+        """
         trailing: list[ft.Control] = []
         if checking:
             trailing.append(
@@ -2166,29 +2607,108 @@ class App:
             trailing.append(
                 ft.Container(width=7, height=7, border_radius=4, bgcolor=COLORS["accent"])
             )
-        # Icon sits to the LEFT of the whole name+version block and is centred
-        # against it (not just the name line) so a two-line row reads as one
-        # tidy unit. `status` stays the same live control the progress writer
-        # updates.
         return ft.Row(
             spacing=10,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
             controls=[
                 badge,
+                # NAME ABOVE, VERSION BELOW — measured, not preferred. Putting
+                # the two on ONE line looked like the tighter answer and is
+                # not: the rail is 200px, and once its padding, the 18px icon,
+                # "fp-chromium" and the state dot have taken their share the
+                # version cell is left about 26px, which ellipsised even
+                # "checking..." down to "ch…". A cell too narrow to hold the
+                # value is not a shorter row, it is a row that says nothing.
+                #
+                # So the stacked block stays and the WRAP is what goes. Both
+                # texts are single-line with an ellipsis (see where they are
+                # constructed), which is the actual defect behind "текст
+                # съевший": an unbounded version string broke across three
+                # lines and changed the panel's height when the section opened.
                 ft.Column(
                     spacing=1,
                     expand=True,
                     controls=[
                         ft.Text(
                             name, size=11, color=COLORS["text_sub"],
-                            font_family="monospace",
+                            font_family="monospace", no_wrap=True, max_lines=1,
+                            overflow=ft.TextOverflow.ELLIPSIS,
                         ),
                         status,
                     ],
                 ),
+                # The reveal sits OUTSIDE the expanding Column, so widening the
+                # status never pushes it off the rail, and the Column's
+                # expand=True is what guarantees the status text is squeezed
+                # rather than allowed its intrinsic width.
+                *([reveal] if reveal is not None else []),
                 *trailing,
             ],
         )
+
+    @staticmethod
+    def _apply_status_bounds(control: ft.Text, expanded: bool) -> None:
+        """Re-apply the one-line / revealed bound to a LONG-LIVED status Text.
+
+        WHY THIS EXISTS AT ALL, because it is not obvious and it cost a capture.
+        The two engine status controls (``engine_text``, ``_engine2_text``) are
+        built ONCE in ``__init__`` and embedded in the row by reference — that
+        is deliberate and must stay, because the download callback writes to
+        them live and a snapshot here would freeze the percent mid-transfer.
+
+        But it means the reveal flag cannot be expressed by constructing the
+        control differently: the object the panel renders is the same object
+        every rebuild, carrying whatever bounds it was born with. Toggling
+        ``_engine_status_expanded`` therefore flipped the chevron's icon and
+        tooltip and changed NOTHING about the text — the row still ellipsised
+        to one line, so the reveal was a control that appeared to work and did
+        not. Caught by looking at the render, not at the semantics tree, which
+        reported the toggle as successful.
+
+        So the bound is applied to the LIVE control at build time instead. The
+        collapsed branch restates the one-line bound rather than assuming it,
+        because a control that was previously expanded has to be put back.
+        """
+        control.no_wrap = not expanded
+        control.max_lines = _STATUS_EXPANDED_MAX_LINES if expanded else 1
+        control.overflow = ft.TextOverflow.ELLIPSIS
+        # A revealed status reads as a block of prose, so it is left-aligned;
+        # collapsed it is a value at the end of a row and stays right-aligned.
+        control.text_align = (
+            ft.TextAlign.LEFT if expanded else ft.TextAlign.RIGHT
+        )
+
+    def _status_control(
+        self, live: ft.Text, expanded: bool
+    ) -> ft.Control:
+        """The status control to render for one engine row.
+
+        TWO CONTROLS, CHOSEN BY STATE, rather than one control mutated — and
+        the difference is not stylistic, it is the second bug this round.
+
+        Mutating the long-lived control's ``no_wrap``/``max_lines`` in place
+        (see :meth:`_apply_status_bounds`) sets the properties correctly and
+        the client does not repaint them: the panel hands flet the SAME object
+        it handed it last rebuild, so the reveal flipped the chevron's icon and
+        tooltip while the text stayed ellipsised to one line. The semantics
+        tree reported that as a successful toggle — only the pixels disagreed.
+
+        So the REVEALED state gets a freshly constructed control, which flet
+        has no choice but to paint. The COLLAPSED state keeps the long-lived
+        one, because that is the object the download progress callback writes
+        to live and swapping it would freeze the percent mid-transfer. The
+        trade lands on the right side: a revealed status is a static string
+        being read, while a collapsed one is the line that has to stay live.
+        """
+        if expanded:
+            return sidebar_status_text(
+                live.value or "",
+                size=12,
+                color=COLORS["text_main"],
+                expanded=True,
+            )
+        self._apply_status_bounds(live, False)
+        return live
 
     def _build_engines_panel(self) -> ft.Control:
         header = ft.Container(
@@ -2254,9 +2774,21 @@ class App:
                     content=self._engine_row(
                         self._engine_logo("chromium"),
                         "fp-chromium",
-                        self.engine_text,
+                        self._status_control(
+                            self.engine_text, self._status_expanded("chromium")
+                        ),
                         checking=self._engine_busy or self._engine_checking,
                         dot=self._engine_update_available(),
+                        reveal=(
+                            self._status_reveal_button(
+                                "chromium", self._status_expanded("chromium")
+                            )
+                            if self._status_needs_reveal(
+                                self.engine_text.value or "",
+                                self._status_expanded("chromium"),
+                            )
+                            else None
+                        ),
                     ),
                 )
             )
@@ -2284,9 +2816,21 @@ class App:
                     content=self._engine_row(
                         self._engine_logo("firefox"),
                         "firefox",
-                        self._engine2_text,
+                        self._status_control(
+                            self._engine2_text, self._status_expanded("firefox")
+                        ),
                         checking=self._engine2_busy or self._engine2_checking,
                         dot=self._engine2_update_available(),
+                        reveal=(
+                            self._status_reveal_button(
+                                "firefox", self._status_expanded("firefox")
+                            )
+                            if self._status_needs_reveal(
+                                self._engine2_text.value or "",
+                                self._status_expanded("firefox"),
+                            )
+                            else None
+                        ),
                     ),
                 )
             )
@@ -2590,11 +3134,14 @@ class App:
 
     def _refresh_engine_text(self, status: str = "") -> None:
         def apply() -> None:
-            cur = engine.current_version() or "unknown"
+            cur = _short_engine_version(engine.current_version() or "unknown")
             if status:
                 self.engine_text.value = status
             elif self._engine_update_available():
-                self.engine_text.value = f"update → {self._engine_latest}"
+                # No "update →" prose: the accent dot beside the row already
+                # says an update is available, and the words were most of what
+                # made this line wrap in a 200px rail.
+                self.engine_text.value = _short_engine_version(self._engine_latest)
             elif self._engine_status:
                 # A build persona refused. Without this the row would fall
                 # through to the installed version and read as "up to date",
