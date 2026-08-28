@@ -586,9 +586,70 @@ def test_the_existing_probe_records_kept_their_realms():
     gaining the realm. A DROPPED probe is owned by
     test_verify_baseline.py::test_a_probe_dropped_from_the_inventory_is_caught.
     """
-    non_new = [p for p in probes.PROBES if p.id != "realm.frameIdentity"]
+    # PS-232. The set of records this realm ARRIVED with, rather than the one
+    # literal id PS-210 could name when it was the only one. The invariant is
+    # unchanged and is stated in the docstring above — a PRE-EXISTING vector
+    # must not silently gain the realm — but the old spelling could not express
+    # it: excluding a single hardcoded id made "declares child_frame" and "is
+    # realm.frameIdentity" the same predicate, so it refused a NEW record too.
+    #
+    # That is stricter than this test's own docstring, and stricter in a
+    # direction that defeats the realm's purpose. `compare_profiles` builds its
+    # work list from `must_differ_probes() x probe.realms`, so the realm can
+    # only enter the unlinkability question if some INDEPENDENT record declares
+    # it — and the only id the old spelling permitted, realm.frameIdentity, is
+    # SHARED and must stay so (frame position is not seed-derived; classifying
+    # it INDEPENDENT would report every pair of profiles as COLLIDING). So the
+    # old spelling did not merely forbid widening, it forbade the child realm
+    # from ever being on the must-differ axis at all, by any means.
+    #
+    # WHAT IS STILL FORBIDDEN, and the reason this is not a relaxation: every
+    # record that existed BEFORE this realm did keeps exactly the realms it
+    # declared. Widening `webgl.readback` to (WINDOW, CHILD_FRAME) — the shape
+    # PS-232 first tried and PS-210 installed this guard against — still fails
+    # here, and test_widening_a_pre_existing_record_is_still_caught below
+    # proves it by construction rather than by assertion.
+    grandfathered = {"realm.frameIdentity", "webgl.readback.childFrame"}
+    pre_existing = [p for p in probes.PROBES if p.id not in grandfathered]
 
-    assert non_new
-    for probe in non_new:
+    assert pre_existing
+    for probe in pre_existing:
         assert probes.CHILD_FRAME not in probe.realms
         assert probe.realms in (probes.BOTH, probes.WINDOW_ONLY)
+
+
+def test_widening_a_pre_existing_record_is_still_caught():
+    """The guard above did not go soft — PS-232 proves it still bites.
+
+    Amending a guard is the moment to demonstrate it still catches what it was
+    installed for, rather than to assert that it does. This rebuilds the exact
+    shape PS-210 forbade (a PRE-EXISTING record gaining the realm) and asserts
+    the predicate above rejects it, so the amendment cannot have widened into a
+    no-op without this test going red.
+    """
+    def rejects(inventory) -> bool:
+        grandfathered = {"realm.frameIdentity", "webgl.readback.childFrame"}
+        return any(
+            probes.CHILD_FRAME in p.realms or p.realms not in (probes.BOTH, probes.WINDOW_ONLY)
+            for p in inventory
+            if p.id not in grandfathered
+        )
+
+    live = next(p for p in probes.PROBES if p.id == "webgl.readback")
+    assert live.realms == probes.WINDOW_ONLY, "premise: this record is window-only"
+
+    # The real inventory passes...
+    assert not rejects(probes.PROBES)
+
+    # ...and the forbidden shape does not, on either spelling of widening.
+    for widened in ((probes.WINDOW, probes.CHILD_FRAME), probes.EVERY_REALM):
+        mutated = tuple(
+            probes.Probe(p.id, widened, p.expr, note=p.note, variance=p.variance)
+            if p.id == "webgl.readback"
+            else p
+            for p in probes.PROBES
+        )
+        assert rejects(mutated), (
+            f"a pre-existing record widened to {widened} was NOT caught — "
+            "the amended guard has gone soft on the very shape it exists for"
+        )
