@@ -232,9 +232,24 @@ def _short_engine_version(version: str) -> str:
     ``148.0.7778`` — the part that still reads as a version — and anything
     else is ellipsised at the budget rather than being silently clipped.
 
-    THE FULL STRING IS NOT DESTROYED, it is relocated: the row's tooltip
-    carries it verbatim, which is where the brief says the detail belongs
-    ("anything else belongs behind a click, not in the rail").
+    WHERE THE FULL STRING GOES — AND THE ANSWER IS "NOWHERE", FOR THE ENGINE
+    ROWS THIS SERVES. An earlier version of this docstring said the row's
+    tooltip carries it verbatim. That is TRUE OF THE ROLLBACK ROW, whose
+    tooltip really does interpolate the build identifier, and it is FALSE of
+    the two engine status rows every caller of this function feeds: their
+    tooltips are the static gesture strings "Check / update fp-chromium" and
+    "Check / update the Firefox engine", with no version in either. It is not
+    behind the reveal chevron either — see :meth:`_engine_row`, which works
+    the arithmetic through: this function caps AT ``_VERSION_MAX_CHARS`` and
+    :meth:`_status_needs_reveal` fires only ABOVE it, so shortening a version
+    is exactly what turns the chevron off.
+
+    So on an engine row the ellipsised tail is genuinely unreachable. That is
+    accepted (PS-229): the line answers "which engine, and am I current?",
+    which the shortened form and the accent dot answer between them, and the
+    tail is a build timestamp nobody picks between by hand. Restoring an
+    affordance would break item 6's rule that a whole line gets no reveal
+    control.
 
     Shortening happens HERE, at the source of the value, rather than by
     clamping the Text control — a clamp would hide the overflow instead of
@@ -446,7 +461,10 @@ class App:
         # across as many lines as it needs ("148.0" / ".7778" / ".215"), which
         # is both the length complaint AND the "съехавший" shift — the panel's
         # height changes with the text. Ellipsis instead of wrap makes the row
-        # a fixed one-line object; the full string lives in the row tooltip.
+        # a fixed one-line object. The ellipsised tail is NOT recovered from a
+        # tooltip: these two rows' tooltips are static gesture strings with no
+        # version interpolated (the ROLLBACK row is the one whose tooltip
+        # carries a build identifier). See _short_engine_version.
         self._engine2_text = ft.Text(
             "", size=12, color=COLORS["text_main"], font_family="monospace",
             no_wrap=True, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
@@ -1500,8 +1518,15 @@ class App:
             #   "firefox-20_151.0_20260817150018"           (31) → "firefox-20_151.0…"
             #
             # The second keeps the build (20) and the upstream version legible.
-            # The full string stays reachable through the row's reveal control,
-            # which is what _status_needs_reveal is for at this length.
+            # The trailing "_20260817150018" is then reachable from NOWHERE —
+            # not this row's tooltip (a static gesture string) and not the
+            # reveal chevron, because shortening caps the value AT
+            # _VERSION_MAX_CHARS while _status_needs_reveal fires only ABOVE
+            # it. _engine_row's docstring works that arithmetic through, and
+            # test_a_shortened_version_line_draws_no_reveal_so_its_tail_is_
+            # unreachable pins the consequence. Accepted in review (PS-229):
+            # the build and upstream version are what the line is for, and a
+            # reveal on a whole line is the affordance item 6 forbids.
             return _short_engine_version(self._engine2_latest)
         return self._engine2_version_text()
 
