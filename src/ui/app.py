@@ -1485,7 +1485,24 @@ class App:
         if self._engine2_status:
             return self._engine2_status
         if self._engine2_update_available():
-            return f"update → {self._engine2_latest}"
+            # No "update →" prose, and shortened at the source — the same
+            # treatment the Chromium row already had, for the same reasons.
+            #
+            # The prose is redundant EXACTLY WHEN IT IS MOST EXPENSIVE: this
+            # branch is the one condition under which the accent dot is drawn
+            # (the row passes dot=self._engine2_update_available()), so the
+            # words say what the dot beside them is already saying. Nine of
+            # the cell's ~17 characters went on them, and what got ellipsised
+            # away to pay for it was the build number — the only thing the
+            # line exists to tell anyone. Firefox tags are long:
+            #
+            #   "update → firefox-20_151.0_20260817150018"  (40) → "update → firefox…"
+            #   "firefox-20_151.0_20260817150018"           (31) → "firefox-20_151.0…"
+            #
+            # The second keeps the build (20) and the upstream version legible.
+            # The full string stays reachable through the row's reveal control,
+            # which is what _status_needs_reveal is for at this length.
+            return _short_engine_version(self._engine2_latest)
         return self._engine2_version_text()
 
     def _engine2_rollback_row(self) -> ft.Control:
@@ -2520,9 +2537,23 @@ class App:
            :func:`_short_engine_version`) and pinned to a single line.
 
         The "update →" prose is gone because it was saying what the accent DOT
-        already says. Name, version, state — nothing else. The full version
-        stays reachable through the row's tooltip, which is where detail
-        belongs.
+        already says — on BOTH rows: this is the shared builder for the
+        Chromium and Firefox entries, and a claim made here that held for only
+        one of its two callers is exactly the stale reference that costs the
+        next reader a round. Name, version, state — nothing else.
+
+        THE FULL VERSION IS REACHABLE THROUGH THE REVEAL CONTROL, NOT THE
+        TOOLTIP. Both rows' tooltips are static strings ("Check / update
+        fp-chromium", "Check / update the Firefox engine") naming the GESTURE,
+        and no version is interpolated into either. What surfaces the whole
+        string is the reveal chevron beside the status, which is drawn exactly
+        when the text does not fit (:meth:`_status_needs_reveal`) — a long
+        Firefox tag is 31 characters against a 17-character budget, so it is
+        drawn in precisely the state that shortens the line.
+
+        (:func:`_short_engine_version`'s own docstring says the tooltip carries
+        it verbatim; that is true of the ROLLBACK row's tooltip, which does
+        interpolate the build identifier, and not of these two.)
 
         `status` is the LIVE Text control the progress callback writes to,
         embedded as-is: a string snapshot here is what froze the row's percent

@@ -495,6 +495,17 @@ def test_a_pinned_engine_is_not_advertised_as_updatable(monkeypatch):
     # row must not tell them they are out of date, must not show the update
     # dot, and clicking must not start a ~320-600MB download over Tor that
     # ends with the pin — and the launched build — exactly as it was.
+    from src.services.browser import invisible_launch as inv
+
+    # PIN THE INSTALLED TEXT, because the assertion below is a "does not name
+    # the rejected build" check and the helper leaves `installed_version()`
+    # unstubbed — it reports whatever engine this MACHINE has. On the box this
+    # was written on that is "firefox-20 · FF 151.0", which contains the token
+    # "firefox-20" for a reason that has nothing to do with the update offer,
+    # so the check passed or failed on ambient state rather than on behaviour.
+    # Deterministic, and distinct from the offered build, so it discriminates.
+    monkeypatch.setattr(inv, "installed_version", lambda: "firefox-19 · FF 150.0")
+
     app, routed = _engine2_row_app(
         monkeypatch, current="firefox-19", latest="firefox-20", pin="firefox-19"
     )
@@ -503,8 +514,20 @@ def test_a_pinned_engine_is_not_advertised_as_updatable(monkeypatch):
         "a pinned engine must not be advertised as updatable — the build "
         "being offered is the one the operator deliberately went back from"
     )
-    assert not app._engine2_status_text().startswith("update →"), (
-        app._engine2_status_text()
+    # NOT `startswith("update →")`. That prefix no longer exists on any code
+    # path (the prose was dropped in PS-229 item 8 because the accent dot was
+    # already saying it), so a prefix check is now VACUOUS: it passes against
+    # a pinned row that wrongly advertises the rejected build, which is the
+    # exact defect this test exists to catch. Anchor on substance instead —
+    # while pinned the row must show what is INSTALLED and must not name the
+    # build being offered.
+    assert app._engine2_status_text() == app._engine2_version_text(), (
+        "a pinned row must fall through to the installed version, not to an "
+        f"update offer; got {app._engine2_status_text()!r}"
+    )
+    assert "firefox-20" not in app._engine2_status_text(), (
+        "the pinned row must not name the build the operator went back from; "
+        f"got {app._engine2_status_text()!r}"
     )
 
     app._on_engine2_click()
@@ -519,12 +542,36 @@ def test_clearing_the_pin_restores_the_update_offer(monkeypatch):
     # The pin must be the ONLY thing suppressing the offer: "resume updates"
     # has to lead somewhere, or the operator is stranded on the old build with
     # no way to move forward again.
+    #
+    # DRIVEN WITH THE REAL LONG TAG SHAPE, not the convenient short one. This
+    # test used to pass `latest="firefox-20"`, and that is precisely why it
+    # never showed the overflow item 8 is about: 19 characters fits, so the
+    # old "update → {latest}" line looked fine here while the shape Firefox
+    # actually publishes — 31 characters — was ellipsised down to
+    # "update → firefox…" in a 17-character cell, spending nine of them on
+    # prose the accent dot was already saying and throwing away the build
+    # number, the only thing the line exists to carry.
+    LONG = "firefox-20_151.0_20260817150018"
+    import src.ui.app as app_mod
+
     app, routed = _engine2_row_app(
-        monkeypatch, current="firefox-19", latest="firefox-20", pin=""
+        monkeypatch, current="firefox-19", latest=LONG, pin=""
     )
 
     assert app._engine2_update_available() is True
-    assert app._engine2_status_text() == "update → firefox-20"
+
+    text = app._engine2_status_text()
+    assert text == "firefox-20_151.0…", text
+    assert not text.startswith("update →"), (
+        "the prose is redundant exactly here — this is the one branch that "
+        f"draws the accent dot; got {text!r}"
+    )
+    assert len(text) <= app_mod._VERSION_MAX_CHARS, (
+        f"the status line must fit the rail's budget; {text!r} is {len(text)}"
+    )
+    # The build is still LEGIBLE after shortening — this is the difference
+    # between shortening and clipping. Dropping the prose is what buys it.
+    assert "firefox-20" in text and "151.0" in text, text
 
     app._on_engine2_click()
 
