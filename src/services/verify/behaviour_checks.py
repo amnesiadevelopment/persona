@@ -176,13 +176,20 @@ def _falsify_restart_continuity(ctx: Context) -> str:
 
 def _run_two_profile_unlinkability(ctx: Context) -> Outcome:
     from .diff import compare_profiles
-    from .probes import must_differ_probes
+    from .probes import must_differ_probes, must_differ_realms
 
     targets = must_differ_probes()
     a = ctx.make_profile("ps70-unlink-a")
     b = ctx.make_profile("ps70-unlink-b")
-    snap_a = ctx.record(a, fresh=True)
-    snap_b = ctx.record(b, fresh=True)
+    # RECORD WHAT THE COMPARATOR WALKS. `compare_profiles` is inventory-driven,
+    # so it asks about every realm a must-differ vector declares; a realm this
+    # recording skipped reads ABSENT -> unread -> INCONCLUSIVE forever, and the
+    # branch below turns one permanently-inconclusive pair into CANNOT_RUN. The
+    # realm set is derived from the same inventory the comparator walks, so the
+    # two cannot drift — see `probes.must_differ_realms`.
+    realms = must_differ_realms()
+    snap_a = ctx.record(a, fresh=True, realms=realms)
+    snap_b = ctx.record(b, fresh=True, realms=realms)
     _readings_or_refuse(snap_a, "profile-A")
     _readings_or_refuse(snap_b, "profile-B")
 
@@ -251,7 +258,7 @@ def _falsify_two_profile_unlinkability(ctx: Context) -> str:
     import copy
 
     from .diff import compare_profiles
-    from .probes import must_differ_probes
+    from .probes import must_differ_probes, must_differ_realms
 
     targets = must_differ_probes()
     if not targets:
@@ -263,8 +270,16 @@ def _falsify_two_profile_unlinkability(ctx: Context) -> str:
 
     a = ctx.make_profile("ps70-unlink-falsify-a")
     b = ctx.make_profile("ps70-unlink-falsify-b")
-    snap_a = ctx.record(a, fresh=True)
-    snap_b = ctx.record(b, fresh=True)
+    # Same realm set as the verdict lane, and for a sharper reason than
+    # symmetry: this falsification PLANTS a collision on `targets[0]` in
+    # `probe.realms[0]`. Were the recording narrower than the inventory, a
+    # target whose only realm this recording skipped would have nothing to
+    # plant ONTO — the KeyError below — so the self-test would fail to run on
+    # exactly the vector the check was extended to cover, and `run_check`
+    # publishes CANNOT_RUN when a falsification cannot run.
+    realms = must_differ_realms()
+    snap_a = ctx.record(a, fresh=True, realms=realms)
+    snap_b = ctx.record(b, fresh=True, realms=realms)
     _readings_or_refuse(snap_a, "falsification-A")
     _readings_or_refuse(snap_b, "falsification-B")
 
