@@ -107,6 +107,22 @@ def num_word(n: int) -> str:
     return _NUMBER_WORDS.get(n, str(n))
 
 
+def join_arms(names: "list[str]") -> str:
+    """Render a list of arm names as English, for prose built FROM the data.
+
+    Exists so a sentence can NAME the arms it is talking about without a
+    literal (PS-239): the paragraph that used to say "macos, linux AND
+    android" went on saying it after PS-191 corrected the gate, contradicting
+    the table directly beneath it. Reads "none" for an empty list rather than
+    rendering an empty gap, so a claim about no arms is still a sentence.
+    """
+    if not names:
+        return "none"
+    if len(names) == 1:
+        return names[0]
+    return ", ".join(names[:-1]) + " AND " + names[-1]
+
+
 def layer_installed(rb: dict, engine: str) -> "list[str]":
     """The extension layer an engine's legs actually REPORTED installing.
 
@@ -252,14 +268,51 @@ def gpu_section(off: dict, on: dict, uoff: dict, uon: dict) -> str:
         add("")
 
     # ---- the instrument finding -------------------------------------
-    add("#### ⚠️ The gate's own verdicts on three of those arms are an "
+    # The uniformity records carry NO raw readings — only a per_arm summary —
+    # so N is recounted from the sweep each one NAMES in `source_record`.
+    # Defined HERE rather than beside the table because the prose below now
+    # names its arms from the data too (PS-239).
+    unif_sources = {
+        "engine-gpu-variance.layer-off.json": off,
+        "engine-gpu-variance.layer-on.json": on,
+    }
+    # WHICH ARMS THE GATE FLAGGED, AND WHETHER IT STILL DOES — both read out
+    # of the evidence rather than typed in (PS-239). This paragraph used to
+    # assert "macos, linux AND android" as a literal. PS-191 then corrected
+    # the gate, the sentence silently became false, and the table beneath it
+    # disagreed with it — the exact drift this script's opening docstring
+    # promises cannot happen. Naming the arms from the records makes the
+    # claim self-updating instead.
+    _then = [
+        arm for arm in ARMS
+        if uon["per_arm"][arm]["module_verdict"] == "TOO_NARROW"
+    ]
+    _now = [
+        arm for arm in ARMS
+        if _uniformity_stats(uon, arm, unif_sources)["module_verdict"]
+        == "TOO_NARROW"
+    ]
+    _cleared = [arm for arm in _then if arm not in _now]
+    add("#### ⚠️ The gate's own verdicts on "
+        f"{num_word(len(_then))} of those arms are an "
         "ESTIMATOR ARTEFACT, not a product finding")
     add("")
-    add("`engine_gpu_variance` returns `TOO_NARROW` for macos, linux AND "
-        "android on the layer-ON run. An identical adverse verdict across "
-        "every non-windows cell is the shape this project has learned to "
-        "distrust (PS-14), and it does not survive checking.")
+    add(f"`engine_gpu_variance` returned `TOO_NARROW` for {join_arms(_then)} on "
+        "the layer-ON run *as the gate stood when these readings were taken*. "
+        "An identical adverse verdict across every non-windows cell is the "
+        "shape this project has learned to distrust (PS-14), and it does not "
+        "survive checking.")
     add("")
+    if _cleared:
+        add(f"**It did not survive it.** The gate has since been corrected "
+            f"(PS-191, which replaced the raw bar comparison with a "
+            f"hypothesis test against the null), and re-judging *these same "
+            f"readings* against *the pool they were actually drawn from* now "
+            f"returns a clean verdict for {join_arms(_cleared)}. The artefact "
+            "diagnosis below was reached before that fix existed and is "
+            "CONFIRMED by it — the numbers never moved, only the rule that "
+            "read them.")
+        add("")
     add("`collision_probability` is the **plug-in** Simpson index "
         "`sum (n_i/N)^2`, which is a BIASED estimator; `bar_for(arm)` is "
         "`1/k`, the collision probability of a uniform draw **in the limit**. "
@@ -306,14 +359,24 @@ def gpu_section(off: dict, on: dict, uoff: dict, uon: dict) -> str:
             "written into PS-16 as one."
         )
     else:
+        # The VERDICT NAMED HERE IS THE STORED ONE — what the gate said WHEN
+        # THIS READING WAS TAKEN — and it is quoted from the record rather
+        # than typed in (PS-239). This sentence is the load-bearing step of
+        # the artefact argument, and the argument is a claim about the OLD
+        # gate: android scored better than uniform predicts and was flagged
+        # anyway. Rendering today's recomputed verdict here would destroy the
+        # argument (it now reads OK, so there would be nothing to explain),
+        # and hardcoding the literal let it go on asserting a flag the table
+        # beneath it no longer showed.
+        _then_android = uon["per_arm"]["android"]["module_verdict"]
         add(
             f"**The single line that settles it:** android scored "
             f"{fnum(a['plugin_estimate'])}, which is BELOW the "
             f"{fnum(a['expected_plugin_under_uniform'])} a uniform draw is "
-            f"expected to score at N={a['seeds_readable']} — and the gate "
-            "still called it `TOO_NARROW`. An arm cannot be *worse than "
-            "uniform* while scoring *better than uniform predicts*. The "
-            "comparison failed, not the pool."
+            f"expected to score at N={a['seeds_readable']} — and the gate, "
+            f"as it stood, still called it `{_then_android}`. An arm cannot "
+            "be *worse than uniform* while scoring *better than uniform "
+            "predicts*. The comparison failed, not the pool."
         )
     add("")
     add("**So the old \"theoretical\" figures are CONFIRMED rather than "
@@ -837,7 +900,25 @@ def _uniformity_stats(unif: dict, arm: str, sources: dict) -> dict:
     # `record["result"]["per_arm"][arm]["verdict"]` — the sweep's stored
     # summary — so taking it from `fresh` would leave this column echoed by a
     # different route while looking recounted. Ask the gate itself instead.
-    out["module_verdict"] = _classify(src["readings"])["per_arm"][arm]["verdict"]
+    #
+    # ⚠️ PINNED TO THE MEASUREMENT EPOCH (PS-239). The gate's verdict is a
+    # comparison against persona's OWN pool, so asking it live judges a frozen
+    # reading against whatever the pool happens to be today. PS-183 widened
+    # `MAC_GPUS` 2 -> 11 AFTER these readings were taken, and re-judging macos
+    # live against 11 entries flips it OK -> TOO_NARROW on both modes
+    # (p=0.064 -> 1.3e-14): an arm condemned for colliding at a rate that was
+    # unremarkable in the pool it actually drew from. This column was the LAST
+    # live read in this file — `analyse` was already pinned via
+    # `_epoch_pool_sizes` — so this closes the gap rather than adding a rule.
+    #
+    # `k` COMES FROM THE SWEEP'S OWN WITNESS, exactly as `_analysed` takes it,
+    # and NOT from the uniformity record's `pool_size` copy: round 6 pinned
+    # that the uniformity copy is never consulted (it poisons it to 999 and
+    # requires the columns to sit still), and round 7 pinned that the sweep's
+    # witness IS what drives them. Reading the copy here would fail both.
+    out["module_verdict"] = _classify(
+        src["readings"], _epoch_pool_sizes(src)
+    )["per_arm"][arm]["verdict"]
     return out
 
 
