@@ -438,8 +438,11 @@ PROBES: tuple[Probe, ...] = (
     ),
     Probe(
         "webgl.readback",
-        # WINDOW_ONLY, and this is a correctness constraint rather than a
-        # preference. MEASURED in a worker on this engine: OffscreenCanvas
+        # WINDOW **and CHILD_FRAME**, and NOT worker. Both halves of that are
+        # correctness constraints rather than preferences, and they are two
+        # different facts about two different realms.
+        #
+        # NOT WORKER. MEASURED in a worker on this engine: OffscreenCanvas
         # exists, but `getContext('webgl')` returns null and only 'webgl2'
         # yields a context — so _JS_WITH_GL, which asks for 'webgl' then
         # 'experimental-webgl', returns null there. A null is RECORDED as
@@ -449,7 +452,47 @@ PROBES: tuple[Probe, ...] = (
         # an INDEPENDENT one it manufactures a false leak report on every
         # pair. Declaring the realm we can actually read keeps the must-differ
         # axis free of readings that are unobtainable by construction.
-        WINDOW_ONLY,
+        #
+        # CHILD_FRAME, added by PS-232, and the reason is the whole point of
+        # this line. `compare_profiles` — the Level 2 unlinkability gate —
+        # builds its work list from `must_differ_probes() x probe.realms`, so
+        # it can only ask about a realm some INDEPENDENT record declares.
+        # Before this tuple gained CHILD_FRAME that list held four pairs and
+        # NONE of them was in a child realm: the realm was structurally
+        # outside the unlinkability question. That is not an abstract gap.
+        # PS-193 MEASURED a real Level 2 failure in exactly this realm on
+        # exactly this vector — CreepJS built a phantom iframe, took it by
+        # INDEXED access (`self[N]`) which never invokes the `contentWindow`
+        # accessor our chain hooked, and Firefox's `creepjs :: webgl_pixel_hash`
+        # received the unperturbed buffer, bit-identical to the unspoofed
+        # baseline, across 4 seeds / 4 exits / 3 days. A collision was
+        # measured here, the realm was added to the harness for it, and the
+        # gate deciding "are these two profiles distinguishable?" still could
+        # not look at it.
+        #
+        # Unlike the worker realm above, the reading is OBTAINABLE here, and
+        # that was measured rather than assumed before this realm was
+        # declared: a child frame HAS a document, so `_CANVAS` takes its
+        # `document.createElement('canvas')` branch instead of the
+        # OffscreenCanvas branch that reads null in a worker. Executed in a
+        # genuinely entered child realm (chromium, indexed reach, the
+        # `contentWindow` accessor instrumented and counted at zero), this
+        # expression returns {digest: 2952899525, bytes: 4096, mid: 3072} —
+        # a real reading, byte-identical across two consecutive records, which
+        # is the determinism the module docstring demands of every record.
+        #
+        # And NOT canvas.readback, which is the other probe that could carry
+        # this realm. Adding CHILD_FRAME to canvas.readback's (WINDOW, WORKER)
+        # would make its realm set exactly ALL_REALMS, and four tests in
+        # tests/test_verify_snapshot.py select on
+        # `set(p.realms) == set(probes.ALL_REALMS)` — three of them taking
+        # `[0]` and naming it `shared`. That `[0]` is realm.frameIdentity
+        # today (variance SHARED); canvas.readback sorts EARLIER in this
+        # inventory, so it would silently capture the selector and rebind
+        # three existing tests onto an INDEPENDENT seed-derived vector, four
+        # files away from the edit. webgl.readback's set stays a strict subset
+        # of ALL_REALMS, so those selectors do not move.
+        (WINDOW, CHILD_FRAME),
         _JS_WITH_GL + "(function(gl){"
         # A deterministic draw with NO shaders: scissored clears only. Shader
         # compilation is the flakiest thing to depend on under a software
