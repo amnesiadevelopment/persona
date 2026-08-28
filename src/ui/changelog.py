@@ -5,6 +5,57 @@ not a git log. When cutting a release, add the new version's highlights here.
 """
 
 CHANGELOG: dict[str, list[str]] = {
+    "3.0.2": [
+        "A heavy page no longer stalls the browser. Opening a demanding site "
+        "could freeze the window and leave a new tab unable to connect; the "
+        "check that runs behind every connection now does its work once "
+        "instead of repeating it for each request.",
+        "Closing persona no longer leaves Chromium running in the background. "
+        "Browser processes were surviving after the app closed — on one "
+        "machine a leftover set was still using most of a processor half a day "
+        "later. A browser and everything it started are now shut down "
+        "together.",
+        "A profile can be launched again after persona is closed and "
+        "reopened. Closing the app before the browser left the profile marked "
+        "as still running, so the second launch was refused; whether a profile "
+        "is really open is now checked against the running browser itself.",
+        "A proxy address that cannot be read is now refused instead of being "
+        "used without its username and password — which silently connected "
+        "you through the proxy unauthenticated, or not at all.",
+        "Emptying your data now also removes quarantined copies of it. Files "
+        "set aside after a failed read could still hold proxy logins, SSH keys "
+        "and certificates in plain text, and were left behind by the wipe. "
+        "Clearing the logs during a wipe also silently did nothing on some "
+        "installs, and now works.",
+        "Firefox profiles now report the language you chose everywhere. A page "
+        "could hand work to a background task that still reported your "
+        "computer's real language, and on many sites that task ran without the "
+        "setting at all — so a site could see your true locale beside the one "
+        "you picked.",
+        "A profile can no longer claim one country's language beside another "
+        "country's clock, and changing a profile's proxy now clears the old "
+        "location instead of continuing to show it as verified.",
+        "Updates that you reject now stay rejected. Declining an update could "
+        "reinstall it by itself after the restart — on Linux with automatic "
+        "updates on, with nobody present.",
+        "macOS profiles draw from a much wider range of graphics hardware, "
+        "making them harder to tell apart.",
+        "The Activity Log is now sized in whole rows, drags smoothly to "
+        "resize, and no longer squeezes the engines list; the window also "
+        "fills the screen properly without a border.",
+        "Two profiles whose names look alike no longer share one Linux "
+        "taskbar entry, so deleting one no longer breaks the other's.",
+        "Firefox starts quietly after an engine update instead of making its "
+        "own first-run connections.",
+        "Certificate logins now record whether the site was actually trusted, "
+        "on both the automation interfaces.",
+        "Installing a browser engine no longer bypasses your configured "
+        "connection when a GitHub token happens to be set in your "
+        "environment — it was contacting GitHub directly, from your real "
+        "address, while reporting that it was going through Tor.",
+        "Profiles with impossible settings can no longer be saved through any "
+        "route into the app.",
+    ],
     "3.0.1": [
         "The Activity Log is now a full-width console along the bottom of the "
         "window instead of a cramped column in the sidebar. Drag its top edge "
