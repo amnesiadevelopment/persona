@@ -1185,9 +1185,16 @@ def revert_to_previous_build(log=None) -> str:
                         os.rename(parked, target)
                     except OSError:
                         pass
+                    # The revert SUCCEEDED here in the only sense that
+                    # matters — the previous version is what is installed —
+                    # so it earns the hold exactly as the clean path does.
+                    # Omitting it on this arm would leave the messier outcome
+                    # the only one the 60s poll can undo.
+                    _set_hold(log=log)
                     _say("Update: couldn't complete going back cleanly "
                          f"({e}), but the previous version is now installed — "
-                         "restart persona to run it.")
+                         "restart persona to run it, and the version you went "
+                         "back from is held until you resume updates.")
                     return app
                 else:
                     # Case B: nothing could be put back. Say so plainly — this
@@ -1209,9 +1216,117 @@ def revert_to_previous_build(log=None) -> str:
     except OSError as e:
         _say(f"Update: couldn't go back to the previous version ({e}).")
         return ""
+    # The reversal is COMPLETE on disk; make it DURABLE. Without this the
+    # restart the next line demands is itself the undo: a fresh process resets
+    # the in-memory dedup, the 60s poll sees the release just rejected as newer
+    # than the restored one, and on Linux with auto-update on (the default) it
+    # is re-installed with nobody present. Best-effort by design — see _set_hold.
+    _set_hold(log=log)
     _say("Update: went back to the previous version — restart persona to run "
-         "it.")
+         "it. The version you went back from is held until you resume updates.")
     return app
+
+
+def _set_hold(log=None) -> None:
+    """Write the standing "not that release" instruction, best-effort.
+
+    Held value is APP_VERSION — the release the operator is REJECTING, which is
+    exactly the one this process is running: reverting is a rename, so the
+    build still executing is the one being reverted FROM (see
+    revert_to_previous_build's docstring on why the relaunch is the operator's).
+
+    Read through a try for the same reason engine/updater.py's _set_pin is: a
+    settings file that cannot be written must not turn a COMPLETED revert into a
+    reported failure. The bundle on disk is already the reverted one; a missing
+    hold costs the reversal its DURABILITY, not its correctness — so this logs
+    the loss and returns rather than raising into a revert that has succeeded.
+    """
+    try:
+        from ...core import settings
+
+        settings.set_app_update_hold(APP_VERSION)
+    except Exception as e:
+        if log:
+            log(
+                f"Update: couldn't record the revert ({e}) — the automatic "
+                "update may put you back on the version you just rejected"
+            )
+
+
+def update_held(latest: str) -> bool:
+    """True when `latest` is a release the operator deliberately went back FROM
+    and has not resumed — so it must not be downloaded, staged-offered, or (on
+    Linux, unattended) installed.
+
+    Holds back the rejected release AND anything older, because "not newer than
+    the thing I rejected" is not an upgrade in any case. A STRICTLY newer
+    release is NOT held: that is the one likely to carry the fix, and letting it
+    through is what stops the hold becoming silently permanent (PS-208).
+
+    Degrades to False (normal updating) when settings are unreadable — the same
+    fail-soft direction as engine/updater.py's pinned_build(). An unreadable
+    settings file must not brick the update path, security updates included."""
+    if not latest:
+        return False
+    try:
+        from ...core import settings
+
+        held = settings.app_update_hold()
+    except Exception:
+        return False
+    if not held:
+        return False
+    return not is_newer(latest, held)
+
+
+def held_version() -> str:
+    """The release an operator went back from and is still being held back from,
+    or "" when they never went back — or when the hold has since been SPENT.
+
+    A hold has no clearing write on the forward path, deliberately: nothing on
+    the install path knows about it, and adding a write there would still leave
+    every already-written stale hold in place. So "is it still held" is DERIVED
+    here rather than stored, which self-heals a hold the operator moved past
+    instead of requiring them to notice and clear it.
+
+    A hold the running build has already moved PAST is spent: update_held() is
+    False for every release that could still be offered (they are all strictly
+    newer than the held one), so the hold cannot suppress anything. Reporting
+    it anyway is not merely cosmetic — _app_rollback_row reads this FIRST and
+    returns early, so a spent hold strands the operator on a resume gesture
+    with nothing to resume AND hides the revert row behind it. That matters
+    because clearing the hold to reach "go back" re-arms the rejected release,
+    which reopens the very loop this ticket closes (PS-208).
+
+    Deriving it keeps a single source of truth: the row's "is it held" question
+    now answers exactly the way update_held() does.
+
+    Fail-soft to "" so an unreadable settings file cannot make the UI claim a
+    hold that is not there."""
+    try:
+        from ...core import settings
+
+        held = settings.app_update_hold()
+    except Exception:
+        return ""
+    if held and is_newer(APP_VERSION, held):
+        return ""
+    return held
+
+
+def resume_app_updates(log=None) -> None:
+    """Clear the hold: the operator saying "go forward again". The next check
+    offers the release they had rejected once more."""
+    try:
+        from ...core import settings
+
+        settings.set_app_update_hold("")
+    except Exception as e:
+        if log:
+            log(f"Update: couldn't clear the hold ({e})")
+        return
+    if log:
+        log("Update: automatic updates resumed")
 
 
 def _try_windows_fast_update(say) -> bool:
