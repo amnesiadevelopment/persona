@@ -1,6 +1,10 @@
 import pytest
 
-from src.services.browser.window_entry import _entry_dir, write_window_entry
+from src.services.browser.window_entry import (
+    _entry_dir,
+    _safe_filename,
+    write_window_entry,
+)
 from src.services.profile.manager import ProfileManager
 
 
@@ -168,8 +172,13 @@ def test_rename_removes_only_the_old_name_not_a_bystander(mgr):
     mgr.update_profile("alpha", "bravo", "", "windows")
 
     assert _mentions("alpha") == []
-    # an unrelated profile's entry is untouched — the rename is not a sweep
-    assert [fn for fn, _ in _mentions("bystander")] == ["persona-bystander.desktop"]
+    # an unrelated profile's entry is untouched — the rename is not a sweep.
+    # Asserted as "exactly the bystander's own entry", not a literal filename:
+    # the filename carries a crc disambiguator since PS-209, and pinning that
+    # opaque digest here would test the scheme rather than the behaviour.
+    assert [fn for fn, _ in _mentions("bystander")] == [
+        _safe_filename("bystander")
+    ]
 
 
 def test_update_without_rename_keeps_the_entry(mgr):
@@ -180,7 +189,7 @@ def test_update_without_rename_keeps_the_entry(mgr):
 
     # nothing was renamed, so nothing is stale: removing here would delete the
     # live profile's own entry and blank its taskbar label until the next launch
-    assert [fn for fn, _ in _mentions("alpha")] == ["persona-alpha.desktop"]
+    assert [fn for fn, _ in _mentions("alpha")] == [_safe_filename("alpha")]
 
 
 def test_failed_dir_rename_keeps_the_old_entry(mgr, monkeypatch):
@@ -200,7 +209,7 @@ def test_failed_dir_rename_keeps_the_old_entry(mgr, monkeypatch):
     ok = mgr.update_profile("alpha", "bravo", "", "linux")
 
     assert ok is False
-    assert [fn for fn, _ in _mentions("alpha")] == ["persona-alpha.desktop"]
+    assert [fn for fn, _ in _mentions("alpha")] == [_safe_filename("alpha")]
 
 
 # --- PS-45: a rename must not re-roll the profile's presented machine -------
