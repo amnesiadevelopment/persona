@@ -302,6 +302,49 @@ def test_a_status_too_long_for_its_cell_offers_the_reveal():
     assert App._status_needs_reveal(long_status, False) is True
 
 
+def test_a_shortened_version_line_draws_no_reveal_so_its_tail_is_unreachable():
+    """The REVEAL FIRES ON A LONG STATUS, NOT ON A LONG VERSION — and this
+    pins the consequence rather than the intention, because the arithmetic is
+    easy to get backwards and a docstring claiming otherwise was written on
+    this branch before being caught.
+
+    ``_status_needs_reveal`` triggers on ``len(value) > _VERSION_MAX_CHARS``
+    and is fed the ALREADY shortened value, which ``_short_engine_version``
+    caps AT that budget. A shortened version therefore lands exactly on the
+    boundary and gets NO chevron.
+
+    That is item 6's rule working correctly (a whole line must not grow an
+    affordance that invites a click doing nothing), but it means the trailing
+    "_20260817150018" of a long Firefox tag is currently reachable from
+    nowhere in the UI in the update-available state — not the tooltip (both
+    engine-row tooltips are static gesture strings), and not the reveal. The
+    build and the upstream version, which is what the line is for, survive.
+
+    If a later change makes the tail reachable, this test should be updated
+    deliberately — not deleted as noise.
+    """
+    from src.ui.app import App, _VERSION_MAX_CHARS, _short_engine_version
+
+    LONG = "firefox-20_151.0_20260817150018"
+    shortened = _short_engine_version(LONG)
+
+    # The prose-carrying string DID cross the budget, which is why the old
+    # line drew a chevron; the shortened one sits exactly on it.
+    assert App._status_needs_reveal(f"update → {LONG}", False) is True
+    assert len(shortened) == _VERSION_MAX_CHARS, shortened
+    assert App._status_needs_reveal(shortened, False) is False, (
+        "a shortened version fits by construction, so it must not grow a "
+        f"reveal control; got {shortened!r}"
+    )
+
+    # The stated consequence, asserted rather than left as prose.
+    assert "20260817150018" not in shortened, (
+        "the tail is dropped by shortening — this is the cost being recorded"
+    )
+    # What the line exists to carry is still legible.
+    assert "firefox-20" in shortened and "151.0" in shortened, shortened
+
+
 def test_an_already_revealed_status_keeps_its_control_so_it_can_be_re_collapsed():
     """Otherwise the reveal is a one-way door: expand a long error, and the
     control that would put it back is gone."""
