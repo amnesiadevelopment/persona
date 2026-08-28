@@ -90,6 +90,9 @@ from .diff import (
     inconclusive_count,
     require_snapshot,
 )
+from .pool_depth import (
+    run as _run_pool_depth,
+)
 from .probes import ALL_REALMS, PROBES, WINDOW, WORKER
 from .runner import run_probes
 from .snapshot import build_snapshot, dumps, load, quote_path, write
@@ -280,6 +283,31 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     return _exit_code(entries)
 
 
+def _cmd_pool_depth(args: argparse.Namespace) -> int:
+    """Set-wide pool depth — the one subcommand that holds a SET, not a pair.
+
+    ``compare`` answers "are these two profiles distinguishable?" and can say a
+    PAIR collided. It cannot say a vector only ever takes two values across the
+    whole campaign, because that is a property of the set and it holds exactly
+    two snapshots. This adds that question; it changes no existing answer.
+
+    ⚠️ IT DOES NOT ROUTE THROUGH ``compare_profiles``, deliberately. Records
+    that carry no ``profile`` header are correctly REFUSED by that mode's
+    ``_require_controlled`` guard, which must not be relaxed to make this lane
+    run: that comparator needs positive evidence the two snapshots are two
+    named identities before it can call agreement a leak. This lane never makes
+    that claim — it takes identity from provenance, reports depth rather than a
+    per-pair verdict, and so rests on a premise the guard is not protecting.
+
+    Exit 2 is the REFUSAL and is reached on this mode's own premise: fewer than
+    two counted profiles. A set that small has no pool depth, and reporting one
+    clean would be the tool at its most confident with the least evidence. It
+    is deliberately not 1 — a refusal is not a finding — which is the same rule
+    ``compare`` states for its own refusal.
+    """
+    return _run_pool_depth(args.paths, as_json=args.json)
+
+
 def _cmd_list(args: argparse.Namespace) -> int:
     for probe in PROBES:
         print(f"{probe.id}\t{','.join(probe.realms)}")
@@ -363,6 +391,37 @@ def build_parser() -> argparse.ArgumentParser:
 
     lst = sub.add_parser("list", help="print the probe inventory")
     lst.set_defaults(func=_cmd_list)
+
+    pool = sub.add_parser(
+        "pool-depth",
+        help=(
+            "set-wide pool depth: how many DISTINCT values each must-differ "
+            "vector takes across a SET of profiles, per engine"
+        ),
+        description=(
+            "Set-wide pool depth for the must-differ vectors. `compare` takes "
+            "exactly two snapshots and can report that a PAIR collided; this "
+            "reports how deep a vector's pool actually is across N of them "
+            "(e.g. 'audio.digest = 2 distinct / 5 seeds'), which is a property "
+            "of the SET and is not expressible pairwise. Reports the distinct "
+            "count AND the collision probability per vector per engine, since "
+            "a bare distinct count is blind to skew. Engines are reported "
+            "separately, never blended. Control-arm and rerun records are "
+            "excluded by PROVENANCE — never by a header field, because those "
+            "headers can be stale. Exits 0 when every vector is distinct, 1 "
+            "when any vector collides, 3 when nothing was measured, and 2 when "
+            "the set is refused (fewer than two counted profiles)."
+        ),
+    )
+    pool.add_argument(
+        "paths",
+        nargs="+",
+        help="snapshot files, or a single directory of them",
+    )
+    pool.add_argument(
+        "--json", action="store_true", help="emit the report as JSON"
+    )
+    pool.set_defaults(func=_cmd_pool_depth)
 
     return parser
 
