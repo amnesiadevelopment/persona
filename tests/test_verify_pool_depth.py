@@ -28,6 +28,7 @@ import sys
 import pytest
 
 from src.services.verify import pool_depth as pd
+from src.services.verify import probes
 from src.services.verify.engine_gpu_variance import collision_probability
 from src.services.verify.probes import must_differ_ids
 
@@ -626,12 +627,83 @@ def test_ac7_an_inconclusive_identity_leaves_the_denominator_honest(tmp_path):
     assert audio.collision_p == pytest.approx(0.5)
 
 
-def test_ac7_the_real_corpus_reports_no_inconclusive_cells(report):
-    # The committed records are complete on every must-differ vector, so any
-    # inconclusive entry here means the reader failed to find a reading that IS
-    # present — a silent under-count wearing the "we didn't look" label.
+
+def _corpus_realms() -> set:
+    """The realms the COMMITTED CORPUS actually recorded.
+
+    PS-232. Read from the artifacts rather than declared as a literal, so this
+    cannot go stale against the files it describes.
+    """
+    found = set()
+    for path in sorted(CORPUS.glob("*.json")):
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        cells = raw.get("probes")
+        if isinstance(cells, dict):
+            found.update(k for k, v in cells.items() if isinstance(v, dict))
+    return found
+
+
+def _speakable(arm) -> list:
+    """The arm's vectors this corpus is CAPABLE of having read.
+
+    A vector is scoped OUT when it declares a realm no committed record
+    contains — not because its inconclusive cell is acceptable, but because the
+    two assertions below are about the READER (did it find a reading that IS
+    present?) and a realm nobody ever recorded puts no reading in front of the
+    reader to find. Leaving such a vector in turns those tests from "the reader
+    works" into "the corpus is current", which is a different claim and one no
+    reader change can satisfy.
+
+    Deliberately NOT a general answer to what an unrecorded realm MEANS to a
+    folded vector — `_fold_realms` is untouched and still returns None, the
+    cell is still reported inconclusive, and `test_ac7_an_inconclusive_identity
+    _leaves_the_denominator_honest` still pins that outcome. That policy
+    question belongs to PS-203's owner. This only stops two corpus-completeness
+    tests from asserting it.
+
+    Keyed off the artifacts, so re-recording the corpus in the child realm
+    silently brings the vector back INTO scope rather than leaving a stale
+    exemption behind — and `test_the_corpus_scope_never_outlives_the_gap_it
+    _describes` fails if it does not.
+    """
+    recorded = _corpus_realms()
+    return [v for v in arm.vectors if set(v.realms) <= recorded]
+
+
+def test_the_corpus_scope_never_outlives_the_gap_it_describes(report):
+    """The scoping above is a DECLARED gap, and this is what stops it hiding one.
+
+    Two ways it could rot, both caught here: a vector could be scoped out for a
+    realm the corpus DOES record (the reader failing, wearing an exemption), or
+    the exemption could quietly grow to cover a vector whose realms are all
+    recorded. Both would let a real under-count pass as expected.
+    """
+    recorded = _corpus_realms()
+    assert recorded, "the corpus recorded no realms at all"
+    # The corpus predates the child_frame realm; that is the whole gap.
+    assert probes.CHILD_FRAME not in recorded
+
     for arm in report.engines:
-        for vector in arm.vectors:
+        scoped_out = [v for v in arm.vectors if v not in _speakable(arm)]
+        for vector in scoped_out:
+            missing = set(vector.realms) - recorded
+            assert missing, (
+                f"{arm.engine} {vector.probe_id} was scoped out of the corpus "
+                "completeness checks, but every realm it declares IS recorded "
+                "— that is a reader failure wearing an exemption, not a gap."
+            )
+        # And the exemption must not be empty-handed either way round: a vector
+        # whose realms are all recorded must be IN scope and therefore asserted.
+        for vector in _speakable(arm):
+            assert set(vector.realms) <= recorded
+
+def test_ac7_the_real_corpus_reports_no_inconclusive_cells(report):
+    # The committed records are complete on every must-differ vector THEY COVER,
+    # so any inconclusive entry here means the reader failed to find a reading
+    # that IS present — a silent under-count wearing the "we didn't look" label.
+    # Scoped to the realms the corpus actually recorded; see `_speakable`.
+    for arm in report.engines:
+        for vector in _speakable(arm):
             assert vector.inconclusive_identities == (), (
                 f"{arm.engine} {vector.probe_id} should have been readable"
             )
@@ -740,10 +812,13 @@ def test_both_record_shapes_are_read_not_just_the_richer_one(report):
     assert "realms" not in chromium_raw and "profile" not in chromium_raw
     assert isinstance(firefox_raw["realms"], list) and "profile" in firefox_raw
 
-    # Both arms produced real readings anyway.
+    # Both arms produced real readings anyway, on every vector this corpus
+    # covers (see `_speakable` — the corpus predates the child_frame realm).
     for engine in (CHROMIUM, FIREFOX):
         arm = report.engine_report(engine)
-        assert all(v.measured for v in arm.vectors), engine
+        speakable = _speakable(arm)
+        assert speakable, engine
+        assert all(v.measured for v in speakable), engine
 
 
 def test_the_profile_less_chromium_records_are_read_without_a_profile_header():
