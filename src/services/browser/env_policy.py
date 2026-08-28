@@ -220,6 +220,82 @@ STALE_RUNTIME_PATH_VARS = (
     "FONTCONFIG_SYSROOT",
 )
 
+# Names a VENDORED dependency reads to decide whether to authenticate — a THIRD
+# category, and the only one here that is not about the browser child at all.
+#
+# It is separate from the two lists above for the reason the header gives about
+# keeping categories apart: these are not operator identity (a token names a
+# GitHub account, not the operator's machine) and not a stale runtime path.
+# Above all they are applied at a DIFFERENT SEAM — persona's own process at
+# startup, not the browser child — so folding them into either tuple would
+# silently widen a named concept AND still not reach the caller that leaks.
+#
+# The leak: invisible_core.download._resolve_asset_url reads
+# ``STEALTHFOX_GITHUB_TOKEN or GITHUB_TOKEN`` and, when either is set, issues
+# ``requests.get("https://api.github.com/...", headers={"Authorization": ...})``
+# with no proxies argument — so it goes DIRECT, on the real IP, carrying a
+# credential. persona's engine install calls that function without an opener
+# (services/browser/engine_install.py), so the egress authority resolved for
+# the transfers does not govern it: the log says "resolving release over Tor…"
+# while the resolution may not be over Tor at all.
+#
+# Neutralising the names costs persona nothing. The branch exists for PRIVATE
+# repos (its own docstring); the release repo is public, and the no-token
+# branch returns the public URL by pure string formatting with NO network call.
+# So the token branch trades a free, silent, offline string for a real-IP
+# authenticated request that buys nothing. persona neither sets nor reads these
+# names anywhere (grep: 0 hits in src/ and pyproject.toml), so there is no
+# capability to lose — which is exactly why a one-shot scrub is safe here and
+# would not be for a name the product actually uses.
+VENDORED_CREDENTIAL_VARS = (
+    "STEALTHFOX_GITHUB_TOKEN",
+    "GITHUB_TOKEN",
+)
+
+
+def scrub_vendored_credentials(env):
+    """Remove the vendored-dependency credential names from ``env`` IN PLACE.
+
+    Deliberately NOT part of ``scrub_inherited_environment``: that is the
+    browser-child entry point, and this category is applied to persona's OWN
+    process at startup instead (see ``neutralise_vendored_credentials``).
+    Takes the mapping to clean rather than reading ``os.environ`` itself, for
+    the same reason as its neighbours. Returns ``env`` for convenience.
+    """
+    for var in VENDORED_CREDENTIAL_VARS:
+        env.pop(var, None)
+    return env
+
+
+def neutralise_vendored_credentials():
+    """Drop the vendored credential names from THIS process, once, at startup.
+
+    Unlike ``scrub_current_process_environ`` below, this IS safe on the manager
+    process — and the difference is the whole reason it exists as its own
+    function rather than a call to that one:
+
+    * It removes TWO names that persona never sets or reads, so nothing in the
+      product loses a capability. ``scrub_current_process_environ`` applies the
+      full operator-identity + stale-path set, which would strip ``USER``,
+      ``LOGNAME``, ``HOSTNAME``, ``SSH_AUTH_SOCK`` and ``FONTCONFIG_*`` from
+      persona ITSELF — a far larger, unevaluated blast radius.
+    * It runs ONCE at startup, before any thread is spawned, so there is no
+      race. The alternative — set/restore around the engine-install call — is
+      NOT narrower despite looking it: ``os.environ`` is process-global and the
+      install runs on a background thread of the manager process, so a
+      mutate/restore there is a global mutation with a race window visible to
+      every other thread and every open profile, whose ``finally`` has to
+      survive an exception on a thread nobody joins.
+
+    Idempotent and safe to call more than once. Returns the names it actually
+    removed, so a caller can log a real change rather than an intention.
+    """
+    import os
+
+    removed = [var for var in VENDORED_CREDENTIAL_VARS if var in os.environ]
+    scrub_vendored_credentials(os.environ)
+    return removed
+
 
 def scrub_operator_identity(env):
     """Remove the operator-identity variables from ``env`` IN PLACE.

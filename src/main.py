@@ -156,6 +156,46 @@ def _ensure_flet_desktop_mode() -> None:
 _ensure_flet_desktop_mode()
 
 
+def _neutralise_vendored_credentials() -> None:
+    """Drop the two GitHub-token env names before anything can read them.
+
+    A vendored dependency (``invisible_core.download._resolve_asset_url``, which
+    persona reaches via the ``invisible_playwright.download`` shim) reads
+    ``STEALTHFOX_GITHUB_TOKEN or GITHUB_TOKEN`` and, when either is set, resolves
+    the engine's release asset through ``api.github.com`` using ``requests`` with
+    no proxies argument — a DIRECT request, on the real IP, carrying an
+    ``Authorization`` header. persona's engine install calls that function
+    without an opener, so the egress authority it resolves for the actual
+    transfers does not govern it: the operator configured a proxy, and this one
+    call ignores it. The no-token branch needs no network at all — it formats
+    the public release URL as a string — so removing the names is strictly
+    better and costs no capability (persona never sets or reads them).
+
+    Runs HERE, at import of the entry module, for the reason the alternative
+    fails: ``os.environ`` is process-global and the engine install runs on a
+    background thread of this process, so setting/restoring the names around
+    that call would be a global mutation with a race window visible to every
+    other thread and open profile, whose ``finally`` must survive an exception
+    on a thread nobody joins. One shot before any thread exists has no race and
+    nothing to restore. Kept beside the other one-shot process policies above.
+    """
+    from src.services.browser.env_policy import neutralise_vendored_credentials
+
+    removed = neutralise_vendored_credentials()
+    if removed:
+        # Logged as an observed change, not an intention — and only when a name
+        # was actually present, so a clean environment stays silent. The VALUE
+        # is never logged; the point is to remove a credential, not record it.
+        print(
+            "persona: removed inherited credential env var(s) "
+            f"{', '.join(removed)} — engine release lookup stays offline",
+            flush=True,
+        )
+
+
+_neutralise_vendored_credentials()
+
+
 from src.core.container import Container
 from src.core.logging import get_logger
 from src.ui.app import App
