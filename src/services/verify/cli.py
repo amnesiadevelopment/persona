@@ -91,11 +91,7 @@ from .diff import (
     require_snapshot,
 )
 from .pool_depth import (
-    NotEnoughProfiles,
-    exit_code_for as _pool_depth_exit_code,
-    format_report as _format_pool_depth,
-    report_for_directory,
-    report_for_paths,
+    run as _run_pool_depth,
 )
 from .probes import ALL_REALMS, PROBES, WINDOW, WORKER
 from .runner import run_probes
@@ -309,22 +305,7 @@ def _cmd_pool_depth(args: argparse.Namespace) -> int:
     is deliberately not 1 — a refusal is not a finding — which is the same rule
     ``compare`` states for its own refusal.
     """
-    try:
-        if len(args.paths) == 1 and os.path.isdir(args.paths[0]):
-            report = report_for_directory(args.paths[0])
-        else:
-            report = report_for_paths(args.paths)
-    except (NotEnoughProfiles, OSError, ValueError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
-
-    if args.json:
-        import json as _json
-
-        print(_json.dumps(report.to_dict(), indent=2, sort_keys=True))
-    else:
-        print(_format_pool_depth(report))
-    return _pool_depth_exit_code(report)
+    return _run_pool_depth(args.paths, as_json=args.json)
 
 
 def _cmd_list(args: argparse.Namespace) -> int:

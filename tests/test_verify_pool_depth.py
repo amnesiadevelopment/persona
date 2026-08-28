@@ -136,7 +136,7 @@ def test_ac2_the_counterfactual_headers_really_do_contradict_their_filenames():
             (
                 CORPUS
                 / f"counterfactual.chromium.no-fingerprint-flag.seedarg{seed}.json"
-            ).read_text()
+            ).read_text(encoding="utf-8")
         )
         assert raw["seed"] == seed
         assert f"--fingerprint={seed}" in raw["flag"]
@@ -235,6 +235,122 @@ def test_ac3_a_rerun_is_named_for_the_identity_it_duplicates():
     )
     assert arm == pd.PRODUCT and is_rerun
     assert "1337" in identity
+
+
+def test_ac3_the_same_identity_arriving_twice_does_not_collide_with_itself(tmp_path):
+    """THE REGRESSION. A duplicate that does not ADMIT to being a rerun.
+
+    ``classify_source`` takes identity from the filename and excludes a rerun
+    only on the literal ``rerun`` token. A copy under another name, a glob over
+    two campaign directories, or a path simply listed twice carries no such
+    token and passes every PER-RECORD rule — ``Record.counts`` cannot see the
+    rest of the set. Counted, seed1 lands in ``by_value`` twice and the report
+    says the two positive-control vectors COLLIDE, on a group ``{1, 1}`` that
+    is one profile agreeing with itself.
+
+    Asserted on the RETURNED REPORT rather than on source text, because the
+    claim is about what the instrument SAYS, not about how it is written.
+    """
+    _write(tmp_path, "reading.chromium.seed1.json", _chromium_like(1, {"value": {"sum": 1.0}}))
+    # A PRODUCT-shaped name carrying no ``rerun`` token — verified below, so
+    # this cannot pass by being excluded as unrecognised instead.
+    dup = _write(tmp_path, "reading.chromium.trial2.seed1.json",
+                 _chromium_like(1, {"value": {"sum": 1.0}}))
+    _write(tmp_path, "reading.chromium.seed2.json", _chromium_like(2, {"value": {"sum": 2.0}}))
+    assert pd.classify_source(str(dup)) == (pd.PRODUCT, False, "1"), (
+        "the duplicate must reach the identity rule as a PRODUCT record"
+    )
+
+    report = pd.report_for_directory(str(tmp_path))
+    arm = report.engine_report(CHROMIUM)
+
+    # One profile is one identity, however many files carry it.
+    assert arm.identities == ("1", "2"), "a duplicate must not inflate the denominator"
+
+    for probe_id in ("webgl.readback", "canvas.readback", "audio.digest"):
+        vector = arm.vector(probe_id)
+        assert vector.identities == 2, f"{probe_id} counted a file, not an identity"
+        assert vector.distinct == 2
+        assert not vector.collides, (
+            f"{probe_id} reported a collision between a profile and ITSELF"
+        )
+        for group in vector.groups:
+            assert len(set(group)) == len(group), f"{probe_id} group repeats an identity"
+
+    assert not report.findings, "a duplicated file is not a leak"
+
+
+def test_ac3_the_duplicate_is_excluded_by_provenance_naming_what_it_duplicates(tmp_path):
+    """Excluded, not silently dropped — and the reason names BOTH files.
+
+    A corrupted grouping still produces a plausible-looking report, so the
+    operator has to be able to see WHICH pair collapsed. The kept file is the
+    one that arrived first; the second is reported against it by name.
+    """
+    _write(tmp_path, "reading.chromium.seed1.json", _chromium_like(1, {"value": {"sum": 1.0}}))
+    dup = _write(tmp_path, "reading.chromium.trial2.seed1.json",
+                 _chromium_like(1, {"value": {"sum": 1.0}}))
+    _write(tmp_path, "reading.chromium.seed2.json", _chromium_like(2, {"value": {"sum": 2.0}}))
+    assert pd.classify_source(str(dup)) == (pd.PRODUCT, False, "1"), (
+        "the duplicate must reach the identity rule as a PRODUCT record, so "
+        "this cannot pass by being excluded as unrecognised instead"
+    )
+
+    report = pd.report_for_directory(str(tmp_path))
+    excluded = dict(report.excluded)
+
+    assert str(dup) in excluded, "the duplicate must be REPORTED, not quietly dropped"
+    reason = excluded[str(dup)]
+    assert "duplicate" in reason
+    assert "reading.chromium.seed1.json" in reason, (
+        "the reason must name the file it duplicates"
+    )
+
+
+def test_ac3_the_duplicate_rule_is_per_engine_not_global(tmp_path):
+    """Two engines may legitimately share a seed number.
+
+    chromium seed1 and firefox seed1 are two different profiles that happen to
+    carry one seed. Deduping on the identity ALONE would delete a real arm, so
+    the key is (engine, identity) — the same partition ``_require_controlled``
+    insists on, held on the set axis.
+    """
+    _write(tmp_path, "reading.chromium.seed1.json", _chromium_like(1, {"value": {"sum": 1.0}}))
+    _write(tmp_path, "reading.chromium.seed2.json", _chromium_like(2, {"value": {"sum": 2.0}}))
+    firefox_1 = _chromium_like(1, {"value": {"sum": 9.0}})
+    firefox_1["engine"] = FIREFOX
+    firefox_2 = _chromium_like(2, {"value": {"sum": 8.0}})
+    firefox_2["engine"] = FIREFOX
+    _write(tmp_path, "reading.firefox.seed1.json", firefox_1)
+    _write(tmp_path, "reading.firefox.seed2.json", firefox_2)
+
+    report = pd.report_for_directory(str(tmp_path))
+    assert report.engine_report(CHROMIUM).identities == ("1", "2")
+    assert report.engine_report(FIREFOX).identities == ("1", "2"), (
+        "a seed shared across engines is two profiles, not one duplicate"
+    )
+    assert not report.excluded, "nothing here is a duplicate"
+
+
+def test_ac3_a_duplicate_reaching_the_lane_by_path_list_is_also_excluded():
+    """``report_for_paths`` and the CLI are the exposed, unguarded routes.
+
+    ``report_for_directory`` is safe only by accident — ``os.listdir`` cannot
+    yield one name twice. The rule therefore lives in ``build_report``, so it
+    holds for every entry point rather than for the one that cannot break.
+    """
+    seed111 = str(CORPUS / "reading.chromium.seed111.json")
+    report = pd.report_for_paths(
+        [seed111, seed111, str(CORPUS / "reading.chromium.seed222.json")]
+    )
+    arm = report.engine_report(CHROMIUM)
+
+    assert arm.identities == ("111", "222")
+    assert not arm.vector("webgl.readback").collides
+    assert not arm.vector("canvas.readback").collides
+    assert pd.exit_code_for(report) == pd.EXIT_OK, (
+        "a listed-twice path must not raise the exit code to a finding"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -418,7 +534,7 @@ def test_ac6_an_unrecognised_file_is_excluded_rather_than_assumed_product(
 
 def _write(tmp_path, name, snapshot):
     path = tmp_path / name
-    path.write_text(json.dumps(snapshot))
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
     return path
 
 
@@ -615,8 +731,12 @@ def test_both_record_shapes_are_read_not_just_the_richer_one(report):
     chromium vector — which would look like a clean, quiet, entirely empty
     chromium arm.
     """
-    chromium_raw = json.loads((CORPUS / "reading.chromium.seed111.json").read_text())
-    firefox_raw = json.loads((CORPUS / "reading.firefox.seed111.json").read_text())
+    chromium_raw = json.loads(
+        (CORPUS / "reading.chromium.seed111.json").read_text(encoding="utf-8")
+    )
+    firefox_raw = json.loads(
+        (CORPUS / "reading.firefox.seed111.json").read_text(encoding="utf-8")
+    )
     assert "realms" not in chromium_raw and "profile" not in chromium_raw
     assert isinstance(firefox_raw["realms"], list) and "profile" in firefox_raw
 
@@ -769,6 +889,7 @@ def test_the_cli_subcommand_runs_the_real_lane_and_exits_one():
         cwd=str(REPO),
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 1, result.stderr
     assert "2 distinct / 5 identities" in result.stdout
@@ -788,6 +909,7 @@ def test_the_cli_refuses_a_single_record_with_exit_two_not_a_clean_zero():
         cwd=str(REPO),
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 2, result.stdout
     assert "error:" in result.stderr
