@@ -232,8 +232,10 @@ def test_a_pinned_entry_declines_to_report_a_generation_split_it_never_saw():
     """An archived record must not carry TODAY's generation map. PS-239.
 
     The two halves are asserted together because either alone is satisfiable
-    by a broken implementation: half 1 alone passes if the field were dropped
-    for every caller, and half 2 alone passes if pinning did nothing.
+    by a broken implementation: half 1 asserts the LIVE path still carries the
+    split, so it alone passes if pinning did nothing; half 2 asserts the
+    PINNED path carries none, so it alone passes if the field were dropped for
+    every caller. Only together do they pin the DIFFERENCE between the paths.
 
     ⚠️ WHY `None` AND NOT `{0: pinned}`. The sweep records witness `k` ALONE —
     they carry no `pool_sizes_by_generation`, no `since` and no `generation`
