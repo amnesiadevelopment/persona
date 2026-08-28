@@ -1259,7 +1259,7 @@ def test_the_stored_verdict_is_reproducible_under_the_rule_that_wrote_it():
     )
 
 
-def test_bar_verdict_keeps_the_old_rules_known_pool_term(monkeypatch):
+def test_bar_verdict_keeps_the_old_rules_known_pool_term():
     """A missing bar meant two different things, and the old rule knew it.
 
     `_bar_verdict` claims to RECONSTRUCT the pre-PS-191 rule rather than
@@ -1271,10 +1271,11 @@ def test_bar_verdict_keeps_the_old_rules_known_pool_term(monkeypatch):
     that quietly disagrees with its own source (PS-239 review, finding 3).
 
     Both halves are asserted together because either alone is satisfiable by a
-    broken implementation: half 1 alone passes if the function always answered
-    INCONCLUSIVE, and half 2 alone passes if it always answered OK.
+    broken implementation: half 1 asserts OK, so it alone passes if the
+    function always answered OK; half 2 asserts INCONCLUSIVE, so it alone
+    passes if it always answered INCONCLUSIVE. Only together do they pin the
+    known-pool term that chooses BETWEEN those two answers.
     """
-    from src.services.browser import gpu_ext
     from src.services.verify import engine_gpu_variance as egv
 
     d = _load_derive_module()
@@ -1291,15 +1292,22 @@ def test_bar_verdict_keeps_the_old_rules_known_pool_term(monkeypatch):
 
     # HALF 2 — HAS a pool we failed to read: "we failed to look" is not a
     # pass, so the same nil bar must reconstruct as INCONCLUSIVE instead.
-    assert egv._POOL_VAR_FOR_ARM["android"] == "ANDROID_GPUS"
-    pools = {k: v for k, v in gpu_ext.GPU_POOLS.items() if k != "ANDROID_GPUS"}
-    assert "ANDROID_GPUS" not in pools, "fixture no longer matches the source"
-    monkeypatch.setattr(gpu_ext, "GPU_POOLS", pools)
-
-    known = egv.classify({"android": varied})["per_arm"]["android"]
-    assert egv.has_known_pool("android") is True
-    assert known["meets_bar"] is None, "fixture no longer nils the bar"
-    assert d._bar_verdict(known, "android") == "INCONCLUSIVE", (
+    #
+    # ⚠️ BUILT BY HAND, because `classify()` CANNOT REACH THIS STATE and a
+    # fixture routed through it does not test what this half is named after.
+    # A nil bar plus a known pool IS `bar_missing`, and that is precisely the
+    # condition `classify` answers with `verdict="INCONCLUSIVE"` — so
+    # `_bar_verdict`'s FIRST branch (`verdict in (CONSTANT, INCONCLUSIVE)`)
+    # matches and returns before the known-pool term is ever evaluated. The
+    # earlier version of this half monkeypatched ANDROID_GPUS out of
+    # GPU_POOLS to nil the bar, and passed for exactly that wrong reason:
+    # measured, it passed against an implementation carrying NO known-pool
+    # term at all, so it could not distinguish the fix from its absence
+    # (PS-239 review, round 2). A synthetic entry is not a shortcut here, it
+    # is the only way past branch 1.
+    assert egv.has_known_pool("android") is True, "fixture arm lost its pool"
+    synthetic = {"verdict": "OK", "meets_bar": None}
+    assert d._bar_verdict(synthetic, "android") == "INCONCLUSIVE", (
         "an arm that HAS a pool we could not read must reconstruct as "
         "INCONCLUSIVE — a failure to look is not a met bar"
     )
