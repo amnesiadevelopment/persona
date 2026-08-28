@@ -825,9 +825,34 @@ def classify(
             # arm that has been widened, profiles that already exist sit in a
             # SMALLER pool and collide MORE often, and reporting only the
             # flattering number would be the same "varied, therefore fine"
-            # move this module exists to refuse. Recorded per arm so the
-            # archived reading carries it too — see pool_sizes_by_generation.
-            "pool_sizes_by_generation": pool_sizes_by_generation(arm),
+            # move this module exists to refuse.
+            #
+            # ⚠️ None ON THE PINNED PATH, AND THAT IS THE HONEST ANSWER RATHER
+            # THAN THE CONVENIENT ONE (PS-239). A pinned entry describes an
+            # ARCHIVED reading, and the sweep records witness `k` ALONE — they
+            # carry no `pool_sizes_by_generation`, no `since` and no
+            # `generation` field of any kind. So the split is simply not
+            # recoverable from the evidence, and the three candidate answers
+            # are not equally true:
+            #
+            #   * reading it LIVE (what this did before) reports a pool state
+            #     that POSTDATES the readings — macos pinned to k=2 sat beside
+            #     a live {0: 2, 1: 11}, an entry that contradicts itself;
+            #   * synthesising {0: pinned} would FABRICATE a witness, asserting
+            #     the pool held exactly one generation numbered 0. PS-183
+            #     introduced the generation tags IN THE SAME EDIT that widened
+            #     MAC_GPUS, so a record taken before it plausibly had no
+            #     generation concept at all. Inventing one is the same
+            #     re-label-without-re-measuring this ticket exists to fix.
+            #
+            # None says "the record did not witness this", which is the only
+            # claim the evidence supports — the module's own "a missing bar is
+            # not a met bar" discipline applied to the other input.
+            # `format_result` already guards with `or {}`, so a pinned entry
+            # prints no split rather than a wrong one.
+            "pool_sizes_by_generation": (
+                pool_sizes_by_generation(arm) if pinned is None else None
+            ),
         }
         if len(readable) < MIN_SEEDS:
             entry["verdict"] = "INCONCLUSIVE"
