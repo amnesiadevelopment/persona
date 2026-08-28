@@ -1280,15 +1280,38 @@ def update_held(latest: str) -> bool:
 
 
 def held_version() -> str:
-    """The release an operator went back from, or "" when they never did.
+    """The release an operator went back from and is still being held back from,
+    or "" when they never went back — or when the hold has since been SPENT.
+
+    A hold has no clearing write on the forward path, deliberately: nothing on
+    the install path knows about it, and adding a write there would still leave
+    every already-written stale hold in place. So "is it still held" is DERIVED
+    here rather than stored, which self-heals a hold the operator moved past
+    instead of requiring them to notice and clear it.
+
+    A hold the running build has already moved PAST is spent: update_held() is
+    False for every release that could still be offered (they are all strictly
+    newer than the held one), so the hold cannot suppress anything. Reporting
+    it anyway is not merely cosmetic — _app_rollback_row reads this FIRST and
+    returns early, so a spent hold strands the operator on a resume gesture
+    with nothing to resume AND hides the revert row behind it. That matters
+    because clearing the hold to reach "go back" re-arms the rejected release,
+    which reopens the very loop this ticket closes (PS-208).
+
+    Deriving it keeps a single source of truth: the row's "is it held" question
+    now answers exactly the way update_held() does.
+
     Fail-soft to "" so an unreadable settings file cannot make the UI claim a
     hold that is not there."""
     try:
         from ...core import settings
 
-        return settings.app_update_hold()
+        held = settings.app_update_hold()
     except Exception:
         return ""
+    if held and is_newer(APP_VERSION, held):
+        return ""
+    return held
 
 
 def resume_app_updates(log=None) -> None:
