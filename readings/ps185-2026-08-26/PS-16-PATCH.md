@@ -109,18 +109,20 @@ paragraph) with the block below. It is the `derive.py` output verbatim.
 >
 > #### ⚠️ The gate's own verdicts on three of those arms are an ESTIMATOR ARTEFACT, not a product finding
 >
-> `engine_gpu_variance` returns `TOO_NARROW` for macos, linux AND android on the layer-ON run. An identical adverse verdict across every non-windows cell is the shape this project has learned to distrust (PS-14), and it does not survive checking.
+> `engine_gpu_variance` returned `TOO_NARROW` for macos, linux AND android on the layer-ON run *as the gate stood when these readings were taken*. An identical adverse verdict across every non-windows cell is the shape this project has learned to distrust (PS-14), and it does not survive checking.
+>
+> **It did not survive it.** The gate has since been corrected (PS-191, which replaced the raw bar comparison with a hypothesis test against the null), and re-judging *these same readings* against *the pool they were actually drawn from* now returns a clean verdict for macos, linux AND android. The artefact diagnosis below was reached before that fix existed and is CONFIRMED by it — the numbers never moved, only the rule that read them.
 >
 > `collision_probability` is the **plug-in** Simpson index `sum (n_i/N)^2`, which is a BIASED estimator; `bar_for(arm)` is `1/k`, the collision probability of a uniform draw **in the limit**. Those are not comparable at finite N, because under a genuinely uniform draw `E[S_hat] = 1/k + (1 - 1/k)/N`. So a perfectly uniform `pick()` is EXPECTED to score above the bar, and the gate flags it.
 >
 > | arm | plug-in (what the gate uses) | unbiased | E[plug-in] if uniform | bar `1/k` | Monte-Carlo p | reading |
 > |---|---|---|---|---|---|---|
 > | windows | 0.1389 | 0.1014 | 0.2333 | 0.2000 | 1.000 | OK → — |
-> | macos | 0.5312 | 0.5109 | 0.5208 | 0.5000 | 0.308 | TOO_NARROW → artefact |
-> | linux | 0.1806 | 0.1449 | 0.1615 | 0.1250 | 0.164 | TOO_NARROW → artefact |
-> | android | 0.2743 | 0.2428 | 0.2812 | 0.2500 | 0.580 | TOO_NARROW → artefact |
+> | macos | 0.5312 | 0.5109 | 0.5208 | 0.5000 | 0.308 | OK → — |
+> | linux | 0.1806 | 0.1449 | 0.1615 | 0.1250 | 0.164 | OK → — |
+> | android | 0.2743 | 0.2428 | 0.2812 | 0.2500 | 0.580 | OK → — |
 >
-> **The single line that settles it:** android scored 0.2743, which is BELOW the 0.2812 a uniform draw is expected to score at N=24 — and the gate still called it `TOO_NARROW`. An arm cannot be *worse than uniform* while scoring *better than uniform predicts*. The comparison failed, not the pool.
+> **The single line that settles it:** android scored 0.2743, which is BELOW the 0.2812 a uniform draw is expected to score at N=24 — and the gate, as it stood, still called it `TOO_NARROW`. An arm cannot be *worse than uniform* while scoring *better than uniform predicts*. The comparison failed, not the pool.
 >
 > **So the old "theoretical" figures are CONFIRMED rather than overturned:** the uniform-selection assumption behind them holds on the real draw (p = macos 0.31, linux 0.16, android 0.58, none anywhere near significance). What has changed is that they are now measurements instead of assumptions — which is the result PS-185 was written to get, and it is a result even though the numbers barely moved: it retires an assumption. **Whether `engine_gpu_variance` should adopt the unbiased estimator is a decision for that module's owner — PS-185 measured and reported it, and deliberately did not change the gate.**
 >

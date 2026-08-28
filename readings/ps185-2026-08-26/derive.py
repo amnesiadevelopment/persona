@@ -40,6 +40,7 @@ if str(REPO_ROOT) not in sys.path:
 from src.services.verify.engine_gpu_variance import (  # noqa: E402
     classify as _classify,
     collision_probability as _collision_probability,
+    has_known_pool as _has_known_pool,
 )
 
 # The readback differ's OWN verdict rule, from the instrument that took the
@@ -105,6 +106,68 @@ def num_word(n: int) -> str:
     """Small counts as words, so a COUNTED figure reads like the prose it
     replaces. Falls back to digits rather than inventing an English rule."""
     return _NUMBER_WORDS.get(n, str(n))
+
+
+def join_arms(names: "list[str]") -> str:
+    """Render a list of arm names as English, for prose built FROM the data.
+
+    Exists so a sentence can NAME the arms it is talking about without a
+    literal (PS-239): the paragraph that used to say "macos, linux AND
+    android" went on saying it after PS-191 corrected the gate, contradicting
+    the table directly beneath it. Reads "none" for an empty list rather than
+    rendering an empty gap, so a claim about no arms is still a sentence.
+    """
+    if not names:
+        return "none"
+    if len(names) == 1:
+        return names[0]
+    return ", ".join(names[:-1]) + " AND " + names[-1]
+
+
+def _bar_verdict(entry: dict, arm: str) -> str:
+    """The verdict the gate WOULD have returned under the pre-PS-191 rule.
+
+    RECOMPUTED from a `classify` entry, never transcribed from a stored
+    summary. The article's artefact argument is a claim about what the OLD
+    gate said, so that verdict has to come from somewhere — and the tempting
+    source, the uniformity record's stored ``module_verdict``, is exactly what
+    axis 2 of ``enumerate_summary_sites.py`` forbids a rendered figure from
+    depending on (poison the field, move the article).
+
+    It does not need to be stored, because PS-191 deliberately KEPT the raw
+    bar comparison it replaced: ``meets_bar`` is still computed on every arm
+    from the readings and the epoch-pinned bar. So the old rule is still a
+    function of the evidence — score above the bar and you were flagged — and
+    is reconstructed here rather than remembered.
+
+    The two branches ahead of the bar are unchanged by PS-191 and so are read
+    straight off the entry: ``CONSTANT`` (one identity) and ``INCONCLUSIVE``
+    (too few seeds, or no bar to compare against) both preceded the bar test
+    then and precede the p-value test now.
+
+    ⚠️ A MISSING BAR IS NOT ONE CASE BUT TWO, and the old rule answered them
+    differently (PS-239 review). ``meets_bar`` is ``None`` whenever ``bar`` is
+    ``None``, but the pre-PS-191 chain reached its ``INCONCLUSIVE`` branch on
+    ``elif bar_missing`` — i.e. ``bar is None`` **AND** ``has_known_pool(arm)``.
+    An arm with no bar and NO known pool fell past that ``elif`` to the final
+    ``else`` and returned ``OK``. Collapsing both into ``INCONCLUSIVE`` here
+    would be a reconstruction that quietly disagrees with the rule it claims
+    to reproduce, so the known-pool term is carried rather than dropped.
+
+    Unreachable with the committed records — every member of ``ARMS`` is named
+    in ``_POOL_VAR_FOR_ARM``, so ``has_known_pool`` is true for each and the
+    two readings coincide — but this function's whole claim is that it
+    RECONSTRUCTS the rule instead of remembering it, and an unreachable
+    divergence is still a divergence.
+    """
+    if entry["verdict"] in ("CONSTANT", "INCONCLUSIVE"):
+        return entry["verdict"]
+    if entry.get("meets_bar") is None:
+        # No bar. INCONCLUSIVE only where the arm HAS a pool we failed to read
+        # ("we failed to look" is not "we looked and it was fine"); otherwise
+        # there was never a comparison to make and the old rule said OK.
+        return "INCONCLUSIVE" if _has_known_pool(arm) else "OK"
+    return "OK" if entry["meets_bar"] else "TOO_NARROW"
 
 
 def layer_installed(rb: dict, engine: str) -> "list[str]":
@@ -252,14 +315,48 @@ def gpu_section(off: dict, on: dict, uoff: dict, uon: dict) -> str:
         add("")
 
     # ---- the instrument finding -------------------------------------
-    add("#### ⚠️ The gate's own verdicts on three of those arms are an "
+    # WHICH ARMS THE GATE FLAGGED, AND WHETHER IT STILL DOES — both RECOMPUTED
+    # from the readings rather than typed in OR read from a stored summary
+    # (PS-239). This paragraph used to assert "macos, linux AND android" as a
+    # literal. PS-191 then corrected the gate, the sentence silently became
+    # false, and the table beneath it disagreed with it — the exact drift this
+    # script's opening docstring promises cannot happen.
+    #
+    # ⚠️ `_then` IS DERIVED, NOT TRANSCRIBED. The obvious source for "what the
+    # gate used to say" is the uniformity record's stored `module_verdict`,
+    # and using it is WRONG here for the reason axis 2 of
+    # `enumerate_summary_sites.py` exists: a rendered figure must not depend
+    # on a stored summary field, or poisoning that field moves the article.
+    # The pre-PS-191 rule was the raw bar comparison, and PS-191 deliberately
+    # KEPT that comparison as `meets_bar` on every arm — so the old verdict is
+    # still a function of the readings and is recomputed as one.
+    _live = _classify(on["readings"], _epoch_pool_sizes(on))["per_arm"]
+    _then = [
+        arm for arm in ARMS
+        if _bar_verdict(_live[arm], arm) == "TOO_NARROW"
+    ]
+    _now = [arm for arm in ARMS if _live[arm]["verdict"] == "TOO_NARROW"]
+    _cleared = [arm for arm in _then if arm not in _now]
+    add("#### ⚠️ The gate's own verdicts on "
+        f"{num_word(len(_then))} of those arms are an "
         "ESTIMATOR ARTEFACT, not a product finding")
     add("")
-    add("`engine_gpu_variance` returns `TOO_NARROW` for macos, linux AND "
-        "android on the layer-ON run. An identical adverse verdict across "
-        "every non-windows cell is the shape this project has learned to "
-        "distrust (PS-14), and it does not survive checking.")
+    add(f"`engine_gpu_variance` returned `TOO_NARROW` for {join_arms(_then)} on "
+        "the layer-ON run *as the gate stood when these readings were taken*. "
+        "An identical adverse verdict across every non-windows cell is the "
+        "shape this project has learned to distrust (PS-14), and it does not "
+        "survive checking.")
     add("")
+    if _cleared:
+        add(f"**It did not survive it.** The gate has since been corrected "
+            f"(PS-191, which replaced the raw bar comparison with a "
+            f"hypothesis test against the null), and re-judging *these same "
+            f"readings* against *the pool they were actually drawn from* now "
+            f"returns a clean verdict for {join_arms(_cleared)}. The artefact "
+            "diagnosis below was reached before that fix existed and is "
+            "CONFIRMED by it — the numbers never moved, only the rule that "
+            "read them.")
+        add("")
     add("`collision_probability` is the **plug-in** Simpson index "
         "`sum (n_i/N)^2`, which is a BIASED estimator; `bar_for(arm)` is "
         "`1/k`, the collision probability of a uniform draw **in the limit**. "
@@ -306,14 +403,28 @@ def gpu_section(off: dict, on: dict, uoff: dict, uon: dict) -> str:
             "written into PS-16 as one."
         )
     else:
+        # THE VERDICT NAMED HERE IS THE OLD GATE'S — what it said WHEN THIS
+        # READING WAS TAKEN — and it is RECOMPUTED from the readings, not
+        # transcribed (PS-239). This sentence is the load-bearing step of the
+        # artefact argument, and the argument is a claim about the OLD gate:
+        # android scored better than uniform predicts and was flagged anyway.
+        # Rendering today's verdict here would destroy the argument (it now
+        # reads OK, so there would be nothing to explain), and hardcoding the
+        # literal let it go on asserting a flag the table beneath it no longer
+        # showed. Reading the uniformity record's stored `module_verdict` is
+        # the third wrong answer: axis 2 forbids a rendered figure from
+        # depending on a stored summary. `_bar_verdict` reconstructs it from
+        # `meets_bar`, which PS-191 kept computing precisely so the old
+        # comparison stays visible.
+        _then_android = _bar_verdict(_live["android"], "android")
         add(
             f"**The single line that settles it:** android scored "
             f"{fnum(a['plugin_estimate'])}, which is BELOW the "
             f"{fnum(a['expected_plugin_under_uniform'])} a uniform draw is "
-            f"expected to score at N={a['seeds_readable']} — and the gate "
-            "still called it `TOO_NARROW`. An arm cannot be *worse than "
-            "uniform* while scoring *better than uniform predicts*. The "
-            "comparison failed, not the pool."
+            f"expected to score at N={a['seeds_readable']} — and the gate, "
+            f"as it stood, still called it `{_then_android}`. An arm cannot "
+            "be *worse than uniform* while scoring *better than uniform "
+            "predicts*. The comparison failed, not the pool."
         )
     add("")
     add("**So the old \"theoretical\" figures are CONFIRMED rather than "
@@ -837,7 +948,25 @@ def _uniformity_stats(unif: dict, arm: str, sources: dict) -> dict:
     # `record["result"]["per_arm"][arm]["verdict"]` — the sweep's stored
     # summary — so taking it from `fresh` would leave this column echoed by a
     # different route while looking recounted. Ask the gate itself instead.
-    out["module_verdict"] = _classify(src["readings"])["per_arm"][arm]["verdict"]
+    #
+    # ⚠️ PINNED TO THE MEASUREMENT EPOCH (PS-239). The gate's verdict is a
+    # comparison against persona's OWN pool, so asking it live judges a frozen
+    # reading against whatever the pool happens to be today. PS-183 widened
+    # `MAC_GPUS` 2 -> 11 AFTER these readings were taken, and re-judging macos
+    # live against 11 entries flips it OK -> TOO_NARROW on both modes
+    # (p=0.064 -> 1.3e-14): an arm condemned for colliding at a rate that was
+    # unremarkable in the pool it actually drew from. This column was the LAST
+    # live read in this file — `analyse` was already pinned via
+    # `_epoch_pool_sizes` — so this closes the gap rather than adding a rule.
+    #
+    # `k` COMES FROM THE SWEEP'S OWN WITNESS, exactly as `_analysed` takes it,
+    # and NOT from the uniformity record's `pool_size` copy: round 6 pinned
+    # that the uniformity copy is never consulted (it poisons it to 999 and
+    # requires the columns to sit still), and round 7 pinned that the sweep's
+    # witness IS what drives them. Reading the copy here would fail both.
+    out["module_verdict"] = _classify(
+        src["readings"], _epoch_pool_sizes(src)
+    )["per_arm"][arm]["verdict"]
     return out
 
 
