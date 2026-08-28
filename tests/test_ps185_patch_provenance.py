@@ -1018,9 +1018,19 @@ def test_the_article_reproduces_independently_of_todays_gpu_pools():
     document. Before the pin, PS-183's `MAC_GPUS` widening silently changed a
     published verdict on all three CI platforms.
 
-    The live product is patched to the WIDENED pool rather than mocked at the
+    The live product is patched to a WIDENED pool rather than mocked at the
     derive layer, so this exercises the same path a real post-PS-183 checkout
     takes.
+
+    ⚠️ THE FIXTURE MUST DIFFER FROM TODAY'S LIVE POOLS, AND THAT IS ASSERTED
+    RATHER THAN ASSUMED (PS-239). This test previously hardcoded
+    ``{"windows": 5, "macos": 11, "linux": 8, "android": 4}`` — which, once
+    PS-183 landed, *was* the live pool on every arm. It therefore substituted
+    a stub identical to the real function and compared a document against
+    itself: it passed unconditionally, and went on passing while the macos
+    verdict was in fact being scored against the wrong null. A test that
+    cannot fail proves nothing, so the widened pool is now derived FROM the
+    live one and the difference is checked before it is relied on.
     """
     from src.services.verify import engine_gpu_variance as egv
 
@@ -1028,11 +1038,37 @@ def test_the_article_reproduces_independently_of_todays_gpu_pools():
     off, on = d.load(d.LAYER_OFF), d.load(d.LAYER_ON)
     before = d.gpu_section(off, on, d.load(d.UNIF_OFF), d.load(d.UNIF_ON))
 
-    wide = {"windows": 5, "macos": 11, "linux": 8, "android": 4}
+    # Derived from the live pool so it CANNOT silently coincide with it, and
+    # far enough from every recorded `k` that a leak would move a verdict
+    # rather than merely a digit.
+    wide = {
+        arm: egv.fallback_pool_size(arm) + 7
+        for arm in ("windows", "macos", "linux", "android")
+    }
+    live = {
+        arm: egv.fallback_pool_size(arm)
+        for arm in ("windows", "macos", "linux", "android")
+    }
+    assert wide != live, (
+        "the widened fixture equals the live pool, so patching it is a no-op "
+        "and this test cannot fail — the exact defect PS-239 found here"
+    )
+
     real_size, real_bar = egv.fallback_pool_size, egv.bar_for
     try:
-        egv.fallback_pool_size = lambda arm: wide.get(arm, 0)
-        egv.bar_for = lambda arm: (1.0 / wide[arm]) if wide.get(arm) else None
+        egv.fallback_pool_size = lambda arm, generation=None: wide.get(arm, 0)
+        egv.bar_for = lambda arm, generation=None: (
+            (1.0 / wide[arm]) if wide.get(arm) else None
+        )
+        # POSITIVE CONTROL: the stub must actually reach the gate. If the
+        # UNPINNED gate does not move under a pool this different, the
+        # substitution is not taking effect and the assertion below would pass
+        # for the wrong reason.
+        moved = egv.classify(on["readings"])["per_arm"]["macos"]
+        assert moved["fallback_pool_size"] == wide["macos"], (
+            "the patched pool did not reach classify(), so this test's stub "
+            f"is inert: {moved['fallback_pool_size']}"
+        )
         after = d.gpu_section(off, on, d.load(d.UNIF_OFF), d.load(d.UNIF_ON))
     finally:
         egv.fallback_pool_size, egv.bar_for = real_size, real_bar
@@ -1053,9 +1089,22 @@ def test_module_verdict_is_asked_of_the_gate_not_transcribed():
     a copy of the sweep's copy. Asking `classify` afresh still reports the
     gate's verdict, with one fewer link that can rot.
     """
+    from src.services.verify import engine_gpu_variance as egv
+
     d = _load_derive_module()
     unif = d.load(d.UNIF_ON)
     off, on = d.load(d.LAYER_OFF), d.load(d.LAYER_ON)
+
+    # WHAT THE GATE ACTUALLY SAYS, asked the same way `derive.py` asks it:
+    # pinned to the pool the sweep witnessed. Computed rather than written
+    # down, because a literal here would be a SECOND TRANSCRIPTION — the very
+    # thing this test forbids one line below. PS-239 found the previous
+    # hardcoded "TOO_NARROW" had silently become false when PS-191 corrected
+    # the gate, so the test asserted a stale answer while claiming to check
+    # provenance.
+    expected = egv.classify(
+        on["readings"], d._epoch_pool_sizes(on)
+    )["per_arm"]["android"]["verdict"]
 
     unif["per_arm"]["android"]["module_verdict"] = "POISONED"
     section = d.gpu_section(off, on, d.load(d.UNIF_OFF), unif)
@@ -1063,9 +1112,9 @@ def test_module_verdict_is_asked_of_the_gate_not_transcribed():
         ln for ln in section.split("\n")
         if ln.startswith("| android |") and ln.count("|") == 8
     )
-    assert "POISONED" not in row and "TOO_NARROW" in row, (
+    assert "POISONED" not in row and f"| {expected} " in row, (
         "the module verdict came from the uniformity record's transcription "
-        f"rather than from the gate itself: {row}"
+        f"rather than from the gate itself (gate says {expected!r}): {row}"
     )
 
 
