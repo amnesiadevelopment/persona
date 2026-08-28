@@ -735,8 +735,32 @@ def completeness(per_arm: "dict[str, dict]") -> dict:
     }
 
 
-def classify(readings: "dict[str, dict[int, str | None]]") -> dict:
+def classify(
+    readings: "dict[str, dict[int, str | None]]",
+    pool_sizes: "dict[str, int] | None" = None,
+) -> dict:
     """Turn per-arm, per-seed identity readings into a verdict. PURE.
+
+    ⚠️ ``pool_sizes`` PINS THE NULL TO THE POOL THE READINGS ACTUALLY FACED,
+    and exists because this function is called on ARCHIVED records as well as
+    on live runs (PS-239). The verdict is a comparison against persona's own
+    pool, so it is only meaningful against the pool that was in place WHEN THE
+    READINGS WERE TAKEN. Omit it and the pool is read live — correct for a run
+    happening now, and WRONG for a record from before a pool was widened,
+    because the reading is then judged against a null it never faced.
+
+    PS-183 widened ``MAC_GPUS`` 2 -> 11, so PS-185's macos readings (measured
+    against a 2-entry pool, p=0.064) re-judged live against 11 entries score
+    p=1.3e-14 and flip ``OK`` -> ``TOO_NARROW`` — an arm condemned for
+    colliding at a rate that was unremarkable in the pool it was drawn from.
+
+    It is a ``{arm: k}`` MAPPING rather than a generation index, matching
+    ``uniformity_check.analyse``'s ``pool_sizes`` argument — the convention
+    this codebase already uses to pin ``k`` to a measurement epoch. ``k`` is an
+    ENVIRONMENTAL INPUT the sweep recorded, not a property of the readings, so
+    the witness is the sweep's own ``fallback_pool_size`` (see
+    ``uniformity_check.epoch_pool_sizes``). An arm absent from the mapping
+    falls back to the live pool, so a caller may pin some arms and not others.
 
     ``readings`` maps arm -> {seed: identity string or None}. A None is a seed
     that could not be read, and is EXCLUDED from the statistics rather than
@@ -771,23 +795,64 @@ def classify(readings: "dict[str, dict[int, str | None]]") -> dict:
         by_seed = readings[arm]
         readable = [v for v in by_seed.values() if v]
         distinct = sorted(set(readable))
-        bar = bar_for(arm)
+        # The pinned `k` for this arm, or None to read the pool live. A pinned
+        # size is used AS the pool size rather than mapped through a
+        # generation: `k` is what the null needs, and the sweep recorded `k`.
+        # The UNPINNED path calls `fallback_pool_size`/`bar_for` exactly as it
+        # always did — single-argument — so the stubs existing tests substitute
+        # for them keep working and the live behaviour is unchanged.
+        pinned = (pool_sizes or {}).get(arm)
+        if pinned is None:
+            pool = fallback_pool_size(arm)
+            bar = bar_for(arm)
+        else:
+            pool = int(pinned)
+            bar = (1.0 / pool) if pool > 0 else None
         bar_missing = bar is None and has_known_pool(arm)
         entry: dict = {
             "seeds_requested": len(by_seed),
             "seeds_readable": len(readable),
             "distinct_identities": len(distinct),
             "identities": distinct,
-            "fallback_pool_size": fallback_pool_size(arm),
+            # The `k` the null was pinned to, recorded so a verdict carries the
+            # pool it was judged against rather than leaving the reader to
+            # assume "today". None means the pool was read live.
+            "pinned_pool_size": pinned,
+            "fallback_pool_size": pool,
             "bar_collision_probability": bar,
             # The per-generation split behind the two figures above. Both of
             # those describe the pool a profile minted TODAY draws from; on an
             # arm that has been widened, profiles that already exist sit in a
             # SMALLER pool and collide MORE often, and reporting only the
             # flattering number would be the same "varied, therefore fine"
-            # move this module exists to refuse. Recorded per arm so the
-            # archived reading carries it too — see pool_sizes_by_generation.
-            "pool_sizes_by_generation": pool_sizes_by_generation(arm),
+            # move this module exists to refuse.
+            #
+            # ⚠️ None ON THE PINNED PATH, AND THAT IS THE HONEST ANSWER RATHER
+            # THAN THE CONVENIENT ONE (PS-239). A pinned entry describes an
+            # ARCHIVED reading, and the sweep records witness `k` ALONE — they
+            # carry no `pool_sizes_by_generation`, no `since` and no
+            # `generation` field of any kind. So the split is simply not
+            # recoverable from the evidence, and the three candidate answers
+            # are not equally true:
+            #
+            #   * reading it LIVE (what this did before) reports a pool state
+            #     that POSTDATES the readings — macos pinned to k=2 sat beside
+            #     a live {0: 2, 1: 11}, an entry that contradicts itself;
+            #   * synthesising {0: pinned} would FABRICATE a witness, asserting
+            #     the pool held exactly one generation numbered 0. PS-183
+            #     introduced the generation tags IN THE SAME EDIT that widened
+            #     MAC_GPUS, so a record taken before it plausibly had no
+            #     generation concept at all. Inventing one is the same
+            #     re-label-without-re-measuring this ticket exists to fix.
+            #
+            # None says "the record did not witness this", which is the only
+            # claim the evidence supports — the module's own "a missing bar is
+            # not a met bar" discipline applied to the other input.
+            # `format_result` already guards with `or {}`, so a pinned entry
+            # prints no split rather than a wrong one.
+            "pool_sizes_by_generation": (
+                pool_sizes_by_generation(arm) if pinned is None else None
+            ),
         }
         if len(readable) < MIN_SEEDS:
             entry["verdict"] = "INCONCLUSIVE"

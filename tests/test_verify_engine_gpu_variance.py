@@ -228,6 +228,57 @@ def test_an_existing_profiles_smaller_pool_is_not_hidden_behind_the_new_bar():
     assert "NOT one size" in text, text
 
 
+def test_a_pinned_entry_declines_to_report_a_generation_split_it_never_saw():
+    """An archived record must not carry TODAY's generation map. PS-239.
+
+    The two halves are asserted together because either alone is satisfiable
+    by a broken implementation: half 1 asserts the LIVE path still carries the
+    split, so it alone passes if pinning did nothing; half 2 asserts the
+    PINNED path carries none, so it alone passes if the field were dropped for
+    every caller. Only together do they pin the DIFFERENCE between the paths.
+
+    ⚠️ WHY `None` AND NOT `{0: pinned}`. The sweep records witness `k` ALONE —
+    they carry no `pool_sizes_by_generation`, no `since` and no `generation`
+    field of any kind — so the split is not recoverable from the evidence.
+    Synthesising `{0: k}` would FABRICATE a witness, asserting the pool held
+    exactly one generation numbered 0; PS-183 introduced the generation tags
+    in the SAME edit that widened `MAC_GPUS`, so a record taken before it
+    plausibly had no generation concept at all. `None` says "the record did
+    not witness this", which is the only claim the evidence supports — the
+    same "we failed to look is not we looked and it was fine" discipline this
+    module applies to a missing bar.
+    """
+    readings = _arm(["c0", "c1"] * 12, arm="macos")
+
+    # HALF 1 — the LIVE path is unchanged and still carries the real split, so
+    # this pins a difference between the two paths rather than a deletion.
+    live = v.classify(readings)["per_arm"]["macos"]
+    assert live["pool_sizes_by_generation"] == v.pool_sizes_by_generation(
+        "macos"
+    ), "the unpinned path must still report the live generation split"
+    assert len(live["pool_sizes_by_generation"]) > 1, (
+        "fixture no longer exercises a widened arm — macos is expected to "
+        "carry more than one generation (PS-183 widened it 2 -> 11)"
+    )
+
+    # HALF 2 — the PINNED path reports no split, and specifically does not
+    # report the live one it would have read a moment ago.
+    pinned = v.classify(readings, {"macos": 2})["per_arm"]["macos"]
+    assert pinned["pinned_pool_size"] == 2
+    assert pinned["fallback_pool_size"] == 2
+    assert pinned["pool_sizes_by_generation"] is None, (
+        "a pinned entry is reporting a generation map; an archived reading "
+        f"cannot witness one: {pinned['pool_sizes_by_generation']!r}"
+    )
+
+    # And the renderer must tolerate it — printing no split rather than
+    # crashing or inventing one.
+    text = v.format_result(
+        {"arms_checked": ["macos"], "per_arm": {"macos": pinned}}
+    )
+    assert "NOT one size" not in text, text
+
+
 def test_a_single_generation_arm_does_not_print_a_meaningless_split():
     # Printing "gen 0: 5 entries" on every unwidened arm would train the reader
     # to skip the line — and this line only earns its space by being rare.

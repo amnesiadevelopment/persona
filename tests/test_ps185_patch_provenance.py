@@ -1018,9 +1018,19 @@ def test_the_article_reproduces_independently_of_todays_gpu_pools():
     document. Before the pin, PS-183's `MAC_GPUS` widening silently changed a
     published verdict on all three CI platforms.
 
-    The live product is patched to the WIDENED pool rather than mocked at the
+    The live product is patched to a WIDENED pool rather than mocked at the
     derive layer, so this exercises the same path a real post-PS-183 checkout
     takes.
+
+    ⚠️ THE FIXTURE MUST DIFFER FROM TODAY'S LIVE POOLS, AND THAT IS ASSERTED
+    RATHER THAN ASSUMED (PS-239). This test previously hardcoded
+    ``{"windows": 5, "macos": 11, "linux": 8, "android": 4}`` — which, once
+    PS-183 landed, *was* the live pool on every arm. It therefore substituted
+    a stub identical to the real function and compared a document against
+    itself: it passed unconditionally, and went on passing while the macos
+    verdict was in fact being scored against the wrong null. A test that
+    cannot fail proves nothing, so the widened pool is now derived FROM the
+    live one and the difference is checked before it is relied on.
     """
     from src.services.verify import engine_gpu_variance as egv
 
@@ -1028,11 +1038,37 @@ def test_the_article_reproduces_independently_of_todays_gpu_pools():
     off, on = d.load(d.LAYER_OFF), d.load(d.LAYER_ON)
     before = d.gpu_section(off, on, d.load(d.UNIF_OFF), d.load(d.UNIF_ON))
 
-    wide = {"windows": 5, "macos": 11, "linux": 8, "android": 4}
+    # Derived from the live pool so it CANNOT silently coincide with it, and
+    # far enough from every recorded `k` that a leak would move a verdict
+    # rather than merely a digit.
+    wide = {
+        arm: egv.fallback_pool_size(arm) + 7
+        for arm in ("windows", "macos", "linux", "android")
+    }
+    live = {
+        arm: egv.fallback_pool_size(arm)
+        for arm in ("windows", "macos", "linux", "android")
+    }
+    assert wide != live, (
+        "the widened fixture equals the live pool, so patching it is a no-op "
+        "and this test cannot fail — the exact defect PS-239 found here"
+    )
+
     real_size, real_bar = egv.fallback_pool_size, egv.bar_for
     try:
-        egv.fallback_pool_size = lambda arm: wide.get(arm, 0)
-        egv.bar_for = lambda arm: (1.0 / wide[arm]) if wide.get(arm) else None
+        egv.fallback_pool_size = lambda arm, generation=None: wide.get(arm, 0)
+        egv.bar_for = lambda arm, generation=None: (
+            (1.0 / wide[arm]) if wide.get(arm) else None
+        )
+        # POSITIVE CONTROL: the stub must actually reach the gate. If the
+        # UNPINNED gate does not move under a pool this different, the
+        # substitution is not taking effect and the assertion below would pass
+        # for the wrong reason.
+        moved = egv.classify(on["readings"])["per_arm"]["macos"]
+        assert moved["fallback_pool_size"] == wide["macos"], (
+            "the patched pool did not reach classify(), so this test's stub "
+            f"is inert: {moved['fallback_pool_size']}"
+        )
         after = d.gpu_section(off, on, d.load(d.UNIF_OFF), d.load(d.UNIF_ON))
     finally:
         egv.fallback_pool_size, egv.bar_for = real_size, real_bar
@@ -1053,9 +1089,22 @@ def test_module_verdict_is_asked_of_the_gate_not_transcribed():
     a copy of the sweep's copy. Asking `classify` afresh still reports the
     gate's verdict, with one fewer link that can rot.
     """
+    from src.services.verify import engine_gpu_variance as egv
+
     d = _load_derive_module()
     unif = d.load(d.UNIF_ON)
     off, on = d.load(d.LAYER_OFF), d.load(d.LAYER_ON)
+
+    # WHAT THE GATE ACTUALLY SAYS, asked the same way `derive.py` asks it:
+    # pinned to the pool the sweep witnessed. Computed rather than written
+    # down, because a literal here would be a SECOND TRANSCRIPTION — the very
+    # thing this test forbids one line below. PS-239 found the previous
+    # hardcoded "TOO_NARROW" had silently become false when PS-191 corrected
+    # the gate, so the test asserted a stale answer while claiming to check
+    # provenance.
+    expected = egv.classify(
+        on["readings"], d._epoch_pool_sizes(on)
+    )["per_arm"]["android"]["verdict"]
 
     unif["per_arm"]["android"]["module_verdict"] = "POISONED"
     section = d.gpu_section(off, on, d.load(d.UNIF_OFF), unif)
@@ -1063,9 +1112,55 @@ def test_module_verdict_is_asked_of_the_gate_not_transcribed():
         ln for ln in section.split("\n")
         if ln.startswith("| android |") and ln.count("|") == 8
     )
-    assert "POISONED" not in row and "TOO_NARROW" in row, (
+    assert "POISONED" not in row and f"| {expected} " in row, (
         "the module verdict came from the uniformity record's transcription "
-        f"rather than from the gate itself: {row}"
+        f"rather than from the gate itself (gate says {expected!r}): {row}"
+    )
+
+
+def test_widening_a_pool_cannot_move_an_archived_records_verdict():
+    """A pool edit must not retroactively re-label a measurement. PS-239.
+
+    This is the defect that turned `main` red, stated as a property. The
+    verdict column is asked of the live gate — deliberately, so it reports
+    what the product says rather than a transcription — and that made it the
+    ONE column still reading the live pool while every other column was
+    already pinned to the measurement epoch. PS-183 widened `MAC_GPUS` 2 -> 11
+    the day after these readings were taken, so macos' committed draw was
+    re-scored against a `1/11` bar it never faced.
+
+    The two halves below are asserted TOGETHER because either alone is
+    satisfiable by a broken gate: a gate that ignored `pool_sizes` entirely
+    would pass the first, and one that always returned the same verdict
+    whatever it was given would pass the second.
+    """
+    from src.services.verify import engine_gpu_variance as egv
+
+    d = _load_derive_module()
+    on = d.load(d.LAYER_ON)
+    epoch = d._epoch_pool_sizes(on)
+
+    # HALF 1 — pinned to the epoch, the verdict is what the pool the readings
+    # actually faced implies, and a widened live pool cannot move it.
+    pinned = egv.classify(on["readings"], epoch)["per_arm"]["macos"]
+    wider = dict(epoch, macos=epoch["macos"] + 9)
+    assert egv.classify(on["readings"], epoch)["per_arm"]["macos"][
+        "verdict"
+    ] == pinned["verdict"], "pinning is not deterministic"
+    assert pinned["fallback_pool_size"] == epoch["macos"], (
+        "the pinned verdict was scored against a pool other than the one the "
+        f"sweep witnessed: {pinned['fallback_pool_size']} != {epoch['macos']}"
+    )
+
+    # HALF 2 — the pin is LOAD-BEARING, not decorative: scoring the SAME
+    # readings against a wider pool really does flip this arm, so half 1 is
+    # holding back a live failure rather than describing a distinction that
+    # makes no difference.
+    widened = egv.classify(on["readings"], wider)["per_arm"]["macos"]
+    assert widened["verdict"] != pinned["verdict"], (
+        "widening macos' pool did not change the verdict, so this test no "
+        "longer demonstrates why the epoch pin matters — re-derive the "
+        f"fixture (both read {pinned['verdict']!r})"
     )
 
 
@@ -1075,6 +1170,17 @@ def test_recomputed_uniformity_matches_the_stored_record_exactly():
     A recount that silently disagreed with the committed record would mean the
     article no longer describes the run it cites — the opposite failure to an
     echo, and just as bad. All four arms in both modes must land exactly.
+
+    ⚠️ `module_verdict` IS CHECKED SEPARATELY, AND MORE STRICTLY, BY
+    `test_the_stored_verdict_is_reproducible_under_the_rule_that_wrote_it`.
+    It is the one field here that is NOT a statistic: every other column is a
+    function of the READINGS alone, so a disagreement means the recount is
+    broken. The verdict is a function of the readings AND the product's rule,
+    and that rule is versioned code which is allowed to be corrected — PS-191
+    replaced a biased bar comparison with a hypothesis test. Demanding that
+    today's rule reproduce a verdict recorded under the old one would make any
+    correction to the gate permanently red on `main` (PS-239), which is
+    precisely how this ticket's CI failure arose.
     """
     d = _load_derive_module()
     sources = {
@@ -1088,7 +1194,7 @@ def test_recomputed_uniformity_matches_the_stored_record_exactly():
             stored = unif["per_arm"][arm]
             for field in (
                 "monte_carlo_p_value", "genuine_narrowing_finding",
-                "pool_size", "module_verdict", "plugin_estimate",
+                "pool_size", "plugin_estimate",
                 "unbiased_estimate", "expected_plugin_under_uniform",
                 "bar_collision_probability", "seeds_readable",
             ):
@@ -1098,12 +1204,137 @@ def test_recomputed_uniformity_matches_the_stored_record_exactly():
                 )
 
 
+def test_the_stored_verdict_is_reproducible_under_the_rule_that_wrote_it():
+    """The record's verdict must be REPRODUCIBLE, not merely explained away.
+
+    This is the other half of the recount, carved out of it because the
+    verdict is a function of the readings AND the gate's rule (PS-239). The
+    weak move would have been to drop `module_verdict` from the recount and
+    call the suite green — that would let the committed verdict be anything at
+    all, including a hand-typed one, which is the transcription this whole
+    file exists to forbid.
+
+    So the record is held to the STRONGER property instead: re-running the
+    rule that WROTE it must reproduce it exactly, on all four arms in both
+    modes. `_bar_verdict` reconstructs the pre-PS-191 rule from `meets_bar`,
+    which PS-191 deliberately kept computing — so this is a recount, not a
+    memory of one.
+
+    Both halves are asserted together, because either alone is satisfiable by
+    a broken implementation: half 1 compares the reconstruction against eight
+    differing stored verdicts, so it alone passes if the gate never changed
+    and a no-op echo would do; half 2 never consults `_bar_verdict` at all, so
+    it alone passes against a constant function. Only together do they pin a
+    reconstruction that both reproduces the record AND differs from today's gate.
+    """
+    d = _load_derive_module()
+
+    changed = []
+    for src_key, unif_path in (
+        (d.LAYER_ON, d.UNIF_ON),
+        (d.LAYER_OFF, d.UNIF_OFF),
+    ):
+        src = d.load(src_key)
+        unif = d.load(unif_path)
+        live = d._classify(src["readings"], d._epoch_pool_sizes(src))["per_arm"]
+
+        for arm in ("windows", "macos", "linux", "android"):
+            stored = unif["per_arm"][arm]["module_verdict"]
+
+            # HALF 1 — the rule that wrote the record reproduces it EXACTLY.
+            assert d._bar_verdict(live[arm], arm) == stored, (
+                f"{unif_path.name} {arm}: the committed verdict {stored!r} is "
+                f"NOT reproducible under the rule that wrote it "
+                f"(recomputed {d._bar_verdict(live[arm], arm)!r}). The record does "
+                "not describe the run it cites."
+            )
+            if live[arm]["verdict"] != stored:
+                changed.append(f"{unif_path.name} {arm} {stored}->"
+                               f"{live[arm]['verdict']}")
+
+    # HALF 2 — the gate HAS since been corrected, so the carve-out above is
+    # load-bearing rather than decorative. If this ever fires, the two rules
+    # agree everywhere and `module_verdict` should go back into the recount.
+    assert changed, (
+        "today's gate reproduces every stored verdict, so splitting this "
+        "field out of the recount is no longer buying anything — fold it back "
+        "into test_recomputed_uniformity_matches_the_stored_record_exactly"
+    )
+
+
+def test_bar_verdict_keeps_the_old_rules_known_pool_term():
+    """A missing bar meant two different things, and the old rule knew it.
+
+    `_bar_verdict` claims to RECONSTRUCT the pre-PS-191 rule rather than
+    remember it, so it has to reconstruct the awkward branch too. `meets_bar`
+    is None whenever the bar is None, but the old chain reached INCONCLUSIVE
+    on `elif bar_missing` — `bar is None` AND `has_known_pool(arm)`. An arm
+    with no bar and NO known pool fell past it to the final `else` and
+    returned OK. Collapsing both into INCONCLUSIVE would be a reconstruction
+    that quietly disagrees with its own source (PS-239 review, finding 3).
+
+    Both halves are asserted together because either alone is satisfiable by a
+    broken implementation: half 1 asserts OK, so it alone passes if the
+    function always answered OK; half 2 asserts INCONCLUSIVE, so it alone
+    passes if it always answered INCONCLUSIVE. Only together do they pin the
+    known-pool term that chooses BETWEEN those two answers.
+    """
+    from src.services.verify import engine_gpu_variance as egv
+
+    d = _load_derive_module()
+    varied = {i: f"c{i}" for i in range(24)}
+
+    # HALF 1 — NO known pool: "there was never a comparison to make" -> OK.
+    unknown = egv.classify({"plan9": varied})["per_arm"]["plan9"]
+    assert egv.has_known_pool("plan9") is False, "fixture arm gained a pool"
+    assert unknown["meets_bar"] is None, "fixture no longer exercises a nil bar"
+    assert d._bar_verdict(unknown, "plan9") == "OK", (
+        "an arm with no bar AND no known pool must reconstruct as OK — the "
+        "old rule fell through to its else branch here"
+    )
+
+    # HALF 2 — HAS a pool we failed to read: "we failed to look" is not a
+    # pass, so the same nil bar must reconstruct as INCONCLUSIVE instead.
+    #
+    # ⚠️ BUILT BY HAND, because `classify()` CANNOT REACH THIS STATE and a
+    # fixture routed through it does not test what this half is named after.
+    # A nil bar plus a known pool IS `bar_missing`, and that is precisely the
+    # condition `classify` answers with `verdict="INCONCLUSIVE"` — so
+    # `_bar_verdict`'s FIRST branch (`verdict in (CONSTANT, INCONCLUSIVE)`)
+    # matches and returns before the known-pool term is ever evaluated. The
+    # earlier version of this half monkeypatched ANDROID_GPUS out of
+    # GPU_POOLS to nil the bar, and passed for exactly that wrong reason:
+    # measured, it passed against an implementation carrying NO known-pool
+    # term at all, so it could not distinguish the fix from its absence
+    # (PS-239 review, round 2). A synthetic entry is not a shortcut here, it
+    # is the only way past branch 1.
+    assert egv.has_known_pool("android") is True, "fixture arm lost its pool"
+    synthetic = {"verdict": "OK", "meets_bar": None}
+    assert d._bar_verdict(synthetic, "android") == "INCONCLUSIVE", (
+        "an arm that HAS a pool we could not read must reconstruct as "
+        "INCONCLUSIVE — a failure to look is not a met bar"
+    )
+
+
+@pytest.mark.timeout(1800)
 def test_enumerator_runs_the_second_mutation_axis():
     """The harness must poison summaries, not only destroy readings.
 
     Round 5's enumerator returned exit 0 over four live members of the class
     because every scenario it ran mutated readings. An enumeration is only
     evidence for the axes it actually runs.
+
+    ⚠️ NEEDS ITS OWN BOUND, exactly as the axis-1 test beside it does. Both
+    spawn the SAME enumerator, which walks every field of every record and
+    re-renders the article once per mutation; axis 2 measures at ~175-200s
+    here. The ini-wide `timeout = 120` therefore killed it mid-subprocess and
+    reported a TIMEOUT rather than a verdict — while the enumerator itself
+    exited 0 when run by hand. Its sibling
+    `test_the_enumerator_is_committed_and_reports_every_site_moving` was given
+    `@pytest.mark.timeout(1800)` for this reason and this one was not, so the
+    same work was bounded at 1800s through one door and 120s through the
+    other. The subprocess already caps itself at `timeout=900`, so a genuine
+    hang still fails rather than running forever (PS-239).
     """
     proc = subprocess.run(
         [sys.executable, str(READINGS / "enumerate_summary_sites.py"),
