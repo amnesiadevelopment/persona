@@ -25,6 +25,31 @@ reach. So the baseline command launches the profile in-process (a thread — see
 ``InvisibleProcess(in_process=True)``), records through the hook it can now see,
 and tears the session down. Launch and record must be one process; they are.
 
+THE CHROMIUM ARM DOES NOT LAUNCH
+--------------------------------
+The paragraph above is the FIREFOX arm's reason and it does not generalise. A
+profile that launches on chromium is read by ATTACHING to a session the
+operator already started in automation mode (``transport``'s CDP adapter), and
+is refused otherwise. It is never launched here.
+
+That asymmetry is a security decision, not an oversight. Reading a chromium
+page needs a CDP debugging port, and that port only exists for a profile
+launched with ``ai_control`` — which ``cdp.py`` describes in its own words as
+an **unauthenticated control channel any process running as this user can
+drive**. Launching our own port so that our own check can see better is the
+canonical instance of the thing the project's isolation invariant refuses, and
+that invariant is not a trade to be weighed. So nothing here launches a debug
+port, sets ``ai_control``, or persists it on a stored record.
+
+The consequence is stated rather than worked around: on a machine with no such
+session running, the chromium arm CANNOT RUN. That is the honest answer and it
+is deliberately not a pass — an arm that returned an empty or errored reading
+instead would compare EQUAL against another empty reading and be reported as
+agreement, manufacturing exactly the green these checks exist to withhold.
+Every failure on this arm is therefore a raised ``BaselineUnavailable``, never
+a returned document. ``behaviour._readings_or_refuse`` is the second net under
+the same trap.
+
 WHY THE PROFILE IS BUILT IN CODE AND NOT LOOKED UP
 --------------------------------------------------
 A snapshot is only a reference if the ONLY thing that can differ between two
@@ -93,6 +118,22 @@ BASELINE_ENGINE = "firefox"
 BASELINE_RESOLUTION = "1920x1080"
 BASELINE_SEARCH_ENGINE = "duckduckgo"
 BASELINE_REALMS: tuple[str, ...] = (WINDOW, WORKER)
+
+# The two channels the recorder can speak, canonical and lowercase.
+#
+# DELIBERATELY NOT `BASELINE_ENGINE`, which names a different thing: that is the
+# pinned baseline PROFILE's stored engine, and reusing it for routing would
+# conflate "what the artifact's profile is" with "which channel did the read".
+# Those came apart in exactly the way this ticket exists to fix.
+#
+# These are what a snapshot's `engine` header is stamped with, because they name
+# THE CHANNEL THAT DID THE READING and not the profile's stored claim. A stored
+# record is an ASSERTION; a transport is an OBSERVATION. Pinned against
+# `_FirefoxTransport.engine` / `_ChromiumTransport.engine` by
+# `test_both_arms_report_the_engine_their_own_transport_reports`, so these
+# spellings cannot drift from the adapters they stand for.
+_FIREFOX_CHANNEL = "firefox"
+_CHROMIUM_CHANNEL = "chromium"
 
 # Probes whose value reads through a HOST facility (GPU/driver stack, installed
 # font metrics) rather than being derived from the seed. Pinning the profile
@@ -359,26 +400,44 @@ def _teardown(proc: Any, name: str) -> None:
     unregister_ff_eval(name)
 
 
-def record_snapshot(
-    *,
-    profile: Profile | None = None,
-    fresh: bool = True,
-    realms: tuple[str, ...] = BASELINE_REALMS,
-    timeout: float = LAUNCH_TIMEOUT_S,
-) -> dict:
-    """Launch the pinned profile, read every probe, tear the session down.
+def _record_on_firefox(
+    profile: Profile, realms: tuple[str, ...], timeout: float, fresh: bool
+) -> tuple[dict, str]:
+    """Launch the profile in-process, read every probe, tear the session down.
 
-    Returns a canonical snapshot document. ``fresh`` (the default) removes the
-    profile's data directory first, so the recording starts from a known state
-    rather than from whatever a previous session left behind — reproducibility
-    is the whole point of the artifact.
+    This is the ORIGINAL recording path, moved behind the engine split with no
+    behavioural change: same launch, same hook lookup, same failure message,
+    same ``finally`` teardown. See :func:`record_snapshot` for why launch and
+    record must happen in one process.
+
+    Returns ``(readings, engine_observed)``. The second element is the engine
+    of the CHANNEL that did the reading, not of the profile record — this arm
+    reads through the firefox eval hook, so reaching the return at all means
+    firefox answered. Pinned against ``_FirefoxTransport.engine`` by
+    ``test_both_arms_report_the_engine_their_own_transport_reports`` so the two
+    spellings of "firefox" cannot drift apart.
+
+    THE DISPLAY GATE LIVES HERE, on the arm that launches, rather than at the
+    top of :func:`record_snapshot` where it used to sit. Before the engine
+    split there was one path and it ALWAYS launched, so an unconditional gate
+    was correct and its message ("recording a baseline launches a real
+    browser ... run it under xvfb") was true. Adding a non-launching arm broke
+    that reference: the chromium arm attaches to a session someone else
+    started and needs no display at all, so gating it on one refused the exact
+    deployment this ticket exists to reach — a headless host running chromium
+    under automation, where a chromium-effective profile would STILL have been
+    unobservable to Levels 1 and 2. That is the "the instrument cannot be
+    pointed at chromium" defect again with a different gate substituted for the
+    hardcoded ``get_ff_eval``, so the gate belongs to the launch, not to the
+    recorder.
     """
-    _require_display()
-    profile = profile or baseline_profile()
-
     from ...core.config import DATA_DIR
     from ..browser.invisible_launch import get_ff_eval
     from ..browser.process import spawn_browser
+
+    # Immediately before the launch, so the refusal and the thing it refuses
+    # are the same event and the message cannot drift out of truth again.
+    _require_display()
 
     if fresh:
         shutil.rmtree(os.path.join(DATA_DIR, profile.name), ignore_errors=True)
@@ -394,12 +453,148 @@ def record_snapshot(
                 f"the session for {profile.name!r} started but published no "
                 "eval hook, so nothing can be read from it"
             )
-        results = run_probes(hook["eval"], realms)
+        return run_probes(hook["eval"], realms), _FIREFOX_CHANNEL
     finally:
         _teardown(proc, profile.name)
 
+
+def _record_on_chromium(
+    profile: Profile, realms: tuple[str, ...], fresh: bool
+) -> tuple[dict, str]:
+    """Read an ALREADY-RUNNING chromium profile over its existing CDP channel.
+
+    THIS PATH DELIBERATELY DOES NOT LAUNCH, and that is a security decision
+    rather than an omission — see the "THE CHROMIUM ARM DOES NOT LAUNCH"
+    section of the module docstring. It attaches to a channel the operator
+    already opened, or it refuses. It never sets, persists or infers
+    ``ai_control``, and it never passes a debugging-port flag to anything.
+
+    ``fresh`` is REFUSED here rather than honoured. Wiping the data directory
+    of a session that is currently running is not a "clean start", it is
+    corruption of a live profile — and the caller asking for one is asking for
+    a launch-from-clean this path is not allowed to perform. Refusing says so;
+    silently downgrading to a warm read would return a document whose
+    provenance claims a freshness it does not have.
+    """
+    from .transport import TransportUnavailable, transport_for
+
+    if fresh:
+        raise BaselineUnavailable(
+            f"cannot take a FRESH recording of {profile.name!r}: it launches on "
+            "chromium, and the chromium arm attaches to an already-running "
+            "session rather than launching one (launching it here would mean "
+            "opening an unauthenticated CDP control channel, which isolation "
+            "forbids). A fresh recording would require wiping the data "
+            "directory of a live session. Record it with fresh=False against a "
+            "profile already running in automation mode, or record the "
+            "firefox-effective baseline instead."
+        )
+
+    try:
+        transport = transport_for(profile.name, _CHROMIUM_CHANNEL)
+    except TransportUnavailable as exc:
+        # Not a reading, so not a verdict. Raised — never returned as an empty
+        # or errored snapshot — because an unreadable arm that reaches the
+        # comparators compares EQUAL against another unreadable arm and is
+        # reported as agreement. See `behaviour._readings_or_refuse`.
+        raise BaselineUnavailable(
+            f"the chromium arm cannot read {profile.name!r}: {exc} Nothing was "
+            "observed, so nothing is certified."
+        ) from exc
+
+    with transport:
+        # `transport.engine`, NOT the constant just passed in and NOT the
+        # profile's stored engine: the header must report the channel that did
+        # the reading. Round-2 review caught the earlier spelling stamping
+        # `effective_engine(profile)` — a profile stored as 'Chromium' was read
+        # over the chromium channel and stamped 'Chromium', an engine nothing
+        # ever observed, which also degraded `engine_build` to "unknown".
+        return run_probes(transport.evaluate, realms), transport.engine
+
+
+def record_snapshot(
+    *,
+    profile: Profile | None = None,
+    fresh: bool = True,
+    realms: tuple[str, ...] = BASELINE_REALMS,
+    timeout: float = LAUNCH_TIMEOUT_S,
+) -> dict:
+    """Read every probe from a live profile, on the engine it ACTUALLY runs on.
+
+    Returns a canonical snapshot document. ``fresh`` (the default) removes the
+    profile's data directory first, so the recording starts from a known state
+    rather than from whatever a previous session left behind — reproducibility
+    is the whole point of the artifact.
+
+    THE ENGINE IS OBSERVED, NEVER ASSUMED — and those are two separate claims
+    about two separate steps, which is what round-2 review caught this docstring
+    conflating.
+
+    ROUTING is chosen by ``effective_engine`` — the same function
+    ``spawn_browser`` routes on — so the read and the launch cannot answer the
+    same question differently. This used to be an unconditional ``get_ff_eval``,
+    which meant every profile that launches on chromium (every
+    non-Windows-desktop profile, whatever its stored ``engine`` says) started
+    fine, published no firefox hook, and died unread.
+
+    STAMPING is taken from the TRANSPORT THAT DID THE READING — each arm returns
+    its own channel's ``engine`` and that is what reaches ``build_snapshot`` —
+    mirroring ``cli.py:126`` (``engine = transport.engine``), which is the one
+    lane that already had this right. It is deliberately NOT
+    ``effective_engine(profile)``: that reads the profile RECORD, and a record
+    is an ASSERTION while a transport is an OBSERVATION. The two agree only
+    when the stored engine happens to be spelled exactly like the channel.
+    ``coherent_engine`` returns a coherent value UNCHANGED and there is no
+    engine whitelist anywhere, so a profile stored as ``'Chromium'`` was read
+    over the chromium channel and then stamped ``'Chromium'`` — an engine
+    nothing ever observed — which additionally degraded ``engine_build`` to
+    ``"unknown"`` (``snapshot.py`` maps any unrecognised family that way) and
+    fed ``diff._META_FIELDS`` a field the recorder no longer guaranteed. That
+    was the same assume-don't-observe defect this function exists to close,
+    with a different constant substituted.
+
+    AN UNRECOGNISED ENGINE IS REFUSED, not read. Routing used to be a bare
+    ``else``, so anything that was not ``firefox`` went to the chromium adapter
+    unconditionally — a profile stored ``'webkit'`` (which passes coherence, as
+    only firefox pairs are constrained) would be driven over CDP and then
+    stamped with its own unknown name. Refusing matches this module's posture:
+    an engine nobody can name is precisely an inconclusive, and inconclusive is
+    never a pass. Normalising instead would silently record one engine's
+    readings under another engine's name, which is the defect above wearing a
+    correction's clothes.
+
+    THE DISPLAY GATE BELONGS TO THE LAUNCH, NOT TO THIS FUNCTION. It used to
+    run unconditionally here, which was correct while there was one path and it
+    always launched. The chromium arm does not launch — it attaches to a
+    session the operator already opened — so gating it on a display refused the
+    precise deployment this function exists to reach: a headless host running
+    chromium under automation, where there is no X display and none is needed.
+    It now sits inside :func:`_record_on_firefox`, immediately before the
+    launch. Pinned by
+    ``test_the_chromium_arm_records_with_no_display_because_it_does_not_launch``,
+    which unsets DISPLAY for real and does NOT stub the gate.
+    """
+    profile = profile or baseline_profile()
+
+    from ..browser.process import effective_engine
+
+    routed = effective_engine(profile)
+    if routed == _FIREFOX_CHANNEL:
+        results, observed = _record_on_firefox(profile, realms, timeout, fresh)
+    elif routed == _CHROMIUM_CHANNEL:
+        results, observed = _record_on_chromium(profile, realms, fresh)
+    else:
+        raise BaselineUnavailable(
+            f"{profile.name!r} resolves to engine {routed!r}, which this "
+            f"recorder cannot speak (it knows {_FIREFOX_CHANNEL!r} and "
+            f"{_CHROMIUM_CHANNEL!r}). Nothing was observed, so nothing is "
+            "certified. Note the stored engine is not normalised on the way "
+            "in: an unexpected spelling such as 'Chromium' lands here rather "
+            "than being read over a channel it does not name."
+        )
+
     snapshot = build_snapshot(
-        results, engine=BASELINE_ENGINE, profile=profile.name, realms=realms
+        results, engine=observed, profile=profile.name, realms=realms
     )
     snapshot["provenance"] = provenance(profile)
     return snapshot
