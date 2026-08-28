@@ -143,6 +143,11 @@ class App:
         self._app_update_size = 0
         self._app_update_tag = ""
         self._app_update_status = ""  # '', downloading, ready, failed
+        # The last tag we told the operator was held. Purely a log de-duper:
+        # the hold gate CLEARS _app_latest, which reopens the 60s poll's own
+        # dedup (`tag != self._app_latest`), so without this the same "held"
+        # line would be written once a minute forever.
+        self._app_held_logged = ""
         self._app_update_done = 0
         self._app_update_total = 0
         self._update_in_progress = False
@@ -2746,6 +2751,53 @@ class App:
 
         threading.Thread(target=loop, daemon=True).start()
 
+    def _clear_held_discovery(self, tag: str) -> None:
+        """Un-discover a held release: forget the tag and the URL the caller
+        just recorded, then say so once.
+
+        RETURNING WITHOUT THIS IS NOT ENOUGH, and that gap is the whole reason
+        this method exists. Every discovery path writes the three fields BEFORE
+        it calls the gate — the 60s poll at _check_app_update_async and the
+        manual check at _check_app_update_now both do
+
+            self._app_latest = tag; self._app_update_url = url; ...
+            self._on_update_found(tag, url)
+
+        so a gate that merely returns leaves all three set. _build_version_panel
+        then computes `has_update = bool(self._app_latest) and ... != ver` as
+        True and renders "[ update to <held tag> ]" DIRECTLY ABOVE the "resume
+        updates (held <tag>)" line — the panel offering to install the very
+        release it is explaining is held. That is the same contradiction
+        _set_update_staged's docstring already refuses one gesture over
+        ("restart into two opposite versions with no way to tell which wins"),
+        landing on the row AC5 is about.
+
+        And the button is LIVE: its on_click is _apply_update_now, which
+        downloads from _app_update_url and installs. So the fix has to empty
+        the FIELDS, not just decline to act on them. Emptying both closes every
+        route that reads them — the panel button, _on_version_click's resume-
+        the-download arm, and _set_auto_update's kick-off when auto-update is
+        switched back on.
+
+        This mirrors _on_app_resume_updates, which zeroes _app_latest in the
+        OTHER direction so the poll's `tag != self._app_latest` dedup reopens.
+        Here that same dedup reopening is why the log line needs its own
+        de-duper: with _app_latest cleared the poll re-announces this tag every
+        60 seconds, so _app_held_logged keeps the explanation to once per tag
+        instead of once a minute."""
+        self._app_latest = ""
+        self._app_update_url = ""
+        self._app_update_size = 0
+        self._app_update_tag = ""
+        self._app_update_status = ""
+        if tag and tag != self._app_held_logged:
+            self._app_held_logged = tag
+            self._log(
+                f"Update {tag} is held — you went back from it. Resume "
+                "updates to install it again."
+            )
+        self._refresh_sidebar()
+
     def _on_update_found(self, tag: str, url: str) -> None:
         """A newer version exists: download it in the background right away,
         then ask before installing (see _when_update_ready)."""
@@ -2767,12 +2819,7 @@ class App:
         # Linux with auto-update on _when_update_ready installs it with nobody
         # present. That is the whole failure the hold exists to end.
         if app_update.update_held(tag):
-            self._app_update_status = ""
-            self._log(
-                f"Update {tag} is held — you went back from it. Resume "
-                "updates to install it again."
-            )
-            self._refresh_sidebar()
+            self._clear_held_discovery(tag)
             return
         # Always refresh the sidebar so the "new version" badge shows.
         self._refresh_sidebar()
@@ -3056,7 +3103,45 @@ class App:
         self._refresh_sidebar()
 
     def _apply_update_now(self) -> None:
-        """Manual 'update now' click: download if needed, then restart."""
+        """Manual 'update now' click: download if needed, then restart.
+
+        THE THIRD HOLD GATE, and defence in depth rather than duplication
+        (PS-208). The argument _when_update_ready makes for its own second
+        reading — "reachable from callers that did not come through
+        _on_update_found" — applies to this method with more force, because it
+        is the only one of the three that installs on a DIRECT operator click:
+        it is _update_button's on_click and _on_version_click's staged arm, and
+        neither routes through _on_update_found or _when_update_ready. So
+        without a gate here the discovery gates can be perfectly correct and a
+        held build still installs.
+
+        HONEST SCOPE, because an earlier draft of this comment overclaimed it
+        and an overclaim is worse than no comment — a reader who trusts one
+        stops checking. I could NOT construct a reachable state in which this
+        gate is the only thing standing between a held release and an install.
+        The staged arm looks like one, but is not: _on_app_rollback refuses to
+        revert while _update_staged OR _update_in_progress is set, so no hold
+        can be written while an installer is staged, and _update_staged is
+        process-lifetime ("" in __init__) so the mandatory restart empties it.
+        Every writer of it (_on_update_found, _start_app_update, and this
+        method) now sits downstream of a hold gate.
+
+        So this is DEFENCE IN DEPTH against a state that is currently
+        unreachable by construction, not a live hole being closed. It is worth
+        its four lines anyway: the three guards that make it unreachable are in
+        two other modules and none of them exist to protect the hold, so a
+        later change to any one of them would reopen this path silently. The
+        cost of being wrong here is installing the exact build the operator
+        walked away from.
+
+        Reads _app_update_tag first and falls back to _app_latest, because the
+        staged arm is reachable with _app_latest already emptied. An unknown
+        tag ("" from both) is NOT held: update_held("") is False, so a click
+        with nothing identifiable proceeds exactly as it does today."""
+        held_tag = self._app_update_tag or self._app_latest
+        if app_update.update_held(held_tag):
+            self._clear_held_discovery(held_tag)
+            return
         if self._update_staged:
             self._log("Restarting into the new version...")
             self._apply_update(self._update_staged)
