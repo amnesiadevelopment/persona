@@ -24,6 +24,12 @@ UNGOOGLED_TAG="${UNGOOGLED_TAG:-unknown}"
 NINJA_JOBS="${NINJA_JOBS:-}"
 PREPARE_RESULT="${PREPARE_RESULT:-unknown}"
 COMPILE_RESULT="${COMPILE_RESULT:-unknown}"
+# PS-244 — where this run's control came from. Empty on the ordinary `both`
+# path, where the control is built in this very run; set to the borrowed run's
+# id on a patched-only dispatch. This is READ, not asserted: it decides only
+# what the manifest SAYS, while whether the borrow was allowed at all is decided
+# by ps218_verify_control.sh, which stops the build before this script runs.
+CONTROL_RUN_ID="${CONTROL_RUN_ID:-}"
 
 REC="record"
 mkdir -p "$REC"
@@ -70,6 +76,15 @@ say() {
   fi
   if [ "$TREE" = "patched" ]; then
     echo "| our fingerprint patches | 16, from fingerprint-chromium \`${FINGERPRINT_TAG:-144.0.7559.132}\` |"
+    # PS-244 — THE PROVENANCE OF THE CONTROL, IN THE SUMMARY TABLE.
+    # An attribution resting on a control built in another run is a weaker
+    # claim than one resting on an in-run control, and a reader must be able to
+    # tell which they are holding without opening the workflow.
+    if [ -n "$CONTROL_RUN_ID" ]; then
+      echo "| control | ⚠️ **BORROWED** from run \`${CONTROL_RUN_ID}\` — this run did NOT build its own |"
+    else
+      echo "| control | IN-RUN — the unmodified tree was built by this dispatch |"
+    fi
   else
     echo "| our fingerprint patches | NONE — this is the instrument check |"
   fi
@@ -119,6 +134,40 @@ say() {
     echo "**Trust the binary over the exit code** and treat this as unresolved."
   fi
   echo
+
+  # ── PS-244: where the control came from, stated in PROSE as well ───────────
+  # The table row above is the scannable form; this is the one a reader who
+  # skips tables still meets. Both are needed because the claim being qualified
+  # ("errors the control had too are NOT ours") is made in prose in
+  # attribution.txt, and a qualification that lives only in a table is easy to
+  # carry away unattached to the claim it qualifies.
+  if [ "$TREE" = "patched" ]; then
+    echo "### Where the control came from"
+    echo
+    if [ -n "$CONTROL_RUN_ID" ]; then
+      echo "⚠️ **This run did not build its own control.** The unmodified tree it is"
+      echo "compared against was built by run \`${CONTROL_RUN_ID}\` and BORROWED, which is"
+      echo "what let this dispatch skip a full unmodified compile (PS-244)."
+      echo
+      echo "The borrow was **verified, not trusted**: before any of this ran, that run's"
+      echo "own recorded evidence was checked to establish it built the **same ungoogled"
+      echo "tag**, on the **same host**, and that it **actually compiled and left a"
+      echo "binary**. Any of those failing stops the build rather than degrading it to an"
+      echo "unattributed one. The per-check record is in"
+      echo "\`control-borrow-verification.txt\`."
+      echo
+      echo "**Read the attribution accordingly.** \"Pre-existing — the unmodified tree had"
+      echo "this too\" here means *the tree run \`${CONTROL_RUN_ID}\` built had it too*, not"
+      echo "*a tree built alongside this one*. The two are the same tag on the same"
+      echo "machine, which is why the borrow is permitted — but they are not the same"
+      echo "build, and this manifest will not present them as though they were."
+    else
+      echo "The unmodified control was built **by this dispatch** (\`trees=both\`), so the"
+      echo "attribution rests on an in-run control. This is the strongest form and the"
+      echo "default."
+    fi
+    echo
+  fi
 
   echo "## Cost"
   echo
