@@ -21,6 +21,7 @@ raises before any socket work, so ``api.github.com`` is never contacted even
 though the tests run with real network available.
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -299,3 +300,143 @@ def test_starting_persona_removes_an_inherited_token_from_its_own_process():
     assert payload["gh"] is None, "GITHUB_TOKEN survived startup"
     # and the scrub stayed narrow
     assert payload["user"] == "operator"
+
+
+# --- The ordering the scrub depends on ---------------------------------------
+
+# Both probes below run as a REAL process via ``python -c "exec(open(...))"``.
+# The ``-c`` form is not incidental: under it ``__main__`` has no ``__file__``,
+# so python-dotenv's ``find_dotenv()`` resolves from the CWD instead of walking
+# up from ``src/core/config.py`` to the repo root. That is what lets a test
+# supply a ``.env`` in ``tmp_path`` without ever writing one into the repo and
+# clobbering a developer's own file.
+
+_SPY_PRELUDE = """
+import json, os, sys
+import requests.adapters as _ra
+_seen = []
+def _spy(self, request, **kw):
+    _seen.append({"url": request.url, "auth": request.headers.get("Authorization")})
+    raise RuntimeError("no packet leaves this test")
+_ra.HTTPAdapter.send = _spy
+"""
+
+
+def _run_probe(tmp_path, script, dotenv_line="GITHUB_TOKEN=ghp_from_dotenv_0000\n"):
+    """Run ``script`` in a real process whose only token source is a .env file."""
+    (tmp_path / ".env").write_text(dotenv_line, encoding="utf-8")
+    (tmp_path / "probe.py").write_text(_SPY_PRELUDE + script, encoding="utf-8")
+
+    env = dict(os.environ)
+    env.pop(SF_TOKEN, None)
+    env.pop(GH_TOKEN, None)
+    env["PYTHONPATH"] = REPO_ROOT
+    env["PERSONA_UTF8_REEXEC"] = "1"  # don't re-exec inside the test
+
+    proc = subprocess.run(
+        [sys.executable, "-c", "exec(open('probe.py', encoding='utf-8').read())"],
+        cwd=str(tmp_path),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=180,
+    )
+    assert proc.returncode == 0, f"probe failed:\n{proc.stderr[-2000:]}"
+
+    payload = None
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            payload = json.loads(line)
+    assert payload is not None, f"no payload in stdout:\n{proc.stdout[-2000:]}"
+    return payload
+
+
+def test_a_token_supplied_via_a_dotenv_file_is_scrubbed_and_sends_no_request(tmp_path):
+    """A token arriving via a ``.env`` FILE must not survive startup either.
+
+    This is a DIFFERENT INPUT SHAPE from the subprocess test above, not a
+    duplicate of it, and it is the one shape the rest of this file leaves
+    unprotected. A token passed through ``env=`` is already set when the entry
+    module is imported; a token in ``.env`` is ABSENT at that moment and gets
+    INJECTED partway through startup, because ``src/core/config.py`` calls
+    ``load_dotenv()`` at import and ``load_dotenv`` sets a name that is not
+    already present. So the two orderings differ, and only one is safe:
+
+        load_dotenv() -> scrub   ->  removed
+        scrub -> load_dotenv()   ->  RE-ARMED after the scrub, and it survives
+                                     to the engine install
+
+    ``src/main.py`` imports ``src.core.config`` explicitly to force the first
+    ordering. Before that line it still GOT the first ordering — but only by
+    accident, through the ~60-module import chain behind
+    ``src/services/browser/__init__.py``. Slimming that ``__init__`` (an obvious
+    and desirable tidy-up) would have silently re-opened this leak with every
+    other test in this file still green.
+
+    Asserted on the REQUEST THE TRANSPORT WAS ASKED TO SEND, in a real process
+    that went through startup: the spy sits on ``HTTPAdapter.send``, below
+    ``requests.get``, and is installed BEFORE ``src.main`` is imported.
+    """
+    payload = _run_probe(
+        tmp_path,
+        """
+sys.argv = ["persona"]
+import src.main  # noqa: F401  — the startup seam under test
+from invisible_playwright.download import _resolve_asset_url
+url = _resolve_asset_url("v150.0-2", "checksums.txt")
+print(json.dumps({
+    "sent": _seen,
+    "url": url,
+    "gh": os.environ.get("GITHUB_TOKEN"),
+    "sf": os.environ.get("STEALTHFOX_GITHUB_TOKEN"),
+}))
+""",
+    )
+
+    # AC1, on the observed request.
+    assert payload["sent"] == [], (
+        "the release lookup contacted the network with a .env-supplied token: "
+        f"{payload['sent']}"
+    )
+    # AC3: and it still resolved the correct public URL.
+    assert payload["url"] == (
+        "https://github.com/feder-cr/firefox_antidetect_patch"
+        "/releases/download/v150.0-2/checksums.txt"
+    )
+    assert payload["gh"] is None, "GITHUB_TOKEN from .env survived startup"
+    assert payload["sf"] is None
+
+
+def test_the_dotenv_probe_can_actually_observe_the_leak(tmp_path):
+    """Negative control for the test above — it must be ABLE to fail.
+
+    A ``.env`` test whose file is never loaded would pass against a leaking
+    implementation, so this pins the HARNESS rather than the product. Same file,
+    same cwd, but persona's startup scrub does NOT run: the token really is
+    injected, and the resolver really does authenticate against api.github.com
+    on the real IP. If this ever stops seeing that request, the test above has
+    stopped testing anything and must be repaired, not deleted.
+    """
+    payload = _run_probe(
+        tmp_path,
+        """
+import src.core.config  # noqa: F401  — fires load_dotenv() WITHOUT the scrub
+from invisible_playwright.download import _resolve_asset_url
+try:
+    _resolve_asset_url("v150.0-2", "checksums.txt")
+except Exception:
+    pass
+print(json.dumps({"sent": _seen, "gh": os.environ.get("GITHUB_TOKEN")}))
+""",
+    )
+
+    # The .env file WAS read...
+    assert payload["gh"] == "ghp_from_dotenv_0000", (
+        "the .env file was not picked up, so the ordering test above is inert"
+    )
+    # ...and the unscrubbed resolver DOES authenticate on the real IP.
+    assert len(payload["sent"]) == 1, f"expected one API request, got {payload['sent']}"
+    assert payload["sent"][0]["url"].startswith("https://api.github.com/")
+    assert payload["sent"][0]["auth"] == "token ghp_from_dotenv_0000"

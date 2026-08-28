@@ -178,7 +178,28 @@ def _neutralise_vendored_credentials() -> None:
     other thread and open profile, whose ``finally`` must survive an exception
     on a thread nobody joins. One shot before any thread exists has no race and
     nothing to restore. Kept beside the other one-shot process policies above.
+
+    ORDERING IS LOAD-BEARING, and it is stated here rather than left to luck.
+    ``.env`` is a documented way to configure this app (README), and
+    ``src/core/config.py`` calls ``load_dotenv()`` AT IMPORT. ``load_dotenv``
+    does not overwrite a name that is already set, but it DOES set one that is
+    absent — so a token supplied via ``.env`` is injected by that import. Only
+    one of the two orderings is safe:
+
+        load_dotenv() -> scrub   ->  token removed          (what we want)
+        scrub -> load_dotenv()   ->  token RE-ARMED after the scrub, and it
+                                     survives to the engine install
+
+    We therefore import ``src.core.config`` FIRST, explicitly, to force the
+    dotenv load ahead of the pop. Before this line existed the safe ordering
+    still happened — but only as an accident: the ``env_policy`` import below
+    reaches its module through ``src/services/browser/__init__.py``, which
+    transitively drags in ``src.core.config`` and fires ``load_dotenv()`` on
+    the way. That is ~60 unrelated modules propping up a two-name env scrub,
+    and slimming that ``__init__`` — an obvious, desirable tidy-up — would have
+    silently re-opened this leak with every test still green.
     """
+    import src.core.config  # noqa: F401  — imported for its load_dotenv() side effect
     from src.services.browser.env_policy import neutralise_vendored_credentials
 
     removed = neutralise_vendored_credentials()
