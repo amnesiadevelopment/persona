@@ -1239,10 +1239,10 @@ def test_the_stored_verdict_is_reproducible_under_the_rule_that_wrote_it():
             stored = unif["per_arm"][arm]["module_verdict"]
 
             # HALF 1 — the rule that wrote the record reproduces it EXACTLY.
-            assert d._bar_verdict(live[arm]) == stored, (
+            assert d._bar_verdict(live[arm], arm) == stored, (
                 f"{unif_path.name} {arm}: the committed verdict {stored!r} is "
                 f"NOT reproducible under the rule that wrote it "
-                f"(recomputed {d._bar_verdict(live[arm])!r}). The record does "
+                f"(recomputed {d._bar_verdict(live[arm], arm)!r}). The record does "
                 "not describe the run it cites."
             )
             if live[arm]["verdict"] != stored:
@@ -1256,6 +1256,52 @@ def test_the_stored_verdict_is_reproducible_under_the_rule_that_wrote_it():
         "today's gate reproduces every stored verdict, so splitting this "
         "field out of the recount is no longer buying anything — fold it back "
         "into test_recomputed_uniformity_matches_the_stored_record_exactly"
+    )
+
+
+def test_bar_verdict_keeps_the_old_rules_known_pool_term(monkeypatch):
+    """A missing bar meant two different things, and the old rule knew it.
+
+    `_bar_verdict` claims to RECONSTRUCT the pre-PS-191 rule rather than
+    remember it, so it has to reconstruct the awkward branch too. `meets_bar`
+    is None whenever the bar is None, but the old chain reached INCONCLUSIVE
+    on `elif bar_missing` — `bar is None` AND `has_known_pool(arm)`. An arm
+    with no bar and NO known pool fell past it to the final `else` and
+    returned OK. Collapsing both into INCONCLUSIVE would be a reconstruction
+    that quietly disagrees with its own source (PS-239 review, finding 3).
+
+    Both halves are asserted together because either alone is satisfiable by a
+    broken implementation: half 1 alone passes if the function always answered
+    INCONCLUSIVE, and half 2 alone passes if it always answered OK.
+    """
+    from src.services.browser import gpu_ext
+    from src.services.verify import engine_gpu_variance as egv
+
+    d = _load_derive_module()
+    varied = {i: f"c{i}" for i in range(24)}
+
+    # HALF 1 — NO known pool: "there was never a comparison to make" -> OK.
+    unknown = egv.classify({"plan9": varied})["per_arm"]["plan9"]
+    assert egv.has_known_pool("plan9") is False, "fixture arm gained a pool"
+    assert unknown["meets_bar"] is None, "fixture no longer exercises a nil bar"
+    assert d._bar_verdict(unknown, "plan9") == "OK", (
+        "an arm with no bar AND no known pool must reconstruct as OK — the "
+        "old rule fell through to its else branch here"
+    )
+
+    # HALF 2 — HAS a pool we failed to read: "we failed to look" is not a
+    # pass, so the same nil bar must reconstruct as INCONCLUSIVE instead.
+    assert egv._POOL_VAR_FOR_ARM["android"] == "ANDROID_GPUS"
+    pools = {k: v for k, v in gpu_ext.GPU_POOLS.items() if k != "ANDROID_GPUS"}
+    assert "ANDROID_GPUS" not in pools, "fixture no longer matches the source"
+    monkeypatch.setattr(gpu_ext, "GPU_POOLS", pools)
+
+    known = egv.classify({"android": varied})["per_arm"]["android"]
+    assert egv.has_known_pool("android") is True
+    assert known["meets_bar"] is None, "fixture no longer nils the bar"
+    assert d._bar_verdict(known, "android") == "INCONCLUSIVE", (
+        "an arm that HAS a pool we could not read must reconstruct as "
+        "INCONCLUSIVE — a failure to look is not a met bar"
     )
 
 

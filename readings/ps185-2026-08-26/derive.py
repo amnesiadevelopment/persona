@@ -40,6 +40,7 @@ if str(REPO_ROOT) not in sys.path:
 from src.services.verify.engine_gpu_variance import (  # noqa: E402
     classify as _classify,
     collision_probability as _collision_probability,
+    has_known_pool as _has_known_pool,
 )
 
 # The readback differ's OWN verdict rule, from the instrument that took the
@@ -123,7 +124,7 @@ def join_arms(names: "list[str]") -> str:
     return ", ".join(names[:-1]) + " AND " + names[-1]
 
 
-def _bar_verdict(entry: dict) -> str:
+def _bar_verdict(entry: dict, arm: str) -> str:
     """The verdict the gate WOULD have returned under the pre-PS-191 rule.
 
     RECOMPUTED from a `classify` entry, never transcribed from a stored
@@ -143,11 +144,29 @@ def _bar_verdict(entry: dict) -> str:
     straight off the entry: ``CONSTANT`` (one identity) and ``INCONCLUSIVE``
     (too few seeds, or no bar to compare against) both preceded the bar test
     then and precede the p-value test now.
+
+    ⚠️ A MISSING BAR IS NOT ONE CASE BUT TWO, and the old rule answered them
+    differently (PS-239 review). ``meets_bar`` is ``None`` whenever ``bar`` is
+    ``None``, but the pre-PS-191 chain reached its ``INCONCLUSIVE`` branch on
+    ``elif bar_missing`` — i.e. ``bar is None`` **AND** ``has_known_pool(arm)``.
+    An arm with no bar and NO known pool fell past that ``elif`` to the final
+    ``else`` and returned ``OK``. Collapsing both into ``INCONCLUSIVE`` here
+    would be a reconstruction that quietly disagrees with the rule it claims
+    to reproduce, so the known-pool term is carried rather than dropped.
+
+    Unreachable with the committed records — every member of ``ARMS`` is named
+    in ``_POOL_VAR_FOR_ARM``, so ``has_known_pool`` is true for each and the
+    two readings coincide — but this function's whole claim is that it
+    RECONSTRUCTS the rule instead of remembering it, and an unreachable
+    divergence is still a divergence.
     """
     if entry["verdict"] in ("CONSTANT", "INCONCLUSIVE"):
         return entry["verdict"]
     if entry.get("meets_bar") is None:
-        return "INCONCLUSIVE"
+        # No bar. INCONCLUSIVE only where the arm HAS a pool we failed to read
+        # ("we failed to look" is not "we looked and it was fine"); otherwise
+        # there was never a comparison to make and the old rule said OK.
+        return "INCONCLUSIVE" if _has_known_pool(arm) else "OK"
     return "OK" if entry["meets_bar"] else "TOO_NARROW"
 
 
@@ -312,7 +331,10 @@ def gpu_section(off: dict, on: dict, uoff: dict, uon: dict) -> str:
     # KEPT that comparison as `meets_bar` on every arm — so the old verdict is
     # still a function of the readings and is recomputed as one.
     _live = _classify(on["readings"], _epoch_pool_sizes(on))["per_arm"]
-    _then = [arm for arm in ARMS if _bar_verdict(_live[arm]) == "TOO_NARROW"]
+    _then = [
+        arm for arm in ARMS
+        if _bar_verdict(_live[arm], arm) == "TOO_NARROW"
+    ]
     _now = [arm for arm in ARMS if _live[arm]["verdict"] == "TOO_NARROW"]
     _cleared = [arm for arm in _then if arm not in _now]
     add("#### ⚠️ The gate's own verdicts on "
@@ -394,7 +416,7 @@ def gpu_section(off: dict, on: dict, uoff: dict, uon: dict) -> str:
         # depending on a stored summary. `_bar_verdict` reconstructs it from
         # `meets_bar`, which PS-191 kept computing precisely so the old
         # comparison stays visible.
-        _then_android = _bar_verdict(_live["android"])
+        _then_android = _bar_verdict(_live["android"], "android")
         add(
             f"**The single line that settles it:** android scored "
             f"{fnum(a['plugin_estimate'])}, which is BELOW the "
