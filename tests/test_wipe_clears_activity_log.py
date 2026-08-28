@@ -167,7 +167,14 @@ def test_the_fullscreen_activity_log_dialog_names_no_wiped_profile(app):
 
     original = handlers.open_log_dialog
     try:
-        handlers.open_log_dialog = lambda page, log_lines: shown.append(log_lines)
+        # **profiles: the fullscreen view now also receives the profile roster
+        # so it can offer a per-profile filter. The stub accepts it rather than
+        # pinning today's signature, so this test keeps asserting what it is
+        # about — that no wiped name reaches the dialog — instead of failing on
+        # an argument it does not care about.
+        handlers.open_log_dialog = lambda page, log_lines, **kw: shown.append(
+            log_lines
+        )
         app.h.open_log_fullscreen()
     finally:
         handlers.open_log_dialog = original
