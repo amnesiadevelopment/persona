@@ -41,6 +41,24 @@ _ENGINE_PIN_KEY = "engine_build_pin"
 # Two engines, two pins. They are independent gestures and nothing should make
 # one engine's rollback observable in the other's UI.
 _CHROMIUM_PIN_KEY = "chromium_build_pin"
+# The persona RELEASE an operator deliberately went BACK from — the app-update
+# counterpart of the two engine pins above, and deliberately a THIRD key rather
+# than a reuse of either.
+#
+# The same flat-dict argument the _CHROMIUM_PIN_KEY comment makes applies again,
+# and the vocabulary differs a third time: the engine keys hold a "firefox-NN"
+# build dir and a Chromium tag, this one holds a PERSONA release like "3.0.2".
+# Sharing would make "go back on persona" mute an engine's update row, and an
+# engine's "resume updates" silently un-hold a rejected persona build.
+#
+# NOTE THE INVERTED SENSE, which is why it is named a hold and not a pin: the
+# engine keys name the build to STAY ON, this one names the release to STAY
+# AWAY FROM. That difference is the whole design choice recorded on PS-208 —
+# holding the rejected release rather than pausing updates outright means a
+# LATER release (the one that probably carries the fix) still installs normally,
+# so the hold cannot silently become permanent. Empty (the normal state) means
+# nothing was ever rejected.
+_APP_HOLD_KEY = "app_update_hold"
 # How PERSONA'S OWN requests should leave the machine (the release-metadata
 # polls it makes unattended at startup) — NOT a profile's proxy, which lives
 # per-profile in the proxy store. Empty means DIRECT, which is what every
@@ -232,6 +250,34 @@ def set_chromium_build_pin(tag: str) -> None:
     """Pin the Chromium engine to `tag`, or pass "" to clear the pin and resume
     normal updating (the operator saying "go forward again")."""
     set(_CHROMIUM_PIN_KEY, str(tag or ""))
+
+
+def app_update_hold() -> str:
+    """The persona release an operator deliberately went BACK from, or "" when
+    they never did. "" is the normal state and means "offer the newest
+    release" — the hold is written only by an explicit revert.
+
+    A hold is a STANDING instruction, not a one-off flag: it survives the
+    restart the revert itself demands, which is the entire point. Without it a
+    revert lasts under a MINUTE — the 60s update poll sees the release the
+    operator just rejected as newer than what is now installed, and on Linux
+    with auto-update on (the default) installs it again with nobody present.
+
+    NOTE THE INVERTED SENSE versus engine_build_pin()/chromium_build_pin(): a
+    pin names the build to STAY ON, this names the release to STAY AWAY FROM.
+    So it holds back that release AND everything at or below it, while a LATER
+    release — the one that probably carries the fix — is offered normally. That
+    is deliberate (PS-208): a hold that swallowed every future release would be
+    a worse defect than the loop it closes."""
+    v = get(_APP_HOLD_KEY, "")
+    return v if isinstance(v, str) else ""
+
+
+def set_app_update_hold(version: str) -> None:
+    """Hold back `version` (and anything not newer than it), or pass "" to
+    clear the hold and resume normal updating (the operator saying "go forward
+    again")."""
+    set(_APP_HOLD_KEY, str(version or ""))
 
 
 def app_egress_proxy() -> str:
