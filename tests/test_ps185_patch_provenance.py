@@ -1170,6 +1170,17 @@ def test_recomputed_uniformity_matches_the_stored_record_exactly():
     A recount that silently disagreed with the committed record would mean the
     article no longer describes the run it cites — the opposite failure to an
     echo, and just as bad. All four arms in both modes must land exactly.
+
+    ⚠️ `module_verdict` IS CHECKED SEPARATELY, AND MORE STRICTLY, BY
+    `test_the_stored_verdict_is_reproducible_under_the_rule_that_wrote_it`.
+    It is the one field here that is NOT a statistic: every other column is a
+    function of the READINGS alone, so a disagreement means the recount is
+    broken. The verdict is a function of the readings AND the product's rule,
+    and that rule is versioned code which is allowed to be corrected — PS-191
+    replaced a biased bar comparison with a hypothesis test. Demanding that
+    today's rule reproduce a verdict recorded under the old one would make any
+    correction to the gate permanently red on `main` (PS-239), which is
+    precisely how this ticket's CI failure arose.
     """
     d = _load_derive_module()
     sources = {
@@ -1183,7 +1194,7 @@ def test_recomputed_uniformity_matches_the_stored_record_exactly():
             stored = unif["per_arm"][arm]
             for field in (
                 "monte_carlo_p_value", "genuine_narrowing_finding",
-                "pool_size", "module_verdict", "plugin_estimate",
+                "pool_size", "plugin_estimate",
                 "unbiased_estimate", "expected_plugin_under_uniform",
                 "bar_collision_probability", "seeds_readable",
             ):
@@ -1191,6 +1202,61 @@ def test_recomputed_uniformity_matches_the_stored_record_exactly():
                     f"{unif_path.name} {arm}: recomputed {field}={got[field]!r} "
                     f"but the committed record stores {stored[field]!r}"
                 )
+
+
+def test_the_stored_verdict_is_reproducible_under_the_rule_that_wrote_it():
+    """The record's verdict must be REPRODUCIBLE, not merely explained away.
+
+    This is the other half of the recount, carved out of it because the
+    verdict is a function of the readings AND the gate's rule (PS-239). The
+    weak move would have been to drop `module_verdict` from the recount and
+    call the suite green — that would let the committed verdict be anything at
+    all, including a hand-typed one, which is the transcription this whole
+    file exists to forbid.
+
+    So the record is held to the STRONGER property instead: re-running the
+    rule that WROTE it must reproduce it exactly, on all four arms in both
+    modes. `_bar_verdict` reconstructs the pre-PS-191 rule from `meets_bar`,
+    which PS-191 deliberately kept computing — so this is a recount, not a
+    memory of one.
+
+    Both halves are asserted together, because either alone is satisfiable by
+    a broken implementation: half 1 alone passes if the old rule is a constant
+    function, and half 2 alone passes if nothing ever changed.
+    """
+    d = _load_derive_module()
+
+    changed = []
+    for src_key, unif_path in (
+        (d.LAYER_ON, d.UNIF_ON),
+        (d.LAYER_OFF, d.UNIF_OFF),
+    ):
+        src = d.load(src_key)
+        unif = d.load(unif_path)
+        live = d._classify(src["readings"], d._epoch_pool_sizes(src))["per_arm"]
+
+        for arm in ("windows", "macos", "linux", "android"):
+            stored = unif["per_arm"][arm]["module_verdict"]
+
+            # HALF 1 — the rule that wrote the record reproduces it EXACTLY.
+            assert d._bar_verdict(live[arm]) == stored, (
+                f"{unif_path.name} {arm}: the committed verdict {stored!r} is "
+                f"NOT reproducible under the rule that wrote it "
+                f"(recomputed {d._bar_verdict(live[arm])!r}). The record does "
+                "not describe the run it cites."
+            )
+            if live[arm]["verdict"] != stored:
+                changed.append(f"{unif_path.name} {arm} {stored}->"
+                               f"{live[arm]['verdict']}")
+
+    # HALF 2 — the gate HAS since been corrected, so the carve-out above is
+    # load-bearing rather than decorative. If this ever fires, the two rules
+    # agree everywhere and `module_verdict` should go back into the recount.
+    assert changed, (
+        "today's gate reproduces every stored verdict, so splitting this "
+        "field out of the recount is no longer buying anything — fold it back "
+        "into test_recomputed_uniformity_matches_the_stored_record_exactly"
+    )
 
 
 def test_enumerator_runs_the_second_mutation_axis():
