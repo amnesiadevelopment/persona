@@ -1093,3 +1093,208 @@ def test_the_wrapped_intl_ctors_keep_the_native_prototype_invariants(arity_probe
     # comparison above is not two identical wrong answers
     assert set(before["protoWritable"].values()) == {False}
     assert set(before["ctorBack"].values()) == {True}
+
+
+# --- nested workers (PS-205) ------------------------------------------------
+# The page-realm script wraps Worker/SharedWorker so a depth-1 worker gets the
+# locale patch. Before PS-205 the PAYLOAD did not re-install that wrapper, so
+# the chain covered exactly one level and a worker spawned from a worker read
+# the HOST locale. Depth-1 was correct, which is why it went unnoticed.
+#
+# ⚠️ THE ISOLATION SELF-TEST BELOW IS THE LOAD-BEARING PART OF THIS HARNESS.
+# The ticket author's first reproduction passed Intl/Date/Number BY REFERENCE
+# into every sandbox, so all three "realms" shared one Intl and realm 0's patch
+# mutated it for everyone. It reported depth-2 as SPOOFED — a false GREEN that
+# would have made the defect look already-fixed. What caught it was a negative
+# control, not inspection: realm 2 received NO BODY AT ALL and still reported
+# the spoofed value, which is impossible under genuine isolation.
+#
+# So this harness passes NO intrinsics (each vm.createContext gets its own) and
+# PROVES the realms are separate before measuring anything: patch Intl in one
+# throwaway realm and require a second untouched realm to still read the host
+# value. It exits non-zero if they are not, which fails the test loudly rather
+# than reporting a meaningless pass. An assertion on a shared-intrinsics
+# harness is a check that could not have failed.
+_NESTED_HARNESS = r"""
+const fs = require("fs");
+const vm = require("vm");
+const SCRIPT = fs.readFileSync(process.argv[2], "utf8");
+
+// Stubs are built INSIDE each context from that context's OWN intrinsics.
+// Nothing crosses the boundary by reference.
+//
+// COMPOSED, not string-edited. An earlier version built WORKER_STUBS by
+// .replace()-ing page-only lines out of PAGE_STUBS, which is fragile twice
+// over: an anchor drifts silently when the text above it is reworded, and a
+// guard against that trips over the word appearing in a COMMENT. Two shared
+// halves and one page-only half cannot drift.
+const COMMON_STUBS = `
+  globalThis.self = globalThis;
+  globalThis.__body = null;
+  globalThis.Blob = function Blob(parts){ globalThis.__body = parts[0]; };
+  globalThis.URL = { createObjectURL: function(){ return "blob:stub"; } };
+  globalThis.XMLHttpRequest = function XMLHttpRequest(){
+    this.status = 200; this.responseText = "";
+    this.open = function(){}; this.send = function(){};
+  };
+  function StubWorker(u,o){}
+  Object.defineProperty(StubWorker, "name", { value: "Worker" });
+  globalThis.Worker = StubWorker;
+  globalThis.SharedWorker = StubWorker;
+`;
+// Page-only: a worker realm has no window, and its navigator is a
+// WorkerNavigator rather than a Navigator. Omitting both is what keeps the
+// worker realms honest.
+//
+// defineProperty, NOT \`globalThis.navigator = ...\`. Node >=21 ships a built-in
+// \`navigator\` as a getter-only accessor, and a sloppy-mode assignment over one
+// is a SILENT no-op — no throw, no warning. The stub would never install and
+// the page realm would read the host locale, a failure with nothing to do with
+// the code under test. Same reason as _HARNESS above; the gate
+// test_the_language_harness_cannot_be_silently_ignored pins it for this file.
+const PAGE_ONLY_STUBS = `
+  globalThis.window = globalThis;
+  globalThis.Navigator = function Navigator(){};
+  Object.defineProperty(globalThis, "navigator", {
+    value: Object.create(Navigator.prototype),
+    writable: true, configurable: true });
+`;
+const PAGE_STUBS = COMMON_STUBS + PAGE_ONLY_STUBS;
+const WORKER_STUBS = COMMON_STUBS;
+
+function mkRealm(stubs) {
+  const ctx = vm.createContext({});
+  vm.runInContext(stubs, ctx);
+  return ctx;
+}
+const locale = (ctx) =>
+  vm.runInContext("new Intl.NumberFormat().resolvedOptions().locale", ctx);
+const numFmt = (ctx) => vm.runInContext("(1234.5).toLocaleString()", ctx);
+const body = (ctx) => vm.runInContext("globalThis.__body", ctx);
+
+const HOST = new Intl.NumberFormat().resolvedOptions().locale;
+const HOST_NUMBER = (1234.5).toLocaleString();
+
+// ---- ISOLATION SELF-TEST: must pass BEFORE any measurement -----------------
+{
+  const a = mkRealm(WORKER_STUBS), b = mkRealm(WORKER_STUBS);
+  vm.runInContext(
+    "Intl.NumberFormat = function(){ return { resolvedOptions: function(){" +
+    " return { locale: 'zz-ZZ' }; } }; };", a);
+  if (locale(a) !== "zz-ZZ" || locale(b) !== HOST) {
+    console.error("ISOLATION FAILED: realms share intrinsics; results void.");
+    process.exit(2);
+  }
+}
+
+// ---- realm 0: the page -----------------------------------------------------
+const r0 = mkRealm(PAGE_STUBS);
+vm.runInContext(SCRIPT, r0);
+const out = { host: HOST, hostNumber: HOST_NUMBER, isolated: true,
+              page: locale(r0), depths: [], bodies: [] };
+
+// Walk the chain: each realm spawns the next and we run the captured body in a
+// brand-new context. A realm that was never handed a body is recorded as such,
+// which is the negative control that catches a contaminated harness.
+let ctx = r0;
+for (let d = 1; d <= 3; d++) {
+  vm.runInContext(`new self.Worker("https://example.com/w${d}.js");`, ctx);
+  const b = body(ctx);
+  out.bodies.push(b ? b.length : null);
+  const next = mkRealm(WORKER_STUBS);
+  if (b) vm.runInContext(b, next);
+  out.depths.push({
+    depth: d,
+    gotBody: !!b,
+    locale: locale(next),
+    number: numFmt(next),
+  });
+  ctx = next;
+}
+console.log(JSON.stringify(out));
+"""
+
+
+@pytest.fixture(scope="module")
+def nested_worker_probe(tmp_path_factory):
+    """Locale actually READ in page, depth-1 and depth-2 worker realms.
+
+    Reports the value each realm returns, never the source text: a text
+    assertion passes on a build that merely renames the payload.
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    d = tmp_path_factory.mktemp("nested")
+    (d / "lang.js").write_text(il._language_override_script("de-DE"), encoding="utf-8")
+    (d / "harness.js").write_text(_NESTED_HARNESS, encoding="utf-8")
+    out = subprocess.run(
+        [node, str(d / "harness.js"), str(d / "lang.js")],
+        capture_output=True, text=True, timeout=60, encoding="utf-8",
+    )
+    # returncode 2 is the isolation self-test failing — surface it as itself
+    assert out.returncode == 0, f"harness failed ({out.returncode}): {out.stderr}"
+    return json.loads(out.stdout)
+
+
+def test_the_nested_worker_harness_proves_its_realms_are_isolated(nested_worker_probe):
+    """The self-test that makes every other assertion here meaningful.
+
+    A harness whose realms share intrinsics reports depth-2 as spoofed against
+    the BROKEN code. If this ever fails, the results below are void rather than
+    merely wrong.
+    """
+    probe = nested_worker_probe
+    assert probe["isolated"] is True
+    # the host locale must NOT already be the spoof target, or every assertion
+    # below passes for free
+    assert probe["host"] != "de-DE", (
+        f"host locale is {probe['host']}; this test cannot distinguish "
+        "spoofed from unspoofed here"
+    )
+
+
+def test_locale_survives_into_a_worker_spawned_from_a_worker(nested_worker_probe):
+    """AC1 — a DEPTH-2 worker reports the spoofed locale.
+
+    Asserted on the locale the realm RETURNS, not on source text. Before
+    PS-205 this read the host locale (en-US under a de-DE identity) because the
+    payload patched Intl but never re-installed the Worker wrapper, so depth-2
+    was never handed a payload at all.
+    """
+    depths = {d["depth"]: d for d in nested_worker_probe["depths"]}
+    d2 = depths[2]
+    # the negative control first: a realm that got no body cannot honestly
+    # report a spoofed locale
+    assert d2["gotBody"], "depth-2 worker was handed no payload — chain stopped"
+    assert d2["locale"] == "de-DE"
+    # and the surface the payload exists to patch, read behaviourally: de-DE
+    # formats 1234.5 as "1.234,5" where the en-US host gives "1,234.5". This is
+    # the creepjs-style read, and it must differ from the host's own output or
+    # the assertion proves nothing.
+    assert d2["number"] != nested_worker_probe["hostNumber"]
+    assert d2["number"] == "1.234,5"
+
+
+def test_page_and_depth_one_still_report_the_spoofed_locale(nested_worker_probe):
+    """AC5 — the levels that already worked are unchanged."""
+    probe = nested_worker_probe
+    assert probe["page"] == "de-DE"
+    depths = {d["depth"]: d for d in probe["depths"]}
+    assert depths[1]["gotBody"]
+    assert depths[1]["locale"] == "de-DE"
+
+
+def test_the_payload_does_not_grow_with_worker_depth(nested_worker_probe):
+    """AC4 — the self-carry is O(1) per level, not string duplication.
+
+    The naive fix embeds the payload inside itself, doubling it at every level
+    (exponential in depth). Re-serialising the named function expression emits
+    the SAME bytes however deep it goes, so this is a fixed point rather than a
+    ratio that merely happens to be under a ceiling.
+    """
+    bodies = nested_worker_probe["bodies"]
+    assert all(b is not None for b in bodies), bodies
+    assert bodies[1] <= 2 * bodies[0], f"payload grew with depth: {bodies}"
+    # stronger than AC4 asks: it does not grow AT ALL
+    assert len(set(bodies)) == 1, f"payload is not a fixed point: {bodies}"
