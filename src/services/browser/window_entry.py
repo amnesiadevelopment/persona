@@ -91,11 +91,11 @@ def _unlink_legacy_entry(entry_dir: pathlib.Path, profile_name: str) -> None:
 
     Accepting the superseded token does not re-open the collision above, for
     two structural reasons. The old token embeds the raw name verbatim behind a
-    fixed prefix and the match is line-anchored, so distinct names give distinct
-    tokens (`validate_profile_name` bans control characters, so a name cannot
-    smuggle a newline in). And the two token spaces cannot overlap: new is
-    `persona_…`, old is `persona-…`, differing at character 8, so an old-token
-    match can never be satisfied by a new-scheme file.
+    fixed prefix and the match is anchored at BOTH ends of an LF-delimited
+    record, so distinct names give distinct tokens. And the two token spaces
+    cannot overlap: new is `persona_…`, old is `persona-…`, differing at
+    character 8, so an old-token match can never be satisfied by a new-scheme
+    file.
     """
     path = entry_dir / _legacy_safe_filename(profile_name)
     try:
@@ -113,7 +113,15 @@ def _unlink_legacy_entry(entry_dir: pathlib.Path, profile_name: str) -> None:
         # Pre-v2.1.8 (8c38017) app_id_for returned f"persona-{profile_name}".
         f"StartupWMClass=persona-{profile_name}",
     )
-    if not any(line in owned for line in body.splitlines()):
+    # NOT body.splitlines(): that splits on the Unicode line-boundary set, which
+    # includes U+2028, U+2029 and U+0085 — all three sit ABOVE 0x20, so
+    # validate_profile_name admits them (it bans only ord < 0x20). A profile
+    # named "a\u2028b" would have its own old-era token torn in half
+    # ("StartupWMClass=persona-a" + "b"), so its entry would be FOUND at the
+    # legacy path and then refused as un-owned: the delete path could not reach
+    # it and the write path could not heal it. A .desktop file is an
+    # LF-delimited format, so split on the separator this format actually uses.
+    if not any(line in owned for line in body.split("\n")):
         # Belongs to another profile — not ours to delete.
         return
 
