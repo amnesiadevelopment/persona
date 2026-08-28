@@ -473,8 +473,96 @@ def _worker_wrap_js(payload: str) -> str:
     are balanced — including the ones inside the ``importScripts`` string
     literal, which the counters in ``tests/test_ff_language_override.py`` see as
     plain text.
+
+    THE ``blob:`` DELIVERY IS A RETAINED ``Blob``, NOT A FETCH (PS-238). The
+    sync XHR below is subject to the page's ``connect-src``, so it is refused on
+    a restrictive origin and the wrapper's own catch falls back to constructing
+    the ORIGINAL ``Worker`` — a worker that runs normally and carries NO locale
+    patch. That is the worst available shape: the page reports the spoofed
+    locale while the worker reports the HOST one, and that page/worker
+    disagreement is a SHARPER tell than the unspoofed value it was hiding.
+
+    AND THE REFUSING ORIGIN IS THE DEFAULT START PAGE. ``_ensure_firefox_
+    policies()`` pins DuckDuckGo, which sends ``default-src 'none'`` with no
+    ``blob:`` in its ``connect-src`` — so this is where every Firefox profile
+    already is the moment it opens, not an exotic corner. Re-measured live on
+    firefox-20 / 151.0 through this project's own launch path at ``62e1ac1``
+    (``spawn_browser(in_process=True)`` + ``get_ff_eval``, locale pinned
+    ``de-DE`` through ``cfg["locale"]``), reading the locale a real ``blob:``
+    worker RETURNS rather than any source text::
+
+        origin                   sync XHR on blob:    page     WORKER
+        https://duckduckgo.com/  THREW NetworkError   de-DE    en-US  <-- HOST
+        https://example.com/     status 200           de-DE    de-DE
+
+    The second row is the control, and it is what makes the first a refusal
+    rather than a broken probe: the same harness on the same build DOES see the
+    spoof arrive where nothing refuses it.
+
+    Composing the retained ``Blob`` needs no fetch, so no CSP directive governs
+    it — measured on the refusing origin in that same run. It also survives
+    ``revokeObjectURL``, which tears down only the URL mapping and not the
+    ``Blob``; that is why this route rather than the ``importScripts`` shim,
+    which ``worker_wrap.py`` deleted for failing exactly that case.
+
+    THIS IS A LOCAL RE-IMPLEMENTATION OF ``worker_wrap.py``'s seam, deliberately
+    — shape (a) of PS-238's fork, and NOT a splice. Every symbol that file's
+    ``_FIREFOX_BLOB_RESOLVE`` depends on belongs to the BOOTSTRAP's realm and
+    has no counterpart here: ``__rb``, the captured natives ``_Blob``/``_URL``/
+    ``_cou``, ``_Ref``, ``BOOT`` and ``__bcloak`` map onto this realm's raw
+    ``Blob``/``URL``/``Reflect``, ``payload`` and ``__cloak``. Re-routing the
+    locale leaf through ``realm_bootstrap_js`` instead (shape (b)) would put
+    PS-205's already-shipped fixed point at risk to save a tidier patch.
+
+    IT DEGRADES TO THE OLD BEHAVIOUR, NEVER BELOW IT. A ``blob:`` url this realm
+    never minted (created before this script ran, or in another realm) is simply
+    absent from the map and falls through to the XHR path below — which is what
+    it would have done anyway. ``data:`` is untouched and keeps the XHR path,
+    correctly: there is no object URL to retain and a ``data:`` URL carries its
+    own body inline.
+
+    THE RETAIN MAP IS EMITTED BY THIS BUILDER, WHICH IS WHAT PUTS IT IN THE
+    RIGHT SCOPE. This text is emitted at BOTH call sites — inside the payload
+    (``_worker_wrap_js("P")``, i.e. inside ``__pnaLoc``'s own body) and in the
+    page (``_worker_wrap_js("WP")``) — so each realm gets its OWN map and the
+    payload's copy ships with ``__pnaLoc.toString()``. A map defined in an
+    ENCLOSING scope would be ``undefined`` in a worker, which is precisely the
+    failure ``worker_wrap.py``'s docstring records and why that module splices
+    its own setup inside ``__pnaInstall``. Nothing here is added to the global:
+    ``__rb`` is a closure variable and the two wrappers are named function
+    EXPRESSIONS, whose names bind only inside their own scope.
+
+    BOTH NEW WRAPPERS ARE CLOAKED through this realm's ``__cloak``. An uncloaked
+    ``URL.createObjectURL`` stringifies as raw patch source — the identical
+    class of tell PS-131 closed, and it would be a fresh one introduced by the
+    fix for another.
     """
     return (
+        # --- retain the Blob behind each object URL (PS-238 delivery) --------
+        # Chained, so the retention this adds is ZERO: an un-revoked object URL
+        # already pins its Blob alive for the document's lifetime, and chaining
+        # the revoke as well means a page that revokes properly frees the entry
+        # immediately. A plain Map, not a WeakMap: the key is a STRING.
+        "var __rb=(typeof Map===\"function\")?new Map():null;"
+        "try{if(__rb&&typeof URL!==\"undefined\""
+        "&&typeof URL.createObjectURL===\"function\""
+        "&&typeof URL.revokeObjectURL===\"function\"){"
+        "var __ocou=URL.createObjectURL,__orv=URL.revokeObjectURL;"
+        "var __wcou=function createObjectURL(obj){"
+        "var u=__ocou.apply(this,arguments);"
+        # Only Blob bodies are useful to compose with; a MediaSource has no body
+        # to prepend to and must fall through to the old path.
+        "try{if(typeof Blob===\"function\"&&obj instanceof Blob)"
+        "__rb.set(String(u),obj);}catch(e){}"
+        "return u;};"
+        "var __wrv=function revokeObjectURL(u){"
+        # Forget FIRST, so the map can never outlive the engine's own mapping
+        # even if the underlying revoke throws.
+        "try{__rb[\"delete\"](String(u));}catch(e){}"
+        "return __orv.apply(this,arguments);};"
+        "__cloak(__wcou,\"createObjectURL\",undefined,__ocou.length);"
+        "__cloak(__wrv,\"revokeObjectURL\",undefined,__orv.length);"
+        "URL.createObjectURL=__wcou;URL.revokeObjectURL=__wrv;}}catch(e){}"
         "var wrapW=function(Orig){if(typeof Orig!==\"function\")return Orig;"
         "var W=function(url,opt){try{"
         "if(opt&&opt.type===\"module\")return Reflect.construct(Orig,[url,opt],W);"
@@ -484,7 +572,17 @@ def _worker_wrap_js(payload: str) -> str:
         "var u=URL.createObjectURL(new Blob([body],"
         "{type:\"application/javascript\"}));"
         "return Reflect.construct(Orig,[u,opt],W);}"
-        "if(/^blob:|^data:/i.test(s)){try{var x=new XMLHttpRequest();"
+        # PS-238: compose the RETAINED Blob rather than re-fetching the url — no
+        # fetch means no `connect-src` to refuse it, and a Blob outlives
+        # revokeObjectURL. Falls through to the XHR below when this realm never
+        # minted the url, so this can only ever ADD a delivery, never remove one.
+        "if(/^blob:|^data:/i.test(s)){"
+        "try{var rb=__rb&&__rb.get(s);"
+        "if(rb){var nb=new Blob([" + payload + "+__nl,rb],"
+        "{type:\"application/javascript\"});"
+        "return Reflect.construct(Orig,[URL.createObjectURL(nb),opt],W);}}"
+        "catch(e){}"
+        "try{var x=new XMLHttpRequest();"
         "x.open(\"GET\",s,false);x.send();"
         "if(x.status===0||(x.status>=200&&x.status<300)){"
         "var u2=URL.createObjectURL(new Blob([" + payload + "+__nl+x.responseText],"
