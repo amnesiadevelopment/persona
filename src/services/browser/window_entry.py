@@ -26,9 +26,48 @@ def _entry_dir() -> pathlib.Path:
     return pathlib.Path(os.path.expanduser("~/.local/share/applications"))
 
 
-def _safe_filename(profile_name: str) -> str:
+def _legacy_safe_filename(profile_name: str) -> str:
+    """The pre-PS-209 filename: sanitise with NO digest.
+
+    Kept only so entries already written under it can be found and removed.
+    Never used to WRITE. It collides for names that collapse to the same
+    sanitised form, which is the whole reason it was replaced.
+    """
     safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in profile_name)
     return f"persona-{safe}.desktop"
+
+
+def _safe_filename(profile_name: str) -> str:
+    """The .desktop filename for a profile.
+
+    Carries the same crc of the original name that `app_id_for` does, and for
+    the same reason: profiles whose names collapse to one sanitised form (e.g.
+    "a-b" and "a b") must not share one file. Without the digest they did, and
+    a single file cannot label two windows — its StartupWMClass matches only
+    one of the pair, so the other fell back to the generic label this module
+    exists to prevent. Worse, `remove_window_entry` unlinks by this name, so
+    deleting either profile removed the entry belonging to the LIVE one and
+    stranded that profile's cleartext `Name=` on the host (PS-209).
+    """
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in profile_name)
+    digest = format(zlib.crc32(profile_name.encode("utf-8")) & 0xFFFFFFFF, "08x")
+    return f"persona-{safe}-{digest}.desktop"
+
+
+def _unlink_legacy_entry(entry_dir: pathlib.Path, profile_name: str) -> None:
+    """Best-effort removal of this profile's pre-PS-209 (digest-less) entry.
+
+    The legacy name is ambiguous by construction, so this can only be reached
+    for a name the caller is already acting on — never as a sweep.
+    """
+    try:
+        (entry_dir / _legacy_safe_filename(profile_name)).unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        logger.warning(
+            "Could not remove legacy desktop entry for %s: %s", profile_name, e
+        )
 
 
 def write_window_entry(profile_name: str, icon: str = "chromium") -> str:
@@ -52,6 +91,14 @@ def write_window_entry(profile_name: str, icon: str = "chromium") -> str:
         f"StartupWMClass={app_id_for(profile_name)}\n"
     )
     path.write_text(content, encoding="utf-8")
+    # PS-209 migration: converge this profile off the old digest-less filename.
+    # The scheme change would otherwise orphan the entry already on disk under
+    # the legacy name, because remove_window_entry no longer computes that path
+    # and nothing else would ever reach it. Unlinking it HERE — for this one
+    # name, after its replacement is safely written — is self-healing on the
+    # next launch and needs no profile list and no directory sweep, so it can
+    # never delete a file this app did not write.
+    _unlink_legacy_entry(entry_dir, profile_name)
     return str(path)
 
 
@@ -59,10 +106,17 @@ def remove_window_entry(profile_name: str) -> None:
     """Delete a profile's desktop entry. The entry embeds the profile NAME in
     cleartext (Name=, and the filename); leaving it after a delete or a panic
     wipe was a forensic trace that survived the wipe (audit6 LOW c). Best-effort;
-    absent file is fine."""
+    absent file is fine.
+
+    Removes BOTH the current filename and this profile's pre-PS-209 legacy one:
+    a delete/wipe is the last chance to reach that residue, and after it the
+    profile is gone, so no later launch would ever converge the old file away.
+    """
+    entry_dir = _entry_dir()
     try:
-        (_entry_dir() / _safe_filename(profile_name)).unlink()
+        (entry_dir / _safe_filename(profile_name)).unlink()
     except FileNotFoundError:
         pass
     except OSError as e:
         logger.warning("Could not remove desktop entry for %s: %s", profile_name, e)
+    _unlink_legacy_entry(entry_dir, profile_name)
