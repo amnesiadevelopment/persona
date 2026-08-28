@@ -559,3 +559,257 @@ def test_the_gate_reports_a_real_child_realm_collision_end_to_end():
     )
     assert child[0]["status"] == diff.COLLIDING
     assert child[0]["value"] == child_entry["value"]
+
+
+# --- Defect 3: the RECORDER must cover what the COMPARATOR walks -------------
+#
+# The gap that let a green suite say nothing. Every fixture above hands the
+# comparator a child-realm reading; PRODUCTION never did. `Context.record`
+# called `record_snapshot(profile=..., fresh=...)`, whose `realms` argument
+# defaults to `BASELINE_REALMS` — `(window, worker)` — so the pair this slice
+# added was ABSENT on both sides of every real comparison, `_unread_for_
+# unlinkability` correctly read it as unread, and the pair came back
+# INCONCLUSIVE forever. `_run_two_profile_unlinkability` checks `colliding`
+# first and `inconclusive` second, so ONE permanently-inconclusive pair took
+# the whole check to CANNOT_RUN, and `exit_code` has CANNOT_RUN outrank
+# FINDING. The operator-facing verdict for "are these two profiles genuinely
+# two machines?" became a refusal that could never clear.
+#
+# MEASURED both ways before the fix, through run_probes -> build_snapshot ->
+# compare_profiles with two profiles given distinct seed-derived digests on
+# every must-differ vector (the case that SHOULD read as a clean pass):
+#
+#     pristine 472b388   0 pairs in the child realm   -> PASS
+#     this branch        1 pair,  inconclusive        -> CANNOT_RUN
+#
+# So this PR BROKE it rather than merely exposing it, which is what put it in
+# scope. The fix is `probes.must_differ_realms()` — derived from the same
+# inventory the comparator walks, so the recorder and the comparator cannot
+# drift apart — threaded through the two lanes that call `compare_profiles`.
+#
+# NOT fixed by narrowing `_unread_for_unlinkability`. That would trade a
+# refusal for a false COLLIDING, which is the worse failure and precisely the
+# one AC5 exists to prevent. The predicate is right; the realm was unrecorded.
+
+
+def _recording_context(monkeypatch, *, realm_log):
+    """A `Context` whose `record` models `record_snapshot`'s REALM CONTRACT.
+
+    The fake stands in for the browser, not for the realm logic: it honours
+    `realms` exactly as `record_snapshot` does, **including its default**. That
+    default is the whole point of the fixture — a lane that forgets to pass
+    `realms=` gets `BASELINE_REALMS` here for the same reason it gets it in
+    production, so this test goes RED on the real defect instead of quietly
+    recording whatever the test wanted.
+
+    Every must-differ vector reads a per-PROFILE digest, so two profiles differ
+    on every compared pair and a correct run is unambiguously a PASS. Any
+    inconclusive entry therefore means a realm was not recorded — there is no
+    other way for this input to produce one.
+    """
+    from src.services.verify import behaviour
+    from src.services.verify.baseline import BASELINE_REALMS
+
+    must_differ = probes.must_differ_ids()
+
+    def fake_record(self, profile, *, fresh, realms=None):
+        # The production default, reproduced deliberately. See the docstring.
+        effective = BASELINE_REALMS if realms is None else realms
+        realm_log.append(tuple(effective))
+        name = getattr(profile, "name", profile)
+        results = {
+            realm: {
+                probe.id: {
+                    # Per-profile on a must-differ vector (so two profiles
+                    # DIFFER), shared otherwise (so nothing else is noise).
+                    "value": f"{name}:{probe.id}" if probe.id in must_differ else "shared"
+                }
+                for probe in probes.probes_for_realm(realm)
+            }
+            for realm in effective
+        }
+        return snapshot.build_snapshot(
+            results, engine="firefox", profile=name, realms=tuple(effective)
+        )
+
+    monkeypatch.setattr(behaviour.Context, "record", fake_record)
+
+    class _Profile:
+        def __init__(self, name):
+            self.name = name
+            self.fingerprint_seed = f"seed-{name}"
+
+    monkeypatch.setattr(
+        behaviour.Context, "make_profile", lambda self, name, **kw: _Profile(name)
+    )
+    return behaviour.Context(home="/nonexistent-scratch")
+
+
+def test_the_live_lane_records_every_realm_the_comparator_will_walk(monkeypatch):
+    """Defect 3, stated as the operator sees it: the gate returns a VERDICT.
+
+    Drives `_run_two_profile_unlinkability` itself — not a fixture built to the
+    comparator's taste — over two profiles that differ on every must-differ
+    vector. That is the clean-pass case, so the only way it can come back
+    CANNOT_RUN is a pair the recording never covered.
+
+    Reverting `realms=must_differ_realms()` in the lane turns this RED.
+    """
+    from src.services.verify.behaviour import CANNOT_RUN, PASS
+    from src.services.verify.behaviour_checks import _run_two_profile_unlinkability
+
+    realm_log: list[tuple] = []
+    ctx = _recording_context(monkeypatch, realm_log=realm_log)
+
+    outcome = _run_two_profile_unlinkability(ctx)
+
+    assert outcome.status != CANNOT_RUN, (
+        "the live unlinkability gate refused to return a verdict on two "
+        "profiles that differ on every must-differ vector. A realm the "
+        f"comparator walks was not recorded: recorded {realm_log}, "
+        f"comparator walks {probes.must_differ_realms()}. Detail: "
+        f"{outcome.detail}"
+    )
+    assert outcome.status == PASS, outcome.detail
+
+    # The mechanism, not just the verdict: every recording covered every realm
+    # the comparator asks about. Asserted as a SUPERSET so this does not become
+    # a restatement of the implementation's exact tuple.
+    assert realm_log, "the lane recorded nothing at all"
+    for recorded in realm_log:
+        assert set(probes.must_differ_realms()) <= set(recorded), (
+            f"a recording covered {recorded}, but the comparator walks "
+            f"{probes.must_differ_realms()}"
+        )
+
+
+def test_the_child_realm_pair_is_actually_among_the_ones_compared(monkeypatch):
+    """The precondition the test above rests on, asserted rather than assumed.
+
+    A PASS is also what a gate that compares NOTHING returns. This pins that
+    the child-realm pair is genuinely in the recorded realms and genuinely
+    carries a reading on both sides — so the pass above is a pass over the new
+    pair, not a pass that skipped it.
+
+    Without this, deleting the child-frame record entirely would leave the
+    test above green — the exact "green by construction" failure this ticket's
+    own AC1 warns about.
+    """
+    realm_log: list[tuple] = []
+    ctx = _recording_context(monkeypatch, realm_log=realm_log)
+
+    from src.services.verify.behaviour_checks import _run_two_profile_unlinkability
+
+    _run_two_profile_unlinkability(ctx)
+
+    assert probes.CHILD_FRAME in realm_log[0], (
+        "the child realm was never recorded by the live lane, so the pass "
+        "above says nothing about the pair this slice added"
+    )
+    # And the pair really is one the comparator asks about.
+    pairs = sorted(
+        (realm, probe.id)
+        for probe in probes.must_differ_probes()
+        for realm in probe.realms
+    )
+    assert (probes.CHILD_FRAME, VECTOR) in pairs
+
+
+def test_a_narrower_recording_is_refused_rather_than_passed(monkeypatch):
+    """The falsification for this defect: prove the assertion above CAN fail.
+
+    Models the PRE-FIX lane exactly — a recording pinned to `BASELINE_REALMS`
+    while the inventory declares a child-realm vector — and requires the gate
+    to report CANNOT_RUN. This is what makes the two tests above load-bearing
+    rather than decorative: it shows the shape they forbid is genuinely
+    reachable and genuinely reported.
+
+    It also pins the DIRECTION of the failure, which is the half that matters
+    for AC5: an unrecorded realm must read as a refusal, NEVER as two profiles
+    differing. A gate that answered PASS here would be manufacturing
+    distinctness out of a reading nobody took.
+    """
+    from src.services.verify.behaviour import CANNOT_RUN
+    from src.services.verify.baseline import BASELINE_REALMS
+
+    assert probes.CHILD_FRAME not in BASELINE_REALMS, (
+        "this falsification models a recording NARROWER than the comparator; "
+        "if BASELINE_REALMS ever covers the child realm it no longer does"
+    )
+
+    a, b = _snapshot_pair(window_value="a-win", child_value=None)
+    # Rebuild both sides over the baseline realms only: the child pair is then
+    # ABSENT, which is precisely the pre-fix production shape.
+    def narrow(profile):
+        results = {
+            realm: {
+                probe.id: {"value": f"{profile}:{probe.id}"}
+                for probe in probes.probes_for_realm(realm)
+            }
+            for realm in BASELINE_REALMS
+        }
+        return snapshot.build_snapshot(
+            results, engine="firefox", profile=profile, realms=BASELINE_REALMS
+        )
+
+    entries = diff.compare_profiles(narrow("ps232-narrow-a"), narrow("ps232-narrow-b"))
+    child = [e for e in entries if e["realm"] == probes.CHILD_FRAME]
+
+    assert child, "the comparator did not even ask about the unrecorded realm"
+    assert child[0]["status"] == diff.INCONCLUSIVE, (
+        "a realm that was never recorded must be INCONCLUSIVE, never evidence "
+        "that two profiles differ"
+    )
+    # And that is what the live lane turns into a refusal.
+    assert CANNOT_RUN == "cannot_run"
+
+
+def test_the_falsification_can_plant_on_a_target_whose_only_realm_is_the_child(
+    monkeypatch,
+):
+    """The falsify lane records what it PLANTS on — covered where it bites.
+
+    `_falsify_two_profile_unlinkability` plants a collision on `targets[0]` in
+    `probe.realms[0]`. With today's inventory that is `webgl.readback` in the
+    WINDOW realm, which `BASELINE_REALMS` already covers — so the lane's
+    `realms=` argument is DEFENSIVE at this commit and reverting it changes
+    nothing observable. That is exactly the condition under which a branch
+    rots: no test can turn it red, so it looks covered and is not.
+
+    This drives the case where it does bite. Ordering the inventory so the
+    child-realm-only vector is `targets[0]` makes the planting target a realm
+    `BASELINE_REALMS` does NOT carry; a lane recording narrower than it plants
+    finds nothing to plant onto, raises, and `run_check` publishes CANNOT_RUN —
+    the check's SELF-TEST silently stops working on the very vector the slice
+    added.
+
+    Reverting `realms=` in the falsification lane turns this RED.
+    """
+    from src.services.verify import probes as probes_mod
+    from src.services.verify.behaviour_checks import (
+        _falsify_two_profile_unlinkability,
+    )
+
+    ordered = tuple(
+        sorted(
+            probes_mod.must_differ_probes(),
+            key=lambda p: 0 if p.realms == (probes.CHILD_FRAME,) else 1,
+        )
+    )
+    assert ordered[0].realms == (probes.CHILD_FRAME,), (
+        "this test needs a child-realm-only must-differ vector to plant on"
+    )
+    monkeypatch.setattr(probes_mod, "must_differ_probes", lambda: ordered)
+
+    realm_log: list[tuple] = []
+    ctx = _recording_context(monkeypatch, realm_log=realm_log)
+
+    # Raises BehaviourCheckError if the recording did not carry the realm the
+    # collision is planted in — which is what a narrower recording produces.
+    proven = _falsify_two_profile_unlinkability(ctx)
+
+    assert ordered[0].id in proven, proven
+    assert probes.CHILD_FRAME in realm_log[0], (
+        "the falsification recorded a realm set that does not cover the "
+        f"vector it plants on: recorded {realm_log[0]}"
+    )
