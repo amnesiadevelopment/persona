@@ -106,6 +106,41 @@ UNCOVERED_SURFACES: tuple[tuple[str, str], ...] = (
         "owned by engine_gate.py, which already records both sides of a bump "
         "on one runner. Not duplicated here.",
     ),
+    (
+        "every check on this list runs on FIREFOX only",
+        "all 18 scratch profiles here take Context.make_profile's defaults "
+        "(os_type=windows, device_type=desktop), and windows+desktop is the "
+        "ONE combination that resolves to firefox — every other OS launches "
+        "on chromium whatever the stored engine says. The recorder can now "
+        "read either engine, so this is a property of the CHECKS' fixtures, "
+        "not of the instrument: nothing below has been observed on chromium, "
+        "and a pass here says nothing about how a macos, linux or mobile "
+        "profile behaves. Widening the fixtures is separate work.",
+    ),
+    (
+        "the chromium arm cannot be recorded on a machine with no automation "
+        "session already running",
+        "reading a chromium page needs a CDP debugging port, and that port "
+        "only exists for a profile launched with ai_control — an "
+        "unauthenticated control channel any same-user process can drive "
+        "(cdp.py). Launching one so our own check can see better is precisely "
+        "the isolation trade the charter refuses, so this module attaches to "
+        "a session the operator already opened and REFUSES otherwise. The "
+        "refusal is a raised BaselineUnavailable, never an empty reading: two "
+        "unreadable recordings compare EQUAL, so a returned blank would be "
+        "reported as agreement. Unobserved here reads as CANNOT_RUN (exit 2), "
+        "never as a pass.",
+    ),
+    (
+        "a FRESH (wipe-then-launch) recording of a chromium-effective profile",
+        "fresh=True means 'remove the data directory, then launch from a "
+        "known state', and the chromium arm is not allowed to launch (above). "
+        "Wiping the directory of an already-running session is corruption, "
+        "not a clean start, so it is refused rather than silently downgraded "
+        "to a warm read — a document whose provenance claimed a freshness it "
+        "did not have would be worse than no document. Chromium recordings "
+        "are therefore warm reads of a live session only.",
+    ),
 )
 
 

@@ -25,6 +25,31 @@ reach. So the baseline command launches the profile in-process (a thread — see
 ``InvisibleProcess(in_process=True)``), records through the hook it can now see,
 and tears the session down. Launch and record must be one process; they are.
 
+THE CHROMIUM ARM DOES NOT LAUNCH
+--------------------------------
+The paragraph above is the FIREFOX arm's reason and it does not generalise. A
+profile that launches on chromium is read by ATTACHING to a session the
+operator already started in automation mode (``transport``'s CDP adapter), and
+is refused otherwise. It is never launched here.
+
+That asymmetry is a security decision, not an oversight. Reading a chromium
+page needs a CDP debugging port, and that port only exists for a profile
+launched with ``ai_control`` — which ``cdp.py`` describes in its own words as
+an **unauthenticated control channel any process running as this user can
+drive**. Launching our own port so that our own check can see better is the
+canonical instance of the thing the project's isolation invariant refuses, and
+that invariant is not a trade to be weighed. So nothing here launches a debug
+port, sets ``ai_control``, or persists it on a stored record.
+
+The consequence is stated rather than worked around: on a machine with no such
+session running, the chromium arm CANNOT RUN. That is the honest answer and it
+is deliberately not a pass — an arm that returned an empty or errored reading
+instead would compare EQUAL against another empty reading and be reported as
+agreement, manufacturing exactly the green these checks exist to withhold.
+Every failure on this arm is therefore a raised ``BaselineUnavailable``, never
+a returned document. ``behaviour._readings_or_refuse`` is the second net under
+the same trap.
+
 WHY THE PROFILE IS BUILT IN CODE AND NOT LOOKED UP
 --------------------------------------------------
 A snapshot is only a reference if the ONLY thing that can differ between two
@@ -359,23 +384,16 @@ def _teardown(proc: Any, name: str) -> None:
     unregister_ff_eval(name)
 
 
-def record_snapshot(
-    *,
-    profile: Profile | None = None,
-    fresh: bool = True,
-    realms: tuple[str, ...] = BASELINE_REALMS,
-    timeout: float = LAUNCH_TIMEOUT_S,
+def _record_on_firefox(
+    profile: Profile, realms: tuple[str, ...], timeout: float, fresh: bool
 ) -> dict:
-    """Launch the pinned profile, read every probe, tear the session down.
+    """Launch the profile in-process, read every probe, tear the session down.
 
-    Returns a canonical snapshot document. ``fresh`` (the default) removes the
-    profile's data directory first, so the recording starts from a known state
-    rather than from whatever a previous session left behind — reproducibility
-    is the whole point of the artifact.
+    This is the ORIGINAL recording path, moved behind the engine split with no
+    behavioural change: same launch, same hook lookup, same failure message,
+    same ``finally`` teardown. See :func:`record_snapshot` for why launch and
+    record must happen in one process.
     """
-    _require_display()
-    profile = profile or baseline_profile()
-
     from ...core.config import DATA_DIR
     from ..browser.invisible_launch import get_ff_eval
     from ..browser.process import spawn_browser
@@ -394,12 +412,98 @@ def record_snapshot(
                 f"the session for {profile.name!r} started but published no "
                 "eval hook, so nothing can be read from it"
             )
-        results = run_probes(hook["eval"], realms)
+        return run_probes(hook["eval"], realms)
     finally:
         _teardown(proc, profile.name)
 
+
+def _record_on_chromium(profile: Profile, realms: tuple[str, ...], fresh: bool) -> dict:
+    """Read an ALREADY-RUNNING chromium profile over its existing CDP channel.
+
+    THIS PATH DELIBERATELY DOES NOT LAUNCH, and that is a security decision
+    rather than an omission — see the "THE CHROMIUM ARM DOES NOT LAUNCH"
+    section of the module docstring. It attaches to a channel the operator
+    already opened, or it refuses. It never sets, persists or infers
+    ``ai_control``, and it never passes a debugging-port flag to anything.
+
+    ``fresh`` is REFUSED here rather than honoured. Wiping the data directory
+    of a session that is currently running is not a "clean start", it is
+    corruption of a live profile — and the caller asking for one is asking for
+    a launch-from-clean this path is not allowed to perform. Refusing says so;
+    silently downgrading to a warm read would return a document whose
+    provenance claims a freshness it does not have.
+    """
+    from .transport import TransportUnavailable, transport_for
+
+    if fresh:
+        raise BaselineUnavailable(
+            f"cannot take a FRESH recording of {profile.name!r}: it launches on "
+            "chromium, and the chromium arm attaches to an already-running "
+            "session rather than launching one (launching it here would mean "
+            "opening an unauthenticated CDP control channel, which isolation "
+            "forbids). A fresh recording would require wiping the data "
+            "directory of a live session. Record it with fresh=False against a "
+            "profile already running in automation mode, or record the "
+            "firefox-effective baseline instead."
+        )
+
+    try:
+        transport = transport_for(profile.name, "chromium")
+    except TransportUnavailable as exc:
+        # Not a reading, so not a verdict. Raised — never returned as an empty
+        # or errored snapshot — because an unreadable arm that reaches the
+        # comparators compares EQUAL against another unreadable arm and is
+        # reported as agreement. See `behaviour._readings_or_refuse`.
+        raise BaselineUnavailable(
+            f"the chromium arm cannot read {profile.name!r}: {exc} Nothing was "
+            "observed, so nothing is certified."
+        ) from exc
+
+    with transport:
+        return run_probes(transport.evaluate, realms)
+
+
+def record_snapshot(
+    *,
+    profile: Profile | None = None,
+    fresh: bool = True,
+    realms: tuple[str, ...] = BASELINE_REALMS,
+    timeout: float = LAUNCH_TIMEOUT_S,
+) -> dict:
+    """Read every probe from a live profile, on the engine it ACTUALLY runs on.
+
+    Returns a canonical snapshot document. ``fresh`` (the default) removes the
+    profile's data directory first, so the recording starts from a known state
+    rather than from whatever a previous session left behind — reproducibility
+    is the whole point of the artifact.
+
+    THE ENGINE IS OBSERVED, NEVER ASSUMED. The channel is chosen by
+    ``effective_engine`` — the same function ``spawn_browser`` routes on — so
+    the read and the launch cannot answer the same question differently. This
+    used to be an unconditional ``get_ff_eval``, which meant every profile that
+    launches on chromium (every non-Windows-desktop profile, whatever its
+    stored ``engine`` says) started fine, published no firefox hook, and died
+    unread. The stamped ``engine`` is likewise the engine observed rather than
+    the ``BASELINE_ENGINE`` constant, so a chromium snapshot is
+    self-describing and ``diff._META_FIELDS`` reports an engine mismatch as
+    the meta difference it is.
+
+    The pinned baseline profile is unaffected: it is windows/desktop/firefox,
+    so it resolves to firefox and takes the byte-identical path it always did.
+    """
+    _require_display()
+    profile = profile or baseline_profile()
+
+    from ..browser.process import effective_engine
+
+    engine = effective_engine(profile)
+    if engine == "firefox":
+        results = _record_on_firefox(profile, realms, timeout, fresh)
+    else:
+        results = _record_on_chromium(profile, realms, fresh)
+
     snapshot = build_snapshot(
-        results, engine=BASELINE_ENGINE, profile=profile.name, realms=realms
+        results, engine=engine, profile=profile.name, realms=realms
     )
     snapshot["provenance"] = provenance(profile)
     return snapshot
