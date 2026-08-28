@@ -1221,8 +1221,11 @@ def test_the_stored_verdict_is_reproducible_under_the_rule_that_wrote_it():
     memory of one.
 
     Both halves are asserted together, because either alone is satisfiable by
-    a broken implementation: half 1 alone passes if the old rule is a constant
-    function, and half 2 alone passes if nothing ever changed.
+    a broken implementation: half 1 compares the reconstruction against eight
+    differing stored verdicts, so it alone passes if the gate never changed
+    and a no-op echo would do; half 2 never consults `_bar_verdict` at all, so
+    it alone passes against a constant function. Only together do they pin a
+    reconstruction that both reproduces the record AND differs from today's gate.
     """
     d = _load_derive_module()
 
