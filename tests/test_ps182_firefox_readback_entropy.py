@@ -82,10 +82,21 @@ def _node() -> str:
 # (the Firefox WORKER shape — probes.py measured that in a FF worker only
 # 'webgl2' yields a context), 3 = both.
 #
-# The fake GL context is built INSIDE the sandbox realm deliberately: the shipped
-# `perturbBytes` gates on `buf instanceof Uint8Array`, and a typed array from
-# another realm fails that check. Constructing it outside would make a working
-# patch look inert — yet another way to manufacture a false collision.
+# The fake GL context is built INSIDE the sandbox realm, and the buffers with it.
+#
+# HISTORICAL NOTE, kept because it is the reason this harness is shaped this way:
+# the shipped `perturbBytes` USED TO gate on `buf instanceof Uint8Array`, so a
+# typed array from another realm failed that check and constructing it outside
+# would have made a working patch look inert — a way to manufacture a false
+# collision. PS-215 replaced that gate with `Object.prototype.toString.call`,
+# which is realm-independent, so the hazard no longer exists and this harness
+# would read correctly either way.
+#
+# It is left same-realm deliberately: this suite measures ENTROPY (does the
+# readback differ across seeds), and keeping the realm question out of it means
+# a future cross-realm regression fails in the suite that OWNS that question —
+# `tests/test_ps215_cross_realm_buffer.py` — instead of showing up here as an
+# unexplained entropy result.
 _HARNESS = r"""
 const vm = require("node:vm");
 // Payload arrives on STDIN, not argv: it carries four ~19KB copies of the

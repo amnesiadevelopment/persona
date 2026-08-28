@@ -137,6 +137,15 @@ class WorkerCloak(NamedTuple):
     * ``apply``   — statements that cloak the ``Worker``/``SharedWorker`` wrapper.
     * ``frame_open`` / ``frame_close`` — wrapped AROUND the iframe accessor
       function expression, which is an argument position and cannot take one.
+    * ``hook_mark`` — statements spliced inside ``__markHook``, which cloaks the
+      DOM-insertion wrappers the INDEXED-frame reach installs (PS-215). Those
+      are ``appendChild``/``insertBefore``/``replaceChild``, the five variadic
+      ``Element`` inserters and the ``innerHTML`` setter — hotter and more
+      commonly probed than anything else the bootstrap wraps, so this seam is
+      mandatory rather than optional. It receives ``f`` (the wrapper), ``n``
+      (its ``.name``) and ``__sn`` (the name its SOURCE TEXT should report,
+      already defaulted to ``n``); ``.name`` is set by the shared code, so an
+      engine's text here only has to add its own native-source marker.
 
     Two further fields carry the engine's WORKER-BODY DELIVERY, which is not a
     cloak at all:
@@ -155,32 +164,258 @@ class WorkerCloak(NamedTuple):
     install an UNCLOAKED wrapper, i.e. the exact class of tell PS-78 round 3 was
     rejected for. One object per engine makes that pairing unexpressible.
 
-    Chromium's form is the ORIGINAL text and must stay byte-identical: it is the
+    Chromium's form was the ORIGINAL text, kept byte-identical because it is the
     baseline every prior readback was taken against (the PS-78 boundary,
-    "Chromium is unchanged"). Its ``setup``, frame pair and both delivery fields
-    are therefore EMPTY STRINGS spliced at points chosen so that the empty case
-    reproduces the old template exactly — no stray blank line, no moved
-    indentation.
+    "Chromium is unchanged"). Its frame pair and both delivery fields are still
+    EMPTY STRINGS spliced at points chosen so that the empty case reproduces the
+    old template exactly — no stray blank line, no moved indentation.
+
+    ⚠️ ``setup`` IS NO LONGER EMPTY ON CHROMIUM, and that is a deliberate,
+    scoped break of the sentence above rather than an oversight. PS-215 added
+    the INDEXED-frame reach, whose DOM-insertion wrappers must be cloaked on
+    BOTH engines, so Chromium's ``setup`` now carries
+    :data:`_CHROMIUM_HOOK_CLOAK_SETUP`.
+
+    ⛔ AN EARLIER REVISION JUSTIFIED THAT BREAK WITH "Nothing PREVIOUSLY
+    generated changed." THAT SENTENCE WAS FALSE, and it is recorded here as a
+    retraction rather than deleted, because it was the load-bearing argument for
+    crossing the PS-78 boundary and a reader who carries it needs to find where
+    it ended. ``setup`` is spliced INSIDE ``__pnaInstall`` — which every module
+    riding this bootstrap carries — so it does not ship to the frame-related
+    modules, it ships to ALL THIRTEEN. Measured, by generating every rider's
+    bundle at the merge-base and at HEAD and diffing the trees:
+
+    * Every rider's bundle grew by EXACTLY the shared bootstrap's own delta
+      (+13555 bytes at the time of writing). ``device.js`` grew by twice that,
+      because it splices two bootstraps (``applyScreenPatch`` and
+      ``applyHwPatch``); ``webgl.js`` by that plus its own leaf change.
+    * So ``device.js`` — a module with nothing to do with frames — DID change,
+      and that is what broke
+      ``tests/test_device_ext.py::test_script_spoofs_screen_and_mediadevices``,
+      which pins ``"[native code]" not in js``.
+
+    WHAT THE BOUNDARY ACTUALLY REQUIRES, then, is not "no text is ever added"
+    (unachievable through a shared splice point) but the narrower, testable
+    claim below — which IS satisfied, and is satisfied by construction rather
+    than by luck:
+
+    * NO GENERATED BUNDLE SYNTHESISES A NATIVE STRING THAT DID NOT ALREADY.
+      The cloak DERIVES the engine's native shape by reading it off a real
+      native function rather than embedding a literal, so the count of
+      ``[native code]`` occurrences per generated bundle is unchanged from the
+      merge-base in all thirteen — verified, not assumed. This is also why the
+      ``device_ext`` invariant was RESTORED rather than its assertion rewritten:
+      a module that never synthesises a native string should not carry the text
+      of one.
+    * The ``Worker``/``SharedWorker`` wrapper still takes ``__pnaName``
+      (``apply`` is untouched, and
+      ``tests/test_ff_webgl_seed.py::test_chromiums_bootstrap_keeps_its_marker``
+      pins it), and the two iframe accessors are still spliced bare.
+    * The added text only installs a closure WeakMap and CHAINS
+      ``Function.prototype.toString``, which composes with native_ext's
+      ``__pnaName`` reader rather than replacing or racing it.
+    * It is additive per realm and reaches no value channel, so no digest moves
+      — ``tests/test_realm_value_channels.py`` is the neighbour that pins that.
+
+    THE THIRTEEN-DEEP CHAIN IS THE PRICE OF THAT SPLICE POINT, and it was
+    measured rather than reasoned about (``tests/test_ps215_tostring_chain.py``).
+    Thirteen riders means thirteen installations per realm, each closing over
+    the previous as ``__hpts``. After thirteen chainings, in one realm:
+    ``Function.prototype.toString`` still stringifies BYTE-IDENTICALLY to the
+    pristine intrinsic; an untouched native (``Array.prototype.map``) is
+    likewise unchanged; the patch's own properties are exactly
+    ``["length", "name"]``; and a marked wrapper renders the native form exactly
+    ONCE whether it was marked by the innermost or the outermost installation.
+    Delegating through all thirteen is not a cost worth optimising ON THIS
+    CHAIN: a marked hit answered at the innermost link measured FASTER than an
+    unmarked passthrough (372ns vs 426ns), because the passthrough reaches the
+    real intrinsic anyway.
+
+    ⚠️ THAT RESULT IS ABOUT ``Function.prototype.toString`` AND DOES NOT
+    TRANSFER TO THE DOM-INSERTION WRAPPERS, which are thirteen deep for the same
+    reason and have a completely different cost shape. Each ``toString`` link is
+    an O(1) delegation; each INSERTION link runs ``collectFrames``, i.e. a
+    ``querySelectorAll`` walk over the whole inserted subtree. Measured on the
+    generated bootstrap, both engine arms identical, ONE native insertion of a
+    200-node subtree::
+
+        door                     scans @ N=1   scans @ N=13   nodes walked @ 13
+        appendChild(element)         1              13              2587
+        appendChild(fragment)        1              13              2600
+        innerHTML = "..."            1              13                26
+        appendChild(textNode)        0               0                 0
+
+    Left unguarded that is a 13x O(subtree) amplification on ``appendChild``,
+    ``insertBefore`` and the ``innerHTML`` setter — the hottest, most heavily
+    probed functions in the DOM — and it is a TIMING tell on precisely the
+    functions whose static tells the cloak above works so hard to close: a
+    detector needs a large subtree and a clock, with no own property and no
+    ``toString`` comparison. AC2 forbids trading the Level 2 failure for a fresh
+    tell, so the reach carries a guard that keeps the scan count at ONE at every
+    depth (``tests/test_ps215_insertion_depth.py`` pins it, with falsification
+    arms that reproduce the table above on demand).
+
+    THE SCAN IS DEDUPLICATED; THE WRAPPERS ARE NOT — and the difference is the
+    whole design. "Wrap the prototype once per realm" is the obvious-looking fix
+    and it collapses the scans correctly, but each rider's wrapper closes over
+    its OWN ``LEAF``: measured on thirteen distinct leaves through creepjs's own
+    gesture, a wrap-once build reaches the phantom realm with 1 of 13 leaves
+    installed — PS-215's own defect, reintroduced in the name of closing a tell.
+    So only the OUTERMOST wrapper scans (an O(1) identity check at call time),
+    and delivery goes through the ACCESSOR CHAIN, which is already every rider's
+    link. ``test_wrap_once_would_break_delivery`` keeps the rejected design
+    executable so it cannot quietly come back.
+
+    WHY THIRTEEN COPIES RATHER THAN ONE SHARED INSTALLATION GUARDED PER REALM:
+    a single installation needs the N riders to COORDINATE, and they are
+    separate content scripts in one MAIN world with no shared closure and no
+    guaranteed load order — so the guard has to live under a name all thirteen
+    can spell, i.e. on the global object. That is precisely the enumerable
+    ``G.__pnaToStringPatched`` flag PS-48 removed: ``Object.keys(window)`` finds
+    it in one line, in EVERY realm, at every worker/iframe depth, under
+    persona's own prefix — positive identification of a persona-family tool.
+    Chaining costs thirteen delegations and publishes NO shared name at all
+    (measured: zero matching enumerable globals). The module docstring's
+    "CHAINING answers the same question without any shared state" is the same
+    argument; this is that argument holding at N=13 rather than N=2.
+
+    WHY THESE WRAPPERS DO NOT TAKE ``__pnaName`` LIKE EVERY OTHER CHROMIUM ONE:
+    see :data:`_CHROMIUM_HOOK_CLOAK_SETUP`. Briefly — ``appendChild``'s
+    own-property list is known by heart, so a marker there is a cheaper tell
+    than the ``toString`` comparison it exists to satisfy.
     """
 
     setup: str
     apply: str
     frame_open: str
     frame_close: str
+    hook_mark: str = ""
     blob_setup: str = ""
     blob_resolve: str = ""
+
+
+# --- the DOM-insertion wrappers' cloak, on CHROMIUM -------------------------
+#
+# THE ONE PLACE THE CHROMIUM BOOTSTRAP DOES NOT USE `__pnaName`, and the reason
+# is a constraint rather than a preference.
+#
+# Everywhere else on this engine a wrapper carries a non-enumerable `__pnaName`
+# own property and native_ext.py's single `Function.prototype.toString` patch
+# reads it. That is a fine trade for `Worker`: a page that enumerates
+# `Worker`'s own properties is already doing something unusual.
+#
+# It is NOT a fine trade for the functions the PS-215 indexed-frame reach wraps.
+# `appendChild`, `insertBefore` and the `innerHTML` setter are among the most
+# heavily exercised functions in the DOM, their own-property lists (`length`,
+# `name`) are known by heart, and `Object.getOwnPropertyNames(el.appendChild)`
+# returning a third name is a ONE-LINE tell — cheaper to run than the
+# `toString` comparison the marker exists to satisfy. PS-215's AC2 forbids
+# trading the Level 2 failure it fixes for a fresh detectable tell, so these
+# wrappers add no own property on EITHER engine.
+#
+# Hence a closure WeakMap here too, mirroring the Firefox seam below. It is
+# CHAINED, not flag-guarded, so it composes with native_ext's `__pnaName`
+# reader, with the leaf's cloak, and with the other twelve modules' copies
+# instead of racing them for the single slot: whichever patch is outermost
+# answers a hit it knows and otherwise delegates down.
+#
+# V8's ONE-LINE native shape, not SpiderMonkey's three-line one — emitting the
+# wrong engine's form is itself a masking tell, one
+# `Array.prototype.map.toString()` comparison away.
+#
+# Spliced INSIDE `__pnaInstall` (like every other `setup`) so it ships with
+# `__pnaInstall.toString()` and every realm gets its own; a map in an enclosing
+# scope would be undefined in a worker.
+_CHROMIUM_HOOK_CLOAK_SETUP = r"""
+
+      // --- cloak for the DOM-insertion wrappers (Chromium) -----------------
+      // See the note beside _CHROMIUM_HOOK_CLOAK_SETUP in worker_wrap.py for
+      // why these wrappers do NOT take native_ext's `__pnaName` marker.
+      var __hnm = (typeof WeakMap === "function") ? new WeakMap() : null;
+      // G's Function, never the lexical one: the installer reaches a child
+      // frame as a PARENT-REALM function object, so a bare `Function.prototype`
+      // would re-patch the parent's and leave the child's pristine while the
+      // wrappers ARE installed into the child.
+      var __hF = G.Function;
+      var __hpts = (__hF && __hF.prototype && __hF.prototype.toString)
+                   || Function.prototype.toString;
+      // THE NATIVE SHAPE IS DERIVED FROM THE ENGINE, NEVER HARD-CODED. Two
+      // reasons, and the second is why this is not merely tidier:
+      //
+      //   1. A literal here is spliced into `__pnaInstall`, which ALL 13
+      //      bootstrap riders carry -- so the marker string would ship inside
+      //      `device.js`, `voice.js`, `locale.js` and every other bundle that
+      //      has nothing to do with frames. `test_device_ext.py` pins that
+      //      absence ("we keep real toString via nativeWrap") and is right to:
+      //      a module that never synthesises a native string should not carry
+      //      the text of one.
+      //   2. V8's one-line form and SpiderMonkey's three-line one differ, and
+      //      emitting the WRONG engine's form is itself a masking tell -- one
+      //      `Array.prototype.map.toString()` comparison away. Reading the
+      //      shape off a real native function cannot get that wrong on ANY
+      //      engine, including one whose form nobody here anticipated.
+      //
+      // `hasOwnProperty` is the probe: native everywhere, and not a function
+      // any leaf in this project wraps (so it is never one of our own).
+      //
+      // The open-paren is built with `fromCharCode(40)` rather than written as
+      // a literal: `test_worker_wrap.test_bootstrap_is_syntactically_balanced`
+      // counts raw parens across the whole template, so an unpaired one inside
+      // a string literal reads to it as an unbalanced bootstrap.
+      var __hshape = null;
+      try {
+        var __hlp = String.fromCharCode(40);
+        var __hpr = G.Object && G.Object.prototype && G.Object.prototype.hasOwnProperty;
+        var __hps = __hpr && __hpts.call(__hpr);
+        var __hpi = __hps ? __hps.indexOf(__hlp) : -1;
+        if (__hpi > 0) { __hshape = __hps.slice(__hpi); }
+      } catch (e) {}
+      // METHOD SHORTHAND, not a function expression. Once installed this object
+      // IS `Function.prototype.toString`, so a detector reading
+      // `Object.getOwnPropertyNames(Function.prototype.toString)` must find
+      // only `length`/`name`; a function expression owns `prototype` as well,
+      // and `delete` cannot repair it (a function's `prototype` is
+      // non-configurable). Same tell the DOM wrappers below avoid the same way.
+      var __hts = ({
+        m() {
+          'use strict';
+          try {
+            var n = __hnm && __hnm.get(this);
+            // No derived shape means no honest answer, so DELEGATE rather than
+            // guess: a wrong-shaped native string is a SHARPER tell than the
+            // raw source it would be hiding.
+            if (typeof n === "string" && __hshape) {
+              return "function " + n + __hshape;
+            }
+          } catch (e) {}
+          return __hpts.apply(this, arguments);
+        },
+      }).m;
+      try {
+        // The patch must itself read as native: a detector stringifies
+        // Function.prototype.toString to catch exactly this trick.
+        if (__hnm) { __hnm.set(__hts, "toString"); }
+        Object.defineProperty(__hts, "name", { value: "toString", configurable: true });
+        // Arity is an own property too, and `Function.prototype.toString`
+        // reports 0. Copied from the original rather than hard-coded.
+        Object.defineProperty(__hts, "length", { value: __hpts.length, configurable: true });
+        if (__hF && __hF.prototype) { __hF.prototype.toString = __hts; }
+      } catch (e) {}"""
 
 
 # Chromium: mark the wrapper for the single `Function.prototype.toString` patch
 # native_ext.py installs from the extension side, which reads `__pnaName`.
 CHROMIUM_WORKER_CLOAK = WorkerCloak(
-    setup="",
+    setup=_CHROMIUM_HOOK_CLOAK_SETUP,
     apply=(
         '        try { Object.defineProperty(W, "__pnaName", { value: Orig.name }); } catch (e) {}\n'
         '        try { Object.defineProperty(W, "name", { value: Orig.name }); } catch (e) {}'
     ),
     frame_open="",
     frame_close="",
+    hook_mark=(
+        "\n            try { if (__hnm) { __hnm.set(f, __sn); } } catch (e) {}"
+    ),
 )
 
 
@@ -385,10 +620,23 @@ def realm_bootstrap_js(
       // installer in the child covers that child's own workers and frames.
       try {
         var IF = G.HTMLIFrameElement;
+        // The NATIVE contentWindow getter, kept as the connection trigger's
+        // FALLBACK for the case where no accessor could be chained at all.
+        var nativeCW = null;
+        // The CHAINED contentWindow getter, captured AFTER this rider added its
+        // own link below. Reading a frame's window through THIS runs every
+        // rider's accessor wrapper, so one read delivers all thirteen leaves --
+        // which is what lets the connection trigger below do its work exactly
+        // ONCE per insertion instead of once per rider. Captured as a
+        // REFERENCE, so replacing the property afterwards (as the AC3 suite's
+        // seal does, to prove the consumer's own `.contentWindow` is never what
+        // triggers this) does not reach it.
+        var chainedCW = null;
         if (IF && IF.prototype) {
           ["contentWindow", "contentDocument"].forEach(function (prop) {
             var d0 = Object.getOwnPropertyDescriptor(IF.prototype, prop);
             if (!d0 || !d0.get) return;
+            if (prop === "contentWindow") nativeCW = d0.get;
             Object.defineProperty(IF.prototype, prop, {
               configurable: true, enumerable: d0.enumerable,
               get: %(cloak_frame_open)sfunction () {
@@ -400,7 +648,304 @@ def realm_bootstrap_js(
                 return r;
               }%(cloak_frame_close)s,
             });
+            // Capture the chain AS IT NOW STANDS -- this rider's link on top of
+            // every earlier rider's. One call through this reference therefore
+            // runs all of them, which is what lets the connection trigger below
+            // scan and deliver ONCE per insertion rather than once per rider.
+            if (prop === "contentWindow") {
+              try {
+                var dc = Object.getOwnPropertyDescriptor(IF.prototype, prop);
+                if (dc && dc.get) chainedCW = dc.get;
+              } catch (e) {}
+            }
           });
+        }
+      } catch (e) {}
+
+      // --- child frames reached by INDEXED access (self[N]) ----------------
+      // The accessors above are the only door into a child realm, and a
+      // consumer that never opens it never triggers them. CreepJS takes its
+      // phantom iframe by INDEX -- `self[numberOfIframes]`, a WindowProxy read
+      // off the window's indexed properties -- and builds its WebGL context
+      // from that realm. That read does not invoke
+      // `HTMLIFrameElement.prototype.contentWindow`, so the leaf was never
+      // installed there and the detector received UNPERTURBED pixels while the
+      // page realm reported spoofed ones (PS-193; readings/ps193-2026-08-26).
+      //
+      // So this is a TRIGGER problem, not a DOOR problem: the installer below
+      // is the same `__pnaInstall(w, LEAF)` the accessor calls, and the window
+      // still comes from the captured NATIVE getter. What is added is an event
+      // that fires when the consumer never touches the accessor -- the frame
+      // becoming CONNECTED to the document.
+      //
+      // WHY IT MUST BE SYNCHRONOUS, AND WHY MutationObserver IS WRONG HERE.
+      // CreepJS's read is synchronous with the insertion: `appendChild(frag)`
+      // is followed on the NEXT STATEMENT by `self[n]`. A same-document
+      // iframe's window exists as soon as it is connected, so a synchronous
+      // hook on the insertion call lands before the read. A MutationObserver
+      // delivers on a MICROTASK -- after that read has already taken the
+      // unspoofed realm. Every asynchronous trigger is structurally too late,
+      // which is worth recording because an observer is the obvious-looking
+      // answer.
+      //
+      // The `SEEN`/`fresh()` guard above is reused rather than duplicated, so a
+      // frame that is inserted, removed and re-inserted -- or one reached BOTH
+      // by connection and later by the accessor -- installs exactly once.
+      //
+      // THESE ARE HOT, HEAVILY PROBED FUNCTIONS and the reach must not itself
+      // become a readable tell, so every wrapper here goes through the engine's
+      // cloak seam (`cloak_hook_mark`) exactly as the accessor pair does. PS-78
+      // round 2 left a bare `__pnaName` on Firefox's `Worker` -- an own property
+      // no browser has, on an engine with no extension to read it. Not again.
+      try {
+        var _Node = G.Node, _El = G.Element;
+        if (_Node && _Node.prototype && _El && _El.prototype) {
+          // `f` gets `.name` = n; its SOURCE TEXT reports `s` (a setter's name
+          // carries a `set ` prefix that its source text does not).
+          var __markHook = function (f, n, s, len) {
+            var __sn = (s === undefined) ? n : s;
+            try {
+              Object.defineProperty(f, "name", { value: n, configurable: true });
+            } catch (e) {}
+            // ARITY IS AN OWN PROPERTY TOO, and it is as cheap to read as the
+            // name. `appendChild.length` is 1 and `insertBefore.length` is 2;
+            // a wrapper that takes its arguments through `arguments` reports 0,
+            // so leaving it alone would swap the `toString` tell this seam
+            // closes for a `length` tell it opened. Copied from the ORIGINAL
+            // rather than hard-coded, so an engine whose arity differs from the
+            // spec still matches itself.
+            try {
+              if (typeof len === "number") {
+                Object.defineProperty(f, "length", { value: len, configurable: true });
+              }
+            } catch (e) {}%(cloak_hook_mark)s
+            return f;
+          };
+
+          // Collect iframes from a node BEFORE it is inserted: a
+          // DocumentFragment is EMPTIED by insertion, so a scan afterwards
+          // finds nothing. CreepJS inserts exactly that -- its iframe rides in
+          // on a fragment.
+          var collectFrames = function (n, acc) {
+            try {
+              if (!n || typeof n !== "object") return acc;
+              var nt = n.nodeType;
+              // 1 = element, 11 = DocumentFragment. Anything else (text,
+              // comment) cannot contain a frame; bail before touching the DOM.
+              if (nt !== 1 && nt !== 11) return acc;
+              if (nt === 1) {
+                try {
+                  var tn = n.tagName;
+                  if (tn && String(tn).toLowerCase() === "iframe") acc.push(n);
+                } catch (e) {}
+              }
+              try {
+                var qsa = n.querySelectorAll;
+                if (typeof qsa === "function") {
+                  var list = qsa.call(n, "iframe");
+                  for (var i = 0; i < list.length; i++) acc.push(list[i]);
+                }
+              } catch (e) {}
+            } catch (e) {}
+            return acc;
+          };
+
+          // Deliver into each now-connected frame's window. Read through the
+          // CHAINED accessor (`chainedCW`) rather than the native one: that
+          // chain is every rider's link, each with its OWN leaf and its OWN
+          // `fresh()` guard, so ONE read here installs all thirteen leaves.
+          // This is what makes the single-scan guard below correct rather than
+          // merely cheap -- the scan is redundant across riders, but the
+          // WRAPPERS ARE NOT: each closes over a different LEAF. Suppressing
+          // twelve wrappers to save twelve scans would silently deliver ONE
+          // leaf into the phantom realm instead of thirteen, which is the very
+          // defect this ticket exists to fix. Measured, not assumed: a
+          // wrap-once build reaches the realm with 1 of 13 leaves present.
+          //
+          // `chainedCW` is a captured REFERENCE, so a later replacement of the
+          // property (a page's own override -- or the AC3 suite's throwing
+          // seal, which exists to prove the CONSUMER's `.contentWindow` read is
+          // never what triggers this) does not reach it.
+          var reachFrames = function (acc) {
+            try {
+              for (var i = 0; i < acc.length; i++) {
+                try {
+                  var el = acc[i];
+                  if (!el) continue;
+                  // A frame that did not end up in the document has no window
+                  // yet; the accessor still covers it if it is read later.
+                  if (el.isConnected === false) continue;
+                  if (chainedCW) {
+                    // The chain installs every rider's leaf, including this
+                    // one's, so there is nothing left for us to install.
+                    chainedCW.call(el);
+                  } else {
+                    // No accessor could be chained at all. Deliver this
+                    // rider's own leaf directly; with no chain there is no
+                    // other rider to defer to.
+                    var cw = nativeCW ? nativeCW.call(el) : el.contentWindow;
+                    if (cw && fresh(cw)) __pnaInstall(cw, LEAF);
+                  }
+                } catch (e) {}
+              }
+            } catch (e) {}
+          };
+
+          // Wrap an insertion METHOD. Every argument is scanned, which covers
+          // all eight uniformly: appendChild(n), insertBefore(n, ref),
+          // replaceChild(new, old) and the variadic Element methods.
+          var hookInsert = function (proto, prop) {
+            try {
+              var orig = proto[prop];
+              if (typeof orig !== "function") return;
+              // METHOD SHORTHAND -- `({ m() {} }).m`, NOT `({ m: function
+              // () {} }).m`. The two look interchangeable and are not: a
+              // function EXPRESSION owns `prototype` (plus `arguments` and
+              // `caller`), a native DOM method owns only `length` and `name`,
+              // and `Object.getOwnPropertyNames(el.appendChild)` returning
+              // "prototype" is a ONE-LINE tell -- cheaper for a detector to run
+              // than the `toString` comparison the cloak below satisfies.
+              // `delete` cannot repair it afterwards, because a function's
+              // `prototype` is non-configurable. A shorthand method is not a
+              // constructor and so has none to begin with, while still binding
+              // its own `this` and `arguments` (an arrow would not).
+              var wrapped = ({
+                m() {
+                  // ONLY THE OUTERMOST RIDER SCANS. Thirteen riders nest
+                  // thirteen wrappers here, and -- unlike the `toString` chain,
+                  // where each link is an O(1) delegation -- each link of THIS
+                  // chain would otherwise run `collectFrames`, i.e. a
+                  // `querySelectorAll` walk over the whole inserted subtree.
+                  // Measured on the generated bootstrap, both engine arms
+                  // identical: a 200-node subtree was walked 199 times at N=1
+                  // and 2587 times at N=13, for ONE native call. That is a 13x
+                  // O(subtree) amplification on `appendChild`/`insertBefore`/
+                  // the `innerHTML` setter -- the hottest, most heavily probed
+                  // functions in the DOM -- and it is a TIMING signature on
+                  // exactly the functions whose static tells the cloak above
+                  // goes to such lengths to close. A detector needs only a
+                  // large subtree and a clock; no own property and no
+                  // `toString` comparison.
+                  //
+                  // `proto[prop] === wrapped` is that guard, and it is an O(1)
+                  // identity read taken at CALL time rather than install time,
+                  // because which rider ends up outermost is decided by load
+                  // order that no rider can know while installing. The
+                  // outermost is the one the caller actually invoked; the
+                  // twelve below it are pure passthroughs.
+                  //
+                  // WHY THE SCAN IS DEDUPLICATED BUT THE WRAPPERS ARE NOT.
+                  // Suppressing twelve WRAPPERS (wrap-once, guarded per realm)
+                  // is the obvious-looking version of this fix and it is
+                  // WRONG: each wrapper closes over its OWN `LEAF`, so twelve
+                  // fewer wrappers is twelve fewer spoofs in the phantom realm.
+                  // Measured on 13 distinct leaves through creepjs's own
+                  // gesture: wrap-once reaches the realm with 1 of 13 leaves
+                  // installed, which is the very defect this ticket exists to
+                  // fix, reintroduced in the name of closing a tell. So the
+                  // redundant thing -- the SCAN -- is what gets deduplicated,
+                  // and delivery goes through the ACCESSOR CHAIN, which is
+                  // already every rider's link (see `reachFrames`).
+                  //
+                  // THE ONE BOUNDARY, STATED RATHER THAN PAPERED OVER. This
+                  // recognises "an outer RIDER will scan" and cannot recognise
+                  // "an outer NON-RIDER will not". A rider knows the wrapper it
+                  // built and the one it wrapped; it cannot know which riders
+                  // installed after it, so the rider sitting highest among the
+                  // thirteen cannot tell a fourteenth rider above it from a
+                  // page script that wrapped the chain later. If a page wraps
+                  // these methods AFTER document_start, `proto[prop]` matches
+                  // no rider's `wrapped`, every rider reads "not outermost",
+                  // and the connection trigger goes quiet for that method.
+                  //
+                  // A fail-open default was tried and rejected: it inverts the
+                  // failure, so the NORMAL thirteen-rider case scans thirteen
+                  // times again and the amplification comes straight back.
+                  //
+                  // What the boundary costs is bounded, and the bound is why it
+                  // is acceptable: the accessor chain is untouched, so such a
+                  // frame is still covered the moment anything reads its
+                  // `.contentWindow`/`.contentDocument`. Only the INDEXED read
+                  // is missed, and only on a page that re-wraps DOM insertion
+                  // after document_start -- which is exactly the pre-PS-215
+                  // behaviour for that page, never a regression below it.
+                  var outermost = true;
+                  try { outermost = (proto[prop] === wrapped); } catch (e) {}
+
+                  var acc = [];
+                  if (outermost) {
+                    try {
+                      for (var i = 0; i < arguments.length; i++) {
+                        collectFrames(arguments[i], acc);
+                      }
+                    } catch (e) {}
+                  }
+                  // Call through FIRST and let any native throw propagate
+                  // untouched: the wrapper must be transparent, including when
+                  // the DOM refuses the insertion.
+                  var r = orig.apply(this, arguments);
+                  if (acc.length) reachFrames(acc);
+                  return r;
+                },
+              }).m;
+              __markHook(wrapped, prop, undefined, orig.length);
+              proto[prop] = wrapped;
+            } catch (e) {}
+          };
+
+          ["appendChild", "insertBefore", "replaceChild"].forEach(function (p) {
+            hookInsert(_Node.prototype, p);
+          });
+          ["append", "prepend", "after", "before", "replaceWith"].forEach(
+            function (p) { hookInsert(_El.prototype, p); });
+
+          // The parse-and-insert door. Scanned AFTER the set, on `this`: the
+          // frames do not exist until the parser has built them.
+          try {
+            var hd = Object.getOwnPropertyDescriptor(_El.prototype, "innerHTML");
+            if (hd && hd.set) {
+              // ACCESSOR SYNTAX, for the same reason the inserters are method
+              // shorthand: a native setter owns only `length` and `name`, while
+              // a `function (v) {}` expression also owns `prototype`,
+              // `arguments` and `caller`. Scanned AFTER the set, on `this` --
+              // the frames do not exist until the parser has built them.
+              var hset = Object.getOwnPropertyDescriptor({
+                set m(v) {
+                  var r = hd.set.call(this, v);
+                  try {
+                    // ONLY THE OUTERMOST RIDER SCANS -- the same guard, and the
+                    // same reason, as the insertion methods above. This is a
+                    // SEPARATE door with its own wrapper, so it needs its own
+                    // check: guarding the methods alone left this one still
+                    // walking the subtree thirteen times per assignment
+                    // (measured -- `appendChild` collapsed to 1 while
+                    // `innerHTML` stayed at 13).
+                    //
+                    // The identity read is on the DESCRIPTOR's setter rather
+                    // than on the property's value: `_El.prototype.innerHTML`
+                    // would INVOKE the getter and yield markup, never a
+                    // function to compare.
+                    var top = true;
+                    try {
+                      var cd = Object.getOwnPropertyDescriptor(
+                        _El.prototype, "innerHTML");
+                      top = !!(cd && cd.set === hset);
+                    } catch (e) {}
+                    if (top) {
+                      var acc = collectFrames(this, []);
+                      if (acc.length) reachFrames(acc);
+                    }
+                  } catch (e) {}
+                  return r;
+                },
+              }, "m").set;
+              __markHook(hset, "set innerHTML", "innerHTML", hd.set.length);
+              Object.defineProperty(_El.prototype, "innerHTML", {
+                configurable: true, enumerable: hd.enumerable,
+                get: hd.get, set: hset,
+              });
+            }
+          } catch (e) {}
         }
       } catch (e) {}
     } catch (e) {}
@@ -414,6 +959,7 @@ def realm_bootstrap_js(
             "cloak_apply": cloak.apply,
             "cloak_frame_open": cloak.frame_open,
             "cloak_frame_close": cloak.frame_close,
+            "cloak_hook_mark": cloak.hook_mark,
             "blob_setup": cloak.blob_setup,
             "blob_resolve": cloak.blob_resolve,
         }
@@ -463,16 +1009,26 @@ _FIREFOX_WORKER_CLOAK_SETUP = r"""
       var __bF = G.Function;
       var __bpts = (__bF && __bF.prototype && __bF.prototype.toString)
                    || Function.prototype.toString;
-      var __bts = function () {
-        'use strict';
-        try {
-          var n = __bnm && __bnm.get(this);
-          if (typeof n === "string") {
-            return "function " + n + "() {" + __bnl + "    [native code]" + __bnl + "}";
-          }
-        } catch (e) {}
-        return __bpts.apply(this, arguments);
-      };
+      // METHOD SHORTHAND, not a function expression. Once installed this object
+      // IS `Function.prototype.toString`, so a detector reading
+      // `Object.getOwnPropertyNames(Function.prototype.toString)` must find
+      // only `length`/`name` -- a function expression also owns `prototype`
+      // (plus `arguments`/`caller`), and `delete` cannot repair it because a
+      // function's `prototype` is non-configurable. This was a bare `function
+      // () {}` until PS-215's own AC2 probe caught it: the SAME fault the DOM
+      // wrappers below avoid the same way, on the patch that cloaks them.
+      var __bts = ({
+        m() {
+          'use strict';
+          try {
+            var n = __bnm && __bnm.get(this);
+            if (typeof n === "string") {
+              return "function " + n + "() {" + __bnl + "    [native code]" + __bnl + "}";
+            }
+          } catch (e) {}
+          return __bpts.apply(this, arguments);
+        },
+      }).m;
       // `f` gets `.name` = n; its SOURCE TEXT reports `s` (an accessor's name
       // carries a `get ` prefix that its source text does not).
       var __bcloak = function (f, n, s) {
@@ -636,6 +1192,14 @@ def firefox_worker_cloak() -> WorkerCloak:
         # argument position and cannot take a statement.
         frame_open="__bcloak(",
         frame_close=', "get " + prop, prop)',
+        # The DOM-insertion wrappers of the PS-215 indexed-frame reach. Same
+        # closure WeakMap as everything else on this engine, so they add no own
+        # property — `__bcloak` already sets `.name`, and `__markHook` has set
+        # it too by the time this runs, so only the source-text registration is
+        # needed here.
+        hook_mark=(
+            "\n            try { if (__bnm) { __bnm.set(f, __sn); } } catch (e) {}"
+        ),
         blob_setup=_FIREFOX_BLOB_RETAIN_SETUP,
         blob_resolve=_FIREFOX_BLOB_RESOLVE,
     )
