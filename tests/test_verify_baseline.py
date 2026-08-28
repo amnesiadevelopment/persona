@@ -855,3 +855,625 @@ def test_a_probe_dropped_from_the_inventory_is_caught():
 
     assert stale == ["realm.seedRecoverable"]
     assert not missing
+
+
+# --- the engine the profile ACTUALLY launches on (PS-237) -------------------
+#
+# NO BROWSER HERE either, and the fakes are chosen so they cannot manufacture
+# the result. The seam under test is which CHANNEL `record_snapshot` reaches
+# for, so the launch and the channel are both faked and the assertion is on the
+# RETURNED SNAPSHOT DOCUMENT — never on source text and never on "a helper was
+# called". A test that asserted the latter would still pass if the document
+# came out stamped with the wrong engine, which is half the defect.
+
+
+def _chromium_effective_profile(name="ps237-chromium-effective"):
+    """A profile STORED as firefox that LAUNCHES on chromium.
+
+    macos/desktop is deliberate and is the corrected, wider claim: it is not a
+    mobile edge case. `coherent_engine` reconciles every non-Windows OS toward
+    chromium (chromium honours os_type; stealth-Firefox reports Windows
+    regardless — process.py's own comment says so), so windows+desktop is the
+    ONE pairing that stays on firefox.
+    """
+    from src.models.profile import Profile
+
+    return Profile(
+        name=name,
+        proxy=None,
+        os_type="macos",
+        device_type="desktop",
+        engine="firefox",
+        resolution="1920x1080",
+        search_engine="duckduckgo",
+        bookmarks=[],
+        certificate=None,
+        ai_control=False,
+        hardware_generation_value=0,
+    )
+
+
+def test_a_profile_stored_as_firefox_but_launching_on_chromium_is_the_defect():
+    """The premise. If this ever stops holding, the rest of this section is
+    testing a problem that no longer exists and must be re-derived."""
+    from src.services.browser.process import effective_engine
+
+    profile = _chromium_effective_profile()
+    assert profile.engine == "firefox", "stored engine"
+    assert effective_engine(profile) == "chromium", (
+        "the stored engine and the launched engine must diverge for this "
+        "section to be meaningful"
+    )
+
+
+def _no_launch(*a, **kw):
+    """A spawn_browser that fails the test instead of starting a browser.
+
+    Not decoration. When AC8's falsification reverts the engine resolution, a
+    chromium-effective profile falls back into the FIREFOX arm and this suite
+    really does try to launch a browser — observed during the falsification
+    run, which crashed a chromium child rather than failing an assertion. A
+    test whose failure mode is "spawn a real browser" is unacceptable in a
+    suite that promises not to, so every chromium-arm test below pins this and
+    the falsification reads as a clean AssertionError.
+    """
+    raise AssertionError("no test on the chromium arm may launch a browser")
+
+
+class _FakeTransport:
+    """A live chromium channel, shaped like transport.Transport.
+
+    ``evaluate`` speaks the runner's actual wire protocol — a ``{"v": ...}`` /
+    ``{"e": ...}`` reply, not a bare value. A fake that returned a bare string
+    would be normalised into a ProtocolError entry by ``runner._as_entry``, so
+    the "a real reading came back" assertion below would be passing over 49
+    errored probes.
+    """
+
+    def __init__(self, value="CHROME"):
+        self.engine = "chromium"
+        self.closed = False
+        self._value = value
+
+    def evaluate(self, expression):
+        return {"v": self._value}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.closed = True
+
+
+def test_a_chromium_effective_profile_is_recorded_through_the_chromium_channel(
+    monkeypatch,
+):
+    """AC1 + AC3, asserted on the returned document.
+
+    Pre-fix this raised BaselineUnavailable("...published no eval hook..."):
+    the read was an unconditional get_ff_eval while the launch routed on
+    effective_engine. The firefox hook is left DELIBERATELY UNSET below, so a
+    regression cannot pass by quietly falling back to it.
+    """
+    from src.services.verify import baseline as bl
+
+    monkeypatch.setattr(bl, "_require_display", lambda: None)
+
+    transport = _FakeTransport()
+    monkeypatch.setattr(
+        "src.services.verify.transport.transport_for",
+        lambda name, engine: transport,
+    )
+
+    # If anything on this path tries to LAUNCH, the test fails loudly rather
+    # than silently exercising the firefox arm.
+    def _must_not_launch(*a, **kw):
+        raise AssertionError("the chromium arm must not launch a browser")
+
+    monkeypatch.setattr("src.services.browser.process.spawn_browser", _must_not_launch)
+
+    snap = bl.record_snapshot(
+        profile=_chromium_effective_profile(), fresh=False, realms=("window",)
+    )
+
+    # THE HEADER STOPS ASSERTING A CONSTANT. This is the whole of AC3: the
+    # document says what was observed, not what BASELINE_ENGINE says.
+    assert snap["engine"] == "chromium"
+    assert snap["engine"] != bl.BASELINE_ENGINE
+    # A real reading came back through that channel — not an empty document.
+    assert bl.count_errors(snap) == 0
+    assert snap["probes"]["window"]["navigator.userAgent"]["value"] == "CHROME"
+    # The channel was released.
+    assert transport.closed, "the transport must be closed after recording"
+
+
+def test_the_firefox_arm_still_launches_in_process_and_reads_its_hook(monkeypatch):
+    """AC5. The pinned baseline profile is windows/desktop/firefox, so it must
+    take the byte-identical path it always did — launch in-process, read the
+    per-process eval hook, tear the session down."""
+    from src.services.verify import baseline as bl
+
+    monkeypatch.setattr(bl, "_require_display", lambda: None)
+    monkeypatch.setattr(bl, "_await_started", lambda proc, timeout: None)
+
+    torn_down = []
+    monkeypatch.setattr(bl, "_teardown", lambda proc, name: torn_down.append(name))
+
+    launched = {}
+
+    def _spawn(profile, in_process=False):
+        launched["name"] = profile.name
+        launched["in_process"] = in_process
+        return object()
+
+    monkeypatch.setattr("src.services.browser.process.spawn_browser", _spawn)
+    # The runner's wire protocol is a {"v": ...} / {"e": ...} reply, not a bare
+    # value — a fake returning "FF" directly would be normalised into a
+    # ProtocolError entry and the reading assertion below would pass over 49
+    # errored probes.
+    monkeypatch.setattr(
+        "src.services.browser.invisible_launch.get_ff_eval",
+        lambda name: {"eval": lambda expr: {"v": "FF"}},
+    )
+    # The chromium channel must NOT be consulted for a firefox profile.
+    monkeypatch.setattr(
+        "src.services.verify.transport.transport_for",
+        lambda name, engine: (_ for _ in ()).throw(
+            AssertionError("firefox must not go through the chromium transport")
+        ),
+    )
+
+    snap = bl.record_snapshot(fresh=False, realms=("window",))
+
+    assert snap["engine"] == "firefox" == bl.BASELINE_ENGINE
+    assert snap["profile"] == bl.BASELINE_PROFILE_NAME
+    assert snap["probes"]["window"]["navigator.userAgent"]["value"] == "FF"
+    # in_process is load-bearing: the hook is published per-process.
+    assert launched == {"name": bl.BASELINE_PROFILE_NAME, "in_process": True}
+    assert torn_down == [bl.BASELINE_PROFILE_NAME]
+
+
+# --- the trap: an unreachable arm is never a pass (AC4) ---------------------
+
+
+def test_an_unreachable_chromium_arm_raises_rather_than_returning_a_blank(
+    monkeypatch,
+):
+    """The named trap, from the failing side.
+
+    `diff_snapshots` compares entries verbatim, so two identically-FAILED
+    readings compare EQUAL and are reported as AGREEMENT. An arm that could not
+    be read must therefore never become a document at all — it raises. This
+    asserts the refusal is a raised BaselineUnavailable, not a returned
+    snapshot carrying errors.
+    """
+    from src.services.verify import baseline as bl
+    from src.services.verify.transport import TransportUnavailable
+
+    monkeypatch.setattr(bl, "_require_display", lambda: None)
+    monkeypatch.setattr("src.services.browser.process.spawn_browser", _no_launch)
+    monkeypatch.setattr(
+        "src.services.verify.transport.transport_for",
+        lambda name, engine: (_ for _ in ()).throw(
+            TransportUnavailable("no debug port — not running under automation")
+        ),
+    )
+
+    with pytest.raises(bl.BaselineUnavailable) as exc:
+        bl.record_snapshot(
+            profile=_chromium_effective_profile(), fresh=False, realms=("window",)
+        )
+
+    msg = str(exc.value)
+    assert "no debug port" in msg, "the actionable cause must survive"
+    assert "nothing is certified" in msg.lower()
+
+
+def test_the_chromium_arm_records_with_no_display_because_it_does_not_launch(
+    monkeypatch,
+):
+    """The round-3 blocker, from the side that was unobservable.
+
+    THIS TEST DELIBERATELY DOES NOT STUB ``_require_display``. Every other
+    chromium-arm test in this file does, and that is exactly why the defect
+    survived a full green suite: the gate was stubbed away at all seven call
+    sites, so nothing ever pointed the instrument at the gate itself.
+
+    The gate used to run unconditionally at the top of ``record_snapshot``,
+    which was correct while there was one path and it always launched. The
+    chromium arm attaches to a session the operator already started, so it
+    needs no display — and gating it on one refused the exact deployment this
+    ticket exists to reach: a headless host running chromium under automation,
+    where a chromium-effective profile was STILL unobservable to Levels 1 and
+    2. Same "the instrument cannot be pointed at chromium" defect, with the
+    display gate substituted for the hardcoded ``get_ff_eval``.
+
+    DISPLAY is unset FOR REAL, and ``IS_LINUX`` is pinned True so the
+    assertion's colour tracks the code rather than the CI runner's OS — on a
+    macOS or Windows runner the gate is a no-op and this test would pass
+    without ever exercising it.
+    """
+    from src.services.verify import baseline as bl
+
+    monkeypatch.setattr("src.core.platform.IS_LINUX", True, raising=False)
+    monkeypatch.delenv("DISPLAY", raising=False)
+
+    transport = _FakeTransport()
+    monkeypatch.setattr(
+        "src.services.verify.transport.transport_for",
+        lambda name, engine: transport,
+    )
+    monkeypatch.setattr("src.services.browser.process.spawn_browser", _no_launch)
+
+    snap = bl.record_snapshot(
+        profile=_chromium_effective_profile(), fresh=False, realms=("window",)
+    )
+
+    # A real reading, on a host with no display server at all.
+    assert snap["engine"] == "chromium"
+    assert bl.count_errors(snap) == 0
+    assert snap["probes"]["window"]["navigator.userAgent"]["value"] == "CHROME"
+
+
+def test_the_firefox_arm_still_refuses_without_a_display(monkeypatch):
+    """The companion, and the reason this pair must be read together.
+
+    Moving the gate must not DELETE it. The firefox arm really does launch a
+    real browser, so on Linux with no display it must still refuse loudly —
+    and the message it refuses with ("launches a real browser", "xvfb-run") is
+    true on this arm, which is what makes it the right home for the gate.
+
+    Without this test, the fix for the blocker above is indistinguishable from
+    simply dropping the gate.
+    """
+    from src.services.verify import baseline as bl
+
+    monkeypatch.setattr("src.core.platform.IS_LINUX", True, raising=False)
+    monkeypatch.delenv("DISPLAY", raising=False)
+
+    # The refusal must arrive BEFORE any launch is attempted.
+    monkeypatch.setattr("src.services.browser.process.spawn_browser", _no_launch)
+
+    with pytest.raises(bl.BaselineUnavailable) as exc:
+        bl.record_snapshot(profile=bl.baseline_profile(), fresh=False)
+
+    msg = str(exc.value)
+    assert "no DISPLAY" in msg
+    assert "xvfb-run" in msg, "the remedy must survive, and it is true here"
+
+
+def test_a_fresh_recording_of_a_chromium_profile_is_refused_not_downgraded(
+    monkeypatch,
+):
+    """fresh=True means wipe-then-launch, and the chromium arm may not launch.
+    Wiping a LIVE session's directory is corruption, not a clean start, so this
+    is refused rather than silently served as a warm read whose provenance
+    would claim a freshness it does not have."""
+    from src.services.verify import baseline as bl
+
+    monkeypatch.setattr(bl, "_require_display", lambda: None)
+    monkeypatch.setattr("src.services.browser.process.spawn_browser", _no_launch)
+
+    wiped = []
+    monkeypatch.setattr(
+        "shutil.rmtree", lambda p, **kw: wiped.append(p)
+    )
+
+    with pytest.raises(bl.BaselineUnavailable) as exc:
+        bl.record_snapshot(
+            profile=_chromium_effective_profile(), fresh=True, realms=("window",)
+        )
+
+    assert "fresh" in str(exc.value).lower()
+    assert not wiped, "a live profile's data directory must not be wiped"
+
+
+def test_readings_or_refuse_still_refuses_an_unreadable_chromium_recording():
+    """AC4's second net, at the comparator door.
+
+    Even if an errored document reached the behavioural checks, no comparison
+    may be performed over it. This is the guard that stops two identical
+    FAILURES being reported as agreement.
+    """
+    from src.services.verify.behaviour import BehaviourCheckError, _readings_or_refuse
+
+    unreadable = _snap(
+        window={"navigator.userAgent": {"error": "Target closed"}},
+        worker={"navigator.userAgent": {"error": "Target closed"}},
+    )
+    unreadable["engine"] = "chromium"
+
+    with pytest.raises(BehaviourCheckError) as exc:
+        _readings_or_refuse(unreadable, "chromium")
+
+    detail = str(exc.value)
+    assert "unreadable probe" in detail
+    assert "Nothing was certified" in detail
+
+    # And the empty case, which is the shape an unreachable arm would take.
+    empty = _snap(window={}, worker={})
+    empty["probes"] = {}
+    with pytest.raises(BehaviourCheckError) as exc:
+        _readings_or_refuse(empty, "chromium")
+    assert "no probes at all" in str(exc.value)
+
+
+def test_two_identically_failed_readings_would_otherwise_compare_equal():
+    """The reason the guard above must exist, demonstrated rather than asserted
+    in prose. If this ever stops being true the guard is still correct, but its
+    rationale has changed and should be re-read."""
+    from src.services.verify.diff import diff_snapshots
+
+    failed = _snap(
+        window={"navigator.userAgent": {"error": "Target closed"}},
+        worker={"navigator.userAgent": {"error": "Target closed"}},
+    )
+    other = json.loads(json.dumps(failed))
+
+    entries = diff_snapshots(failed, other)
+    changed = [e for e in entries if e.get("status") == "changed"]
+    assert not changed, (
+        "two identical failures compare EQUAL — which is exactly why an "
+        "unreadable arm must never reach a comparator"
+    )
+
+
+# --- the comparator needs no edit (AC3) -------------------------------------
+
+
+def test_the_comparator_already_reports_an_engine_mismatch_as_meta():
+    """CONFIRMED, not assumed. `engine` is already in diff._META_FIELDS, so a
+    firefox snapshot compared against a chromium one reports the engine
+    difference as a __meta__ entry — 'a different question', not drift. This
+    test exists so that fact stays true, since the recorder now emits both."""
+    from src.services.verify.diff import META_REALM, _META_FIELDS, diff_snapshots
+
+    assert "engine" in _META_FIELDS
+
+    ff = _snap()
+    chrome = _snap()
+    chrome["engine"] = "chromium"
+
+    entries = diff_snapshots(ff, chrome, include_meta=True)
+    meta = [e for e in entries if e["realm"] == META_REALM]
+    engine_entry = [e for e in meta if e["probe_id"] == "engine"]
+
+    assert engine_entry, "an engine mismatch must be reported as a meta entry"
+    assert engine_entry[0]["expected"] == "firefox"
+    assert engine_entry[0]["observed"] == "chromium"
+
+
+# --- isolation (AC6) --------------------------------------------------------
+
+
+def test_no_verification_path_persists_ai_control(monkeypatch):
+    """The isolation line, asserted on the objects the code actually builds.
+
+    The chromium arm reads a session the operator already opened; it must never
+    turn ai_control ON to manufacture a debugging port. The pinned baseline
+    profile has it off, and the scratch profiles the behavioural checks build
+    have it off.
+    """
+    from src.services.verify.behaviour import Context
+
+    assert baseline.baseline_profile().ai_control is False
+
+    created = {}
+
+    class _FakeManager:
+        profiles = {}
+
+        def add_profile(self, name, proxy, **opts):
+            created.update(opts)
+            from src.models.profile import Profile
+
+            self.profiles[name] = Profile(
+                name=name, proxy=None, **{
+                    k: v for k, v in opts.items() if k != "bookmarks"
+                }, bookmarks=[]
+            )
+            return True
+
+    ctx = Context(home="/tmp/scratch-ps237")
+    ctx._manager = _FakeManager()
+    monkeypatch.setattr(ctx, "manager", lambda: ctx._manager)
+
+    ctx.make_profile("ps237-scratch")
+
+    assert created["ai_control"] is False, (
+        "a verification scratch profile must never be stored with ai_control on"
+    )
+
+
+# --- AC3 round 2: the header reports the CHANNEL, not the RECORD -------------
+#
+# Round-2 review found the header stamped `effective_engine(profile)` — the
+# profile RECORD — while the channel was picked by a hardcoded literal. A record
+# is an ASSERTION; a transport is an OBSERVATION. The tests below drive the two
+# apart on purpose, because a test in which they agree cannot tell the fix from
+# the defect.
+
+
+def test_both_arms_report_the_engine_their_own_transport_reports(monkeypatch):
+    """The two channel constants ARE the adapters' own `engine` values.
+
+    Cited by name from `baseline._record_on_firefox` and from the constants
+    themselves, so those docstrings do not promise a guard that is not here.
+
+    Read off REAL adapter instances rather than compared as literals: two
+    equal string constants prove nothing about the objects they stand for, and
+    the whole defect being fixed was two spellings of "the engine" drifting
+    apart. `_ChromiumTransport.__init__` sets `.engine` before it attaches, so
+    the attach is stubbed out — that is what makes the object reachable with no
+    browser, not a weakening of the assertion.
+    """
+    from src.services.verify import baseline as bl
+    from src.services.verify import transport as tr
+
+    firefox = tr._FirefoxTransport("p", {"eval": lambda expr: {"v": 1}})
+    assert firefox.engine == bl._FIREFOX_CHANNEL
+
+    async def _no_attach(self):
+        return None
+
+    monkeypatch.setattr(tr._ChromiumTransport, "_attach", _no_attach)
+    chromium = tr._ChromiumTransport("p", 9222)
+    try:
+        assert chromium.engine == bl._CHROMIUM_CHANNEL
+    finally:
+        chromium.close()
+
+    # And they are genuinely two different channels, so a test that confused
+    # them could not pass by both constants being the same string.
+    assert bl._FIREFOX_CHANNEL != bl._CHROMIUM_CHANNEL
+
+
+def test_the_header_is_stamped_by_the_transport_not_by_the_profile_record(
+    monkeypatch,
+):
+    """THE MISMATCH, BUILT AND WATCHED. This is the discriminating test.
+
+    `test_a_chromium_effective_profile_is_recorded_through_the_chromium_channel`
+    above passes against the DEFECT as well as against the fix, because for that
+    profile `effective_engine` and the channel happen to agree — so agreement
+    cannot tell them apart. Here the transport deliberately reports something
+    the profile record does not, and only a header sourced from the transport
+    can report it.
+
+    `engine_build` is asserted through a STUBBED accessor rather than against
+    the string "unknown": chromium is not installed in this container, so
+    `engine_build("chromium")` answers "unknown" here for an environmental
+    reason that has nothing to do with this defect. Asserting on that literal
+    would be a test whose colour tracks the container (PS-14).
+    """
+    from src.services.verify import baseline as bl
+
+    monkeypatch.setattr(bl, "_require_display", lambda: None)
+    monkeypatch.setattr("src.services.browser.process.spawn_browser", _no_launch)
+
+    # The channel answers with an engine name the profile record does not carry
+    # and `effective_engine` never returns. Under the round-1 spelling the
+    # header took `effective_engine(profile)` -> "chromium" and this string
+    # could not appear in the document at all.
+    observed = "chromium-cdp-attached"
+
+    transport = _FakeTransport()
+    transport.engine = observed
+    monkeypatch.setattr(
+        "src.services.verify.transport.transport_for",
+        lambda name, engine: transport,
+    )
+
+    monkeypatch.setattr(
+        "src.services.engine.updater.current_version",
+        lambda: "chromium-148.0.7778.215",
+    )
+
+    profile = _chromium_effective_profile()
+    snap = bl.record_snapshot(profile=profile, fresh=False, realms=("window",))
+
+    from src.services.browser.process import effective_engine
+
+    assert snap["engine"] == observed, (
+        "the header must report the channel that did the reading"
+    )
+    assert snap["engine"] != effective_engine(profile), (
+        "sourcing the header from the profile record is the defect under test"
+    )
+    assert snap["engine"] != profile.engine, "nor from the stored engine field"
+    # A real reading came back, so this is not a refusal wearing a pass's shape.
+    assert bl.count_errors(snap) == 0
+    assert snap["probes"]["window"]["navigator.userAgent"]["value"] == "CHROME"
+
+
+def test_the_engine_build_follows_the_observed_engine(monkeypatch):
+    """AC3's provenance half: the build is resolved for the OBSERVED family.
+
+    Round-2 review measured `engine_build` degrading to "unknown" because the
+    header carried a family no accessor recognises, silently losing the build
+    the artifact was actually recorded under. Stubbed accessor, so this
+    discriminates on a machine with no chromium installed.
+    """
+    from src.services.verify import baseline as bl
+
+    monkeypatch.setattr(bl, "_require_display", lambda: None)
+    monkeypatch.setattr("src.services.browser.process.spawn_browser", _no_launch)
+    monkeypatch.setattr(
+        "src.services.verify.transport.transport_for",
+        lambda name, engine: _FakeTransport(),
+    )
+    monkeypatch.setattr(
+        "src.services.engine.updater.current_version",
+        lambda: "chromium-148.0.7778.215",
+    )
+
+    snap = bl.record_snapshot(
+        profile=_chromium_effective_profile(), fresh=False, realms=("window",)
+    )
+
+    assert snap["engine"] == "chromium"
+    assert snap["engine_build"] == "chromium-148.0.7778.215", (
+        "the build must be resolved for the engine that was observed"
+    )
+
+
+@pytest.mark.parametrize("stored", ["Chromium", "webkit", "CHROMIUM"])
+def test_an_engine_this_recorder_cannot_speak_is_refused_never_read(
+    monkeypatch, stored
+):
+    """The `else` branch, decided deliberately: refuse, do not guess.
+
+    `coherent_engine` returns a coherent value UNCHANGED and only firefox pairs
+    are constrained, so 'Chromium' and 'webkit' are both storable through the
+    ordinary door and both reach `effective_engine` verbatim — round-2 review
+    executed exactly that. The old bare `else` sent them to the chromium
+    adapter and then stamped them with their own unknown name.
+
+    Refusing is this module's posture: an engine nobody can name is an
+    inconclusive, and inconclusive is never a pass. Asserts the refusal is a
+    RAISE and that nothing was read — a refusal that still opened a channel
+    would be the defect with a message attached.
+    """
+    from src.models.profile import Profile
+    from src.services.verify import baseline as bl
+
+    monkeypatch.setattr(bl, "_require_display", lambda: None)
+    monkeypatch.setattr("src.services.browser.process.spawn_browser", _no_launch)
+
+    def _must_not_open(name, engine):
+        raise AssertionError(
+            f"an unspeakable engine ({stored!r}) must be refused BEFORE a "
+            "channel is opened"
+        )
+
+    monkeypatch.setattr(
+        "src.services.verify.transport.transport_for", _must_not_open
+    )
+
+    profile = Profile(
+        name="ps237-unspeakable",
+        proxy=None,
+        os_type="windows",
+        device_type="desktop",
+        engine=stored,
+        resolution="1920x1080",
+        search_engine="duckduckgo",
+        bookmarks=[],
+        certificate=None,
+        ai_control=False,
+        hardware_generation_value=0,
+    )
+
+    # Premise: this really is storable and really does survive to the router.
+    from src.services.browser.process import effective_engine
+
+    assert effective_engine(profile) == stored, (
+        "premise: the stored spelling reaches the router unnormalised"
+    )
+
+    with pytest.raises(bl.BaselineUnavailable) as exc:
+        bl.record_snapshot(profile=profile, fresh=False, realms=("window",))
+
+    msg = str(exc.value)
+    assert stored in msg, "the refusal must name the engine it could not speak"
+    assert "nothing is certified" in msg.lower()

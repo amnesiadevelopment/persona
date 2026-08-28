@@ -206,6 +206,39 @@ def _chromium_transport(profile_name: str) -> Transport:
     return _ChromiumTransport(profile_name, port)
 
 
+def transport_for(profile_name: str, engine: str) -> Transport:
+    """Dispatch to the channel for an ALREADY-RESOLVED ``engine``.
+
+    Split out of :func:`evaluate_for` so a caller that has ALREADY resolved the
+    engine — and whose profile may not be in the store at all — can reach the
+    same two adapters without a second lookup. ``baseline.record_snapshot``
+    is exactly that caller: its pinned profile is CONSTRUCTED, never stored, so
+    :func:`resolve_engine`'s ``ProfileManager`` lookup would answer "no such
+    profile" for a profile that launches perfectly well.
+
+    Dispatch lives HERE and in one place only, so the CLI lane and the gate
+    lane cannot drift into answering "which channel does this engine speak?"
+    differently.
+
+    Never launches anything and never mutates stored profile state.
+    """
+    import asyncio
+
+    if engine == "firefox":
+        return _firefox_transport(profile_name)
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        raise TransportUnavailable(
+            "the chromium transport owns its own event loop and cannot be "
+            "created from inside a running one; call it from a synchronous "
+            "context (or a worker thread)"
+        )
+    return _chromium_transport(profile_name)
+
+
 def evaluate_for(profile_name: str) -> Transport:
     """Return a live :class:`Transport` for an ALREADY-RUNNING profile.
 
@@ -221,22 +254,7 @@ def evaluate_for(profile_name: str) -> Transport:
     The chromium path drives its own event loop, so it must not be constructed
     from inside a running one.
     """
-    import asyncio
-
-    engine = resolve_engine(profile_name)
-    if engine == "firefox":
-        return _firefox_transport(profile_name)
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        pass
-    else:
-        raise TransportUnavailable(
-            "the chromium transport owns its own event loop and cannot be "
-            "created from inside a running one; call it from a synchronous "
-            "context (or a worker thread)"
-        )
-    return _chromium_transport(profile_name)
+    return transport_for(profile_name, resolve_engine(profile_name))
 
 
 __all__ = [

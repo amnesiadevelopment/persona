@@ -106,6 +106,62 @@ UNCOVERED_SURFACES: tuple[tuple[str, str], ...] = (
         "owned by engine_gate.py, which already records both sides of a bump "
         "on one runner. Not duplicated here.",
     ),
+    (
+        "every check on this list runs on FIREFOX only",
+        "all 18 scratch profiles here take Context.make_profile's defaults "
+        "(os_type=windows, device_type=desktop), and windows+desktop is the "
+        "ONE combination that resolves to firefox — every other OS launches "
+        "on chromium whatever the stored engine says. The recorder can now "
+        "read either engine, so this is a property of the CHECKS' fixtures, "
+        "not of the instrument: nothing below has been observed on chromium, "
+        "and a pass here says nothing about how a macos, linux or mobile "
+        "profile behaves. Widening the fixtures is separate work.",
+    ),
+    (
+        "the chromium arm cannot be recorded on a machine with no automation "
+        "session already running",
+        "reading a chromium page needs a CDP debugging port, and that port "
+        "only exists for a profile launched with ai_control — an "
+        "unauthenticated control channel any same-user process can drive "
+        "(cdp.py). Launching one so our own check can see better is precisely "
+        "the isolation trade the charter refuses, so this module attaches to "
+        "a session the operator already opened and REFUSES otherwise. The "
+        "refusal is a raised BaselineUnavailable, never an empty reading: two "
+        "unreadable recordings compare EQUAL, so a returned blank would be "
+        "reported as agreement. Unobserved here reads as CANNOT_RUN (exit 2), "
+        "never as a pass.",
+    ),
+    (
+        "THIS lane still needs a display even for a chromium profile, though "
+        "the recorder underneath it does not",
+        "run_checks calls require_display() as a PREFLIGHT whenever any "
+        "SELECTED check has needs_launch=True (4 of the 7: restart-continuity, "
+        "two-profile-unlinkability, benign-edit-stability, "
+        "trash-restore-and-wipe), and that is decided before any profile's "
+        "engine is resolved — the preflight is engine-BLIND by construction. "
+        "The recorder's own gate now sits on the firefox arm, immediately "
+        "before the launch, so baseline.record_snapshot reads an "
+        "already-running chromium session on a headless host with no DISPLAY "
+        "at all. This lane is deliberately NOT narrowed to match: every one of "
+        "those 4 launching checks uses firefox fixtures (above), which really "
+        "do launch, so the preflight refuses nothing today that could have "
+        "run, and refusing once up front gives an operator one actionable "
+        "message instead of four identical ones. The consequence is stated "
+        "rather than left to be discovered: chromium reachability is WIDER in "
+        "baseline than in this module, and widening any launching check's "
+        "fixtures to chromium means revisiting this preflight in the same "
+        "change — left as it is, it would refuse a run that needs no display.",
+    ),
+    (
+        "a FRESH (wipe-then-launch) recording of a chromium-effective profile",
+        "fresh=True means 'remove the data directory, then launch from a "
+        "known state', and the chromium arm is not allowed to launch (above). "
+        "Wiping the directory of an already-running session is corruption, "
+        "not a clean start, so it is refused rather than silently downgraded "
+        "to a warm read — a document whose provenance claimed a freshness it "
+        "did not have would be worse than no document. Chromium recordings "
+        "are therefore warm reads of a live session only.",
+    ),
 )
 
 
@@ -309,9 +365,15 @@ class Context:
     def record(self, profile, *, fresh: bool, realms: "tuple[str, ...] | None" = None):
         """Observe a live profile through the EXISTING recorder.
 
-        Every reading in this module comes through here. ``record_snapshot``
-        launches in-process (the firefox eval hook is published per-process),
-        reads every probe in the requested realms, and tears the session down.
+        Every reading in this module comes through here, and what
+        ``record_snapshot`` does depends on the engine the profile ACTUALLY
+        launches on. On the FIREFOX arm it launches in-process (the firefox
+        eval hook is published per-process), reads every probe in the requested
+        realms, and tears the session down. On the CHROMIUM arm it does NOT
+        launch at all: it attaches to a session the operator already opened in
+        automation mode, or it refuses — launching there would mean opening an
+        unauthenticated CDP control channel, which isolation forbids. So
+        ``self.launches`` counts recordings, not browser starts.
 
         ``realms`` defaults to ``record_snapshot``'s own default
         (``BASELINE_REALMS`` — window and worker), which is what the continuity
