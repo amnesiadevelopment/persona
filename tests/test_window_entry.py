@@ -127,6 +127,26 @@ def test_deleting_one_colliding_profile_keeps_the_others_entry(tmp_path, monkeyp
     assert "Name=a_b" not in body
 
 
+def _legacy_body(profile_name: str, icon: str = "chromium") -> str:
+    """A legacy (pre-PS-209) entry exactly as the old writer produced it.
+
+    Byte-for-byte the merge-base `write_window_entry` body — crucially it
+    carries `StartupWMClass=app_id_for(name)`, which the old writer has ALWAYS
+    written. That token is what proves ownership of an ambiguous legacy
+    filename, so a fixture that omits it is not a legacy entry the product
+    could ever have written, and testing against one would prove nothing.
+    """
+    return (
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        f"Name={profile_name}\n"
+        f"Icon={icon}\n"
+        "Terminal=false\n"
+        "NoDisplay=true\n"
+        f"StartupWMClass={app_id_for(profile_name)}\n"
+    )
+
+
 def test_write_converges_off_the_legacy_filename(tmp_path, monkeypatch):
     # PS-209 migration (a): an entry already on disk under the old digest-less
     # name would otherwise be orphaned forever, since remove_window_entry no
@@ -135,7 +155,7 @@ def test_write_converges_off_the_legacy_filename(tmp_path, monkeypatch):
     d = pathlib.Path(tmp_path) / ".local/share/applications"
     d.mkdir(parents=True, exist_ok=True)
     legacy = d / "persona-acct.desktop"
-    legacy.write_text("[Desktop Entry]\nName=acct\n", encoding="utf-8")
+    legacy.write_text(_legacy_body("acct"), encoding="utf-8")
 
     new_path = pathlib.Path(write_window_entry("acct"))
 
@@ -154,8 +174,84 @@ def test_remove_also_unlinks_the_legacy_filename(tmp_path, monkeypatch):
     # and this would silently stop exercising the removal path. The space
     # sanitises to "_", so the legacy name is persona-secret_acct.desktop.
     legacy = d / "persona-secret_acct.desktop"
-    legacy.write_text("[Desktop Entry]\nName=secret acct\n", encoding="utf-8")
+    legacy.write_text(_legacy_body("secret acct"), encoding="utf-8")
 
     remove_window_entry("secret acct")
 
     assert _entries(tmp_path) == []
+
+
+# --- PS-209 round 2: the migration helper must not re-open the collision -----
+#
+# `_legacy_safe_filename` is ambiguous BY CONSTRUCTION, and the new scheme's
+# own output is a well-formed legacy name for a DIFFERENT profile, because the
+# `-<8 hex>` suffix uses only characters the sanitiser passes through:
+#
+#     _safe_filename("a_b") == _legacy_safe_filename("a_b-28cb39ea")
+#
+# Both names pass validate_profile_name, so the pair is creatable. Unlinking a
+# legacy path by NAME therefore deleted another live profile's CURRENT entry —
+# the very collision this ticket closes, reintroduced through the migration.
+# Ownership is confirmed from the entry's StartupWMClass instead.
+
+_VICTIM = "a_b"
+# _safe_filename(_VICTIM) == _legacy_safe_filename(_ATTACKER)
+_ATTACKER = "a_b-28cb39ea"
+
+
+def test_launching_a_profile_keeps_a_colliding_profiles_current_entry(
+    tmp_path, monkeypatch
+):
+    # The WRITE path. Merely launching _ATTACKER ran the legacy cleanup for its
+    # own name, which resolved to _VICTIM's current file and unlinked it.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    victim = pathlib.Path(write_window_entry(_VICTIM))
+    attacker = pathlib.Path(write_window_entry(_ATTACKER))
+
+    assert victim.exists(), "a live profile's entry was deleted by another's launch"
+    assert attacker.exists()
+    assert sorted(_entries(tmp_path)) == sorted([victim.name, attacker.name])
+    # the survivor still matches its OWN window identity
+    assert f"StartupWMClass={app_id_for(_VICTIM)}\n" in victim.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_deleting_a_profile_keeps_a_colliding_profiles_current_entry(
+    tmp_path, monkeypatch
+):
+    # The REMOVE path. Deleting _ATTACKER unlinked its own entry AND, via the
+    # legacy path, _VICTIM's — leaving the live victim with no entry at all and
+    # its window on the generic taskbar label this module exists to prevent.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    victim = pathlib.Path(write_window_entry(_VICTIM))
+    write_window_entry(_ATTACKER)
+
+    remove_window_entry(_ATTACKER)
+
+    assert victim.exists(), "deleting one profile removed a live profile's entry"
+    assert _entries(tmp_path) == [victim.name]
+    body = victim.read_text(encoding="utf-8")
+    assert f"StartupWMClass={app_id_for(_VICTIM)}\n" in body
+    assert f"Name={_VICTIM}\n" in body
+
+
+def test_legacy_cleanup_leaves_an_entry_it_cannot_prove_it_owns(tmp_path, monkeypatch):
+    # The stated bound of the content guard, pinned rather than left implicit.
+    # Ownership is proven from StartupWMClass; a file at the legacy path that
+    # does NOT carry this profile's token is left alone. In exchange for never
+    # deleting a live profile's entry, a hand-edited or truncated legacy file
+    # survives as residue — the safe direction of the trade, and the reason the
+    # guard is content-based rather than name-based.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    d = pathlib.Path(tmp_path) / ".local/share/applications"
+    d.mkdir(parents=True, exist_ok=True)
+    foreign = d / "persona-acct.desktop"
+    foreign.write_text("[Desktop Entry]\nName=something else\n", encoding="utf-8")
+
+    write_window_entry("acct")
+
+    assert foreign.exists(), "unlinked a file it could not prove it owned"
+    assert foreign.read_text(encoding="utf-8") == (
+        "[Desktop Entry]\nName=something else\n"
+    )
