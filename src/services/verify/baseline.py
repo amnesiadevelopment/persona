@@ -416,10 +416,28 @@ def _record_on_firefox(
     firefox answered. Pinned against ``_FirefoxTransport.engine`` by
     ``test_both_arms_report_the_engine_their_own_transport_reports`` so the two
     spellings of "firefox" cannot drift apart.
+
+    THE DISPLAY GATE LIVES HERE, on the arm that launches, rather than at the
+    top of :func:`record_snapshot` where it used to sit. Before the engine
+    split there was one path and it ALWAYS launched, so an unconditional gate
+    was correct and its message ("recording a baseline launches a real
+    browser ... run it under xvfb") was true. Adding a non-launching arm broke
+    that reference: the chromium arm attaches to a session someone else
+    started and needs no display at all, so gating it on one refused the exact
+    deployment this ticket exists to reach — a headless host running chromium
+    under automation, where a chromium-effective profile would STILL have been
+    unobservable to Levels 1 and 2. That is the "the instrument cannot be
+    pointed at chromium" defect again with a different gate substituted for the
+    hardcoded ``get_ff_eval``, so the gate belongs to the launch, not to the
+    recorder.
     """
     from ...core.config import DATA_DIR
     from ..browser.invisible_launch import get_ff_eval
     from ..browser.process import spawn_browser
+
+    # Immediately before the launch, so the refusal and the thing it refuses
+    # are the same event and the message cannot drift out of truth again.
+    _require_display()
 
     if fresh:
         shutil.rmtree(os.path.join(DATA_DIR, profile.name), ignore_errors=True)
@@ -545,10 +563,17 @@ def record_snapshot(
     readings under another engine's name, which is the defect above wearing a
     correction's clothes.
 
-    The pinned baseline profile is unaffected: it is windows/desktop/firefox,
-    so it routes to firefox and takes the byte-identical path it always did.
+    THE DISPLAY GATE BELONGS TO THE LAUNCH, NOT TO THIS FUNCTION. It used to
+    run unconditionally here, which was correct while there was one path and it
+    always launched. The chromium arm does not launch — it attaches to a
+    session the operator already opened — so gating it on a display refused the
+    precise deployment this function exists to reach: a headless host running
+    chromium under automation, where there is no X display and none is needed.
+    It now sits inside :func:`_record_on_firefox`, immediately before the
+    launch. Pinned by
+    ``test_the_chromium_arm_records_with_no_display_because_it_does_not_launch``,
+    which unsets DISPLAY for real and does NOT stub the gate.
     """
-    _require_display()
     profile = profile or baseline_profile()
 
     from ..browser.process import effective_engine

@@ -1069,6 +1069,79 @@ def test_an_unreachable_chromium_arm_raises_rather_than_returning_a_blank(
     assert "nothing is certified" in msg.lower()
 
 
+def test_the_chromium_arm_records_with_no_display_because_it_does_not_launch(
+    monkeypatch,
+):
+    """The round-3 blocker, from the side that was unobservable.
+
+    THIS TEST DELIBERATELY DOES NOT STUB ``_require_display``. Every other
+    chromium-arm test in this file does, and that is exactly why the defect
+    survived a full green suite: the gate was stubbed away at all seven call
+    sites, so nothing ever pointed the instrument at the gate itself.
+
+    The gate used to run unconditionally at the top of ``record_snapshot``,
+    which was correct while there was one path and it always launched. The
+    chromium arm attaches to a session the operator already started, so it
+    needs no display — and gating it on one refused the exact deployment this
+    ticket exists to reach: a headless host running chromium under automation,
+    where a chromium-effective profile was STILL unobservable to Levels 1 and
+    2. Same "the instrument cannot be pointed at chromium" defect, with the
+    display gate substituted for the hardcoded ``get_ff_eval``.
+
+    DISPLAY is unset FOR REAL, and ``IS_LINUX`` is pinned True so the
+    assertion's colour tracks the code rather than the CI runner's OS — on a
+    macOS or Windows runner the gate is a no-op and this test would pass
+    without ever exercising it.
+    """
+    from src.services.verify import baseline as bl
+
+    monkeypatch.setattr("src.core.platform.IS_LINUX", True, raising=False)
+    monkeypatch.delenv("DISPLAY", raising=False)
+
+    transport = _FakeTransport()
+    monkeypatch.setattr(
+        "src.services.verify.transport.transport_for",
+        lambda name, engine: transport,
+    )
+    monkeypatch.setattr("src.services.browser.process.spawn_browser", _no_launch)
+
+    snap = bl.record_snapshot(
+        profile=_chromium_effective_profile(), fresh=False, realms=("window",)
+    )
+
+    # A real reading, on a host with no display server at all.
+    assert snap["engine"] == "chromium"
+    assert bl.count_errors(snap) == 0
+    assert snap["probes"]["window"]["navigator.userAgent"]["value"] == "CHROME"
+
+
+def test_the_firefox_arm_still_refuses_without_a_display(monkeypatch):
+    """The companion, and the reason this pair must be read together.
+
+    Moving the gate must not DELETE it. The firefox arm really does launch a
+    real browser, so on Linux with no display it must still refuse loudly —
+    and the message it refuses with ("launches a real browser", "xvfb-run") is
+    true on this arm, which is what makes it the right home for the gate.
+
+    Without this test, the fix for the blocker above is indistinguishable from
+    simply dropping the gate.
+    """
+    from src.services.verify import baseline as bl
+
+    monkeypatch.setattr("src.core.platform.IS_LINUX", True, raising=False)
+    monkeypatch.delenv("DISPLAY", raising=False)
+
+    # The refusal must arrive BEFORE any launch is attempted.
+    monkeypatch.setattr("src.services.browser.process.spawn_browser", _no_launch)
+
+    with pytest.raises(bl.BaselineUnavailable) as exc:
+        bl.record_snapshot(profile=bl.baseline_profile(), fresh=False)
+
+    msg = str(exc.value)
+    assert "no DISPLAY" in msg
+    assert "xvfb-run" in msg, "the remedy must survive, and it is true here"
+
+
 def test_a_fresh_recording_of_a_chromium_profile_is_refused_not_downgraded(
     monkeypatch,
 ):

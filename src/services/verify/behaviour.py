@@ -132,6 +132,27 @@ UNCOVERED_SURFACES: tuple[tuple[str, str], ...] = (
         "never as a pass.",
     ),
     (
+        "THIS lane still needs a display even for a chromium profile, though "
+        "the recorder underneath it does not",
+        "run_checks calls require_display() as a PREFLIGHT whenever any "
+        "SELECTED check has needs_launch=True (4 of the 7: restart-continuity, "
+        "two-profile-unlinkability, benign-edit-stability, "
+        "trash-restore-and-wipe), and that is decided before any profile's "
+        "engine is resolved — the preflight is engine-BLIND by construction. "
+        "The recorder's own gate now sits on the firefox arm, immediately "
+        "before the launch, so baseline.record_snapshot reads an "
+        "already-running chromium session on a headless host with no DISPLAY "
+        "at all. This lane is deliberately NOT narrowed to match: every one of "
+        "those 4 launching checks uses firefox fixtures (above), which really "
+        "do launch, so the preflight refuses nothing today that could have "
+        "run, and refusing once up front gives an operator one actionable "
+        "message instead of four identical ones. The consequence is stated "
+        "rather than left to be discovered: chromium reachability is WIDER in "
+        "baseline than in this module, and widening any launching check's "
+        "fixtures to chromium means revisiting this preflight in the same "
+        "change — left as it is, it would refuse a run that needs no display.",
+    ),
+    (
         "a FRESH (wipe-then-launch) recording of a chromium-effective profile",
         "fresh=True means 'remove the data directory, then launch from a "
         "known state', and the chromium arm is not allowed to launch (above). "
