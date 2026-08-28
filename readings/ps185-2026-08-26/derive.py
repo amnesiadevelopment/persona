@@ -123,6 +123,34 @@ def join_arms(names: "list[str]") -> str:
     return ", ".join(names[:-1]) + " AND " + names[-1]
 
 
+def _bar_verdict(entry: dict) -> str:
+    """The verdict the gate WOULD have returned under the pre-PS-191 rule.
+
+    RECOMPUTED from a `classify` entry, never transcribed from a stored
+    summary. The article's artefact argument is a claim about what the OLD
+    gate said, so that verdict has to come from somewhere — and the tempting
+    source, the uniformity record's stored ``module_verdict``, is exactly what
+    axis 2 of ``enumerate_summary_sites.py`` forbids a rendered figure from
+    depending on (poison the field, move the article).
+
+    It does not need to be stored, because PS-191 deliberately KEPT the raw
+    bar comparison it replaced: ``meets_bar`` is still computed on every arm
+    from the readings and the epoch-pinned bar. So the old rule is still a
+    function of the evidence — score above the bar and you were flagged — and
+    is reconstructed here rather than remembered.
+
+    The two branches ahead of the bar are unchanged by PS-191 and so are read
+    straight off the entry: ``CONSTANT`` (one identity) and ``INCONCLUSIVE``
+    (too few seeds, or no bar to compare against) both preceded the bar test
+    then and precede the p-value test now.
+    """
+    if entry["verdict"] in ("CONSTANT", "INCONCLUSIVE"):
+        return entry["verdict"]
+    if entry.get("meets_bar") is None:
+        return "INCONCLUSIVE"
+    return "OK" if entry["meets_bar"] else "TOO_NARROW"
+
+
 def layer_installed(rb: dict, engine: str) -> "list[str]":
     """The extension layer an engine's legs actually REPORTED installing.
 
@@ -276,22 +304,24 @@ def gpu_section(off: dict, on: dict, uoff: dict, uon: dict) -> str:
         "engine-gpu-variance.layer-off.json": off,
         "engine-gpu-variance.layer-on.json": on,
     }
-    # WHICH ARMS THE GATE FLAGGED, AND WHETHER IT STILL DOES — both read out
-    # of the evidence rather than typed in (PS-239). This paragraph used to
-    # assert "macos, linux AND android" as a literal. PS-191 then corrected
-    # the gate, the sentence silently became false, and the table beneath it
-    # disagreed with it — the exact drift this script's opening docstring
-    # promises cannot happen. Naming the arms from the records makes the
-    # claim self-updating instead.
-    _then = [
-        arm for arm in ARMS
-        if uon["per_arm"][arm]["module_verdict"] == "TOO_NARROW"
-    ]
-    _now = [
-        arm for arm in ARMS
-        if _uniformity_stats(uon, arm, unif_sources)["module_verdict"]
-        == "TOO_NARROW"
-    ]
+    # WHICH ARMS THE GATE FLAGGED, AND WHETHER IT STILL DOES — both RECOMPUTED
+    # from the readings rather than typed in OR read from a stored summary
+    # (PS-239). This paragraph used to assert "macos, linux AND android" as a
+    # literal. PS-191 then corrected the gate, the sentence silently became
+    # false, and the table beneath it disagreed with it — the exact drift this
+    # script's opening docstring promises cannot happen.
+    #
+    # ⚠️ `_then` IS DERIVED, NOT TRANSCRIBED. The obvious source for "what the
+    # gate used to say" is the uniformity record's stored `module_verdict`,
+    # and using it is WRONG here for the reason axis 2 of
+    # `enumerate_summary_sites.py` exists: a rendered figure must not depend
+    # on a stored summary field, or poisoning that field moves the article.
+    # The pre-PS-191 rule was the raw bar comparison, and PS-191 deliberately
+    # KEPT that comparison as `meets_bar` on every arm — so the old verdict is
+    # still a function of the readings and is recomputed as one.
+    _live = _classify(on["readings"], _epoch_pool_sizes(on))["per_arm"]
+    _then = [arm for arm in ARMS if _bar_verdict(_live[arm]) == "TOO_NARROW"]
+    _now = [arm for arm in ARMS if _live[arm]["verdict"] == "TOO_NARROW"]
     _cleared = [arm for arm in _then if arm not in _now]
     add("#### ⚠️ The gate's own verdicts on "
         f"{num_word(len(_then))} of those arms are an "
@@ -359,16 +389,20 @@ def gpu_section(off: dict, on: dict, uoff: dict, uon: dict) -> str:
             "written into PS-16 as one."
         )
     else:
-        # The VERDICT NAMED HERE IS THE STORED ONE — what the gate said WHEN
-        # THIS READING WAS TAKEN — and it is quoted from the record rather
-        # than typed in (PS-239). This sentence is the load-bearing step of
-        # the artefact argument, and the argument is a claim about the OLD
-        # gate: android scored better than uniform predicts and was flagged
-        # anyway. Rendering today's recomputed verdict here would destroy the
-        # argument (it now reads OK, so there would be nothing to explain),
-        # and hardcoding the literal let it go on asserting a flag the table
-        # beneath it no longer showed.
-        _then_android = uon["per_arm"]["android"]["module_verdict"]
+        # THE VERDICT NAMED HERE IS THE OLD GATE'S — what it said WHEN THIS
+        # READING WAS TAKEN — and it is RECOMPUTED from the readings, not
+        # transcribed (PS-239). This sentence is the load-bearing step of the
+        # artefact argument, and the argument is a claim about the OLD gate:
+        # android scored better than uniform predicts and was flagged anyway.
+        # Rendering today's verdict here would destroy the argument (it now
+        # reads OK, so there would be nothing to explain), and hardcoding the
+        # literal let it go on asserting a flag the table beneath it no longer
+        # showed. Reading the uniformity record's stored `module_verdict` is
+        # the third wrong answer: axis 2 forbids a rendered figure from
+        # depending on a stored summary. `_bar_verdict` reconstructs it from
+        # `meets_bar`, which PS-191 kept computing precisely so the old
+        # comparison stays visible.
+        _then_android = _bar_verdict(_live["android"])
         add(
             f"**The single line that settles it:** android scored "
             f"{fnum(a['plugin_estimate'])}, which is BELOW the "
