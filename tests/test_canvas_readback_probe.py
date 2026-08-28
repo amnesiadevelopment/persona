@@ -211,6 +211,13 @@ def test_no_other_probe_was_reclassified():
     assert probes.must_differ_ids() == {
         "audio.digest",
         "webgl.readback",
+        # PS-232. The child-realm reading of the webgl vector, as its OWN
+        # record rather than as a realm added to "webgl.readback" above — which
+        # is why BOTH ids appear here and neither replaced the other. Updating
+        # this literal is the deliberate acknowledgement this tripwire exists
+        # to force: the must-differ set grew, and it grew by exactly one
+        # declared vector rather than by a silent reclassification.
+        "webgl.readback.childFrame",
         PROBE_ID,
     }
     assert {p.id for p in probes.probes_with_variance(probes.POOLED)} == {
@@ -235,14 +242,25 @@ def _two_profile_snapshots(*, worker_null):
     attributable to that one row and to nothing else.
     """
 
+    realms = {
+        realm for probe in probes.must_differ_probes() for realm in probe.realms
+    }
+
     def one(profile):
         snap = {
             "schema_version": 1,
             "engine": "firefox",
             "engine_build": "firefox-20",
             "profile": profile,
-            "realms": [probes.WINDOW, probes.WORKER],
-            "probes": {probes.WINDOW: {}, probes.WORKER: {}},
+            # PS-232. Built from the realms the must-differ inventory actually
+            # DECLARES, rather than from a hardcoded pair. This helper walks
+            # `must_differ_probes() x probe.realms` below, so a vector declaring
+            # a third realm raised KeyError here — the fixture was behind the
+            # data model, exactly as `_profile_snapshot` in
+            # tests/test_verify_snapshot.py was. Self-maintaining now: a fourth
+            # realm costs nothing here either.
+            "realms": sorted(realms),
+            "probes": {realm: {} for realm in realms},
         }
         for probe in probes.must_differ_probes():
             for realm in probe.realms:
@@ -280,7 +298,22 @@ def _unlinkability_verdict(*, worker_null):
         def make_profile(self, name, **kwargs):
             return type("P", (), {"name": name})()
 
-        def record(self, profile, fresh=False):
+        def record(self, profile, fresh=False, realms=None):
+            # `realms` is ACCEPTED AND IGNORED, and both halves are deliberate.
+            #
+            # PS-232 gave the real `Context.record` a `realms` argument so the
+            # two lanes that call `compare_profiles` record every realm that
+            # comparator walks. This double stands in for the BROWSER, not for
+            # the realm logic: it returns snapshots `_two_profile_snapshots`
+            # already built over `must_differ_probes() x probe.realms`, so they
+            # carry every declared realm — including `child_frame` — whatever
+            # is asked for here. Honouring the argument would mean re-deriving
+            # those snapshots and would change what these two tests measure;
+            # rejecting it (the bare `fresh=False` signature) made them raise
+            # TypeError on a call production makes correctly.
+            #
+            # So this is a SIGNATURE widening, not a behaviour change: both
+            # tests return the same verdicts as before (cannot_run / pass).
             return self._snaps[profile.name]
 
     return _run_two_profile_unlinkability(_Ctx())

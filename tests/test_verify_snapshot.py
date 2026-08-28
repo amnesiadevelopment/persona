@@ -26,12 +26,18 @@ from src.services.verify import diff, probes, runner, snapshot
 # expression belongs to without parsing JavaScript.
 _MARKER_RE = re.compile(r"/\*probe:(.+?)\*/")
 
+# The INDEXED access the child-frame harness is reached by (`self[N]`), which
+# appears in no other realm's expression. See `_fake_evaluate`.
+_CHILD_FRAME_MARK = "self.length-1"
+
 
 def _ids_in(expression):
     return _MARKER_RE.findall(expression)
 
 
-def _fake_evaluate(window_values=None, worker_values=None, harness_error=None):
+def _fake_evaluate(
+    window_values=None, worker_values=None, child_frame_values=None, harness_error=None
+):
     """Build an ``evaluate`` that answers wrapper expressions from canned data.
 
     ``*_values`` map probe id -> the value to report, or an ``Exception``
@@ -39,6 +45,7 @@ def _fake_evaluate(window_values=None, worker_values=None, harness_error=None):
     """
     window_values = window_values or {}
     worker_values = worker_values or {}
+    child_frame_values = child_frame_values or {}
 
     def reply(value):
         if isinstance(value, BaseException):
@@ -48,6 +55,25 @@ def _fake_evaluate(window_values=None, worker_values=None, harness_error=None):
     def evaluate(expression):
         ids = _ids_in(expression)
         assert ids, "wrapper carried no probe marker"
+        # PS-232. Discriminated FIRST, and by a literal unique to the child
+        # realm's INDEXED reach, because the child harness is shaped like
+        # neither of the other two: it carries MANY ids like the worker
+        # harness, so it would fall into the worker branch and answer a
+        # child-realm read with `worker:<id>`. That is not a cosmetic mislabel
+        # — every must-differ vector in the realm would then take the SAME
+        # default on both profiles and be reported COLLIDING, which is a false
+        # leak report on the very axis this fixture exists to model.
+        #
+        # `_CHILD_FRAME_MARK` is asserted against the real expression by
+        # test_the_child_frame_discriminator_still_matches_the_real_harness, so
+        # this cannot rot silently into the worker branch if the reach changes.
+        if _CHILD_FRAME_MARK in expression:
+            return {
+                probe_id: reply(
+                    child_frame_values.get(probe_id, f"child_frame:{probe_id}")
+                )
+                for probe_id in ids
+            }
         if len(ids) == 1 and "new Worker" not in expression:
             probe_id = ids[0]
             return reply(window_values.get(probe_id, f"window:{probe_id}"))
@@ -64,6 +90,13 @@ def _fake_evaluate(window_values=None, worker_values=None, harness_error=None):
 
 def _run(**kwargs):
     return runner.run_probes(_fake_evaluate(**kwargs), (probes.WINDOW, probes.WORKER))
+
+
+def _run_realms(realms, **kwargs):
+    """``_run`` over an explicit realm tuple. PS-232: the unlinkability
+    fixtures record the child realm, while the continuity fixtures above stay
+    on the two realms they were written for."""
+    return runner.run_probes(_fake_evaluate(**kwargs), realms)
 
 
 def _snapshot(**kwargs):
@@ -114,6 +147,46 @@ def test_no_probe_reads_a_live_clock():
 
 
 # --- the runner -------------------------------------------------------------
+
+
+def test_the_child_frame_discriminator_still_matches_the_real_harness():
+    """`_CHILD_FRAME_MARK` is tied to the reach it discriminates on. PS-232.
+
+    The fixture above tells a child-realm expression from a worker one by
+    looking for this literal, but the literal was a bare copy of
+    ``runner.py``'s indexed reach with nothing holding the two together. Round 2
+    review measured the consequence: respelling the mark as ``self.length - 1``
+    (what a reformat produces) gave *12 collateral failures* in tests about
+    cross-engine compares, whose messages named nothing about this
+    discriminator. That is a debugging trail, not a guard.
+
+    The stakes are why it needs to be a guard. The child harness carries MANY
+    ids like the worker harness, so a mark that stops matching does not error —
+    child-realm reads fall through to the worker branch and every must-differ
+    vector in the realm takes the SAME default on both profiles, reported
+    COLLIDING. A false leak report on the very axis this fixture models.
+
+    Asserted against the expression ``run_child_frame_realm`` actually
+    evaluates (``child_frame_expression``, runner.py:378) — not the inner
+    ``child_frame_source`` body, which does not carry the reach.
+    """
+    child_probes = probes.probes_for_realm(probes.CHILD_FRAME)
+    assert child_probes, "premise: some record declares the child realm"
+
+    expression = runner.child_frame_expression(child_probes)
+    assert _CHILD_FRAME_MARK in expression, (
+        f"the fixture discriminates the child realm on {_CHILD_FRAME_MARK!r}, "
+        "which the shipped child-frame expression no longer contains — "
+        "child-realm reads would fall through to the worker branch"
+    )
+
+    # ...and it must stay UNIQUE to that realm, or the discrimination is
+    # ambiguous in the other direction: a window/worker expression carrying the
+    # mark would be answered with child-realm values.
+    worker_probes = probes.probes_for_realm(probes.WORKER)
+    assert _CHILD_FRAME_MARK not in runner.worker_expression(worker_probes)
+    for probe in probes.probes_for_realm(probes.WINDOW):
+        assert _CHILD_FRAME_MARK not in runner.window_expression(probe), probe.id
 
 
 def test_run_probes_covers_every_probe_in_every_requested_realm():
@@ -1220,18 +1293,35 @@ def _profile_snapshot(profile, *, engine="chromium", **kwargs):
     (a null, a per-profile digest) in control of its own target.
     """
     window_values = kwargs.get("window_values") or {}
-    mirrored = {
-        probe.id: window_values[probe.id]
-        for probe in probes.must_differ_probes()
-        if probe.id in window_values and probes.WORKER in probe.realms
-    }
-    if mirrored:
-        kwargs["worker_values"] = {**mirrored, **(kwargs.get("worker_values") or {})}
+    # PS-232. Taken over the NON-WINDOW realms rather than over `worker` alone,
+    # because a must-differ vector may now declare CHILD_FRAME. Same rule and
+    # same reason as the worker mirror above, one realm wider; keyed off
+    # `realm in probe.realms` exactly as before, so a vector classified in a
+    # fourth realm costs nothing here either.
+    #
+    # NOTE the id-vs-realm subtlety: the child-realm vector is its OWN record
+    # (`webgl.readback.childFrame`), so a caller names it by THAT id, not by
+    # `webgl.readback`. The caller still wins on any key it states explicitly.
+    for realm in (probes.WORKER, probes.CHILD_FRAME):
+        mirrored = {
+            probe.id: window_values[probe.id]
+            for probe in probes.must_differ_probes()
+            if probe.id in window_values and realm in probe.realms
+        }
+        key = f"{realm}_values"
+        if mirrored:
+            kwargs[key] = {**mirrored, **(kwargs.get(key) or {})}
     return snapshot.build_snapshot(
-        _run(**kwargs),
+        # RECORDS the child realm too. The mirror above is necessary and not
+        # sufficient: a realm a snapshot never recorded reads ABSENT, which
+        # `compare_profiles` correctly reports INCONCLUSIVE rather than as a
+        # pass — so without this the must-differ pairs in the child realm would
+        # be inconclusive on every pair and the "two distinct profiles compare
+        # clean" premise these tests rest on would be untestable there.
+        _run_realms((probes.WINDOW, probes.WORKER, probes.CHILD_FRAME), **kwargs),
         engine=engine,
         profile=profile,
-        realms=(probes.WINDOW, probes.WORKER),
+        realms=(probes.WINDOW, probes.WORKER, probes.CHILD_FRAME),
         version="9.9.9",
     )
 

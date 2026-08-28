@@ -112,7 +112,32 @@ def test_every_must_differ_vector_is_readable_on_the_loopback_page():
         "audio.digest": local_probe.AUDIO_DIGEST,
         CANVAS_PROBE_ID: local_probe.CANVAS_PIXEL_HASH,
     }
-    must_differ = [p.id for p in probes.must_differ_probes()]
+    # PS-232. Scoped to the vectors this page is CAPABLE of reading. The
+    # loopback page is a SINGLE realm — it serves one document and hosts no
+    # child browsing context — so a probe declaring only `child_frame` has no
+    # reading here to map, and inventing one would be worse than the gap it
+    # papers over: it would point a child-realm vector at the WINDOW realm's
+    # hash and quietly assert that two different realms are the same reading.
+    #
+    # This narrows WHICH probes are policed; it does not soften the rule for
+    # any probe still in scope, and the guard below stops the exemption from
+    # outliving the gap that justifies it.
+    must_differ = [
+        p.id for p in probes.must_differ_probes() if probes.WINDOW in p.realms
+    ]
+
+    out_of_scope = [
+        p for p in probes.must_differ_probes() if probes.WINDOW not in p.realms
+    ]
+    for probe in out_of_scope:
+        # NOTE: no `assert probes.WINDOW not in probe.realms` here. That line
+        # restated the comprehension's own filter directly above, so it could
+        # never go red — it read as a guarantee while carrying none. The
+        # assertion below is the one doing the work.
+        assert probe.id not in expected, (
+            f"{probe.id} is mapped to a loopback vector but declares no window "
+            "realm — the page cannot read it, so that mapping is a fiction."
+        )
 
     unmapped = sorted(set(must_differ) - set(expected))
     assert not unmapped, (

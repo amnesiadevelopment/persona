@@ -40,6 +40,7 @@ ALL_REALMS = (WINDOW, WORKER, CHILD_FRAME)
 
 BOTH = (WINDOW, WORKER)
 WINDOW_ONLY = (WINDOW,)
+CHILD_FRAME_ONLY = (CHILD_FRAME,)
 
 # Every realm the harness can enter — which is ALL_REALMS, by definition.
 # Reserved for probes whose vector is meaningful in all of them (see
@@ -259,6 +260,79 @@ _JS_WITH_GL = (
     "})"
 )
 
+_JS_WEBGL_READBACK = (
+    _JS_WITH_GL + "(function(gl){"
+    # A deterministic draw with NO shaders: scissored clears only. Shader
+    # compilation is the flakiest thing to depend on under a software
+    # renderer, and nothing here needs it — the vector is the readback,
+    # not the geometry.
+    "var W=32,H=32;"
+    "try{gl.disable(gl.DEPTH_TEST);}catch(e){}"
+    "gl.enable(gl.SCISSOR_TEST);"
+    # MID-RANGE colours, deliberately. webgl_ext's perturbBytes nudges a
+    # byte only `if (v > 1 && v < 254)` (webgl_ext.py:66), so a black or
+    # white surface is returned UNTOUCHED and this probe would read as a
+    # total spoof failure while the spoof is working perfectly. Four bands
+    # rather than one flat fill so the surface carries spatial structure
+    # for the position-sensitive digest below.
+    #
+    # Every channel is chosen to land OFF a .5 byte boundary once scaled by
+    # 255. A float->byte conversion that lands exactly on .5 (0.30 -> 76.5,
+    # 0.70 -> 178.5, 0.50 -> 127.5) is a tie, and tie-breaking is not
+    # guaranteed to be the same rule on every renderer — so a boundary
+    # channel makes the digest look more renderer-portable than it is, and
+    # each band here covers 1024 bytes. It does not threaten AC3/AC4 (both
+    # sides of a comparison move together), but it costs nothing to remove
+    # the ambiguity, so none of these twelve is a tie.
+    "var bands=[[0.31,0.45,0.60],[0.55,0.35,0.69],"
+    "[0.42,0.62,0.38],[0.66,0.51,0.28]];"
+    "for(var b=0;b<bands.length;b++){"
+    "gl.scissor(0,b*(H/4),W,H/4);"
+    "gl.clearColor(bands[b][0],bands[b][1],bands[b][2],1);"
+    "gl.clear(gl.COLOR_BUFFER_BIT);}"
+    "gl.disable(gl.SCISSOR_TEST);"
+    # Uint8Array / RGBA UNSIGNED_BYTE: perturbBytes returns early on any
+    # other destination type (webgl_ext.py:60-63), so a float readback
+    # would observe no seed variance at all.
+    "var px=new Uint8Array(W*H*4);"
+    "gl.readPixels(0,0,W,H,gl.RGBA,gl.UNSIGNED_BYTE,px);"
+    # FNV-1a over EVERY byte, not a sum and not a sample.
+    #   * Not a sample: `perturbBytes` moves at most `_BUDGET` (512) bytes
+    #     (webgl_ext.py:75, :121), and it picks WHICH ones by ordinal among
+    #     the bytes that pass the mid-range guard — so the touched offsets
+    #     are spread thinly and unpredictably across the whole array rather
+    #     than sitting on a fixed comb. A narrow sample reads a false "no
+    #     variance". Measured on THIS probe's own 32x32 draw: 3072 of 4096
+    #     bytes are eligible and 384 of them move.
+    #
+    #     This used to read "_STRIDE is 17, so only every 17th byte is
+    #     touched at all; 4096 bytes span ~241 touched indices". PS-97
+    #     deleted that stride, precisely BECAUSE selecting by BYTE OFFSET is
+    #     aliased away by a row width the CALLER chooses: CreepJS's 17x42
+    #     corner has a 68-byte row = exactly 4 x 17, so the comb visited four
+    #     columns forever and moved ZERO eligible bytes, and two profiles
+    #     published one `pixels:` hash. The reason a narrow sample lies is
+    #     unchanged; only the reason the touched set is sparse is.
+    #   * Not a sum: the deltas are +/-1 each, so a sum is a random walk
+    #     over a ~+/-40 range — small enough that two seeds collide by
+    #     ARITHMETIC rather than by identity. That is the pigeonhole
+    #     property which makes a vector POOLED, and it would have made
+    #     this probe INDEPENDENT by declaration and POOLED in behaviour.
+    #     A position-sensitive hash makes a collision a real collision.
+    "var h=2166136261,mid=0;"
+    "for(var i=0;i<px.length;i++){var v=px[i];"
+    "if(v>1&&v<254)mid++;"
+    "h=Math.imul(h^v,16777619);}"
+    # `mid` is the self-check that keeps a green from being empty: it is
+    # how many bytes were even ELIGIBLE for perturbation. If a future
+    # change makes the draw black or white, `mid` collapses toward the
+    # alpha-only floor and the digest stops varying — this says which of
+    # the two happened, rather than leaving "identical digests" to be read
+    # as a spoof failure. An integer, so no float formatting to defeat.
+    "return {digest:h>>>0,bytes:px.length,mid:mid};"
+    "})"
+)
+
 # ``toString`` of a function, or a marker when the function isn't there. Used by
 # the masking-tell probes: the point is to observe what a PAGE would read off a
 # spoofed function, not to grep our own source for the masking helper.
@@ -450,76 +524,7 @@ PROBES: tuple[Probe, ...] = (
         # pair. Declaring the realm we can actually read keeps the must-differ
         # axis free of readings that are unobtainable by construction.
         WINDOW_ONLY,
-        _JS_WITH_GL + "(function(gl){"
-        # A deterministic draw with NO shaders: scissored clears only. Shader
-        # compilation is the flakiest thing to depend on under a software
-        # renderer, and nothing here needs it — the vector is the readback,
-        # not the geometry.
-        "var W=32,H=32;"
-        "try{gl.disable(gl.DEPTH_TEST);}catch(e){}"
-        "gl.enable(gl.SCISSOR_TEST);"
-        # MID-RANGE colours, deliberately. webgl_ext's perturbBytes nudges a
-        # byte only `if (v > 1 && v < 254)` (webgl_ext.py:66), so a black or
-        # white surface is returned UNTOUCHED and this probe would read as a
-        # total spoof failure while the spoof is working perfectly. Four bands
-        # rather than one flat fill so the surface carries spatial structure
-        # for the position-sensitive digest below.
-        #
-        # Every channel is chosen to land OFF a .5 byte boundary once scaled by
-        # 255. A float->byte conversion that lands exactly on .5 (0.30 -> 76.5,
-        # 0.70 -> 178.5, 0.50 -> 127.5) is a tie, and tie-breaking is not
-        # guaranteed to be the same rule on every renderer — so a boundary
-        # channel makes the digest look more renderer-portable than it is, and
-        # each band here covers 1024 bytes. It does not threaten AC3/AC4 (both
-        # sides of a comparison move together), but it costs nothing to remove
-        # the ambiguity, so none of these twelve is a tie.
-        "var bands=[[0.31,0.45,0.60],[0.55,0.35,0.69],"
-        "[0.42,0.62,0.38],[0.66,0.51,0.28]];"
-        "for(var b=0;b<bands.length;b++){"
-        "gl.scissor(0,b*(H/4),W,H/4);"
-        "gl.clearColor(bands[b][0],bands[b][1],bands[b][2],1);"
-        "gl.clear(gl.COLOR_BUFFER_BIT);}"
-        "gl.disable(gl.SCISSOR_TEST);"
-        # Uint8Array / RGBA UNSIGNED_BYTE: perturbBytes returns early on any
-        # other destination type (webgl_ext.py:60-63), so a float readback
-        # would observe no seed variance at all.
-        "var px=new Uint8Array(W*H*4);"
-        "gl.readPixels(0,0,W,H,gl.RGBA,gl.UNSIGNED_BYTE,px);"
-        # FNV-1a over EVERY byte, not a sum and not a sample.
-        #   * Not a sample: `perturbBytes` moves at most `_BUDGET` (512) bytes
-        #     (webgl_ext.py:75, :121), and it picks WHICH ones by ordinal among
-        #     the bytes that pass the mid-range guard — so the touched offsets
-        #     are spread thinly and unpredictably across the whole array rather
-        #     than sitting on a fixed comb. A narrow sample reads a false "no
-        #     variance". Measured on THIS probe's own 32x32 draw: 3072 of 4096
-        #     bytes are eligible and 384 of them move.
-        #
-        #     This used to read "_STRIDE is 17, so only every 17th byte is
-        #     touched at all; 4096 bytes span ~241 touched indices". PS-97
-        #     deleted that stride, precisely BECAUSE selecting by BYTE OFFSET is
-        #     aliased away by a row width the CALLER chooses: CreepJS's 17x42
-        #     corner has a 68-byte row = exactly 4 x 17, so the comb visited four
-        #     columns forever and moved ZERO eligible bytes, and two profiles
-        #     published one `pixels:` hash. The reason a narrow sample lies is
-        #     unchanged; only the reason the touched set is sparse is.
-        #   * Not a sum: the deltas are +/-1 each, so a sum is a random walk
-        #     over a ~+/-40 range — small enough that two seeds collide by
-        #     ARITHMETIC rather than by identity. That is the pigeonhole
-        #     property which makes a vector POOLED, and it would have made
-        #     this probe INDEPENDENT by declaration and POOLED in behaviour.
-        #     A position-sensitive hash makes a collision a real collision.
-        "var h=2166136261,mid=0;"
-        "for(var i=0;i<px.length;i++){var v=px[i];"
-        "if(v>1&&v<254)mid++;"
-        "h=Math.imul(h^v,16777619);}"
-        # `mid` is the self-check that keeps a green from being empty: it is
-        # how many bytes were even ELIGIBLE for perturbation. If a future
-        # change makes the draw black or white, `mid` collapses toward the
-        # alpha-only floor and the digest stops varying — this says which of
-        # the two happened, rather than leaving "identical digests" to be read
-        # as a spoof failure. An integer, so no float formatting to defeat.
-        "return {digest:h>>>0,bytes:px.length,mid:mid};"
-        "})",
+        _JS_WEBGL_READBACK,
         # THE SECOND must-differ vector. webgl_ext.py adds a deterministic
         # per-(seed, byte-offset) +/-1 delta to a bounded, content-selected set
         # of bytes in a byte-typed readPixels result (webgl_ext.py:5-7,
@@ -954,6 +959,66 @@ PROBES: tuple[Probe, ...] = (
             "entered rather than assumed."
         ),
     ),
+    Probe(
+        # PS-232. THE SAME VECTOR, DECLARED IN THE CHILD REALM — as a NEW
+        # record rather than as a realm added to the one above, and that shape
+        # is the whole point of this record rather than an incidental choice.
+        #
+        # `compare_profiles` - the Level 2 unlinkability gate - builds its work
+        # list from `must_differ_probes() x probe.realms`, so it can only ask
+        # about a realm some INDEPENDENT record declares. Before this record
+        # existed that list held four pairs and NONE was in a child realm: the
+        # realm was structurally outside the unlinkability question. PS-193
+        # MEASURED a real Level 2 failure in exactly this realm on exactly this
+        # vector - CreepJS built a phantom iframe, took it by INDEXED access
+        # (`self[N]`), which never invokes the `contentWindow` accessor our
+        # chain hooked, and Firefox's `creepjs :: webgl_pixel_hash` received the
+        # unperturbed buffer, bit-identical to the unspoofed baseline, across
+        # 4 seeds / 4 exits / 3 days. A collision was measured here, the realm
+        # was added to the harness for it, and the gate deciding "are these two
+        # profiles distinguishable?" still could not look at it.
+        #
+        # WHY A SEPARATE RECORD AND NOT `webgl.readback` GAINING A REALM.
+        # PS-210 chose "the new realm arrives as a NEW record" deliberately, so
+        # that no existing vector silently starts being evaluated somewhere it
+        # was never validated, and it installed a guard to enforce that. The
+        # two records share EXPRESSION but not IDENTITY: `_JS_WEBGL_READBACK`
+        # is one source of truth, so the charter's one-record-per-vector
+        # objection to a duplicated expression does not apply - there is no
+        # second copy to drift. What is duplicated is the DECLARATION, which is
+        # exactly the thing that has to be per-realm for the realm to be
+        # validated on its own evidence.
+        #
+        # CHILD_FRAME_ONLY, not (WINDOW, CHILD_FRAME). Declaring the window
+        # realm here would add this id to `probes_for_realm("window")`, which
+        # the committed baseline records exactly - tripping
+        # test_the_committed_baseline_records_exactly_the_live_probe_inventory
+        # for a reading the window realm already has under the id above. The
+        # window reading is not missing; it belongs to the other record.
+        #
+        # NOT WORKER, for the reason the record above gives at length: in a
+        # worker `getContext('webgl')` returns null, a null is recorded as
+        # {"value": null}, and two profiles both reading null compare EQUAL and
+        # are reported COLLIDING. A child frame has a DOCUMENT, so `_CANVAS`
+        # takes its `document.createElement('canvas')` branch rather than the
+        # OffscreenCanvas branch that reads null in a worker. That is the
+        # mechanical reason this vector is expressible here and not there, and
+        # it was MEASURED before this record was declared, not assumed: in a
+        # genuinely entered child realm (chromium, indexed reach, the
+        # `contentWindow` accessor instrumented and counted at zero) this
+        # expression returns a real reading, byte-identical across two
+        # consecutive records - the determinism this module demands.
+        "webgl.readback.childFrame",
+        CHILD_FRAME_ONLY,
+        _JS_WEBGL_READBACK,
+        note=(
+            "The webgl readback vector, read in a same-origin CHILD realm "
+            "reached by indexed access. Shares its expression with "
+            "webgl.readback; separate record so the child realm is validated "
+            "on its own evidence rather than inheriting the window realm's."
+        ),
+        variance=INDEPENDENT,
+    ),
 )
 
 
@@ -996,6 +1061,51 @@ def must_differ_ids() -> frozenset[str]:
     cross-profile comparator cannot drift out of step with the inventory.
     """
     return frozenset(p.id for p in must_differ_probes())
+
+
+def must_differ_realms() -> tuple[str, ...]:
+    """Every realm the cross-profile comparator will WALK, in ``ALL_REALMS`` order.
+
+    PS-232. This exists so a RECORDING can be taken over exactly the realms
+    :func:`~.diff.compare_profiles` is going to ask about, and it is derived
+    from the same inventory that comparator walks rather than listed anywhere.
+
+    THE DEFECT IT CLOSES. ``compare_profiles`` builds its work list from
+    ``must_differ_probes() x probe.realms``, so declaring a must-differ vector
+    in a new realm immediately makes the comparator ask about that realm. A
+    recorder pinned to a narrower realm tuple then answers ABSENT on the new
+    pair, ``_unread_for_unlinkability`` correctly reads ABSENT as unread, and
+    the pair comes back INCONCLUSIVE on every run — which
+    ``_run_two_profile_unlinkability`` reports as CANNOT_RUN. The gate stops
+    returning a verdict at all: the comparator was taught to ask about a realm
+    the recorder was never taught to record. Measured, not argued — recording
+    ``(window, worker)`` while the inventory declared a ``child_frame`` vector
+    took the live check from PASS to CANNOT_RUN on two profiles that differ on
+    every vector, i.e. the case that should read as a clean pass.
+
+    So the rule is: whoever RECORDS for a cross-profile comparison records
+    THIS, and the two cannot drift apart because both are computed from the
+    inventory. Adding a vector stays "a record in PROBES and nothing else"
+    (``probes.py:8``) — the recording realms follow automatically.
+
+    DELIBERATELY NOT ``ALL_REALMS``. A realm no must-differ vector declares is
+    not compared, so recording it would buy nothing and cost a launch-time
+    realm entry on every run; and every extra realm is one more surface whose
+    failure to be entered a caller has to reason about. This returns what is
+    ASKED ABOUT, which is the set the answer actually depends on.
+
+    NOT ``BASELINE_REALMS`` EITHER, and the two are not interchangeable. The
+    committed baseline ARTIFACT is a fixed two-realm document by design
+    (``baseline.BASELINE_REALMS``, pinned by its own guard); this is the realm
+    set of a LIVE two-profile comparison. Same shape, different jobs — see
+    ``baseline.py``'s note. Widening one must never be read as licence to
+    widen the other.
+    """
+    return tuple(
+        realm
+        for realm in ALL_REALMS
+        if any(realm in probe.realms for probe in must_differ_probes())
+    )
 
 
 def _check_unique() -> None:
