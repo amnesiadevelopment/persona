@@ -236,6 +236,100 @@ def test_deleting_a_profile_keeps_a_colliding_profiles_current_entry(
     assert f"Name={_VICTIM}\n" in body
 
 
+# --- PS-209 round 3: the ownership token has TWO eras ----------------------
+#
+# `app_id_for` gained its digest at 8c38017 (v2.1.8); before that it returned
+# `persona-{raw name}`. `_safe_filename` was byte-identical from v1.0.0 through
+# the merge-base, so a pre-v2.1.8 entry sits at EXACTLY the path the legacy
+# helper computes — it is FOUND, and a guard that knows only the modern token
+# then refuses it. That turns residue the pre-PS-209 code cleaned up (it
+# unlinked by name, unguarded) into residue nothing can ever reach: the write
+# path cannot heal it and the delete path cannot remove it, so it would survive
+# a panic wipe with the profile's cleartext Name= on the host.
+#
+# The fixture body below is the OLD writer's, copied from 7ad7422 — NOT
+# `_legacy_body`, which uses today's `app_id_for` and so only covers v2.1.8+.
+
+
+def _pre_v218_body(profile_name: str, icon: str = "chromium") -> str:
+    """A v2.1.7-era entry, byte-for-byte as the writer at 7ad7422 produced it.
+
+    The only difference from `_legacy_body` is the StartupWMClass token, and
+    that difference is the whole point: this is the shape a guard pinned to the
+    modern token silently fails to recognise.
+    """
+    return (
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        f"Name={profile_name}\n"
+        f"Icon={icon}\n"
+        "Terminal=false\n"
+        "NoDisplay=true\n"
+        f"StartupWMClass=persona-{profile_name}\n"
+    )
+
+
+def test_remove_unlinks_a_pre_v218_legacy_entry(tmp_path, monkeypatch):
+    # The DELETE path, and the one that matters most: remove_window_entry is
+    # reached from wipe_all_profiles, whose "nothing survives it" is only true
+    # if this file goes. An interior space is a valid profile name, so the
+    # legacy filename is persona-client_acct.desktop.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    d = pathlib.Path(tmp_path) / ".local/share/applications"
+    d.mkdir(parents=True, exist_ok=True)
+    legacy = d / "persona-client_acct.desktop"
+    legacy.write_text(_pre_v218_body("client acct"), encoding="utf-8")
+    # the era check itself: this entry does NOT carry today's token
+    assert f"StartupWMClass={app_id_for('client acct')}" not in legacy.read_text(
+        encoding="utf-8"
+    )
+
+    remove_window_entry("client acct")
+
+    assert not legacy.exists(), "pre-v2.1.8 residue survived a delete/panic wipe"
+    assert _entries(tmp_path) == []
+
+
+def test_write_converges_off_a_pre_v218_legacy_entry(tmp_path, monkeypatch):
+    # The WRITE path: the next launch heals it, rather than leaving the orphan
+    # sitting beside the new file forever.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    d = pathlib.Path(tmp_path) / ".local/share/applications"
+    d.mkdir(parents=True, exist_ok=True)
+    legacy = d / "persona-client_acct.desktop"
+    legacy.write_text(_pre_v218_body("client acct"), encoding="utf-8")
+
+    new_path = pathlib.Path(write_window_entry("client acct"))
+
+    assert not legacy.exists(), "pre-v2.1.8 entry left beside the new one"
+    assert _entries(tmp_path) == [new_path.name]
+    assert f"StartupWMClass={app_id_for('client acct')}" in new_path.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_pre_v218_token_does_not_reopen_the_collision(tmp_path, monkeypatch):
+    # Accepting the superseded token must not re-open round 2's collision. It
+    # cannot: the old token embeds the raw name verbatim behind a fixed prefix
+    # and the match is line-anchored, and the two token spaces differ at
+    # character 8 (`persona_` vs `persona-`), so an old-token match can never
+    # be satisfied by a new-scheme file. Asserted here on files on disk.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    victim = pathlib.Path(write_window_entry(_VICTIM))
+    attacker = pathlib.Path(write_window_entry(_ATTACKER))
+
+    assert victim.exists(), "the widened guard deleted a live profile's entry"
+    assert sorted(_entries(tmp_path)) == sorted([victim.name, attacker.name])
+
+    remove_window_entry(_ATTACKER)
+
+    assert victim.exists(), "the widened guard deleted a live profile's entry"
+    assert _entries(tmp_path) == [victim.name]
+    assert f"StartupWMClass={app_id_for(_VICTIM)}\n" in victim.read_text(
+        encoding="utf-8"
+    )
+
+
 def test_legacy_cleanup_leaves_an_entry_it_cannot_prove_it_owns(tmp_path, monkeypatch):
     # The stated bound of the content guard, pinned rather than left implicit.
     # Ownership is proven from StartupWMClass; a file at the legacy path that
