@@ -571,6 +571,40 @@ def test_the_window_worker_comparison_is_unchanged_by_the_new_realm():
     assert entries[0]["probe_id"] == "realm.kind"
 
 
+# PS-232. ONE definition of the child-frame guard, called both by the guard
+# test below and by the test that proves the guard still bites.
+#
+# Round 2 review caught the previous spelling: the proof test carried its own
+# copy of this literal and its own copy of the predicate, so it exercised a
+# COPY and never read the real one. Adding "webgl.readback" here — which
+# re-permits exactly the widening PS-210 installed the guard against — left
+# that proof green. Two copies of a literal is the same drift hazard
+# test_the_two_records_share_one_expression_so_they_cannot_drift exists to
+# prevent one file away; a guard's proof must fail when the GUARD goes soft,
+# which it can only do by reading the guard itself.
+_REALM_NATIVE_IDS = frozenset({"realm.frameIdentity", "webgl.readback.childFrame"})
+
+
+def _records_predating_the_child_frame_realm(inventory):
+    """The records the guard applies to: every one that PRE-DATES this realm."""
+    return [p for p in inventory if p.id not in _REALM_NATIVE_IDS]
+
+
+def _child_frame_guard_violations(inventory):
+    """Records breaking the guard: a PRE-EXISTING record declaring the realm.
+
+    Empty means the invariant holds. Returns the offenders rather than a bool
+    so the guard test can name them, keeping one definition of the predicate
+    instead of trading shared code for a readable failure.
+    """
+    return [
+        p
+        for p in _records_predating_the_child_frame_realm(inventory)
+        if probes.CHILD_FRAME in p.realms
+        or p.realms not in (probes.BOTH, probes.WINDOW_ONLY)
+    ]
+
+
 def test_the_existing_probe_records_kept_their_realms():
     """AC7. Every pre-existing record keeps exactly the realms it declared.
 
@@ -608,14 +642,15 @@ def test_the_existing_probe_records_kept_their_realms():
     # declared. Widening `webgl.readback` to (WINDOW, CHILD_FRAME) — the shape
     # PS-232 first tried and PS-210 installed this guard against — still fails
     # here, and test_widening_a_pre_existing_record_is_still_caught below
-    # proves it by construction rather than by assertion.
-    grandfathered = {"realm.frameIdentity", "webgl.readback.childFrame"}
-    pre_existing = [p for p in probes.PROBES if p.id not in grandfathered]
+    # proves it, by driving THIS SAME predicate rather than a copy of it.
+    pre_existing = _records_predating_the_child_frame_realm(probes.PROBES)
+    assert pre_existing, "premise: there are records older than this realm"
 
-    assert pre_existing
-    for probe in pre_existing:
-        assert probes.CHILD_FRAME not in probe.realms
-        assert probe.realms in (probes.BOTH, probes.WINDOW_ONLY)
+    offenders = _child_frame_guard_violations(probes.PROBES)
+    assert not offenders, (
+        "a record that pre-dates the child-frame realm declares it: "
+        + ", ".join(f"{p.id}{p.realms}" for p in offenders)
+    )
 
 
 def test_widening_a_pre_existing_record_is_still_caught():
@@ -623,23 +658,23 @@ def test_widening_a_pre_existing_record_is_still_caught():
 
     Amending a guard is the moment to demonstrate it still catches what it was
     installed for, rather than to assert that it does. This rebuilds the exact
-    shape PS-210 forbade (a PRE-EXISTING record gaining the realm) and asserts
-    the predicate above rejects it, so the amendment cannot have widened into a
-    no-op without this test going red.
-    """
-    def rejects(inventory) -> bool:
-        grandfathered = {"realm.frameIdentity", "webgl.readback.childFrame"}
-        return any(
-            probes.CHILD_FRAME in p.realms or p.realms not in (probes.BOTH, probes.WINDOW_ONLY)
-            for p in inventory
-            if p.id not in grandfathered
-        )
+    shape PS-210 forbade (a PRE-EXISTING record gaining the realm) and drives
+    ``_child_frame_guard_violations`` — **the predicate the guard test itself
+    calls, not a copy of it** — so the amendment cannot widen into a no-op
+    without this test going red.
 
+    Round 2 review measured why that distinction is the whole test: the earlier
+    spelling re-implemented the predicate locally with its own copy of the
+    grandfathered literal, so re-permitting `webgl.readback` in the REAL set
+    (which allows precisely the widening PS-210 forbade) left this green. A
+    guard that has gone soft looks exactly like a guard that is working, so the
+    proof has to read the guard.
+    """
     live = next(p for p in probes.PROBES if p.id == "webgl.readback")
     assert live.realms == probes.WINDOW_ONLY, "premise: this record is window-only"
 
     # The real inventory passes...
-    assert not rejects(probes.PROBES)
+    assert not _child_frame_guard_violations(probes.PROBES)
 
     # ...and the forbidden shape does not, on either spelling of widening.
     for widened in ((probes.WINDOW, probes.CHILD_FRAME), probes.EVERY_REALM):
@@ -649,7 +684,29 @@ def test_widening_a_pre_existing_record_is_still_caught():
             else p
             for p in probes.PROBES
         )
-        assert rejects(mutated), (
+        offenders = _child_frame_guard_violations(mutated)
+        assert [p.id for p in offenders] == ["webgl.readback"], (
             f"a pre-existing record widened to {widened} was NOT caught — "
             "the amended guard has gone soft on the very shape it exists for"
         )
+
+
+def test_the_guard_still_covers_the_record_the_realm_was_forbidden_on():
+    """The grandfathered set cannot quietly grow to cover a pre-existing record.
+
+    ``_child_frame_guard_violations`` only bites records OUTSIDE
+    ``_REALM_NATIVE_IDS``, so widening that set is the one edit that disarms the
+    guard while every assertion above still reads true — the exact mutation
+    round 2 review landed and measured green. Pinning membership directly is
+    what makes that edit loud: the ids exempt from the guard are the two records
+    that were BORN with the realm, and `webgl.readback` is not one of them.
+    """
+    live_ids = {p.id for p in probes.PROBES}
+    assert _REALM_NATIVE_IDS <= live_ids, "premise: exempt ids are real records"
+
+    # The pre-existing vector the realm was forbidden on must remain SUBJECT to
+    # the guard — i.e. never exempt from it.
+    assert "webgl.readback" not in _REALM_NATIVE_IDS
+    assert "webgl.readback" in {
+        p.id for p in _records_predating_the_child_frame_realm(probes.PROBES)
+    }

@@ -149,6 +149,46 @@ def test_no_probe_reads_a_live_clock():
 # --- the runner -------------------------------------------------------------
 
 
+def test_the_child_frame_discriminator_still_matches_the_real_harness():
+    """`_CHILD_FRAME_MARK` is tied to the reach it discriminates on. PS-232.
+
+    The fixture above tells a child-realm expression from a worker one by
+    looking for this literal, but the literal was a bare copy of
+    ``runner.py``'s indexed reach with nothing holding the two together. Round 2
+    review measured the consequence: respelling the mark as ``self.length - 1``
+    (what a reformat produces) gave *12 collateral failures* in tests about
+    cross-engine compares, whose messages named nothing about this
+    discriminator. That is a debugging trail, not a guard.
+
+    The stakes are why it needs to be a guard. The child harness carries MANY
+    ids like the worker harness, so a mark that stops matching does not error —
+    child-realm reads fall through to the worker branch and every must-differ
+    vector in the realm takes the SAME default on both profiles, reported
+    COLLIDING. A false leak report on the very axis this fixture models.
+
+    Asserted against the expression ``run_child_frame_realm`` actually
+    evaluates (``child_frame_expression``, runner.py:378) — not the inner
+    ``child_frame_source`` body, which does not carry the reach.
+    """
+    child_probes = probes.probes_for_realm(probes.CHILD_FRAME)
+    assert child_probes, "premise: some record declares the child realm"
+
+    expression = runner.child_frame_expression(child_probes)
+    assert _CHILD_FRAME_MARK in expression, (
+        f"the fixture discriminates the child realm on {_CHILD_FRAME_MARK!r}, "
+        "which the shipped child-frame expression no longer contains — "
+        "child-realm reads would fall through to the worker branch"
+    )
+
+    # ...and it must stay UNIQUE to that realm, or the discrimination is
+    # ambiguous in the other direction: a window/worker expression carrying the
+    # mark would be answered with child-realm values.
+    worker_probes = probes.probes_for_realm(probes.WORKER)
+    assert _CHILD_FRAME_MARK not in runner.worker_expression(worker_probes)
+    for probe in probes.probes_for_realm(probes.WINDOW):
+        assert _CHILD_FRAME_MARK not in runner.window_expression(probe), probe.id
+
+
 def test_run_probes_covers_every_probe_in_every_requested_realm():
     results = _run()
     for realm in (probes.WINDOW, probes.WORKER):
