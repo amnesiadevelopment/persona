@@ -1,4 +1,7 @@
+import pytest
+
 from src.models.proxy import Proxy
+from src.services.proxy.freshness import proxy_indicator_state
 from src.services.proxy.store import ProxyStore
 
 
@@ -273,25 +276,132 @@ def test_update_sets_rotate_url(tmp_path):
     assert s.get("home").rotate_url == "https://rotate.example/x"
 
 
-def test_set_url_changes_url_and_keeps_rest(tmp_path):
+def test_set_url_changes_url_and_drops_the_old_exits_geography(tmp_path):
+    """A moved URL is a moved EXIT: nothing recorded about the old one survives.
+
+    INVERTED from `test_set_url_changes_url_and_keeps_rest`, which asserted
+    `country_code == "CA"` and `last_ip == "5.5.5.5"` survived a URL change —
+    it encoded the defect (the record went on asserting the PREVIOUS exit's
+    geography under a "verified" verdict). The rotate settings are genuinely
+    kept; the geography is not.
+    """
     s = _fixed_store(tmp_path, 1000.0)
     s.add("home", "socks5://sess-a:p@1.2.3.4:1080", "https://rotate.example/x")
-    s.mark_checked("home", "CA", "Canada", "5.5.5.5")
+    s.mark_checked("home", "CA", "Canada", "5.5.5.5", "America/Toronto", 43.7, -79.4)
     assert s.set_url("home", "socks5://sess-b:p@1.2.3.4:1080") is True
     p = s.get("home")
     assert p.url == "socks5://sess-b:p@1.2.3.4:1080"
+    # Rotate settings survive — they describe the ROTATOR, not the exit.
     assert p.rotate_url == "https://rotate.example/x"
+    # All six geo fields plus the check bookkeeping are gone.
+    assert p.country_code == ""
+    assert p.country_name == ""
+    assert p.last_ip == ""
+    assert p.timezone == ""
+    assert p.lat is None
+    assert p.lon is None
+    assert p.checked_at == 0.0
+    assert p.last_check_ok is None
+    # The verdict the launch path actually reads, not just the fields.
+    assert proxy_indicator_state(p, 1000.0) == "unverified"
+
+
+def test_set_url_without_a_url_change_keeps_everything(tmp_path):
+    """The no-change path is byte-identical to before this slice.
+
+    `app.py`'s `_rotate_proxy` already guards with `if url != proxy.url`, so
+    this is reachable only by calling directly — but it is the contract the
+    invalidation is conditioned on, so it is covered rather than assumed.
+    """
+    s = _fixed_store(tmp_path, 1000.0)
+    s.add("home", "socks5://sess-a:p@1.2.3.4:1080", "https://rotate.example/x")
+    s.mark_checked("home", "CA", "Canada", "5.5.5.5", "America/Toronto", 43.7, -79.4)
+    assert s.set_url("home", "socks5://sess-a:p@1.2.3.4:1080") is True
+    p = s.get("home")
+    assert p.url == "socks5://sess-a:p@1.2.3.4:1080"
     assert p.country_code == "CA"
+    assert p.country_name == "Canada"
     assert p.last_ip == "5.5.5.5"
+    assert p.timezone == "America/Toronto"
+    assert p.lat == 43.7
+    assert p.lon == -79.4
+    assert p.checked_at == 1000.0
+    assert p.last_check_ok is True
+    assert proxy_indicator_state(p, 1000.0) == "verified"
 
 
 def test_set_url_persists(tmp_path):
+    """The URL moves across a reload — and so does the invalidation.
+
+    The `mark_checked` here is load-bearing, not scene-setting. Without it the
+    fixture never has any geography for `set_url` to drop: `Proxy`'s dataclass
+    defaults are already `country_code=""` / `timezone=""`, so the two geo
+    assertions below held identically with the fix, without it, and against any
+    future regression — they read as covering the invariant while being
+    structurally incapable of detecting its violation.
+    """
     path = str(tmp_path / "proxies.json")
-    s1 = ProxyStore(path=path)
+    s1 = ProxyStore(path=path, now=lambda: 1000.0)
     s1.add("home", "socks5://1.2.3.4:1080")
+    s1.mark_checked("home", "CA", "Canada", "5.5.5.5", "America/Toronto", 43.7, -79.4)
     s1.set_url("home", "socks5://9.9.9.9:1080")
     s2 = ProxyStore(path=path)
     assert s2.get("home").url == "socks5://9.9.9.9:1080"
+    # The URL moved, so no geography may ride across the reload with it.
+    assert s2.get("home").country_code == ""
+    assert s2.get("home").timezone == ""
+
+
+def test_set_url_invalidation_survives_a_restart(tmp_path):
+    """The durable half — a `set_url` with NO follow-up check, then a reload.
+
+    `set_url` `_save()`s before the rotate caller's check runs, so a crash,
+    kill or quit between the two used to leave the stale affirmative on DISK:
+    a fresh store read back the NEW url beside the OLD exit's geography and a
+    `last_check_ok` of True, indicator "verified", and nothing later
+    re-examined it. This is not a ~10s race — it survived a restart.
+    """
+    path = str(tmp_path / "proxies.json")
+    s1 = ProxyStore(path=path, now=lambda: 1000.0)
+    s1.add("home", "socks5://sess-a:pw@1.2.3.4:1080", "https://rotate.example/x")
+    s1.mark_checked("home", "DE", "Germany", "5.5.5.5", "Europe/Berlin", 52.5, 13.4)
+    s1.set_url("home", "socks5://sess-vy4bplk2:pw@1.2.3.4:1080")
+
+    p = ProxyStore(path=path).get("home")  # a fresh store, as a restart would
+    assert p.url == "socks5://sess-vy4bplk2:pw@1.2.3.4:1080"
+    assert p.country_code == ""
+    assert p.country_name == ""
+    assert p.last_ip == ""
+    assert p.timezone == ""
+    assert p.lat is None
+    assert p.lon is None
+    assert p.checked_at == 0.0
+    assert p.last_check_ok is None
+    assert proxy_indicator_state(p, 1000.0) == "unverified"
+
+
+def test_set_url_leaves_no_zone_for_a_launch_to_declare(tmp_path):
+    """Reaches the OBSERVER, not just the record.
+
+    The point of the invalidation is what a proxied profile DECLARES. Clearing
+    only the verdict (leaving the geography) would move the record to
+    "unverified" and change this outcome not at all — `_proxy_timezone`'s first
+    branch returns `proxy.timezone` whenever it is non-empty, and the
+    unverified-with-geography row is deliberately left launching. So assert the
+    refusal, which is the thing that would silently not happen.
+    """
+    from src.services.browser.launch_policy import _proxy_timezone
+    from src.services.proxy.errors import GeographyUnknownError
+
+    path = str(tmp_path / "proxies.json")
+    s = ProxyStore(path=path, now=lambda: 1000.0)
+    s.add("home", "socks5://sess-a:pw@1.2.3.4:1080", "https://rotate.example/x")
+    s.mark_checked("home", "DE", "Germany", "5.5.5.5", "Europe/Berlin", 52.5, 13.4)
+    assert _proxy_timezone(s.get("home")) == "Europe/Berlin"  # before the move
+
+    s.set_url("home", "socks5://sess-vy4bplk2:pw@1.2.3.4:1080")
+    with pytest.raises(GeographyUnknownError):
+        _proxy_timezone(ProxyStore(path=path).get("home"))
 
 
 def test_set_url_unknown(tmp_path):

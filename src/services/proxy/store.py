@@ -175,15 +175,66 @@ class ProxyStore(StoreGuardMixin, TrashableMixin):
         return True
 
     def set_url(self, name: str, url: str) -> bool:
-        """Change a proxy's URL in place, keeping geo and rotate settings.
+        """Change a proxy's URL in place, keeping the rotate settings.
 
-        Used after session-token rotation, where the follow-up check refreshes
-        the geo fields anyway.
+        Used after session-token rotation. When the URL actually MOVES, the
+        recorded geography is invalidated here — all six geo fields plus the
+        check bookkeeping — exactly as ``update()`` does via its ``keep_geo``
+        term. A URL that is unchanged keeps everything, which is what makes
+        this safe to call unconditionally.
+
+        WHY THIS IS THE MODEL'S JOB AND NOT THE CALLER'S. This used to keep the
+        geo, and justified it with a promise about ONE caller: "the follow-up
+        check refreshes the geo fields anyway". That is a property of
+        ``app.py``'s ``_rotate_proxy``, not of the record, and it does not
+        survive contact with reality in two reachable ways:
+
+        - IN FLIGHT. ``_save()`` happens here, the check finishes ~10s later
+          (``PROXY_CHECK_TIMEOUT``), and nothing gates a launch on a check that
+          is in flight.
+        - DURABLE, the sharper one. A crash, kill or quit between the two
+          leaves the stale affirmative ON DISK. Re-opening the file with a
+          fresh ``ProxyStore`` — as a restart does — reads back the NEW url
+          beside the OLD exit's country, timezone, coordinates and a
+          ``last_check_ok`` of True. Nothing later re-examines it.
+
+        The result was a record asserting the previous exit's geography under a
+        verdict that still read "verified", so a proxied profile declared a
+        location that disagreed with the exit actually carrying its traffic.
+        Neither shipped refusal covered it: the disproven-geo guard fires on
+        ``proxy_indicator_state == "failed"`` and this state read "verified",
+        and the no-geo refusal requires the fields to be EMPTY when they were
+        populated with the previous exit's values. ``proxy_indicator_state``
+        reads only ``last_check_ok`` / ``checked_at``, so a URL change is
+        invisible to it by construction — which is why the invalidation has to
+        happen at the WRITE, here, rather than being detected downstream.
+
+        WHY ZEROING RATHER THAN ONLY CLEARING THE VERDICT. The alternative was
+        to keep the geography and clear only ``last_check_ok`` / ``checked_at``,
+        letting the launch path refuse via its unverified route. Executed end to
+        end, that is a NO-OP on the launch outcome: the record moves to
+        "unverified", but ``_proxy_timezone``'s first branch returns
+        ``proxy.timezone`` whenever it is non-empty, and the tri-state
+        unverified-with-geography row is deliberately left LAUNCHING (see the
+        NOTE in ``launch_policy.py``). The profile would go on declaring the old
+        exit's zone. Zeroing is what actually reaches the observer, and it keeps
+        this method structurally consistent with its sibling ``update()``.
         """
         with self._lock:
             proxy = self.proxies.get(name)
             if proxy is None:
                 return False
+            if url != proxy.url:
+                # The exit moved: nothing recorded about the OLD one describes
+                # the new one. Mirrors update()'s `keep_geo` field-for-field.
+                proxy.country_code = ""
+                proxy.country_name = ""
+                proxy.last_ip = ""
+                proxy.timezone = ""
+                proxy.lat = None
+                proxy.lon = None
+                proxy.checked_at = 0.0
+                proxy.last_check_ok = None
             proxy.url = url
             self._save()
         return True
