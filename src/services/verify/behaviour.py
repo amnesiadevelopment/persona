@@ -344,9 +344,15 @@ class Context:
     def record(self, profile, *, fresh: bool, realms: "tuple[str, ...] | None" = None):
         """Observe a live profile through the EXISTING recorder.
 
-        Every reading in this module comes through here. ``record_snapshot``
-        launches in-process (the firefox eval hook is published per-process),
-        reads every probe in the requested realms, and tears the session down.
+        Every reading in this module comes through here, and what
+        ``record_snapshot`` does depends on the engine the profile ACTUALLY
+        launches on. On the FIREFOX arm it launches in-process (the firefox
+        eval hook is published per-process), reads every probe in the requested
+        realms, and tears the session down. On the CHROMIUM arm it does NOT
+        launch at all: it attaches to a session the operator already opened in
+        automation mode, or it refuses — launching there would mean opening an
+        unauthenticated CDP control channel, which isolation forbids. So
+        ``self.launches`` counts recordings, not browser starts.
 
         ``realms`` defaults to ``record_snapshot``'s own default
         (``BASELINE_REALMS`` — window and worker), which is what the continuity

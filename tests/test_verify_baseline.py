@@ -1210,3 +1210,197 @@ def test_no_verification_path_persists_ai_control(monkeypatch):
     assert created["ai_control"] is False, (
         "a verification scratch profile must never be stored with ai_control on"
     )
+
+
+# --- AC3 round 2: the header reports the CHANNEL, not the RECORD -------------
+#
+# Round-2 review found the header stamped `effective_engine(profile)` — the
+# profile RECORD — while the channel was picked by a hardcoded literal. A record
+# is an ASSERTION; a transport is an OBSERVATION. The tests below drive the two
+# apart on purpose, because a test in which they agree cannot tell the fix from
+# the defect.
+
+
+def test_both_arms_report_the_engine_their_own_transport_reports(monkeypatch):
+    """The two channel constants ARE the adapters' own `engine` values.
+
+    Cited by name from `baseline._record_on_firefox` and from the constants
+    themselves, so those docstrings do not promise a guard that is not here.
+
+    Read off REAL adapter instances rather than compared as literals: two
+    equal string constants prove nothing about the objects they stand for, and
+    the whole defect being fixed was two spellings of "the engine" drifting
+    apart. `_ChromiumTransport.__init__` sets `.engine` before it attaches, so
+    the attach is stubbed out — that is what makes the object reachable with no
+    browser, not a weakening of the assertion.
+    """
+    from src.services.verify import baseline as bl
+    from src.services.verify import transport as tr
+
+    firefox = tr._FirefoxTransport("p", {"eval": lambda expr: {"v": 1}})
+    assert firefox.engine == bl._FIREFOX_CHANNEL
+
+    async def _no_attach(self):
+        return None
+
+    monkeypatch.setattr(tr._ChromiumTransport, "_attach", _no_attach)
+    chromium = tr._ChromiumTransport("p", 9222)
+    try:
+        assert chromium.engine == bl._CHROMIUM_CHANNEL
+    finally:
+        chromium.close()
+
+    # And they are genuinely two different channels, so a test that confused
+    # them could not pass by both constants being the same string.
+    assert bl._FIREFOX_CHANNEL != bl._CHROMIUM_CHANNEL
+
+
+def test_the_header_is_stamped_by_the_transport_not_by_the_profile_record(
+    monkeypatch,
+):
+    """THE MISMATCH, BUILT AND WATCHED. This is the discriminating test.
+
+    `test_a_chromium_effective_profile_is_recorded_through_the_chromium_channel`
+    above passes against the DEFECT as well as against the fix, because for that
+    profile `effective_engine` and the channel happen to agree — so agreement
+    cannot tell them apart. Here the transport deliberately reports something
+    the profile record does not, and only a header sourced from the transport
+    can report it.
+
+    `engine_build` is asserted through a STUBBED accessor rather than against
+    the string "unknown": chromium is not installed in this container, so
+    `engine_build("chromium")` answers "unknown" here for an environmental
+    reason that has nothing to do with this defect. Asserting on that literal
+    would be a test whose colour tracks the container (PS-14).
+    """
+    from src.services.verify import baseline as bl
+
+    monkeypatch.setattr(bl, "_require_display", lambda: None)
+    monkeypatch.setattr("src.services.browser.process.spawn_browser", _no_launch)
+
+    # The channel answers with an engine name the profile record does not carry
+    # and `effective_engine` never returns. Under the round-1 spelling the
+    # header took `effective_engine(profile)` -> "chromium" and this string
+    # could not appear in the document at all.
+    observed = "chromium-cdp-attached"
+
+    transport = _FakeTransport()
+    transport.engine = observed
+    monkeypatch.setattr(
+        "src.services.verify.transport.transport_for",
+        lambda name, engine: transport,
+    )
+
+    monkeypatch.setattr(
+        "src.services.engine.updater.current_version",
+        lambda: "chromium-148.0.7778.215",
+    )
+
+    profile = _chromium_effective_profile()
+    snap = bl.record_snapshot(profile=profile, fresh=False, realms=("window",))
+
+    from src.services.browser.process import effective_engine
+
+    assert snap["engine"] == observed, (
+        "the header must report the channel that did the reading"
+    )
+    assert snap["engine"] != effective_engine(profile), (
+        "sourcing the header from the profile record is the defect under test"
+    )
+    assert snap["engine"] != profile.engine, "nor from the stored engine field"
+    # A real reading came back, so this is not a refusal wearing a pass's shape.
+    assert bl.count_errors(snap) == 0
+    assert snap["probes"]["window"]["navigator.userAgent"]["value"] == "CHROME"
+
+
+def test_the_engine_build_follows_the_observed_engine(monkeypatch):
+    """AC3's provenance half: the build is resolved for the OBSERVED family.
+
+    Round-2 review measured `engine_build` degrading to "unknown" because the
+    header carried a family no accessor recognises, silently losing the build
+    the artifact was actually recorded under. Stubbed accessor, so this
+    discriminates on a machine with no chromium installed.
+    """
+    from src.services.verify import baseline as bl
+
+    monkeypatch.setattr(bl, "_require_display", lambda: None)
+    monkeypatch.setattr("src.services.browser.process.spawn_browser", _no_launch)
+    monkeypatch.setattr(
+        "src.services.verify.transport.transport_for",
+        lambda name, engine: _FakeTransport(),
+    )
+    monkeypatch.setattr(
+        "src.services.engine.updater.current_version",
+        lambda: "chromium-148.0.7778.215",
+    )
+
+    snap = bl.record_snapshot(
+        profile=_chromium_effective_profile(), fresh=False, realms=("window",)
+    )
+
+    assert snap["engine"] == "chromium"
+    assert snap["engine_build"] == "chromium-148.0.7778.215", (
+        "the build must be resolved for the engine that was observed"
+    )
+
+
+@pytest.mark.parametrize("stored", ["Chromium", "webkit", "CHROMIUM"])
+def test_an_engine_this_recorder_cannot_speak_is_refused_never_read(
+    monkeypatch, stored
+):
+    """The `else` branch, decided deliberately: refuse, do not guess.
+
+    `coherent_engine` returns a coherent value UNCHANGED and only firefox pairs
+    are constrained, so 'Chromium' and 'webkit' are both storable through the
+    ordinary door and both reach `effective_engine` verbatim — round-2 review
+    executed exactly that. The old bare `else` sent them to the chromium
+    adapter and then stamped them with their own unknown name.
+
+    Refusing is this module's posture: an engine nobody can name is an
+    inconclusive, and inconclusive is never a pass. Asserts the refusal is a
+    RAISE and that nothing was read — a refusal that still opened a channel
+    would be the defect with a message attached.
+    """
+    from src.models.profile import Profile
+    from src.services.verify import baseline as bl
+
+    monkeypatch.setattr(bl, "_require_display", lambda: None)
+    monkeypatch.setattr("src.services.browser.process.spawn_browser", _no_launch)
+
+    def _must_not_open(name, engine):
+        raise AssertionError(
+            f"an unspeakable engine ({stored!r}) must be refused BEFORE a "
+            "channel is opened"
+        )
+
+    monkeypatch.setattr(
+        "src.services.verify.transport.transport_for", _must_not_open
+    )
+
+    profile = Profile(
+        name="ps237-unspeakable",
+        proxy=None,
+        os_type="windows",
+        device_type="desktop",
+        engine=stored,
+        resolution="1920x1080",
+        search_engine="duckduckgo",
+        bookmarks=[],
+        certificate=None,
+        ai_control=False,
+        hardware_generation_value=0,
+    )
+
+    # Premise: this really is storable and really does survive to the router.
+    from src.services.browser.process import effective_engine
+
+    assert effective_engine(profile) == stored, (
+        "premise: the stored spelling reaches the router unnormalised"
+    )
+
+    with pytest.raises(bl.BaselineUnavailable) as exc:
+        bl.record_snapshot(profile=profile, fresh=False, realms=("window",))
+
+    msg = str(exc.value)
+    assert stored in msg, "the refusal must name the engine it could not speak"
+    assert "nothing is certified" in msg.lower()
