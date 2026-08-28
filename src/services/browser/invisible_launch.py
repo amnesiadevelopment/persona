@@ -440,6 +440,65 @@ def _engine_accept_language_tags(locale: str) -> list:
     return [t.strip() for t in expanded.split(",") if t.strip()]
 
 
+def _worker_wrap_js(payload: str) -> str:
+    """The ``Worker``/``SharedWorker`` wrapper that carries ``payload`` into a
+    child realm, emitted so the SAME text is valid in the page realm AND inside
+    the single-quoted worker-payload literal.
+
+    ``payload`` names a JS variable holding the source to prepend to the child's
+    body — ``WP`` in the page realm, ``P`` (the payload's re-serialisation of
+    itself) inside a worker.
+
+    This exists because the wrapper has to be installed in BOTH realms and there
+    is only one correct version of it. Before PS-205 the wrapper lived only in
+    the page: ``WP`` patched ``Intl`` in a depth-1 worker but never re-installed
+    the wrapper there, so the chain covered exactly one level and a worker
+    spawned from a worker read the HOST locale. Measured at ``826a580`` in
+    isolated ``node:vm`` realms (host ``en-US``, target ``de-DE``): page
+    ``de-DE``, depth-1 ``de-DE``, depth-2 ``en-US`` — with no depth-2 body
+    captured at all, because ``Worker`` was never wrapped in the worker.
+
+    Duplicating this text into the payload by hand is what lets the two copies
+    drift, which is the failure mode ``worker_wrap.py`` calls out at :270 for
+    the audio/webgl path on this same engine. One builder, two call sites.
+
+    ⚠️ EMISSION RULES, inherited from :func:`_native_cloak_js` and load-bearing
+    for the same reason. The text must use DOUBLE quotes only and contain NO
+    newline and NO backslash, because it is inlined inside a SINGLE-quoted JS
+    literal: a ``'`` would terminate that literal, and a ``\\n`` escape would be
+    consumed by the OUTER literal and put a raw newline inside a double-quoted
+    string in the worker source — a SyntaxError. The newline the blob body needs
+    is therefore ``__nl`` (``String.fromCharCode(10)``, defined by the cloak
+    prelude that both realms inline) rather than an escape. Parens and braces
+    are balanced — including the ones inside the ``importScripts`` string
+    literal, which the counters in ``tests/test_ff_language_override.py`` see as
+    plain text.
+    """
+    return (
+        "var wrapW=function(Orig){if(typeof Orig!==\"function\")return Orig;"
+        "var W=function(url,opt){try{"
+        "if(opt&&opt.type===\"module\")return Reflect.construct(Orig,[url,opt],W);"
+        "var s=String(url);"
+        "if(/^https?:/i.test(s)){var body=" + payload + "+__nl+"
+        "\"try{importScripts(\"+JSON.stringify(s)+\");}catch(e){}\";"
+        "var u=URL.createObjectURL(new Blob([body],"
+        "{type:\"application/javascript\"}));"
+        "return Reflect.construct(Orig,[u,opt],W);}"
+        "if(/^blob:|^data:/i.test(s)){try{var x=new XMLHttpRequest();"
+        "x.open(\"GET\",s,false);x.send();"
+        "if(x.status===0||(x.status>=200&&x.status<300)){"
+        "var u2=URL.createObjectURL(new Blob([" + payload + "+__nl+x.responseText],"
+        "{type:\"application/javascript\"}));"
+        "return Reflect.construct(Orig,[u2,opt],W);}}catch(e){}"
+        "return Reflect.construct(Orig,[url,opt],W);}"
+        "return Reflect.construct(Orig,[url,opt],W);"
+        "}catch(e){return Reflect.construct(Orig,[url,opt],W);}};"
+        "W.prototype=Orig.prototype;return __cloak(W,Orig.name);};"
+        "if(self.Worker)self.Worker=wrapW(self.Worker);"
+        "if(self.SharedWorker)self.SharedWorker=wrapW(self.SharedWorker);"
+    )
+
+
 def _language_override_script(locale: str) -> str:
     """JS that pins navigator.language/languages to `locale`.
 
@@ -630,7 +689,21 @@ def _language_override_script(locale: str) -> str:
         # page-realm cloak above cannot reach it — the payload carries its own
         # inlined copy. _native_cloak_js() is double-quoted and newline-free by
         # construction, so it drops straight into this single-quoted literal.
-        "const WP='(function(L){try{" + _native_cloak_js() +
+        #
+        # NAMED function expression (PS-205), for the reason worker_wrap.py:270
+        # states verbatim for the audio/webgl path on this same engine: the body
+        # is what crosses into a worker, so it must be able to re-bind itself BY
+        # NAME inside its own serialized body "to keep covering the worker's OWN
+        # children". `__pnaLoc` is a function-expression name — bound only inside
+        # its own scope, never on the worker's global object — so it leaves no
+        # enumerable residue a page can read.
+        #
+        # Before this, the chain covered exactly ONE level: WP patched Intl in a
+        # depth-1 worker but never re-installed the Worker wrapper there, so a
+        # worker spawned from a worker read the HOST locale. Measured in isolated
+        # node:vm realms at 826a580 (host en-US, target de-DE): page de-DE,
+        # depth-1 de-DE, depth-2 en-US — no depth-2 body captured at all.
+        "const WP='(function __pnaLoc(L){try{" + _native_cloak_js() +
         "var wrap=function(n){var C=Intl[n];if(!C)return;var W=function(a,o){"
         "return Reflect.construct(C,[a||L,o],W);};W.prototype=C.prototype;"
         "__cloak(W,C.name,undefined,C.length);"
@@ -652,24 +725,30 @@ def _language_override_script(locale: str) -> str:
         "function(l,opt){"
         "return o.call(this,l===undefined?L:l,opt);},o.name,undefined,"
         "o.length);});"
+        # THE SELF-CARRY (PS-205). Re-emit THIS function from inside its own
+        # body and install the same wrapper the page installed, so the chain
+        # continues into this worker's OWN children instead of stopping here.
+        #
+        # `__pnaLoc.toString()` — the self-reference — is what makes this O(1)
+        # per level. The naive fix embeds the WP text inside WP, which DOUBLES
+        # the payload at every level (exponential in depth); re-serialising the
+        # function by name emits the same bytes however deep it goes. This is
+        # exactly the technique realm_bootstrap_js uses at worker_wrap.py:312
+        # (`"var I=(" + __pnaInstall.toString() + ");"`), and it is why that
+        # path already recurses while this one did not.
+        #
+        # toString here returns the REAL source: the cloak's Function.prototype
+        # .toString patch only rewrites functions registered in its __nm
+        # WeakMap, and __pnaLoc is deliberately never cloaked. The engine's own
+        # JSON.stringify re-quotes the locale for the next level, exactly as the
+        # page realm does when it builds WP.
+        "var P=\"(\"+__pnaLoc.toString()+\")(\"+JSON.stringify(L)+\");\";"
+        + _worker_wrap_js("P") +
         "}catch(e){}})('+JSON.stringify(L)+');';"
-        "var wrapW=function(Orig){if(typeof Orig!=='function')return Orig;"
-        "var W=function(url,opt){try{"
-        "if(opt&&opt.type==='module')return Reflect.construct(Orig,[url,opt],W);"
-        "var s=String(url);"
-        "if(/^https?:/i.test(s)){var body=WP+'\\ntry{importScripts('+JSON.stringify(s)+');}catch(e){}';"
-        "var u=URL.createObjectURL(new Blob([body],{type:'application/javascript'}));"
-        "return Reflect.construct(Orig,[u,opt],W);}"
-        "if(/^blob:|^data:/i.test(s)){try{var x=new XMLHttpRequest();x.open('GET',s,false);x.send();"
-        "if(x.status===0||(x.status>=200&&x.status<300)){"
-        "var u2=URL.createObjectURL(new Blob([WP+'\\n'+x.responseText],{type:'application/javascript'}));"
-        "return Reflect.construct(Orig,[u2,opt],W);}}catch(e){}"
-        "return Reflect.construct(Orig,[url,opt],W);}"
-        "return Reflect.construct(Orig,[url,opt],W);"
-        "}catch(e){return Reflect.construct(Orig,[url,opt],W);}};"
-        "W.prototype=Orig.prototype;return __cloak(W,Orig.name);};"
-        "if(self.Worker)self.Worker=wrapW(self.Worker);"
-        "if(self.SharedWorker)self.SharedWorker=wrapW(self.SharedWorker);"
+        # The SAME builder the payload uses for its own children (PS-205), so
+        # the two copies of this wrapper cannot drift apart. The page prepends
+        # `WP`; a worker prepends `P`, its re-serialisation of itself.
+        + _worker_wrap_js("WP") +
         "}catch(e){}"
         "}catch(e){}"
         "})();"
