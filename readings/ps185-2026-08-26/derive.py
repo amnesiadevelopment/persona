@@ -296,14 +296,6 @@ def gpu_section(off: dict, on: dict, uoff: dict, uon: dict) -> str:
         add("")
 
     # ---- the instrument finding -------------------------------------
-    # The uniformity records carry NO raw readings — only a per_arm summary —
-    # so N is recounted from the sweep each one NAMES in `source_record`.
-    # Defined HERE rather than beside the table because the prose below now
-    # names its arms from the data too (PS-239).
-    unif_sources = {
-        "engine-gpu-variance.layer-off.json": off,
-        "engine-gpu-variance.layer-on.json": on,
-    }
     # WHICH ARMS THE GATE FLAGGED, AND WHETHER IT STILL DOES — both RECOMPUTED
     # from the readings rather than typed in OR read from a stored summary
     # (PS-239). This paragraph used to assert "macos, linux AND android" as a
