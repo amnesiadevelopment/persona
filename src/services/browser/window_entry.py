@@ -74,9 +74,28 @@ def _unlink_legacy_entry(entry_dir: pathlib.Path, profile_name: str) -> None:
     never a foreign file, it was another profile's current one.
 
     So ownership is confirmed from CONTENT, not from the name: a legacy entry
-    has always carried `StartupWMClass=app_id_for(name)` (true at the
-    merge-base writer), and `app_id_for` is unambiguous — that is the premise
-    of this whole ticket — which makes it a reliable ownership token.
+    carries a `StartupWMClass` naming the profile it belongs to, and that token
+    is unambiguous — that is the premise of this whole ticket — which makes it
+    a reliable ownership token.
+
+    BOTH eras of that token are accepted, because `app_id_for` has not always
+    returned one shape. It gained its digest at 8c38017 (v2.1.8); before that
+    it returned `persona-{raw name}`. `_safe_filename` was byte-identical from
+    v1.0.0 through the merge-base, so a v2.1.7-era entry sits at EXACTLY the
+    path computed here — recognising only the modern token would FIND that file
+    and then refuse it, turning residue the pre-PS-209 code cleaned up (it
+    unlinked by name, unguarded) into residue nothing can ever reach: the write
+    path could not heal it and the delete path could not remove it, so a panic
+    wipe would leave the profile's cleartext `Name=` on the host and
+    `wipe_all_profiles`' "nothing survives it" would stop being true.
+
+    Accepting the superseded token does not re-open the collision above, for
+    two structural reasons. The old token embeds the raw name verbatim behind a
+    fixed prefix and the match is line-anchored, so distinct names give distinct
+    tokens (`validate_profile_name` bans control characters, so a name cannot
+    smuggle a newline in). And the two token spaces cannot overlap: new is
+    `persona_…`, old is `persona-…`, differing at character 8, so an old-token
+    match can never be satisfied by a new-scheme file.
     """
     path = entry_dir / _legacy_safe_filename(profile_name)
     try:
@@ -89,7 +108,12 @@ def _unlink_legacy_entry(entry_dir: pathlib.Path, profile_name: str) -> None:
         )
         return
 
-    if f"StartupWMClass={app_id_for(profile_name)}\n" not in body:
+    owned = (
+        f"StartupWMClass={app_id_for(profile_name)}",
+        # Pre-v2.1.8 (8c38017) app_id_for returned f"persona-{profile_name}".
+        f"StartupWMClass=persona-{profile_name}",
+    )
+    if not any(line in owned for line in body.splitlines()):
         # Belongs to another profile — not ours to delete.
         return
 
