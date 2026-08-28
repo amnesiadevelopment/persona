@@ -311,9 +311,10 @@ def test_write_converges_off_a_pre_v218_legacy_entry(tmp_path, monkeypatch):
 def test_pre_v218_token_does_not_reopen_the_collision(tmp_path, monkeypatch):
     # Accepting the superseded token must not re-open round 2's collision. It
     # cannot: the old token embeds the raw name verbatim behind a fixed prefix
-    # and the match is line-anchored, and the two token spaces differ at
-    # character 8 (`persona_` vs `persona-`), so an old-token match can never
-    # be satisfied by a new-scheme file. Asserted here on files on disk.
+    # and the match is anchored at both ends of an LF-delimited record, and the
+    # two token spaces differ at character 8 (`persona_` vs `persona-`), so an
+    # old-token match can never be satisfied by a new-scheme file. Asserted
+    # here on files on disk.
     monkeypatch.setenv("HOME", str(tmp_path))
     victim = pathlib.Path(write_window_entry(_VICTIM))
     attacker = pathlib.Path(write_window_entry(_ATTACKER))
@@ -349,3 +350,87 @@ def test_legacy_cleanup_leaves_an_entry_it_cannot_prove_it_owns(tmp_path, monkey
     assert foreign.read_text(encoding="utf-8") == (
         "[Desktop Entry]\nName=something else\n"
     )
+
+
+# --- PS-209 round 4: a line separator the VALIDATOR allows ------------------
+#
+# The ownership guard split the entry body with `str.splitlines()`, which
+# splits on the Unicode line-boundary set. Three of those separators sit ABOVE
+# 0x20 — U+2028 LINE SEPARATOR, U+2029 PARAGRAPH SEPARATOR, U+0085 NEXT LINE —
+# and `validate_profile_name` bans only `ord(c) < 0x20`, so all three are
+# creatable profile names. For such a name the pre-v2.1.8 token tears in half
+# before the comparison:
+#
+#     'StartupWMClass=persona-a\u2028b'  ->  ['StartupWMClass=persona-a', 'b']
+#
+# so the entry is FOUND at the legacy path and then refused as un-owned —
+# exactly the failure round 3 was raised to fix, reintroduced by narrowing the
+# match on an assumption about what the input alphabet can contain. A .desktop
+# file is LF-delimited, so the guard splits on "\n".
+#
+# Direction of the failure is false-negative only (it declines to delete, never
+# deletes the wrong file), so these assert on RESIDUE surviving, not data loss.
+
+_SEPARATORS_THE_VALIDATOR_ALLOWS = ("\u2028", "\u2029", "\u0085")
+
+
+def test_separators_the_validator_allows_are_creatable_names():
+    # The reachability premise the two tests below rest on, asserted rather
+    # than assumed: these are real profile names a user can create, which is
+    # the same bar the ticket applied to "a b".
+    from src.utils.validation import validate_profile_name
+
+    for sep in _SEPARATORS_THE_VALIDATOR_ALLOWS:
+        assert validate_profile_name(f"client{sep}acct") == (True, "")
+        # and each one DOES split under splitlines() — the reason it matters
+        assert len(f"x{sep}y".splitlines()) > 1
+        assert len(f"x{sep}y".split("\n")) == 1
+
+
+def test_remove_unlinks_a_pre_v218_entry_whose_name_holds_a_line_separator(
+    tmp_path, monkeypatch
+):
+    # The DELETE path — reached from wipe_all_profiles, whose "nothing survives
+    # it" is only true if this file goes. The separator sanitises to "_", so
+    # all three names share the legacy filename persona-client_acct.desktop.
+    for sep in _SEPARATORS_THE_VALIDATOR_ALLOWS:
+        home = tmp_path / f"home_{ord(sep):04x}"
+        monkeypatch.setenv("HOME", str(home))
+        d = home / ".local/share/applications"
+        d.mkdir(parents=True, exist_ok=True)
+        name = f"client{sep}acct"
+        legacy = d / "persona-client_acct.desktop"
+        legacy.write_text(_pre_v218_body(name), encoding="utf-8")
+
+        remove_window_entry(name)
+
+        assert not legacy.exists(), (
+            f"U+{ord(sep):04X}: pre-v2.1.8 residue survived a delete/panic wipe; "
+            f"cleartext left on host: {_entries(home)}"
+        )
+        assert _entries(home) == []
+
+
+def test_write_converges_off_a_pre_v218_entry_whose_name_holds_a_separator(
+    tmp_path, monkeypatch
+):
+    # The WRITE path: the next launch heals the orphan instead of leaving it
+    # beside the new file forever, which is what made this residue permanent.
+    for sep in _SEPARATORS_THE_VALIDATOR_ALLOWS:
+        home = tmp_path / f"home_{ord(sep):04x}"
+        monkeypatch.setenv("HOME", str(home))
+        d = home / ".local/share/applications"
+        d.mkdir(parents=True, exist_ok=True)
+        name = f"client{sep}acct"
+        legacy = d / "persona-client_acct.desktop"
+        legacy.write_text(_pre_v218_body(name), encoding="utf-8")
+
+        new_path = pathlib.Path(write_window_entry(name))
+
+        assert not legacy.exists(), (
+            f"U+{ord(sep):04X}: pre-v2.1.8 entry left beside the new one"
+        )
+        assert _entries(home) == [new_path.name]
+        assert f"StartupWMClass={app_id_for(name)}" in new_path.read_text(
+            encoding="utf-8"
+        )
