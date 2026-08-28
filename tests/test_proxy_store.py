@@ -331,9 +331,19 @@ def test_set_url_without_a_url_change_keeps_everything(tmp_path):
 
 
 def test_set_url_persists(tmp_path):
+    """The URL moves across a reload — and so does the invalidation.
+
+    The `mark_checked` here is load-bearing, not scene-setting. Without it the
+    fixture never has any geography for `set_url` to drop: `Proxy`'s dataclass
+    defaults are already `country_code=""` / `timezone=""`, so the two geo
+    assertions below held identically with the fix, without it, and against any
+    future regression — they read as covering the invariant while being
+    structurally incapable of detecting its violation.
+    """
     path = str(tmp_path / "proxies.json")
-    s1 = ProxyStore(path=path)
+    s1 = ProxyStore(path=path, now=lambda: 1000.0)
     s1.add("home", "socks5://1.2.3.4:1080")
+    s1.mark_checked("home", "CA", "Canada", "5.5.5.5", "America/Toronto", 43.7, -79.4)
     s1.set_url("home", "socks5://9.9.9.9:1080")
     s2 = ProxyStore(path=path)
     assert s2.get("home").url == "socks5://9.9.9.9:1080"
