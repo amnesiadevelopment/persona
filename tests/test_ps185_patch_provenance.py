@@ -1259,12 +1259,25 @@ def test_the_stored_verdict_is_reproducible_under_the_rule_that_wrote_it():
     )
 
 
+@pytest.mark.timeout(1800)
 def test_enumerator_runs_the_second_mutation_axis():
     """The harness must poison summaries, not only destroy readings.
 
     Round 5's enumerator returned exit 0 over four live members of the class
     because every scenario it ran mutated readings. An enumeration is only
     evidence for the axes it actually runs.
+
+    ⚠️ NEEDS ITS OWN BOUND, exactly as the axis-1 test beside it does. Both
+    spawn the SAME enumerator, which walks every field of every record and
+    re-renders the article once per mutation; axis 2 measures at ~175-200s
+    here. The ini-wide `timeout = 120` therefore killed it mid-subprocess and
+    reported a TIMEOUT rather than a verdict — while the enumerator itself
+    exited 0 when run by hand. Its sibling
+    `test_the_enumerator_is_committed_and_reports_every_site_moving` was given
+    `@pytest.mark.timeout(1800)` for this reason and this one was not, so the
+    same work was bounded at 1800s through one door and 120s through the
+    other. The subprocess already caps itself at `timeout=900`, so a genuine
+    hang still fails rather than running forever (PS-239).
     """
     proc = subprocess.run(
         [sys.executable, str(READINGS / "enumerate_summary_sites.py"),
