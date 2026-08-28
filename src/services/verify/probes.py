@@ -1063,6 +1063,51 @@ def must_differ_ids() -> frozenset[str]:
     return frozenset(p.id for p in must_differ_probes())
 
 
+def must_differ_realms() -> tuple[str, ...]:
+    """Every realm the cross-profile comparator will WALK, in ``ALL_REALMS`` order.
+
+    PS-232. This exists so a RECORDING can be taken over exactly the realms
+    :func:`~.diff.compare_profiles` is going to ask about, and it is derived
+    from the same inventory that comparator walks rather than listed anywhere.
+
+    THE DEFECT IT CLOSES. ``compare_profiles`` builds its work list from
+    ``must_differ_probes() x probe.realms``, so declaring a must-differ vector
+    in a new realm immediately makes the comparator ask about that realm. A
+    recorder pinned to a narrower realm tuple then answers ABSENT on the new
+    pair, ``_unread_for_unlinkability`` correctly reads ABSENT as unread, and
+    the pair comes back INCONCLUSIVE on every run — which
+    ``_run_two_profile_unlinkability`` reports as CANNOT_RUN. The gate stops
+    returning a verdict at all: the comparator was taught to ask about a realm
+    the recorder was never taught to record. Measured, not argued — recording
+    ``(window, worker)`` while the inventory declared a ``child_frame`` vector
+    took the live check from PASS to CANNOT_RUN on two profiles that differ on
+    every vector, i.e. the case that should read as a clean pass.
+
+    So the rule is: whoever RECORDS for a cross-profile comparison records
+    THIS, and the two cannot drift apart because both are computed from the
+    inventory. Adding a vector stays "a record in PROBES and nothing else"
+    (``probes.py:8``) — the recording realms follow automatically.
+
+    DELIBERATELY NOT ``ALL_REALMS``. A realm no must-differ vector declares is
+    not compared, so recording it would buy nothing and cost a launch-time
+    realm entry on every run; and every extra realm is one more surface whose
+    failure to be entered a caller has to reason about. This returns what is
+    ASKED ABOUT, which is the set the answer actually depends on.
+
+    NOT ``BASELINE_REALMS`` EITHER, and the two are not interchangeable. The
+    committed baseline ARTIFACT is a fixed two-realm document by design
+    (``baseline.BASELINE_REALMS``, pinned by its own guard); this is the realm
+    set of a LIVE two-profile comparison. Same shape, different jobs — see
+    ``baseline.py``'s note. Widening one must never be read as licence to
+    widen the other.
+    """
+    return tuple(
+        realm
+        for realm in ALL_REALMS
+        if any(realm in probe.realms for probe in must_differ_probes())
+    )
+
+
 def _check_unique() -> None:
     seen: set[str] = set()
     for p in PROBES:

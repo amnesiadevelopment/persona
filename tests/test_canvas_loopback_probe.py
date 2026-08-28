@@ -130,7 +130,10 @@ def test_every_must_differ_vector_is_readable_on_the_loopback_page():
         p for p in probes.must_differ_probes() if probes.WINDOW not in p.realms
     ]
     for probe in out_of_scope:
-        assert probes.WINDOW not in probe.realms
+        # NOTE: no `assert probes.WINDOW not in probe.realms` here. That line
+        # restated the comprehension's own filter directly above, so it could
+        # never go red — it read as a guarantee while carrying none. The
+        # assertion below is the one doing the work.
         assert probe.id not in expected, (
             f"{probe.id} is mapped to a loopback vector but declares no window "
             "realm — the page cannot read it, so that mapping is a fiction."

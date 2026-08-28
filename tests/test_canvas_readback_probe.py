@@ -298,7 +298,22 @@ def _unlinkability_verdict(*, worker_null):
         def make_profile(self, name, **kwargs):
             return type("P", (), {"name": name})()
 
-        def record(self, profile, fresh=False):
+        def record(self, profile, fresh=False, realms=None):
+            # `realms` is ACCEPTED AND IGNORED, and both halves are deliberate.
+            #
+            # PS-232 gave the real `Context.record` a `realms` argument so the
+            # two lanes that call `compare_profiles` record every realm that
+            # comparator walks. This double stands in for the BROWSER, not for
+            # the realm logic: it returns snapshots `_two_profile_snapshots`
+            # already built over `must_differ_probes() x probe.realms`, so they
+            # carry every declared realm — including `child_frame` — whatever
+            # is asked for here. Honouring the argument would mean re-deriving
+            # those snapshots and would change what these two tests measure;
+            # rejecting it (the bare `fresh=False` signature) made them raise
+            # TypeError on a call production makes correctly.
+            #
+            # So this is a SIGNATURE widening, not a behaviour change: both
+            # tests return the same verdicts as before (cannot_run / pass).
             return self._snaps[profile.name]
 
     return _run_two_profile_unlinkability(_Ctx())

@@ -306,17 +306,45 @@ class Context:
             raise BehaviourCheckError(f"scratch profile {name!r} vanished after create")
         return profile
 
-    def record(self, profile, *, fresh: bool):
+    def record(self, profile, *, fresh: bool, realms: "tuple[str, ...] | None" = None):
         """Observe a live profile through the EXISTING recorder.
 
         Every reading in this module comes through here. ``record_snapshot``
         launches in-process (the firefox eval hook is published per-process),
-        reads every probe in both realms, and tears the session down.
+        reads every probe in the requested realms, and tears the session down.
+
+        ``realms`` defaults to ``record_snapshot``'s own default
+        (``BASELINE_REALMS`` — window and worker), which is what the continuity
+        comparators want: they ask "did THIS profile move?", answered by
+        :func:`~.diff.diff_snapshots` over whatever realms both recordings
+        carry.
+
+        PS-232. A caller that is going to compare with
+        :func:`~.diff.compare_profiles` must pass
+        :func:`~.probes.must_differ_realms` instead, because that comparator is
+        INVENTORY-driven rather than intersection-driven: it walks every realm
+        a must-differ vector declares, and a realm this recording skipped reads
+        ABSENT -> unread -> INCONCLUSIVE on every run, which the unlinkability
+        check reports as CANNOT_RUN. Recording narrower than the comparator
+        walks does not lose a comparison quietly; it converts the whole verdict
+        into a permanent refusal.
+
+        DELIBERATELY OPT-IN rather than widened for everyone. Only the two
+        cross-profile lanes use ``compare_profiles``; the other four
+        (continuity, benign-edit, trash/restore) use ``diff_snapshots``, and
+        for them an extra realm is extra surface to enter with no comparison
+        depending on it — while :func:`_readings_or_refuse` REFUSES a recording
+        carrying any unreadable probe, so a realm that failed to be entered
+        would turn those checks' verdicts into refusals over a realm they never
+        asked about. Narrow default, explicit widening, no lane changed except
+        the one whose comparator changed.
         """
         from .baseline import record_snapshot
 
         self.launches += 1
-        return record_snapshot(profile=profile, fresh=fresh)
+        if realms is None:
+            return record_snapshot(profile=profile, fresh=fresh)
+        return record_snapshot(profile=profile, fresh=fresh, realms=realms)
 
     def data_dir(self, name: str) -> str:
         from ...core.config import DATA_DIR
