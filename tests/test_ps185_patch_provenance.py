@@ -1118,6 +1118,52 @@ def test_module_verdict_is_asked_of_the_gate_not_transcribed():
     )
 
 
+def test_widening_a_pool_cannot_move_an_archived_records_verdict():
+    """A pool edit must not retroactively re-label a measurement. PS-239.
+
+    This is the defect that turned `main` red, stated as a property. The
+    verdict column is asked of the live gate — deliberately, so it reports
+    what the product says rather than a transcription — and that made it the
+    ONE column still reading the live pool while every other column was
+    already pinned to the measurement epoch. PS-183 widened `MAC_GPUS` 2 -> 11
+    the day after these readings were taken, so macos' committed draw was
+    re-scored against a `1/11` bar it never faced.
+
+    The two halves below are asserted TOGETHER because either alone is
+    satisfiable by a broken gate: a gate that ignored `pool_sizes` entirely
+    would pass the first, and one that always returned the same verdict
+    whatever it was given would pass the second.
+    """
+    from src.services.verify import engine_gpu_variance as egv
+
+    d = _load_derive_module()
+    on = d.load(d.LAYER_ON)
+    epoch = d._epoch_pool_sizes(on)
+
+    # HALF 1 — pinned to the epoch, the verdict is what the pool the readings
+    # actually faced implies, and a widened live pool cannot move it.
+    pinned = egv.classify(on["readings"], epoch)["per_arm"]["macos"]
+    wider = dict(epoch, macos=epoch["macos"] + 9)
+    assert egv.classify(on["readings"], epoch)["per_arm"]["macos"][
+        "verdict"
+    ] == pinned["verdict"], "pinning is not deterministic"
+    assert pinned["fallback_pool_size"] == epoch["macos"], (
+        "the pinned verdict was scored against a pool other than the one the "
+        f"sweep witnessed: {pinned['fallback_pool_size']} != {epoch['macos']}"
+    )
+
+    # HALF 2 — the pin is LOAD-BEARING, not decorative: scoring the SAME
+    # readings against a wider pool really does flip this arm, so half 1 is
+    # holding back a live failure rather than describing a distinction that
+    # makes no difference.
+    widened = egv.classify(on["readings"], wider)["per_arm"]["macos"]
+    assert widened["verdict"] != pinned["verdict"], (
+        "widening macos' pool did not change the verdict, so this test no "
+        "longer demonstrates why the epoch pin matters — re-derive the "
+        f"fixture (both read {pinned['verdict']!r})"
+    )
+
+
 def test_recomputed_uniformity_matches_the_stored_record_exactly():
     """The recount must REPRODUCE the evidence, not merely differ from it.
 
