@@ -7,9 +7,8 @@ not a git log. When cutting a release, add the new version's highlights here.
 CHANGELOG: dict[str, list[str]] = {
     "3.0.2": [
         "A heavy page no longer stalls the browser. Opening a demanding site "
-        "could freeze the window and leave a new tab unable to connect; the "
-        "check that runs behind every connection now does its work once "
-        "instead of repeating it for each request.",
+        "could freeze the window; the check that runs behind every connection "
+        "now does its work once instead of repeating it for each request.",
         "Closing persona no longer leaves Chromium running in the background. "
         "Browser processes were surviving after the app closed — on one "
         "machine a leftover set was still using most of a processor half a day "
