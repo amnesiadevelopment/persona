@@ -44,6 +44,8 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RECORD_SH = REPO_ROOT / "scripts" / "ps218_record_env.sh"
+VERIFY_SH = REPO_ROOT / "scripts" / "ps218_verify_control.sh"
+HOST_ID_SH = REPO_ROOT / "scripts" / "ps218_host_id.sh"
 
 # ─── Synthetic host identity. Invented; not a reading of any machine. ─────────
 FAKE_HOSTNAME = "SYNTHETIC-TESTHOST-ZZZ9"
@@ -150,8 +152,15 @@ def record(tmp_path) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_the_hostname_never_reaches_the_record(record):
-    """`uname -a` field 2 is the nodename. On this runner it is a `DESKTOP-*`
-    name that identifies a personal workstation, not a cloud runner."""
+    """`uname -a` field 2 is the nodename, which on this runner is a name that
+    identifies a personal workstation rather than a cloud runner.
+
+    ⚠️ The prefix that name carries is deliberately NOT written here. Naming it
+    would put a host-identity fragment into the very file that exists to remove
+    one — the same recursion this ticket warns about, one notch smaller. It is
+    also a real regression against `main`, which carries that fragment in zero
+    tracked files.
+    """
     assert FAKE_HOSTNAME not in record, (
         "the hostname was published to a record that reaches a PUBLIC "
         "repository's Actions log and workflow artifacts"
@@ -466,3 +475,182 @@ def test_the_digest_is_salted_so_a_low_entropy_name_cannot_be_reversed(tmp_path,
         "salt is not being applied and the digest is a plain hash of a "
         "low-entropy string"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# THE TWO AUDIT DEFECTS (persona-reviewer-2, 06:51:58Z)
+#
+# Both were REPRODUCED by the auditor, and neither was catchable by the merged
+# ps244 suite — those tests write BOTH sides of the comparison from one
+# template, so a one-sided format change looks identical on both sides and
+# cannot be seen. These build the two sides SEPARATELY, which is the whole
+# point.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# A control recorded BEFORE this ticket: raw values, exactly as it exists today
+# on run 33151144134 — the only successful control that exists.
+LEGACY_HOSTNAME = "SYNTHETIC-LEGACY-HOST-PP7"
+LEGACY_CPU = "Fictional Legacy Model Z-9999"
+
+_LEGACY_ENV = f"""\
+# PS-218 build environment — tree: unmodified
+# pass: pre-prepare
+# host: Linux {LEGACY_HOSTNAME} 9.9.9-synthetic-kernel #1 SMP SYNTHETIC x86_64 GNU/Linux
+
+== CPU as the RUNNER sees it ==
+nproc:            32
+nproc --all:      32
+Model name:                              {LEGACY_CPU}
+
+== SOURCE PROVENANCE ==
+portablelinux tag:  144.0.7559.132-1
+"""
+
+_LEGACY_MANIFEST = """\
+| ungoogled-chromium-portablelinux tag | `144.0.7559.132-1` |
+| **1. Patches APPLIED** | YES |
+| **2. Tree COMPILED** | YES |
+| chrome binary on disk | PRESENT (436M) |
+"""
+
+_CONTROL_RUN = "33151144134"
+
+
+def _borrow_fixture(tmp_path, salt, *, same_machine: bool):
+    """A LEGACY (raw-value) control beside a NEW-format record for this run.
+
+    The two sides are built by different means on purpose: the control is
+    written raw, and this run's record is pseudonymised through the shipped
+    helper. That asymmetry is exactly the situation the merged suite cannot
+    represent, and it is where both defects lived.
+    """
+    control = tmp_path / "control"
+    record = tmp_path / "record"
+    control.mkdir()
+    record.mkdir()
+
+    (control / "environment-unmodified.txt").write_text(_LEGACY_ENV, encoding="utf-8")
+    (control / "MANIFEST-unmodified.md").write_text(_LEGACY_MANIFEST, encoding="utf-8")
+    (control / "compile-unmodified.provenance").write_text(
+        "phase=compile\ntree=unmodified\nungoogled_tag=144.0.7559.132-1\n"
+        f"github_run_id={_CONTROL_RUN}\n",
+        encoding="utf-8",
+    )
+    (control / "compile-unmodified.log").write_text(
+        "[1/1] LINK ./chrome\nninja: build completed successfully.\n", encoding="utf-8"
+    )
+
+    host = LEGACY_HOSTNAME if same_machine else "SYNTHETIC-OTHER-HOST-RR3"
+    cpu = LEGACY_CPU if same_machine else "Fictional Other Model Y-1111"
+    anon_host = _shell_pseudonymise(host, salt)
+    anon_cpu = _shell_pseudonymise(cpu, salt)
+
+    (record / "environment-patched.txt").write_text(
+        _LEGACY_ENV.replace("tree: unmodified", "tree: patched")
+        .replace(f"Linux {LEGACY_HOSTNAME}", f"Linux {anon_host}")
+        .replace(LEGACY_CPU, anon_cpu),
+        encoding="utf-8",
+    )
+    return control, record
+
+
+def _shell_pseudonymise(value: str, salt: Path) -> str:
+    """Call the SHIPPED helper, so the test cannot drift from the implementation."""
+    proc = subprocess.run(
+        ["bash", "-c", f'. "{HOST_ID_SH}"; pseudonymise "$1"', "_", value],
+        env={**os.environ, "PS218_HOST_SALT_FILE": str(salt)},
+        capture_output=True, text=True, encoding="utf-8", timeout=60, check=True,
+    )
+    return proc.stdout.strip()
+
+
+def _run_verify(tmp_path, salt):
+    return subprocess.run(
+        ["bash", str(VERIFY_SH)],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PS218_HOST_SALT_FILE": str(salt),
+            "CONTROL_DIR": "control",
+            "CURRENT_ENV": "record/environment-patched.txt",
+            "UNGOOGLED_TAG": "144.0.7559.132-1",
+            "CONTROL_RUN_ID": _CONTROL_RUN,
+            "GITHUB_RUN_ID": "33999999999",
+        },
+        capture_output=True, text=True, encoding="utf-8", timeout=120,
+    )
+
+
+def test_a_control_recorded_before_this_change_can_still_be_borrowed(tmp_path):
+    """⚠️ DEFECT 1: the format change must not be one-sided.
+
+    Every control that exists today was recorded BEFORE this ticket, so it holds
+    a raw hostname and CPU model. If only the writer is changed, this run emits
+    pseudonyms, the comparator sees two different strings, and it refuses EVERY
+    borrow — including run 33151144134, the only successful control there is.
+    The feature would be dead on arrival for exactly the data it exists to use.
+
+    The shared helper hashes the legacy value with the same salt, so the same
+    machine still matches.
+    """
+    salt = tmp_path / "salt"
+    _borrow_fixture(tmp_path, salt, same_machine=True)
+
+    proc = _run_verify(tmp_path, salt)
+
+    assert proc.returncode == 0, (
+        "a legacy control from the SAME machine was refused, so no existing "
+        f"control can be borrowed at all:\n{proc.stdout}\n{proc.stderr}"
+    )
+    assert "VERIFIED" in proc.stdout
+
+
+def test_a_legacy_control_from_another_machine_is_still_refused(tmp_path):
+    """The security property that the compatibility shim must not cost.
+
+    Accepting a legacy record must not mean accepting ANY legacy record: a
+    control built elsewhere still hashes differently and must still be refused.
+    Without this, the fix for defect 1 would be a guard that never fires.
+    """
+    salt = tmp_path / "salt"
+    _borrow_fixture(tmp_path, salt, same_machine=False)
+
+    proc = _run_verify(tmp_path, salt)
+
+    assert proc.returncode != 0, "a control from a DIFFERENT machine was accepted"
+    assert "REFUSED [host]" in proc.stdout
+    assert not (tmp_path / "control" / "BORROWED-CONTROL.verified").exists(), (
+        "a borrow certificate was written for a refused control"
+    )
+
+
+@pytest.mark.parametrize("same_machine", [True, False], ids=["pass-path", "refusal-path"])
+def test_the_borrow_never_republishes_the_values_this_ticket_removes(
+    tmp_path, same_machine
+):
+    """⚠️ DEFECT 2: the verify script re-emitted the borrowed control's raw
+    hostname and CPU model into `record/control-borrow-verification.txt` and
+    stdout — both world-readable (the artifact is uploaded under `if: always()`,
+    and the Actions log is public). So the borrow path republished exactly what
+    the scrub removes.
+
+    BOTH PATHS ARE CHECKED, and the refusal path is the one that mattered most:
+    `compare_or_fail` prints both sides in its DIFFERS branch, and defect 1
+    guaranteed every borrow took that branch — so defect 1 was the delivery
+    mechanism for defect 2.
+    """
+    salt = tmp_path / "salt"
+    _borrow_fixture(tmp_path, salt, same_machine=same_machine)
+
+    proc = _run_verify(tmp_path, salt)
+    report = tmp_path / "record" / "control-borrow-verification.txt"
+    emitted = proc.stdout + proc.stderr + (
+        report.read_text(encoding="utf-8") if report.exists() else ""
+    )
+
+    for secret in (LEGACY_HOSTNAME, LEGACY_CPU):
+        assert secret not in emitted, (
+            f"the borrow path published {secret!r} to the report and/or the "
+            "Actions log, both of which are world-readable — republishing the "
+            "value this ticket exists to remove"
+        )
