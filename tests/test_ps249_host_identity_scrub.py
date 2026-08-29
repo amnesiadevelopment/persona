@@ -136,7 +136,8 @@ def record(tmp_path) -> str:
 
     proc = subprocess.run(
         ["bash", str(RECORD_SH), "unmodified"],
-        cwd=workdir, env=env, capture_output=True, text=True, timeout=120,
+        cwd=workdir, env=env, capture_output=True, text=True,
+        encoding="utf-8", timeout=120,
     )
     assert proc.returncode == 0, f"recording script failed:\n{proc.stderr}"
     return (workdir / "record" / "environment-unmodified.txt").read_text(
@@ -267,15 +268,45 @@ def test_this_test_file_does_not_republish_what_it_guards():
 @pytest.mark.parametrize(
     "field",
     ["nproc:", "nproc --all:", "CPU(s):", "Thread(s) per core:",
-     "Core(s) per socket:", "Socket(s):", "MemTotal", "Architecture:"],
+     "Core(s) per socket:", "Socket(s):", "Architecture:"],
 )
 def test_the_capacity_figures_are_kept(record, field):
     """Counts and clocks make the wall-clock and OOM readings interpretable and
     identify no machine. The build's own timing analysis depends on knowing it
-    ran on 32 threads."""
+    ran on 32 threads.
+
+    These fields come from the `lscpu` allow-list and the `nproc` echoes, both
+    of which the stubs supply, so they are asserted on every host.
+    """
     assert field in record, (
         f"{field!r} was scrubbed away. It is a capacity figure, not host "
         "identity, and the record is useless without it."
+    )
+
+
+@pytest.mark.skipif(
+    not Path("/proc/meminfo").exists(),
+    reason="the memory figures are read from /proc/meminfo, which is Linux-only",
+)
+def test_the_memory_figures_are_kept(record):
+    """The memory ceiling is the figure the whole record exists to establish —
+    PS-218's own reason for being is that "WSL2's memory allocation is not the
+    host's", and an OOM at link time is read against it.
+
+    ⚠️ SEPARATED FROM THE PARAMETRISED SET, AND GUARDED, BECAUSE IT IS THE ONE
+    CAPACITY FIELD THAT IS NOT PORTABLE. The script reads it with
+    `grep ... /proc/meminfo || true`, which yields nothing on a host that has no
+    procfs — so on macOS the field is legitimately absent and asserting it
+    unconditionally fails for a reason that has nothing to do with the scrub.
+    That is what happened on the first CI run of this file: a real defect in the
+    test, not in the fix.
+
+    The guard is `/proc/meminfo` itself rather than `sys.platform`, so it states
+    the actual precondition instead of a proxy for it.
+    """
+    assert "MemTotal" in record, (
+        "MemTotal was scrubbed away. It is a capacity figure, not host "
+        "identity, and the OOM readings cannot be interpreted without it."
     )
 
 
@@ -340,7 +371,8 @@ def test_the_pseudonym_is_stable_across_dispatches(tmp_path, record):
 
     subprocess.run(
         ["bash", str(RECORD_SH), "unmodified"],
-        cwd=workdir, env=env, capture_output=True, text=True, timeout=120, check=True,
+        cwd=workdir, env=env, capture_output=True, text=True,
+        encoding="utf-8", timeout=120, check=True,
     )
     second = (workdir / "record" / "environment-unmodified.txt").read_text(
         encoding="utf-8"
@@ -394,7 +426,8 @@ def test_a_different_machine_still_produces_a_different_pseudonym(tmp_path, reco
 
     subprocess.run(
         ["bash", str(RECORD_SH), "unmodified"],
-        cwd=workdir, env=env, capture_output=True, text=True, timeout=120, check=True,
+        cwd=workdir, env=env, capture_output=True, text=True,
+        encoding="utf-8", timeout=120, check=True,
     )
     other_record = (workdir / "record" / "environment-unmodified.txt").read_text(
         encoding="utf-8"
@@ -422,7 +455,8 @@ def test_the_digest_is_salted_so_a_low_entropy_name_cannot_be_reversed(tmp_path,
 
     subprocess.run(
         ["bash", str(RECORD_SH), "unmodified"],
-        cwd=workdir, env=env, capture_output=True, text=True, timeout=120, check=True,
+        cwd=workdir, env=env, capture_output=True, text=True,
+        encoding="utf-8", timeout=120, check=True,
     )
     resalted = (workdir / "record" / "environment-unmodified.txt").read_text(
         encoding="utf-8"
