@@ -690,6 +690,76 @@ def test_the_in_run_fetch_cannot_overwrite_a_verified_borrow(workflow):
     )
 
 
+def _effective_permissions(workflow, job):
+    """What the job's token ACTUALLY holds.
+
+    A job-level `permissions:` block REPLACES the file-level one — it does not
+    merge with it — and a declared block sets every UNLISTED scope to `none`.
+    Both facts matter here, so this resolves them rather than reading one level
+    and hoping.
+    """
+    job_perms = workflow["jobs"][job].get("permissions")
+    return job_perms if job_perms is not None else workflow.get("permissions")
+
+
+def test_the_patched_job_may_actually_read_the_borrowed_runs_artifact(workflow):
+    """The defect that made the whole feature unreachable, pinned.
+
+    Round 1 shipped the borrow step with `run-id` and a token — but the token
+    could not USE it. `actions/download-artifact` reading ANOTHER run's artifact
+    calls `GET /repos/{owner}/{repo}/actions/runs/{run_id}/artifacts`, which
+    needs `actions: read`; the file-level block grants `contents: read` only,
+    and a declared block zeroes every unlisted scope. So every patched-only
+    dispatch 403'd at the fetch — including one naming a perfectly valid
+    control — and the ticket's success criterion was unreachable.
+
+    It failed CLOSED, so no unattributed build was ever possible. But the
+    refusal path was exercised and the SUCCESS path was not, and the defect
+    landed precisely there. This is that missing assertion.
+    """
+    perms = _effective_permissions(workflow, "patched")
+    assert perms is not None, (
+        "the patched job must resolve a permissions block; with none at either "
+        "level the token would hold the repo default, which is not what this "
+        "workflow documents"
+    )
+    assert perms.get("actions") == "read", (
+        "the patched job's token cannot list another run's artifacts without "
+        "`actions: read`, so the borrow step 403s and `trees=patched` NEVER "
+        f"works. Effective permissions were {perms!r}."
+    )
+    assert perms.get("contents") == "read", (
+        "a job-level block REPLACES the file-level one rather than merging, so "
+        "`contents: read` must be restated here or the checkouts cannot read "
+        "the repo"
+    )
+
+
+def test_borrowing_bought_no_write_scope_anywhere(workflow):
+    """The security posture the widening had to preserve.
+
+    These jobs execute untrusted third-party build code (the Chromium source,
+    upstream build scripts, a toolchain fetched at build time). `actions: read`
+    can only enumerate and download existing artifacts — it cannot mutate the
+    repo, publish a release or move a ref. Nothing here may hold a write scope,
+    and the control job — which reads no other run — must not be widened at all.
+    """
+    for job in workflow["jobs"]:
+        perms = _effective_permissions(workflow, job)
+        assert perms != "write-all", f"{job} holds write-all"
+        for scope, level in (perms or {}).items():
+            assert level in ("read", "none"), (
+                f"job {job!r} holds {scope}: {level!r}. This workflow runs "
+                "untrusted third-party code and must never carry a write-capable "
+                "token."
+            )
+
+    assert _effective_permissions(workflow, "unmodified").get("actions") != "read", (
+        "the control job reads no other run's artifacts, so it must NOT be "
+        "widened along with the patched job"
+    )
+
+
 def test_the_artifact_name_reveals_a_borrowed_control(workflow):
     """Provenance must be visible in the artifact list itself."""
     upload = next(s for s in _patched_steps(workflow)
