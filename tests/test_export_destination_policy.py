@@ -126,7 +126,7 @@ def test_operator_lane_export_to_an_arbitrary_outside_directory_still_succeeds(
     """
     pdir = tmp_path / "pdata"
     pdir.mkdir()
-    (pdir / "cookies.sqlite").write_text("ok")
+    (pdir / "cookies.sqlite").write_text("ok", encoding="utf-8")
 
     elsewhere = tmp_path / "external-drive"
     elsewhere.mkdir()
