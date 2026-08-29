@@ -63,6 +63,20 @@
 #    ahead of its own control. That ordering is a property of the graph rather
 #    than of anyone remembering to honour it.
 #
+#    PS-244 ADDED A SECOND WAY TO HOLD A CONTROL, AND DID NOT REMOVE THE RULE.
+#    A patched build still may not run without one; `trees=patched` changes only
+#    WHERE the control comes from — a previously-completed run, named by the
+#    operator — so the rebase loop stops paying ~1h25m of unmodified compile per
+#    iteration. The borrowed control is VERIFIED, NOT TRUSTED: before anything
+#    is built, ps218_verify_control.sh checks that run's OWN RECORDED EVIDENCE
+#    for the same ungoogled tag, the same host, and an actual successful compile
+#    that left a binary. Any check failing STOPS the build. It never degrades to
+#    an unattributed patched build, because that is the error this file exists
+#    to prevent. The `needs:` edge remains, and the `if:` below requires the
+#    control job to have SUCCEEDED on the `both` path and to have been SKIPPED
+#    on the patched-only path — so "ran ahead of a failed control" stays
+#    unreachable in the job graph rather than being ruled out in prose.
+#
 # 2. Build WITH our 16 fingerprint patches, and record what breaks at COMPILE
 #    time. Patch application and compilation are SEPARATE RESULTS and are
 #    reported separately — see the `prepare` / `compile` step split below, which
@@ -105,16 +119,35 @@ on:
       trees:
         description: >-
           Which trees to build. "both" runs the instrument check and then the
-          patched tree. "unmodified" runs the instrument check alone — use it to
-          establish the environment before spending hours on a patched build.
-          "patched" is deliberately NOT offered on its own: a patched build
-          without its control cannot be attributed.
+          patched tree — the SAFE DEFAULT, and the only one that needs nothing
+          from a previous run. "unmodified" runs the instrument check alone —
+          use it to establish the environment before spending hours on a
+          patched build. "patched" builds ONLY the patched tree and BORROWS its
+          control from a previously-completed run named in control_run_id — it
+          skips ~1h25m of unmodified compile per iteration, which is the
+          dominant cost of the rebase loop (PS-244). A patched build still
+          cannot be attributed without a control: the borrowed one is VERIFIED
+          (same tag, same host, actually compiled) and the build is REFUSED if
+          it is not.
         required: true
         default: "both"
         type: choice
         options:
           - both
           - unmodified
+          - patched
+      control_run_id:
+        description: >-
+          REQUIRED WHEN trees=patched, ignored otherwise. The run id of a
+          previously-completed dispatch whose UNMODIFIED control this build will
+          borrow instead of rebuilding. Take it from the URL of that run
+          (.../actions/runs/<THIS NUMBER>). It is CHECKED, not trusted: the run
+          must have built the same ungoogled tag on the same host and must
+          actually have compiled, established from its own recorded evidence.
+          Records are retained for 30 DAYS, so a control older than that is gone
+          and the dispatch must fall back to trees=both.
+        required: false
+        default: ""
       ninja_jobs:
         description: >-
           Ninja parallelism. LEAVE EMPTY for the upstream default (unrestricted,
@@ -132,8 +165,20 @@ on:
 # READ-only, matching the posture ci.yml and release.yml document in place.
 # These jobs fetch and execute untrusted third-party code (the Chromium source
 # tarball, upstream build scripts, a toolchain downloaded at build time) and
-# must not hold a write-capable token that code could exfiltrate. Nothing here
-# writes to the repo, so nothing needs widening.
+# must not hold a write-capable token that code could exfiltrate.
+#
+# NO WRITE SCOPE IS GRANTED ANYWHERE IN THIS FILE, and that is the posture to
+# preserve. But "read-only" is not one scope: declaring a `permissions:` block
+# sets every UNLISTED scope to `none`, so this default alone gives the token
+# `actions: none` — and PS-244's borrowed control is an artifact belonging to
+# ANOTHER run, which `actions/download-artifact` can only list through
+# `GET /repos/{owner}/{repo}/actions/runs/{run_id}/artifacts`. That endpoint
+# needs `actions: read`. The `patched` job therefore widens ITS OWN block by
+# that one read scope (see its `permissions:`); this default stays as-is, so
+# the control job — which reads no other run — is unaffected.
+#
+# Do not "simplify" that job-level block away: without it every patched-only
+# dispatch 403s at the fetch and the feature cannot work at all.
 permissions:
   contents: read
 
@@ -159,6 +204,13 @@ jobs:
   # ───────────────────────────────────────────────────────────────────────────
   unmodified:
     name: "1. unmodified tree (instrument check)"
+    # SKIPPED on a patched-only dispatch — that skip IS the ~1h25m saving, and
+    # it is the only thing `trees=patched` actually changes about this job.
+    # The patched job below does not treat a skip as permission to run without
+    # a control: it requires this job to have SUCCEEDED on the `both` path and
+    # to have been SKIPPED on the patched-only path, and on that path a
+    # BORROWED control must pass verification before anything is compiled.
+    if: inputs.trees != 'patched'
     runs-on: [self-hosted, persona-build]
     # Two builds of ~4–5.5 h each are expected; the upstream CI entrypoint
     # itself carries a 5 h ninja timeout. This ceiling is deliberately well
@@ -310,11 +362,55 @@ jobs:
   # STEP 2 — THE SUBJECT. Same tag, same container, same script; the ONLY
   # difference is our 16 patches. `needs: unmodified` is what guarantees the
   # control has already produced its result.
+  #
+  # THE `if:` BELOW IS A SAFETY GATE, NOT A CONVENIENCE, AND IT IS WRITTEN THE
+  # LONG WAY ON PURPOSE. It enumerates the TWO ways this job may legitimately
+  # start, and nothing else:
+  #
+  #   trees=both     → the control job must have SUCCEEDED. Unchanged from
+  #                    before PS-244: a failed control still stops the subject.
+  #   trees=patched  → the control job must have been SKIPPED, and a BORROWED
+  #                    control must then pass verification in the job itself.
+  #
+  # Naming `success` and `skipped` explicitly — rather than writing something
+  # permissive like `always()` or `result != 'failure'` — is what keeps "the
+  # patched tree ran after a control that FAILED" unreachable in the job graph.
+  # That is the PS-218 invariant, and it survives this change intact.
+  #
+  # `!cancelled()` is REQUIRED here and is not decoration: GitHub skips a job
+  # whose dependency was skipped unless its `if:` contains a status function, so
+  # without it the `trees=patched` branch could never run at all. `!cancelled()`
+  # is the narrowest one that works — `always()` would additionally run this job
+  # after someone cancelled the dispatch, spending hours on a build nobody is
+  # waiting for, on the owner's personal workstation.
   # ───────────────────────────────────────────────────────────────────────────
   patched:
     name: "2. patched tree (our 16 fingerprint patches)"
     needs: unmodified
-    if: inputs.trees == 'both'
+    # WIDENED BY EXACTLY ONE READ SCOPE, and only on this job. The borrowed
+    # control is an artifact of ANOTHER run, so `actions/download-artifact`
+    # must list that run's artifacts via
+    #   GET /repos/{owner}/{repo}/actions/runs/{run_id}/artifacts
+    # which requires `actions: read`. The file-level block above grants
+    # `contents: read` only, and a declared block sets every unlisted scope to
+    # `none` — so without this the borrow step 403s on EVERY patched-only
+    # dispatch, including one naming a perfectly valid control.
+    #
+    # `contents: read` MUST be repeated here: a job-level block REPLACES the
+    # file-level one rather than merging with it, and omitting it would leave
+    # the two checkouts unable to read the repo.
+    #
+    # STILL NO WRITE SCOPE. This job executes untrusted third-party build code,
+    # and `actions: read` cannot mutate the repo, publish a release, or move a
+    # ref — it can only enumerate and download existing artifacts. The control
+    # job is deliberately NOT widened: it reads no other run.
+    permissions:
+      contents: read
+      actions: read
+    if: >-
+      ${{ !cancelled()
+      && ( (inputs.trees == 'both' && needs.unmodified.result == 'success')
+        || (inputs.trees == 'patched' && needs.unmodified.result == 'skipped') ) }}
     runs-on: [self-hosted, persona-build]
     timeout-minutes: 900
     steps:
@@ -345,6 +441,49 @@ jobs:
         run: persona/scripts/ps218_record_env.sh patched pre-prepare
         env:
           UCPL_DIR: ucpl
+
+      # ── PS-244: THE BORROWED CONTROL, FETCHED AND VERIFIED BEFORE ANY BUILD ──
+      # Placement is load-bearing. These two steps sit ABOVE staging, prepare
+      # and compile so that an unusable control costs SECONDS, not the ~1h25m
+      # compile this feature exists to avoid. A verification that fired after
+      # the build would refuse a result already paid for.
+      #
+      # They are also below the pre-prepare env record on purpose: that record
+      # is THIS run's side of the host comparison, so it must exist before the
+      # comparison can be made.
+      #
+      # `continue-on-error` is deliberately NOT set on either. On the `both`
+      # path a missing control is a legitimate state handled by CONTROL UNKNOWN;
+      # here it is not — the operator asked to skip the control build, so a
+      # control that cannot be fetched and verified means this dispatch cannot
+      # produce an attributable result and must stop.
+      - name: Fetch the BORROWED control from the run the operator named
+        if: inputs.trees == 'patched'
+        uses: actions/download-artifact@v4
+        with:
+          name: ps218-unmodified-${{ inputs.ungoogled_tag }}
+          path: control
+          # The artifact belongs to ANOTHER run, so it must be named explicitly
+          # along with a token that may read it. Without `run-id` this silently
+          # resolves against the CURRENT run — which on a patched-only dispatch
+          # has no unmodified artifact at all.
+          run-id: ${{ inputs.control_run_id }}
+          github-token: ${{ github.token }}
+
+      # THE GATE. Everything about whether borrowing is honest happens here:
+      # same ungoogled tag (two independent witnesses), same host, and a control
+      # that ACTUALLY COMPILED and left a binary — all read from the borrowed
+      # run's OWN RECORDED EVIDENCE rather than from the operator's assertion.
+      # Any check failing exits non-zero and the job stops here, before a single
+      # source file is compiled.
+      - name: Verify the borrowed control — REFUSE the build if it is not comparable
+        if: inputs.trees == 'patched'
+        run: persona/scripts/ps218_verify_control.sh
+        env:
+          CONTROL_DIR: control
+          CURRENT_ENV: record/environment-patched.txt
+          UNGOOGLED_TAG: ${{ inputs.ungoogled_tag }}
+          CONTROL_RUN_ID: ${{ inputs.control_run_id }}
 
       # Our 16 go in through ungoogled's OWN mechanism. `shared.sh`'s
       # apply_patches() already calls
@@ -408,13 +547,24 @@ jobs:
       # brought in EXPLICITLY. It lands in `control/`, not `record/`, precisely
       # so a leftover in the shared workspace can never be mistaken for it: the
       # attribution script reads only this directory and refuses anything whose
-      # provenance stamp does not name this run.
+      # provenance stamp does not name this run — or, on a patched-only
+      # dispatch, does not carry the borrow certificate proving another run's
+      # control was checked and passed.
       #
       # `continue-on-error` because the control may legitimately not exist (the
       # unmodified tree failed to prepare, so no compile log was produced). That
       # case is already handled — every error is then marked CONTROL UNKNOWN
       # rather than asserted as ours.
+      #
+      # PS-244: SCOPED TO `both`, AND THAT SCOPE IS LOAD-BEARING. On a
+      # patched-only dispatch the control was already fetched and VERIFIED near
+      # the top of this job. Letting this step run there would download over the
+      # verified directory — replacing checked bytes with unchecked ones after
+      # the check had passed, which is a TOCTOU that would defeat the entire
+      # verification. It would also resolve against the current run, which on
+      # that path has no unmodified artifact at all.
       - name: Fetch the control's compile log (for the control diff)
+        if: inputs.trees == 'both'
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
@@ -442,12 +592,21 @@ jobs:
           NINJA_JOBS: ${{ inputs.ninja_jobs }}
           PREPARE_RESULT: ${{ steps.prepare.outcome }}
           COMPILE_RESULT: ${{ steps.compile.outcome }}
+          # Empty on the `both` path, which is what makes the manifest say
+          # IN-RUN there and name the borrowed run here.
+          CONTROL_RUN_ID: ${{ inputs.trees == 'patched' && inputs.control_run_id || '' }}
 
+      # PS-244 — THE ARTIFACT NAME CARRIES THE PROVENANCE.
+      # A reader browsing the run's artifacts must be able to tell an attribution
+      # backed by an in-run control from one backed by a borrowed one WITHOUT
+      # opening the workflow, the manifest, or this file. The `both` path keeps
+      # exactly its old name, so nothing about the safe path changes; a borrowed
+      # run is named for what it is and for WHICH run it leaned on.
       - name: Upload the record (patched)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ps218-patched-${{ inputs.ungoogled_tag }}
+          name: ps218-patched-${{ inputs.ungoogled_tag }}${{ inputs.trees == 'patched' && format('-borrowed-control-{0}', inputs.control_run_id) || '' }}
           path: |
             record/
           if-no-files-found: warn

@@ -46,6 +46,10 @@ PATCHED_LOG="${REC}/compile-patched.log"
 CONTROL_DIR="${CONTROL_DIR:-control}"
 CONTROL_LOG="${CONTROL_DIR}/compile-unmodified.log"
 CONTROL_PROV="${CONTROL_DIR}/compile-unmodified.provenance"
+# PS-244 — the borrow certificate written by ps218_verify_control.sh. Its
+# presence is what distinguishes "a control from another run, checked" from
+# "a control from another run, found lying around". See the provenance block.
+CONTROL_CERT="${CONTROL_DIR}/BORROWED-CONTROL.verified"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TWO KINDS OF LINE, AND WHY THEY MUST NOT SHARE A BUCKET
@@ -179,24 +183,64 @@ owner_of() {
   done
   echo
 
-  # ── the control's errors, if a log for THIS RUN is available ──────────────
-  # Presence is not provenance. A control log is usable only when its stamp says
-  # it came from this dispatch and this tag; anything else is refused and
-  # reported, because a control from another run is worse than no control — it
-  # licenses "PRE-EXISTING — NOT ours" against a tree that was never built here.
+  # ── the control's errors, if a USABLE control log is available ────────────
+  # Presence is not provenance. A control log is usable in exactly two ways, and
+  # anything else is refused and reported — because a control from another run
+  # is worse than no control: it licenses "PRE-EXISTING — NOT ours" against a
+  # tree that was never built here.
+  #
+  #   IN-RUN   — the stamp names this dispatch and this tag. The original case,
+  #              unchanged, and still the default (`trees=both`).
+  #   BORROWED — PS-244. The stamp names a DIFFERENT run, and that is ALLOWED
+  #              ONLY when ps218_verify_control.sh has left a certificate saying
+  #              it checked that run's own recorded evidence (same tag, same
+  #              host, actually compiled) and passed it.
+  #
+  # ⚠️ THE STAMP CHECK IS WIDENED HERE, NOT REMOVED, AND THE DISTINCTION IS THE
+  # WHOLE SAFETY CASE. Dropping the check would turn every stale log left on the
+  # self-hosted runner into an accepted control. So the borrow path demands MORE
+  # evidence than the in-run path, not less: a certificate that names THIS run
+  # as its verifier (so a certificate left behind by an earlier dispatch cannot
+  # authorise anything), names the SAME control run the log's own stamp names
+  # (so the certificate and the bytes cannot be about different runs), and
+  # agrees on the tag.
   CONTROL_AVAILABLE=false
   CONTROL_REFUSED=""
+  CONTROL_ORIGIN="none"
+  ctl_tag=""
+  ctl_run=""
+  cert_ctl_run=""
+  want_tag="${UNGOOGLED_TAG:-unknown}"
+  want_run="${GITHUB_RUN_ID:-local}"
   if [ -f "$CONTROL_LOG" ]; then
     if [ -f "$CONTROL_PROV" ]; then
       # shellcheck disable=SC1090
       ctl_tag="$(sed -n 's/^ungoogled_tag=//p' "$CONTROL_PROV")"
       ctl_run="$(sed -n 's/^github_run_id=//p' "$CONTROL_PROV")"
-      want_tag="${UNGOOGLED_TAG:-unknown}"
-      want_run="${GITHUB_RUN_ID:-local}"
-      if [ "$ctl_tag" = "$want_tag" ] && [ "$ctl_run" = "$want_run" ]; then
+      if [ "$ctl_tag" != "$want_tag" ]; then
+        # The tag must match on BOTH paths. A borrow certificate cannot excuse
+        # a control built from a different tree — that is not a provenance
+        # question, it is a different experiment.
+        CONTROL_REFUSED="tag mismatch — control was built from tag='${ctl_tag}', this run is building tag='${want_tag}'"
+      elif [ "$ctl_run" = "$want_run" ]; then
         CONTROL_AVAILABLE=true
+        CONTROL_ORIGIN="in-run"
+      elif [ -f "$CONTROL_CERT" ]; then
+        cert_by_run="$(sed -n 's/^verified_by_run=//p' "$CONTROL_CERT")"
+        cert_ctl_run="$(sed -n 's/^control_run_id=//p' "$CONTROL_CERT")"
+        cert_tag="$(sed -n 's/^ungoogled_tag=//p' "$CONTROL_CERT")"
+        if [ "$cert_by_run" != "$want_run" ]; then
+          CONTROL_REFUSED="borrow certificate was issued by run '${cert_by_run}', not by this run ('${want_run}'). A certificate left on the runner by an earlier dispatch authorises nothing."
+        elif [ "$cert_ctl_run" != "$ctl_run" ]; then
+          CONTROL_REFUSED="borrow certificate authorises control run '${cert_ctl_run}', but the log on disk is stamped run '${ctl_run}'. The certificate and the bytes are about different runs."
+        elif [ "$cert_tag" != "$want_tag" ]; then
+          CONTROL_REFUSED="borrow certificate names tag '${cert_tag}', this run is building '${want_tag}'"
+        else
+          CONTROL_AVAILABLE=true
+          CONTROL_ORIGIN="borrowed"
+        fi
       else
-        CONTROL_REFUSED="stamp mismatch — control was tag='${ctl_tag}' run='${ctl_run}', this run is tag='${want_tag}' run='${want_run}'"
+        CONTROL_REFUSED="stamp mismatch — control was tag='${ctl_tag}' run='${ctl_run}', this run is tag='${want_tag}' run='${want_run}', and no verified-borrow certificate authorises using another run's control"
       fi
     else
       CONTROL_REFUSED="control log carries NO provenance stamp, so it cannot be shown to belong to this run"
@@ -206,7 +250,20 @@ owner_of() {
   if $CONTROL_AVAILABLE; then
     extract_errors "$CONTROL_LOG" | sort -u > "${REC}/.control-errors" || true
     echo "== control (unmodified tree) errors: $(wc -l < "${REC}/.control-errors") =="
-    echo "control provenance: tag=${ctl_tag} run=${ctl_run} — matches this run"
+    if [ "$CONTROL_ORIGIN" = "borrowed" ]; then
+      # The reader must never have to infer this. An attribution resting on a
+      # control built in ANOTHER run is a weaker claim than one resting on an
+      # in-run control, and it says so in the place the claim is made.
+      echo "control provenance: tag=${ctl_tag} run=${ctl_run} — BORROWED from another run (PS-244)"
+      echo "control origin:     BORROWED — this run did NOT build its own control."
+      echo "    The control above was built by run ${ctl_run} and was verified against"
+      echo "    this run before use: same ungoogled tag, same host, and it actually"
+      echo "    compiled. See control-borrow-verification.txt for the per-check record."
+      echo "    This is NOT an in-run control and must not be presented as one."
+    else
+      echo "control provenance: tag=${ctl_tag} run=${ctl_run} — matches this run"
+      echo "control origin:     IN-RUN — built by this dispatch."
+    fi
   else
     : > "${REC}/.control-errors"
     if [ -n "$CONTROL_REFUSED" ]; then
