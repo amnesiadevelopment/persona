@@ -53,6 +53,16 @@
 # runner by an earlier dispatch therefore cannot authorise anything.
 set -euo pipefail
 
+# ── PS-249: the SHARED host-label definition ────────────────────────────────
+# Sourced rather than copied. This script READS two records and compares them,
+# while ps218_record_env.sh WRITES one — when only the writer was changed, a
+# control recorded before PS-249 held raw values while this run emitted
+# pseudonyms, so the comparator reported DIFFERS and refused every borrow of
+# every existing control. One definition means reader and writer cannot drift.
+_PS218_HOST_ID_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ps218_host_id.sh"
+# shellcheck source=scripts/ps218_host_id.sh
+. "$_PS218_HOST_ID_LIB"
+
 CONTROL_DIR="${CONTROL_DIR:-control}"
 # The environment record THIS run wrote for its own machine, which is the side
 # the borrowed control is compared against. It is produced by the pre-prepare
@@ -141,15 +151,38 @@ env_host_field() {
   [ -f "$1" ] || return 0
   sed -n 's/^# host: //p' "$1" 2>/dev/null | head -1 | awk -v i="$2" '{print $i}' || true
 }
-env_nodename() { env_host_field "$1" 2; }
+# ── PS-249: host identity is CANONICALISED on the way in ────────────────────
+# `canon_host_id` (scripts/ps218_host_id.sh, shared with ps218_record_env.sh)
+# brings both sides to the same footing before anything compares or PRINTS them:
+# an already-anonymised `anon-…` passes through, an unreadable value passes
+# through so `is_readable` can refuse it, and a RAW legacy value is
+# pseudonymised here with the same salt.
+#
+# That single choke point fixes two defects at once, which is why it lives here
+# rather than at each call site:
+#
+#   1. A control recorded BEFORE PS-249 holds a raw hostname and CPU model.
+#      Without this, the comparator saw a raw string on one side and a pseudonym
+#      on the other, reported DIFFERS, and refused EVERY borrow of every control
+#      that already exists. Hashing the legacy value with the same salt means
+#      the same machine still MATCHES and a different machine still REFUSES —
+#      the security semantics are unchanged, only the representation is.
+#
+#   2. `compare_or_fail` prints both values in its match line AND in all three
+#      refusal branches, into `$REPORT` and stdout — both world-readable. So the
+#      borrow path used to republish exactly the values this ticket removes, and
+#      defect 1 guaranteed the printing branch fired. Canonicalising at entry
+#      means every downstream emission can only ever carry a pseudonym; scrubbing
+#      the individual `echo`s would have left the next new message free to leak.
+env_nodename() { canon_host_id "$(env_host_field "$1" 2)"; }
 env_kernel()   { env_host_field "$1" 3; }
 env_nproc()    { env_field "$1" 's/^nproc:[[:space:]]*//p'; }
 env_nproc_all(){ env_field "$1" 's/^nproc --all:[[:space:]]*//p'; }
 env_tag()      { env_field "$1" 's/^portablelinux tag:[[:space:]]*//p'; }
 env_cpu() {
   [ -f "$1" ] || return 0
-  grep -iE '^[[:space:]]*model name[[:space:]]*:' "$1" 2>/dev/null | head -1 \
-    | sed -E 's/.*[Mm]odel name[[:space:]]*:[[:space:]]*//' || true
+  canon_host_id "$(grep -iE '^[[:space:]]*model name[[:space:]]*:' "$1" 2>/dev/null | head -1 \
+    | sed -E 's/.*[Mm]odel name[[:space:]]*:[[:space:]]*//')"
 }
 
 # A markdown table cell from the manifest: `| **2. Tree COMPILED** | YES |`

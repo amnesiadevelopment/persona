@@ -37,51 +37,18 @@ UCPL_DIR="${UCPL_DIR:?UCPL_DIR must point at the ungoogled-chromium-portablelinu
 # a browser disclosing the machine behind it; publishing the maintainer's own
 # machine is that same leak one layer up.
 #
-# WHY A PSEUDONYM AND NOT A CONSTANT LABEL. `ps218_verify_control.sh` (PS-244)
-# decides whether a borrowed control may be reused by COMPARING the hostname and
-# CPU model of two records. Replacing either with a fixed string would make that
-# comparison compare a constant to itself — it would pass for every host, and a
-# control built on a different machine would be accepted. That is a guard that
-# can never fire, the exact failure class this project keeps getting bitten by.
+# The label definition is SHARED with ps218_verify_control.sh rather than copied.
+# That is not tidiness: this script WRITES the record and that one READS two of
+# them and compares. When only the writer was changed, a control recorded before
+# the fix held raw values while this run emitted pseudonyms, so the comparator
+# reported DIFFERS and refused every borrow of every existing control. One
+# definition means the writer and the reader cannot drift apart.
 #
-# A salted digest keeps both properties at once: STABLE on one machine (so
-# records stay comparable across dispatches) and DISCRIMINATING between machines
-# (so the borrow check still refuses), while disclosing neither value.
-#
-# THE SALT IS WHAT MAKES IT IRREVERSIBLE, and it is not optional. Both inputs are
-# low-entropy — a WSL hostname is `DESKTOP-` plus 7 characters, and there are only
-# a few hundred retail CPU models — so an UNSALTED digest of either is trivially
-# brute-forced from a public log. The salt is generated locally, kept 0600, and
-# never recorded.
-#
-# FAIL-CLOSED, DELIBERATELY: if the salt cannot be established the fields are
-# written as `unknown`, which `is_readable()` in the verify script already
-# refuses. A salt failure therefore REFUSES a borrow loudly instead of silently
-# comparing two constants. It never falls back to the real value.
-PS218_HOST_SALT_FILE="${PS218_HOST_SALT_FILE:-${HOME:-/tmp}/.persona-ps218-host-salt}"
-
-_host_salt() {
-  if [ ! -s "$PS218_HOST_SALT_FILE" ]; then
-    ( umask 077
-      mkdir -p "$(dirname "$PS218_HOST_SALT_FILE")" 2>/dev/null || return 1
-      head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$PS218_HOST_SALT_FILE"
-    ) 2>/dev/null || return 1
-  fi
-  [ -s "$PS218_HOST_SALT_FILE" ] || return 1
-  cat "$PS218_HOST_SALT_FILE" 2>/dev/null
-}
-
-# A stable, non-identifying label for one input. Empty input stays `unknown`
-# rather than becoming a digest of the empty string, which would be a value that
-# every machine with a missing reading would share.
-pseudonymise() {
-  local value="$1" salt digest
-  [ -n "$value" ] || { echo "unknown"; return 0; }
-  salt="$(_host_salt)" || { echo "unknown"; return 0; }
-  [ -n "$salt" ] || { echo "unknown"; return 0; }
-  digest="$(printf '%s\n' "${salt}:${value}" | sha256sum 2>/dev/null | cut -c1-12)" || true
-  [ -n "$digest" ] && echo "$digest" || echo "unknown"
-}
+# See scripts/ps218_host_id.sh for why a salted digest, and not a constant label,
+# is the only option that keeps the borrow check both working and honest.
+_PS218_HOST_ID_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ps218_host_id.sh"
+# shellcheck source=scripts/ps218_host_id.sh
+. "$_PS218_HOST_ID_LIB"
 
 REC="record"
 mkdir -p "$REC"
