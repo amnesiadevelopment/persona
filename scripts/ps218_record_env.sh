@@ -30,6 +30,59 @@ esac
 
 UCPL_DIR="${UCPL_DIR:?UCPL_DIR must point at the ungoogled-chromium-portablelinux checkout}"
 
+# ── PS-249: host identity must never reach the PUBLIC repository ─────────────
+# amnesiadevelopment/persona is public, so Actions logs AND workflow artifacts
+# are world-readable. This record used to publish the runner's hostname and its
+# exact CPU model — an identifiable personal workstation. Persona exists to stop
+# a browser disclosing the machine behind it; publishing the maintainer's own
+# machine is that same leak one layer up.
+#
+# WHY A PSEUDONYM AND NOT A CONSTANT LABEL. `ps218_verify_control.sh` (PS-244)
+# decides whether a borrowed control may be reused by COMPARING the hostname and
+# CPU model of two records. Replacing either with a fixed string would make that
+# comparison compare a constant to itself — it would pass for every host, and a
+# control built on a different machine would be accepted. That is a guard that
+# can never fire, the exact failure class this project keeps getting bitten by.
+#
+# A salted digest keeps both properties at once: STABLE on one machine (so
+# records stay comparable across dispatches) and DISCRIMINATING between machines
+# (so the borrow check still refuses), while disclosing neither value.
+#
+# THE SALT IS WHAT MAKES IT IRREVERSIBLE, and it is not optional. Both inputs are
+# low-entropy — a WSL hostname is `DESKTOP-` plus 7 characters, and there are only
+# a few hundred retail CPU models — so an UNSALTED digest of either is trivially
+# brute-forced from a public log. The salt is generated locally, kept 0600, and
+# never recorded.
+#
+# FAIL-CLOSED, DELIBERATELY: if the salt cannot be established the fields are
+# written as `unknown`, which `is_readable()` in the verify script already
+# refuses. A salt failure therefore REFUSES a borrow loudly instead of silently
+# comparing two constants. It never falls back to the real value.
+PS218_HOST_SALT_FILE="${PS218_HOST_SALT_FILE:-${HOME:-/tmp}/.persona-ps218-host-salt}"
+
+_host_salt() {
+  if [ ! -s "$PS218_HOST_SALT_FILE" ]; then
+    ( umask 077
+      mkdir -p "$(dirname "$PS218_HOST_SALT_FILE")" 2>/dev/null || return 1
+      head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$PS218_HOST_SALT_FILE"
+    ) 2>/dev/null || return 1
+  fi
+  [ -s "$PS218_HOST_SALT_FILE" ] || return 1
+  cat "$PS218_HOST_SALT_FILE" 2>/dev/null
+}
+
+# A stable, non-identifying label for one input. Empty input stays `unknown`
+# rather than becoming a digest of the empty string, which would be a value that
+# every machine with a missing reading would share.
+pseudonymise() {
+  local value="$1" salt digest
+  [ -n "$value" ] || { echo "unknown"; return 0; }
+  salt="$(_host_salt)" || { echo "unknown"; return 0; }
+  [ -n "$salt" ] || { echo "unknown"; return 0; }
+  digest="$(printf '%s\n' "${salt}:${value}" | sha256sum 2>/dev/null | cut -c1-12)" || true
+  [ -n "$digest" ] && echo "$digest" || echo "unknown"
+}
+
 REC="record"
 mkdir -p "$REC"
 # The two passes write SEPARATE files rather than one overwriting the other:
@@ -45,18 +98,61 @@ fi
   echo "# PS-218 build environment — tree: ${TREE}"
   echo "# pass: ${PHASE_LABEL}"
   echo "# recorded: $(date -Is)"
-  echo "# host: $(uname -a)"
+  # PS-249: `uname -a` field 2 is the NODENAME (the hostname) — that field, and
+  # only that field, is replaced. Everything else `uname -a` prints is kernel
+  # release, kernel version, architecture and OS family, all of which the ticket
+  # keeps because they make the readings interpretable and identify no machine.
+  #
+  # THE FIELD POSITIONS ARE A CONTRACT, NOT A FORMATTING CHOICE.
+  # `ps218_verify_control.sh` reads this line with
+  #     sed -n 's/^# host: //p' | awk '{print $i}'
+  # taking i=2 for the nodename and i=3 for the kernel release. Rebuilding the
+  # line from the same five components in the same order keeps that parser
+  # working unchanged; dropping or reordering a field would silently shift the
+  # kernel into the hostname slot and make the borrow check compare the wrong
+  # things while still reporting success.
+  echo "# host: $(uname -s) $(pseudonymise "$(uname -n)") $(uname -r) $(uname -v) $(uname -m) $(uname -o)"
   echo
 
   echo "== CPU as the RUNNER sees it =="
-  # The i9-14900K is 8 performance + 16 efficiency cores. Work scheduled as
-  # though all 32 threads were equal will have stragglers, so a wall-clock
-  # longer than the 130-core-hours ÷ cores prediction may be a property of the
-  # hardware rather than a fault. Recording the topology is what lets a reader
-  # tell those two apart instead of assuming either.
+  # This runner is a hybrid-core desktop part: its performance and efficiency
+  # cores are NOT equal, so work scheduled as though every thread were identical
+  # will have stragglers, and a wall-clock longer than the
+  # 130-core-hours ÷ cores prediction may be a property of the hardware rather
+  # than a fault. Recording the topology is what lets a reader tell those two
+  # apart instead of assuming either.
+  #
+  # PS-249: this comment used to name the exact retail CPU model in prose. That
+  # is host identity COMMITTED to a public repository — it leaks with no run at
+  # all, so scrubbing only the runtime output would have left it in place. The
+  # asymmetry it explains is what matters here, not the part number.
   echo "nproc:            $(nproc)"
   echo "nproc --all:      $(nproc --all)"
-  lscpu 2>/dev/null | grep -Ei 'model name|^cpu\(s\)|thread|core|socket|mhz' || true
+
+  # PS-249: the CPU model is pseudonymised; the CAPACITY figures are kept.
+  #
+  # `Model name:` is preserved as a FIELD because `ps218_verify_control.sh`
+  # (PS-244) reads it — `grep -iE '^[[:space:]]*model name[[:space:]]*:'` — to
+  # refuse a control built on different hardware. Deleting the line would make
+  # that check read an empty value (`is_readable()` refuses, so every borrow
+  # fails); replacing it with a constant would make it compare a constant to
+  # itself and pass for every host. The pseudonym is the only option that keeps
+  # the check both WORKING and HONEST.
+  echo "Model name:       $(pseudonymise "$(lscpu 2>/dev/null | sed -nE 's/^[[:space:]]*[Mm]odel name[[:space:]]*:[[:space:]]*//p' | head -1)")"
+
+  # ⚠️ THE FIELDS ARE NOW LISTED EXPLICITLY, NOT MATCHED BY REGEX.
+  # The previous pattern was `'model name|^cpu\(s\)|thread|core|socket|mhz'`,
+  # and the bare `core` alternative also matches the `Flags:` line — every
+  # modern x86 flag list contains `perfctr_core` — so the whole CPU flag string
+  # was published too. That is a far narrower fingerprint than a model name: the
+  # flag set pins microarchitecture, stepping and errata state. It was not in
+  # the ticket's two cited lines; an explicit allow-list is what makes the leak
+  # impossible to reintroduce by widening a pattern.
+  #
+  # Every field below is a COUNT or a CLOCK. None of them identifies a machine,
+  # and all of them are load-bearing for reading the build's timing and OOM
+  # behaviour, which the ticket requires be kept.
+  lscpu 2>/dev/null | grep -E '^(CPU\(s\)|Thread\(s\) per core|Core\(s\) per socket|Socket\(s\)|CPU max MHz|CPU min MHz|Architecture|Byte Order):' || true
   echo
 
   echo "== MEMORY as the RUNNER (WSL2 guest) sees it =="
